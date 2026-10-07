@@ -7,6 +7,9 @@ import numpy as np
 
 from nodes.groups import if_enum_group
 from nodes.impl.image_utils import fast_gaussian_blur
+from nodes.impl.native_channels import concatenate_channels
+from nodes.impl.native_convolution import convolve
+from nodes.impl.native_filters import arithmetic, morphology
 from nodes.properties.inputs import EnumInput, ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
@@ -168,42 +171,42 @@ def edge_detection_node(
         filter_y = FILTER_Y.get(algorithm)
 
         def g_x() -> np.ndarray:
-            return cv2.filter2D(img, -1, filter_x)
+            return convolve(img, filter_x, 0)
 
         def g_y() -> np.ndarray:
             filter = filter_y if filter_y is not None else np.rot90(filter_x, 1)
-            return cv2.filter2D(img, -1, filter)
+            return convolve(img, filter, 0)
 
         if algorithm == Algorithm.ROBERTS:
             gradient_component = GradientComponent.MAGNITUDE
 
         if gradient_component == GradientComponent.MAGNITUDE:
-            img = np.hypot(g_x(), g_y()) * (amount / 2)
+            img = arithmetic(g_x(), 0, amount / 2, b=g_y())
         elif gradient_component == GradientComponent.X:
-            img = g_x() * (amount / 2) + 0.5
+            img = arithmetic(g_x(), 1, amount / 2)
         elif gradient_component == GradientComponent.Y:
-            img = g_y() * (amount / 2) + 0.5
+            img = arithmetic(g_y(), 1, amount / 2)
         else:
             raise ValueError(f"Invalid gradient component: {gradient_component}")
 
     elif algorithm == Algorithm.PREWITT_COMPASS:
-        img = prewitt_compass(img) * (amount / 2)
+        img = arithmetic(prewitt_compass(img), 2, amount / 2)
 
     elif algorithm == Algorithm.LAPLACIAN:
-        img = cv2.filter2D(img, -1, LAPLACE_KERNEL) * amount  # type: ignore
+        img = arithmetic(convolve(img, LAPLACE_KERNEL, 0), 2, amount)
 
     elif algorithm == Algorithm.LAPLACIAN_DENOISE:
-        img = laplacian_denoise(img) * amount
+        img = arithmetic(laplacian_denoise(img), 2, amount)
 
     elif algorithm == Algorithm.DIFFERENCE_OF_GAUSSIAN:
         g1 = fast_gaussian_blur(img, radius_1)
         g2 = fast_gaussian_blur(img, radius_2)
-        img = (g1 - g2) * amount
+        img = arithmetic(g1, 3, amount, b=g2)
 
-    img = np.clip(img, 0, 1)  # type: ignore
+    img = arithmetic(img, 6, clip=True)
 
     if alpha is not None:
-        img = np.dstack((img, alpha))
+        img = concatenate_channels(img, alpha)
     return img
 
 
@@ -223,11 +226,12 @@ def prewitt_compass(img: np.ndarray) -> np.ndarray:
         ]
     ).astype(np.float32)
 
-    g = np.abs(cv2.filter2D(img, -1, filter_0))
+    filtered = convolve(img, filter_0, 0)
+    g = arithmetic(filtered, 5, b=filtered)
     for i in range(1, 4):
-        g = np.maximum(g, np.abs(cv2.filter2D(img, -1, np.rot90(filter_0, i))))
+        g = arithmetic(g, 5, b=convolve(img, np.rot90(filter_0, i), 0))
     for i in range(4):
-        g = np.maximum(g, np.abs(cv2.filter2D(img, -1, np.rot90(filter_45, i))))
+        g = arithmetic(g, 5, b=convolve(img, np.rot90(filter_45, i), 0))
 
     return g
 
@@ -238,7 +242,7 @@ def laplacian_denoise(img: np.ndarray) -> np.ndarray:
     # Changes: Instead of using the laplacian to get the sign of the magnitude,
     # we use it as a clipped factor. This eliminates abrupt changes in the
     # output image and has an even stronger denoising effect.
-    max_val = cv2.dilate(img, cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3)))
-    min_val = cv2.erode(img, cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3)))
-    laplace = cv2.filter2D(img, -1, LAPLACE_KERNEL)
-    return np.maximum(max_val - img, img - min_val) * np.clip(laplace * 10, -0.75, 0.75)  # type: ignore
+    max_val = morphology(img, cv2.MORPH_CROSS, 1, 1, maximum=True)
+    min_val = morphology(img, cv2.MORPH_CROSS, 1, 1, maximum=False)
+    laplace = convolve(img, LAPLACE_KERNEL, 0)
+    return arithmetic(img, 4, b=max_val, c=min_val, d=laplace)

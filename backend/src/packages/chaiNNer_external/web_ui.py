@@ -9,6 +9,8 @@ from enum import Enum
 import requests
 from sanic.log import logger
 
+from nodes.impl import numpy_pool
+
 STABLE_DIFFUSION_TEXT2IMG_PATH = "/sdapi/v1/txt2img"
 STABLE_DIFFUSION_IMG2IMG_PATH = "/sdapi/v1/img2img"
 STABLE_DIFFUSION_INTERROGATE_PATH = "/sdapi/v1/interrogate"
@@ -22,7 +24,7 @@ STABLE_DIFFUSION_REQUEST_TIMEOUT = float(
     os.environ.get("STABLE_DIFFUSION_REQUEST_TIMEOUT", None) or "600"
 )  # 10 minutes
 
-_thread_pool = ThreadPoolExecutor(max_workers=4)
+_thread_pool = ThreadPoolExecutor(max_workers=4, initializer=numpy_pool.install)
 
 
 @dataclass

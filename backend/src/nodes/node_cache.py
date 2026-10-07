@@ -5,7 +5,9 @@ import hashlib
 import os
 import tempfile
 import time
+from concurrent.futures import Future
 from enum import Enum
+from threading import RLock, get_ident
 from typing import Iterable, NewType
 
 import numpy as np
@@ -13,8 +15,9 @@ from sanic.log import logger
 
 from api import RunFn
 
-CACHE_MAX_BYTES = int(os.environ.get("CACHE_MAX_BYTES", 1024**3))  # default 1 GiB
+CACHE_MAX_BYTES = int(os.environ.get("CACHE_MAX_BYTES", str(1024**3)))  # default 1 GiB
 CACHE_REGISTRY: list[NodeOutputCache] = []
+_CACHE_LOCK = RLock()
 
 
 class CachedNumpyArray:
@@ -39,10 +42,11 @@ class NodeOutputCache:
         self._bytes: dict[CacheKey, int] = {}
         self._access_time: dict[CacheKey, float] = {}
 
-        CACHE_REGISTRY.append(self)
+        with _CACHE_LOCK:
+            CACHE_REGISTRY.append(self)
 
     @staticmethod
-    def _args_to_key(args: Iterable[object]) -> CacheKey:
+    def args_to_key(args: Iterable[object]) -> CacheKey:
         key = []
         for arg in args:
             if isinstance(arg, (int, float, bool, str, bytes)):
@@ -75,31 +79,37 @@ class NodeOutputCache:
         return size
 
     def empty(self) -> bool:
-        return len(self._data) == 0
+        with _CACHE_LOCK:
+            return len(self._data) == 0
 
     def oldest(self) -> tuple[CacheKey, float]:
-        return min(self._access_time.items(), key=lambda x: x[1])
+        with _CACHE_LOCK:
+            return min(self._access_time.items(), key=lambda x: x[1])
 
     def size(self):
-        return sum(self._bytes.values())
+        with _CACHE_LOCK:
+            return sum(self._bytes.values())
 
     @staticmethod
     def _enforce_limits():
-        while True:
-            total_bytes = sum([cache.size() for cache in CACHE_REGISTRY])
-            logger.debug(
-                f"Cache size: {total_bytes} ({100*total_bytes/CACHE_MAX_BYTES:0.1f}% of limit)"
-            )
-            if total_bytes <= CACHE_MAX_BYTES:
-                return
-            logger.debug("Dropping oldest cache key")
+        with _CACHE_LOCK:
+            while True:
+                total_bytes = sum([cache.size() for cache in CACHE_REGISTRY])
+                logger.debug(
+                    f"Cache size: {total_bytes} ({100 * total_bytes / CACHE_MAX_BYTES:0.1f}% of limit)"
+                )
+                if total_bytes <= CACHE_MAX_BYTES:
+                    return
+                logger.debug("Dropping oldest cache key")
 
-            oldest_keys = [
-                (cache, cache.oldest()) for cache in CACHE_REGISTRY if not cache.empty()
-            ]
+                oldest_keys = [
+                    (cache, cache.oldest())
+                    for cache in CACHE_REGISTRY
+                    if not cache.empty()
+                ]
 
-            cache, (key, _) = min(oldest_keys, key=lambda x: x[1][1])
-            cache.drop(key)
+                cache, (key, _) = min(oldest_keys, key=lambda x: x[1][1])
+                cache.drop(key)
 
     @staticmethod
     def _write_arrays_to_disk(output: list) -> list:
@@ -130,38 +140,94 @@ class NodeOutputCache:
             return output[0]
         return output
 
+    @staticmethod
+    def restore(stored: list) -> object:
+        """The node output a stored snapshot holds; its arrays are read back fresh."""
+        return NodeOutputCache._list_to_output(
+            NodeOutputCache._read_arrays_from_disk(stored)
+        )
+
     def get(self, args: Iterable[object]) -> object | None:
-        key = self._args_to_key(args)
-        if key in self._data:
-            logger.debug("Cache hit")
-            self._access_time[key] = time.time()
-            return self._list_to_output(self._read_arrays_from_disk(self._data[key]))
-        logger.debug("Cache miss")
-        return None
+        return self.get_by_key(self.args_to_key(args))
 
     def put(self, args: Iterable[object], output: object):
-        key = self._args_to_key(args)
-        self._data[key] = self._write_arrays_to_disk(self._output_to_list(output))
-        self._bytes[key] = self._estimate_bytes(self._output_to_list(output))
-        self._access_time[key] = time.time()
-        self._enforce_limits()
+        self.put_by_key(self.args_to_key(args), output)
 
     def drop(self, key: CacheKey):
-        del self._data[key]
-        del self._bytes[key]
-        del self._access_time[key]
+        with _CACHE_LOCK:
+            del self._data[key]
+            del self._bytes[key]
+            del self._access_time[key]
+
+    def get_by_key(self, key: CacheKey) -> object | None:
+        with _CACHE_LOCK:
+            if key in self._data:
+                logger.debug("Cache hit")
+                self._access_time[key] = time.time()
+                return self.restore(self._data[key])
+            logger.debug("Cache miss")
+            return None
+
+    def put_by_key(self, key: CacheKey, output: object) -> list:
+        values = self._output_to_list(output)
+        # Each new snapshot owns separate temporary files, so serialization need
+        # not hold the registry lock or block another node's computation.
+        stored = self._write_arrays_to_disk(values)
+        size = self._estimate_bytes(values)
+        with _CACHE_LOCK:
+            self._data[key] = stored
+            self._bytes[key] = size
+            self._access_time[key] = time.time()
+            self._enforce_limits()
+        # Waiters retain this snapshot even if the memory limit evicts its entry.
+        return stored
 
 
 def cached(run: RunFn):
     cache = NodeOutputCache()
+    pending: dict[CacheKey, tuple[Future[list], int]] = {}
 
     @functools.wraps(run)
     def _run(*args: object):
-        out = cache.get(args)
-        if out is not None:
-            return out
-        output = run(*args)
-        cache.put(args, output)
-        return output
+        # Registered cached nodes do not mutate their inputs. Reuse the key
+        # instead of copying and hashing every image again on a cache miss.
+        key = cache.args_to_key(args)
+        with _CACHE_LOCK:
+            out = cache.get_by_key(key)
+            if out is not None:
+                return out
+            active = pending.get(key)
+            if active is None:
+                future: Future[list] = Future()
+                pending[key] = (future, get_ident())
+                owner = True
+            else:
+                future, owner_thread = active
+                if owner_thread == get_ident():
+                    raise RuntimeError(
+                        "Recursive evaluation of the same cached node inputs"
+                    )
+                owner = False
+
+        if not owner:
+            stored = future.result()
+            # CachedNumpyArray uses seek/read on a shared temporary file. Keep
+            # these reads atomic; each waiter receives its own immutable array.
+            with _CACHE_LOCK:
+                return cache.restore(stored)
+
+        try:
+            output = run(*args)
+            stored = cache.put_by_key(key, output)
+        except BaseException as error:
+            with _CACHE_LOCK:
+                future.set_exception(error)
+                pending.pop(key)
+            raise
+        else:
+            with _CACHE_LOCK:
+                future.set_result(stored)
+                pending.pop(key)
+            return output
 
     return _run

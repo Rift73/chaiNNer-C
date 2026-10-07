@@ -1,0 +1,84 @@
+{
+  "files": [
+    {
+      "variant": "installed",
+      "path": "packages/chaiNNer_standard/image/io/load_image.py",
+      "sha256": "9eb5a9686d36788ef372d03935cd94b953e21e90b8a47ed1fea149c09dd61c09"
+    },
+    {
+      "variant": "installed",
+      "path": "packages/chaiNNer_standard/image/io/save_image.py",
+      "sha256": "5c60ddd00ee0271965d055160dc8824709e4fa7620d0062557de23bc9d81a251"
+    },
+    {
+      "variant": "installed",
+      "path": "packages/chaiNNer_standard/image/io/view_image_external.py",
+      "sha256": "6eadf3c66648258db96d0f8d90f932e1063fe48435d1e06dfeb2360484dde452"
+    },
+    {
+      "variant": "installed",
+      "path": "nodes/impl/dds/texconv.py",
+      "sha256": "03ff6d6844047f97c9a765c594934437a6dd43ea34d6c81885a8581fc4c259dc"
+    },
+    {
+      "variant": "installed",
+      "path": "nodes/impl/dds/format.py",
+      "sha256": "49c7c4a338acaaf71ced64e8843f4cb8ed33f5778b9849134ffd459c5bdd0ae3"
+    },
+    {
+      "variant": "installed",
+      "path": "nodes/impl/image_formats.py",
+      "sha256": "69d0c6979347fa1fed3bca2dbfabdf484b8baa52b535dd7ab9ea0ad17d5e022a"
+    },
+    {
+      "variant": "installed",
+      "path": "nodes/impl/image_utils.py",
+      "sha256": "23d9276c13e969d302ca4f49c59488cdf5cbffd7e3a9ce23eda5a62a26545e06"
+    },
+    {
+      "variant": "installed",
+      "path": "nodes/utils/utils.py",
+      "sha256": "e2afb9d6bda8c07b8e5c12c20671d40e9bfab42089bc46cea452832e0b47ee4c"
+    },
+    {
+      "variant": "source",
+      "path": "packages/chaiNNer_standard/image/io/load_image.py",
+      "sha256": "d490c7cb249416dfa3d47aab0a84e6531dbd67fcb43949f74800d74565096d31"
+    },
+    {
+      "variant": "source",
+      "path": "packages/chaiNNer_standard/image/io/save_image.py",
+      "sha256": "d3f6c1c645d14c35f9823c609fd673d5609383d66aa0f6754684b8cbfc500026"
+    },
+    {
+      "variant": "source",
+      "path": "packages/chaiNNer_standard/image/io/view_image_external.py",
+      "sha256": "6e79cfb4aae8d0c39655ead2be6c6c21be9e157362bf3dc05e4a7fdd2b4aa85f"
+    },
+    {
+      "variant": "source",
+      "path": "nodes/impl/dds/texconv.py",
+      "sha256": "647ebfbba63f8d119f41585d012f70561c1d80743ee0ac911f0c235d40acf3d6"
+    },
+    {
+      "variant": "source",
+      "path": "nodes/impl/dds/format.py",
+      "sha256": "c824a0e13809b4c9927adfb43d8129735c6a01d89ee005ba44e48be58615a614"
+    },
+    {
+      "variant": "source",
+      "path": "nodes/impl/image_formats.py",
+      "sha256": "69d0c6979347fa1fed3bca2dbfabdf484b8baa52b535dd7ab9ea0ad17d5e022a"
+    },
+    {
+      "variant": "source",
+      "path": "nodes/impl/image_utils.py",
+      "sha256": "167a48d9919536245266d2c62aac7b121d322d5746ac23a1becf738c81f54242"
+    },
+    {
+      "variant": "source",
+      "path": "nodes/utils/utils.py",
+      "sha256": "6877d8b6128245f6d0ee9488b474d380b743a7d153fea7a253fe27e4ec7209f1"
+    }
+  ]
+}

@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 
 import navi
+from nodes.impl.native_analysis import apply_palette
 from nodes.properties.inputs import ImageInput
 from nodes.properties.outputs import ImageOutput
-from nodes.utils.utils import get_h_w_c
 
 from .. import miscellaneous_group
 
@@ -17,9 +17,9 @@ def quantize(img: np.ndarray, levels: int) -> np.ndarray:
     The type of the integers in the returned array will be the smallest unsigned integer type that can fit `levels` many values. E.g. uint8 is used for 256, and uint16 is used for 257 levels.
     """
     assert levels >= 1
-    assert (
-        levels <= 2**24
-    ), "Quantizing float32 values with more than 2**24 levels doesn't make sense, because only integers up to 2**24 can be represented exactly using float32."
+    assert levels <= 2**24, (
+        "Quantizing float32 values with more than 2**24 levels doesn't make sense, because only integers up to 2**24 can be represented exactly using float32."
+    )
 
     q: np.ndarray = np.round(img * (levels - 1))
 
@@ -52,9 +52,4 @@ def apply_palette_node(
     img: np.ndarray,
     lut: np.ndarray,
 ) -> np.ndarray:
-    # convert to the size of the LUT
-    _, w, _ = get_h_w_c(lut)
-    img = quantize(img, w)
-
-    # only use top row of lut
-    return np.take(lut[0], img, axis=0)
+    return apply_palette(img, lut)

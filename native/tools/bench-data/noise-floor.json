@@ -1,0 +1,985 @@
+{
+  "floors": {
+    "resize-real-256": {
+      "floor": 0.04704875730128665,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.02346853727252279,
+          "background_busy_percent": 7.7564698209044565
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.04704875730128665,
+          "background_busy_percent": 8.945191660368163
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.01539457493784529,
+          "background_busy_percent": 8.74964866577665
+        }
+      ]
+    },
+    "gaussian": {
+      "floor": 0.05750834550438791,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.05750834550438791,
+          "background_busy_percent": 7.737536911585895
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.01850141986158309,
+          "background_busy_percent": 8.369099352038962
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.02633052680848962,
+          "background_busy_percent": 8.04148778755198
+        }
+      ]
+    },
+    "lens-spectral": {
+      "floor": 0.06237763348108932,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.06237763348108932,
+          "background_busy_percent": 11.849412371552717
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.0064289899338138695,
+          "background_busy_percent": 8.253456203864275
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.016950251098179134,
+          "background_busy_percent": 8.74671344885499
+        }
+      ]
+    },
+    "morphology": {
+      "floor": 0.04766605175053146,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.04421099065994111,
+          "background_busy_percent": 7.510412334129096
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.024684359189239925,
+          "background_busy_percent": 8.48783652507082
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.04766605175053146,
+          "background_busy_percent": 10.693866883222956
+        }
+      ]
+    },
+    "normal-map": {
+      "floor": 0.040329353212315275,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.022776179416212943,
+          "background_busy_percent": 7.836943441636583
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.040329353212315275,
+          "background_busy_percent": 9.289065848541586
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.01557666401914842,
+          "background_busy_percent": 8.33845941659196
+        }
+      ]
+    },
+    "caption": {
+      "floor": 0.04397710589584277,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.04397710589584277,
+          "background_busy_percent": 7.813770669558146
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.04303052625759455,
+          "background_busy_percent": 8.387727417810407
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.04152898520543506,
+          "background_busy_percent": 7.071180555555555
+        }
+      ]
+    },
+    "split-channels": {
+      "floor": 0.042741999253377405,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.042741999253377405,
+          "background_busy_percent": 7.840856641742823
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.01355846748494965,
+          "background_busy_percent": 8.710267732824125
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.032207919300920276,
+          "background_busy_percent": 7.7579818719104985
+        }
+      ]
+    },
+    "palette-median": {
+      "floor": 0.05870963550004365,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.04665243160881333,
+          "background_busy_percent": 7.733013171510956
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.05870963550004365,
+          "background_busy_percent": 10.482654802666179
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.009795002662380072,
+          "background_busy_percent": 7.826026892613741
+        }
+      ]
+    },
+    "palette-dither": {
+      "floor": 0.05370875926542069,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.05370875926542069,
+          "background_busy_percent": 7.366351983143069
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.03424027127749942,
+          "background_busy_percent": 8.91997383919471
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.008785991048898392,
+          "background_busy_percent": 7.657145514963902
+        }
+      ]
+    },
+    "parallel-branches": {
+      "floor": 0.025349744014790485,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.0214693360055366,
+          "background_busy_percent": 8.544352870229446
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.025349744014790485,
+          "background_busy_percent": 7.764263165232633
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.023816830192276525,
+          "background_busy_percent": 7.949648749974763
+        }
+      ]
+    },
+    "video-ffv1": {
+      "floor": 0.013401887987645012,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.012045428073545599,
+          "background_busy_percent": 10.266450485653618
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.013401887987645012,
+          "background_busy_percent": 10.69213256192388
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.009324187847594036,
+          "background_busy_percent": 11.337615683632015
+        }
+      ]
+    },
+    "video-h264": {
+      "floor": 0.04709564315058643,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.04709564315058643,
+          "background_busy_percent": 11.847192670623471
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.01818172338869239,
+          "background_busy_percent": 10.061558532151839
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.016527066552171125,
+          "background_busy_percent": 10.39549570510437
+        }
+      ]
+    },
+    "video-resize-h264": {
+      "floor": 0.013749975149227434,
+      "launches": [
+        {
+          "run": "bench-20261001T164648Z",
+          "repeats": 6,
+          "floor": 0.013749975149227434,
+          "background_busy_percent": 11.330379432540612
+        },
+        {
+          "run": "bench-20261001T165432Z",
+          "repeats": 6,
+          "floor": 0.013018924843691623,
+          "background_busy_percent": 11.01439056091199
+        },
+        {
+          "run": "bench-20261001T170210Z",
+          "repeats": 6,
+          "floor": 0.005769989420761916,
+          "background_busy_percent": 12.120984744776894
+        }
+      ]
+    }
+  },
+  "cpu_floors": {
+    "auto": {
+      "resize-real-256": {
+        "floor": 0.17960621463287652,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.09401712441980493,
+            "throughput_floor": 0.03559554050278686,
+            "background_busy_percent": 14.508956404871864
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.07763056024829175,
+            "throughput_floor": 0.03589958306193218,
+            "background_busy_percent": 16.06565521262038
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.17960621463287652,
+            "throughput_floor": 0.020578838054655924,
+            "background_busy_percent": 12.271801391679995
+          }
+        ]
+      },
+      "gaussian": {
+        "floor": 0.49559602002363634,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.3840242443665315,
+            "throughput_floor": 0.10059973047288326,
+            "background_busy_percent": 14.186811939620927
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.4216449194948324,
+            "throughput_floor": 0.028936792374306013,
+            "background_busy_percent": 16.18052375950515
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.49559602002363634,
+            "throughput_floor": 0.040623937526560794,
+            "background_busy_percent": 14.166388239224858
+          }
+        ]
+      },
+      "lens-spectral": {
+        "floor": 0.043284926935073346,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.022164634133959023,
+            "throughput_floor": 0.016034645826708212,
+            "background_busy_percent": 12.670259411134573
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.043284926935073346,
+            "throughput_floor": 0.10230760625261817,
+            "background_busy_percent": 16.95836258477551
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.03986889444062944,
+            "throughput_floor": 0.014040093583590785,
+            "background_busy_percent": 12.33436782681448
+          }
+        ]
+      },
+      "morphology": {
+        "floor": 0.3539799533025412,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.3539799533025412,
+            "throughput_floor": 0.056846395501740775,
+            "background_busy_percent": 13.744075829383887
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.19735615816595142,
+            "throughput_floor": 0.0825880192828621,
+            "background_busy_percent": 21.240399385560675
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.14824142973564927,
+            "throughput_floor": 0.0522899837720639,
+            "background_busy_percent": 15.828852402449893
+          }
+        ]
+      },
+      "normal-map": {
+        "floor": 0.3821215511218379,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.3274629838698738,
+            "throughput_floor": 0.026050805821075454,
+            "background_busy_percent": 12.439578616049204
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.3821215511218379,
+            "throughput_floor": 0.03138824940804174,
+            "background_busy_percent": 18.1695550053958
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.32625903433560355,
+            "throughput_floor": 0.03223315312064629,
+            "background_busy_percent": 13.546049339239708
+          }
+        ]
+      },
+      "caption": {
+        "floor": 0.7743377700418322,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.7743377700418322,
+            "throughput_floor": 0.05130378864081917,
+            "background_busy_percent": 11.529439361951678
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.7106928404655803,
+            "throughput_floor": 0.04918664942976384,
+            "background_busy_percent": 18.277232834279815
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.4311706967142441,
+            "throughput_floor": 0.0621528438682598,
+            "background_busy_percent": 11.815934727735476
+          }
+        ]
+      },
+      "split-channels": {
+        "floor": 0.2930875305038888,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.28048770372573106,
+            "throughput_floor": 0.06652615807605203,
+            "background_busy_percent": 11.851432880844644
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.2930875305038888,
+            "throughput_floor": 0.05558904310808566,
+            "background_busy_percent": 18.506775594890748
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.22599256187152866,
+            "throughput_floor": 0.047266474936689534,
+            "background_busy_percent": 12.745358090185675
+          }
+        ]
+      },
+      "palette-median": {
+        "floor": 0.15682877942752083,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.15682877942752083,
+            "throughput_floor": 0.0768079173607779,
+            "background_busy_percent": 14.965233881163085
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.13234627711354105,
+            "throughput_floor": 0.03393477517468458,
+            "background_busy_percent": 16.26779646436406
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.1458972420024367,
+            "throughput_floor": 0.06386980640487745,
+            "background_busy_percent": 14.566672590486345
+          }
+        ]
+      },
+      "palette-dither": {
+        "floor": 0.21366403303807885,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.1694876834196658,
+            "throughput_floor": 0.017338208040108733,
+            "background_busy_percent": 11.482690242088738
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.20519561322211016,
+            "throughput_floor": 0.035637433043385056,
+            "background_busy_percent": 16.777531411677753
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.21366403303807885,
+            "throughput_floor": 0.041269381308961274,
+            "background_busy_percent": 13.844053398058254
+          }
+        ]
+      },
+      "parallel-branches": {
+        "floor": 0.6020392814396288,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.31917839669936227,
+            "throughput_floor": 0.05954658949916546,
+            "background_busy_percent": 11.67910447761194
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.6020392814396288,
+            "throughput_floor": 0.08972172877556522,
+            "background_busy_percent": 20.93611828568927
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.5209131805894149,
+            "throughput_floor": 0.03393554910707317,
+            "background_busy_percent": 12.125229117570044
+          }
+        ]
+      },
+      "video-ffv1": {
+        "floor": 0.07408194188700279,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.04451003416960902,
+            "throughput_floor": 0.020799829722044152,
+            "background_busy_percent": 14.722812135213115
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.020708172368369453,
+            "throughput_floor": 0.00671579710716603,
+            "background_busy_percent": 15.729580407086214
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.07408194188700279,
+            "throughput_floor": 0.01734066745809948,
+            "background_busy_percent": 15.381298673665555
+          }
+        ]
+      },
+      "video-h264": {
+        "floor": 0.04328829381134829,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.03661031978520923,
+            "throughput_floor": 0.02828735855205691,
+            "background_busy_percent": 15.092241372122494
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.022454068831020395,
+            "throughput_floor": 0.034049426329453,
+            "background_busy_percent": 17.451771944894418
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.04328829381134829,
+            "throughput_floor": 0.04403586422462776,
+            "background_busy_percent": 15.156088032030688
+          }
+        ]
+      },
+      "video-resize-h264": {
+        "floor": 0.16601350032773113,
+        "launches": [
+          {
+            "run": "bench-20261002T233958Z",
+            "repeats": 6,
+            "floor": 0.07355833856636872,
+            "throughput_floor": 0.009534883707336756,
+            "background_busy_percent": 15.980470980594589
+          },
+          {
+            "run": "bench-20261002T234603Z",
+            "repeats": 6,
+            "floor": 0.16601350032773113,
+            "throughput_floor": 0.034574544225261704,
+            "background_busy_percent": 16.358290129851888
+          },
+          {
+            "run": "bench-20261002T235213Z",
+            "repeats": 6,
+            "floor": 0.06296302194837719,
+            "throughput_floor": 0.019736236043345526,
+            "background_busy_percent": 16.03031922446299
+          }
+        ]
+      }
+    },
+    "k1": {
+      "resize-real-256": {
+        "floor": 0.15999011942052177,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.05829352104589236,
+            "throughput_floor": 0.0341843812777681,
+            "background_busy_percent": 11.761545677335835
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.15999011942052177,
+            "throughput_floor": 0.013472371323265127,
+            "background_busy_percent": 12.62599380212118
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.13787890596102262,
+            "throughput_floor": 0.026069352624894855,
+            "background_busy_percent": 11.322045561426318
+          }
+        ]
+      },
+      "gaussian": {
+        "floor": 0.6026861923401797,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.6026861923401797,
+            "throughput_floor": 0.04958831543472099,
+            "background_busy_percent": 11.602006688963211
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.15233020449309947,
+            "throughput_floor": 0.029842960283703843,
+            "background_busy_percent": 10.588067642029262
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.46568996749826924,
+            "throughput_floor": 0.046954092963032726,
+            "background_busy_percent": 11.855224638385671
+          }
+        ]
+      },
+      "lens-spectral": {
+        "floor": 0.06764109776143769,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.06764109776143769,
+            "throughput_floor": 0.006051607527314945,
+            "background_busy_percent": 11.685548320204465
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.064431249161946,
+            "throughput_floor": 0.014260024712706482,
+            "background_busy_percent": 11.731600028437013
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.046296869867345665,
+            "throughput_floor": 0.014656710159637864,
+            "background_busy_percent": 14.787862234014879
+          }
+        ]
+      },
+      "morphology": {
+        "floor": 0.24903663107081106,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.24903663107081106,
+            "throughput_floor": 0.029824896547746935,
+            "background_busy_percent": 16.34160097745066
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.1157559004923632,
+            "throughput_floor": 0.018402058086960965,
+            "background_busy_percent": 11.263426769830154
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.12181104132887526,
+            "throughput_floor": 0.030086539154568156,
+            "background_busy_percent": 13.370826742402453
+          }
+        ]
+      },
+      "normal-map": {
+        "floor": 0.19844068220838643,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.14853234162345821,
+            "throughput_floor": 0.036131784712080936,
+            "background_busy_percent": 13.579117960239174
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.18783476770723317,
+            "throughput_floor": 0.031693629810462275,
+            "background_busy_percent": 11.104305253682845
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.19844068220838643,
+            "throughput_floor": 0.06348884339505147,
+            "background_busy_percent": 12.527583633577006
+          }
+        ]
+      },
+      "caption": {
+        "floor": 0.5076908172591931,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.25515300413487896,
+            "throughput_floor": 0.06902785084773297,
+            "background_busy_percent": 13.03434417245159
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.5076908172591931,
+            "throughput_floor": 0.008186949760770543,
+            "background_busy_percent": 10.155538564629474
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.4718448530311347,
+            "throughput_floor": 0.05680133726455412,
+            "background_busy_percent": 14.27437267311146
+          }
+        ]
+      },
+      "split-channels": {
+        "floor": 0.6548771419987781,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.6548771419987781,
+            "throughput_floor": 0.0638150785760649,
+            "background_busy_percent": 12.344571550376582
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.1482078762102677,
+            "throughput_floor": 0.08112389786532356,
+            "background_busy_percent": 10.911725967009238
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.1792255716699941,
+            "throughput_floor": 0.02020446831579422,
+            "background_busy_percent": 12.513736263736263
+          }
+        ]
+      },
+      "palette-median": {
+        "floor": 0.23357528013166454,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.1149748028916046,
+            "throughput_floor": 0.019219557535441974,
+            "background_busy_percent": 11.993493777354493
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.16057900082408516,
+            "throughput_floor": 0.049368361701405794,
+            "background_busy_percent": 11.124919523554341
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.23357528013166454,
+            "throughput_floor": 0.029171134833807993,
+            "background_busy_percent": 12.323807060649166
+          }
+        ]
+      },
+      "palette-dither": {
+        "floor": 0.24997797576454345,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.20030928598281736,
+            "throughput_floor": 0.022639049491106882,
+            "background_busy_percent": 10.93740139469653
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.233398034675023,
+            "throughput_floor": 0.018121093619603155,
+            "background_busy_percent": 13.253516307477476
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.24997797576454345,
+            "throughput_floor": 0.014019968469227751,
+            "background_busy_percent": 13.504927991339017
+          }
+        ]
+      },
+      "parallel-branches": {
+        "floor": 0.26713270254847304,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.26713270254847304,
+            "throughput_floor": 0.004735311229355409,
+            "background_busy_percent": 10.47721987645821
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.20496211495088018,
+            "throughput_floor": 0.008429222870038024,
+            "background_busy_percent": 13.572811648132923
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.15929417508073968,
+            "throughput_floor": 0.02443597829580116,
+            "background_busy_percent": 13.07900372718277
+          }
+        ]
+      },
+      "video-ffv1": {
+        "floor": 0.11333603509384076,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.03426084988474391,
+            "throughput_floor": 0.04278899808758999,
+            "background_busy_percent": 15.185276352859308
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.0875436516173448,
+            "throughput_floor": 0.0986253336995087,
+            "background_busy_percent": 15.945238235154203
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.11333603509384076,
+            "throughput_floor": 0.052022048864077595,
+            "background_busy_percent": 16.722310908271403
+          }
+        ]
+      },
+      "video-h264": {
+        "floor": 0.0927679667196171,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.0927679667196171,
+            "throughput_floor": 0.01471552721825007,
+            "background_busy_percent": 15.06104524705805
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.04472492977830563,
+            "throughput_floor": 0.032307295686790374,
+            "background_busy_percent": 14.82200188755969
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.013256937879533226,
+            "throughput_floor": 0.030413988453493926,
+            "background_busy_percent": 15.559893056529859
+          }
+        ]
+      },
+      "video-resize-h264": {
+        "floor": 0.06254014474016344,
+        "launches": [
+          {
+            "run": "bench-20261002T235813Z",
+            "repeats": 6,
+            "floor": 0.05541324572474753,
+            "throughput_floor": 0.09702904548221448,
+            "background_busy_percent": 15.850359093825201
+          },
+          {
+            "run": "bench-20261003T000600Z",
+            "repeats": 6,
+            "floor": 0.06254014474016344,
+            "throughput_floor": 0.10648453270579974,
+            "background_busy_percent": 20.116885573382113
+          },
+          {
+            "run": "bench-20261003T001348Z",
+            "repeats": 6,
+            "floor": 0.01498638898139602,
+            "throughput_floor": 0.06213594500792735,
+            "background_busy_percent": 17.252625533211315
+          }
+        ]
+      }
+    }
+  }
+}

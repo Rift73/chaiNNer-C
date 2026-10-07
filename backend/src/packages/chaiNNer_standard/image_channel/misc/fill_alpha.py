@@ -3,12 +3,12 @@ from __future__ import annotations
 from enum import Enum
 
 import numpy as np
-from chainner_ext import (
+
+from nodes.impl.native_alpha_gamma import (
     fill_alpha_extend_color,
     fill_alpha_fragment_blur,
     fill_alpha_nearest_color,
 )
-
 from nodes.properties.inputs import EnumInput, ImageInput
 from nodes.properties.outputs import ImageOutput
 

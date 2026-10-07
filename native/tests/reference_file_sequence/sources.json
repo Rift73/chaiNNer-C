@@ -1,0 +1,30 @@
+{
+  "roots": {
+    "source": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src",
+    "installed": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src"
+  },
+  "sha256": {
+    "source/packages/chaiNNer_standard/image/batch_processing/load_images.py": "536f7ea327074ce6b0e4b086042aa9e996642bb3968c8591f1ef8ef1736cefec",
+    "source/nodes/utils/utils.py": "6877d8b6128245f6d0ee9488b474d380b743a7d153fea7a253fe27e4ec7209f1",
+    "source/nodes/impl/image_formats.py": "69d0c6979347fa1fed3bca2dbfabdf484b8baa52b535dd7ab9ea0ad17d5e022a",
+    "source/api/iter.py": "ba9acf5b3985c0060fb4be0651dee4a09dbc4fe037b28cdea24eae753371a7c3",
+    "installed/packages/chaiNNer_standard/image/batch_processing/load_images.py": "536f7ea327074ce6b0e4b086042aa9e996642bb3968c8591f1ef8ef1736cefec",
+    "installed/nodes/utils/utils.py": "e2afb9d6bda8c07b8e5c12c20671d40e9bfab42089bc46cea452832e0b47ee4c",
+    "installed/nodes/impl/image_formats.py": "69d0c6979347fa1fed3bca2dbfabdf484b8baa52b535dd7ab9ea0ad17d5e022a",
+    "installed/api/iter.py": "2dc6848ed6d74e8962ca05a62d381edb2a6a7554159fbc50234db7588b66e0ca",
+    "library/wcmatch/__init__.py": "9476c668a8c7e0f15de5dc7fa0bed3eb74229ee5dbdcf1d9980cdb17a1f210d5",
+    "library/wcmatch/__meta__.py": "c06b14323140bba225b8bc6648bd5246c2ac61a0757ca2cf09f14e173de12b56",
+    "library/wcmatch/_wcmatch.py": "3c905c4be441d13746757d96d2f82228fb570ed2f952a868c7c938bb497ad2ff",
+    "library/wcmatch/_wcparse.py": "9dd9173bdc8c7b2f5b50432f4918f899fc7ce71e2e8c167d7be6f3a8d159bd49",
+    "library/wcmatch/fnmatch.py": "e4aa45d3e99746eb380956e5fa883d723ae8bc7e4c247a50406aab06a0840a99",
+    "library/wcmatch/glob.py": "6da5a482a2b1bcccf9abfc57593872e8d8d6d0a3d18c3e4c5df26ddc5a2769f4",
+    "library/wcmatch/pathlib.py": "be2294b64f1d301bb6370fa45ae5a7a198b3c1deda95b5d1febd6820188e5563",
+    "library/wcmatch/posix.py": "528cab059fb341d5cb230adc73f757ba23c8e779311266bb49204a2331d81844",
+    "library/wcmatch/util.py": "730d7dcabf62fbf5aa98ae836ddc9c2b1a0785bb1b25a4eaefe365ba125b5ae8",
+    "library/wcmatch/wcmatch.py": "c0dfe3659cb72a3320643d4b1e53c9085f50eda14506b45f6bc4207e97eadd83",
+    "library/bracex/__init__.py": "2faf37340e4d452001d062246b88f43fd38810930bf929023d8c25ee64e4b4aa",
+    "library/bracex/__main__.py": "52dee1fd35bd6e05ff142dc5618eac5cca839aaa5c9c1fdb3296a7d31890464f",
+    "library/bracex/__meta__.py": "6822f4d5fb5d51d27fc284c419ee7cb6e332c9714b709e2355f75ee6529d9d9a",
+    "library/wcmatch-8.4.1.dist-info/licenses/LICENSE.md": "808c786009575c726b133ded563f4a16d4b348a937473fce52f529474f58579f"
+  }
+}

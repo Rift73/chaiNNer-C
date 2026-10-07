@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import math
-
-import cv2
 import numpy as np
 
 from nodes.groups import linked_inputs_group
+from nodes.impl import native_layout
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -31,31 +29,4 @@ def pixelate_node(
     size_x: int,
     size_y: int,
 ) -> np.ndarray:
-    block_sizes = (size_x, size_y)
-    height, width = img.shape[:2]
-
-    pad_x = (block_sizes[0] - width % block_sizes[0]) % block_sizes[0]
-    pad_y = (block_sizes[1] - height % block_sizes[1]) % block_sizes[1]
-    img = cv2.copyMakeBorder(img, 0, pad_y, 0, pad_x, cv2.BORDER_REFLECT_101)
-
-    num_blocks_x = math.ceil(width / block_sizes[0])
-    num_blocks_y = math.ceil(height / block_sizes[1])
-
-    blocks = img[: num_blocks_y * block_sizes[1], : num_blocks_x * block_sizes[0]]
-    blocks = (
-        blocks.reshape(
-            (num_blocks_y, block_sizes[1], num_blocks_x, block_sizes[0], img.shape[-1])
-        )
-        if len(img.shape) > 2
-        else blocks.reshape(
-            (num_blocks_y, block_sizes[1], num_blocks_x, block_sizes[0])
-        )
-    )
-
-    average_colors = np.mean(np.mean(blocks, axis=1), axis=2)  # type: ignore
-
-    repeated_colors = np.repeat(
-        np.repeat(average_colors, block_sizes[0], axis=1), block_sizes[1], axis=0
-    )
-
-    return repeated_colors[:height, :width]
+    return native_layout.pixelate(img, size_x, size_y)

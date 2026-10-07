@@ -61,12 +61,12 @@ def split_spritesheet_node(
     order: OrderEnum,
 ) -> Generator[tuple[np.ndarray, int]]:
     h, w, _ = get_h_w_c(sprite_sheet)
-    assert (
-        h % rows == 0
-    ), "Height of sprite sheet must be a multiple of the number of rows"
-    assert (
-        w % columns == 0
-    ), "Width of sprite sheet must be a multiple of the number of columns"
+    assert h % rows == 0, (
+        "Height of sprite sheet must be a multiple of the number of rows"
+    )
+    assert w % columns == 0, (
+        "Width of sprite sheet must be a multiple of the number of columns"
+    )
 
     individual_h = h // rows
     individual_w = w // columns
@@ -88,4 +88,6 @@ def split_spritesheet_node(
         return sprite, index
 
     # We just need the index, so we can pass in a list of None's
-    return Generator.from_range(rows * columns, get_sprite)
+    generator = Generator.from_range(rows * columns, get_sprite)
+    generator.source_paths = ()
+    return generator

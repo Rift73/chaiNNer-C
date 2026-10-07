@@ -1,0 +1,18 @@
+{
+  "roots": {
+    "installed": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src",
+    "source": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src"
+  },
+  "sha256": {
+    "installed/packages/chaiNNer_standard/utility/directory/directory_go_up.py": "cc75a70077dc6952e498cdf72529b0a1ec52e51ac48c31557c9bcc23953663fc",
+    "installed/packages/chaiNNer_standard/utility/math/math.py": "ad73e17b8c5a97ecd79aa70bf8f55f1833f8d23b9859b3124b550f02340447a2",
+    "installed/packages/chaiNNer_standard/utility/math/round.py": "b1fc18fbaa66d796b6994f4c164d65a174915ad78ba03b468976e70786328688",
+    "installed/packages/chaiNNer_standard/utility/value/parse_number.py": "55bfa7151a61f8ca8f5bac22d3297cb2eebc8fbf3a2f8a3cb84faed5c298de50",
+    "installed/nodes/utils/utils.py": "e2afb9d6bda8c07b8e5c12c20671d40e9bfab42089bc46cea452832e0b47ee4c",
+    "source/packages/chaiNNer_standard/utility/directory/directory_go_up.py": "cc75a70077dc6952e498cdf72529b0a1ec52e51ac48c31557c9bcc23953663fc",
+    "source/packages/chaiNNer_standard/utility/math/math.py": "a9f286a35ba71ab1846adc466b49d4a3642686aac7af96229f67a2a72e003c0f",
+    "source/packages/chaiNNer_standard/utility/math/round.py": "b1fc18fbaa66d796b6994f4c164d65a174915ad78ba03b468976e70786328688",
+    "source/packages/chaiNNer_standard/utility/value/parse_number.py": "55bfa7151a61f8ca8f5bac22d3297cb2eebc8fbf3a2f8a3cb84faed5c298de50",
+    "source/nodes/utils/utils.py": "6877d8b6128245f6d0ee9488b474d380b743a7d153fea7a253fe27e4ec7209f1"
+  }
+}

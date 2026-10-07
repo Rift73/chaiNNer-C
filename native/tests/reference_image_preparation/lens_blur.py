@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+from typing import Literal
+
+import numpy as np
+
+from nodes.impl.image_utils import as_3d
+from nodes.impl.native_convolution import convolve
+from nodes.impl.native_filters import normalize_lens
+from nodes.impl.native_lens import complex_kernel, compose, power
+from nodes.properties.inputs import ImageInput, SliderInput
+from nodes.properties.outputs import ImageOutput
+
+from .. import blur_group
+
+# Lens blur adapted from GIMP Lens Blur
+# Copyright (c) 2019 Davide Sandona'
+# https://github.com/Davide-sd/GIMP-lens-blur.git
+
+kernel_scales = [1.4, 1.2, 1.2, 1.2, 1.2, 1.2]
+
+kernel_params = [
+    [
+        [0.862325, 1.624835, 0.767583, 1.862321],
+    ],
+    [
+        [0.886528, 5.268909, 0.411259, -0.548794],
+        [1.960518, 1.558213, 0.513282, 4.56111],
+    ],
+    [
+        [2.17649, 5.043495, 1.621035, -2.105439],
+        [1.019306, 9.027613, -0.28086, -0.162882],
+        [2.81511, 1.597273, -0.366471, 10.300301],
+    ],
+    [
+        [4.338459, 1.553635, -5.767909, 46.164397],
+        [3.839993, 4.693183, 9.795391, -15.227561],
+        [2.791880, 8.178137, -3.048324, 0.302959],
+        [1.342190, 12.328289, 0.010001, 0.244650],
+    ],
+    [
+        [4.892608, 1.685979, -22.356787, 85.91246],
+        [4.71187, 4.998496, 35.918936, -28.875618],
+        [4.052795, 8.244168, -13.212253, -1.578428],
+        [2.929212, 11.900859, 0.507991, 1.816328],
+        [1.512961, 16.116382, 0.138051, -0.01],
+    ],
+    [
+        [5.143778, 2.079813, -82.326596, 111.231024],
+        [5.612426, 6.153387, 113.878661, 58.004879],
+        [5.982921, 9.802895, 39.479083, -162.028887],
+        [6.505167, 11.059237, -71.286026, 95.027069],
+        [3.869579, 14.81052, 1.405746, -3.704914],
+        [2.201904, 19.032909, -0.152784, -0.107988],
+    ],
+]
+
+ParamKey = Literal["a", "b", "A", "B"]
+Params = dict[ParamKey, float]
+
+
+def get_parameters(component_count: int) -> tuple[list[Params], float]:
+    parameter_index = max(0, min(component_count - 1, len(kernel_params) - 1))
+    param_keys: list[ParamKey] = ["a", "b", "A", "B"]
+    parameter_dictionaries = [
+        dict(zip(param_keys, b, strict=False)) for b in kernel_params[parameter_index]
+    ]
+    return (parameter_dictionaries, kernel_scales[parameter_index])
+
+
+def complex_kernel_1d(radius: int, scale: float, a: float, b: float):
+    return complex_kernel(radius, scale, a, b)
+
+
+def normalize_kernels(kernels: list[np.ndarray], params: list[Params]):
+    return normalize_lens(kernels, [(p["A"], p["B"]) for p in params])
+
+
+def weighted_sum(kernel: np.ndarray, params: Params) -> np.ndarray:
+    return np.add(kernel.real * params["A"], kernel.imag * params["B"])
+
+
+def lens_blur(
+    img: np.ndarray, radius: int, component_count: int, exposure_gamma: float
+) -> np.ndarray:
+    img = np.ascontiguousarray(np.transpose(as_3d(img), (2, 0, 1)), dtype=np.float32)
+    parameters, scale = get_parameters(component_count)
+    components = [
+        complex_kernel_1d(radius, scale, component_params["a"], component_params["b"])
+        for component_params in parameters
+    ]
+    components = normalize_kernels(components, parameters)
+    img = power(img, exposure_gamma)
+    output_image = np.empty_like(img)
+    for component_index, (component, component_params) in enumerate(
+        zip(components, parameters, strict=False)
+    ):
+        component_real = np.real(component)
+        component_imag = np.imag(component)
+        component_real_t = component_real.transpose()
+        component_imag_t = component_imag.transpose()
+        for channel in range(img.shape[0]):
+            inter_real = convolve(img[channel], component_real, 0)
+            inter_imag = convolve(img[channel], component_imag, 0)
+            final_1 = convolve(inter_real, component_real_t, 0)
+            final_2 = convolve(inter_real, component_imag_t, 0)
+            final_3 = convolve(inter_imag, component_real_t, 0)
+            final_4 = convolve(inter_imag, component_imag_t, 0)
+            compose(
+                final_1,
+                final_2,
+                final_3,
+                final_4,
+                component_params["A"],
+                component_params["B"],
+                out=output_image[channel],
+                accumulate=component_index != 0,
+            )
+    output_image = power(output_image, 1.0 / exposure_gamma, finish=True)
+    output_image = output_image.transpose(1, 2, 0)
+    return output_image
+
+
+@blur_group.register(
+    schema_id="chainner:image:lens_blur",
+    name="Lens Blur",
+    description="Apply Lens blur to an image.",
+    icon="MdBlurOn",
+    inputs=[
+        ImageInput(),
+        SliderInput("Radius", min=0, max=1000, default=3, scale="log"),
+        SliderInput("Components", min=1, max=6, default=5).with_docs(
+            "This controls the quality of the lens blur. More components will result in a more realistic blur, but will also be slower to compute."
+        ),
+        SliderInput(
+            "Exposure Gamma",
+            min=0.01,
+            max=100,
+            default=5,
+            precision=4,
+            step=0.1,
+            scale="log",
+        ),
+    ],
+    outputs=[ImageOutput(shape_as=0)],
+)
+def lens_blur_node(
+    img: np.ndarray,
+    radius: int,
+    component_count: int,
+    exposure_gamma: float,
+) -> np.ndarray:
+    if radius == 0:
+        return img
+
+    return lens_blur(img, radius, component_count, exposure_gamma)

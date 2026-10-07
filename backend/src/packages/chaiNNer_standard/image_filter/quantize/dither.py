@@ -3,22 +3,15 @@ from __future__ import annotations
 from enum import Enum
 
 import numpy as np
-from chainner_ext import (
-    UniformQuantization,
-    error_diffusion_dither,
-    ordered_dither,
-    quantize,
-    riemersma_dither,
-)
 
 from nodes.groups import if_enum_group
 from nodes.impl.dithering.constants import (
-    DIFFUSION_ALGORITHM_MAP,
     ERROR_PROPAGATION_MAP_LABELS,
     THRESHOLD_MAP_LABELS,
     ErrorDiffusionMap,
     ThresholdMap,
 )
+from nodes.impl.native_neighborhood import DIFFUSION_IDS, uniform_dither
 from nodes.properties.inputs import EnumInput, ImageInput, NumberInput
 from nodes.properties.outputs import ImageOutput
 
@@ -88,20 +81,13 @@ def dither_node(
     error_diffusion_map: ErrorDiffusionMap,
     history_length: int,
 ) -> np.ndarray:
-    quant = UniformQuantization(num_colors)
-
     if dither_algorithm == UniformDitherAlgorithm.NONE:
-        return quantize(img, quant)
+        return uniform_dither(img, num_colors, 0)
     elif dither_algorithm == UniformDitherAlgorithm.ORDERED:
         map_size = _THRESHOLD_MAP[threshold_map]
-        return ordered_dither(img, quant, map_size)
+        return uniform_dither(img, num_colors, 1, map_size=map_size)
     elif dither_algorithm == UniformDitherAlgorithm.DIFFUSION:
-        algorithm = DIFFUSION_ALGORITHM_MAP[error_diffusion_map]
-        return error_diffusion_dither(img, quant, algorithm)
+        algorithm = DIFFUSION_IDS[error_diffusion_map.value]
+        return uniform_dither(img, num_colors, 2, algorithm=algorithm)
     elif dither_algorithm == UniformDitherAlgorithm.RIEMERSMA:
-        return riemersma_dither(
-            img,
-            quant,
-            history_length,
-            1 / history_length,
-        )
+        return uniform_dither(img, num_colors, 3, history_length=history_length)

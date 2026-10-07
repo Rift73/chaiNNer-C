@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import DirectoryInput, NumberInput
 from nodes.properties.outputs import DirectoryOutput
 
@@ -31,7 +32,4 @@ from .. import directory_group
     ],
 )
 def directory_go_up_node(directory: Path, amt: int) -> Path:
-    result = directory
-    for _ in range(amt):
-        result = result.parent
-    return result
+    return graph().utility_directory_up(globals(), directory, amt)

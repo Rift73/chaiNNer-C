@@ -5,12 +5,15 @@ import sys
 from enum import Enum
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 from nodes.groups import icon_set_group, menu_icon_row_group
+from nodes.impl import native_text
 from nodes.impl.caption import get_font_size
 from nodes.impl.color.color import Color
-from nodes.impl.image_utils import normalize, to_uint8
+from nodes.impl.font_cache import font_lease
+from nodes.impl.image_utils import to_uint8
+from nodes.impl.native_buffers import colorize_text
 from nodes.properties.inputs import (
     Anchor,
     AnchorInput,
@@ -25,10 +28,7 @@ from nodes.properties.outputs import ImageOutput
 from .. import create_images_group
 
 TEXT_AS_IMAGE_FONT_PATH = [
-    [
-        "Roboto/Roboto-Regular.ttf",
-        "Roboto/Roboto-Italic.ttf",
-    ],
+    ["Roboto/Roboto-Regular.ttf", "Roboto/Roboto-Italic.ttf"],
     ["Roboto/Roboto-Bold.ttf", "Roboto/Roboto-BoldItalic.ttf"],
 ]
 
@@ -37,19 +37,6 @@ class TextAlignment(Enum):
     LEFT = "left"
     CENTER = "center"
     RIGHT = "right"
-
-
-X_Y_REF_FACTORS = {
-    Anchor.TOP_LEFT: {"x": np.array([0, 0.5]), "y": np.array([0, 0.5])},
-    Anchor.TOP: {"x": np.array([0.5, 0]), "y": np.array([0, 0.5])},
-    Anchor.TOP_RIGHT: {"x": np.array([1, -0.5]), "y": np.array([0, 0.5])},
-    Anchor.LEFT: {"x": np.array([0, 0.5]), "y": np.array([0.5, 0])},
-    Anchor.CENTER: {"x": np.array([0.5, 0]), "y": np.array([0.5, 0])},
-    Anchor.RIGHT: {"x": np.array([1, -0.5]), "y": np.array([0.5, 0])},
-    Anchor.BOTTOM_LEFT: {"x": np.array([0, 0.5]), "y": np.array([1, -0.5])},
-    Anchor.BOTTOM: {"x": np.array([0.5, 0]), "y": np.array([1, -0.5])},
-    Anchor.BOTTOM_RIGHT: {"x": np.array([1, -0.5]), "y": np.array([1, -0.5])},
-}
 
 
 @create_images_group.register(
@@ -83,12 +70,7 @@ X_Y_REF_FACTORS = {
     ],
     outputs=[
         ImageOutput(
-            image_type="""
-                Image {
-                    width: Input5,
-                    height: Input6,
-                }
-                """,
+            image_type="\n                Image {\n                    width: Input5,\n                    height: Input6,\n                }\n                ",
             channels=4,
             assume_normalized=True,
         )
@@ -109,47 +91,20 @@ def text_as_image_node(
         os.path.dirname(sys.modules["__main__"].__file__),  # type: ignore
         f"fonts/{path}",  # type: ignore
     )
-
-    lines = text.split("\n")
-    line_count, max_line = len(lines), max(lines, key=len)
-
-    # Use a text as reference to get max size
-    font = ImageFont.truetype(font_path, size=100)
-    w_ref, h_ref = get_font_size(font, max_line)[0], get_font_size(font, "[§]")[1]
-
-    # Calculate font size to fill the specified image size
-    w = int(width * 100.0 / w_ref)
-    h = int(height * 100.0 / (h_ref * line_count))
-    font_size = min(w, h)
-    font = ImageFont.truetype(font_path, size=font_size)
-    w_text, h_text = get_font_size(font, max_line)
-    h_text *= line_count
-
-    # Text color
-    ink = tuple(to_uint8(np.array(color.value)))
-
-    # Create a PIL image to add text
-    pil_image = Image.new("RGBA", (width, height))
-    drawing = ImageDraw.Draw(pil_image)
-
-    x_ref = round(
-        np.sum(np.array([width, w_text]) * X_Y_REF_FACTORS[position]["x"])  # type: ignore
-    )
-    y_ref = round(
-        np.sum(
-            np.array([height, h_text]) * X_Y_REF_FACTORS[position]["y"]  # type: ignore
+    lines, max_line = native_text.scan(text)
+    line_count = len(lines)
+    with font_lease(font_path, 100) as font:
+        w_ref, h_ref = (get_font_size(font, max_line)[0], get_font_size(font, "[§]")[1])
+    font_size = native_text.fit(width, height, w_ref, h_ref, line_count)
+    with font_lease(font_path, font_size) as font:
+        w_text, h_text = get_font_size(font, max_line)
+        h_text *= line_count
+        ink = tuple(to_uint8(np.array(color.value)))
+        pil_image = Image.new("L", (width, height))
+        drawing = ImageDraw.Draw(pil_image)
+        xy = native_text.anchor(
+            width, height, w_text, h_text, list(Anchor).index(position)
         )
-    )
-
-    drawing.text(
-        (x_ref, y_ref),
-        text,
-        font=font,
-        anchor="mm",
-        align=alignment.value,
-        fill=ink,  # type: ignore
-    )
-
-    img = normalize(np.array(pil_image))
-
+        native_text.draw_lines(drawing, xy, lines, font, alignment.value)
+    img = colorize_text(np.array(pil_image), ink)
     return img

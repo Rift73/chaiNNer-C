@@ -188,7 +188,9 @@ class WorkerServer:
             return
 
         async def test_connection(session: aiohttp.ClientSession):
-            async with session.get("/health", timeout=5) as resp:
+            async with session.get(
+                "/health", timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
                 resp.raise_for_status()
 
         start = time.time()
@@ -233,7 +235,7 @@ class WorkerServer:
             f"/{request.route.path}",
             headers=request.headers,
             data=request.body,
-            timeout=timeout,
+            timeout=aiohttp.ClientTimeout(total=timeout),
         ) as resp:
             headers = resp.headers
             status = resp.status

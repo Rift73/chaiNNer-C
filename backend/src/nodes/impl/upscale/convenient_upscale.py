@@ -5,11 +5,16 @@ import numpy as np
 from ...utils.utils import get_h_w_c
 from ..image_op import ImageOp, clipped
 from ..image_utils import as_target_channels
+from ..native_buffers import alpha_backgrounds, constant_alpha, flatten_alpha
+from ..native_framework_shared import assemble_alpha, recover_alpha
 
 
 def with_black_and_white_backgrounds(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     c = get_h_w_c(img)[2]
     assert c == 4
+
+    if img.dtype == np.float32:
+        return alpha_backgrounds(img)
 
     black = np.copy(img[:, :, :3])
     white = np.copy(img[:, :, :3])
@@ -21,6 +26,8 @@ def with_black_and_white_backgrounds(img: np.ndarray) -> tuple[np.ndarray, np.nd
 
 
 def denoise_and_flatten_alpha(img: np.ndarray) -> np.ndarray:
+    if img.dtype == np.float32 and img.ndim == 3 and 1 <= img.shape[2] <= 7:
+        return flatten_alpha(img)
     alpha_min = np.min(img, axis=2)
     alpha_max = np.max(img, axis=2)
     alpha_mean = np.mean(img, axis=2)
@@ -59,13 +66,12 @@ def convenient_upscale(
 
     if in_img_c == 4:
         # Ignore alpha if single-color or not being replaced
-        unique = np.unique(img[:, :, 3])
-        if len(unique) == 1:
+        is_constant, alpha_value = constant_alpha(img)
+        if is_constant:
             rgb = as_target_channels(
                 upscale(as_target_channels(img[:, :, :3], model_in_nc, True)), 3, True
             )
-            unique_alpha = np.full(rgb.shape[:-1], unique[0], np.float32)
-            return np.dstack((rgb, unique_alpha))
+            return assemble_alpha(rgb, alpha_value)
 
         if separate_alpha:
             # Upscale the RGB channels and alpha channel separately
@@ -75,7 +81,7 @@ def convenient_upscale(
             alpha = denoise_and_flatten_alpha(
                 upscale(as_target_channels(img[:, :, 3], model_in_nc, True))
             )
-            return np.dstack((rgb, alpha))
+            return assemble_alpha(rgb, alpha)
         else:
             # Transparency hack (white/black background difference alpha)
             black, white = with_black_and_white_backgrounds(img)
@@ -87,10 +93,10 @@ def convenient_upscale(
             )
 
             # Interpolate between the alpha values to get a more defined alpha
-            alpha_candidates = 1 - (white_up - black_up)  #  type: ignore
+            alpha_candidates = recover_alpha(white_up, black_up)
             alpha = denoise_and_flatten_alpha(alpha_candidates)
 
-            return np.dstack((black_up, alpha))
+            return assemble_alpha(black_up, alpha)
 
     return as_target_channels(
         upscale(as_target_channels(img, model_in_nc, True)), in_img_c, True

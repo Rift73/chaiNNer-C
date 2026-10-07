@@ -1,8 +1,33 @@
 // eslint-disable-next-line import/no-extraneous-dependencies
 const AdmZip = require('adm-zip');
+const nodeFs = require('fs');
 const fs = require('fs/promises');
 const path = require('path');
 const packageJson = require('./package.json');
+
+// cross-zip, which @electron-forge/maker-zip uses (4.0.1 is its latest), clears its output with
+// fs.rmdir(path, { recursive: true }), an option Node 25 removed. In this build process such a
+// call goes to fs.rm with recursive and force, its documented replacement (rm -rf); every other
+// rmdir call is unchanged.
+const { rmdir, rmdirSync } = nodeFs;
+nodeFs.rmdir = (target, options, callback) => {
+    if (options && typeof options === 'object' && options.recursive) {
+        nodeFs.rm(
+            target,
+            { recursive: true, force: true, maxRetries: options.maxRetries },
+            callback
+        );
+    } else {
+        rmdir(target, options, callback);
+    }
+};
+nodeFs.rmdirSync = (target, options) => {
+    if (options && options.recursive) {
+        nodeFs.rmSync(target, { recursive: true, force: true, maxRetries: options.maxRetries });
+    } else {
+        rmdirSync(target, options);
+    }
+};
 
 const makerOptions = {
     categories: ['Graphics'],

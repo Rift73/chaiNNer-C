@@ -5,6 +5,9 @@ from math import ceil
 import cv2
 import numpy as np
 
+from nodes.impl.native_analysis import correction
+from nodes.impl.native_channels import combine_rgb_alpha
+from nodes.impl.native_cv_resize import resize as cv_resize
 from nodes.impl.resize import ResizeFilter, resize
 from nodes.properties.inputs import ImageInput, NumberInput
 from nodes.properties.outputs import ImageOutput
@@ -51,9 +54,9 @@ def average_color_fix_node(
     input_h, input_w, input_c = get_h_w_c(input_img)
     ref_h, ref_w, ref_c = get_h_w_c(ref_img)
 
-    assert (
-        ref_w < input_w and ref_h < input_h
-    ), "Image must be larger than Reference Image"
+    assert ref_w < input_w and ref_h < input_h, (
+        "Image must be larger than Reference Image"
+    )
 
     # Find the diff of both images
 
@@ -74,26 +77,12 @@ def average_color_fix_node(
         ref_img = ref_img[:, :, :3]
 
     # Get difference between the reference image and downscaled input
-    downscaled_diff = ref_img - downscaled_input  # type: ignore
-
-    downscaled_alpha_diff = None
-    if ref_alpha is not None or downscaled_alpha is not None:
-        # Don't alter RGB pixels if either the input or reference pixel is
-        # fully transparent, since RGB diff is indeterminate for those pixels.
-        if ref_alpha is not None and downscaled_alpha is not None:
-            invalid_alpha_mask = (ref_alpha == 0) | (downscaled_alpha == 0)
-        elif ref_alpha is not None:
-            invalid_alpha_mask = ref_alpha == 0
-        else:
-            invalid_alpha_mask = downscaled_alpha == 0
-        invalid_alpha_indices = np.nonzero(invalid_alpha_mask)
-        downscaled_diff[invalid_alpha_indices] = 0
-
-        if ref_alpha is not None and downscaled_alpha is not None:
-            downscaled_alpha_diff = ref_alpha - downscaled_alpha  # type: ignore
+    downscaled_diff, downscaled_alpha_diff = correction(
+        downscaled_input, ref_img, downscaled_alpha, ref_alpha, add=False
+    )
 
     # Upsample the difference
-    diff = cv2.resize(
+    diff = cv_resize(
         downscaled_diff,
         (input_w, input_h),
         interpolation=cv2.INTER_CUBIC,
@@ -101,26 +90,19 @@ def average_color_fix_node(
 
     alpha_diff = None
     if downscaled_alpha_diff is not None:
-        alpha_diff = cv2.resize(
+        alpha_diff = cv_resize(
             downscaled_alpha_diff,
             (input_w, input_h),
             interpolation=cv2.INTER_CUBIC,
         )
         alpha_diff = np.expand_dims(alpha_diff, 2)
 
-    if alpha_diff is not None:
-        # Don't alter alpha pixels if the input pixel is fully transparent, since
-        # doing so would expose indeterminate RGB data.
-        invalid_rgb_mask = alpha == 0
-        invalid_rgb_indices = np.nonzero(invalid_rgb_mask)
-        alpha_diff[invalid_rgb_indices] = 0
-
-    result = input_img + diff
-    if alpha_diff is not None:
-        alpha = alpha + alpha_diff  # type: ignore
+    result, corrected_alpha = correction(input_img, diff, alpha, alpha_diff, add=True)
+    if corrected_alpha is not None:
+        alpha = corrected_alpha
 
     # add alpha back in
     if alpha is not None:
-        result = np.concatenate([result, alpha], axis=2)
+        result = combine_rgb_alpha(result, alpha)
 
     return result

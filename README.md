@@ -1,142 +1,192 @@
-# chaiNNer
+# chaiNNer-C
 
-[![GitHub Latest Release](https://img.shields.io/github/v/release/chaiNNer-org/chaiNNer)](https://github.com/chaiNNer-org/chaiNNer/releases/latest)
-[![GitHub Total Downloads](https://img.shields.io/github/downloads/chaiNNer-org/chaiNNer/total)](https://github.com/chaiNNer-org/chaiNNer/releases)
-[![License](https://img.shields.io/github/license/chaiNNer-org/chaiNNer)](./LICENSE)
-[![Discord](https://img.shields.io/discord/930865462852591648?label=Discord&logo=Discord&logoColor=white&color=5865F2)](https://discord.gg/pzvAKPKyHM)
-[![ko-fi](https://img.shields.io/badge/Ko--fi-Support%20chaiNNer%20-hotpink?logo=kofi&logoColor=white)](https://ko-fi.com/T6T46KTTW)
-![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)
+chaiNNer-C is [chaiNNer](https://github.com/chaiNNer-org/chaiNNer), the node-based image processing GUI by
+[chaiNNer-org](https://github.com/chaiNNer-org) and its contributors, with its CPU image nodes converted to C and C++
+for speed. The application, the node graph, the nodes and the UI are upstream's work; chaiNNer-C changes only how the
+CPU nodes compute, and their outputs match upstream's. It is an independent fork, not affiliated with or endorsed by
+chaiNNer-org. For chaiNNer itself, its documentation and community, see the
+[upstream repository](https://github.com/chaiNNer-org/chaiNNer).
 
-<p align="center">
-  <a href="https://github.com/chaiNNer-org/chaiNNer/releases" target="_blank">
-    <img src="docs/assets/banner.png" width="720" />
-  </a>
-</p>
+chaiNNer-C ships as a portable Windows package built on the upstream nightly `0.25.1-nightly.2025-10-21`, with no
+auto-update and the header `chaiNNer v0.3.0`.
 
-A node-based image processing GUI aimed at making chaining image processing tasks easy and customizable. Born as an AI upscaling application, chaiNNer has grown into an extremely flexible and powerful programmatic image processing application.
+## What is converted
 
-ChaiNNer gives you a level of customization of your image processing workflow that very few others do. Not only do you have full control over your processing pipeline, you can do incredibly complex tasks just by connecting a few nodes together.
+- Image, filter, color, resize, blend, convolution, pixel-art, tiling and utility nodes run in a native layer
+  (`native/`): C17 kernels in `chainner_native.dll`, a C++20/pybind11 module `_chainner_graph.pyd`, and
+  `chainner_ext.pyd`, a C replacement for upstream's Rust `chainner_ext`.
+- The Python backend (`backend/src`) is upstream's with the native paths wired in; nodes without one run upstream's
+  Python unchanged. The GPU nodes keep their engines (PyTorch, ONNX Runtime, NCNN); the ONNX CPU session adapter, the
+  ONNX-to-NCNN converter, NCNN param handling and tiling control are native.
+- `src/` and `tests/` are upstream's frontend at `d56e507f` with the package's UI changes ported (no updates, `v0.3.0`,
+  the drop repairs), its integrated Python moved to CPython 3.14.8 and its own `%APPDATA%\chaiNNer-C`: the
+  UI when running from source ([Build and run](#build-and-run)). The portable package uses the installed nightly's UI.
 
-ChaiNNer is also cross-platform, meaning you can run it on Windows, MacOS, and Linux.
+**Output contract.** The reference is upstream chaiNNer's own backend, run on the same Python stack with the same
+inputs, and chaiNNer-C's outputs must be bit-exact against it. The few documented deviations and test tolerances are
+in [ARCHITECTURE section 7](native/ARCHITECTURE.md#7-retained-engines-and-exactness-exceptions).
 
-For help, suggestions, or just to hang out, you can join the [chaiNNer Discord server](https://discord.gg/pzvAKPKyHM)
+## Requirements
 
-Remember: chaiNNer is still a work in progress and in alpha. While it is slowly getting more to where we want it, it is going to take quite some time to have every possible feature we want to add. If you're knowledgeable in TypeScript, React, or Python, feel free to contribute to this project and help us get closer to that goal.
+- **Windows x64**, the only platform validated and packaged.
+- **Any x86-64 CPU with x86-64-v2 (SSE4.2, POPCNT)**, the baseline NumPy 2.x requires. The native binaries are
+  baseline x86-64 code; their AVX2 and AVX-512 kernels are used at runtime when the CPU has them (`native/src/isa.c`).
 
-Note: As of right now, chaiNNer is not under active development. This may resume in the future, but at the moment there is no active dev work aside from community contributions via PRs.
+- **GPU (optional):** PyTorch (CUDA 13.2 build) and ONNX Runtime GPU need an NVIDIA GPU; NCNN runs on Vulkan.
 
-## Installation
+## The tested Python stack
 
-Download the latest release from the [Github releases page](https://github.com/chaiNNer-org/chaiNNer/releases) and run the installer best suited for your system. Simple as that.
+[`native/python-stack.lock.txt`](native/python-stack.lock.txt) records the stack chaiNNer-C is built and tested on: the
+interpreter, its archive's SHA-256, pip's version and a full `pip freeze`. Main entries: CPython 3.14.8
+(python-build-standalone `20261003`), NumPy 2.5.3, OpenCV 5.0.0.93, Pillow 12.3.0, PyTorch 2.14.1+cu132, ONNX Runtime
+(`onnxruntime-gpu`) 1.30.0 and ncnn 1.0.20260526.
 
-You don't even need to have Python installed, as chaiNNer will download an isolated integrated Python build on startup. From there, you can install all the other dependencies via the Dependency Manager.
+The pins are floors, not ceilings: the dependency manager installs a package only when it is missing or older than its
+pin. Native kernels that mirror a library's numerics check its exact version
+(`backend/src/nodes/impl/native_versions.py`); on any other version they use the library's own code, so results stay
+correct and only the speedup is lost.
 
-If you do wish to use your system Python installation still, you can turn the system Python setting on. However, it is much more recommended to use integrated Python. If you do wish to use your system Python, we recommend using Python 3.11, but we try to support 3.8, 3.9, and 3.10 as well.
+## Build and run
 
-If you'd like to test the latest changes and tweaks, try out our [nightly builds](https://github.com/chaiNNer-org/chaiNNer-nightly)
+Prerequisites: LLVM 23.1.2 (`clang-cl`, `lld-link`, `llvm-lib`, `llvm-rc`); Visual Studio 2022 Build Tools with the
+MSVC toolset 14.44.35207 and the Windows SDK 10.0.26100.0 for headers and libraries (no Developer environment needed);
+CMake 3.20 or newer on `PATH`; Ninja (by default the Build Tools' copy); Node.js with npm. Run every command from the
+repository root in PowerShell.
 
-## How To Use
+1. **Clone** the `chaiNNer-C` branch: `git clone --branch chaiNNer-C <chaiNNer-C repository URL>`.
+2. **Provision the build's Python.** `-BuildOnly` downloads the lock's python-build-standalone CPython 3.14.8 into
+   `native\runtime\cpython-3.14.8`, checked against the lock's SHA-256, and installs only the lock's NumPy and
+   pybind11 (the build's headers; no PyTorch):
 
-### Basic Usage
+   ```powershell
+   powershell -NoProfile -File native\tools\provision_runtime.ps1 -BuildOnly
+   ```
 
-While it might seem intimidating at first due to all the possible options, chaiNNer is pretty simple to use. For example, this is all you need to do in order to perform an upscale:
+3. **Build the native layer** with clang-cl (the binaries land in `backend/src`):
 
-<p align="center">
-    <img src="docs/assets/simple_screenshot.png" width="480" />
-</p>
+   ```powershell
+   & '.\native\Build.ps1' -Configuration Release
+   ```
 
-Before you get to this point though, you'll need to install one of the neural network frameworks from the dependency manager. You can access this via the button in the upper-right-hand corner. ChaiNNer offers support for PyTorch (with select model architectures), NCNN, and ONNX. For Nvidia users, PyTorch will be the preferred way to upscale. For AMD users, NCNN will be the preferred way to upscale.
+4. **Install the UI's packages and start chaiNNer-C:**
 
-All the other Python dependencies are automatically installed, and chaiNNer even carries its own integrated Python support so that you do not have to modify your existing Python configuration.
+   ```powershell
+   npm ci
+   npm start
+   ```
 
-Then, all you have to do is drag and drop (or double click) node names in the selection panel to bring them into the editor. Then, drag from one node handle to another to connect the nodes. Each handle is color-coded to its specific type, and while connecting will show you only the compatible connections. This makes it very easy to know what to connect where.
+5. **First start:** the app downloads its integrated Python, python-build-standalone CPython 3.14.8 (the lock's), and
+   chaiNNer's dependency manager installs the Python packages. Everything it keeps (the integrated Python, settings,
+   logs and backend storage) lives in its own folder, `%APPDATA%\chaiNNer-C`, never in an installed chaiNNer's
+   `%APPDATA%\chaiNNer`.
 
-Once you have a working chain set up in the editor, you can press the green "run" button in the top bar to run the chain you have made. You will see the connections between nodes become animated, and start to un-animate as they finish processing. You can stop or pause processing with the red "stop" and yellow "pause" buttons respectively.
+`npm start` runs the app with its own backend. `npm run dev` is upstream's developer mode: it runs the backend with
+the `python` on `PATH` (with `debugpy`) as a remote backend, so it neither downloads the integrated Python nor uses
+the dependency manager.
 
-<p align="center">
-    <img src="docs/assets/screenshot.png" width="540" />
-</p>
+## Develop, test and package
 
-Don't forget, there are plenty of non-upscaling tasks you can do with chaiNNer as well!
+The developer and test path provisions the whole tested stack and needs, for packaging, the upstream nightly
+[`0.25.1-nightly.2025-10-21`](https://github.com/chaiNNer-org/chaiNNer-nightly/releases/tag/2025-10-21) installed,
+whose UI is the shell the package patches.
 
-### Tips & Tricks
+1. **Provision the Python runtime from the lock.** It downloads the lock's python-build-standalone CPython 3.14.8 into
+   `native\runtime\cpython-3.14.8`, checked against the lock's SHA-256 (never extracted over an existing runtime,
+   which is used only if it was extracted from that archive),
+   installs the lock's pip and exactly its pins (torch and torchvision from the PyTorch CUDA 13.2 index, `chainner-pip`
+   from the backend's bundled wheel, the rest from PyPI), and fails unless `pip check` is clean and `pip freeze` equals
+   the lock. It never writes the lock; `-Relock` is the deliberate upgrade step (the latest versions, then a new lock
+   and the full acceptance).
 
-To select multiple nodes, hold down shift and drag around all the nodes you want to be selected. You can also select an individual node by just clicking on it. When nodes are selected, you can press backspace or delete to delete them from the editor.
+   ```powershell
+   powershell -NoProfile -File native\tools\provision_runtime.ps1
+   ```
 
-To perform batch processing on a folder of images, use the "Load Images" node. To process videos, use the "Load Video" node. It's important to note however that you cannot use both "Load Images" and "Load Video" nodes (or any two nodes that perform batch iteration) together in a chain. You can however combine the output (collector) nodes in the chain, for example using "Save Image" with "Load Video", and "Save Video" with "Load Images".
+2. **Create the test and tool environment** (`requirements.txt` adds the lint and type-check tools):
 
-You can right-click in the editor viewport to show an inline nodes list to select from. You also can get this menu by dragging a connection out to the editor rather than making an actual connection, and it will show compatible nodes to automatically create a connection with.
+   ```powershell
+   native\runtime\cpython-3.14.8\python.exe -m venv --system-site-packages native\.venv
+   & '.\native\.venv\Scripts\python.exe' -m pip install -r requirements.txt
+   ```
 
-### Helpful Resources
+3. **Build the native layer** (`chainner_native.dll` and `_chainner_graph.pyd` into `backend/src/nodes/impl`,
+   `chainner_ext.pyd` into `backend/src/chainner_ext`):
 
--   [Kim's chaiNNer Templates](https://github.com/kimberly990/kim-chaiNNer-Templates/)
-    -   A collection of useful chain templates that can quickly get you started if you are still new to using chaiNNer.
--   [OpenModelDB Model Database](https://openmodeldb.info/)
-    -   A nice collection of Super-Resolution models that have been trained by the community.
--   [Interactive Visual Comparison of Upscaling Models](https://phhofm.github.io/upscale/multimodels.html)
-    -   An online comparison of different models. The author also provides a list of [favorites](https://phhofm.github.io/upscale/favorites.html).
+   ```powershell
+   & '.\native\Build.ps1' -Configuration Release
+   ```
 
-## Compatibility Notes
+4. **Test:**
 
--   MacOS versions 10.x and below are not supported.
+   ```powershell
+   $env:PYTHONDONTWRITEBYTECODE = '1'; $env:CUDA_VISIBLE_DEVICES = '-1'
+   $env:NUMBA_CACHE_DIR = "$env:TEMP\chainner-c-numba"
+   & '.\native\.venv\Scripts\python.exe' -B -m pytest native/tests backend/tests -q -p no:cacheprovider
+   ```
 
--   Windows versions 8.1 and below are also not supported.
+**The toolchain** is the only one, pinned in `native/toolchain.cmake` and `native/CMakeLists.txt`: clang-cl 23.1.2
+with lld-link and llvm-lib, baseline x86-64 code with per-file AVX2 and AVX-512 targets for the ISA units, ThinLTO,
+no PGO, `/fp:strict`, and `/W4 /WX` for first-party code. `-Define CHAINNER_C_MARCH=<cpu>` (for example `native`
+for the building machine's own CPU, or `icelake-server`) adds `-march` to every target, for builds that stay on that
+machine, never for releases. The hot kernels already pick AVX2 or AVX-512 at runtime, so the gain is modest; after
+such a build, run the tests (step 4) once, since a different code generation is checked there.
+Configuration refuses any other clang-cl, MSVC toolset or Windows SDK version. The tool locations are CMake cache
+entries, set on a build directory's first configure (for example `-Define 'chainner_c_llvm=<LLVM 23.1.2>/bin'`; also
+`chainner_c_vc_tools`, `chainner_c_sdk`, `chainner_c_sdk_version`; defaults in `native/toolchain.cmake`), and
+`-Ninja <path to ninja.exe>` selects another Ninja.
 
--   Apple Silicon Macs should support almost everything. Although, ONNX only supports the CPU Execution Provider, and NCNN sometimes does not work properly.
+Builds are reproducible: `/Brepro` (no timestamps, no PDB in Release) and a source-path map make the binaries
+byte-identical wherever the repository is checked out, and `.gitattributes` gives every checkout LF line endings.
 
--   Some NCNN users with non-Nvidia GPUs might get all-black outputs. I am not sure what to do to fix this as it appears to be due to the graphics driver crashing as a result of going out of memory. If this happens to you, try manually setting a tiling amount.
+## Package
 
--   To use the Clipboard nodes, Linux users need to have xclip or, for wayland users, wl-copy installed.
+`native/tools/package_port.py` is the local portable-package path: from the full runtime of
+[Develop, test and package](#develop-test-and-package) and the installed nightly, it builds the portable package in
+`out\chaiNNer-C`:
 
-## GPU Support
+```powershell
+$py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\package_port.py',
+  '--installed-app', "$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21",
+  '--installed-python', '.\native\runtime\cpython-3.14.8')
+& $py @pkg --validate-only   # check the inputs; writes nothing
+& $py @pkg                   # build, or refresh an existing package
+```
 
-For PyTorch inference, only Nvidia GPUs are officially supported. If you do not have an Nvidia GPU, you will have to use PyTorch in CPU mode. This is because PyTorch only supports Nvidia's CUDA. MacOS users on Apple Silicon Macs can also take advantage of PyTorch's MPS mode, which should work with chaiNNer.
+- It copies the installed app's shell and the provisioned runtime, writes `backend/src` byte for byte, and records
+  everything in a manifest, `chainner-c-package.json`.
+- It accepts only the `0.25.1-nightly.2025-10-21` app, whose two UI bundles are pinned by SHA-256 and get two reviewed
+  patches: updates removed, chaiNNer-C's version `v0.3.0` shown, the integrated-Python check accepting CPython 3.14, and
+  file and folder drops repaired.
+- The runtime's `Lib` is precompiled with hash-based bytecode (`unchecked-hash`), so two builds are byte-identical.
+- A `portable` marker keeps the profile inside the package; run `chaiNNer.exe` from its folder.
+- A repeat run with unchanged inputs reports `verified_no_op`. `node native\tools\verify_independent_ui.cjs` and the
+  other `verify_*.cjs` scripts check the patched bundles.
 
-If you have an AMD or Intel GPU that supports NCNN however, chaiNNer now supports NCNN inference. You can use any existing NCNN .bin/.param model files (only ESRGAN-related SR models have been tested), or use chaiNNer to convert a PyTorch or ONNX model to NCNN.
+## Checks and CI
 
-For NCNN, make sure to select which GPU you want to use in the settings. It might be defaulting to your integrated graphics!
-
-For Nvidia GPUs, ONNX is also an option to be used. ONNX will use CPU mode on non-Nvidia GPUs, similar to PyTorch.
-
-## Model Architecture Support
-
-ChaiNNer currently supports a limited amount of neural network architectures. More architectures will be supported in the future.
-
-### PyTorch
-
-As of v0.21.0, chaiNNer uses our new package called [Spandrel](https://github.com/chaiNNer-org/spandrel) to support Pytorch model architectures. For a list of what's supported, [check out the list there](https://github.com/chaiNNer-org/spandrel#model-architecture-support).
-
-### NCNN
-
-#### Single Image Super Resolution
-
--   Technically, almost any SR model should work assuming they follow a typical CNN-based SR structure. However, I have only tested with ESRGAN (and its variants) and with Waifu2x.
-
-### ONNX
-
-#### Single Image Super Resolution
-
--   Similarly to NCNN, technically almost any SR model should work assuming they follow a typical CNN-based SR structure. However, I have only tested with ESRGAN.
-
-#### Background Removal
-
--   [u2net](https://github.com/danielgatis/rembg) | [u2net](https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx), [u2netp](https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx), [u2net_cloth_seg](https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net_cloth_seg.onnx), [u2net_human_seg](https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net_human_seg.onnx), [silueta](https://github.com/danielgatis/rembg/releases/download/v0.0.0/silueta.onnx)
--   [isnet](https://github.com/xuebinqin/DIS) | [isnet](https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx)
-
-## Troubleshooting
-
-For troubleshooting information, view the [troubleshooting document](https://github.com/chaiNNer-org/chaiNNer/wiki/06--Troubleshooting).
-
-## Building chaiNNer Yourself
-
-I provide pre-built versions of chaiNNer here on GitHub. However, if you would like to build chaiNNer yourself, simply run `npm install` (make sure that you have at least npm v7 installed) to install all the nodejs dependencies, and `npm run make` to build the application.
-
-## FAQ
-
-For FAQ information, view the [FAQ document](https://github.com/chaiNNer-org/chaiNNer/wiki/07--FAQ).
+Hosted CI (`.github/workflows/lint-backend.yml`) runs `ruff format --check` and `ruff check` on `ubuntu-latest`, and
+pyright and `backend/tests` on `windows-latest` against CPU builds of the lock. The native build, `native/tests`, the
+runtime verifiers, the parity checks and the benchmark are local gates, documented in
+[`native/README.md`](native/README.md).
 
 ## Documentation
 
-For in-depth documentation covering various aspects of ChaiNNer, including CLI usage, data representation, and a contributor's guide, kindly refer to our [ChaiNNer Wiki](https://github.com/chaiNNer-org/chaiNNer/wiki).
+- [`native/README.md`](native/README.md): the detailed reference to build, test, package, verify and benchmark.
+- [`native/ARCHITECTURE.md`](native/ARCHITECTURE.md): design, exactness rules, deviations and packaging.
+- [`native/DESIGN-DECISIONS.md`](native/DESIGN-DECISIONS.md): the key decisions, why they were taken and where they
+  live.
+- [`native/MAINTAINING.md`](native/MAINTAINING.md): checklists for upgrades, kernel and UI changes, packaging,
+  publishing and the local acceptance gates.
+- [`native/STATUS.md`](native/STATUS.md): current state, pending work and the decision log.
 
+## License
 
+chaiNNer-C is free software under the GNU General Public License v3.0 ([`LICENSE`](LICENSE)), chaiNNer's license.
+chaiNNer is by chaiNNer-org and its contributors.
+
+- The native kernels adapt algorithms from other projects (chaiNNer-rs, OpenCV, Pillow, NumPy, PyMatting and others);
+  `backend/src/nodes/impl/chainner_native.LICENSE.txt` lists each adaptation and its license, file by file.
+- Vendored and ported third-party code (fpng, pybind11, the ONNX Runtime C header and the sources ported into
+  `chainner_ext.pyd`) keeps its license texts under `native/third_party`.
+- The runtime is python-build-standalone CPython, and each installed wheel keeps its own license. The UI shell is
+  upstream's installed build, unmodified apart from the reviewed patches above.

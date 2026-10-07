@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import EnumInput, NumberInput, TextInput
 from nodes.properties.outputs import TextOutput
 
@@ -48,11 +49,6 @@ class PaddingAlignment(Enum):
 def text_padding_node(
     text: str, width: int, padding: str, alignment: PaddingAlignment
 ) -> str:
-    if alignment == PaddingAlignment.START:
-        return text.rjust(width, padding)
-    elif alignment == PaddingAlignment.END:
-        return text.ljust(width, padding)
-    elif alignment == PaddingAlignment.CENTER:
-        return text.center(width, padding)
-    else:
-        raise ValueError(f"Invalid alignment '{alignment}'.")
+    return graph().utility_text_padding(
+        text, width, padding, alignment, PaddingAlignment
+    )

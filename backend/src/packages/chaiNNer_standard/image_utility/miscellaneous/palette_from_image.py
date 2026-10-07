@@ -11,6 +11,8 @@ from nodes.impl.dithering.palette import (
     kmeans_palette,
     median_cut_palette,
 )
+from nodes.impl.native_image_setup import distinct_exceeds
+from nodes.impl.native_palette import pad_edge
 from nodes.properties.inputs import EnumInput, ImageInput, NumberInput
 from nodes.properties.outputs import ImageOutput
 
@@ -28,7 +30,6 @@ PALETTE_EXTRACTION_METHOD_LABELS = {
     PaletteExtractionMethod.KMEANS: "K-Means",
     PaletteExtractionMethod.MEDIAN_CUT: "Median cut",
 }
-
 MAX_COLORS = 4096
 
 
@@ -40,10 +41,7 @@ MAX_COLORS = 4096
         "The color palette is returned as an image with one row (height=1). All colors of the palette are in the top row of the image.",
         f'*Note:* The "{PALETTE_EXTRACTION_METHOD_LABELS[PaletteExtractionMethod.ALL]}" option only supports images with at most {MAX_COLORS} distinct colors. If the image has more colors, an error will occur.',
     ],
-    see_also=[
-        "chainner:image:lut",
-        "chainner:image:palette_dither",
-    ],
+    see_also=["chainner:image:lut", "chainner:image:palette_dither"],
     icon="MdGradient",
     inputs=[
         ImageInput(),
@@ -53,25 +51,16 @@ MAX_COLORS = 4096
             default=PaletteExtractionMethod.KMEANS,
         ).with_id(1),
         if_enum_group(
-            1,
-            (PaletteExtractionMethod.KMEANS, PaletteExtractionMethod.MEDIAN_CUT),
-        )(
-            NumberInput("Palette Size", min=2, max=MAX_COLORS, default=8).with_id(2),
-        ),
+            1, (PaletteExtractionMethod.KMEANS, PaletteExtractionMethod.MEDIAN_CUT)
+        )(NumberInput("Palette Size", min=2, max=MAX_COLORS, default=8).with_id(2)),
     ],
     outputs=[
         ImageOutput(
             "Palette",
             image_type=navi.Image(
-                width="""
-                    min(
-                        match Input1 {
-                            PaletteExtractionMethod::All => int(1..),
-                            _ => Input2
-                        },
-                        MAX_COLORS
-                    )
-                """.replace("MAX_COLORS", str(MAX_COLORS)),
+                width="\n                    min(\n                        match Input1 {\n                            PaletteExtractionMethod::All => int(1..),\n                            _ => Input2\n                        },\n                        MAX_COLORS\n                    )\n                ".replace(
+                    "MAX_COLORS", str(MAX_COLORS)
+                ),
                 height=1,
                 channels_as="Input0",
             ),
@@ -83,20 +72,25 @@ def palette_from_image_node(
     palette_extraction_method: PaletteExtractionMethod,
     palette_size: int,
 ) -> np.ndarray:
+    if (
+        palette_extraction_method != PaletteExtractionMethod.ALL
+        and 0 <= palette_size <= MAX_COLORS
+    ):
+        if distinct_exceeds(img, palette_size):
+            if palette_extraction_method == PaletteExtractionMethod.KMEANS:
+                return kmeans_palette(img, palette_size)
+            if palette_extraction_method == PaletteExtractionMethod.MEDIAN_CUT:
+                return median_cut_palette(img, palette_size)
     distinct_colors = distinct_colors_palette(img)
     distinct_count = distinct_colors.shape[1]
-
     if palette_extraction_method == PaletteExtractionMethod.ALL:
         if distinct_count > MAX_COLORS:
             raise ValueError(
                 f"Image has {distinct_count} distinct colors, but only palettes with at most {MAX_COLORS} colors are supported."
             )
         return distinct_colors
-
     if palette_size >= distinct_count:
-        excess = palette_size - distinct_count
-        return np.pad(distinct_colors, [(0, 0), (0, excess), (0, 0)], mode="edge")  # type: ignore
-
+        return pad_edge(distinct_colors, palette_size)
     if palette_extraction_method == PaletteExtractionMethod.KMEANS:
         return kmeans_palette(img, palette_size)
     elif palette_extraction_method == PaletteExtractionMethod.MEDIAN_CUT:

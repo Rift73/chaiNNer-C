@@ -1,0 +1,6 @@
+{
+  "component": "native_tensors.py::_torch_allocate",
+  "source": "https://github.com/pytorch/pytorch/blob/8a3007010a9802ac006bcbde5524f97ac3b23ea6/aten/src/ATen/TensorIterator.cpp#L175",
+  "license_url": "https://raw.githubusercontent.com/pytorch/pytorch/8a3007010a9802ac006bcbde5524f97ac3b23ea6/LICENSE",
+  "license_sha256": "bd018feef8825e88181c84eb7e3aa4eafb8f08a20d9fd6ef948569610c4a3e43"
+}

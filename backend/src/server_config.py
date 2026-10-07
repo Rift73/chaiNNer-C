@@ -3,6 +3,19 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 
+from sanic.log import LOGGING_CONFIG_DEFAULTS
+
+# Sanic 24.12 changed its log line format. The host parses the worker's lines, and
+# the UI strips the host's timestamps, by the 23.x form "[time] [pid] [LEVEL] text",
+# which Sanic's legacy formatters keep.
+LOG_CONFIG = {
+    **LOGGING_CONFIG_DEFAULTS,
+    "formatters": {
+        "generic": {"class": "sanic.logging.formatter.LegacyFormatter"},
+        "access": {"class": "sanic.logging.formatter.LegacyAccessFormatter"},
+    },
+}
+
 
 @dataclass
 class ServerConfig:

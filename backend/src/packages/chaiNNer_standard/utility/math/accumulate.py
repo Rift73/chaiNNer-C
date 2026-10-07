@@ -3,6 +3,7 @@ from __future__ import annotations
 from enum import Enum
 
 from api import BaseInput, Collector, IteratorInputInfo
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import EnumInput
 from nodes.properties.outputs import NumberOutput
 
@@ -28,28 +29,10 @@ class Operation(Enum):
 
     @property
     def neutral(self) -> float:
-        if self == Operation.SUM:
-            return 0
-        elif self == Operation.PRODUCT:
-            return 1
-        elif self == Operation.MAXIMUM:
-            return float("-inf")
-        elif self == Operation.MINIMUM:
-            return float("inf")
-        else:
-            raise NotImplementedError()
+        return graph().execution_accumulate_neutral(globals(), self)
 
     def reduce(self, a: float, b: float) -> float:
-        if self == Operation.SUM:
-            return a + b
-        elif self == Operation.PRODUCT:
-            return a * b
-        elif self == Operation.MAXIMUM:
-            return max(a, b)
-        elif self == Operation.MINIMUM:
-            return min(a, b)
-        else:
-            raise NotImplementedError()
+        return graph().execution_accumulate_reduce(globals(), self, a, b)
 
 
 @math_group.register(
@@ -92,12 +75,4 @@ class Operation(Enum):
     kind="collector",
 )
 def accumulate_node(_: None, operation: Operation) -> Collector[float, float]:
-    result = [operation.neutral]
-
-    def on_iterate(x: float):
-        result[0] = operation.reduce(result[0], x)
-
-    def on_complete():
-        return result[0]
-
-    return Collector(on_iterate=on_iterate, on_complete=on_complete)
+    return graph().execution_accumulate(globals(), operation)

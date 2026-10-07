@@ -15,7 +15,6 @@ from sanic import Sanic
 from sanic.log import access_logger, logger
 from sanic.request import Request
 from sanic.response import json
-from sanic_cors import CORS
 
 import api
 from custom_types import UpdateProgressFn
@@ -28,8 +27,9 @@ from dependencies.store import (
 )
 from events import EventQueue
 from gpu import nvidia
+from nodes.impl.cors import add_cors
 from response import error_response, success_response
-from server_config import ServerConfig
+from server_config import LOG_CONFIG, ServerConfig
 from server_process_helper import WorkerServer
 
 
@@ -72,10 +72,10 @@ class AppContext:
         return app_instance.ctx
 
 
-app = Sanic("chaiNNer_host", ctx=AppContext())
+app = Sanic("chaiNNer_host", ctx=AppContext(), log_config=LOG_CONFIG)
 app.config.REQUEST_TIMEOUT = sys.maxsize
 app.config.RESPONSE_TIMEOUT = sys.maxsize
-CORS(app)
+add_cors(app)
 
 
 class SSEFilter(logging.Filter):
@@ -356,7 +356,7 @@ async def setup_sse(request: Request):
         try:
             message = await ctx.setup_queue.get()
             await response.send(
-                f"event: {message['event']}\n" f"data: {stringify(message['data'])}\n\n"
+                f"event: {message['event']}\ndata: {stringify(message['data'])}\n\n"
             )
         except Exception:
             break
@@ -490,6 +490,7 @@ async def setup(sanic_app: Sanic, loop: asyncio.AbstractEventLoop):
 
 
 setup_task = None
+close_task = None
 
 
 async def close_server(sanic_app: Sanic):
@@ -504,19 +505,24 @@ async def close_server(sanic_app: Sanic):
 
     worker = AppContext.get(sanic_app).get_worker_unmanaged()
     await worker.stop()
+    # Sanic 25 serves only after the after_server_start listeners return, and loses
+    # a stop requested before that.
+    while not sanic_app.state.is_running:
+        await asyncio.sleep(0.01)
     sanic_app.stop()
 
 
 @app.after_server_stop
-async def after_server_stop(sanic_app: Sanic, _loop: asyncio.AbstractEventLoop):
+async def after_server_stop(sanic_app: Sanic):
     worker = AppContext.get(sanic_app).get_worker_unmanaged()
     await worker.stop()
     logger.info("Server closed.")
 
 
 @app.after_server_start
-async def after_server_start(sanic_app: Sanic, loop: asyncio.AbstractEventLoop):
-    global setup_task
+async def after_server_start(sanic_app: Sanic):
+    global setup_task, close_task
+    loop = asyncio.get_running_loop()
 
     # initialize the queues
     ctx = AppContext.get(sanic_app)
@@ -530,7 +536,7 @@ async def after_server_start(sanic_app: Sanic, loop: asyncio.AbstractEventLoop):
 
     # start task to close the server
     if ctx.config.close_after_start:
-        loop.create_task(close_server(sanic_app))
+        close_task = loop.create_task(close_server(sanic_app))
 
 
 def main():

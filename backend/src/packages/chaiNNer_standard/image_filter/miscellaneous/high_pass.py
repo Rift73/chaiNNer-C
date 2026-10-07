@@ -6,6 +6,8 @@ import numpy as np
 
 from nodes.groups import if_enum_group, required
 from nodes.impl.image_utils import fast_gaussian_blur
+from nodes.impl.native_analysis import binary
+from nodes.impl.native_channels import concatenate_channels
 from nodes.properties.inputs import EnumInput, ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
@@ -99,13 +101,13 @@ def high_pass_node(
     elif mode == BlurMode.CUSTOM:
         assert blurred is not None, "Expected a blurred image to be given."
 
-    assert (
-        blurred.shape == img.shape
-    ), "Expected blurred image to have same shape as the input image."
+    assert blurred.shape == img.shape, (
+        "Expected blurred image to have same shape as the input image."
+    )
 
-    img = contrast * (img - blurred) + 0.5
+    img = binary(img, blurred, 0, contrast)
 
     if alpha is not None:
-        img = np.dstack((img, alpha))
+        img = concatenate_channels(img, alpha)
 
     return img

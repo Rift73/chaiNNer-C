@@ -1,0 +1,40 @@
+{
+  "installed_root": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src",
+  "files": [
+    {
+      "origin": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\packages\\chaiNNer_standard\\utility\\random\\derive_seed.py",
+      "snapshot": "installed\\derive_seed.py",
+      "sha256": "ad1425e5d38bdbd5409fd189fb61b22e2138ffae1fc1a8e083add76ccd1b9772"
+    },
+    {
+      "origin": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\packages\\chaiNNer_standard\\utility\\random\\random_number.py",
+      "snapshot": "installed\\random_number.py",
+      "sha256": "79e58e083b7443c587caf84a639de8f1cdf77114f50de8d1732a29fd06cb8c4d"
+    },
+    {
+      "origin": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\nodes\\utils\\seed.py",
+      "snapshot": "installed\\seed.py",
+      "sha256": "ec76b16f4568a92c9362fd96f6e156083e1d659d7d50e303a6592a86bdf17905"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src\\packages\\chaiNNer_standard\\utility\\random\\derive_seed.py",
+      "snapshot": "source\\derive_seed.py",
+      "sha256": "bede550686d111b2e1de956c98f81407c5fe4994a1999452ed3a8b6ec0d59cf9"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src\\packages\\chaiNNer_standard\\utility\\random\\random_number.py",
+      "snapshot": "source\\random_number.py",
+      "sha256": "79e58e083b7443c587caf84a639de8f1cdf77114f50de8d1732a29fd06cb8c4d"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src\\nodes\\utils\\seed.py",
+      "snapshot": "source\\seed.py",
+      "sha256": "ec76b16f4568a92c9362fd96f6e156083e1d659d7d50e303a6592a86bdf17905"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\native\\runtime\\cpython-3.14.8\\Lib\\random.py",
+      "snapshot": "random_python314.py",
+      "sha256": "cf8e72f887d838e273c274b79758b2bf8630a0927112b8876fa3a9e4b9b1756b"
+    }
+  ]
+}

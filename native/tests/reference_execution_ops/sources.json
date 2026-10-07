@@ -1,0 +1,26 @@
+{
+  "roots": {
+    "source": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src",
+    "installed": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src"
+  },
+  "sha256": {
+    "source/packages/chaiNNer_standard/utility/directory/directory_go_into.py": "5c3a498fa163f9f36f8c60968124d46a91a901b0297b6263919aaa82bf7b2bd2",
+    "source/packages/chaiNNer_standard/utility/math/accumulate.py": "0f68d663e79eb999502e6c3afb3bb0ad0dbd7a3f13514ac35e25573b2be9132e",
+    "source/packages/chaiNNer_standard/utility/math/logic_operation.py": "265d730ed5a5bdbd544ea6f26fd231f5b8f5bbaed0fb4493ced3ccaea4ef3106",
+    "source/packages/chaiNNer_standard/utility/text/note.py": "966cc19fe1b2de881d86ce074c4ceea0ac04be1b20f80846968804aff5972968",
+    "source/packages/chaiNNer_standard/utility/value/conditional.py": "18f1e263dba068adacea7b93c74d1f64e7e1cf389292983f3b9e29defc0f0856",
+    "source/packages/chaiNNer_standard/utility/value/execution_number.py": "034998c696b112be6d60ac193abeaa38a33b9415080e66c7420c26f5cfa441f2",
+    "source/packages/chaiNNer_standard/utility/value/range.py": "c0381b1707f9308798ef14173c05c2b0d18ef0264a5bad900e76bb03447220f9",
+    "source/api/iter.py": "ba9acf5b3985c0060fb4be0651dee4a09dbc4fe037b28cdea24eae753371a7c3",
+    "source/api/lazy.py": "cbaf1628c72bdcb371de85072583a4968624ba3468e025442503a5144c9a5ad9",
+    "installed/packages/chaiNNer_standard/utility/directory/directory_go_into.py": "5c3a498fa163f9f36f8c60968124d46a91a901b0297b6263919aaa82bf7b2bd2",
+    "installed/packages/chaiNNer_standard/utility/math/accumulate.py": "0f68d663e79eb999502e6c3afb3bb0ad0dbd7a3f13514ac35e25573b2be9132e",
+    "installed/packages/chaiNNer_standard/utility/math/logic_operation.py": "265d730ed5a5bdbd544ea6f26fd231f5b8f5bbaed0fb4493ced3ccaea4ef3106",
+    "installed/packages/chaiNNer_standard/utility/text/note.py": "966cc19fe1b2de881d86ce074c4ceea0ac04be1b20f80846968804aff5972968",
+    "installed/packages/chaiNNer_standard/utility/value/conditional.py": "18f1e263dba068adacea7b93c74d1f64e7e1cf389292983f3b9e29defc0f0856",
+    "installed/packages/chaiNNer_standard/utility/value/execution_number.py": "034998c696b112be6d60ac193abeaa38a33b9415080e66c7420c26f5cfa441f2",
+    "installed/packages/chaiNNer_standard/utility/value/range.py": "c0381b1707f9308798ef14173c05c2b0d18ef0264a5bad900e76bb03447220f9",
+    "installed/api/iter.py": "2dc6848ed6d74e8962ca05a62d381edb2a6a7554159fbc50234db7588b66e0ca",
+    "installed/api/lazy.py": "c83312027c67ba9df635a4f110ab41e73ad5d99fe1cb184c8712ed9d60b33330"
+  }
+}

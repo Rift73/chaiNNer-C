@@ -106,6 +106,8 @@ __pycache__/
 
 # C extensions
 *.so
+backend/src/nodes/impl/chainner_native.dll
+backend/src/nodes/impl/chainner_native.dylib
 
 # Distribution / packaging
 .Python
@@ -244,3 +246,6 @@ dmypy.json
 
 # traces
 backend/traces
+
+# chaiNNer-C planning records (local only)
+docs/superpowers/

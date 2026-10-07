@@ -4,6 +4,7 @@ import asyncio
 import gc
 import importlib
 import logging
+import os
 import sys
 import tempfile
 import traceback
@@ -18,7 +19,6 @@ from sanic import Sanic
 from sanic.log import access_logger, logger
 from sanic.request import Request
 from sanic.response import json
-from sanic_cors import CORS
 
 import api
 from api import (
@@ -33,6 +33,9 @@ from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
 from dependencies.store import installed_packages
 from events import EventConsumer, EventQueue, ExecutionErrorData
+from nodes.impl import native, native_profile, numpy_pool
+from nodes.impl.cors import add_cors
+from nodes.impl.tensorrt import cache as tensorrt_cache
 from process import ExecutionId, Executor, NodeExecutionError, NodeOutput
 from progress_controller import Aborted
 from response import (
@@ -41,7 +44,9 @@ from response import (
     no_executor_response,
     success_response,
 )
-from server_config import ServerConfig
+from server_config import LOG_CONFIG, ServerConfig
+
+POOL_SIZE = 8  # executor pool workers, each Executor's pool_size; item window P = max(1, POOL_SIZE - 2)
 
 
 class AppContext:
@@ -50,7 +55,10 @@ class AppContext:
         self.executor: Executor | None = None
         self.individual_executors: dict[ExecutionId, Executor] = {}
         self.cache: dict[NodeId, NodeOutput] = {}
-        self.pool: Final[ThreadPoolExecutor] = ThreadPoolExecutor(max_workers=4)
+        # Increased from 4 to 8 workers for better parallelism in batch processing
+        self.pool: Final[ThreadPoolExecutor] = ThreadPoolExecutor(
+            max_workers=POOL_SIZE, initializer=numpy_pool.install
+        )
 
     @cached_property
     def queue(self) -> EventQueue:
@@ -87,10 +95,10 @@ class AppContext:
         return app_instance.ctx
 
 
-app = Sanic("chaiNNer_executor", ctx=AppContext())
+app = Sanic("chaiNNer_executor", ctx=AppContext(), log_config=LOG_CONFIG)
 app.config.REQUEST_TIMEOUT = sys.maxsize
 app.config.RESPONSE_TIMEOUT = sys.maxsize
-CORS(app)
+add_cors(app)
 
 
 class SSEFilter(logging.Filter):
@@ -119,6 +127,7 @@ class ZeroCounter:
 run_individual_counter = ZeroCounter()
 
 setup_task = None
+close_task = None
 
 
 async def nodes_available():
@@ -234,15 +243,25 @@ async def run(request: Request):
             pool=ctx.pool,
             storage_dir=ctx.storage_dir,
             parent_cache=OutputCache(static_data=ctx.cache.copy()),
+            pool_size=POOL_SIZE,
         )
         try:
+            native_profile.reset()
+            if native_profile.enabled():
+                native_profile.start_loop_thread_cpu()
             ctx.executor = executor
             await executor.run()
         except Aborted:
-            pass
+            app.loop.call_soon(collect_failed_run, ctx)
         finally:
             ctx.executor = None
-            gc.collect()
+            # No gc.collect() here: a successful run never collects; collect_failed_run
+            # runs one after a failed or stopped run.
+            # Before the line, whose "numpy_pool" entry reports the release.
+            numpy_pool.release()
+            line = native_profile.log_line()
+            if line is not None:
+                logger.info(line)
 
         return json(success_response(), status=200)
     except Exception as exception:
@@ -276,12 +295,32 @@ async def run(request: Request):
             }
 
         ctx.queue.put({"event": "execution-error", "data": error})
+        # After this handler returns, so the error is unreferenced by then.
+        app.loop.call_soon(collect_failed_run, ctx)
         return json(error_response("Error running nodes!", exception), status=500)
     finally:
         if ctx.config.trace and tracer is not None:
             logger.info("Stopping VizTracer...")
             tracer.stop()
             tracer.save(f"../traces/trace_{executor_id}.json")
+
+
+def collect_failed_run(ctx: AppContext) -> None:
+    """Frees what a failed or stopped /run's reference cycles hold, then releases the
+    NumPy pool if no /run executes.
+
+    The error's traceback holds the run's frames, and the futures and Lazy results
+    that hold the error are reachable from those frames, so the run's inputs (its
+    arrays) live until a collection reaches the cycle's oldest generation. A stopped
+    /run is collected too: its arrays were measured still held after the next /runs.
+    run schedules this with call_soon, so it runs once the handler has returned and
+    dropped the exception. gc is imported for this path only: a successful run never
+    collects.
+    """
+    gc.collect()
+    # Not while a /run executes: it releases at its own end.
+    if ctx.executor is None:
+        numpy_pool.release()
 
 
 class RunIndividualRequest(TypedDict):
@@ -340,6 +379,7 @@ async def run_individual(request: Request):
             queue=queue,
             storage_dir=ctx.storage_dir,
             pool=ctx.pool,
+            pool_size=POOL_SIZE,
         )
 
         with run_individual_counter:
@@ -367,12 +407,40 @@ async def run_individual(request: Request):
             finally:
                 if ctx.individual_executors.get(execution_id, None) == executor:
                     ctx.individual_executors.pop(execution_id, None)
-                gc.collect()
+                # The response does not wait for the broadcasts, as upstream's;
+                # the NumPy pool is released once they are sent.
+                release = asyncio.create_task(release_after_broadcasts(ctx, executor))
+                individual_releases.add(release)
+                release.add_done_callback(individual_releases.discard)
+                # gc.collect() removed - called after every individual node, too frequent
 
         return json({"success": True, "data": None})
     except Exception as exception:
         logger.error(exception, exc_info=True)
         return json({"success": False, "error": str(exception)})
+
+
+# The deferred NumPy pool releases of /run/individual, held until they finish.
+individual_releases: set[asyncio.Task[None]] = set()
+
+
+async def release_after_broadcasts(ctx: AppContext, executor: Executor) -> None:
+    """Releases the NumPy pool once an individual run's broadcasts are sent.
+
+    The broadcasts free their temporaries when they finish; a release before that
+    would leave them idle until the next release point.
+    """
+    try:
+        try:
+            await executor.flush_broadcasts()
+        finally:
+            # Not while a /run executes: it releases at its own end.
+            if ctx.executor is None:
+                numpy_pool.release()
+    except Exception:
+        logger.exception(
+            "Error sending an individual run's broadcasts or releasing the NumPy pool"
+        )
 
 
 @app.route("/clear-cache/individual", methods=["POST"])
@@ -381,8 +449,14 @@ async def clear_cache_individual(request: Request):
     ctx = AppContext.get(request.app)
     try:
         full_data = dict(request.json)  # type: ignore
+        # TensorRT engines and sessions outlive runs; a session in use is freed
+        # when its run returns it.
+        tensorrt_cache.release_node(full_data["id"])
         if ctx.cache.get(full_data["id"], None) is not None:
             del ctx.cache[full_data["id"]]
+            # Not while a /run executes: it releases at its own end.
+            if ctx.executor is None:
+                numpy_pool.release()
         return json({"success": True, "data": None})
     except Exception as exception:
         logger.error(exception, exc_info=True)
@@ -556,7 +630,7 @@ async def sse(request: Request):
     while True:
         message = await ctx.queue.get()
         await response.send(
-            f"event: {message['event']}\n" f"data: {stringify(message['data'])}\n\n"
+            f"event: {message['event']}\ndata: {stringify(message['data'])}\n\n"
         )
 
 
@@ -567,6 +641,7 @@ async def import_packages(
     importlib.import_module("packages.chaiNNer_pytorch")
     importlib.import_module("packages.chaiNNer_ncnn")
     importlib.import_module("packages.chaiNNer_onnx")
+    importlib.import_module("packages.chaiNNer_tensorrt")
     importlib.import_module("packages.chaiNNer_external")
 
     logger.info("Loading Nodes...")
@@ -599,7 +674,7 @@ async def import_packages(
                 else:
                     count = len(modules)
                     if count > 3:
-                        modules = modules[:2] + [f"and {count - 2} more ..."]
+                        modules = [*modules[:2], f"and {count - 2} more ..."]
                     l = "\n".join("  ->  " + m for m in modules)
                     logger.warning(f"{error}  ->  {count} modules ...\n{l}")
 
@@ -609,6 +684,7 @@ async def import_packages(
 
 async def setup(sanic_app: Sanic):
     await import_packages(AppContext.get(sanic_app).config)
+    logger.info(native.isa_line())
 
 
 exit_code = 0
@@ -624,27 +700,41 @@ async def close_server(sanic_app: Sanic):
         logger.error(f"Error waiting for server to start: {ex}")
         exit_code = 1
 
+    # Sanic 25 serves only after the after_server_start listeners return, and loses
+    # a stop requested before that. Setup's imports never yield, so it can finish
+    # first.
+    while not sanic_app.state.is_running:
+        await asyncio.sleep(0.01)
+
     # now we can close the server
     logger.info("Closing server...")
     sanic_app.stop()
 
 
 @app.after_server_start
-async def after_server_start(sanic_app: Sanic, loop: asyncio.AbstractEventLoop):
+async def after_server_start(sanic_app: Sanic):
     # pylint: disable=global-statement
-    global setup_task
+    global setup_task, close_task
     ctx = AppContext.get(sanic_app)
+    loop = asyncio.get_running_loop()
 
     # start the setup task
     setup_task = loop.create_task(setup(sanic_app))
 
     # start task to close the server
     if ctx.config.close_after_start:
-        loop.create_task(close_server(sanic_app))
+        close_task = loop.create_task(close_server(sanic_app))
 
 
 def main():
-    config = AppContext.get(app).config
+    ctx = AppContext.get(app)
+    config = ctx.config
+    # numba (PyMatting's cache=True kernels) otherwise writes its cache beside the
+    # runtime's site-packages. numba reads the variable when it is first imported, and
+    # the node modules that import it load in setup, after this.
+    os.environ["NUMBA_CACHE_DIR"] = str(ctx.storage_dir / "numba-cache")
+    # Before the event loop exists: its tasks copy this thread's context.
+    numpy_pool.install()
     app.run(port=config.port, single_process=True)
     if exit_code != 0:
         sys.exit(exit_code)

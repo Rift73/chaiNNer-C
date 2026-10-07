@@ -50,6 +50,44 @@ import { useSettings } from '../hooks/useSettings';
 
 const compareById = (a: Edge | Node, b: Edge | Node) => a.id.localeCompare(b.id);
 
+/**
+ * Edges are elevated above nodes, so a file dragged where an edge covers a node would reach the
+ * canvas. A file drag or drop on an edge is sent on to the node under the pointer instead.
+ */
+const forwardFileDropToNode = (event: DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    if (!(event.target instanceof Element) || !event.target.closest('.react-flow__edge')) return;
+    const { currentTarget } = event;
+    const receiver = currentTarget.ownerDocument
+        .elementsFromPoint(event.clientX, event.clientY)
+        .find(
+            (element) =>
+                element.closest('.react-flow__node') !== null && currentTarget.contains(element)
+        );
+    if (!receiver) return;
+    event.preventDefault();
+    event.stopPropagation();
+    receiver.dispatchEvent(
+        new window.DragEvent(event.type, {
+            bubbles: true,
+            cancelable: true,
+            composed: event.nativeEvent.composed,
+            dataTransfer: event.dataTransfer,
+            clientX: event.clientX,
+            clientY: event.clientY,
+            screenX: event.screenX,
+            screenY: event.screenY,
+            ctrlKey: event.ctrlKey,
+            shiftKey: event.shiftKey,
+            altKey: event.altKey,
+            metaKey: event.metaKey,
+            button: event.button,
+            buttons: event.buttons,
+            relatedTarget: event.relatedTarget,
+        })
+    );
+};
+
 interface ReactFlowBoxProps {
     nodeTypes: NodeTypes;
     edgeTypes: EdgeTypes;
@@ -468,6 +506,8 @@ export const ReactFlowBox = memo(({ wrapperRef, nodeTypes, edgeTypes }: ReactFlo
             h="100%"
             ref={wrapperRef}
             w="100%"
+            onDragOverCapture={forwardFileDropToNode}
+            onDropCapture={forwardFileDropToNode}
         >
             <ReactFlow
                 elevateEdgesOnSelect

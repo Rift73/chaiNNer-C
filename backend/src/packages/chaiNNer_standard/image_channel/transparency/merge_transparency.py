@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from nodes.impl import native_channels
 from nodes.impl.color.color import Color
-from nodes.impl.image_utils import as_target_channels
 from nodes.properties.inputs import ImageInput
 from nodes.properties.outputs import ImageOutput
 
@@ -46,32 +46,4 @@ def merge_transparency_node(
     rgb: np.ndarray | Color,
     a: np.ndarray | Color,
 ) -> np.ndarray:
-    start_shape = None
-
-    # determine shape
-    for i in rgb, a:
-        if isinstance(i, np.ndarray):
-            start_shape = (i.shape[0], i.shape[1])
-            break
-
-    if start_shape is None:
-        raise ValueError(
-            "At least one input must be an image, but both RGB and Alpha are colors."
-        )
-
-    # check same size
-    for i in rgb, a:
-        if isinstance(i, np.ndarray):
-            assert (
-                i.shape[:2] == start_shape
-            ), "All channel images must have the same resolution"
-
-    def to_image(i: np.ndarray | Color) -> np.ndarray:
-        if isinstance(i, np.ndarray):
-            return i
-        return i.to_image(start_shape[1], start_shape[0])
-
-    rgb = as_target_channels(to_image(rgb), 3, narrowing=True)
-    a = to_image(a)
-
-    return np.dstack((rgb, a))
+    return native_channels.combine_rgb_alpha(rgb, a)

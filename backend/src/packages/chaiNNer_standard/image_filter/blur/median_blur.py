@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import cv2
 import numpy as np
 
-from nodes.impl.image_utils import to_uint8
+from nodes.impl.native_neighborhood import median
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -28,9 +27,4 @@ def median_blur_node(
 ) -> np.ndarray:
     if radius == 0:
         return img
-    else:
-        size = 2 * radius + 1
-        if size <= 5:
-            return cv2.medianBlur(img, size)
-        else:  # cv2 requires uint8 for kernel size > 5
-            return cv2.medianBlur(to_uint8(img, normalized=True), size)
+    return median(img, radius)

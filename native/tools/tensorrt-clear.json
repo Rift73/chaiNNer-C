@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "baseline_sha256": {
+    "resources/app/.vite/renderer/main_window/index.js": "50f22a101c16c97fd1db413e3e0becf647c360b817f09b8a3089fa649fd16877",
+    "resources/app/.vite/build/main.js": "df979a26746d814f4dd8e4ce555f6114304a0b7f72cef429de783c646ad26f10",
+    "resources/app/.vite/renderer/main_window/index.css": "2b33220c0429e43d9a11cea32cc32b5df6fb919d3cc36be7d074f8e5609c9f81"
+  },
+  "reason": "TensorRT engines and sessions outlive chain runs (backend e1e30bb2), so the UI frees them as 1223117b adds to src/: a Clear item in the node menu of the TensorRT Upscale Image and Load Engine nodes, and removeNodesById clears each removed node's backend cache. The renderer's Backend (Aa context), log (H2) and CloseIcon (Nv) are the baseline's own; main.js and index.css are unchanged.",
+  "edits": [
+    {
+      "label": "renderer_remove_nodes_clears_cache",
+      "bundle": "resources/app/.vite/renderer/main_window/index.js",
+      "before": "const v0=W.useCallback(A0=>{if(A0.length===0)return;const ne=A0.filter(I2=>!!k(I2)),ye=new Set(ne);G(I2=>I2.filter(yn=>!ye.has(yn.id))),g1(I2=>I2.filter(yn=>!ye.has(yn.source)&&!ye.has(yn.target)))},[G,g1,k])",
+      "after": "const v0=W.useCallback(A0=>{if(A0.length===0)return;const ne=A0.filter(I2=>!!k(I2)),ye=new Set(ne);G(I2=>I2.filter(yn=>!ye.has(yn.id))),g1(I2=>I2.filter(yn=>!ye.has(yn.source)&&!ye.has(yn.target))),ne.forEach(I2=>{w.clearNodeCacheIndividual(I2).catch(H2.error)})},[G,g1,k,w])"
+    },
+    {
+      "label": "renderer_node_menu_backend",
+      "bundle": "resources/app/.vite/renderer/main_window/index.js",
+      "before": "{const{openNodeDocumentation:f}=We(iT),{id:d,isLocked:p=!1,schemaId:z}=e,",
+      "after": "{const{openNodeDocumentation:f}=We(iT),{backend:trtClearBackend}=We(Aa),{id:d,isLocked:p=!1,schemaId:z}=e,"
+    },
+    {
+      "label": "renderer_node_menu_clear_item",
+      "bundle": "resources/app/.vite/renderer/main_window/index.js",
+      "before": "s&&_.jsx(Or,{icon:_.jsx(X0e,{}),onClick:s,children:\"Refresh Preview\"}),",
+      "after": "s&&_.jsx(Or,{icon:_.jsx(X0e,{}),onClick:s,children:\"Refresh Preview\"}),(z===\"chainner:tensorrt:upscale_image\"||z===\"chainner:tensorrt:load_engine\")&&_.jsx(Or,{icon:_.jsx(Nv,{}),onClick:()=>{trtClearBackend.clearNodeCacheIndividual(d).catch(H2.error)},children:\"Clear\"}),"
+    }
+  ]
+}

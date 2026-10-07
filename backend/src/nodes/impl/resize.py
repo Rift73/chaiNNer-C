@@ -3,10 +3,9 @@ from __future__ import annotations
 from enum import Enum
 
 import numpy as np
-from chainner_ext import ResizeFilter as NativeResizeFilter
-from chainner_ext import resize as native_resize
 
 from ..utils.utils import get_h_w_c
+from . import native_resample
 
 
 class ResizeFilter(Enum):
@@ -26,22 +25,6 @@ class ResizeFilter(Enum):
     GAUSS = 11
 
 
-_FILTER_MAP: dict[ResizeFilter, NativeResizeFilter] = {
-    ResizeFilter.NEAREST: NativeResizeFilter.Nearest,
-    ResizeFilter.BOX: NativeResizeFilter.Box,
-    ResizeFilter.LINEAR: NativeResizeFilter.Linear,
-    ResizeFilter.CATROM: NativeResizeFilter.CubicCatrom,
-    ResizeFilter.LANCZOS: NativeResizeFilter.Lanczos,
-    ResizeFilter.HERMITE: NativeResizeFilter.Hermite,
-    ResizeFilter.MITCHELL: NativeResizeFilter.CubicMitchell,
-    ResizeFilter.BSPLINE: NativeResizeFilter.CubicBSpline,
-    ResizeFilter.HAMMING: NativeResizeFilter.Hamming,
-    ResizeFilter.HANN: NativeResizeFilter.Hann,
-    ResizeFilter.LAGRANGE: NativeResizeFilter.Lagrange,
-    ResizeFilter.GAUSS: NativeResizeFilter.Gauss,
-}
-
-
 def resize(
     img: np.ndarray,
     out_dims: tuple[int, int],
@@ -58,7 +41,7 @@ def resize(
     new_memory = new_w * new_h * c * 4
     if new_memory > MAX_MEMORY:
         raise RuntimeError(
-            f"Resize would require {round(new_memory / GB, 3)} GB of memory, but only {MAX_MEMORY//GB} GB are allowed."
+            f"Resize would require {round(new_memory / GB, 3)} GB of memory, but only {MAX_MEMORY // GB} GB are allowed."
         )
 
     if filter == ResizeFilter.AUTO:
@@ -75,26 +58,27 @@ def resize(
     if filter == ResizeFilter.NEAREST:
         # we don't need premultiplied alpha for NN
         separate_alpha = True
-
-    native_filter = _FILTER_MAP[filter]
+        if new_w == 0 or new_h == 0:
+            # The original binding returns HWC even for a 2D grayscale input.
+            return native_resample.filtered(
+                img, out_dims, ResizeFilter.BOX.value, False
+            )
+        return native_resample.nearest(img, out_dims)
 
     if not separate_alpha and c == 4:
         # pre-multiply alpha
-        img = img.copy()
-        img[:, :, 0] *= img[..., 3]
-        img[:, :, 1] *= img[..., 3]
-        img[:, :, 2] *= img[..., 3]
+        if img.dtype == np.float32:
+            img = native_resample.premultiply(img)
+        else:
+            img = img.copy()
+            img[:, :, 0] *= img[..., 3]
+            img[:, :, 1] *= img[..., 3]
+            img[:, :, 2] *= img[..., 3]
 
-    img = native_resize(img, out_dims, native_filter, gamma_correction)
-    # native_resize guarantees that the output is float32 in the range [0, 1]
-    # so no need to normalize
+    img = native_resample.filtered(img, out_dims, filter.value, gamma_correction)
 
-    if not separate_alpha and c == 4:
+    if not separate_alpha and c == 4 and img.size:
         # undo pre-multiply alpha
-        alpha_r = 1 / np.maximum(img[..., 3], 0.0001)
-        img[:, :, 0] *= alpha_r
-        img[:, :, 1] *= alpha_r
-        img[:, :, 2] *= alpha_r
-        np.minimum(img, 1, out=img)
+        img = native_resample.finish_alpha_inplace(img)
 
     return img

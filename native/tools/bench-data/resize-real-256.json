@@ -1,0 +1,183 @@
+{
+  "data": [
+    {
+      "id": "11b7aa3f-763f-42de-afe7-e17cb6578b8b",
+      "schemaId": "chainner:image:save",
+      "inputs": [
+        {
+          "type": "edge",
+          "id": "d184414e-15f5-48d7-8c93-9cb859fa53c3",
+          "index": 0
+        },
+        {
+          "type": "value",
+          "value": "F:\\chaiNNer-C-diagnostics\\resize-gap-20260921\\20260921T121752Z\\http-B"
+        },
+        {
+          "type": "value",
+          "value": null
+        },
+        {
+          "type": "edge",
+          "id": "800c1ac6-d63d-4dc0-8ac1-28fa5b6ddc0c",
+          "index": 3
+        },
+        {
+          "type": "value",
+          "value": "png"
+        },
+        {
+          "type": "value",
+          "value": "u8"
+        },
+        {
+          "type": "value",
+          "value": 0
+        },
+        {
+          "type": "value",
+          "value": 95
+        },
+        {
+          "type": "value",
+          "value": 2167057
+        },
+        {
+          "type": "value",
+          "value": 0
+        },
+        {
+          "type": "value",
+          "value": "u8"
+        },
+        {
+          "type": "value",
+          "value": 5
+        },
+        {
+          "type": "value",
+          "value": "BC1_UNORM_SRGB"
+        },
+        {
+          "type": "value",
+          "value": 0
+        },
+        {
+          "type": "value",
+          "value": 0
+        },
+        {
+          "type": "value",
+          "value": 0
+        },
+        {
+          "type": "value",
+          "value": 0
+        },
+        {
+          "type": "value",
+          "value": 0
+        },
+        {
+          "type": "value",
+          "value": "4:2:0"
+        },
+        {
+          "type": "value",
+          "value": 0
+        }
+      ],
+      "parent": null,
+      "nodeType": "regularNode"
+    },
+    {
+      "id": "800c1ac6-d63d-4dc0-8ac1-28fa5b6ddc0c",
+      "schemaId": "chainner:image:load_images",
+      "inputs": [
+        {
+          "type": "value",
+          "value": "F:\\Download\\New folder\\DiverSeg-IP\\HR\\0"
+        },
+        {
+          "type": "value",
+          "value": 0
+        },
+        {
+          "type": "value",
+          "value": 1
+        },
+        {
+          "type": "value",
+          "value": "**/*"
+        },
+        {
+          "type": "value",
+          "value": true
+        },
+        {
+          "type": "value",
+          "value": 256
+        },
+        {
+          "type": "value",
+          "value": 0
+        }
+      ],
+      "parent": null,
+      "nodeType": "generator"
+    },
+    {
+      "id": "d184414e-15f5-48d7-8c93-9cb859fa53c3",
+      "schemaId": "chainner:image:resize",
+      "inputs": [
+        {
+          "type": "edge",
+          "id": "800c1ac6-d63d-4dc0-8ac1-28fa5b6ddc0c",
+          "index": 0
+        },
+        {
+          "type": "value",
+          "value": 0
+        },
+        {
+          "type": "value",
+          "value": 50
+        },
+        {
+          "type": "value",
+          "value": 1
+        },
+        {
+          "type": "value",
+          "value": 1
+        },
+        {
+          "type": "value",
+          "value": 5
+        },
+        {
+          "type": "value",
+          "value": 0
+        }
+      ],
+      "parent": null,
+      "nodeType": "regularNode"
+    }
+  ],
+  "options": {
+    "chaiNNer_pytorch": {
+      "use_cpu": true,
+      "use_fp16": false
+    },
+    "chaiNNer_onnx": {
+      "execution_provider": "CPUExecutionProvider",
+      "tensorrt_fp16_mode": false
+    },
+    "chaiNNer_ncnn": {
+      "threads": 1,
+      "blocktime": 0,
+      "budget_limit": 0
+    }
+  },
+  "sendBroadcastData": true
+}

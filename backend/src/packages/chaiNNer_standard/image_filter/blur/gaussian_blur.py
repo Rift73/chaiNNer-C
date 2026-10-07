@@ -50,4 +50,4 @@ def gaussian_blur_node(
     if sigma_x == 0 and sigma_y == 0:
         return img
 
-    return fast_gaussian_blur(img, sigma_x, sigma_y)
+    return fast_gaussian_blur(img, sigma_x, sigma_y, normalized=True)

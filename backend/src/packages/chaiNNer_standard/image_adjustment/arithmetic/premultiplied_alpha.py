@@ -4,6 +4,7 @@ from enum import Enum
 
 import numpy as np
 
+from nodes.impl.native_adjustments import adjust
 from nodes.properties.inputs import EnumInput, ImageInput
 from nodes.properties.outputs import ImageOutput
 
@@ -37,14 +38,9 @@ class AlphaAssociation(Enum):
 def premultiplied_alpha_node(
     img: np.ndarray, alpha_association: AlphaAssociation
 ) -> np.ndarray:
-    rgb = img[..., :3]
-    alpha = img[..., 3]
-
     if alpha_association == AlphaAssociation.UNPREMULTIPLY_RGB:
-        rgb_divided = rgb / alpha[..., np.newaxis]
-        return np.concatenate((rgb_divided, alpha[..., np.newaxis]), axis=-1)
+        return adjust(img, 6)
     elif alpha_association == AlphaAssociation.PREMULTIPLY_RGB:
-        rgb_multed = rgb * alpha[..., np.newaxis]
-        return np.concatenate((rgb_multed, alpha[..., np.newaxis]), axis=-1)
+        return adjust(img, 5)
     else:
         raise ValueError(f"Invalid Alpha Association State '{alpha_association}'.")

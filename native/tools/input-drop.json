@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "baseline_renderer_sha256": "50f22a101c16c97fd1db413e3e0becf647c360b817f09b8a3089fa649fd16877",
+  "reason": "Directory input drag/drop and file/node lock guards; directory classification before extension routing. Preserves installed Electron 25 File.path boundary and visible UI. File drops pass through elevated edge hit areas to the node under the pointer; no focus, selection or visual changes.",
+  "edits": [
+    {
+      "label": "directory_toast_context",
+      "before": "bir=W.memo(({value:e,setValue:a,resetValue:o,isLocked:l,input:s,inputKey:f,isConnected:d,inputType:p,nodeId:z})=>{const{t:w}=Y8(),",
+      "after": "bir=W.memo(({value:e,setValue:a,resetValue:o,isLocked:l,input:s,inputKey:f,isConnected:d,inputType:p,nodeId:z})=>{const{t:w}=Y8(),{sendToast:cnDropToast}=We(Cm),"
+    },
+    {
+      "label": "directory_handlers",
+      "before": "},V=d?Cir(p):e,B=S01(z,s,e,d),A=eg(",
+      "after": "},cnDirDrag=event=>{if(!event.dataTransfer.types.includes(\"Files\"))return;event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect=l||d?\"none\":\"copy\"},cnDirDrop=event=>{if(!event.dataTransfer.types.includes(\"Files\"))return;event.preventDefault();event.stopPropagation();if(l||d)return;const transfer=event.dataTransfer;if(transfer.files.length!==1){cnDropToast({status:\"error\",description:`Only one directory is accepted by ${s.label}.`});return}let folder;const items=Array.from(transfer.items).filter(item=>item.kind===\"file\");if(items.length===1){try{const entry=items[0].webkitGetAsEntry();if(entry?.isDirectory){const candidate=transfer.files[0].path;if(typeof candidate===\"string\"&&candidate.length>0)folder=candidate}}catch{folder=void 0}}if(folder){a(folder);H(folder)}else cnDropToast({status:\"error\",description:`Drop a directory onto ${s.label}, not a file.`})},V=d?Cir(p):e,B=S01(z,s,e,d),A=eg("
+    },
+    {
+      "label": "directory_event_binding",
+      "before": "children:_.jsxs(Jb,{size:\"sm\",onContextMenu:A.onContextMenu,children:",
+      "after": "children:_.jsxs(Jb,{size:\"sm\",onContextMenu:A.onContextMenu,onDragOver:cnDirDrag,onDrop:cnDirDrop,children:"
+    },
+    {
+      "label": "file_drag_guard",
+      "before": "A=k=>{k.preventDefault(),k.dataTransfer.types.includes(\"Files\")&&(k.stopPropagation(),k.dataTransfer.dropEffect=\"move\")},T=k=>",
+      "after": "A=k=>{k.preventDefault(),k.dataTransfer.types.includes(\"Files\")&&(k.stopPropagation(),k.dataTransfer.dropEffect=d||f?\"none\":\"copy\")},T=k=>"
+    },
+    {
+      "label": "file_drop_guard",
+      "before": "T=k=>{if(k.preventDefault(),k.dataTransfer.types.includes(\"Files\")){k.stopPropagation();const P=oW1(k.dataTransfer,b);",
+      "after": "T=k=>{if(k.preventDefault(),k.dataTransfer.types.includes(\"Files\")){k.stopPropagation();if(d||f)return;const P=oW1(k.dataTransfer,b);"
+    },
+    {
+      "label": "node_drag_guard",
+      "before": "g1.stopPropagation(),g1.dataTransfer.dropEffect=\"move\")},K=g1=>",
+      "after": "g1.stopPropagation(),g1.dataTransfer.dropEffect=o.isLocked||o.connectedInputs.has(Z.id)?\"none\":\"copy\")},K=g1=>"
+    },
+    {
+      "label": "node_drop_guard",
+      "before": "g1.stopPropagation();const i1=oW1(g1.dataTransfer,Z.filetypes);",
+      "after": "g1.stopPropagation();if(o.isLocked||o.connectedInputs.has(Z.id))return;const i1=oW1(g1.dataTransfer,Z.filetypes);"
+    },
+    {
+      "label": "file_extension_directory_rejection",
+      "before": "oW1=(e,a)=>{if(e.files.length===1){const[o]=e.files",
+      "after": "oW1=(e,a)=>{if(e.files.length===1){if(Array.from(e.items).some(item=>item.kind===\"file\"&&item.webkitGetAsEntry?.()?.isDirectory))return;const[o]=e.files"
+    },
+    {
+      "label": "chain_file_directory_rejection",
+      "before": "NNn=e=>{if(e.files.length===1){const[a]=e.files;",
+      "after": "NNn=e=>{if(e.files.length===1){if(Array.from(e.items).some(item=>item.kind===\"file\"&&item.webkitGetAsEntry?.()?.isDirectory))return!1;const[a]=e.files;"
+    },
+    {
+      "label": "edge_drop_forwarding",
+      "before": "const oW1=(e,a)=>",
+      "after": "const cnForwardFileDrop=(event) => {\n    if (!event.dataTransfer.types.includes('Files'))\n        return;\n    if (!(event.target instanceof Element) || !event.target.closest('.react-flow__edge'))\n        return;\n    const receiver = event.currentTarget.ownerDocument\n        .elementsFromPoint(event.clientX, event.clientY)\n        .find((element) => element.closest('.react-flow__node') && event.currentTarget.contains(element));\n    if (!receiver)\n        return;\n    event.preventDefault();\n    event.stopPropagation();\n    receiver.dispatchEvent(new DragEvent(event.type, {\n        bubbles: true,\n        cancelable: true,\n        composed: event.nativeEvent.composed,\n        dataTransfer: event.dataTransfer,\n        clientX: event.clientX,\n        clientY: event.clientY,\n        screenX: event.screenX,\n        screenY: event.screenY,\n        ctrlKey: event.ctrlKey,\n        shiftKey: event.shiftKey,\n        altKey: event.altKey,\n        metaKey: event.metaKey,\n        button: event.button,\n        buttons: event.buttons,\n        relatedTarget: event.relatedTarget,\n    }));\n},oW1=(e,a)=>"
+    },
+    {
+      "label": "edge_drop_capture_binding",
+      "before": "className:K?\"\":\"no-chain-animation\",h:\"100%\",ref:e,w:\"100%\",children:_.jsxs(cJt",
+      "after": "className:K?\"\":\"no-chain-animation\",h:\"100%\",ref:e,w:\"100%\",onDragOverCapture:cnForwardFileDrop,onDropCapture:cnForwardFileDrop,children:_.jsxs(cJt"
+    }
+  ]
+}

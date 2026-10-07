@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import cv2
 import numpy as np
 
 from nodes.impl.image_utils import to_uint8
+from nodes.impl.native_repair import canny
 from nodes.properties.inputs import ImageInput, NumberInput
 from nodes.properties.outputs import ImageOutput
 
@@ -29,4 +29,4 @@ def canny_edge_detection_node(
     t_lower: int,
     t_upper: int,
 ) -> np.ndarray:
-    return cv2.Canny(to_uint8(img, normalized=True), t_lower, t_upper)
+    return canny(to_uint8(img, normalized=True), t_lower, t_upper)

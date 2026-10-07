@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from api import Collector, IteratorInputInfo
+from nodes.impl import native_layout
 from nodes.properties.inputs import ImageInput, NumberInput, OrderEnum, RowOrderDropdown
 from nodes.properties.outputs import ImageOutput
 
@@ -61,19 +62,10 @@ def merge_spritesheet_node(
         results.append(tile)
 
     def on_complete():
-        if order == OrderEnum.ROW_MAJOR:
-            result_rows = []
-            for i in range(rows):
-                row = np.concatenate(results[i * columns : (i + 1) * columns], axis=1)
-                result_rows.append(row)
-            return np.concatenate(result_rows, axis=0)
-        elif order == OrderEnum.COLUMN_MAJOR:
-            result_cols = []
-            for i in range(columns):
-                column = np.concatenate(results[i * rows : (i + 1) * rows], axis=0)
-                result_cols.append(column)
-            return np.concatenate(result_cols, axis=1)
-        else:
+        if order not in (OrderEnum.ROW_MAJOR, OrderEnum.COLUMN_MAJOR):
             raise ValueError(f"Invalid order: {order}")
+        return native_layout.merge_spritesheet(
+            results, rows, columns, order == OrderEnum.ROW_MAJOR
+        )
 
     return Collector(on_iterate=on_iterate, on_complete=on_complete)

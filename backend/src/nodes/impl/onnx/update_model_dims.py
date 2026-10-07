@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from typing import Sequence
 
-import onnx.checker
-from onnx import ModelProto, ValueInfoProto
+from onnx import ModelProto
+
+from ..native_graph import graph
 
 
 def update_inputs_outputs_dims(
@@ -47,47 +48,4 @@ def update_inputs_outputs_dims(
         updated_model = update_inputs_outputs_dims(model, input_dims, output_dims)
         onnx.save(updated_model, 'model.onnx')
     """
-    dim_param_set: set[str] = set()
-
-    def init_dim_param_set(
-        dim_param_set: set[str], value_infos: list[ValueInfoProto]
-    ) -> None:
-        for info in value_infos:
-            shape = info.type.tensor_type.shape
-            for dim in shape.dim:
-                if dim.HasField("dim_param"):
-                    dim_param_set.add(dim.dim_param)  # type: ignore
-
-    init_dim_param_set(dim_param_set, model.graph.input)  # type: ignore
-    init_dim_param_set(dim_param_set, model.graph.output)  # type: ignore
-    init_dim_param_set(dim_param_set, model.graph.value_info)  # type: ignore
-
-    def update_dim(tensor: ValueInfoProto, dim: str | int, j: int, name: str) -> None:
-        dim_proto = tensor.type.tensor_type.shape.dim[j]
-        if isinstance(dim, int):
-            if dim >= 0:
-                dim_proto.dim_value = dim
-            else:
-                generated_dim_param = name + "_" + str(j)
-                if generated_dim_param in dim_param_set:
-                    raise ValueError(
-                        f"Unable to generate unique dim_param for axis {j} of {name}. Please manually provide a dim_param value."
-                    )
-                dim_proto.dim_param = generated_dim_param
-        else:
-            dim_proto.dim_param = dim
-
-    for input_ in model.graph.input:
-        input_name = input_.name
-        input_dim_arr = input_dims[input_name]
-        for j, dim in enumerate(input_dim_arr):
-            update_dim(input_, dim, j, input_name)
-
-    for output in model.graph.output:
-        output_name = output.name
-        output_dim_arr = output_dims[output_name]
-        for j, dim in enumerate(output_dim_arr):
-            update_dim(output, dim, j, output_name)
-
-    onnx.checker.check_model(model)
-    return model
+    return graph().onnx_update_dims(model, input_dims, output_dims)

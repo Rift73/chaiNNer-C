@@ -1,0 +1,30 @@
+{
+  "rust_repository": "https://github.com/chaiNNer-org/chaiNNer-rs",
+  "rust_commit": "6f6ead6064f81b4049d3deb803c9279c7950736b",
+  "installed_chainner_ext": "0.3.10",
+  "files": {
+    "adv_mame.rs": "950855a2e845d0c26549fe766dce15d2ff8ef1944b5308bdf47772f23439a048",
+    "eagle.rs": "6469c21b6e1c00b6568d76fa45b73b7e461627a396a8de35e13248e51c3b587d",
+    "mod.rs": "2c8438c5ae68b1885ca5ec5ee86e0c3efcaa7ec773ebfd794c49b5c89f37ba0c",
+    "sai.rs": "7a7f05682259a8850357ee3d7d38d86dabdbf9cd6d3c65b9c157d2da6620b3a0",
+    "util.rs": "9d387d952e3bb10df2e9802b6c737a828eaa684e403057827f682cb880f3683c",
+    "hqx/common.rs": "021ef1fb978f6b2de6a9500224541db2c2beb0326744adda2bb6188fcf0df571",
+    "hqx/hq2x.rs": "ddef9badaee5e46b59c4dc6c6cccf860eb55de2a9db42901967b91b41714ccbd",
+    "hqx/hq3x.rs": "590423c75391a7a179fd9c2b0296872e9ed99e84005f5b5594822eab503e4b11",
+    "hqx/hq4x.rs": "df2dd586d03abd3590468bfb97ad11532e4a57cc6edb49e037b2c70e8fe300cc",
+    "hqx/mod.rs": "bb96cef13b0f1135163bbcc5a21a65c10122df8e896d1e964d913670f1e85f0d",
+    "hqx/yuv.rs": "8215f069f609eb58117d31514d5a2712cffdafbbcc023b2594b56b84b6765939"
+  },
+  "installed_node": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\packages\\chaiNNer_standard\\image_dimension\\resize\\resize_pixel_art.py",
+  "installed_node_sha256": "1e80ab7f3892d1072f7f8497ad69107cb7b89b67466ec214178c1fabba3a9395",
+  "license_references": {
+    "COPYING-LGPL-2.1": {
+      "url": "https://raw.githubusercontent.com/grom358/hqx/master/COPYING",
+      "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551"
+    },
+    "original-hq2x.c": {
+      "url": "https://raw.githubusercontent.com/grom358/hqx/master/src/hq2x.c",
+      "sha256": "1a1bd74d9b72a0ee24774f981c94a270287702964b68d32f2ab59425256c4ade"
+    }
+  }
+}

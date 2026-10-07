@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from enum import Enum
 
-import cv2
 import numpy as np
 
-from nodes.impl.image_utils import to_uint8
+from nodes.impl.native_color_ops import auto_threshold
 from nodes.properties.inputs import EnumInput, ImageInput
 from nodes.properties.outputs import NumberOutput
-from nodes.utils.utils import get_h_w_c
 
 from .. import threshold_group
 
@@ -41,18 +39,4 @@ _AUTO_THRESHOLD_LABELS: dict[AutoThreshold, str] = {
     ],
 )
 def generate_threshold_node(img: np.ndarray, method: AutoThreshold) -> float:
-    if get_h_w_c(img)[2] != 1:
-        # these methods need grayscale images, so we'll use the mean across all channels
-        img = np.mean(img, axis=-1)
-
-    # otsu and triangle methods are only implemented for uint8 images
-    img = to_uint8(img, normalized=True)
-
-    if method == AutoThreshold.OTSU:
-        threshold, _ = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    elif method == AutoThreshold.TRIANGLE:
-        threshold, _ = cv2.threshold(
-            img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_TRIANGLE
-        )
-
-    return threshold / 255 * 100
+    return auto_threshold(img, method.value)

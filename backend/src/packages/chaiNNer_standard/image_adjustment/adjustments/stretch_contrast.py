@@ -5,6 +5,8 @@ from enum import Enum
 import numpy as np
 
 from nodes.groups import if_enum_group
+from nodes.impl.native_channels import combine_rgb_alpha
+from nodes.impl.native_transfer import contrast_bounds, stack_stretched, stretch_range
 from nodes.properties.inputs import BoolInput, EnumInput, ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
@@ -13,13 +15,7 @@ from .. import adjustments_group
 
 
 def _stretch(img: np.ndarray, range_min: float, range_max: float) -> np.ndarray:
-    if range_min > range_max:
-        raise ValueError("min must be less than max")
-    if range_min == range_max:
-        return img * 0
-
-    range_diff = range_max - range_min
-    return (img - range_min) / range_diff
+    return stretch_range(img, range_min, range_max)
 
 
 class StretchMode(Enum):
@@ -76,11 +72,9 @@ def stretch_contrast_node(
 ) -> np.ndarray:
     def get_range_of(i: np.ndarray) -> tuple[float, float]:
         if mode == StretchMode.AUTO:
-            return float(np.min(i)), float(np.max(i))
+            return contrast_bounds(i)
         elif mode == StretchMode.PERCENTILE:
-            return float(np.percentile(i, percentile)), float(
-                np.percentile(i, 100 - percentile)
-            )
+            return contrast_bounds(i, percentile)
         elif mode == StretchMode.MANUAL:
             if manual_min > manual_max:
                 raise ValueError("Minimum must be less than Maximum")
@@ -108,9 +102,13 @@ def stretch_contrast_node(
             range_min, range_max = get_range_of(channel)
             channels.append(_stretch(channel, range_min, range_max))
 
-        img = np.dstack(channels)
+        img = stack_stretched(channels)
 
     if alpha is not None:
-        img = np.dstack([img, alpha])
+        img = (
+            combine_rgb_alpha(img, alpha)
+            if img.dtype == np.float32
+            else stack_stretched([img[:, :, c] for c in range(3)] + [alpha])
+        )
 
     return img

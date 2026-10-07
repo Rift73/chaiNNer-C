@@ -7,6 +7,7 @@ import numpy as np
 
 from nodes.groups import if_enum_group
 from nodes.impl.cas import cas_mix
+from nodes.impl.native_convolution import convolve
 from nodes.properties.inputs import BoolInput, EnumInput, ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -78,7 +79,7 @@ def high_boost_filter_node(
         kernel = identity - np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]]) / 5
 
     kernel = kernel * amount + identity
-    sharpened = cv2.filter2D(img, -1, kernel)
+    sharpened = convolve(img, kernel, 0)
 
     if contrast_adaptive:
         shape = cv2.MORPH_RECT if kernel_type == KernelType.STRONG else cv2.MORPH_CROSS

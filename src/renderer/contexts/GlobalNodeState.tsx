@@ -717,8 +717,13 @@ export const GlobalProvider = memo(
                 changeEdges((edges) =>
                     edges.filter((e) => !toRemove.has(e.source) && !toRemove.has(e.target))
                 );
+                // The backend keeps some resources (TensorRT engines and sessions) until
+                // their node is cleared.
+                filteredIds.forEach((id) => {
+                    backend.clearNodeCacheIndividual(id).catch(log.error);
+                });
             },
-            [changeNodes, changeEdges, getNode]
+            [changeNodes, changeEdges, getNode, backend]
         );
 
         const removeEdgeById = useCallback(

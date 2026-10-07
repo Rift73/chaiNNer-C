@@ -1,6 +1,6 @@
 # This is a basic workflow to help you get started with Actions
 
-name: Lint
+name: Backend
 
 # Controls when the workflow will run
 on:
@@ -12,11 +12,17 @@ on:
             - closed
         paths:
             - 'backend/**'
+            - 'native/tools/**'
+            - 'native/tests/**'
+            - 'stubs/**'
             - '.github/workflows/**'
+            - '.github/actions/**'
             - 'pyproject.toml'
+            - 'pyrightconfig.json'
             - 'requirements.txt'
+            - 'native/python-stack.lock.txt'
     push:
-        branches: [main]
+        branches: [main, chaiNNer-C]
 
     # Allows you to run this workflow manually from the Actions tab
     workflow_dispatch:
@@ -26,10 +32,10 @@ jobs:
     backend-formatting:
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v3
-            - uses: actions/setup-python@v4
+            - uses: actions/checkout@v5
+            - uses: actions/setup-python@v6
               with:
-                  python-version: '3.9'
+                  python-version: '3.14'
                   cache: 'pip'
             - run: pip install -r requirements.txt
             - run: ruff format backend --check
@@ -37,28 +43,31 @@ jobs:
     backend-lint:
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v3
-            - uses: actions/setup-python@v4
+            - uses: actions/checkout@v5
+            - uses: actions/setup-python@v6
               with:
-                  python-version: '3.9'
+                  python-version: '3.14'
                   cache: 'pip'
             - run: pip install -r requirements.txt
             - run: ruff check backend
 
+    # Hosted CI runs the lint jobs and the backend's pure-Python tests only (Consult 14 D-30 (d)):
+    # the native build, native/tests, the verifiers, parity and the bench are local gates
+    # (native/README.md). Both Windows jobs use .github/actions/backend-env, the environment
+    # pyrightconfig.json names (locally the provisioned runtime), so pyright runs plain with the
+    # repo's config. The backend itself never starts here: its native binaries are not built.
     backend-pyright:
-        runs-on: ubuntu-latest
+        runs-on: windows-latest
         steps:
-            - uses: actions/checkout@v3
-            - uses: actions/setup-python@v4
-              with:
-                  python-version: '3.9'
-                  cache: 'pip'
-            - run: pip install -r requirements.txt
-            - uses: actions/cache@v3
-              with:
-                path: ~/.cache/chainner_pip
-                key: chainner-pip-cache-3.9
-            - name: Start backend to install dependencies
-              run: python ./backend/src/run.py --close-after-start --install-builtin-packages
+            - uses: actions/checkout@v5
+            - uses: ./.github/actions/backend-env
             - name: pyright
-              run: pyright backend/
+              run: ./native/runtime/cpython-3.14.8/Scripts/pyright
+
+    backend-tests:
+        runs-on: windows-latest
+        steps:
+            - uses: actions/checkout@v5
+            - uses: ./.github/actions/backend-env
+            - name: pytest backend/tests
+              run: ./native/runtime/cpython-3.14.8/Scripts/python -m pytest backend/tests

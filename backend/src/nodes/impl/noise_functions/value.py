@@ -3,6 +3,7 @@ import itertools
 import numpy as np
 from typing_extensions import override
 
+from ..native_generation import procedural_noise, procedural_supported
 from .noise_generator import NoiseGenerator
 
 
@@ -23,6 +24,10 @@ class ValueNoise(NoiseGenerator):
 
     @override
     def evaluate(self, points: np.ndarray):
+        if procedural_supported(points, self.dimensions):
+            return procedural_noise(
+                points, self.permutation_table, values=self.values, smooth=self.smooth
+            )
         block, fractional = np.divmod(points, 1)
         if self.smooth:
             fractional = smoothstep(fractional)

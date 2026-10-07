@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import onnxruntime as ort
-
-from ..onnx.session import get_input_shape
+from ..onnx.session import OnnxSession, get_input_shape
 from .session_base import BaseSession
 from .session_cloth import ClothSession
 from .session_simple import SimpleSession
 
 
-def new_session(session: ort.InferenceSession) -> BaseSession:
+def new_session(session: OnnxSession) -> BaseSession:
     session_class: type[BaseSession]
 
     input_width = get_input_shape(session)[2]

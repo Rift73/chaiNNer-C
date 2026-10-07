@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from nodes.impl.native_adjustments import adjust
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -41,4 +42,4 @@ from .. import adjustments_group
 def clamp_node(img: np.ndarray, minimum: float, maximum: float) -> np.ndarray:
     if minimum <= 0 and maximum >= 1:
         return img
-    return np.clip(img, minimum, maximum)
+    return adjust(img, 4, minimum, maximum)

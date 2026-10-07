@@ -7,8 +7,7 @@ from typing import Dict, Literal, TypedDict, Union
 
 import navi
 from api import BroadcastData, ErrorValue, InputId, IterOutputId, NodeId, OutputId
-
-# General events
+from nodes.impl.event_queue import LatestEventQueue
 
 
 class BackendStatusData(TypedDict):
@@ -28,11 +27,6 @@ class BackendStateEvent(TypedDict):
 
 
 BackendEvent = Union[BackendStatusEvent, BackendStateEvent]
-
-
-# Execution events
-
-
 InputsDict = Dict[InputId, ErrorValue]
 
 
@@ -75,7 +69,7 @@ class NodeStartEvent(TypedDict):
 class NodeProgressData(TypedDict):
     nodeId: NodeId
     progress: float
-    """A number between 0 and 1"""
+    "A number between 0 and 1"
     index: int
     total: int
     eta: float
@@ -116,8 +110,6 @@ ExecutionEvent = Union[
     NodeBroadcastEvent,
     NodeFinishEvent,
 ]
-
-
 Event = Union[ExecutionEvent, BackendEvent]
 
 
@@ -142,7 +134,7 @@ class _FilteredEventConsumer(EventConsumer):
 
 class EventQueue(EventConsumer):
     def __init__(self):
-        self.queue = asyncio.Queue()
+        self.queue = LatestEventQueue()
 
     async def get(self) -> Event:
         return await self.queue.get()

@@ -1,0 +1,501 @@
+{
+ "about": "Boundary cases where regex 1.8.4's own NFA engines (nfa and backtrack cells) and its default DFA path disagree. The default and dfa cells reproduce the real module exactly on them; the nfa and backtrack cells print what Rust's PikeVM and backtracker print. Controller's refinement of Consult 4: these case ids are excluded from the nfa/backtrack-vs-real comparison only; nfa == backtrack is still asserted on them.",
+ "ruling": "Controller's refinement of Consult 4 (2026-10-06): the nfa and backtrack cells are compared with the real module on boundary cases except exactly these ids; default (prefilter on and off) and dfa compare them; nfa == backtrack is asserted on every op. chainner_ext_conformance.py regex-probe fails on any other disagreement.",
+ "source": "X2 (native: regex engine 1b9226df, lazy DFA 881aac80), from its instrumented runs",
+ "mechanisms": {
+  "A": "The DFA's reverse pass runs on the &text[start..] slice (exec.rs:808 find_dfa_forward, exec.rs:835 find_dfa_anchored_reverse; exec_dfa_reverse_suffix slices [start..end]), so a look-around at the match start sees the slice start as the text start.",
+  "B": "Under a Unicode \\b or \\B, dfa.rs start_flags (dfa.rs:1418, 1448) classify the byte before the start with is_ascii_word, so after a non-ASCII word character the start state misjudges the boundary; the DFA quits only when it consumes a non-ASCII byte (dfa.rs:1486)."
+ },
+ "verification": "Removing A (a reverse pass on a cut slice quits to the NFA) and B (a Unicode-\\b start next to a non-ASCII byte quits to the NFA) together makes the default cell equal the nfa cell on every boundary case; mechanisms lists the removal(s) that alone resolve the case.",
+ "count": {
+  "cases": 60,
+  "ops": 221
+ },
+ "cases": [
+  {
+   "id": "word_boundary/wb5",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 1,
+   "pattern": "\\b$"
+  },
+  {
+   "id": "word_boundary/wb27",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 1,
+   "pattern": "\\b$"
+  },
+  {
+   "id": "word_boundary/wb28",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 1,
+   "pattern": "\\b$"
+  },
+  {
+   "id": "word_boundary/nb12",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 1,
+   "pattern": "\\B(foo|bar|[A-Z])\\B"
+  },
+  {
+   "id": "word_boundary/nb14",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 1,
+   "pattern": "\\B(foo|bar|[A-Z])\\B"
+  },
+  {
+   "id": "word_boundary/nb15",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 1,
+   "pattern": "\\B(foo|bar|[A-Z])\\B"
+  },
+  {
+   "id": "word_boundary/nb16",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 1,
+   "pattern": "\\B(foo|bar|[A-Z])\\B"
+  },
+  {
+   "id": "word_boundary/nb19",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 1,
+   "pattern": "\\B(fo|foo)\\B"
+  },
+  {
+   "id": "word_boundary/nb20",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 1,
+   "pattern": "\\B(foo|fo)\\B"
+  },
+  {
+   "id": "word_boundary/nb24",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 1,
+   "pattern": "\\B$"
+  },
+  {
+   "id": "word_boundary/nb25",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 1,
+   "pattern": "\\B$"
+  },
+  {
+   "id": "flags/match_flag_multi",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 2,
+   "pattern": "(?-u)(?m)(?:^\\d+$\\n?)+"
+  },
+  {
+   "id": "gen/0145",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 5,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen/0163",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 4,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen/0171",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 3,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen/0181",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 2,
+   "pattern": "\\b"
+  },
+  {
+   "id": "gen/0204",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 9,
+   "pattern": "\\b"
+  },
+  {
+   "id": "gen/0206",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 4,
+   "pattern": "(?s)(?:\\B)"
+  },
+  {
+   "id": "gen/0231",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 6,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen/0292",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 9,
+   "pattern": "(\\B|[a-c](?i:ß)\\W)"
+  },
+  {
+   "id": "gen/0312",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 3,
+   "pattern": "(?is)\\b"
+  },
+  {
+   "id": "gen/0331",
+   "mechanisms": [
+    "A",
+    "B"
+   ],
+   "ops": 9,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen/0334",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 6,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen/0340",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 1,
+   "pattern": "(?m-s)\\b"
+  },
+  {
+   "id": "pos/05",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 6,
+   "pattern": "\\B"
+  },
+  {
+   "id": "pos/30",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 5,
+   "pattern": "\\B."
+  },
+  {
+   "id": "pos/31",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 5,
+   "pattern": "(\\B)(.)?"
+  },
+  {
+   "id": "pos/33",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 2,
+   "pattern": "\\B\\w*"
+  },
+  {
+   "id": "pos/35",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 6,
+   "pattern": ".?\\B"
+  },
+  {
+   "id": "pos/36",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 6,
+   "pattern": "\\B|ö"
+  },
+  {
+   "id": "pos/38",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 4,
+   "pattern": "(?s)\\B.*"
+  },
+  {
+   "id": "pos/40",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 6,
+   "pattern": "\\B(?:)|b"
+  },
+  {
+   "id": "gen2/0178",
+   "mechanisms": [
+    "A",
+    "B"
+   ],
+   "ops": 3,
+   "pattern": "(?x)[\\w--\\d]\\x{1F600}ab\\BÄ1\\pL|(?:(?m:$))+|\\B|\\p{Lu}"
+  },
+  {
+   "id": "gen2/0182",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 4,
+   "pattern": "(?U)c|\\b|\\u{e4}|[[:alpha:]]|中"
+  },
+  {
+   "id": "gen2/0222",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 1,
+   "pattern": "\\b"
+  },
+  {
+   "id": "gen2/0246",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 7,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen2/0279",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 3,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen2/0311",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 1,
+   "pattern": "(x(?-u:\\b)\\u{e4}+)+?|\\A|\\B"
+  },
+  {
+   "id": "gen2/0316",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 7,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen2/0333",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 1,
+   "pattern": "\\b"
+  },
+  {
+   "id": "gen2/0344",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 3,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen2/0375",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 7,
+   "pattern": "(?m)\\B"
+  },
+  {
+   "id": "gen2/0413",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 4,
+   "pattern": "\\B|a\\W\\x{1F600}"
+  },
+  {
+   "id": "gen2/0421",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 8,
+   "pattern": "((?<n1>中\\PL\\x{1F600})[^a]?(?m:$)|\\b|[äöü]){2,}"
+  },
+  {
+   "id": "gen2/0532",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 2,
+   "pattern": "\\b"
+  },
+  {
+   "id": "gen2/0542",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 2,
+   "pattern": "(?m-s)\\b|\\x41|\\x{1F600}"
+  },
+  {
+   "id": "gen2/0577",
+   "mechanisms": [
+    "A",
+    "B"
+   ],
+   "ops": 6,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen2/0590",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 2,
+   "pattern": "\\b"
+  },
+  {
+   "id": "gen2/0628",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 2,
+   "pattern": "[\\w--\\d]|\\B"
+  },
+  {
+   "id": "gen2/0651",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 4,
+   "pattern": "(?is)(\\b){1,3}"
+  },
+  {
+   "id": "gen2/0681",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 4,
+   "pattern": "\\d|\\B|[a-z&&[^c]]"
+  },
+  {
+   "id": "gen2/0720",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 8,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen2/0743",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 6,
+   "pattern": "(?is)(?:(?-u:\\b))\\p{Lu}[a-c]|(?i:k)|\\x{1F600}[^a]\\w|😀[a-c](^)*?"
+  },
+  {
+   "id": "gen2/0749",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 4,
+   "pattern": "\\B"
+  },
+  {
+   "id": "gen2/0775",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 4,
+   "pattern": "\\b"
+  },
+  {
+   "id": "gen2/0778",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 1,
+   "pattern": "\\b"
+  },
+  {
+   "id": "gen2/0780",
+   "mechanisms": [
+    "B"
+   ],
+   "ops": 2,
+   "pattern": "\\b"
+  },
+  {
+   "id": "mut2/0066",
+   "mechanisms": [
+    "A",
+    "B"
+   ],
+   "ops": 1,
+   "pattern": "]_|[\\pL\\d]|\\b"
+  },
+  {
+   "id": "strategy/21",
+   "mechanisms": [
+    "A",
+    "B"
+   ],
+   "ops": 1,
+   "pattern": "\\b\\w+\\b"
+  },
+  {
+   "id": "strategy/23",
+   "mechanisms": [
+    "A"
+   ],
+   "ops": 9,
+   "pattern": "\\B\\w{2}\\B"
+  }
+ ]
+}

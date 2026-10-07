@@ -23,11 +23,7 @@ from ..io.load_model import load_model_node
 @batch_processing_group.register(
     schema_id="chainner:ncnn:load_models",
     name="Load Models",
-    description=(
-        "Iterate over all files in a directory and run the provided nodes on just the"
-        " NCNN model files (.param/.bin). Supports the same models as"
-        " `chainner:ncnn:load_model`."
-    ),
+    description="Iterate over all files in a directory and run the provided nodes on just the NCNN model files (.param/.bin). Supports the same models as `chainner:ncnn:load_model`.",
     icon="MdLoop",
     inputs=[
         DirectoryInput(),
@@ -49,39 +45,30 @@ from ..io.load_model import load_model_node
     kind="generator",
 )
 def load_models_node(
-    directory: Path,
-    fail_fast: bool,
+    directory: Path, fail_fast: bool
 ) -> tuple[Generator[tuple[NcnnModelWrapper, str, str, int]], Path]:
-    logger.debug(f"Iterating over models in directory: {directory}")
+    logger.debug("Iterating over models in directory: %s", directory)
 
     def load_model(filepath_pairs: tuple[Path, Path], index: int):
         model, dirname, basename = load_model_node(filepath_pairs[0], filepath_pairs[1])
-        # Get relative path from root directory passed by Iterator directory input
         rel_path = os.path.relpath(dirname, directory)
-        return model, rel_path, basename, index
+        return (model, rel_path, basename, index)
 
-    param_files: list[Path] = list_all_files_sorted(directory, [".param"])
-    bin_files: list[Path] = list_all_files_sorted(directory, [".bin"])
-
+    files = list_all_files_sorted(directory, [".param", ".bin"])
+    param_files = [path for path in files if path.suffix.lower() == ".param"]
+    bin_files = [path for path in files if path.suffix.lower() == ".bin"]
     if len(param_files) != len(bin_files):
         raise ValueError(
-            "The number of param files and bin files are not the same. Please check"
-            " your directory."
+            "The number of param files and bin files are not the same. Please check your directory."
         )
-
-    # Check if the filenames match
-    for param_file, bin_file in zip(param_files, bin_files):
+    for param_file, bin_file in zip(param_files, bin_files, strict=False):
         param_file_name, _ = os.path.splitext(param_file)
         bin_file_name, _ = os.path.splitext(bin_file)
-
         if param_file_name != bin_file_name:
             raise ValueError(
-                f"Param file {param_file_name} does not match bin file {bin_file_name}."
-                " Please check your files."
+                f"Param file {param_file_name} does not match bin file {bin_file_name}. Please check your files."
             )
-
-    model_files = list(zip(param_files, bin_files))
-
+    model_files = list(zip(param_files, bin_files, strict=False))
     return (
         Generator.from_list(model_files, load_model).with_fail_fast(fail_fast),
         directory,

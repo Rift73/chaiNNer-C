@@ -1,0 +1,85 @@
+{
+  "description": "Independent full installed/source snapshots before stage4 text edits",
+  "files": [
+    {
+      "variant": "installed",
+      "path": "packages/chaiNNer_standard/utility/text/regex_find.py",
+      "sha256": "d983748d7612a558f48bd43c6723798d1d956ff847da5bc7e310ba12064d1124"
+    },
+    {
+      "variant": "installed",
+      "path": "packages/chaiNNer_standard/utility/text/regex_replace.py",
+      "sha256": "d81a50dcfe57280cbd3a531ca8cc52c1179a8d5bfabca9d86bcb95e0a7d4f338"
+    },
+    {
+      "variant": "installed",
+      "path": "packages/chaiNNer_standard/utility/text/text_padding.py",
+      "sha256": "dcbec591cec6fd7514f3cda760c086453d61b110bd22d66f75a9b0f13a76f0d9"
+    },
+    {
+      "variant": "installed",
+      "path": "packages/chaiNNer_standard/utility/text/text_pattern.py",
+      "sha256": "268bb68010e73b7a191e29420a1cf2fd8dd377e4624cf1b3b36a26bd52db36da"
+    },
+    {
+      "variant": "installed",
+      "path": "packages/chaiNNer_standard/utility/text/text_replace.py",
+      "sha256": "dbfb59a161f9719790a4ef64c21793d466c88366a6c4db10158d634eae447f5f"
+    },
+    {
+      "variant": "installed",
+      "path": "packages/chaiNNer_standard/utility/text/text_slice.py",
+      "sha256": "1cacba6e85d589263da0fdfab45c7f062239238434f24eb447dfa2fbf4c18a20"
+    },
+    {
+      "variant": "installed",
+      "path": "nodes/utils/replacement.py",
+      "sha256": "93d4884d8b1e7bd83a8b4a3756980d76b85be1e4ecaf5ce86a674a9eba51d8ae"
+    },
+    {
+      "variant": "installed",
+      "path": "nodes/impl/rust_regex.py",
+      "sha256": "5ebbc6d4b3c5443b7b528efd3b7564cd58c17603b16cf4a26a92dfd862ab5ef1"
+    },
+    {
+      "variant": "source",
+      "path": "packages/chaiNNer_standard/utility/text/regex_find.py",
+      "sha256": "5c578328fb910cb050de56daca317cc6b24300a597515261a26eb4e3c318a984"
+    },
+    {
+      "variant": "source",
+      "path": "packages/chaiNNer_standard/utility/text/regex_replace.py",
+      "sha256": "d81a50dcfe57280cbd3a531ca8cc52c1179a8d5bfabca9d86bcb95e0a7d4f338"
+    },
+    {
+      "variant": "source",
+      "path": "packages/chaiNNer_standard/utility/text/text_padding.py",
+      "sha256": "dcbec591cec6fd7514f3cda760c086453d61b110bd22d66f75a9b0f13a76f0d9"
+    },
+    {
+      "variant": "source",
+      "path": "packages/chaiNNer_standard/utility/text/text_pattern.py",
+      "sha256": "268bb68010e73b7a191e29420a1cf2fd8dd377e4624cf1b3b36a26bd52db36da"
+    },
+    {
+      "variant": "source",
+      "path": "packages/chaiNNer_standard/utility/text/text_replace.py",
+      "sha256": "dbfb59a161f9719790a4ef64c21793d466c88366a6c4db10158d634eae447f5f"
+    },
+    {
+      "variant": "source",
+      "path": "packages/chaiNNer_standard/utility/text/text_slice.py",
+      "sha256": "1cacba6e85d589263da0fdfab45c7f062239238434f24eb447dfa2fbf4c18a20"
+    },
+    {
+      "variant": "source",
+      "path": "nodes/utils/replacement.py",
+      "sha256": "96275c71f8ab803acf994bb69d1fb3d9d41364c909e3f49d7f04d502077cf99b"
+    },
+    {
+      "variant": "source",
+      "path": "nodes/impl/rust_regex.py",
+      "sha256": "5ebbc6d4b3c5443b7b528efd3b7564cd58c17603b16cf4a26a92dfd862ab5ef1"
+    }
+  ]
+}

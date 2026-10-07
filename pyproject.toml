@@ -1,8 +1,11 @@
-[project]
-# Support Python 3.8+.
-requires-python = ">=3.8"
+# Tool settings only: the repository is not a Python distribution, so there is no [project]
+# table (upstream's held only requires-python, for ruff's target, which is now explicit).
+# The backend runs only on the bundled CPython 3.14 (the native pyd links python314).
 
 [tool.ruff]
+# backend/src keeps upstream's Python 3.8 dialect, so it stays diffable against
+# upstream's sources; native/pyproject.toml targets py314 for chaiNNer-C's own code.
+target-version = "py38"
 # Same as Black.
 line-length = 88
 indent-width = 4
@@ -16,7 +19,7 @@ unsafe-fixes = true
 
 [tool.ruff.lint]
 # Add the `line-too-long` rule to the enforced rule set.
-extend-select = [
+select = [
     "UP", # pyupgrade
     "E",  # pycodestyle
     "W",  # pycodestyle
@@ -53,6 +56,7 @@ ignore = [
     "PLR0911", # Too many return statements
     "PLR0912", # Too many branches
     "PLR0913", # Too many arguments
+    "PLR0917", # Too many positional arguments: node functions are called positionally by the executor (process.py run_node); sibling of PLR0913
     "PLR0915", # Too many statements,
     "E741",    # Ambiguous variable name,
     "E712",    # true-false-comparison, has false positives because of numpy's operator overloading
@@ -62,6 +66,8 @@ ignore = [
     "N999",    # Invalid module name (which triggers for chaiNNer)
     "N818",    # Exception name should end in Error
     "ISC001",  # Implicit string concatenation, conflicts with formatter
+    "PLC0415", # Import outside top level: deliberate lazy imports (torch/onnx/scipy only where used; native_* <-> image_utils cycle; native tests sequence DLL loads)
+    "PLC0414", # Useless import alias: x as x is the PEP 484 explicit export that marks names the native mirrors read through globals() (F401 and pyright honour it)
 ]
 
 [tool.ruff.format]
@@ -81,6 +87,11 @@ line-ending = "auto"
 [tool.ruff.lint.pep8-naming]
 ignore-names = ["*Input", "*Output", "*Dropdown"]
 
+[tool.ruff.lint.per-file-ignores]
+# Type stubs must use the names of the external APIs they describe
+# (cudaMalloc, cudaError_t, cudaSuccess, ...), which pep8-naming rejects.
+"stubs/cuda/**/*.pyi" = ["N801", "N802", "N815", "N816"]
+
 [tool.pytest.ini_options]
 filterwarnings = ["ignore::DeprecationWarning", "ignore::UserWarning"]
-pythonpath = ["backend/src"]
+pythonpath = ["backend/src", "native/tools"]

@@ -349,9 +349,6 @@ const PythonSettings = memo(() => {
 });
 
 const AdvancedSettings = memo(() => {
-    const [checkForUpdatesOnStartup, setCheckForUpdatesOnStartup] = useMutSetting(
-        'checkForUpdatesOnStartup'
-    );
     const [experimentalFeatures, setExperimentalFeatures] = useMutSetting('experimentalFeatures');
     const [hardwareAcceleration, setHardwareAcceleration] = useMutSetting('hardwareAcceleration');
     const [allowMultipleInstances, setAllowMultipleInstances] =
@@ -362,14 +359,6 @@ const AdvancedSettings = memo(() => {
             divider={<StackDivider />}
             w="full"
         >
-            <ToggleSetting
-                setValue={setCheckForUpdatesOnStartup}
-                setting={{
-                    label: 'Check for Update on Start-up',
-                    description: 'Toggles checking for updates on start-up.',
-                }}
-                value={checkForUpdatesOnStartup}
-            />
             <ToggleSetting
                 setValue={setExperimentalFeatures}
                 setting={{

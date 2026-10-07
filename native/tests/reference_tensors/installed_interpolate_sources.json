@@ -1,0 +1,20 @@
+{
+  "purpose": "Read-only oracle for test_tensor_complete::test_validation_mean_without_model_execution (replaces reads of the sibling upstream checkout).",
+  "installed_root": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src",
+  "upstream_commit": "d56e507f9c0d648ca8827d67cb839e074faeb8a7",
+  "note": "sha256 is of the LF-normalized file; it equals the upstream blob at upstream_commit and the installed file with CRLF stripped.",
+  "files": {
+    "installed_onnx_interpolate.py": {
+      "path": "packages/chaiNNer_onnx/onnx/utility/interpolate_models.py",
+      "sha256": "d9be24d1bc3ee0546cda67e3c8e5ce095487543ec069abffe33ce9af4e473aa3"
+    },
+    "installed_ncnn_interpolate.py": {
+      "path": "packages/chaiNNer_ncnn/ncnn/utility/interpolate_models.py",
+      "sha256": "aad5527b9e014c2a8ee881e700e9da07eb93c9a72a1b1c748ab4708585ea1101"
+    },
+    "installed_pytorch_interpolate.py": {
+      "path": "packages/chaiNNer_pytorch/pytorch/utility/interpolate_models.py",
+      "sha256": "3a830868f6cbb7406f55726e2aedaf45d278e849c18beb060023689a1c530ff7"
+    }
+  }
+}

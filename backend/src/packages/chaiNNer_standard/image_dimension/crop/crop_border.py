@@ -5,6 +5,7 @@ from enum import Enum
 
 import numpy as np
 
+from nodes.impl.native_resample import border_region
 from nodes.properties.inputs import EnumInput, ImageInput, NumberInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import Padding, Region, get_h_w_c
@@ -73,6 +74,12 @@ def crop_border_node(
     tolerance /= 100
 
     h, w, c = get_h_w_c(img)
+
+    if img.dtype == np.float32 and (img.ndim == 2 or (img.ndim == 3 and c >= 2)):
+        crop = Region(*border_region(img, tolerance, select.value))
+        crop = crop.add_padding(Padding.all(padding))
+        crop = crop.intersect(Region(0, 0, w, h))
+        return crop.read_from(img)
 
     # find the border color of the border
     border_color = get_border_color(img)

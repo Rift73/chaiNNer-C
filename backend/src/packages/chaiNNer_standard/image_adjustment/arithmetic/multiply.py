@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from nodes.impl.native_adjustments import adjust
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -31,6 +32,4 @@ def multiply_node(img: np.ndarray, mult: float) -> np.ndarray:
     if mult == 1.0:
         return img
 
-    img = img * mult
-
-    return img
+    return adjust(img, 1, mult)

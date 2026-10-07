@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from enum import Enum
 
-from chainner_ext import RustRegex
-
-from nodes.impl.rust_regex import match_to_replacements_dict
+from nodes.impl.native_graph import graph
+from nodes.impl.rust_regex import RustRegex
 from nodes.properties.inputs import EnumInput, TextInput
 from nodes.properties.outputs import TextOutput
 from nodes.utils.replacement import ReplacementString
@@ -59,22 +58,12 @@ def regex_replace_node(
     mode: ReplacementMode,
 ) -> str:
     # parse the inputs before we do any actual work
-    r = RustRegex(regex_pattern)
-    replacement = ReplacementString(replacement_pattern)
-
-    matches = r.findall(text)
-    if len(matches) == 0:
-        return text
-
-    if mode == ReplacementMode.REPLACE_FIRST:
-        matches = matches[:1]
-
-    result = ""
-    last_end = 0
-    for match in matches:
-        result += text[last_end : match.start]
-        result += replacement.replace(match_to_replacements_dict(r, match, text))
-        last_end = match.end
-
-    result += text[last_end:]
-    return result
+    return graph().utility_regex_replace(
+        text,
+        regex_pattern,
+        replacement_pattern,
+        mode,
+        ReplacementMode,
+        RustRegex,
+        ReplacementString,
+    )

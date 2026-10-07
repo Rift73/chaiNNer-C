@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 import navi
+from nodes.impl import native_geometry
 from nodes.impl.image_utils import NormalMapType
 from nodes.impl.normals.util import (
     XYZ,
@@ -67,6 +68,15 @@ def convert_normals_node(
     from_type: NormalMapType,
     to_type: NormalMapType,
 ) -> np.ndarray:
+    if native_geometry.image_supported(img):
+        formats = (
+            NormalMapType.DIRECTX,
+            NormalMapType.OPENGL,
+            NormalMapType.OCTAHEDRAL,
+        )
+        return native_geometry.normal_map(
+            img, 2, formats.index(from_type), formats.index(to_type)
+        )
     # Step 1: Read/decode the image to get the XYZ components of the normals
 
     # we define this as DirectX normals

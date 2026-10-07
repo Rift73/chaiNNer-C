@@ -31,7 +31,6 @@ export const migrateOldStorageSettings = (settings: ReadonlyStorage): Partial<Ch
         systemPythonLocation: get<string | null>('use-system-python', null) || '',
 
         theme: get('theme', 'dark'),
-        checkForUpdatesOnStartup: get('check-upd-on-strtup-2', true),
         startupTemplate: get<string>('startup-template', '') || '',
         animateChain: get('animate-chain', true),
         snapToGrid: get('snap-to-grid', false),

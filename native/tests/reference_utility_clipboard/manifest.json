@@ -1,0 +1,24 @@
+{
+  "files": [
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src\\packages\\chaiNNer_standard\\utility\\clipboard\\copy_to_clipboard.py",
+      "snapshot": "source/copy_to_clipboard.py",
+      "sha256": "fc537e4a3c5f16b42ca64070764141ff6f1f9901e67c9c15b412e997a5d589bc"
+    },
+    {
+      "origin": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\packages\\chaiNNer_standard\\utility\\clipboard\\copy_to_clipboard.py",
+      "snapshot": "installed/copy_to_clipboard.py",
+      "sha256": "fc537e4a3c5f16b42ca64070764141ff6f1f9901e67c9c15b412e997a5d589bc"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\native\\reports\\reference-sources-resample\\chaiNNer-rs-6f6ead6064f81b4049d3deb803c9279c7950736b\\crates\\bindings\\src\\clipboard.rs",
+      "snapshot": "clipboard.rs",
+      "sha256": "7a651ed4e41e8caea357665bb18e3cdf0c3a189aa62805529faa27c0011d799e"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\native\\reports\\reference-sources-resample\\chaiNNer-rs-6f6ead6064f81b4049d3deb803c9279c7950736b\\crates\\bindings\\src\\convert.rs",
+      "snapshot": "convert.rs",
+      "sha256": "29ed88ad9d03b9517602de3e0bd8ea05aa7959847998384a00e393c194235760"
+    }
+  ]
+}

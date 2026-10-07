@@ -3,6 +3,7 @@ from __future__ import annotations
 from enum import Enum
 
 from nodes.groups import if_enum_group
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import EnumInput, NumberInput, TextInput
 from nodes.properties.outputs import TextOutput
 
@@ -86,15 +87,13 @@ def text_slice_node(
     max_length: int,
     alignment: SliceAlignment,
 ) -> str:
-    if operation == SliceOperation.START:
-        return text[start:]
-    elif operation == SliceOperation.START_AND_LENGTH:
-        start = max(-len(text), start)
-        return text[start : start + length]
-    elif operation == SliceOperation.MAX_LENGTH:
-        if max_length == 0:
-            return ""
-        if alignment == SliceAlignment.START:
-            return text[:max_length]
-        elif alignment == SliceAlignment.END:
-            return text[-max_length:]
+    return graph().utility_text_slice(
+        text,
+        operation,
+        start,
+        length,
+        max_length,
+        alignment,
+        SliceOperation,
+        SliceAlignment,
+    )

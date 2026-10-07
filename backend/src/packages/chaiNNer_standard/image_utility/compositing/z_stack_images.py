@@ -5,9 +5,10 @@ from enum import Enum
 import numpy as np
 
 from nodes.groups import optional_list_group
+from nodes.impl import native_layout
 from nodes.properties.inputs import EnumInput, ImageInput
 from nodes.properties.outputs import ImageOutput
-from nodes.utils.utils import ALPHABET, get_h_w_c
+from nodes.utils.utils import ALPHABET
 
 from .. import compositing_group
 
@@ -63,24 +64,4 @@ def z_stack_images_node(
     expression: Expression,
     *inputs: np.ndarray | None,
 ) -> np.ndarray:
-    images = [x for x in inputs if x is not None]
-    assert (
-        2 <= len(images) <= 15
-    ), f"Number of images must be between 2 and 15 ({len(images)})"
-
-    assert all(
-        get_h_w_c(image) == get_h_w_c(images[0]) for image in images
-    ), "All images must have the same dimensions and channels"
-
-    if expression == Expression.MEAN:
-        result = np.mean(images, axis=0)
-    elif expression == Expression.MEDIAN:
-        result = np.median(images, axis=0)
-    elif expression == Expression.MIN:
-        result = np.min(images, axis=0)
-    elif expression == Expression.MAX:
-        result = np.max(images, axis=0)
-    else:
-        raise AssertionError(f"Invalid expression '{expression}'")
-
-    return result
+    return native_layout.z_stack(inputs, expression.value)

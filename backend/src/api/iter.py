@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Generic, Iterable, TypeVar
 
 I = TypeVar("I")
@@ -13,6 +14,8 @@ class Generator(Generic[I]):
     expected_length: int
     fail_fast: bool = True
     metadata: object | None = None
+    # Files the iterator reads per item (read-ahead safety); None = unknown.
+    source_paths: tuple[Path, ...] | None = None
 
     def with_fail_fast(self, fail_fast: bool):
         self.fail_fast = fail_fast
