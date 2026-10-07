@@ -4,6 +4,7 @@ from enum import Enum
 
 from api import Lazy, SpecialSuggestion
 from nodes.groups import if_enum_group
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import BoolInput, EnumInput
 from nodes.properties.outputs import BoolOutput
 
@@ -102,11 +103,4 @@ OP_LABEL: dict[LogicOperation, str] = {
     ],
 )
 def logic_operation_node(op: LogicOperation, a: bool, b: Lazy[bool]) -> bool:
-    if op == LogicOperation.AND:
-        return a and b.value
-    if op == LogicOperation.OR:
-        return a or b.value
-    if op == LogicOperation.XOR:
-        return a != b.value
-    if op == LogicOperation.NOT:
-        return not a
+    return graph().execution_logic(globals(), op, a, b)

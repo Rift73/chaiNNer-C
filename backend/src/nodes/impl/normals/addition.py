@@ -3,6 +3,7 @@ from enum import Enum
 
 import numpy as np
 
+from .. import native_geometry
 from .util import XYZ, normalize_normals
 
 
@@ -82,6 +83,16 @@ def add_normals(
     f1: float = 1,
     f2: float = 1,
 ) -> XYZ:
+    if (
+        method in (AdditionMethod.PARTIAL_DERIVATIVES, AdditionMethod.ANGLES)
+        and native_geometry.image_supported(n1)
+        and native_geometry.image_supported(n2)
+        and n1.shape[:2] == n2.shape[:2]
+        and native_geometry.factors_supported(f1, f2)
+    ):
+        return native_geometry.add(n1, n2, method.value, f1, f2)
+
+    # Preserve NumPy's general dtype and broadcasting contract for non-image callers.
     # Convert BGR to XY
     x1 = n1[:, :, 2] * 2 - 1
     y1 = n1[:, :, 1] * 2 - 1
@@ -103,6 +114,13 @@ def strengthen_normals(method: AdditionMethod, n: np.ndarray, f: float) -> XYZ:
     """
     Same as `add_normals`, but with `n2` being the same as `n1` and `f2=0`.
     """
+    if (
+        method in (AdditionMethod.PARTIAL_DERIVATIVES, AdditionMethod.ANGLES)
+        and native_geometry.image_supported(n)
+        and native_geometry.factors_supported(f)
+    ):
+        return native_geometry.add(n, None, method.value, f)
+
     # Convert BGR to XY
     x = n[:, :, 2] * 2 - 1
     y = n[:, :, 1] * 2 - 1

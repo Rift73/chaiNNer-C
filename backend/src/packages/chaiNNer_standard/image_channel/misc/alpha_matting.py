@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 import pymatting
 
+from nodes.impl.native_matting import estimate_alpha, estimate_foreground, output
+from nodes.impl.native_transparency import matting_input
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
@@ -18,8 +20,10 @@ from .. import miscellaneous_group
         "Uses a trimap to separate foreground from background.",
         "Trimaps are a three-color image that categorize the input image into foreground (white), background (black), and undecided (gray). Alpha matting uses this information to separate the foreground from the background.",
         "A trimap typically has to be created manually, but it's typically an easy task since the trimaps don't have to detailed. The only requirements are that black pixels are the background, and white pixels are the foreground. The boundary region between foreground and background can be gray.",
-        "The following image shows the input image (top left), its trimap (top right), the output alpha (bottom left), and the output image with a different background (bottom right):"
-        "![lemur_at_the_beach.png](https://github.com/pymatting/pymatting/raw/master/data/lemur/lemur_at_the_beach.png)",
+        (
+            "The following image shows the input image (top left), its trimap (top right), the output alpha (bottom left), and the output image with a different background (bottom right):"
+            "![lemur_at_the_beach.png](https://github.com/pymatting/pymatting/raw/master/data/lemur/lemur_at_the_beach.png)"
+        ),
     ],
     icon="MdContentCut",
     see_also="chainner:onnx:rembg",
@@ -61,27 +65,38 @@ def alpha_matting_node(
     fg_threshold: int,
     bg_threshold: int,
 ) -> np.ndarray:
-    assert (
-        fg_threshold > bg_threshold
-    ), "The foreground threshold must be greater than the background threshold."
+    assert fg_threshold > bg_threshold, (
+        "The foreground threshold must be greater than the background threshold."
+    )
 
     h, w, c = get_h_w_c(img)
     assert (h, w) == trimap.shape[:2], "The image and trimap must have the same size."
 
-    # apply thresholding to trimap
-    trimap = np.where(trimap > fg_threshold / 255, 1, trimap)
-    trimap = np.where(trimap < bg_threshold / 255, 0, trimap)
-    trimap = trimap.astype(np.float64)
-
-    # convert to rgb
-    if c == 4:
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+    if img.dtype == np.float32 and trimap.dtype in (
+        np.dtype(np.float32),
+        np.dtype(np.float64),
+    ):
+        img, trimap = matting_input(img, trimap, fg_threshold / 255, bg_threshold / 255)
     else:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = img.astype(np.float64)
+        # Other helper dtypes retain the original NumPy/OpenCV behavior.
+        trimap = np.where(trimap > fg_threshold / 255, 1, trimap)
+        trimap = np.where(trimap < bg_threshold / 255, 0, trimap)
+        trimap = trimap.astype(np.float64)
+        if c == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
+        else:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = img.astype(np.float64)
 
     assert img.dtype == np.float64
     assert trimap.dtype == np.float64
+    if trimap.ndim == 2 and trimap.size:
+        alpha = estimate_alpha(img, trimap)
+        foreground = estimate_foreground(img, alpha)
+        assert isinstance(foreground, np.ndarray)
+        return output(foreground, alpha)
+
+    # Preserve the original general-helper errors for empty/HWC trimaps.
     alpha = pymatting.estimate_alpha_cf(img, trimap)
     foreground = pymatting.estimate_foreground_ml(img, alpha)
     assert isinstance(foreground, np.ndarray)

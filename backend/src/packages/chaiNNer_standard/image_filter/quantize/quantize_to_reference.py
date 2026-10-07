@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 import navi
+from nodes.impl.native_filters import quantize_reference
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
@@ -108,31 +109,4 @@ def quantize_to_reference_node(
 
     spatial_scale = spatial_scale / 100
     spatial_scale = spatial_scale * spatial_scale
-    img = add_xy(img, r_w * spatial_scale)
-    reference_img = add_xy(reference_img, r_w * spatial_scale)
-    c = i_c + 2
-
-    kernel_size = 2 * kernel_radius + 1
-    scale = i_h // r_h
-
-    padded_ref = np.pad(
-        reference_img,
-        ((kernel_radius, kernel_radius), (kernel_radius, kernel_radius), (0, 0)),
-        mode="reflect",
-    )
-
-    result = np.zeros((i_h, i_w, i_c), dtype=np.float32)
-
-    for h in range(r_h):
-        for w in range(r_w):
-            kernel = padded_ref[h : h + kernel_size, w : w + kernel_size]
-            colors = np.unique(kernel.reshape(-1, c), axis=0)
-            img_section = img[h * scale : (h + 1) * scale, w * scale : (w + 1) * scale]
-            quantized_section = quantize_image(img_section, colors)
-            quantized_section = quantized_section[:, :, :i_c]
-            result[
-                h * scale : (h + 1) * scale,
-                w * scale : (w + 1) * scale,
-            ] = quantized_section
-
-    return result
+    return quantize_reference(img, reference_img, kernel_radius, r_w * spatial_scale)

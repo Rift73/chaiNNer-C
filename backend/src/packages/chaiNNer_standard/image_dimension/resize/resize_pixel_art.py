@@ -3,8 +3,8 @@ from __future__ import annotations
 from enum import Enum
 
 import numpy as np
-from chainner_ext import pixel_art_upscale
 
+from nodes.impl.native_pixel_art import pixel_art_upscale
 from nodes.properties.inputs import (
     EnumInput,
     ImageInput,

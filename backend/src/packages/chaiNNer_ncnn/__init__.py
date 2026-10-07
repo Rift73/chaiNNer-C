@@ -29,10 +29,9 @@ package = add_package(
     dependencies=[
         Dependency(
             display_name="NCNN",
-            pypi_name="ncnn-vulkan",
-            version="2023.6.18",
+            pypi_name="ncnn",
+            version="1.0.20260526",
             size_estimate=7 * MB if is_mac else 4 * MB,
-            import_name="ncnn_vulkan",
         ),
     ],
     icon="NCNN",

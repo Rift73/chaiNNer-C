@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import EnumInput, TextInput
 from nodes.properties.outputs import TextOutput
 
@@ -43,7 +44,4 @@ class ReplacementMode(Enum):
     see_also=["chainner:utility:regex_replace"],
 )
 def text_replace_node(text: str, old: str, new: str, mode: ReplacementMode) -> str:
-    if mode == ReplacementMode.REPLACE_ALL:
-        return text.replace(old, new)
-    else:
-        return text.replace(old, new, 1)
+    return graph().utility_text_replace(text, old, new, mode, ReplacementMode)

@@ -11,6 +11,8 @@ from sanic.log import logger
 
 from system import is_arm_mac, is_linux, is_mac, is_windows
 
+from . import numpy_pool
+
 
 def get_download_url() -> str:
     if is_windows:
@@ -102,7 +104,7 @@ def run_setup(base_dir: Path):
 
     global _setup_future
     if _setup_future is None:
-        executor = ThreadPoolExecutor(max_workers=1)
+        executor = ThreadPoolExecutor(max_workers=1, initializer=numpy_pool.install)
         _setup_future = executor.submit(task)
         executor.shutdown(wait=True)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from nodes.impl import native_channels
 from nodes.impl.color.color import Color
 from nodes.properties.inputs import ImageInput
 from nodes.properties.outputs import ImageOutput
@@ -60,37 +61,4 @@ def combine_rgba_node(
     img_b: np.ndarray | Color,
     img_a: np.ndarray | Color | None,
 ) -> np.ndarray:
-    if img_a is None:
-        img_a = Color.gray(1)
-
-    start_shape = None
-
-    # determine shape
-    inputs = (img_b, img_g, img_r, img_a)
-    for i in inputs:
-        if isinstance(i, np.ndarray):
-            start_shape = (i.shape[0], i.shape[1])
-            break
-
-    if start_shape is None:
-        raise ValueError(
-            "At least one channels must be an image, but all given channels are colors."
-        )
-
-    # check same size
-    for i in inputs:
-        if isinstance(i, np.ndarray):
-            assert (
-                i.shape[:2] == start_shape
-            ), "All channel images must have the same resolution"
-
-    channels = [
-        (
-            i
-            if isinstance(i, np.ndarray)
-            else i.to_image(width=start_shape[1], height=start_shape[0])
-        )
-        for i in inputs
-    ]
-
-    return np.stack(channels, axis=2)
+    return native_channels.combine_rgba(img_r, img_g, img_b, img_a)

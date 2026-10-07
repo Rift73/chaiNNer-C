@@ -5,7 +5,8 @@ from enum import Enum
 import numpy as np
 
 from nodes.groups import if_enum_group
-from nodes.impl.image_utils import ShiftFill, shift
+from nodes.impl import native_channels
+from nodes.impl.image_utils import ShiftFill
 from nodes.properties.inputs import (
     EnumInput,
     ImageInput,
@@ -79,4 +80,4 @@ def shift_node(
         abs_x = round_half_up(w * rel_x / 100)
         abs_y = round_half_up(h * rel_y / 100)
 
-    return shift(img, abs_x, abs_y, fill)
+    return native_channels.shift(img, abs_x, abs_y, fill.value)

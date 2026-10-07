@@ -19,6 +19,7 @@ import { ChainnerSettings } from '../../common/settings/settings';
 import { CriticalError } from '../../common/ui/error';
 import { Progress, ProgressController, ProgressToken, SubProgress } from '../../common/ui/progress';
 import { assertNever } from '../../common/util';
+import { chainnerCVersion } from '../../common/version';
 import { OpenArguments, parseArgs } from '../arguments';
 import { BackendProcess } from '../backend/process';
 import { setupBackend } from '../backend/setup';
@@ -429,7 +430,7 @@ const createBackend = async (
     args: OpenArguments,
     settings: ChainnerSettings
 ) => {
-    log.info(`chaiNNer Version: ${version}`);
+    log.info(`chaiNNer-C ${chainnerCVersion} (upstream ${version})`);
 
     return setupBackend(
         token,

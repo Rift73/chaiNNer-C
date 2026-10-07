@@ -85,8 +85,7 @@ def pytorch_auto_split(
     def upscale(img: np.ndarray, _: object):
         progress.check_aborted()
         if progress.paused:
-            # clear resources before pausing
-            gc.collect()
+            # Only clear CUDA cache before pausing, skip gc.collect() (too slow)
             safe_cuda_cache_empty()
             progress.suspend()
 

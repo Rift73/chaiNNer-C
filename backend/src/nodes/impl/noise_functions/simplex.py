@@ -14,6 +14,7 @@ import itertools
 import numpy as np
 from typing_extensions import override
 
+from ..native_generation import procedural_noise, procedural_supported
 from .noise_generator import NoiseGenerator
 
 # fmt: off
@@ -98,6 +99,20 @@ class SimplexNoise(NoiseGenerator):
     def evaluate(self, points: np.ndarray):
         n_points = points.shape[0]
         assert points.shape == (n_points, self.dimensions)
+        if (
+            n_points > 0
+            and np.isfinite(self.r2)
+            and procedural_supported(points, self.dimensions)
+        ):
+            return procedural_noise(
+                points,
+                self.permutation_table,
+                gradients=self.gradients,
+                f=self.F,
+                g=self.G,
+                r2=self.r2,
+                scale=SCALE[self.dimensions],
+            )
 
         skewed_points = points + (points.sum(axis=1) * self.F).reshape((n_points, 1))
         skewed_bases, skewed_points_remainder = np.divmod(skewed_points, 1)

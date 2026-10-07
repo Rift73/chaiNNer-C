@@ -1,20 +1,16 @@
 from __future__ import annotations
 
+import atexit
 import tempfile
 from weakref import WeakKeyDictionary
 
-try:
-    from ncnn_vulkan import ncnn
-
-    use_gpu = True
-except ImportError:
-    from ncnn import ncnn  # type: ignore
-
-    use_gpu = False
+from ncnn import ncnn
 
 from packages.chaiNNer_ncnn.settings import NcnnSettings
 
 from .model import NcnnModelWrapper
+
+use_gpu = ncnn.get_gpu_count() > 0
 
 
 def create_ncnn_net(model: NcnnModelWrapper, settings: NcnnSettings) -> ncnn.Net:
@@ -63,3 +59,19 @@ def get_ncnn_net(model: NcnnModelWrapper, settings: NcnnSettings) -> ncnn.Net:
         cached = create_ncnn_net(model, settings=settings)
         __session_cache[model] = cached
     return cached
+
+
+def destroy_gpu_instance() -> None:
+    """Frees the cached nets, then ncnn's Vulkan instance. Runs at exit.
+
+    PyPI ncnn creates the instance at the first get_gpu_count() and otherwise frees
+    it only in a static destructor, once the Vulkan driver is unloading: a process
+    that exits normally with it alive crashes (0xC0000005). A Vulkan net freed after
+    the instance crashes the same way, so the cached nets go first. A worker the host
+    terminates never gets here.
+    """
+    __session_cache.clear()
+    ncnn.destroy_gpu_instance()
+
+
+atexit.register(destroy_gpu_instance)

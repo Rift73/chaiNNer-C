@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from nodes.impl.native_channels import combine_rgb_alpha
+from nodes.impl.native_color_ops import linear, material
 from nodes.impl.resize import ResizeFilter, resize
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
@@ -31,8 +33,7 @@ def spec_to_metal(
 
     # Metal is approximated using the magnitude of the specular map.
 
-    spec_max = np.maximum(spec[:, :, 0], np.maximum(spec[:, :, 1], spec[:, :, 2]))
-    metal = np.clip((spec_max - metallic_min) / metallic_diff, 0, 1)
+    metal = material(spec, 3, minimum=metallic_min, span=metallic_diff)
 
     # This uses the conversion method described here:
     # https://marmoset.co/posts/pbr-texture-conversion/
@@ -46,16 +47,15 @@ def spec_to_metal(
     else:
         # to prevent color bleeding from non-metal parts of the specular map,
         # we apply the metal map as alpha and resize before combining with diffuse
-        scaled = resize(np.dstack((spec, metal)), diff_size, ResizeFilter.LANCZOS)
+        scaled = resize(combine_rgb_alpha(spec, metal), diff_size, ResizeFilter.LANCZOS)
         sped_scaled: np.ndarray = scaled[:, :, 0:3]
         metal_scaled: np.ndarray = scaled[:, :, 3]
-    metal3_scaled = np.dstack((metal_scaled,) * 3)
-    albedo = metal3_scaled * sped_scaled + (1 - metal3_scaled) * diff
+    albedo = material(sped_scaled, 4, b=diff, mask=metal_scaled)
 
     if gloss is None:
         roughness = np.zeros((1, 1), np.float32) + 0.5
     else:
-        roughness = 1 - gloss
+        roughness = linear(gloss, -1, 1)
 
     return albedo, metal, roughness
 
@@ -124,6 +124,6 @@ def specular_to_metal_node(
     )
 
     if diff_alpha is not None:
-        albedo = np.dstack((albedo, diff_alpha))
+        albedo = combine_rgb_alpha(albedo, diff_alpha)
 
     return albedo, metal, roughness

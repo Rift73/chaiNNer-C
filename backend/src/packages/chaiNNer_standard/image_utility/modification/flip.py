@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from api import KeyInfo
+from nodes.impl import native_channels
 from nodes.impl.image_utils import FlipAxis
 from nodes.properties.inputs import EnumInput, ImageInput
 from nodes.properties.outputs import ImageOutput
@@ -23,4 +24,4 @@ from .. import modification_group
     key_info=KeyInfo.enum(1),
 )
 def flip_node(img: np.ndarray, axis: FlipAxis) -> np.ndarray:
-    return axis.flip(img)
+    return native_channels.flip(img, axis.value)

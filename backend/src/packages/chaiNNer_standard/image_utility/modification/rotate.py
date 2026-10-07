@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from api import KeyInfo
+from nodes.impl import native_layout
 from nodes.impl.pil_utils import (
     FillColor,
     RotateSizeChange,
@@ -131,4 +132,18 @@ def rotate_node(
     expand: RotateSizeChange,
     fill: FillColor,
 ) -> np.ndarray:
+    normalized_angle = angle % 360
+    # These are the exact transpose paths. The helper below handles general
+    # affine sampling through the compatible C implementation.
+    supported_shape = img.ndim == 2 or (img.ndim == 3 and img.shape[2] in (2, 3, 4))
+    if supported_shape and (
+        normalized_angle in (0, 180)
+        or (
+            normalized_angle in (90, 270)
+            and (expand == RotateSizeChange.EXPAND or img.shape[0] == img.shape[1])
+        )
+    ):
+        return native_layout.rotate_quarters(
+            img, int(normalized_angle // 90), fill == FillColor.TRANSPARENT
+        )
     return rotate(img, angle, interpolation, expand, fill)

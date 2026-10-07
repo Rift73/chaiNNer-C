@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from nodes.impl.native_adjustments import adjust
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -30,6 +31,4 @@ def add_node(img: np.ndarray, add: float) -> np.ndarray:
     if add == 0:
         return img
 
-    img = img + (add / 100)
-
-    return img
+    return adjust(img, 0, add / 100)

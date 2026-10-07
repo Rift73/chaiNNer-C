@@ -6,8 +6,9 @@ import numpy as np
 
 from api import KeyInfo
 from nodes.groups import if_enum_group
+from nodes.impl import native_layout
 from nodes.impl.color.color import Color
-from nodes.impl.image_utils import BorderType, create_border
+from nodes.impl.image_utils import BorderType
 from nodes.properties.inputs import (
     BorderInput,
     ColorInput,
@@ -16,7 +17,7 @@ from nodes.properties.inputs import (
     NumberInput,
 )
 from nodes.properties.outputs import ImageOutput
-from nodes.utils.utils import Padding, get_h_w_c
+from nodes.utils.utils import get_h_w_c
 
 from .. import padding_group
 
@@ -112,19 +113,22 @@ def pad_node(
     height: int,
 ) -> np.ndarray:
     if border_mode == BorderMode.BORDER:
-        return create_border(img, border_type, Padding.all(amount), color=color)
+        return native_layout.pad(
+            img, border_type.value, color, amount, amount, amount, amount
+        )
     elif border_mode == BorderMode.EDGES:
-        return create_border(
-            img, border_type, Padding(top, right, bottom, left), color=color
+        return native_layout.pad(
+            img, border_type.value, color, top, right, bottom, left
         )
     elif border_mode == BorderMode.OFFSETS:
         h, w, _ = get_h_w_c(img)
-        r = width - left - w
-        b = height - top - h
-        padded = create_border(
-            img, border_type, Padding(top, max(0, r), max(0, b), left), color=color
+        return native_layout.pad(
+            img,
+            border_type.value,
+            color,
+            top,
+            max(0, width - left - w),
+            max(0, height - top - h),
+            left,
+            (height, width),
         )
-        if r < 0 or b < 0:
-            # copy, so we don't keep a reference to the underlying array
-            padded = padded[:height, :width, ...].copy()
-        return padded

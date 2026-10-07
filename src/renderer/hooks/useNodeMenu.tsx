@@ -14,7 +14,9 @@ import { IoMdFastforward } from 'react-icons/io';
 import { MdPlayArrow, MdPlayDisabled } from 'react-icons/md';
 import { useReactFlow } from 'reactflow';
 import { useContext } from 'use-context-selector';
-import { EdgeData, NodeData } from '../../common/common-types';
+import { EdgeData, NodeData, SchemaId } from '../../common/common-types';
+import { log } from '../../common/log';
+import { BackendContext } from '../contexts/BackendContext';
 import { GlobalContext } from '../contexts/GlobalNodeState';
 import { NodeDocumentationContext } from '../contexts/NodeDocumentationContext';
 import { copyToClipboard } from '../helpers/copyAndPaste';
@@ -22,6 +24,12 @@ import { UseContextMenu, useContextMenu } from './useContextMenu';
 import { NO_DISABLED, UseDisabled } from './useDisabled';
 import { NO_PASSTHROUGH, UsePassthrough } from './usePassthrough';
 import './useNodeMenu.scss';
+
+/** Nodes whose backend resources (TensorRT engines and sessions) outlive a run. */
+const CLEARABLE_SCHEMAS: ReadonlySet<SchemaId> = new Set([
+    'chainner:tensorrt:upscale_image' as SchemaId,
+    'chainner:tensorrt:load_engine' as SchemaId,
+]);
 
 export interface UseNodeMenuOptions {
     disabled?: UseDisabled;
@@ -40,6 +48,7 @@ export const useNodeMenu = (
     }: UseNodeMenuOptions = {}
 ): UseContextMenu => {
     const { openNodeDocumentation } = useContext(NodeDocumentationContext);
+    const { backend } = useContext(BackendContext);
     const { id, isLocked = false, schemaId } = data;
 
     const { removeNodesById, resetInputs, resetConnections, duplicateNodes, toggleNodeLock } =
@@ -78,7 +87,7 @@ export const useNodeMenu = (
             <MenuDivider />
             <MenuItem
                 as="a"
-                className="useNodeMenu-container"
+                className="use-node-menu-container"
                 closeOnSelect={false}
                 icon={<CloseIcon />}
                 ref={resetMenuParentRef}
@@ -89,7 +98,7 @@ export const useNodeMenu = (
                     <ChevronRightIcon />
                 </HStack>
             </MenuItem>
-            <div className="useNodeMenu-child">
+            <div className="use-node-menu-child">
                 <MenuList
                     left={resetMenuParentRef.current?.offsetWidth || 0}
                     marginTop="-55px"
@@ -179,6 +188,17 @@ export const useNodeMenu = (
                     onClick={reload}
                 >
                     Refresh Preview
+                </MenuItem>
+            )}
+
+            {CLEARABLE_SCHEMAS.has(schemaId) && (
+                <MenuItem
+                    icon={<CloseIcon />}
+                    onClick={() => {
+                        backend.clearNodeCacheIndividual(id).catch(log.error);
+                    }}
+                >
+                    Clear
                 </MenuItem>
             )}
 

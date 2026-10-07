@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from nodes.groups import optional_list_group
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import TextInput
 from nodes.properties.outputs import TextOutput
 from nodes.utils.replacement import ReplacementString
@@ -49,9 +50,4 @@ def text_pattern_node(
     pattern: str,
     *args: str | None,
 ) -> str:
-    replacements: dict[str, str] = {}
-    for i, s in enumerate(args):
-        if s is not None:
-            replacements[str(i + 1)] = s
-
-    return ReplacementString(pattern).replace(replacements)
+    return graph().utility_text_pattern(pattern, args, ReplacementString)

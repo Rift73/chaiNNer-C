@@ -16,22 +16,24 @@ interface PythonDownload {
     path: string;
 }
 
+// python-build-standalone 20261003, CPython 3.14.8: the interpreter of native/python-stack.lock.txt,
+// whose header records the Windows archive's SHA-256.
 const downloads: Record<SupportedPlatform, PythonDownload> = {
     linux: {
-        url: 'https://github.com/indygreg/python-build-standalone/releases/download/20230826/cpython-3.11.5+20230826-x86_64-unknown-linux-gnu-install_only.tar.gz',
-        version: '3.11.5',
-        path: 'python/bin/python3.11',
+        url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.14.8+20261003-x86_64-unknown-linux-gnu-install_only.tar.gz',
+        version: '3.14.8',
+        path: 'python/bin/python3.14',
     },
     darwin: {
         url: isArmMac
-            ? 'https://github.com/indygreg/python-build-standalone/releases/download/20230826/cpython-3.11.5+20230826-aarch64-apple-darwin-install_only.tar.gz'
-            : 'https://github.com/indygreg/python-build-standalone/releases/download/20230826/cpython-3.11.5+20230826-x86_64-apple-darwin-install_only.tar.gz',
-        version: '3.11.5',
-        path: 'python/bin/python3.11',
+            ? 'https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.14.8+20261003-aarch64-apple-darwin-install_only.tar.gz'
+            : 'https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.14.8+20261003-x86_64-apple-darwin-install_only.tar.gz',
+        version: '3.14.8',
+        path: 'python/bin/python3.14',
     },
     win32: {
-        url: 'https://github.com/indygreg/python-build-standalone/releases/download/20230826/cpython-3.11.5+20230826-x86_64-pc-windows-msvc-shared-install_only.tar.gz',
-        version: '3.11.5',
+        url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.14.8+20261003-x86_64-pc-windows-msvc-install_only.tar.gz',
+        version: '3.14.8',
         path: 'python/python.exe',
     },
 };
@@ -80,7 +82,9 @@ export const getIntegratedPython = async (
 
     if (pythonBinExists) {
         const pythonInfo = await checkPythonPaths([pythonPath]);
-        if (semver.eq(pythonInfo.version, version)) {
+        // CPython 3.14: this table's version or a newer one is kept; an older one (upstream's
+        // 3.11.5) is removed below and replaced by the download.
+        if (semver.gte(pythonInfo.version, version)) {
             return pythonInfo;
         }
     }

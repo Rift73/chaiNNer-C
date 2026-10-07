@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from nodes.impl.native_adjustments import adjust
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -31,6 +32,4 @@ def divide_node(img: np.ndarray, divide: float) -> np.ndarray:
     if divide == 1.0:
         return img
 
-    img = img * (1.0 / divide)
-
-    return img
+    return adjust(img, 1, 1.0 / divide)

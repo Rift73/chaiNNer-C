@@ -10,13 +10,15 @@ import {
     MenuList,
     Tooltip,
 } from '@chakra-ui/react';
-import { memo } from 'react';
+import { DragEvent, memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BsFolderPlus } from 'react-icons/bs';
 import { MdContentCopy, MdFolder } from 'react-icons/md';
+import { useContext } from 'use-context-selector';
 import { log } from '../../../common/log';
 
 import { getFields, isDirectory } from '../../../common/types/util';
+import { AlertBoxContext } from '../../contexts/AlertBoxContext';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useInputRefactor } from '../../hooks/useInputRefactor';
 import { useLastDirectory } from '../../hooks/useLastDirectory';
@@ -47,6 +49,7 @@ export const DirectoryInput = memo(
         nodeId,
     }: InputProps<'directory', string>) => {
         const { t } = useTranslation();
+        const { sendToast } = useContext(AlertBoxContext);
 
         const { lastDirectory, setLastDirectory } = useLastDirectory(inputKey);
 
@@ -59,6 +62,46 @@ export const DirectoryInput = memo(
             if (!canceled && path) {
                 setValue(path);
                 setLastDirectory(path);
+            }
+        };
+
+        // A directory dropped from the file manager sets the input; a locked or connected input
+        // takes no drop, and a file or several items are refused with a toast.
+        const onDragOver = (event: DragEvent<HTMLDivElement>) => {
+            if (!event.dataTransfer.types.includes('Files')) return;
+            event.preventDefault();
+            event.stopPropagation();
+            // eslint-disable-next-line no-param-reassign
+            event.dataTransfer.dropEffect = isLocked || isConnected ? 'none' : 'copy';
+        };
+
+        const onDrop = (event: DragEvent<HTMLDivElement>) => {
+            if (!event.dataTransfer.types.includes('Files')) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (isLocked || isConnected) return;
+
+            const { files, items } = event.dataTransfer;
+            if (files.length !== 1) {
+                sendToast({
+                    status: 'error',
+                    description: `Only one directory is accepted by ${input.label}.`,
+                });
+                return;
+            }
+            const entries = Array.from(items).filter((item) => item.kind === 'file');
+            const folder =
+                entries.length === 1 && entries[0].webkitGetAsEntry()?.isDirectory === true
+                    ? files[0].path
+                    : undefined;
+            if (folder) {
+                setValue(folder);
+                setLastDirectory(folder);
+            } else {
+                sendToast({
+                    status: 'error',
+                    description: `Drop a directory onto ${input.label}, not a file.`,
+                });
             }
         };
 
@@ -126,6 +169,8 @@ export const DirectoryInput = memo(
                     <InputGroup
                         size="sm"
                         onContextMenu={menu.onContextMenu}
+                        onDragOver={onDragOver}
+                        onDrop={onDrop}
                     >
                         <InputLeftElement pointerEvents="none">
                             <Icon

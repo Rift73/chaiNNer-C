@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-import os
+# `x as x` imports: the native mirror reads these names in native/src/file_sequence.cpp
+import os as os
 from pathlib import Path
 
 import numpy as np
-from wcmatch import glob
+from wcmatch import glob as glob
 
 from api import Generator, IteratorOutputInfo
 from nodes.groups import Condition, if_group
-from nodes.impl.image_formats import get_available_image_formats
+from nodes.impl.image_formats import (
+    get_available_image_formats as get_available_image_formats,
+)
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import BoolInput, DirectoryInput, NumberInput, TextInput
 from nodes.properties.outputs import (
     DirectoryOutput,
@@ -16,45 +20,19 @@ from nodes.properties.outputs import (
     NumberOutput,
     TextOutput,
 )
-from nodes.utils.utils import alphanumeric_sort
 
 from .. import batch_processing_group
-from ..io.load_image import load_image_node
+from ..io.load_image import load_image_node as load_image_node
 
 
 def extension_filter(lst: list[str]) -> str:
     """generates a mcmatch.glob expression to filter files with specific extensions
     ex. {*,**/*}@(*.png|*.jpg|...)"""
-    return "**/*@(" + "|".join(lst) + ")"
+    return graph().file_sequence_extension_filter(lst)
 
 
 def list_glob(directory: Path, globexpr: str, ext_filter: list[str]) -> list[Path]:
-    extension_expr = extension_filter(ext_filter)
-
-    flags = (
-        glob.EXTGLOB
-        | glob.BRACE
-        | glob.GLOBSTAR
-        | glob.NEGATE
-        | glob.DOTGLOB
-        | glob.NEGATEALL
-    )
-
-    foo = list(glob.iglob(globexpr, root_dir=directory, flags=flags))
-
-    filtered = glob.globfilter(
-        foo,
-        extension_expr,
-        flags=flags | glob.IGNORECASE,
-    )
-
-    return [
-        Path(x)
-        for x in sorted(
-            {str(directory / f) for f in filtered},
-            key=alphanumeric_sort,
-        )
-    ]
+    return graph().file_sequence_list_glob(globals(), directory, globexpr, ext_filter)
 
 
 @batch_processing_group.register(
@@ -112,25 +90,13 @@ def load_images_node(
     limit: int,
     fail_fast: bool,
 ) -> tuple[Generator[tuple[np.ndarray, str, str, int]], Path]:
-    def load_image(path: Path, index: int):
-        img, img_dir, basename = load_image_node(path)
-        # Get relative path from root directory passed by Iterator directory input
-        rel_path = os.path.relpath(img_dir, directory)
-        return img, rel_path, basename, index
-
-    supported_filetypes = get_available_image_formats()
-
-    if not use_glob:
-        glob_str = "**/*" if is_recursive else "*"
-
-    just_image_files = list_glob(directory, glob_str, supported_filetypes)
-    if not len(just_image_files):
-        raise FileNotFoundError(f"{directory} has no valid images.")
-
-    if use_limit:
-        just_image_files = just_image_files[:limit]
-
-    return (
-        Generator.from_list(just_image_files, load_image).with_fail_fast(fail_fast),
+    return graph().file_sequence_load_images(
+        globals(),
         directory,
+        use_glob,
+        is_recursive,
+        glob_str,
+        use_limit,
+        limit,
+        fail_fast,
     )

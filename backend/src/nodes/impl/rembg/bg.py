@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-import onnxruntime as ort
-from pymatting import estimate_alpha_cf, estimate_foreground_ml
-from scipy.ndimage import binary_erosion
 
 from ...utils.utils import get_h_w_c
+from ..native_channels import concatenate_channels
+from ..native_color_complete import cvt_color
+from ..native_filters import morphology
+from ..native_framework_images import matting_trimap, threshold_mask
+from ..native_gaussian import gaussian
+from ..native_layout import stack
+from ..native_matting import estimate_alpha, estimate_foreground
+from ..native_tensors import cast_numpy
+from ..onnx.session import OnnxSession
 from .session_factory import new_session
 
 
@@ -28,34 +34,21 @@ def alpha_matting_cutout(
     assert_rgb(img)
     assert_gray(mask)
 
-    is_foreground = mask > (foreground_threshold / 255)
-    is_background = mask < (background_threshold / 255)
-
-    structure = None
-    if erode_structure_size > 0:
-        structure = np.ones(
-            (erode_structure_size, erode_structure_size), dtype=np.uint8
-        )
-
-    is_foreground = binary_erosion(is_foreground, structure=structure)
-    is_background = binary_erosion(is_background, structure=structure, border_value=1)
-
-    trimap = np.full(mask.shape, dtype=np.float64, fill_value=0.5)
-    trimap[is_foreground] = 1
-    trimap[is_background] = 0
-
-    img64 = img.astype(np.float64)
-    alpha = estimate_alpha_cf(img64, trimap)
-    foreground = estimate_foreground_ml(img64, alpha)
+    trimap = matting_trimap(
+        mask, foreground_threshold, background_threshold, erode_structure_size
+    )
+    img64 = cast_numpy(img, np.dtype(np.float64))
+    alpha = estimate_alpha(img64, trimap)
+    foreground = estimate_foreground(img64, alpha)
     assert isinstance(foreground, np.ndarray)
 
-    return np.dstack((foreground.astype(np.float32), alpha.astype(np.float32)))
+    return concatenate_channels(foreground, cast_numpy(alpha, np.dtype(np.float32)))
 
 
 def naive_cutout(img: np.ndarray, mask: np.ndarray) -> np.ndarray:
     assert_rgb(img)
     assert_gray(mask)
-    return np.dstack((img, mask))
+    return concatenate_channels(img, mask)
 
 
 def post_process(mask: np.ndarray) -> np.ndarray:
@@ -65,18 +58,16 @@ def post_process(mask: np.ndarray) -> np.ndarray:
     args:
         mask: Binary Numpy Mask
     """
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.GaussianBlur(
-        mask, (5, 5), sigmaX=2, sigmaY=2, borderType=cv2.BORDER_DEFAULT
-    )
-    mask = np.where(mask < 0.5, 0, 1).astype(np.float32)
+    mask = morphology(mask, cv2.MORPH_ELLIPSE, 1, 1, maximum=False)
+    mask = morphology(mask, cv2.MORPH_ELLIPSE, 1, 1, maximum=True)
+    mask = gaussian(mask, 2, 2, size=(5, 5), border=cv2.BORDER_DEFAULT)
+    mask = threshold_mask(mask)
     return mask
 
 
 def remove_bg(
     img: np.ndarray,
-    ort_session: ort.InferenceSession,
+    ort_session: OnnxSession,
     alpha_matting: bool = False,
     alpha_matting_foreground_threshold: int = 240,
     alpha_matting_background_threshold: int = 10,
@@ -85,7 +76,7 @@ def remove_bg(
 ) -> tuple[np.ndarray, np.ndarray]:
     # Flip channels to RGB mode
     assert_rgb(img)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = cvt_color(img, cv2.COLOR_BGR2RGB)
     session = new_session(ort_session)
 
     masks: list[np.ndarray] = session.predict(img)
@@ -117,6 +108,6 @@ def remove_bg(
     if mask is None or len(cutouts) == 0:
         raise ValueError("Model failed to generate masks")
 
-    cutout = cv2.vconcat(cutouts)
+    cutout = stack(cutouts, "vertical")
 
-    return cv2.cvtColor(cutout, cv2.COLOR_RGBA2BGRA), mask
+    return cvt_color(cutout, cv2.COLOR_RGBA2BGRA), mask

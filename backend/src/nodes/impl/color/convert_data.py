@@ -6,6 +6,10 @@ import cv2
 import numpy as np
 
 from ...utils.utils import get_h_w_c
+from ..native_adjustments import adjust
+from ..native_channels import combine_rgb_alpha, merge_channels
+from ..native_color_complete import cvt_color, lab_lch
+from ..native_transparency import representation
 from .convert_model import ColorSpace, ColorSpaceDetector, Conversion
 
 GRAY = ColorSpace(0, "Gray", 1)
@@ -87,55 +91,67 @@ color_spaces_or_detectors: list[ColorSpace | ColorSpaceDetector] = [
 def __rev3(image: np.ndarray) -> np.ndarray:
     c = get_h_w_c(image)[2]
     assert c == 3, "Expected a 3-channel image"
+    if image.dtype == np.float32:
+        return cvt_color(image, cv2.COLOR_BGR2RGB)
     return np.stack([image[:, :, 2], image[:, :, 1], image[:, :, 0]], axis=2)
 
 
 def __rgb_to_hsv(img: np.ndarray) -> np.ndarray:
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    img = cvt_color(img, cv2.COLOR_BGR2HSV)
+    if img.dtype == np.float32:
+        return representation(img, 2)
     img[:, :, 0] /= 360  # type: ignore
     return __rev3(img)
 
 
 def __hsv_to_rgb(img: np.ndarray) -> np.ndarray:
+    if img.dtype == np.float32:
+        return cvt_color(representation(img, 3), cv2.COLOR_HSV2BGR)
     img = __rev3(img)
     img[:, :, 0] *= 360
-    return cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
+    return cvt_color(img, cv2.COLOR_HSV2BGR)
 
 
 def __rgb_to_hsl(img: np.ndarray) -> np.ndarray:
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2HLS)
+    img = cvt_color(img, cv2.COLOR_BGR2HLS)
+    if img.dtype == np.float32:
+        return representation(img, 4)
     h = img[:, :, 0] / 360  # type: ignore
     l = img[:, :, 1]
     s = img[:, :, 2]
-    return cv2.merge((l, s, h))
+    return merge_channels(l, s, h) if img.dtype == np.float32 else cv2.merge((l, s, h))
 
 
 def __hsl_to_rgb(img: np.ndarray) -> np.ndarray:
+    if img.dtype == np.float32:
+        return cvt_color(representation(img, 5), cv2.COLOR_HLS2BGR)
     h = img[:, :, 2] * 360
     s = img[:, :, 1]
     l = img[:, :, 0]
-    return cv2.cvtColor(cv2.merge((h, l, s)), cv2.COLOR_HLS2BGR)
+    return cvt_color(cv2.merge((h, l, s)), cv2.COLOR_HLS2BGR)
 
 
 def __hsv_to_hsl(img: np.ndarray) -> np.ndarray:
     # the S and HSV and HSL are different, only the H is the same
     h = img[:, :, 2]
-    hls = cv2.cvtColor(__hsv_to_rgb(img), cv2.COLOR_BGR2HLS)
+    hls = cvt_color(__hsv_to_rgb(img), cv2.COLOR_BGR2HLS)
     l = hls[:, :, 1]
     s = hls[:, :, 2]
-    return cv2.merge((l, s, h))
+    return merge_channels(l, s, h) if img.dtype == np.float32 else cv2.merge((l, s, h))
 
 
 def __hsl_to_hsv(img: np.ndarray) -> np.ndarray:
     # the S and HSV and HSL are different, only the H is the same
     h = img[:, :, 2]
-    hsv = cv2.cvtColor(__hsl_to_rgb(img), cv2.COLOR_BGR2HSV)
+    hsv = cvt_color(__hsl_to_rgb(img), cv2.COLOR_BGR2HSV)
     s = hsv[:, :, 1]
     v = hsv[:, :, 2]
-    return cv2.merge((v, s, h))
+    return merge_channels(v, s, h) if img.dtype == np.float32 else cv2.merge((v, s, h))
 
 
 def __rgb_to_cmyk(img: np.ndarray) -> np.ndarray:
+    if img.dtype == np.float32:
+        return representation(img, 0)
     b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
     maximum = np.max(img, axis=2)
     soft_max = np.maximum(maximum, 0.001)
@@ -147,6 +163,8 @@ def __rgb_to_cmyk(img: np.ndarray) -> np.ndarray:
 
 
 def __cmyk_to_rgb(img: np.ndarray) -> np.ndarray:
+    if img.dtype == np.float32:
+        return representation(img, 1)
     y, m, c, k = img[:, :, 0], img[:, :, 1], img[:, :, 2], img[:, :, 3]
     maximum = 1 - k
     r = (1 - c) * maximum
@@ -157,7 +175,9 @@ def __cmyk_to_rgb(img: np.ndarray) -> np.ndarray:
 
 def __rgb_to_lab(img: np.ndarray) -> np.ndarray:
     # 0≤L≤100 , -127≤a≤127, -127≤b≤127
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    img = cvt_color(img, cv2.COLOR_BGR2LAB)
+    if img.dtype == np.float32:
+        return representation(img, 6)
     l = img[:, :, 0] / 100  # type: ignore
     a = (img[:, :, 1] + 127) / 254  # type: ignore
     b = (img[:, :, 2] + 127) / 254  # type: ignore
@@ -165,14 +185,18 @@ def __rgb_to_lab(img: np.ndarray) -> np.ndarray:
 
 
 def __lab_to_rgb(img: np.ndarray) -> np.ndarray:
+    if img.dtype == np.float32:
+        return cvt_color(representation(img, 7), cv2.COLOR_LAB2BGR)
     # 0≤L≤100 , -127≤a≤127, -127≤b≤127
     l = img[:, :, 2] * 100
     a = img[:, :, 1] * 254 - 127
     b = img[:, :, 0] * 254 - 127
-    return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
+    return cvt_color(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
 
 
 def __lab_to_lch(img: np.ndarray) -> np.ndarray:
+    if img.dtype == np.float32:
+        return lab_lch(img)
     l = img[:, :, 2]
     # a and b must be centered at 0
     a = img[:, :, 1] - 0.5
@@ -201,7 +225,8 @@ def __lab_to_lch(img: np.ndarray) -> np.ndarray:
     # h angle and use that to normalize C. `Cmax` for a,b in [-1,1] is defined
     # as follows: `Cmax = 1/max(abs(cos(h)), abs(sin(h)))`. Since, we use a,b
     # in [-0.5,0.5], we just have to divide that value by 2.
-    c_max = 0.5 / np.maximum(np.abs(np.sin(h)), np.abs(np.cos(h)))
+    sin_h, cos_h = np.sin(h), np.cos(h)
+    c_max = 0.5 / np.maximum(np.abs(sin_h), np.abs(cos_h))
     c = c / c_max
     h = h / (math.pi * 2) + 0.5
 
@@ -209,6 +234,8 @@ def __lab_to_lch(img: np.ndarray) -> np.ndarray:
 
 
 def __lch_to_lab(img: np.ndarray) -> np.ndarray:
+    if img.dtype == np.float32:
+        return lab_lch(img, inverse=True)
     l = img[:, :, 2]
 
     # undo the c and h [0,1] normalization
@@ -223,6 +250,13 @@ def __lch_to_lab(img: np.ndarray) -> np.ndarray:
     return cv2.merge((b, a, l))
 
 
+def __yuv_to_rgb(img: np.ndarray) -> np.ndarray:
+    result = cvt_color(__rev3(img), cv2.COLOR_YUV2BGR)
+    return (
+        adjust(result, 4, 0, 1) if result.dtype == np.float32 else np.clip(result, 0, 1)
+    )
+
+
 # The conversion loses one channel of information (e.g. the alpha channel, or a color channel)
 __CHANNEL_LOST = 1000
 # The conversion loses hue/chroma information in certain edge cases
@@ -233,30 +267,30 @@ conversions: list[Conversion] = [
     # RGB and grayscale
     Conversion(
         direction=(RGB, GRAY),
-        convert=lambda i: cv2.cvtColor(i, cv2.COLOR_BGR2GRAY),
+        convert=lambda i: cvt_color(i, cv2.COLOR_BGR2GRAY),
         cost=__CHANNEL_LOST * 2,
     ),
     Conversion(
         direction=(GRAY, RGB),
-        convert=lambda i: cv2.cvtColor(i, cv2.COLOR_GRAY2BGR),
+        convert=lambda i: cvt_color(i, cv2.COLOR_GRAY2BGR),
     ),
     Conversion(
         direction=(RGBA, GRAY),
-        convert=lambda i: cv2.cvtColor(i, cv2.COLOR_BGRA2GRAY),
+        convert=lambda i: cvt_color(i, cv2.COLOR_BGRA2GRAY),
         cost=__CHANNEL_LOST * 3,
     ),
     Conversion(
         direction=(GRAY, RGBA),
-        convert=lambda i: cv2.cvtColor(i, cv2.COLOR_GRAY2BGRA),
+        convert=lambda i: cvt_color(i, cv2.COLOR_GRAY2BGRA),
     ),
     # YUV
     Conversion(
         direction=(RGB, YUV),
-        convert=lambda i: __rev3(cv2.cvtColor(i, cv2.COLOR_BGR2YUV)),
+        convert=lambda i: __rev3(cvt_color(i, cv2.COLOR_BGR2YUV)),
     ),
     Conversion(
         direction=(YUV, RGB),
-        convert=lambda i: np.clip(cv2.cvtColor(__rev3(i), cv2.COLOR_YUV2BGR), 0, 1),
+        convert=__yuv_to_rgb,
         cost=__CHROMA_LOST,
     ),
     # HSV/HSL
@@ -327,13 +361,13 @@ for dir_3, dir_4 in ALPHA_PAIRS.items():
     conversions.append(
         Conversion(
             direction=(dir_3, dir_4),
-            convert=lambda i: cv2.cvtColor(i, cv2.COLOR_BGR2BGRA),
+            convert=lambda i: cvt_color(i, cv2.COLOR_BGR2BGRA),
         )
     )
     conversions.append(
         Conversion(
             direction=(dir_4, dir_3),
-            convert=lambda i: cv2.cvtColor(i, cv2.COLOR_BGRA2BGR),
+            convert=lambda i: cvt_color(i, cv2.COLOR_BGRA2BGR),
             cost=__CHANNEL_LOST,
         )
     )
@@ -351,7 +385,10 @@ for conv in list(conversions):
             def convert(img: np.ndarray) -> np.ndarray:
                 color = img[:, :, :3]
                 alpha = img[:, :, 3]
-                return np.dstack((old_conv.convert(color), alpha))
+                result = old_conv.convert(color)
+                if img.dtype == np.float32:
+                    return combine_rgb_alpha(result, alpha)
+                return np.dstack((result, alpha))
 
             return convert
 

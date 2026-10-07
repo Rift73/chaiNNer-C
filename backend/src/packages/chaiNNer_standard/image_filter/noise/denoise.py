@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import cv2
 import numpy as np
 
 from nodes.groups import Condition, if_group
 from nodes.impl.image_utils import to_uint8
+from nodes.impl.native_denoise import denoise
 from nodes.properties.inputs import ImageInput, NumberInput, SliderInput
 from nodes.properties.outputs import ImageOutput
-from nodes.utils.utils import get_h_w_c
 
 from .. import noise_group
 
@@ -52,35 +51,5 @@ def denoise_node(
     patch_radius: int,
     search_radius: int,
 ) -> np.ndarray:
-    _, _, c = get_h_w_c(img)
     image_array = to_uint8(img)
-
-    patch_window_size = 2 * patch_radius + 1
-    search_window_size = 2 * search_radius + 1
-
-    if c == 1:
-        denoised = cv2.fastNlMeansDenoising(
-            src=image_array,
-            h=h,
-            templateWindowSize=patch_window_size,
-            searchWindowSize=search_window_size,
-        )
-
-    else:
-        rgb = image_array[:, :, :3]
-        alpha = None
-        if c == 4:
-            alpha = image_array[:, :, 3]
-
-        denoised = cv2.fastNlMeansDenoisingColored(
-            src=rgb,
-            h=h,
-            hColor=h_color,
-            templateWindowSize=patch_window_size,
-            searchWindowSize=search_window_size,
-        )
-
-        if alpha is not None:
-            denoised = np.dstack((denoised, alpha))
-
-    return denoised
+    return denoise(image_array, h, h_color, patch_radius, search_radius)

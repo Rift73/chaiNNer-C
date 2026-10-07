@@ -3,6 +3,9 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from nodes.impl import native_color_ops
+from nodes.impl.native_channels import combine_rgb_alpha
+from nodes.impl.native_color_complete import cvt_color
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
@@ -13,12 +16,10 @@ from .. import adjustments_group
 def with_lightness(img: np.ndarray, lightness: float) -> np.ndarray:
     if lightness > 0:
         assert lightness <= 1
-        res = img * (1 - lightness)
-        res += lightness
-        return res
+        return native_color_ops.linear(img, 1 - lightness, lightness)
     elif lightness < 0:
         assert lightness >= -1
-        return img * (1 + lightness)
+        return native_color_ops.linear(img, 1 + lightness)
     else:
         return img
 
@@ -98,24 +99,13 @@ def hue_and_saturation_node(
 
     if hue != 0 or saturation != 0:
         # Convert to HLS color space
-        h, l, s = cv2.split(cv2.cvtColor(img, cv2.COLOR_BGR2HLS))
-
-        # Adjust hue
-        if hue != 0:
-            h += hue  # type: ignore
-            h[h >= 360] -= 360  # Wrap positive overflow
-            h[h < 0] += 360  # Wrap negative overflow
-
-        # Adjust saturation
-        if saturation != 0:
-            factor = 1 + saturation
-            s *= factor  # type: ignore
-            if factor > 1:
-                s = np.clip(s, 0, 1, out=s)
+        hls = native_color_ops.hls_adjust(
+            cvt_color(img, cv2.COLOR_BGR2HLS), hue, saturation
+        )
 
         # we assume that this returns normalized values in Change Color Model,
         # so it should be fine here as well
-        img = cv2.cvtColor(cv2.merge([h, l, s]), cv2.COLOR_HLS2BGR)
+        img = cvt_color(hls, cv2.COLOR_HLS2BGR)
 
     # Adjust lightness
     if lightness != 0:
@@ -123,6 +113,6 @@ def hue_and_saturation_node(
 
     # Re-add alpha, if it exists
     if alpha is not None:
-        img = np.dstack((img, alpha))
+        img = combine_rgb_alpha(img, alpha)
 
     return img

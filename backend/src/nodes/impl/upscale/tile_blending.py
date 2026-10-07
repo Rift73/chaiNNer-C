@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
 
 import numpy as np
 
 from nodes.utils.utils import get_h_w_c
 
+from ..native_buffers import tile_mix
+from ..native_framework_shared import blend_curve, blend_weights, copy_into
+
 
 def sin_blend_fn(x: np.ndarray) -> np.ndarray:
-    return (np.sin(x * math.pi - math.pi / 2) + 1) / 2
+    return blend_curve(x)
 
 
 def half_sin_blend_fn(i: np.ndarray) -> np.ndarray:
     # only use half the overlap
-    i = np.clip(i * 2 - 0.5, 0, 1)
-    return sin_blend_fn(i)
+    return blend_curve(i, half=True)
 
 
 class BlendDirection(Enum):
@@ -39,6 +40,13 @@ def _fast_mix(a: np.ndarray, b: np.ndarray, blend: np.ndarray) -> np.ndarray:
     """
     Returns `a * (1 - blend) + b * blend`
     """
+    if (
+        a.dtype == b.dtype == blend.dtype == np.float32
+        and a.ndim == 3
+        and a.shape == b.shape == blend.shape
+        and 0 not in a.shape
+    ):
+        return tile_mix(a, b, blend)
     # a * (1 - blend) + b * blend
     # a - a * blend + b * blend
     r = b * blend
@@ -95,25 +103,24 @@ class TileBlender:
             if self._last_blend is not None and self._last_blend.shape[1] == blend_size:
                 return self._last_blend
 
-            blend = self.blend_fn(
-                np.arange(blend_size, dtype=np.float32) / (blend_size - 1)
-            )
+            blend = self._weights(blend_size)
             blend = blend.reshape((1, blend_size, 1))
-            blend = np.repeat(blend, repeats=self.height, axis=0)
-            blend = np.repeat(blend, repeats=self.channels, axis=2)
+            blend = np.broadcast_to(blend, (self.height, blend_size, self.channels))
         else:
             if self._last_blend is not None and self._last_blend.shape[0] == blend_size:
                 return self._last_blend
 
-            blend = self.blend_fn(
-                np.arange(blend_size, dtype=np.float32) / (blend_size - 1)
-            )
+            blend = self._weights(blend_size)
             blend = blend.reshape((blend_size, 1, 1))
-            blend = np.repeat(blend, repeats=self.width, axis=1)
-            blend = np.repeat(blend, repeats=self.channels, axis=2)
+            blend = np.broadcast_to(blend, (blend_size, self.width, self.channels))
 
         self._last_blend = blend
         return blend
+
+    def _weights(self, size: int) -> np.ndarray:
+        if self.blend_fn is sin_blend_fn or self.blend_fn is half_sin_blend_fn:
+            return blend_weights(size, half=self.blend_fn is half_sin_blend_fn)
+        return self.blend_fn(np.arange(size, dtype=np.float32) / (size - 1))
 
     def add_tile(self, tile: np.ndarray, overlap: TileOverlap) -> None:
         h, w, c = get_h_w_c(tile)
@@ -126,7 +133,7 @@ class TileBlender:
 
             if self.offset == 0:
                 # the first tile is copied in as is
-                self.result[:, :w, ...] = tile
+                copy_into(self.result[:, :w, ...], tile)
 
                 assert o.start == 0
                 self.offset += w - o.end
@@ -143,9 +150,12 @@ class TileBlender:
                     o = TileOverlap(self.last_end_overlap, o.end)
 
                 # copy over the part that doesn't need blending (yet)
-                self.result[
-                    :, self.offset + o.start : self.offset + w - o.start, ...
-                ] = tile[:, o.start * 2 :, ...]
+                copy_into(
+                    self.result[
+                        :, self.offset + o.start : self.offset + w - o.start, ...
+                    ],
+                    tile[:, o.start * 2 :, ...],
+                )
 
                 # blend the overlapping part
                 blend_size = o.start * 2
@@ -156,8 +166,9 @@ class TileBlender:
                 ]
                 right = tile[:, :blend_size, ...]
 
-                self.result[:, self.offset - o.start : self.offset + o.start, ...] = (
-                    _fast_mix(left, right, blend)
+                copy_into(
+                    self.result[:, self.offset - o.start : self.offset + o.start, ...],
+                    _fast_mix(left, right, blend),
                 )
 
                 self.offset += w - o.total
@@ -168,7 +179,7 @@ class TileBlender:
 
             if self.offset == 0:
                 # the first tile is copied in as is
-                self.result[:h, :, ...] = tile
+                copy_into(self.result[:h, :, ...], tile)
 
                 assert o.start == 0
                 self.offset += h - o.end
@@ -185,9 +196,12 @@ class TileBlender:
                     o = TileOverlap(self.last_end_overlap, o.end)
 
                 # copy over the part that doesn't need blending
-                self.result[
-                    self.offset + o.start : self.offset + h - o.start, :, ...
-                ] = tile[o.start * 2 :, :, ...]
+                copy_into(
+                    self.result[
+                        self.offset + o.start : self.offset + h - o.start, :, ...
+                    ],
+                    tile[o.start * 2 :, :, ...],
+                )
 
                 # blend the overlapping part
                 blend_size = o.start * 2
@@ -198,8 +212,9 @@ class TileBlender:
                 ]
                 right = tile[: o.start * 2, :, ...]
 
-                self.result[self.offset - o.start : self.offset + o.start, :, ...] = (
-                    _fast_mix(left, right, blend)
+                copy_into(
+                    self.result[self.offset - o.start : self.offset + o.start, :, ...],
+                    _fast_mix(left, right, blend),
                 )
 
                 self.offset += h - o.total

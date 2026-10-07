@@ -1,18 +1,13 @@
 from dataclasses import dataclass
 
-try:
-    from ncnn_vulkan import ncnn
-
-    use_gpu = True
-except ImportError:
-    from ncnn import ncnn  # type: ignore
-
-    use_gpu = False
+from ncnn import ncnn
 
 from api import DropdownSetting, NodeContext, NumberSetting, ToggleSetting
 from system import is_arm_mac
 
 from . import package
+
+use_gpu = ncnn.get_gpu_count() > 0
 
 if not is_arm_mac and use_gpu:
     try:
@@ -34,10 +29,9 @@ if not is_arm_mac and use_gpu:
 
 default_net_opt = ncnn.Net().opt
 
-# Haven't tested disabling Winograd/SGEMM in the ncnn_vulkan fork, so only
-# allow it with upstream ncnn for now. It should work fine regardless of
-# CPU/GPU, but I only tested with CPU. Ditto for multithreading, except it
-# only makes sense for CPU.
+# Disabling Winograd/SGEMM was only tested on the CPU, so these toggles are
+# offered only when NCNN finds no Vulkan GPU. It should work fine regardless of
+# CPU/GPU. Ditto for multithreading, except it only makes sense for CPU.
 if not use_gpu:
     package.add_setting(
         ToggleSetting(

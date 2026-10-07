@@ -1,0 +1,10 @@
+[tool.ruff]
+extend = "../pyproject.toml"
+target-version = "py314"
+extend-exclude = ["tests/reference_*.py", "tests/reference_adjustments", "tests/reference_channels", "tests/reference_color_ops", "tests/reference_analysis", "tests/reference_generation", "tests/reference_buffers", "tests/reference_transparency", "tests/reference_layout", "tests/reference_filters", "tests/reference_palette", "tests/reference_resample", "tests/reference_neighborhood", "tests/reference_tensors", "tests/reference_transfer", "tests/reference_convolution", "tests/reference_wavelet", "tests/reference_alpha_gamma", "tests/reference_normal_nodes", "tests/reference_color_complete", "tests/reference_matting", "tests/reference_normal_complete", "tests/reference_stage2_blur", "tests/reference_pixel_art", "tests/reference_onnx_graph", "tests/reference_ncnn", "tests/reference_framework_images", "tests/reference_framework_shared", "tests/reference_tiling", "tests/reference_utility_scalar", "tests/reference_utility_random", "tests/reference_utility_text", "tests/reference_image_io", "tests/reference_utility_clipboard", "tests/reference_execution_ops", "tests/reference_file_sequence", "tests/reference_video", "tests/reference_image_preparation", "tests/reference_framework_optimizations"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests are white-box over the private C ABIs, executor internals and frozen oracles
+# (SLF001), and pytest injects their fixture parameters (ANN001, ANN002). SLF001 stays
+# enforced in backend and native/tools (Consult 13 D-25).
+"tests/*.py" = ["ANN001", "ANN002", "SLF001"]
