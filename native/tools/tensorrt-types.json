@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "baseline_sha256": {
+    "resources/app/.vite/renderer/main_window/index.js": "50f22a101c16c97fd1db413e3e0becf647c360b817f09b8a3089fa649fd16877",
+    "resources/app/.vite/build/main.js": "df979a26746d814f4dd8e4ce555f6114304a0b7f72cef429de783c646ad26f10",
+    "resources/app/.vite/renderer/main_window/index.css": "2b33220c0429e43d9a11cea32cc32b5df6fb919d3cc36be7d074f8e5609c9f81"
+  },
+  "reason": "TensorRT types for the TensorRT nodes, as e9a0b103 adds them to src/ (upstream badba2d9): the TensorRTEngine struct, the TrtPrecision and TrtShapeMode enums and convenientUpscaleTrt in the navi scope of both bundles, and the TensorRT accent colour with its light and dark tokens. TileSize is already in the baseline scope; the disabled-package UI (713dbdcc) is not needed to show the nodes.",
+  "edits": [
+    {
+      "label": "renderer_scope_engine_types",
+      "bundle": "resources/app/.vite/renderer/main_window/index.js",
+      "before": "    subType: \"Generic\",\n};\n\ndef pytorchToOnnx(model: PyTorchModel): OnnxModel {",
+      "after": "    subType: \"Generic\",\n};\n\nstruct TensorRTEngine {\n    scale: int(1..),\n    inputChannels: int(1..),\n    outputChannels: int(1..),\n    precision: string,\n    minHeight: int(1..) | null,\n    minWidth: int(1..) | null,\n    optHeight: int(1..) | null,\n    optWidth: int(1..) | null,\n    maxHeight: int(1..) | null,\n    maxWidth: int(1..) | null,\n}\n\nenum TrtPrecision { fp32, fp16 }\nenum TrtShapeMode { fixed, dynamic }\n\ndef pytorchToOnnx(model: PyTorchModel): OnnxModel {"
+    },
+    {
+      "label": "renderer_scope_convenient_upscale_trt",
+      "bundle": "resources/app/.vite/renderer/main_window/index.js",
+      "before": "    }\n}\n\nstruct SplitFilePath {",
+      "after": "    }\n}\ndef convenientUpscaleTrt(engine: TensorRTEngine, image: Image) {\n    Image {\n        width: engine.scale * image.width,\n        height: engine.scale * image.height,\n        channels: if engine.inputChannels == engine.outputChannels {\n            image.channels\n        } else {\n            engine.outputChannels\n        }\n    }\n}\n\nstruct SplitFilePath {"
+    },
+    {
+      "label": "main_scope_engine_types",
+      "bundle": "resources/app/.vite/build/main.js",
+      "before": "    subType: \"Generic\",\n};\n\ndef pytorchToOnnx(model: PyTorchModel): OnnxModel {",
+      "after": "    subType: \"Generic\",\n};\n\nstruct TensorRTEngine {\n    scale: int(1..),\n    inputChannels: int(1..),\n    outputChannels: int(1..),\n    precision: string,\n    minHeight: int(1..) | null,\n    minWidth: int(1..) | null,\n    optHeight: int(1..) | null,\n    optWidth: int(1..) | null,\n    maxHeight: int(1..) | null,\n    maxWidth: int(1..) | null,\n}\n\nenum TrtPrecision { fp32, fp16 }\nenum TrtShapeMode { fixed, dynamic }\n\ndef pytorchToOnnx(model: PyTorchModel): OnnxModel {"
+    },
+    {
+      "label": "main_scope_convenient_upscale_trt",
+      "bundle": "resources/app/.vite/build/main.js",
+      "before": "    }\n}\n\nstruct SplitFilePath {",
+      "after": "    }\n}\ndef convenientUpscaleTrt(engine: TensorRTEngine, image: Image) {\n    Image {\n        width: engine.scale * image.width,\n        height: engine.scale * image.height,\n        channels: if engine.inputChannels == engine.outputChannels {\n            image.channels\n        } else {\n            engine.outputChannels\n        }\n    }\n}\n\nstruct SplitFilePath {"
+    },
+    {
+      "label": "renderer_accent_colour",
+      "bundle": "resources/app/.vite/renderer/main_window/index.js",
+      "before": "{type:jO(\"NcnnNetwork\"),color:fb(\"--type-color-ncnn\")}]",
+      "after": "{type:jO(\"NcnnNetwork\"),color:fb(\"--type-color-ncnn\")},{type:jO(\"TensorRTEngine\"),color:fb(\"--type-color-tensorrt\")}]"
+    },
+    {
+      "label": "css_light_colour",
+      "bundle": "resources/app/.vite/renderer/main_window/index.css",
+      "before": "--type-color-ncnn: #ed64a6}",
+      "after": "--type-color-ncnn: #ed64a6;--type-color-tensorrt: #76b900}"
+    },
+    {
+      "label": "css_dark_colour",
+      "bundle": "resources/app/.vite/renderer/main_window/index.css",
+      "before": "--type-color-ncnn: #ae5354}",
+      "after": "--type-color-ncnn: #ae5354;--type-color-tensorrt: #90c41c}"
+    }
+  ]
+}

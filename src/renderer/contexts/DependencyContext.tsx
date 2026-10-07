@@ -205,8 +205,12 @@ const PackageView = memo(
         onUninstall: () => void;
         onUpdate: () => void;
     }) => {
+        const isDisabled = p.disabled ?? false;
         return (
-            <AccordionItem cursor="pointer">
+            <AccordionItem
+                cursor="pointer"
+                opacity={isDisabled ? 0.5 : 1}
+            >
                 <h2>
                     <VStack
                         spacing={0}
@@ -252,7 +256,7 @@ const PackageView = memo(
                                     {packageInfo.canUpdate && (
                                         <Button
                                             colorScheme="blue"
-                                            disabled={isRunningShell}
+                                            disabled={isRunningShell || isDisabled}
                                             isLoading={isRunningShell && isInstalling}
                                             leftIcon={<DownloadIcon />}
                                             size="sm"
@@ -264,7 +268,7 @@ const PackageView = memo(
 
                                     <Button
                                         colorScheme="red"
-                                        isDisabled={isRunningShell}
+                                        isDisabled={isRunningShell || isDisabled}
                                         isLoading={isRunningShell && isInstalling}
                                         leftIcon={<DeleteIcon />}
                                         size="sm"
@@ -275,21 +279,29 @@ const PackageView = memo(
                                 </HStack>
                             ) : (
                                 <HStack py={2}>
-                                    <Button
-                                        colorScheme="blue"
-                                        isDisabled={isRunningShell}
-                                        isLoading={isRunningShell && isInstalling}
-                                        leftIcon={<DownloadIcon />}
-                                        size="sm"
-                                        onClick={onInstall}
+                                    <Tooltip
+                                        hasArrow
+                                        borderRadius={8}
+                                        isDisabled={!isDisabled}
+                                        label={p.disabledReason ?? ''}
+                                        openDelay={200}
                                     >
-                                        Install (
-                                        {formatSizeEstimate([
-                                            ...packageInfo.missing,
-                                            ...packageInfo.outdated,
-                                        ])}
-                                        )
-                                    </Button>
+                                        <Button
+                                            colorScheme="blue"
+                                            isDisabled={isRunningShell || isDisabled}
+                                            isLoading={isRunningShell && isInstalling}
+                                            leftIcon={<DownloadIcon />}
+                                            size="sm"
+                                            onClick={onInstall}
+                                        >
+                                            Install (
+                                            {formatSizeEstimate([
+                                                ...packageInfo.missing,
+                                                ...packageInfo.outdated,
+                                            ])}
+                                            )
+                                        </Button>
+                                    </Tooltip>
                                 </HStack>
                             )}
                             <AccordionButton

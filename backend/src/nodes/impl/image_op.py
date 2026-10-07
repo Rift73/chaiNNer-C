@@ -3,6 +3,8 @@ from typing import Callable
 import numpy as np
 from typing_extensions import Concatenate, ParamSpec
 
+from .native_framework_shared import clip_image
+
 ImageOp = Callable[[np.ndarray], np.ndarray]
 """
 An image processing operation that takes an image and produces a new image.
@@ -15,7 +17,7 @@ def clipped(op: ImageOp) -> ImageOp:
     """
     Ensures that all values in the returned image are between 0 and 1.
     """
-    return lambda i: np.clip(op(i), 0, 1)
+    return lambda i: clip_image(op(i))
 
 
 P = ParamSpec("P")

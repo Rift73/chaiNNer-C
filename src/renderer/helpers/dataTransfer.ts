@@ -28,11 +28,20 @@ export interface DataTransferProcessorOptions {
     changeEdges: SetState<Edge<EdgeData>[]>;
 }
 
+/**
+ * Whether the drop holds a directory. A directory reaches `files` like a file, so a name such as
+ * `photos.png` would otherwise pass an extension check.
+ */
+export const includesDirectory = (dataTransfer: DataTransfer): boolean =>
+    Array.from(dataTransfer.items).some(
+        (item) => item.kind === 'file' && item.webkitGetAsEntry()?.isDirectory === true
+    );
+
 export const getSingleFileWithExtension = (
     dataTransfer: DataTransfer,
     allowedExtensions: readonly string[]
 ): string | undefined => {
-    if (dataTransfer.files.length === 1) {
+    if (dataTransfer.files.length === 1 && !includesDirectory(dataTransfer)) {
         const [file] = dataTransfer.files;
         const extension = extname(file.path).toLowerCase();
         if (allowedExtensions.includes(extension)) {
@@ -109,7 +118,7 @@ const chainnerPresetProcessor: DataTransferProcessor = (
 };
 
 const openChainnerFileProcessor: DataTransferProcessor = (dataTransfer) => {
-    if (dataTransfer.files.length === 1) {
+    if (dataTransfer.files.length === 1 && !includesDirectory(dataTransfer)) {
         const [file] = dataTransfer.files;
         if (/\.chn/i.test(file.path)) {
             // found a .chn file

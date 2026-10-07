@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs.__system_inputs import StaticValueInput
 from nodes.properties.outputs import NumberOutput
 
@@ -24,4 +25,4 @@ from .. import value_group
     ],
 )
 def execution_number_node(number: int) -> int:
-    return number
+    return graph().execution_number(number)

@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 
 from ..utils.utils import get_h_w_c
+from . import native_rotate
 from .image_utils import FillColor, convert_to_bgra, normalize, to_uint8
 
 
@@ -29,11 +30,11 @@ class RotationInterpolationMethod(Enum):
 
 
 INTERPOLATION_METHODS_MAP = {
-    InterpolationMethod.NEAREST: Image.NEAREST,
-    InterpolationMethod.BOX: Image.BOX,
-    InterpolationMethod.LINEAR: Image.BILINEAR,
-    InterpolationMethod.CUBIC: Image.BICUBIC,
-    InterpolationMethod.LANCZOS: Image.LANCZOS,
+    InterpolationMethod.NEAREST: Image.Resampling.NEAREST,
+    InterpolationMethod.BOX: Image.Resampling.BOX,
+    InterpolationMethod.LINEAR: Image.Resampling.BILINEAR,
+    InterpolationMethod.CUBIC: Image.Resampling.BICUBIC,
+    InterpolationMethod.LANCZOS: Image.Resampling.LANCZOS,
 }
 
 
@@ -70,20 +71,17 @@ def rotate(
     expand: RotateSizeChange,
     fill: FillColor,
 ) -> np.ndarray:
-    """Perform PIL rotate"""
+    """Perform Pillow-compatible byte rotation in C."""
 
     c = get_h_w_c(img)[2]
     if fill == FillColor.TRANSPARENT:
         img = convert_to_bgra(img, c)
     fill_color = tuple([x * 255 for x in fill.get_color(c)])
 
-    resample = INTERPOLATION_METHODS_MAP[interpolation.interpolation_method]
-
-    pimg = Image.fromarray(to_uint8(img, normalized=True))
-    pimg = pimg.rotate(
+    return native_rotate.rotate(
+        to_uint8(img, normalized=True),
         angle,
-        resample=resample,  # type: ignore
-        expand=bool(expand.value),
-        fillcolor=fill_color,  # type: ignore
+        interpolation.value,
+        bool(expand.value),
+        fill_color,
     )
-    return normalize(np.array(pimg))

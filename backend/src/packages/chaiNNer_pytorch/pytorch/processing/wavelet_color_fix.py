@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 
 from api import NodeContext
+from nodes.impl import native_wavelet
 from nodes.impl.pytorch.utils import np2tensor, safe_cuda_cache_empty, tensor2np
 from nodes.impl.resize import ResizeFilter, resize
 from nodes.properties.inputs import ImageInput, NumberInput
@@ -18,6 +19,9 @@ from .. import processing_group
 
 
 def wavelet_blur(image: torch.Tensor, radius: int) -> torch.Tensor:
+    native_result = native_wavelet.blur(image, radius)
+    if native_result is not None:
+        return native_result
     kernel_vals = [
         [0.0625, 0.125, 0.0625],
         [0.125, 0.25, 0.125],
@@ -31,6 +35,9 @@ def wavelet_blur(image: torch.Tensor, radius: int) -> torch.Tensor:
 
 
 def wavelet_decomposition(image: torch.Tensor, levels: int = 5):
+    native_result = native_wavelet.decomposition(image, levels)
+    if native_result is not None:
+        return native_result
     high_freq = torch.zeros_like(image)
     low_freq = image
     for i in range(levels):
@@ -43,6 +50,9 @@ def wavelet_decomposition(image: torch.Tensor, levels: int = 5):
 def wavelet_reconstruction(
     content_feat: torch.Tensor, style_feat: torch.Tensor, levels: int
 ) -> torch.Tensor:
+    native_result = native_wavelet.reconstruction(content_feat, style_feat, levels)
+    if native_result is not None:
+        return native_result
     content_high_freq, _ = wavelet_decomposition(content_feat, levels=levels)
     _, style_low_freq = wavelet_decomposition(style_feat, levels=levels)
     return content_high_freq + style_low_freq

@@ -13,6 +13,8 @@ from spandrel import (
 )
 
 from api.node_context import NodeContext
+from nodes.impl.native_analysis import mean as native_mean
+from nodes.impl.native_tensors import interpolate_torch
 from nodes.impl.pytorch.utils import np2tensor, tensor2np
 from nodes.properties.inputs import ModelInput, SliderInput
 from nodes.properties.outputs import ModelOutput, NumberOutput
@@ -25,11 +27,10 @@ def perform_interp(model_a: dict, model_b: dict, amount: int):
     try:
         amount_b = amount / 100
         amount_a = 1 - amount_b
-
         state_dict = {}
         for k, v_1 in model_a.items():
             v_2 = model_b[k]
-            state_dict[k] = (amount_a * v_1) + (amount_b * v_2)
+            state_dict[k] = interpolate_torch(v_1, v_2, amount_a, amount_b)
         return state_dict
     except Exception as e:
         raise ValueError(
@@ -38,46 +39,15 @@ def perform_interp(model_a: dict, model_b: dict, amount: int):
 
 
 def check_can_interp(model_a: dict, model_b: dict):
-    a_keys = model_a.keys()
-    b_keys = model_b.keys()
-    if a_keys != b_keys:
+    if model_a.keys() != model_b.keys():
         return False
-    interp_50 = perform_interp(model_a, model_b, 50)
-    model_descriptor = ModelLoader(torch.device("cpu")).load_from_state_dict(interp_50)
-    size = max(model_descriptor.size_requirements.minimum, 3)
-    size = size + (size % model_descriptor.size_requirements.multiple_of)
-    assert isinstance(size, int), "min_size_restriction must be an int"
-    fake_img = np.ones((size, size, model_descriptor.input_channels), dtype=np.float32)
-    del interp_50
-    with torch.no_grad():
-        img_tensor = np2tensor(fake_img, change_range=True).cpu()
-        if isinstance(model_descriptor, MaskedImageModelDescriptor):
-            np.ones((size, size, 1), dtype=np.float32)
-            mask_tensor = np2tensor(fake_img, change_range=True).cpu()
-            t_out = model_descriptor(img_tensor, mask_tensor)
-        elif isinstance(model_descriptor, ImageModelDescriptor):  # type: ignore <- I get that this can technically never happen, but please just let me write exhaustive checks
-            t_out = model_descriptor(img_tensor)
-        else:
-            logger.warning(
-                "Unknown model type used with interpolation. Since we cannot verify inference works with this model, we will assume the interpolation is valid. Please report."
-            )
-            return True
-        if isinstance(t_out, tuple):
-            t_out = t_out[0]
-        result = tensor2np(t_out.detach(), change_range=False, imtype=np.float32)
-    del model_descriptor, img_tensor, t_out, fake_img
-    mean_color = np.mean(result)
-    del result
-    gc.collect()
-    return mean_color > 0.5
+    return _check_interp_state(perform_interp(model_a, model_b, 50))
 
 
 @utility_group.register(
     schema_id="chainner:pytorch:interpolate_models",
     name="Interpolate Models",
-    description="""Interpolate two of the same kind of model state-dict
-             together. Note: models must share a common 'pretrained model' ancestor
-             in order to be interpolatable.""",
+    description="Interpolate two of the same kind of model state-dict\n             together. Note: models must share a common 'pretrained model' ancestor\n             in order to be interpolatable.",
     icon="BsTornado",
     inputs=[
         ModelInput("Model A"),
@@ -110,27 +80,68 @@ def interpolate_models_node(
 ) -> tuple[ModelDescriptor, int, int]:
     exec_options = get_settings(context)
     pytorch_device = exec_options.device
-
     if amount == 0:
-        return model_a, 100, 0
+        return (model_a, 100, 0)
     elif amount == 100:
-        return model_b, 0, 100
-
+        return (model_b, 0, 100)
     if model_a.device != model_b.device:
         model_a.to(pytorch_device)
         model_b.to(pytorch_device)
-
     state_a = model_a.model.state_dict()
     state_b = model_b.model.state_dict()
-
     logger.debug("Interpolating models...")
-    if not check_can_interp(state_a, state_b):
+    state_dict = None
+    if (
+        amount == 50
+        and exec_options.budget_limit == 0
+        and (state_a.keys() == state_b.keys())
+        and all(
+            type(value) is torch.Tensor and value.device.type == "cpu"
+            for state in (state_a, state_b)
+            for value in state.values()
+        )
+    ):
+        state_dict = perform_interp(state_a, state_b, amount)
+        validation_state = {key: value.clone() for key, value in state_dict.items()}
+        compatible = _check_interp_state(validation_state)
+        del validation_state
+    else:
+        compatible = check_can_interp(state_a, state_b)
+    if not compatible:
         raise ValueError(
             "These models are not compatible and not able to be interpolated together"
         )
-
-    state_dict = perform_interp(state_a, state_b, amount)
-
+    if state_dict is None:
+        state_dict = perform_interp(state_a, state_b, amount)
     model = ModelLoader(pytorch_device).load_from_state_dict(state_dict)
+    return (model, 100 - amount, amount)
 
-    return model, 100 - amount, amount
+
+def _check_interp_state(interp_50: dict):
+    model_descriptor = ModelLoader(torch.device("cpu")).load_from_state_dict(interp_50)
+    size = max(model_descriptor.size_requirements.minimum, 3)
+    size = size + size % model_descriptor.size_requirements.multiple_of
+    assert isinstance(size, int), "min_size_restriction must be an int"
+    fake_img = np.ones((size, size, model_descriptor.input_channels), dtype=np.float32)
+    del interp_50
+    with torch.no_grad():
+        img_tensor = np2tensor(fake_img, change_range=True).cpu()
+        if isinstance(model_descriptor, MaskedImageModelDescriptor):
+            np.ones((size, size, 1), dtype=np.float32)
+            mask_tensor = np2tensor(fake_img, change_range=True).cpu()
+            t_out = model_descriptor(img_tensor, mask_tensor)
+        elif isinstance(model_descriptor, ImageModelDescriptor):  # type: ignore <- I get that this can technically never happen, but please just let me write exhaustive checks
+            t_out = model_descriptor(img_tensor)
+        else:
+            logger.warning(
+                "Unknown model type used with interpolation. Since we cannot verify inference works with this model, we will assume the interpolation is valid. Please report."
+            )
+            return True
+        if isinstance(t_out, tuple):
+            t_out = t_out[0]
+        result = tensor2np(t_out.detach(), change_range=False, imtype=np.float32)
+    del model_descriptor, img_tensor, t_out, fake_img
+    mean_color = native_mean(result) if result.dtype == np.float32 else np.mean(result)
+    del result
+    gc.collect()
+    return mean_color > 0.5

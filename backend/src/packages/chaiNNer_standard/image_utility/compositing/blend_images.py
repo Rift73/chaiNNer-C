@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from enum import Enum
 
-import cv2
 import numpy as np
 
 from nodes.groups import Condition, if_enum_group, if_group
-from nodes.impl.blend import BlendMode, blend_images
+from nodes.impl.blend import BlendMode
 from nodes.impl.color.color import Color
-from nodes.impl.image_utils import as_2d_grayscale
-from nodes.impl.pil_utils import convert_to_bgra
+from nodes.impl.native_composite import canvas, dimensions
 from nodes.properties.inputs import (
     BlendModeDropdown,
     BoolInput,
@@ -19,7 +17,6 @@ from nodes.properties.inputs import (
     SliderInput,
 )
 from nodes.properties.outputs import ImageOutput
-from nodes.utils.utils import get_h_w_c
 
 from .. import compositing_group
 
@@ -172,91 +169,17 @@ def blend_images_node(
     y_px: int,
     crop_to_fit: bool,
 ) -> np.ndarray:
-    # Convert colors to images
-    do_crop_to_fit = crop_to_fit
-    if isinstance(base, Color):
-        if isinstance(ov, Color):
-            raise ValueError("At least one layer must be an image")
-        base = base.to_image(width=ov.shape[1], height=ov.shape[0])
-        do_crop_to_fit = False
-    if isinstance(ov, Color):
-        ov = ov.to_image(width=base.shape[1], height=base.shape[0])
-        do_crop_to_fit = False
-
-    base_height, base_width, base_channel_count = get_h_w_c(base)
-    overlay_height, overlay_width, _ = get_h_w_c(ov)
-
-    # Calculate coordinates of the overlay layer
-    #   origin: top-let point of the base layer
-    #   (x0, y0): top-left point of the overlay layer
-    #   (x1, y1): bottom-right point of the overlay layer
+    (base_height, base_width, _), (overlay_height, overlay_width, _) = dimensions(
+        base, ov
+    )
     if overlay_position == BlendOverlayPosition.PERCENT_OFFSET:
-        x0, y0 = [
-            round((base_width - overlay_width) * x_percent / 100),
-            round((base_height - overlay_height) * y_percent / 100),
-        ]
+        x0 = round((base_width - overlay_width) * x_percent / 100)
+        y0 = round((base_height - overlay_height) * y_percent / 100)
     elif overlay_position == BlendOverlayPosition.PIXEL_OFFSET:
-        x0, y0 = [x_px, y_px]
+        x0, y0 = x_px, y_px
     else:
         x0, y0 = np.array(
             [base_width - overlay_width, base_height - overlay_height]
             * BLEND_OVERLAY_X0_Y0_FACTORS[overlay_position]
         ).astype("int")
-    x1, y1 = x0 + overlay_width, y0 + overlay_height
-
-    # Add borders to the base layer
-    top = bottom = left = right = 0
-    if not do_crop_to_fit:
-        left, right = abs(min(x0, 0)), max(0, (x1 - base_width))
-        top, bottom = abs(min(y0, 0)), max(0, (y1 - base_height))
-
-    if any((top, bottom, left, right)):
-        # copyMakeBorder will create black border if base not converted to RGBA first
-        base = convert_to_bgra(base, base_channel_count)
-        base = cv2.copyMakeBorder(
-            base, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(0.0,)
-        )
-        assert isinstance(base, np.ndarray)
-    else:  # Make sure cached image not being worked on regardless
-        base = base.copy()
-
-    # Coordinates of the intersection area
-    if do_crop_to_fit:
-        i_x0, i_x1 = max(0, x0), min(x1, base_width)
-        i_y0, i_y1 = max(0, y0), min(y1, base_height)
-        if not (0 <= i_x0 < i_x1 and 0 <= i_y0 < i_y1):
-            return base
-
-        ov_x0 = max(0, -1 * x0)
-        ov_x1 = ov_x0 + i_x1 - i_x0
-        ov_y0 = max(0, -1 * y0)
-        ov_y1 = ov_y0 + i_y1 - i_y0
-        # Crop overlay
-        ov = ov[
-            ov_y0:ov_y1,
-            ov_x0:ov_x1,
-        ]
-    else:
-        i_x0, i_x1 = x0 + left, x1 + left
-        i_y0, i_y1 = y0 + top, y1 + top
-
-    # Blend layers
-    blended_img = blend_images(
-        ov,
-        base[i_y0:i_y1, i_x0:i_x1],
-        blend_mode,
-    )
-
-    result = base  # Just so the names make sense
-    result_c = get_h_w_c(result)[2]
-    blend_c = get_h_w_c(blended_img)[2]
-
-    # Have to ensure blend and result have same shape
-    if result_c < blend_c:
-        if blend_c == 4:
-            result = convert_to_bgra(result, result_c)
-        else:
-            result = as_2d_grayscale(result)
-            result = np.dstack((result, result, result))
-    result[i_y0:i_y1, i_x0:i_x1] = blended_img
-    return result
+    return canvas(base, ov, blend_mode.value, x0, y0, crop_to_fit)

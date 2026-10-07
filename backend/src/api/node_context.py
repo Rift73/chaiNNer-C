@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from .settings import SettingsParser
+from .types import NodeId
 
 
 class Aborted(Exception):
@@ -136,6 +137,13 @@ class NodeContext(Progress, ABC):
     def settings(self) -> SettingsParser:
         """
         Returns the settings of the current node execution.
+        """
+
+    @property
+    @abstractmethod
+    def node_id(self) -> NodeId:
+        """
+        The id of the current node. `/clear-cache/individual` clears by this id.
         """
 
     @property

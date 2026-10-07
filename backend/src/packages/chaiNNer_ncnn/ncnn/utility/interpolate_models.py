@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from api import NodeContext
+from nodes.impl.native_analysis import mean as native_mean
 from nodes.impl.ncnn.model import NcnnModelWrapper
 from nodes.impl.upscale.auto_split_tiles import NO_TILING
 from nodes.properties.inputs import NcnnModelInput, SliderInput
@@ -16,7 +17,7 @@ def check_will_upscale(context: NodeContext, interp: NcnnModelWrapper):
     fake_img = np.ones((3, 3, 3), dtype=np.float32, order="F")
     result = upscale_image_node(context, fake_img, interp, NO_TILING, 0, False)
 
-    mean_color = np.mean(result)
+    mean_color = native_mean(result) if result.dtype == np.float32 else np.mean(result)
     del result
     return mean_color > 0.5
 

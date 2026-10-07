@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import numpy as np
-from chainner_ext import fast_gamma
 
+from nodes.impl.native_alpha_gamma import fast_gamma
 from nodes.properties.inputs import BoolInput, ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 

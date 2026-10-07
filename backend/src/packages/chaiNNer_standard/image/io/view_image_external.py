@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-import os
-import platform
-import subprocess
-import time
-from tempfile import mkdtemp
+# `x as x` imports: the native mirror reads these names in native/src/image_io.cpp
+import os as os
+import platform as platform
+import subprocess as subprocess
+import time as time
+from tempfile import mkdtemp as mkdtemp
 
-import cv2
+import cv2 as cv2
 import numpy as np
-from sanic.log import logger
+from sanic.log import logger as logger
 
-from nodes.impl.image_utils import to_uint8
+from nodes.impl.image_utils import to_uint8 as to_uint8
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import ImageInput
 
 from .. import io_group
@@ -30,19 +32,4 @@ from .. import io_group
     limited_to_8bpc="The temporary file is an 8-bit PNG.",
 )
 def view_image_external_node(img: np.ndarray) -> None:
-    tempdir = mkdtemp(prefix="chaiNNer-")
-    logger.debug(f"Writing image to temp path: {tempdir}")
-    im_name = f"{time.time()}.png"
-    temp_save_dir = os.path.join(tempdir, im_name)
-    status = cv2.imwrite(
-        temp_save_dir,
-        to_uint8(img, normalized=True),
-    )
-
-    if status:
-        if platform.system() == "Darwin":  # macOS
-            subprocess.call(("open", temp_save_dir))
-        elif platform.system() == "Windows":  # Windows
-            os.startfile(temp_save_dir)  # type: ignore
-        else:  # linux variants
-            subprocess.call(("xdg-open", temp_save_dir))
+    return graph().image_io_view(globals(), img)

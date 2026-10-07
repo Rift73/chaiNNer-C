@@ -10,6 +10,9 @@ from onnx.onnx_pb import TensorProto
 from sanic.log import logger
 
 from api import NodeContext
+from nodes.impl.native_analysis import mean as native_mean
+from nodes.impl.native_graph import graph
+from nodes.impl.native_tensors import cast_numpy, interpolate_numpy
 from nodes.impl.onnx.load import load_onnx_model
 from nodes.impl.onnx.model import OnnxModel
 from nodes.impl.onnx.utils import safely_optimize_onnx_model
@@ -26,37 +29,28 @@ def perform_interp(
     model_b_weights: RepeatedCompositeFieldContainer,
     amount: float,
 ) -> list[TensorProto]:
-    amount_b = amount / 100
-    amount_a = 1 - amount_b
-
-    interp_weights_list = []
-    for weight_a, weight_b in zip(model_a_weights, model_b_weights):
-        weight_name = weight_b.name
-        weight_array_a = onph.to_array(weight_a)
-        weight_array_b = onph.to_array(weight_b)
-
-        assert (
-            weight_array_a.shape == weight_array_b.shape
-        ), "Weights must have same size and shape"
-
-        weight_array_interp = (
-            weight_array_a * amount_a + weight_array_b * amount_b
-        ).astype(weight_array_a.dtype)
-        weight_interp = onph.from_array(weight_array_interp, weight_name)
-        interp_weights_list.append(weight_interp)
-
-    return interp_weights_list
+    return graph().onnx_perform_interp(
+        model_a_weights,
+        model_b_weights,
+        amount,
+        onph.to_array,
+        onph.from_array,
+        interpolate_numpy,
+        cast_numpy,
+    )
 
 
 def check_will_upscale(context: NodeContext, model: OnnxModel):
-    if model.sub_type != "Generic":
-        return True
-    fake_img = np.ones((3, 3, 3), dtype=np.float32, order="F")
-    result = upscale_image_node(context, fake_img, model, NO_TILING, 0, False)
-
-    mean_color = np.mean(result)
-    del result
-    return mean_color > 0.5
+    return graph().onnx_check_will_upscale(
+        context,
+        model,
+        {
+            "np": np,
+            "native_mean": native_mean,
+            "upscale_image_node": upscale_image_node,
+            "NO_TILING": NO_TILING,
+        },
+    )
 
 
 @utility_group.register(
@@ -93,37 +87,18 @@ def interpolate_models_node(
     b: OnnxModel,
     amount: int,
 ) -> tuple[OnnxModel, int, int]:
-    if amount == 0:
-        return a, 100, 0
-    elif amount == 100:
-        return b, 0, 100
-
-    # Just to be sure there is no mismatch from opt/un-opt models
-    model_proto_a = onnx.load_from_string(a.bytes)
-    model_proto_a = safely_optimize_onnx_model(model_proto_a)
-    model_a_weights = model_proto_a.graph.initializer
-
-    model_proto_b = onnx.load_from_string(b.bytes)
-    model_proto_b = safely_optimize_onnx_model(model_proto_b)
-    model_b_weights = model_proto_b.graph.initializer
-
-    assert len(model_a_weights) == len(
-        model_b_weights
-    ), "Models must have same number of weights"
-
-    logger.debug("Interpolating models...")
-    interp_weights_list = perform_interp(model_a_weights, model_b_weights, amount)
-
-    model_proto_interp = deepcopy(model_proto_b)
-    for _ in range(len(model_proto_interp.graph.initializer)):  # type: ignore
-        # Assigning a new value or assigning to field index do not seem to work
-        model_proto_interp.graph.initializer.pop()  # type: ignore
-    model_proto_interp.graph.initializer.extend(interp_weights_list)  # type: ignore
-
-    model = load_onnx_model(model_proto_interp)
-    if not check_will_upscale(context, model):
-        raise ValueError(
-            "These models are not compatible and not able to be interpolated together"
-        )
-
-    return model, 100 - amount, amount
+    return graph().onnx_interpolate_models(
+        context,
+        a,
+        b,
+        amount,
+        {
+            "onnx": onnx,
+            "safely_optimize_onnx_model": safely_optimize_onnx_model,
+            "logger": logger,
+            "perform_interp": perform_interp,
+            "deepcopy": deepcopy,
+            "load_onnx_model": load_onnx_model,
+            "check_will_upscale": check_will_upscale,
+        },
+    )

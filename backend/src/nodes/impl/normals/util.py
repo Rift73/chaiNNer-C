@@ -1,14 +1,16 @@
-from typing import Tuple
-
 import numpy as np
 
-XYZ = Tuple[np.ndarray, np.ndarray, np.ndarray]
+from .. import native_geometry
+
+XYZ = tuple[np.ndarray, np.ndarray, np.ndarray]
 """
 The normalized XYZ components of a normal map. Z is guaranteed to be >= 0.
 """
 
 
 def normalize_normals(x: np.ndarray, y: np.ndarray) -> XYZ:
+    if native_geometry.components_supported(x, y):
+        return native_geometry.normalize(x, y)
     # The square of the length of X and Y
     l_sq = np.square(x) + np.square(y)
 
@@ -29,6 +31,9 @@ def gr_to_xyz(n: np.ndarray) -> XYZ:
     Takes a BGR or BGRA image and converts it into XYZ normal components only by looking at the R and G channels.
     """
 
+    if native_geometry.image_supported(n):
+        return native_geometry.decode(n)
+
     x = n[:, :, 2] * 2 - 1
     y = n[:, :, 1] * 2 - 1
 
@@ -39,6 +44,9 @@ def xyz_to_bgr(xyz: XYZ) -> np.ndarray:
     """
     Converts the given XYZ components into an BGR image.
     """
+    if native_geometry.components_supported(*xyz):
+        return native_geometry.encode(xyz)
+
     x, y, z = xyz
 
     r = (x + 1) * 0.5
@@ -52,6 +60,9 @@ def octahedral_gr_to_xyz(n: np.ndarray) -> XYZ:
     """
     Takes a BGR or BGRA image of octahedral (RTX Remix) normals and converts it into XYZ normal components only by looking at the R and G channels.
     """
+    if native_geometry.image_supported(n):
+        return native_geometry.decode(n, octahedral=True)
+
     r = n[:, :, 2] * 2 - 1
     g = n[:, :, 1] * 2 - 1
 
@@ -74,6 +85,9 @@ def xyz_to_octahedral_bgr(xyz: XYZ) -> np.ndarray:
     https://knarkowicz.wordpress.com/2014/04/16/octahedron-normal-vector-encoding/
     https://jcgt.org/published/0003/02/01/
     """
+    if native_geometry.components_supported(*xyz):
+        return native_geometry.encode(xyz, octahedral=True)
+
     x, y, z = xyz
     absolute = np.abs(x) + np.abs(y) + np.abs(z)
     x /= absolute

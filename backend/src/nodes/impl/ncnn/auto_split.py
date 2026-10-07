@@ -1,94 +1,99 @@
 from __future__ import annotations
 
 import gc
+import threading
 
 import numpy as np
-
-try:
-    from ncnn_vulkan import ncnn
-
-    use_gpu = True
-except ImportError:
-    from ncnn import ncnn  # type: ignore
-
-    use_gpu = False
+from ncnn import ncnn
 from sanic.log import logger
 
 from ...utils.utils import get_h_w_c
 from ..image_utils import to_uint8
+from ..native_framework_images import ncnn_input
+from ..native_tensors import cast_numpy
 from ..upscale.auto_split import Split, Tiler, auto_split
+
+use_gpu = ncnn.get_gpu_count() > 0
+# PyPI ncnn's Extractor has no Vulkan allocator setters, so an extractor takes them
+# from the Option it copies at creation. Nets are cached and shared, and node work
+# runs on a thread pool, so one upscale's allocators stay on net.opt only while this
+# lock is held.
+_net_opt_lock = threading.Lock()
 
 
 def ncnn_auto_split(
     img: np.ndarray,
-    net,  # noqa: ANN001
+    net: ncnn.Net,
     input_name: str,
     output_name: str,
-    blob_vkallocator,  # noqa: ANN001
-    staging_vkallocator,  # noqa: ANN001
+    blob_vkallocator: ncnn.VkBlobAllocator | None,
+    staging_vkallocator: ncnn.VkStagingAllocator | None,
     tiler: Tiler,
+    collect_after: bool = True,
 ) -> np.ndarray:
+
+    def clear_vkallocators() -> None:
+        if blob_vkallocator is not None:
+            blob_vkallocator.clear()
+        if staging_vkallocator is not None:
+            staging_vkallocator.clear()
+
     def upscale(img: np.ndarray, _: object):
-        ex = net.create_extractor()
         if use_gpu:
-            ex.set_blob_vkallocator(blob_vkallocator)
-            ex.set_workspace_vkallocator(blob_vkallocator)
-            ex.set_staging_vkallocator(staging_vkallocator)
-        # ex.set_light_mode(True)
+            with _net_opt_lock:
+                net.opt.blob_vkallocator = blob_vkallocator
+                net.opt.workspace_vkallocator = blob_vkallocator
+                net.opt.staging_vkallocator = staging_vkallocator
+                try:
+                    ex = net.create_extractor()
+                finally:
+                    net.opt.blob_vkallocator = None
+                    net.opt.workspace_vkallocator = None
+                    net.opt.staging_vkallocator = None
+        else:
+            ex = net.create_extractor()
         try:
             lr_c = get_h_w_c(img)[2]
-            lr_img_fix = to_uint8(img)
-            if lr_c == 1:
-                pixel_type = ncnn.Mat.PixelType.PIXEL_GRAY
-            elif lr_c == 3:
-                pixel_type = ncnn.Mat.PixelType.PIXEL_RGB
+            pixel_image = img
+            lr_img_fix = to_uint8(pixel_image)
+            if lr_c in (1, 3, 4):
+                lr_planar = ncnn_input(lr_img_fix)
+                mat_in = ncnn.Mat(lr_planar).clone()
             else:
                 pixel_type = ncnn.Mat.PixelType.PIXEL_RGBA
-            mat_in = ncnn.Mat.from_pixels(
-                lr_img_fix,
-                pixel_type,
-                lr_img_fix.shape[1],
-                lr_img_fix.shape[0],
-            )
-            mean_vals = []
-            norm_vals = [1 / 255.0] * lr_c
-            mat_in.substract_mean_normalize(mean_vals, norm_vals)
+                mat_in = ncnn.Mat.from_pixels(
+                    lr_img_fix, pixel_type, lr_img_fix.shape[1], lr_img_fix.shape[0]
+                )
+                mat_in.substract_mean_normalize([], [1 / 255.0] * lr_c)
             ex.input(input_name, mat_in)
             _, mat_out = ex.extract(output_name)
-            result = np.array(mat_out).transpose(1, 2, 0).astype(np.float32)
+            result = cast_numpy(
+                np.asarray(mat_out).transpose(1, 2, 0), np.dtype(np.float32)
+            )
             del ex, mat_in, mat_out
-            gc.collect()
-            if use_gpu:
-                # Clear VRAM
-                blob_vkallocator.clear()
-                staging_vkallocator.clear()
+            clear_vkallocators()
             return result
         except Exception as e:
             if "vkQueueSubmit" in str(e):
                 ex = None
                 del ex
                 gc.collect()
-                if use_gpu:
-                    blob_vkallocator.clear()
-                    staging_vkallocator.clear()
-                # TODO: Have someone running into this issue enable this and see if it fixes anything
-                # ncnn.destroy_gpu_instance()
+                clear_vkallocators()
                 raise RuntimeError(
                     "A critical error has occurred. You may need to restart chaiNNer in order for NCNN upscaling to start working again."
                 ) from e
-            # Check to see if its actually the NCNN out of memory error
             if "failed" in str(e):
-                # clear VRAM
                 logger.debug("NCNN out of VRAM, clearing VRAM and splitting.")
                 ex = None
                 del ex
                 gc.collect()
-                if use_gpu:
-                    blob_vkallocator.clear()
-                    staging_vkallocator.clear()
+                clear_vkallocators()
                 return Split()
             else:
-                # Re-raise the exception if not an OOM error
                 raise
 
-    return auto_split(img, upscale, tiler)
+    try:
+        return auto_split(img, upscale, tiler)
+    finally:
+        if collect_after:
+            gc.collect()

@@ -4,6 +4,7 @@ import numpy as np
 
 import navi
 from nodes.impl.color.color import Color
+from nodes.impl.native_generation import image_fill
 from nodes.properties.inputs import ColorInput, NumberInput
 from nodes.properties.outputs import ImageOutput
 
@@ -32,4 +33,4 @@ from .. import create_images_group
     ],
 )
 def create_color_node(color: Color, width: int, height: int) -> np.ndarray:
-    return color.to_image(width, height)
+    return image_fill(width, height, color.value)

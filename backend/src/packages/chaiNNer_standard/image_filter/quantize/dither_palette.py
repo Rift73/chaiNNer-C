@@ -3,20 +3,14 @@ from __future__ import annotations
 from enum import Enum
 
 import numpy as np
-from chainner_ext import (
-    PaletteQuantization,
-    error_diffusion_dither,
-    quantize,
-    riemersma_dither,
-)
 
 import navi
 from nodes.groups import if_enum_group
 from nodes.impl.dithering.constants import (
-    DIFFUSION_ALGORITHM_MAP,
     ERROR_PROPAGATION_MAP_LABELS,
     ErrorDiffusionMap,
 )
+from nodes.impl.native_neighborhood import DIFFUSION_IDS, palette_dither
 from nodes.properties.inputs import EnumInput, ImageInput, NumberInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
@@ -71,22 +65,15 @@ def dither_palette_node(
     error_diffusion_map: ErrorDiffusionMap,
     history_length: int,
 ) -> np.ndarray:
-    assert (
-        get_h_w_c(img)[2] == get_h_w_c(palette)[2]
-    ), "Image and palette must have the same number of channels."
+    assert get_h_w_c(img)[2] == get_h_w_c(palette)[2], (
+        "Image and palette must have the same number of channels."
+    )
 
     palette = palette[:1, ...]
-    quant = PaletteQuantization(palette)
-
     if dither_algorithm == PaletteDitherAlgorithm.NONE:
-        return quantize(img, quant)
+        return palette_dither(img, palette, 0)
     elif dither_algorithm == PaletteDitherAlgorithm.DIFFUSION:
-        algorithm = DIFFUSION_ALGORITHM_MAP[error_diffusion_map]
-        return error_diffusion_dither(img, quant, algorithm)
+        algorithm = DIFFUSION_IDS[error_diffusion_map.value]
+        return palette_dither(img, palette, 2, algorithm=algorithm)
     elif dither_algorithm == PaletteDitherAlgorithm.RIEMERSMA:
-        return riemersma_dither(
-            img,
-            quant,
-            history_length,
-            1 / history_length,
-        )
+        return palette_dither(img, palette, 3, history_length=history_length)

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import cv2
 import numpy as np
 
 import navi
 from nodes.impl.gradients import (
     conic_gradient,
 )
+from nodes.impl.native_color_complete import colorwheel
 from nodes.properties.inputs import (
     NumberInput,
 )
@@ -36,18 +36,6 @@ from .. import create_images_group
 def create_colorwheel_node(
     size: int,
 ) -> np.ndarray:
-    img = np.zeros((size, size), dtype=np.float32)  # Create a new buffer with all zeros
-
-    conic_gradient(
-        img, rotation=0 * np.pi / 180
-    )  # Create our hue component with a chaiNNer conic gradient
-
-    w = np.ones(
-        (size, size), dtype=np.float32
-    )  # Create a new buffer with a value of "one"
-
-    hsv = np.stack((img, w, w), axis=2)  # Stack our HSV channels to BGR order
-
-    hsv[:, :, 0] *= 360  # Rotate the channel order
-
-    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    img = np.empty((size, size), dtype=np.float32)
+    conic_gradient(img, rotation=0 * np.pi / 180)
+    return colorwheel(img)

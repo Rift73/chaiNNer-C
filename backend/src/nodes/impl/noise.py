@@ -1,14 +1,32 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import Enum
-from typing import Callable
 
 import numpy as np
 
 from ..utils.utils import get_h_w_c
 from .image_utils import as_target_channels
+from .native_noise import add_noise
 
 
+def _native_supported(image: object, amount: object, seed: object) -> bool:
+    return bool(
+        isinstance(image, np.ndarray)
+        and image.dtype == np.float32
+        and image.ndim in (2, 3)
+        and all(image.shape)
+        and (image.ndim == 2 or image.shape[2] != 2)
+        and isinstance(amount, (int, float, np.integer, np.floating))
+        and np.isfinite(amount)
+        and 0 <= amount <= 1
+        and isinstance(seed, (int, np.integer))
+    )
+
+
+# Original NumPy helper compatibility for inputs outside Add Noise's node
+# contract (e.g. float64/empty images, other amounts or NumPy seed objects).
+# This path is retained behavior and is not counted as converted C work.
 def __add_noises(
     image: np.ndarray,
     noise_gen: Callable[[int, int], list[np.ndarray]],
@@ -70,6 +88,8 @@ def gaussian_noise(
     noise_color: NoiseColor,
     seed: int = 0,
 ) -> np.ndarray:
+    if _native_supported(image, amount, seed):
+        return add_noise(image, amount, noise_color.channels, seed, 0)
     rng = np.random.default_rng(seed)
     return __add_noise(
         image,
@@ -86,6 +106,8 @@ def uniform_noise(
     noise_color: NoiseColor,
     seed: int = 0,
 ) -> np.ndarray:
+    if _native_supported(image, amount, seed):
+        return add_noise(image, amount, noise_color.channels, seed, 1)
     rng = np.random.default_rng(seed)
     return __add_noise(
         image,
@@ -102,6 +124,9 @@ def salt_and_pepper_noise(
     noise_color: NoiseColor,
     seed: int = 0,
 ) -> np.ndarray:
+    if _native_supported(image, amount, seed):
+        return add_noise(image, amount, noise_color.channels, seed, 2)
+
     def gen_noise(h: int, w: int):
         rng = np.random.default_rng(seed)
         noise_c = noise_color.channels
@@ -124,6 +149,8 @@ def poisson_noise(
     noise_color: NoiseColor,
     seed: int = 0,
 ) -> np.ndarray:
+    if _native_supported(image, amount, seed):
+        return add_noise(image, amount, noise_color.channels, seed, 3)
     rng = np.random.default_rng(seed)
     return __add_noise(
         image,
@@ -138,6 +165,8 @@ def speckle_noise(
     noise_color: NoiseColor,
     seed: int = 0,
 ) -> np.ndarray:
+    if _native_supported(image, amount, seed):
+        return add_noise(image, amount, noise_color.channels, seed, 4)
     rng = np.random.default_rng(seed)
     return __add_noise(
         image,

@@ -27,9 +27,14 @@ export const getIsPortableSync = lazy((): boolean => {
     return isPortable;
 });
 
+// chaiNNer-C keeps its own root (%APPDATA%\chaiNNer-C on Windows), never upstream chaiNNer's
+// userData, so it cannot replace an installed chaiNNer's integrated Python, settings or logs.
+// main.ts makes it Electron's userData too.
 export const getRootDir = lazy((): string => {
     const isPortable = getIsPortableSync();
-    const rootDir = isPortable ? currentExecutableDir : app.getPath('userData');
+    const rootDir = isPortable
+        ? currentExecutableDir
+        : path.join(app.getPath('appData'), 'chaiNNer-C');
     return rootDir;
 });
 

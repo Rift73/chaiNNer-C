@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import math
+# `x as x` imports: the native mirror reads these names in native/src/utility_scalar.cpp
+import math as math
 from enum import Enum
 
 import numpy as np
 
 from nodes.groups import if_enum_group
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import EnumInput, NumberInput
 from nodes.properties.outputs import NumberOutput
-from nodes.utils.utils import round_half_up
 
 from .. import math_group
 
@@ -99,20 +100,4 @@ def round_node(
     m: float,
     p: float,
 ) -> int | float:
-    if operation == RoundOperation.FLOOR:
-        op = math.floor
-    elif operation == RoundOperation.CEILING:
-        op = math.ceil
-    elif operation == RoundOperation.ROUND:
-        op = round_half_up
-    else:
-        raise RuntimeError(f"Unknown operation {operation}")
-
-    if scale == RoundScale.UNIT:
-        return op(a)
-    elif scale == RoundScale.MULTIPLE:
-        return op(a / m) * m
-    elif scale == RoundScale.POWER:
-        return p ** op(math.log(a, p))
-    else:
-        raise RuntimeError(f"Unknown scale {scale}")
+    return graph().utility_round(globals(), a, operation, scale, m, p)

@@ -1,14 +1,41 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple, Union
+import warnings
+from typing import Any, Dict, Protocol, Sequence, Tuple, Union
 from weakref import WeakKeyDictionary
 
 import onnxruntime as ort
 
+from ..native_onnx_runtime import NativeSession, supports_model
 from .model import OnnxModel
 from .utils import OnnxParsedTensorShape, parse_onnx_shape
 
 ProviderDesc = Union[str, Tuple[str, Dict[Any, Any]]]
+
+
+class OnnxNodeArg(Protocol):
+    """An input or output of an ONNX session: ORT's NodeArg or the native one."""
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def type(self) -> str: ...
+    @property
+    def shape(self) -> Sequence[int | str | None]: ...
+
+
+class OnnxSession(Protocol):
+    """The session surface the backend uses. ort.InferenceSession and the native
+    adapter (NativeSession) both provide it."""
+
+    def get_inputs(self) -> Sequence[OnnxNodeArg]: ...
+    def get_outputs(self) -> Sequence[OnnxNodeArg]: ...
+    def run(
+        self,
+        output_names: list[str] | None,
+        input_feed: dict[str, Any],
+        run_options: Any = None,
+    ) -> Sequence[object]: ...
 
 
 def create_inference_session(
@@ -17,7 +44,18 @@ def create_inference_session(
     execution_provider: str,
     should_tensorrt_fp16: bool = False,
     tensorrt_cache_path: str | None = None,
-) -> ort.InferenceSession:
+) -> OnnxSession:
+    if execution_provider == "CPUExecutionProvider" and supports_model(model.bytes):
+        # The native adapter implements the image-session surface below; model
+        # values outside dense numeric tensors and all other providers retain
+        # the original framework binding explicitly. Native failures propagate.
+        session = NativeSession(model.bytes)
+        # Original providers=[CPU, CPU] emits this warning while deduplicating.
+        warnings.warn(
+            "Duplicate provider 'CPUExecutionProvider' encountered, ignoring.",
+            stacklevel=2,
+        )
+        return session
     tensorrt: ProviderDesc = (
         "TensorrtExecutionProvider",
         {
@@ -60,9 +98,7 @@ def create_inference_session(
     return session
 
 
-__session_cache: WeakKeyDictionary[OnnxModel, ort.InferenceSession] = (
-    WeakKeyDictionary()
-)
+__session_cache: WeakKeyDictionary[OnnxModel, OnnxSession] = WeakKeyDictionary()
 
 
 def get_onnx_session(
@@ -71,7 +107,7 @@ def get_onnx_session(
     execution_provider: str,
     should_tensorrt_fp16: bool,
     tensorrt_cache_path: str | None = None,
-) -> ort.InferenceSession:
+) -> OnnxSession:
     cached = __session_cache.get(model)
     if cached is None:
         cached = create_inference_session(
@@ -85,7 +121,7 @@ def get_onnx_session(
     return cached
 
 
-def get_input_shape(session: ort.InferenceSession) -> OnnxParsedTensorShape:
+def get_input_shape(session: OnnxSession) -> OnnxParsedTensorShape:
     """
     Returns the input shape, input channels, input width (optional), and input height (optional).
     """
@@ -93,7 +129,7 @@ def get_input_shape(session: ort.InferenceSession) -> OnnxParsedTensorShape:
     return parse_onnx_shape(session.get_inputs()[0].shape)
 
 
-def get_output_shape(session: ort.InferenceSession) -> OnnxParsedTensorShape:
+def get_output_shape(session: OnnxSession) -> OnnxParsedTensorShape:
     """
     Returns the output shape, output channels, output width (optional), and output height (optional).
     """

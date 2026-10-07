@@ -7,6 +7,7 @@ import numpy as np
 
 import navi
 from nodes.impl.image_utils import to_uint8
+from nodes.impl.native_repair import inpaint
 from nodes.properties.inputs import EnumInput, ImageInput, NumberInput
 from nodes.properties.outputs import ImageOutput
 
@@ -59,10 +60,10 @@ def inpaint_node(
     inpaint_method: InpaintAlgorithm,
     radius: float,
 ) -> np.ndarray:
-    assert (
-        img.shape[:2] == mask.shape[:2]
-    ), "Input image and mask must have the same resolution"
+    assert img.shape[:2] == mask.shape[:2], (
+        "Input image and mask must have the same resolution"
+    )
 
     img = to_uint8(img, normalized=True)
     mask = to_uint8(mask, normalized=True)
-    return cv2.inpaint(img, mask, radius, inpaint_method.value)
+    return inpaint(img, mask, radius, inpaint_method.value)

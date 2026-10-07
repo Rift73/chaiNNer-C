@@ -1,28 +1,22 @@
 from __future__ import annotations
 
-import math
-from functools import reduce
-from typing import Dict, Literal
+from typing import Literal
 
-import cv2
 import numpy as np
 
 from nodes.impl.image_utils import as_3d
+from nodes.impl.native_buffers import freeze_normalized
+from nodes.impl.native_convolution import convolve
+from nodes.impl.native_filters import normalize_lens
+from nodes.impl.native_lens import complex_kernel, compose, power
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
 from .. import blur_group
 
-# Lens blur adapted from GIMP Lens Blur
-# Copyright (c) 2019 Davide Sandona'
-# https://github.com/Davide-sd/GIMP-lens-blur.git
-
 kernel_scales = [1.4, 1.2, 1.2, 1.2, 1.2, 1.2]
-
 kernel_params = [
-    [
-        [0.862325, 1.624835, 0.767583, 1.862321],
-    ],
+    [[0.862325, 1.624835, 0.767583, 1.862321]],
     [
         [0.886528, 5.268909, 0.411259, -0.548794],
         [1.960518, 1.558213, 0.513282, 4.56111],
@@ -35,8 +29,8 @@ kernel_params = [
     [
         [4.338459, 1.553635, -5.767909, 46.164397],
         [3.839993, 4.693183, 9.795391, -15.227561],
-        [2.791880, 8.178137, -3.048324, 0.302959],
-        [1.342190, 12.328289, 0.010001, 0.244650],
+        [2.79188, 8.178137, -3.048324, 0.302959],
+        [1.34219, 12.328289, 0.010001, 0.24465],
     ],
     [
         [4.892608, 1.685979, -22.356787, 85.91246],
@@ -54,45 +48,29 @@ kernel_params = [
         [2.201904, 19.032909, -0.152784, -0.107988],
     ],
 ]
-
 ParamKey = Literal["a", "b", "A", "B"]
-Params = Dict[ParamKey, float]
+Params = dict[ParamKey, float]
 
 
 def get_parameters(component_count: int) -> tuple[list[Params], float]:
     parameter_index = max(0, min(component_count - 1, len(kernel_params) - 1))
     param_keys: list[ParamKey] = ["a", "b", "A", "B"]
     parameter_dictionaries = [
-        dict(zip(param_keys, b)) for b in kernel_params[parameter_index]
+        dict(zip(param_keys, b, strict=False)) for b in kernel_params[parameter_index]
     ]
     return (parameter_dictionaries, kernel_scales[parameter_index])
 
 
 def complex_kernel_1d(radius: int, scale: float, a: float, b: float):
-    kernel_radius = radius
-    kernel_size = kernel_radius * 2 + 1
-    ax = np.arange(-kernel_radius, kernel_radius + 1.0, dtype=np.float32)
-    ax = ax * scale * (1 / kernel_radius)
-    kernel_complex = np.zeros((kernel_size), dtype=np.complex64)
-    kernel_complex.real = np.exp(-a * (ax**2)) * np.cos(b * (ax**2))  # type: ignore
-    kernel_complex.imag = np.exp(-a * (ax**2)) * np.sin(b * (ax**2))  # type: ignore
-    return kernel_complex.reshape((1, kernel_size))
+    return complex_kernel(radius, scale, a, b)
 
 
 def normalize_kernels(kernels: list[np.ndarray], params: list[Params]):
-    total = 0
-    for k, p in zip(kernels, params):
-        for i in range(k.shape[1]):
-            for j in range(k.shape[1]):
-                total += p["A"] * (
-                    k[0, i].real * k[0, j].real - k[0, i].imag * k[0, j].imag
-                ) + p["B"] * (k[0, i].real * k[0, j].imag + k[0, i].imag * k[0, j].real)
-    scalar = 1 / math.sqrt(total)
-    return [k * scalar for k in kernels]
+    return normalize_lens(kernels, [(p["A"], p["B"]) for p in params])
 
 
 def weighted_sum(kernel: np.ndarray, params: Params) -> np.ndarray:
-    return np.add(kernel.real * params["A"], kernel.imag * params["B"])
+    return np.add(np.real(kernel) * params["A"], np.imag(kernel) * params["B"])
 
 
 def lens_blur(
@@ -105,33 +83,38 @@ def lens_blur(
         for component_params in parameters
     ]
     components = normalize_kernels(components, parameters)
-    img = np.power(img, exposure_gamma)
-    component_output = []
-    for component, component_params in zip(components, parameters):
-        channels = []
+    img = power(img, exposure_gamma)
+    output_image = np.empty_like(img)
+    for component_index, (component, component_params) in enumerate(
+        zip(components, parameters, strict=False)
+    ):
         component_real = np.real(component)
         component_imag = np.imag(component)
         component_real_t = component_real.transpose()
         component_imag_t = component_imag.transpose()
         for channel in range(img.shape[0]):
-            inter_real = cv2.filter2D(img[channel], -1, component_real)
-            inter_imag = cv2.filter2D(img[channel], -1, component_imag)
-            final_1 = cv2.filter2D(inter_real, -1, component_real_t)
-            final_2 = cv2.filter2D(inter_real, -1, component_imag_t)
-            final_3 = cv2.filter2D(inter_imag, -1, component_real_t)
-            final_4 = cv2.filter2D(inter_imag, -1, component_imag_t)
-            final = final_1 - final_4 + 1j * (final_2 + final_3)  # type: ignore
-            channels.append(final)
-        component_image = np.stack(
-            [weighted_sum(channel, component_params) for channel in channels]
-        )
-        component_output.append(component_image)
-    output_image = reduce(np.add, component_output)
-    output_image = np.clip(output_image, 0, None)
-    output_image = np.power(output_image, 1.0 / exposure_gamma)
-    output_image = np.clip(output_image, 0, 1)
-    output_image = output_image.transpose(1, 2, 0)
-    return output_image
+            inter_real = convolve(img[channel], component_real, 0)
+            inter_imag = convolve(img[channel], component_imag, 0)
+            final_1 = convolve(inter_real, component_real_t, 0)
+            final_2 = convolve(inter_real, component_imag_t, 0)
+            final_3 = convolve(inter_imag, component_real_t, 0)
+            final_4 = convolve(inter_imag, component_imag_t, 0)
+            compose(
+                final_1,
+                final_2,
+                final_3,
+                final_4,
+                component_params["A"],
+                component_params["B"],
+                out=output_image[channel],
+                accumulate=component_index != 0,
+            )
+    # Upstream clips and powers the planar (c, h, w) image, then returns its
+    # transpose(1, 2, 0): that view's strides reach the next node (ImageOutput keeps
+    # np.clip's order K), so the port returns the same view of its frozen plane.
+    return freeze_normalized(
+        power(output_image, 1.0 / exposure_gamma, finish=True)
+    ).transpose(1, 2, 0)
 
 
 @blur_group.register(
@@ -158,12 +141,8 @@ def lens_blur(
     outputs=[ImageOutput(shape_as=0)],
 )
 def lens_blur_node(
-    img: np.ndarray,
-    radius: int,
-    component_count: int,
-    exposure_gamma: float,
+    img: np.ndarray, radius: int, component_count: int, exposure_gamma: float
 ) -> np.ndarray:
     if radius == 0:
         return img
-
     return lens_blur(img, radius, component_count, exposure_gamma)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from nodes.impl.native_adjustments import log_linear
 from nodes.properties.inputs import BoolInput, ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -39,11 +40,4 @@ def log_to_linear_node(
     gamma: float,
     invert_log_to_linear: bool,
 ) -> np.ndarray:
-    offset = pow(10.0, (black - white) * 0.002 / gamma)
-    gain = 1.0 / (1.0 - offset)
-
-    if not invert_log_to_linear:
-        img = gain * (pow(10.0, (1023.0 * img - white) * 0.002 / gamma) - offset)
-    else:
-        img = (np.log10(img / gain + offset) / (0.002 / gamma) + white) / 1023.0
-    return img
+    return log_linear(img, black, white, gamma, invert_log_to_linear)

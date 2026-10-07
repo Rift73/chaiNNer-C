@@ -4,11 +4,12 @@ from enum import Enum
 
 import cv2
 import numpy as np
-from chainner_ext import binary_threshold
 
 from api import KeyInfo
 from nodes.groups import if_enum_group
 from nodes.impl.image_utils import as_2d_grayscale
+from nodes.impl.native_color_ops import threshold as native_threshold
+from nodes.impl.native_threshold import binary_threshold_aa
 from nodes.properties.inputs import BoolInput, EnumInput, ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
@@ -93,23 +94,10 @@ def threshold_node(
     smoothness = extra_smoothness / 10
 
     if not anti_aliasing:
-        _, result = cv2.threshold(img, threshold, max_value, thresh_type.value)
-        return result
+        return native_threshold(img, threshold, max_value, thresh_type.value)
 
-    binary = binary_threshold(img, threshold, True, smoothness)
+    binary = binary_threshold_aa(img, threshold, smoothness)
     if get_h_w_c(binary)[2] == 1:
         binary = as_2d_grayscale(binary)
 
-    if thresh_type == ThresholdType.BINARY_INV:
-        binary = 1 - binary
-
-    if thresh_type in (ThresholdType.BINARY, ThresholdType.BINARY_INV):
-        if max_value < 1:
-            binary *= max_value
-        return binary
-    elif thresh_type == ThresholdType.TRUNC:
-        return binary * threshold + img * (1 - binary)
-    elif thresh_type == ThresholdType.TO_ZERO:
-        return binary * img
-    elif thresh_type == ThresholdType.TO_ZERO_INV:
-        return (1 - binary) * img
+    return native_threshold(img, threshold, max_value, thresh_type.value, binary)

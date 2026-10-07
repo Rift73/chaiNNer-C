@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from enum import Enum
 
-from chainner_ext import RustRegex
-
 from nodes.groups import if_enum_group
-from nodes.impl.rust_regex import get_range_text, match_to_replacements_dict
+from nodes.impl.native_graph import graph
+from nodes.impl.rust_regex import RustRegex
 from nodes.properties.inputs import EnumInput, TextInput
 from nodes.properties.outputs import TextOutput
 from nodes.utils.replacement import ReplacementString
@@ -24,8 +23,10 @@ class OutputMode(Enum):
     description=[
         "Find some text matching a given regex.",
         "This node has 2 modes for output: full match and pattern.",
-        "- **Full Match:** return the full match. E.g. for the regex `\\d+` and the text `My two cats caught 32 mice in 14 days`, the output will be `32`."
-        "\n- **Pattern:** using the same pattern syntax as in other nodes, return a formatted pattern of the match. E.g. for the regex `(\\w+) is (\\w+)`, the pattern is `{1}={2}`, and the text `My name is Jane.`, the output will be `name=Jane`.",
+        (
+            "- **Full Match:** return the full match. E.g. for the regex `\\d+` and the text `My two cats caught 32 mice in 14 days`, the output will be `32`."
+            "\n- **Pattern:** using the same pattern syntax as in other nodes, return a formatted pattern of the match. E.g. for the regex `(\\w+) is (\\w+)`, the pattern is `{1}={2}`, and the text `My name is Jane.`, the output will be `name=Jane`."
+        ),
     ],
     icon="MdTextFields",
     inputs=[
@@ -63,16 +64,13 @@ def regex_find_node(
     output: OutputMode,
     output_pattern: str,
 ) -> str:
-    r = RustRegex(regex_pattern)
-    m = r.search(text)
-    if m is None:
-        raise RuntimeError(
-            f"No match found. Unable to find the pattern '{regex_pattern}' in the text."
-        )
-
-    if output == OutputMode.FULL_MATCH:
-        return get_range_text(text, m)
-    elif output == OutputMode.PATTERN:
-        replacements = match_to_replacements_dict(r, m, text)
-        replacement = ReplacementString(output_pattern)
-        return replacement.replace(replacements)
+    return graph().utility_regex_find(
+        text,
+        regex_pattern,
+        output,
+        output_pattern,
+        OutputMode,
+        RustRegex,
+        ReplacementString,
+        True,
+    )

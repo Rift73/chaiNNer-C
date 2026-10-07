@@ -6,6 +6,8 @@ from __future__ import annotations
 import numpy as np
 from scipy import ndimage
 
+from .. import native_blue
+
 
 def find_largest_void(binary_pattern: np.ndarray, standard_deviation: float):
     """This function returns the indices of the largest void in the given binary
@@ -18,6 +20,8 @@ def find_largest_void(binary_pattern: np.ndarray, standard_deviation: float):
     @return A flat index i such that BinaryPattern.flat[i] corresponds to the
             largest void. By definition this is a majority pixel.
     @sa GetVoidAndClusterBlueNoise"""
+    if binary_pattern.ndim == 2 and binary_pattern.size:
+        return native_blue.find(binary_pattern, standard_deviation, False)
     # The minority value is always True for convenience
     if np.count_nonzero(binary_pattern) * 2 >= np.size(binary_pattern):
         binary_pattern = np.logical_not(binary_pattern)
@@ -25,7 +29,7 @@ def find_largest_void(binary_pattern: np.ndarray, standard_deviation: float):
     # the tiniest difference can change the ranking. Therefore we apply the Gaussian
     # through a fast Fourier transform by means of the convolution theorem.
     filtered_array = np.fft.ifftn(
-        ndimage.fourier.fourier_gaussian(
+        ndimage.fourier_gaussian(
             np.fft.fftn(np.where(binary_pattern, 1.0, 0.0)), standard_deviation
         )
     ).real
@@ -37,10 +41,12 @@ def find_tightest_cluster(binary_pattern: np.ndarray, standard_deviation: float)
     """Like FindLargestVoid() but finds the tightest cluster which is a minority
      pixel by definition.
     @sa GetVoidAndClusterBlueNoise"""
+    if binary_pattern.ndim == 2 and binary_pattern.size:
+        return native_blue.find(binary_pattern, standard_deviation, True)
     if np.count_nonzero(binary_pattern) * 2 >= np.size(binary_pattern):
         binary_pattern = np.logical_not(binary_pattern)
     filtered_array = np.fft.ifftn(
-        ndimage.fourier.fourier_gaussian(
+        ndimage.fourier_gaussian(
             np.fft.fftn(np.where(binary_pattern, 1.0, 0.0)), standard_deviation
         )
     ).real
@@ -74,6 +80,10 @@ def create_blue_noise(
            is little change.
     @return An integer array of shape OutputShape containing each integer from 0
             to np.prod(OutputShape)-1 exactly once."""
+    if len(output_shape) == 2 and all(d > 0 for d in output_shape):
+        return native_blue.create(
+            output_shape, standard_deviation, initial_seed_fraction, seed
+        )
     n_rank = np.prod(output_shape)
     # Generate the initial binary pattern with a prescribed number of ones
     n_initial_one = max(

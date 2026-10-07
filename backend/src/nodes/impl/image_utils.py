@@ -10,6 +10,8 @@ import numpy as np
 
 from ..utils.utils import Padding, get_h_w_c, split_file_path
 from .color.color import Color
+from .native_buffers import converted_pixels, freeze_normalized
+from .native_color_complete import cvt_color
 
 MAX_VALUES_BY_DTYPE = {
     np.dtype("int8").name: 127,
@@ -74,9 +76,9 @@ class NormalMapType(Enum):
 def convert_to_bgra(img: np.ndarray, in_c: int) -> np.ndarray:
     assert in_c in (1, 3, 4), f"Number of channels ({in_c}) unexpected"
     if in_c == 1:
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
+        img = cvt_color(img, cv2.COLOR_GRAY2BGRA)
     elif in_c == 3:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+        img = cvt_color(img, cv2.COLOR_BGR2BGRA)
 
     return img.copy()
 
@@ -89,6 +91,9 @@ def _get_iinfo(img: np.ndarray) -> np.iinfo | None:
 
 
 def normalize(img: np.ndarray) -> np.ndarray:
+    converted = converted_pixels(img)
+    if converted is not None:
+        return converted
     if img.dtype != np.float32:
         info = _get_iinfo(img)
         img = img.astype(np.float32)
@@ -114,6 +119,10 @@ def to_uint8(img: np.ndarray, normalized: bool = False) -> np.ndarray:
     if img.dtype == np.uint8:
         return img.copy()
 
+    converted = converted_pixels(img, 8, normalized)
+    if converted is not None:
+        return converted
+
     if not normalized or img.dtype != np.float32:
         img = normalize(img)
 
@@ -128,6 +137,10 @@ def to_uint16(img: np.ndarray, normalized: bool = False) -> np.ndarray:
     """
     if img.dtype == np.uint16:
         return img.copy()
+
+    converted = converted_pixels(img, 16, normalized)
+    if converted is not None:
+        return converted
 
     if not normalized or img.dtype != np.float32:
         img = normalize(img)
@@ -221,27 +234,27 @@ def as_target_channels(
         return img
 
     if not narrowing:
-        assert (
-            c < target_c
-        ), f"Narrowing is false, image channels ({c}) must be less than target channels ({target_c})"
+        assert c < target_c, (
+            f"Narrowing is false, image channels ({c}) must be less than target channels ({target_c})"
+        )
 
     if c == 1:
         if target_c == 3:
-            return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            return cvt_color(img, cv2.COLOR_GRAY2BGR)
         if target_c == 4:
-            return cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
+            return cvt_color(img, cv2.COLOR_GRAY2BGRA)
 
     if c == 3:
         if target_c == 1:
-            return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            return cvt_color(img, cv2.COLOR_BGR2GRAY)
         if target_c == 4:
-            return cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+            return cvt_color(img, cv2.COLOR_BGR2BGRA)
 
     if c == 4:
         if target_c == 1:
-            return cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
+            return cvt_color(img, cv2.COLOR_BGRA2GRAY)
         if target_c == 3:
-            return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            return cvt_color(img, cv2.COLOR_BGRA2BGR)
 
     raise ValueError(f"Unable to convert {c} channel image to {target_c} channel image")
 
@@ -274,9 +287,9 @@ def create_border(
         cv_border_type = cv2.BORDER_CONSTANT
         value = (1.0,) * c
     elif border_type == BorderType.CUSTOM_COLOR:
-        assert (
-            color is not None
-        ), "Creating a border with a custom color requires supplying a custom color."
+        assert color is not None, (
+            "Creating a border with a custom color requires supplying a custom color."
+        )
 
         # widen image or color to make them compatible
         if color.channels > c:
@@ -286,6 +299,12 @@ def create_border(
 
         cv_border_type = cv2.BORDER_CONSTANT
         value = color.value
+
+    # OpenCV 4.8's reflective-border index loop does not terminate when an
+    # input spatial dimension is empty. Such an image has no source pixel to
+    # extend; preserve valid constant-fill and no-padding behavior above.
+    if cv_border_type != cv2.BORDER_CONSTANT and 0 in img.shape[:2]:
+        raise ValueError("Cannot extend a border from an empty image")
 
     return cv2.copyMakeBorder(
         img,
@@ -349,7 +368,6 @@ def cartesian_product(arrays: list[np.ndarray]) -> np.ndarray:
     This is cartesian_product_transpose_pp from this following SO post by Paul Panzer:
     https://stackoverflow.com/questions/11144513/cartesian-product-of-x-and-y-array-points-into-single-array-of-2d-points/49445693#49445693
     """
-    #
     la = len(arrays)
     dtype = np.result_type(*arrays)
     arr = np.empty((la, *map(len, arrays)), dtype=dtype)
@@ -363,6 +381,8 @@ def fast_gaussian_blur(
     img: np.ndarray,
     sigma_x: float,
     sigma_y: float | None = None,
+    *,
+    normalized: bool = False,
 ) -> np.ndarray:
     """
     Computes a channel-wise gaussian blur of the given image using a fast approximation.
@@ -377,7 +397,26 @@ def fast_gaussian_blur(
     apply a small gaussian blur to the image after upscaling to smooth out the artifacts. This
     single step almost doubles the runtime of the method, but it is still much faster than
     blurring the full image.
+
+    normalized: the caller returns the result straight to its ImageOutput (the
+    Gaussian Blur node). A float32 result that is not img (every float32 path
+    allocates one) is then returned through freeze_normalized(result, clamp=True):
+    clamped in place as the output enforce would convert it, frozen and registered,
+    so the enforce can borrow it. Callers that use the raw values in arithmetic keep
+    the default and receive a writable, unclamped array.
     """
+    result = _fast_gaussian_blur(img, sigma_x, sigma_y)
+    if normalized and result.dtype == np.float32 and result is not img:
+        return freeze_normalized(result, clamp=True)
+    return result
+
+
+def _fast_gaussian_blur(
+    img: np.ndarray,
+    sigma_x: float,
+    sigma_y: float | None,
+) -> np.ndarray:
+    """fast_gaussian_blur's raw result."""
     if sigma_y is None:
         sigma_y = sigma_x
     if sigma_x == 0 or sigma_y == 0:
@@ -428,24 +467,38 @@ def fast_gaussian_blur(
 
     if h != h_down or w != w_down:
         # downsampled gaussian blur
-        img = cv2.resize(img, (w_down, h_down), interpolation=cv2.INTER_AREA)
-        img = cv2.GaussianBlur(
-            img,
-            (0, 0),
-            sigmaX=x_down_sigma,
-            sigmaY=y_down_sigma,
-            borderType=cv2.BORDER_REFLECT,
-        )
-        img = cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
+        if img.dtype == np.float32:
+            from .native_cv_resize import resize
+            from .native_gaussian import gaussian
+
+            img = resize(img, (w_down, h_down), cv2.INTER_AREA)
+            img = gaussian(img, x_down_sigma, y_down_sigma)
+            img = resize(img, (w, h), cv2.INTER_LINEAR)
+        else:
+            # Public helper compatibility outside the float32 image-node domain.
+            img = cv2.resize(img, (w_down, h_down), interpolation=cv2.INTER_AREA)
+            img = cv2.GaussianBlur(
+                img,
+                (0, 0),
+                sigmaX=x_down_sigma,
+                sigmaY=y_down_sigma,
+                borderType=cv2.BORDER_REFLECT,
+            )
+            img = cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
 
     if x_up_sigma != 0 or y_up_sigma != 0:
         # post blur to smooth out artifacts
-        img = cv2.GaussianBlur(
-            img,
-            (0, 0),
-            sigmaX=x_up_sigma,
-            sigmaY=y_up_sigma,
-            borderType=cv2.BORDER_REFLECT,
-        )
+        if img.dtype == np.float32:
+            from .native_gaussian import gaussian
+
+            img = gaussian(img, x_up_sigma, y_up_sigma)
+        else:
+            img = cv2.GaussianBlur(
+                img,
+                (0, 0),
+                sigmaX=x_up_sigma,
+                sigmaY=y_up_sigma,
+                borderType=cv2.BORDER_REFLECT,
+            )
 
     return img

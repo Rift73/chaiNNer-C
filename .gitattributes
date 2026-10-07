@@ -1,1 +1,5 @@
-* text=auto eol=LF
+* text=auto eol=lf
+backend/src/** -text
+native/tests/reference_*/** -text
+native/tests/oracle/** -text
+native/tests/chainner_ext/** -text

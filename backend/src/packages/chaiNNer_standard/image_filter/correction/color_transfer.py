@@ -12,6 +12,7 @@ from nodes.impl.color_transfer.mean_std import (
     mean_std_transfer,
 )
 from nodes.impl.color_transfer.principal_color import principal_color_transfer
+from nodes.impl.native_transfer_complete import transfer_mask, transfer_with_alpha
 from nodes.properties.inputs import BoolInput, EnumInput, ImageInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
@@ -77,22 +78,13 @@ def color_transfer_node(
         alpha = img[:, :, 3]
     bgr_img = img[:, :, :3]
 
-    _, _, ref_img_c = get_h_w_c(ref_img)
-
-    ref_alpha = None
-    if ref_img_c == 4:
-        ref_alpha = ref_img[:, :, 3]
     bgr_ref_img = ref_img[:, :, :3]
 
     # Don't process RGB data if the pixel is fully transparent, since
     # such RGB data is indeterminate.
-    valid_rgb_indices = np.ones(img.shape[:-1], dtype=bool)
-    if alpha is not None:
-        valid_rgb_indices = alpha > 0
+    valid_rgb_indices = transfer_mask(img)
 
-    ref_valid_rgb_indices = np.ones(ref_img.shape[:-1], dtype=bool)
-    if ref_alpha is not None:
-        ref_valid_rgb_indices = ref_alpha > 0
+    ref_valid_rgb_indices = transfer_mask(ref_img)
 
     transfer = bgr_img
     if algorithm == TransferColorAlgorithm.MEAN_STD:
@@ -115,6 +107,6 @@ def color_transfer_node(
         )
 
     if alpha is not None:
-        transfer = np.dstack((transfer, alpha))
+        transfer = transfer_with_alpha(transfer, img)
 
     return transfer

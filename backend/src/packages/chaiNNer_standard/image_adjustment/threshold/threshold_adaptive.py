@@ -5,7 +5,7 @@ from enum import Enum
 import cv2
 import numpy as np
 
-from nodes.impl.image_utils import to_uint8
+from nodes.impl.native_color_ops import adaptive_threshold
 from nodes.properties.inputs import EnumInput, ImageInput, NumberInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -85,16 +85,11 @@ def threshold_adaptive_node(
     block_radius: int,
     c: float,
 ) -> np.ndarray:
-    # Adaptive threshold requires uint8 input
-    img = to_uint8(img, normalized=True)
-
-    max_value = max_value / 100 * 255
-
-    return cv2.adaptiveThreshold(
+    return adaptive_threshold(
         img,
-        max_value,
-        adaptive_method.value,
         threshold_type.value,
-        block_radius * 2 + 1,
+        max_value / 100 * 255,
+        adaptive_method.value,
+        block_radius,
         round(c / 100 * 255),
     )

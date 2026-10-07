@@ -4,6 +4,7 @@ from typing import SupportsFloat
 
 import numpy as np
 
+from nodes.impl.native_analysis import statistics
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import NumberOutput
 
@@ -43,9 +44,5 @@ def image_statistics_node(
         # So by rounding to 4 digits, we have 1 digit left over to contain rounding errors
         return round(float(n) * 255, 4)
 
-    return (
-        to_float(np.min(img)),
-        to_float(np.max(img)),
-        to_float(np.mean(img)),
-        to_float(np.percentile(img, percentile)),
-    )
+    minimum, maximum, mean, quantile = statistics(img, percentile)
+    return to_float(minimum), to_float(maximum), to_float(mean), to_float(quantile)
