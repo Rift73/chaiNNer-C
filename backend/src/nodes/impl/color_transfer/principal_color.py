@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..native_transfer_complete import supported
+from ..native_transfer_complete import transfer as complete_transfer
+
 __author__ = "Daniel Steinberg"
 __copyright__ = "Copyright 2022, Daniel Steinberg"
 __credits__ = ["Daniel Steinberg"]
@@ -30,6 +33,9 @@ def principal_color_transfer(
         on Display." In IEEE International Conference on Image Processing 2005,
         2:II-5, 2005.
     """
+
+    if supported(img, ref_img, valid_indices, ref_valid_indices):
+        return complete_transfer(img, ref_img, valid_indices, ref_valid_indices, True)
 
     shape = img.shape
 

@@ -1,0 +1,139 @@
+diff --git a/nodes/impl/ncnn/auto_split.py b/nodes/impl/ncnn/auto_split.py
+index f7cdf4d..acf2b29 100644
+--- a/nodes/impl/ncnn/auto_split.py
++++ b/nodes/impl/ncnn/auto_split.py
+@@ -3,21 +3,15 @@ from __future__ import annotations
+ import gc
+ 
+ import numpy as np
+-
+-try:
+-    from ncnn_vulkan import ncnn
+-
+-    use_gpu = True
+-except ImportError:
+-    from ncnn import ncnn  # type: ignore
+-
+-    use_gpu = False
++from ncnn import ncnn
+ from sanic.log import logger
+ 
+ from ...utils.utils import get_h_w_c
+ from ..image_utils import to_uint8
+ from ..upscale.auto_split import Split, Tiler, auto_split
+ 
++use_gpu = ncnn.get_gpu_count() > 0
++
+ 
+ def ncnn_auto_split(
+     img: np.ndarray,
+diff --git a/nodes/impl/ncnn/session.py b/nodes/impl/ncnn/session.py
+index 67f102c..86b33ba 100644
+--- a/nodes/impl/ncnn/session.py
++++ b/nodes/impl/ncnn/session.py
+@@ -3,19 +3,14 @@ from __future__ import annotations
+ import tempfile
+ from weakref import WeakKeyDictionary
+ 
+-try:
+-    from ncnn_vulkan import ncnn
+-
+-    use_gpu = True
+-except ImportError:
+-    from ncnn import ncnn  # type: ignore
+-
+-    use_gpu = False
++from ncnn import ncnn
+ 
+ from packages.chaiNNer_ncnn.settings import NcnnSettings
+ 
+ from .model import NcnnModelWrapper
+ 
++use_gpu = ncnn.get_gpu_count() > 0
++
+ 
+ def create_ncnn_net(model: NcnnModelWrapper, settings: NcnnSettings) -> ncnn.Net:
+     net = ncnn.Net()
+diff --git a/packages/chaiNNer_ncnn/ncnn/processing/upscale_image.py b/packages/chaiNNer_ncnn/ncnn/processing/upscale_image.py
+index a444a31..80984ab 100644
+--- a/packages/chaiNNer_ncnn/ncnn/processing/upscale_image.py
++++ b/packages/chaiNNer_ncnn/ncnn/processing/upscale_image.py
+@@ -4,15 +4,7 @@ from contextlib import contextmanager
+ 
+ import cv2
+ import numpy as np
+-
+-try:
+-    from ncnn_vulkan import ncnn
+-
+-    use_gpu = True
+-except ImportError:
+-    from ncnn import ncnn  # type: ignore
+-
+-    use_gpu = False
++from ncnn import ncnn
+ from sanic.log import logger
+ 
+ from api import NodeContext
+@@ -43,6 +35,8 @@ from system import is_mac
+ from ...settings import NcnnSettings, get_settings
+ from .. import processing_group
+ 
++use_gpu = ncnn.get_gpu_count() > 0
++
+ 
+ @contextmanager
+ def managed_blob_vkallocator(vkdev: ncnn.VulkanDevice):
+diff --git a/packages/chaiNNer_ncnn/settings.py b/packages/chaiNNer_ncnn/settings.py
+index 1f16ba4..ec82c19 100644
+--- a/packages/chaiNNer_ncnn/settings.py
++++ b/packages/chaiNNer_ncnn/settings.py
+@@ -1,19 +1,14 @@
+ from dataclasses import dataclass
+ 
+-try:
+-    from ncnn_vulkan import ncnn
+-
+-    use_gpu = True
+-except ImportError:
+-    from ncnn import ncnn  # type: ignore
+-
+-    use_gpu = False
++from ncnn import ncnn
+ 
+ from api import DropdownSetting, NodeContext, NumberSetting, ToggleSetting
+ from system import is_arm_mac
+ 
+ from . import package
+ 
++use_gpu = ncnn.get_gpu_count() > 0
++
+ if not is_arm_mac and use_gpu:
+     try:
+         gpu_list = []
+diff --git a/packages/chaiNNer_standard/__init__.py b/packages/chaiNNer_standard/__init__.py
+index 868580a..cc76b62 100644
+--- a/packages/chaiNNer_standard/__init__.py
++++ b/packages/chaiNNer_standard/__init__.py
+@@ -23,7 +23,7 @@ package = add_package(
+         ),
+         Dependency(
+             display_name="Pillow (PIL)",
+-            pypi_name="Pillow",
++            pypi_name="pillow",
+             version="9.2.0",
+             size_estimate=3 * MB,
+             import_name="PIL",
+@@ -81,12 +81,6 @@ package = add_package(
+             version="1.1.10",
+             size_estimate=52 * KB,
+         ),
+-        Dependency(
+-            display_name="ChaiNNer Extensions",
+-            pypi_name="chainner_ext",
+-            version="0.3.10",
+-            size_estimate=2.0 * MB,
+-        ),
+     ],
+ )
+ 

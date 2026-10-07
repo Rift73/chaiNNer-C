@@ -15,6 +15,7 @@ from nodes.impl.gradients import (
     vertical_gradient,
 )
 from nodes.impl.image_utils import as_target_channels
+from nodes.impl.native_generation import image_fill
 from nodes.properties.inputs import (
     BoolInput,
     ColorInput,
@@ -144,9 +145,4 @@ def create_gradient_node(
             as_target_channels(color_1.to_1x1_image(), color_2.channels)
         )
 
-    c1 = color_1.to_image(width=width, height=height)
-    c2 = color_2.to_image(width=width, height=height)
-    if color_1.channels > 1:
-        img = np.dstack((img,) * color_1.channels)
-
-    return c2 * img + c1 * (1 - img)
+    return image_fill(width, height, color_1.value, second=color_2.value, gradient=img)

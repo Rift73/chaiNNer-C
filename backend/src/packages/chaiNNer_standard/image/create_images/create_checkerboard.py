@@ -4,6 +4,7 @@ import numpy as np
 
 from nodes.impl.color.color import Color
 from nodes.impl.image_utils import as_target_channels
+from nodes.impl.native_generation import image_fill
 from nodes.properties.inputs import ColorInput, NumberInput
 from nodes.properties.outputs import ImageOutput
 
@@ -44,10 +45,6 @@ def create_checkerboard_node(
     color_2: Color,
     square_size: int,
 ) -> np.ndarray:
-    # Determine the number of squares in each direction
-    num_cols = (width + square_size - 1) // square_size
-    num_rows = (height + square_size - 1) // square_size
-
     max_channels = max(color_1.channels, color_2.channels)
 
     color_a = Color.from_1x1_image(
@@ -57,26 +54,11 @@ def create_checkerboard_node(
         as_target_channels(color_2.to_1x1_image(), max_channels)
     )
 
-    img = np.zeros(
-        (height, width, max_channels), dtype=np.float32
-    )  # Create a new buffer with all zeros
-
-    # Fill the checkerboard with alternating squares
-    for i in range(num_rows):
-        for j in range(num_cols):
-            if (i + j) % 2 == 0:
-                img[
-                    max(0, height - (i + 1) * square_size) : max(
-                        0, height - i * square_size
-                    ),
-                    j * square_size : min(width, (j + 1) * square_size),
-                ] = color_a.value
-            else:
-                img[
-                    max(0, height - (i + 1) * square_size) : max(
-                        0, height - i * square_size
-                    ),
-                    j * square_size : min(width, (j + 1) * square_size),
-                ] = color_b.value
-
-    return img
+    return image_fill(
+        width,
+        height,
+        color_a.value,
+        second=color_b.value,
+        square=square_size,
+        keep_channel=True,
+    )

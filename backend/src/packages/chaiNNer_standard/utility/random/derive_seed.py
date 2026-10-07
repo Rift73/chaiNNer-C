@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import hashlib
-import struct
 from typing import Union
 
 from nodes.groups import optional_list_group, seed_group
+from nodes.impl.native_utility_random import derive_seed, seed_to_bytes
 from nodes.properties.inputs import BaseInput, SeedInput
 from nodes.properties.outputs import SeedOutput
 from nodes.utils.seed import Seed
@@ -24,16 +23,7 @@ def SourceInput(label: str):
 
 
 def _to_bytes(s: Source) -> bytes:
-    if isinstance(s, str):
-        return s.encode(errors="backslashreplace")
-    if isinstance(s, Seed):
-        s = s.value
-
-    i = int(s)
-    if isinstance(s, int) or s == i:  # type: ignore
-        return i.to_bytes(i.bit_length() // 8 + 1, byteorder="big", signed=True)
-
-    return struct.pack("d", s)
+    return seed_to_bytes(s)
 
 
 @random_group.register(
@@ -53,16 +43,4 @@ def _to_bytes(s: Source) -> bytes:
     ],
 )
 def derive_seed_node(seed: Seed, *sources: Source | None) -> Seed:
-    if all(s is None for s in sources):
-        # return seed as is if there are no sources of randomness
-        # this is useful for extracting out seeds
-        return seed
-
-    h = hashlib.sha256()
-
-    h.update(_to_bytes(seed))
-    for s in sources:
-        if s is not None:
-            h.update(_to_bytes(s))
-
-    return Seed.from_bytes(h.digest())
+    return derive_seed(seed, sources)

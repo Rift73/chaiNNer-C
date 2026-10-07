@@ -5,6 +5,8 @@ from enum import Enum
 import cv2
 import numpy as np
 
+from nodes.impl.native_buffers import freeze_normalized
+from nodes.impl.native_filters import morphology
 from nodes.properties.inputs import EnumInput, ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -46,7 +48,9 @@ def dilate_node(
     if radius == 0 or iterations == 0:
         return img
 
-    size = 2 * radius + 1
-    element = cv2.getStructuringElement(morph_shape.value, (size, size))
-
-    return cv2.dilate(img, element, iterations=iterations)
+    # The fresh result is clamped in place as the output enforce converts it, frozen
+    # and registered (freeze_normalized), so the enforce can borrow it.
+    return freeze_normalized(
+        morphology(img, morph_shape.value, radius, iterations, maximum=True),
+        clamp=True,
+    )

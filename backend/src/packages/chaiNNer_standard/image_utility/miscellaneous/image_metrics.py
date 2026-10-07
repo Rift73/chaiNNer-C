@@ -5,7 +5,8 @@ import math
 import cv2
 import numpy as np
 
-from nodes.impl.image_utils import calculate_ssim
+from nodes.impl.native_analysis import binary, calculate_ssim, mean
+from nodes.impl.native_color_complete import cvt_color
 from nodes.properties.inputs import ImageInput
 from nodes.properties.outputs import NumberOutput
 from nodes.utils.utils import get_h_w_c
@@ -33,18 +34,18 @@ from .. import miscellaneous_group
 def image_metrics_node(
     orig_img: np.ndarray, comp_img: np.ndarray
 ) -> tuple[float, float, float]:
-    assert (
-        orig_img.shape == comp_img.shape
-    ), "Images must have same dimensions and color depth"
+    assert orig_img.shape == comp_img.shape, (
+        "Images must have same dimensions and color depth"
+    )
 
     # If an image is not grayscale, convert to YCrCb and compute metrics
     # on luma channel only
     c = get_h_w_c(orig_img)[2]
     if c > 1:
-        orig_img = cv2.cvtColor(orig_img, cv2.COLOR_BGR2YCrCb)[:, :, 0]
-        comp_img = cv2.cvtColor(comp_img, cv2.COLOR_BGR2YCrCb)[:, :, 0]
+        orig_img = cvt_color(orig_img, cv2.COLOR_BGR2YCrCb)[:, :, 0]
+        comp_img = cvt_color(comp_img, cv2.COLOR_BGR2YCrCb)[:, :, 0]
 
-    mse = round(np.mean((comp_img - orig_img) ** 2), 6)  # type: ignore
+    mse = round(mean(binary(comp_img, orig_img, 2)), 6)
     psnr = round(10 * math.log(1 / mse), 6)
     ssim = round(calculate_ssim(comp_img, orig_img), 6)
 

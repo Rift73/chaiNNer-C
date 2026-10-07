@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from api import Lazy
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import AnyInput, BoolInput
 from nodes.properties.outputs import BaseOutput
 
@@ -30,4 +31,4 @@ from .. import value_group
 def conditional_node(
     cond: bool, if_true: Lazy[object], if_false: Lazy[object]
 ) -> object:
-    return if_true.value if cond else if_false.value
+    return graph().execution_conditional(cond, if_true, if_false)

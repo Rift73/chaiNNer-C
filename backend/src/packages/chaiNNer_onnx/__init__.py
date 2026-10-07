@@ -23,16 +23,17 @@ def get_onnx_runtime():
         return Dependency(
             display_name="ONNX Runtime (GPU)",
             pypi_name="onnxruntime-gpu",
-            version="1.17.1",
+            version="1.30.0",
             size_estimate=120 * MB,
             import_name="onnxruntime",
-            extra_index_url="https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/",
         )
     elif is_windows:
+        # onnxruntime-directml's last release is 1.24.4; it serves the public API 22
+        # that the native session wrapper requests.
         return Dependency(
             display_name="ONNX Runtime (DirectMl)",
             pypi_name="onnxruntime-directml",
-            version="1.17.1",
+            version="1.24.4",
             size_estimate=15 * MB,
             import_name="onnxruntime",
         )
@@ -40,7 +41,7 @@ def get_onnx_runtime():
         return Dependency(
             display_name="ONNX Runtime",
             pypi_name="onnxruntime",
-            version="1.17.1",
+            version="1.30.0",
             size_estimate=6 * MB,
         )
 
@@ -54,20 +55,20 @@ package = add_package(
         Dependency(
             display_name="ONNX",
             pypi_name="onnx",
-            version="1.16.0",
+            version="1.23.2",
             size_estimate=12 * MB,
         ),
         Dependency(
             display_name="ONNX Optimizer",
             pypi_name="onnxoptimizer",
-            version="0.3.13",
+            version="0.4.2",
             size_estimate=300 * KB,
         ),
         get_onnx_runtime(),
         Dependency(
             display_name="Protobuf",
             pypi_name="protobuf",
-            version="4.24.2",
+            version="7.36.2",
             size_estimate=500 * KB,
         ),
     ],

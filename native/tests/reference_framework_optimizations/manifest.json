@@ -1,0 +1,19 @@
+{
+  "provenance": "Independent pre-optimization source snapshot, captured by parent before writes; GPL-3.0 chaiNNer source.",
+  "sha256": {
+    "nodes/impl/ncnn/auto_split.py": "fef654aa7baa19cb10a4b62d3ec71816b7d80a365da890b3ac91bde1063aa6a1",
+    "nodes/impl/onnx/auto_split.py": "51a1410814111daae2f2dcf56fd0d99bbadc069f2d60a92fd90512b3f3988138",
+    "packages/chaiNNer_ncnn/ncnn/batch_processing/load_models.py": "2b19030dbfbdcf8b4757ea028250663a15bc73e0072536774c20bd6138d80276",
+    "packages/chaiNNer_pytorch/pytorch/processing/align_image_to_reference.py": "c27afdc1b1c6c126aedf2100ad7b3314f0051539c9934b745947600fb287f42a",
+    "packages/chaiNNer_pytorch/pytorch/restoration/upscale_face.py": "ac33ccfc338208947f99afa4280670d51c27f6adf8ae4a636bd394662ae07fd3",
+    "packages/chaiNNer_pytorch/pytorch/utility/interpolate_models.py": "8f0505cc9bfe394068e14cb600dc69a3c375c946f03ac5729d45374a03327a67",
+    "installed/packages/chaiNNer_pytorch/pytorch/processing/align_image_to_reference.py": "c27afdc1b1c6c126aedf2100ad7b3314f0051539c9934b745947600fb287f42a",
+    "installed/packages/chaiNNer_pytorch/pytorch/restoration/upscale_face.py": "aaaf7580065680fb13794278b7246a2efbf99877b6154d83648200e528e4e335",
+    "installed/packages/chaiNNer_pytorch/pytorch/utility/interpolate_models.py": "75ba5db8ce1f6a22ba34a6fb49e2f9697f3d587bf537fbc9f29eec03043b99bd",
+    "installed/packages/chaiNNer_ncnn/ncnn/batch_processing/load_models.py": "7270dcb599098f73b70cc45a6ba83577b4c2e4cab167917ca69fed9f3349d993",
+    "installed/nodes/impl/ncnn/auto_split.py": "77d58120a2a3ffaaff101c770ae026697593810eb991ceca8b010e0a02a603f1",
+    "installed/packages/chaiNNer_ncnn/ncnn/processing/upscale_image.py": "7089a3c116e8374160884a9602c8942317ac3fcbd58b3978aa163fbf6c7fc7ce",
+    "installed/nodes/impl/onnx/auto_split.py": "3b67e0f80cca696c91d033cb8c25a5d49e0e4764cb8fe700944a828f3109156d",
+    "installed/packages/chaiNNer_onnx/onnx/processing/upscale_image.py": "3cd18789d066649b13ffb104765fe3990be6a79faaae389ff6e737e32142ccd5"
+  }
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import NumberInput, TextInput
 from nodes.properties.outputs import NumberOutput
 
@@ -23,4 +24,4 @@ from .. import value_group
     ],
 )
 def parse_number_node(text: str, base: int) -> int:
-    return int(text, base)
+    return graph().utility_parse_number(globals(), text, base)

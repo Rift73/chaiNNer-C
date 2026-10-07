@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import math
+# `x as x` imports: the native mirror reads these names in native/src/utility_scalar.cpp
+import math as math
 from enum import Enum
 
 from api import SpecialSuggestion
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import EnumInput, NumberInput
 from nodes.properties.outputs import NumberOutput
 
@@ -125,35 +127,4 @@ _special_mod_numbers = (0.0, float("inf"), float("-inf"), float("nan"))
     ],
 )
 def math_node(op: MathOperation, a: float, b: float) -> int | float:
-    if op == MathOperation.ADD:
-        return a + b
-    elif op == MathOperation.SUBTRACT:
-        return a - b
-    elif op == MathOperation.MULTIPLY:
-        return a * b
-    elif op == MathOperation.DIVIDE:
-        return a / b
-    elif op == MathOperation.POWER:
-        try:
-            result = pow(a, b)
-        except Exception as e:
-            raise ValueError(f"{a}^{b} is not defined for real numbers.") from e
-
-        if isinstance(result, (int, float)):
-            return result
-        raise ValueError(f"{a}^{b} is not defined for real numbers.")
-    elif op == MathOperation.LOG:
-        return math.log(b, a)
-    elif op == MathOperation.MAXIMUM:
-        return max(a, b)
-    elif op == MathOperation.MINIMUM:
-        return min(a, b)
-    elif op == MathOperation.MODULO:
-        if a in _special_mod_numbers or b in _special_mod_numbers:
-            return a - b * math.floor(a / b)
-        else:
-            return a % b
-    elif op == MathOperation.PERCENT:
-        return a * b / 100
-    else:
-        raise RuntimeError(f"Unknown operator {op}")
+    return graph().utility_math(globals(), op, a, b)

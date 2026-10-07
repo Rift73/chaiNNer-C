@@ -2,20 +2,28 @@ import math
 
 import numpy as np
 
+from .native_geometry import fill_gradient
+
 
 def horizontal_gradient(img: np.ndarray):
+    if fill_gradient(img, 0):
+        return
     x = np.arange(img.shape[1])
     p = x / (img.shape[1] - 1)
     img[:, :] = p.reshape((1, -1))
 
 
 def vertical_gradient(img: np.ndarray):
+    if fill_gradient(img, 1):
+        return
     x = np.arange(img.shape[0])
     p = x / (img.shape[0] - 1)
     img[:, :] = p.reshape((-1, 1))
 
 
 def diagonal_gradient(img: np.ndarray, angle: float, width: float):
+    if fill_gradient(img, 2, angle, width):
+        return
     center = np.array([img.shape[0], img.shape[1]], dtype=np.float32) / 2
     direction = np.array([np.cos(angle), np.sin(angle)], dtype=np.float32)
 
@@ -32,6 +40,8 @@ def diagonal_gradient(img: np.ndarray, angle: float, width: float):
 def radial_gradient(
     img: np.ndarray, inner_radius_percent: float = 0, outer_radius_percent: float = 1
 ):
+    if fill_gradient(img, 3, inner_radius_percent, outer_radius_percent):
+        return
     inner_radius = inner_radius_percent * img.shape[1] / 2
     outer_radius = outer_radius_percent * img.shape[1] / 2
 
@@ -45,6 +55,8 @@ def radial_gradient(
 
 
 def conic_gradient(img: np.ndarray, rotation: float = 0):
+    if fill_gradient(img, 4, rotation):
+        return
     if rotation > np.pi:
         rotation -= 2 * np.pi
     if rotation < -np.pi:

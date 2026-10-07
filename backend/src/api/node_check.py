@@ -6,7 +6,8 @@ import os
 import pathlib
 from collections import OrderedDict
 from enum import Enum
-from typing import Any, Callable, NewType, Tuple, Union, cast, get_args
+from types import UnionType
+from typing import Any, Callable, NewType, Tuple, Union, cast, get_args, get_origin
 
 from .node_context import NodeContext
 from .node_data import NodeData
@@ -53,25 +54,22 @@ TYPE_CHECK_LEVEL = _get_check_level("TYPE_CHECK_LEVEL", CHECK_LEVEL)
 
 
 class TypeTransformer(ast.NodeTransformer):
-    def visit_BinOp(self, node: ast.BinOp):  # noqa
+    def visit_BinOp(self, node: ast.BinOp):
         if isinstance(node.op, ast.BitOr):
             return ast.Subscript(
                 value=ast.Name(id="Union", ctx=ast.Load()),
-                slice=ast.Index(
-                    value=ast.Tuple(
-                        elts=[
-                            self.visit(node.left),
-                            self.visit(node.right),
-                        ],
-                        ctx=ast.Load(),
-                    ),
+                slice=ast.Tuple(
+                    elts=[
+                        self.visit(node.left),
+                        self.visit(node.right),
+                    ],
                     ctx=ast.Load(),
                 ),
                 ctx=ast.Load(),
             )
         return super().visit_BinOp(node)
 
-    def visit_Subscript(self, node: ast.Subscript):  # noqa
+    def visit_Subscript(self, node: ast.Subscript):
         if isinstance(node.value, ast.Name) and node.value.id == "tuple":
             return ast.Subscript(
                 value=ast.Name(id="Tuple", ctx=ast.Load()),
@@ -113,13 +111,10 @@ def union_types(types: list[_Ty]) -> _Ty:
 
 
 def union_to_set(t: _Ty) -> set[_Ty]:
-    s = str(t)
-    if s.startswith("typing.Union["):
+    # Optional[X] is Union[X, None]; unions flatten, so their args are the members.
+    if get_origin(t) in (Union, UnionType):
         return set(get_args(t))
-    elif s.startswith("typing.Optional["):
-        return {*union_to_set(get_args(t)[0]), _Ty(type(None))}
-    else:
-        return {t}
+    return {t}
 
 
 def is_subset_of(a: _Ty, b: _Ty) -> bool:

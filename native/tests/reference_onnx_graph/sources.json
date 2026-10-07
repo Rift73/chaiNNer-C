@@ -1,0 +1,12 @@
+{
+  "installed_app": "0.25.1-nightly.2025-10-21",
+  "files": {
+    "load.py": "8cdaaee165c10f2bc87ae1d486d55455be54aefbb01c0cc8f27b26c5c231d9bb",
+    "model.py": "95e6e1cd271b150e00c74856904ac028313f164d8ee3bf17d1b6c8738f3676d4",
+    "onnx_to_ncnn.py": "059480b0b1bc91a7e3afd837a628dad05d21c2937c9e467fe0dc6c7fc2cf3aa7",
+    "tensorproto_utils.py": "eac1a142949e121d9ec03d29203118644816a2fa54608e95e36832aabea2dfcb",
+    "update_model_dims.py": "3ded50c334cad203ad4e6923db1d07f3951cccd6dfc2a4d81e69286f84c2a4b7",
+    "utils.py": "29d3dd1e0e6f0346d2dd510b981e6c8aac6960e34c4b665af05c85e7483e4bb7",
+    "__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

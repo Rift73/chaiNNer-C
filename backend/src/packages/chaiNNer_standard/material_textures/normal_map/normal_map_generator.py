@@ -8,9 +8,14 @@ import numpy as np
 
 import navi
 from nodes.groups import icon_set_group, if_enum_group
-from nodes.impl.image_utils import BorderType, create_border, fast_gaussian_blur
+from nodes.impl.image_utils import fast_gaussian_blur
+from nodes.impl.native_color_complete import cvt_color
+from nodes.impl.native_color_ops import height_map, normal_output, prepare_height
+from nodes.impl.native_convolution import convolve
+from nodes.impl.native_layout import pad
+from nodes.impl.native_normal_kernel import sharpen
 from nodes.impl.normals.edge_filter import EdgeFilter, get_filter_kernels
-from nodes.impl.normals.height import HeightSource, get_height_map
+from nodes.impl.normals.height import HeightSource
 from nodes.properties.inputs import (
     BoolInput,
     EnumInput,
@@ -18,7 +23,7 @@ from nodes.properties.inputs import (
     SliderInput,
 )
 from nodes.properties.outputs import ImageOutput
-from nodes.utils.utils import Padding, get_h_w_c
+from nodes.utils.utils import get_h_w_c
 
 from .. import normal_map_group
 
@@ -35,7 +40,7 @@ def as_grayscale(img: np.ndarray) -> np.ndarray:
     if c == 1:
         return img
     if c == 3:
-        return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        return cvt_color(img, cv2.COLOR_BGR2GRAY)
     raise AssertionError("Only grayscale and RGB images are supported.")
 
 
@@ -267,8 +272,8 @@ def normal_map_generator_node(
     invert_g: bool,
     alpha_output: AlphaOutput,
 ) -> np.ndarray:
-    h, w, c = get_h_w_c(img)
-    height = get_height_map(img, height_source)
+    _, _, c = get_h_w_c(img)
+    height = height_map(img, height_source.value)
 
     filter_x, filter_y = get_filter_kernels(
         edge_filter,
@@ -287,7 +292,7 @@ def normal_map_generator_node(
     padding = 0
     if tileable:
         padding = max(1, filter_x.shape[0] // 2, math.ceil(abs(blur_sharp) * 2))
-        height = create_border(height, BorderType.WRAP, Padding.all(padding))
+        height = pad(height, 3, None, padding, padding, padding, padding)
 
     if blur_sharp < 0:
         # blur
@@ -295,43 +300,29 @@ def normal_map_generator_node(
     elif blur_sharp > 0:
         # sharpen
         blurred = fast_gaussian_blur(height, blur_sharp)
-        height = cv2.addWeighted(height, 2.0, blurred, -1.0, 0)
+        height = sharpen(height, blurred)
 
-    if min_z > 0:
-        height = np.maximum(min_z, height)
-    if scale != 0:
-        height = height * scale  # type: ignore
+    height = prepare_height(height, min_z, scale)
 
-    dx = cv2.filter2D(height, -1, filter_x)
-    dy = cv2.filter2D(height, -1, filter_y)
+    dx = convolve(height, filter_x, 0)
+    dy = convolve(height, filter_y, 0)
 
     if padding > 0:
         dx = dx[padding:-padding, padding:-padding]
         dy = dy[padding:-padding, padding:-padding]
         height = height[padding:-padding, padding:-padding]
 
-    x, y, z = normalize(dx, dy)
-
-    if invert_r:
-        x = -x
-    if invert_g:
-        y = -y
-
     if alpha_output is AlphaOutput.NONE:
         a = None
     elif alpha_output is AlphaOutput.HEIGHT:
         a = height
     elif alpha_output is AlphaOutput.UNCHANGED:
-        a = np.ones((h, w), dtype=np.float32) if c < 4 else img[:, :, 3]
+        a = None if c < 4 else img[:, :, 3]
     elif alpha_output is AlphaOutput.ONE:
-        a = np.ones((h, w), dtype=np.float32)
+        a = None
     else:
         raise AssertionError(f"Invalid alpha output '{alpha_output}'")
 
-    r = (x + 1) * 0.5
-    g = (y + 1) * 0.5
-    b = np.abs(z)
-
-    channels = (b, g, r) if a is None else (b, g, r, a)
-
-    return cv2.merge(channels)
+    return normal_output(
+        dx, dy, a, invert_r, invert_g, alpha_output is not AlphaOutput.NONE
+    )

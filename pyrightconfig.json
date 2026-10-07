@@ -1,13 +1,30 @@
 {
 	"include": [
-		"backend"
+		"backend",
+		"native/tools",
+		"native/tests"
 	],
+	// The environment is pinned, so plain `pyright` from the repo root does not depend on
+	// the PATH interpreter: the provisioned CPython 3.14 runtime (the tested stack) is the
+	// venv, and native/.venv's own site-packages adds the requirements.txt dev packages
+	// (appdirs, viztracer). pyright reads only a venv's own site-packages, never
+	// include-system-site-packages, so native/.venv cannot serve as the venv alone.
+	"pythonVersion": "3.14",
+	"venvPath": "native/runtime",
+	"venv": "cpython-3.14.8",
 	"extraPaths": [
-		"backend/src"
+		"backend/src",
+		"native/tools",
+		"native/.venv/Lib/site-packages"
 	],
 	"exclude": [
-		"**/__pycache__"
+		"**/__pycache__",
+		"native/tests/reference_*",
+		"native/.venv",
+		"native/runtime",
+		"native/build"
 	],
+	"stubPath": "stubs",
 	"ignore": [],
 	"typeCheckingMode": "basic",
 	"useLibraryCodeForTypes": true,

@@ -1,0 +1,31 @@
+name: Backend environment
+description: >-
+    CPython 3.14 and a venv at native/runtime/cpython-3.14.8, the environment pyrightconfig.json
+    names (locally the provisioned runtime), holding the lock's packages as CPU builds and
+    requirements.txt. Windows runners only.
+runs:
+    using: composite
+    steps:
+        - uses: actions/setup-python@v6
+          with:
+              python-version: '3.14'
+              cache: 'pip'
+              cache-dependency-path: |
+                  requirements.txt
+                  native/python-stack.lock.txt
+        - name: Create the environment pyrightconfig.json names
+          shell: pwsh
+          run: python -m venv native/runtime/cpython-3.14.8
+        # CPU builds of the lock: PyPI's Windows torch and torchvision wheels are CPU builds,
+        # onnxruntime stands in for onnxruntime-gpu, and chainner-pip (the backend's bundled
+        # wheel, not on PyPI) is left out, since no checked file imports it.
+        - name: Write the lock's CPU requirements
+          shell: pwsh
+          run: |
+              Get-Content native/python-stack.lock.txt |
+              Where-Object { $_ -notmatch '^chainner-pip==' } |
+              ForEach-Object { $_ -replace '\+cu\d+', '' -replace '^onnxruntime-gpu==', 'onnxruntime==' } |
+              Set-Content "$env:RUNNER_TEMP/lock-cpu.txt"
+        - name: Install the lock and requirements.txt
+          shell: pwsh
+          run: ./native/runtime/cpython-3.14.8/Scripts/python -m pip install -r requirements.txt -r "$env:RUNNER_TEMP/lock-cpu.txt"

@@ -72,8 +72,9 @@ export const FileInput = memo(
             if (event.dataTransfer.types.includes('Files')) {
                 event.stopPropagation();
 
+                // A locked or connected input takes no drop.
                 // eslint-disable-next-line no-param-reassign
-                event.dataTransfer.dropEffect = 'move';
+                event.dataTransfer.dropEffect = isLocked || isConnected ? 'none' : 'copy';
             }
         };
 
@@ -82,6 +83,7 @@ export const FileInput = memo(
 
             if (event.dataTransfer.types.includes('Files')) {
                 event.stopPropagation();
+                if (isLocked || isConnected) return;
 
                 const p = getSingleFileWithExtension(event.dataTransfer, filetypes);
                 if (p) {

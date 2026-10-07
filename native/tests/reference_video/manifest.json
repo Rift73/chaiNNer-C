@@ -1,0 +1,75 @@
+{
+  "installed_root": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src",
+  "files": [
+    {
+      "origin": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\nodes\\impl\\video.py",
+      "snapshot": "installed\\nodes\\impl\\video.py",
+      "sha256": "4b08b19a78093bf6a4c63ad6dd1f486ddf920b919a604335c3c437607686ae06"
+    },
+    {
+      "origin": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\nodes\\impl\\ffmpeg.py",
+      "snapshot": "installed\\nodes\\impl\\ffmpeg.py",
+      "sha256": "afa61c578341c2ddd91cfdc368630d359c99f24e98197efb3e4c0e895a131e02"
+    },
+    {
+      "origin": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\packages\\chaiNNer_standard\\image\\video_frames\\load_video.py",
+      "snapshot": "installed\\packages\\chaiNNer_standard\\image\\video_frames\\load_video.py",
+      "sha256": "e9b4ee9674d944f61c12d9a671484912987106bb7f177bcde0ba58e998823d8d"
+    },
+    {
+      "origin": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\packages\\chaiNNer_standard\\image\\video_frames\\save_video.py",
+      "snapshot": "installed\\packages\\chaiNNer_standard\\image\\video_frames\\save_video.py",
+      "sha256": "b56576532b3375f3ba1838c96c7638cf3fdeb839c3bf66ac09ee80bfcaf41ff5"
+    },
+    {
+      "origin": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\api\\iter.py",
+      "snapshot": "installed\\api\\iter.py",
+      "sha256": "2dc6848ed6d74e8962ca05a62d381edb2a6a7554159fbc50234db7588b66e0ca"
+    },
+    {
+      "origin": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\api\\node_context.py",
+      "snapshot": "installed\\api\\node_context.py",
+      "sha256": "3a9dce257cf44c22a6ec9114809a3ac14a8818a6dc5bc154de0316cc2a09e835"
+    },
+    {
+      "origin": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\process.py",
+      "snapshot": "installed\\process.py",
+      "sha256": "19d36a7b98f2c750987f3006232187f73b4daa12de9a689e6a52a780962264a3"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src\\nodes\\impl\\video.py",
+      "snapshot": "source\\nodes\\impl\\video.py",
+      "sha256": "038c005de0d206931e9cfd5f05ff6374b8d0ad16e53f95c6c8a6223fee69b118"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src\\nodes\\impl\\ffmpeg.py",
+      "snapshot": "source\\nodes\\impl\\ffmpeg.py",
+      "sha256": "55898efda47831729fc0ac3a2d46220255de064b6fe670f702ee806de89c08c9"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src\\packages\\chaiNNer_standard\\image\\video_frames\\load_video.py",
+      "snapshot": "source\\packages\\chaiNNer_standard\\image\\video_frames\\load_video.py",
+      "sha256": "e9b4ee9674d944f61c12d9a671484912987106bb7f177bcde0ba58e998823d8d"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src\\packages\\chaiNNer_standard\\image\\video_frames\\save_video.py",
+      "snapshot": "source\\packages\\chaiNNer_standard\\image\\video_frames\\save_video.py",
+      "sha256": "031f106427f24a181aabcb026de72af6f7ab53853673f3eee5b2b787966f14f1"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src\\api\\iter.py",
+      "snapshot": "source\\api\\iter.py",
+      "sha256": "ba9acf5b3985c0060fb4be0651dee4a09dbc4fe037b28cdea24eae753371a7c3"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src\\api\\node_context.py",
+      "snapshot": "source\\api\\node_context.py",
+      "sha256": "6cf6718419eda78f335ef99a7a10d5f8027f920d7084194f5ed0651a3eb654ea"
+    },
+    {
+      "origin": "C:\\Users\\PC\\Desktop\\Repository\\chaiNNer-C\\backend\\src\\process.py",
+      "snapshot": "source\\process.py",
+      "sha256": "5698c9ad941bf58a59a50dac60d0e12865d8936ad5557a6dbbf0aaafbd315ad0"
+    }
+  ]
+}

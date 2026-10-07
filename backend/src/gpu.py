@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Callable, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 import pynvml as nv
 from sanic.log import logger
+
+if TYPE_CHECKING:
+    from ctypes import _Pointer
 
 _FP16_ARCH_ABILITY_MAP = {
     nv.NVML_DEVICE_ARCH_KEPLER: False,
@@ -30,7 +33,7 @@ class MemoryUsage:
 @dataclass(frozen=True)
 class NvDevice:
     index: int
-    handle: nv.c_nvmlDevice_t
+    handle: _Pointer[nv.struct_c_nvmlDevice_t]  # nv.c_nvmlDevice_t's type
     name: str
 
     @staticmethod
@@ -94,13 +97,14 @@ class NvInfo:
     @property
     def any_needs_legacy_cuda(self) -> bool:
         """
-        Check if any device needs legacy CUDA version (12.6 instead of 12.8).
-        CUDA 12.8 dropped support for Pascal (GTX 1000 series) and older architectures.
+        Check if any device needs legacy CUDA version (12.6 instead of 13.2).
+        CUDA 13 dropped Maxwell, Pascal and Volta; those get cu126.
         """
         for gpu in self.devices:
             arch = gpu.architecture
-            # Pascal and older architectures need CUDA 12.6
+            # Volta and older architectures need CUDA 12.6
             if arch in (
+                nv.NVML_DEVICE_ARCH_VOLTA,
                 nv.NVML_DEVICE_ARCH_PASCAL,
                 nv.NVML_DEVICE_ARCH_MAXWELL,
                 nv.NVML_DEVICE_ARCH_KEPLER,
@@ -147,4 +151,4 @@ def _get_nvidia_info() -> NvInfo:
 nvidia = _get_nvidia_info()
 
 
-__all__ = ["nvidia", "NvInfo", "NvDevice", "MemoryUsage"]
+__all__ = ["MemoryUsage", "NvDevice", "NvInfo", "nvidia"]

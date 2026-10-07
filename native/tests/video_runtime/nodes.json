@@ -1,0 +1,358 @@
+{
+  "nodes": [
+    {
+      "schemaId": "chainner:image:save",
+      "kind": "regularNode",
+      "inputs": [
+        {
+          "id": 0,
+          "label": "Image"
+        },
+        {
+          "id": 1,
+          "label": "Directory"
+        },
+        {
+          "id": 2,
+          "label": "Subdirectory Path",
+          "def": null
+        },
+        {
+          "id": 3,
+          "label": "Image Name",
+          "def": null
+        },
+        {
+          "id": 4,
+          "label": "Image Format",
+          "def": "png"
+        },
+        {
+          "id": 15,
+          "label": "Color Depth",
+          "def": "u8"
+        },
+        {
+          "id": 14,
+          "label": "Lossless",
+          "def": 0
+        },
+        {
+          "id": 5,
+          "label": "Quality",
+          "def": 95
+        },
+        {
+          "id": 11,
+          "label": "Chroma Subsampling",
+          "def": 2167057
+        },
+        {
+          "id": 12,
+          "label": "Progressive",
+          "def": 0
+        },
+        {
+          "id": 16,
+          "label": "Color Depth",
+          "def": "u8"
+        },
+        {
+          "id": 18,
+          "label": "Compression",
+          "def": 5
+        },
+        {
+          "id": 6,
+          "label": "DDS Format",
+          "def": "BC1_UNORM_SRGB"
+        },
+        {
+          "id": 7,
+          "label": "BC7 Compression",
+          "def": 0
+        },
+        {
+          "id": 9,
+          "label": "Error Metric",
+          "def": 0
+        },
+        {
+          "id": 8,
+          "label": "Dithering",
+          "def": 0
+        },
+        {
+          "id": 10,
+          "label": "Generate Mip Maps",
+          "def": 0
+        },
+        {
+          "id": 13,
+          "label": "Separate Alpha for MipMaps",
+          "def": 0
+        },
+        {
+          "id": 17,
+          "label": "Chroma Subsampling",
+          "def": "4:2:0"
+        },
+        {
+          "id": 1000,
+          "label": "Skip existing files",
+          "def": 0
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "schemaId": "chainner:image:load_video",
+      "kind": "generator",
+      "inputs": [
+        {
+          "id": 0,
+          "label": "Video File"
+        },
+        {
+          "id": 1,
+          "label": "Use limit",
+          "def": 0
+        },
+        {
+          "id": 2,
+          "label": "Limit",
+          "def": 10
+        }
+      ],
+      "outputs": [
+        {
+          "id": 0,
+          "label": "Frame"
+        },
+        {
+          "id": 1,
+          "label": "Index"
+        },
+        {
+          "id": 2,
+          "label": "Video Directory"
+        },
+        {
+          "id": 3,
+          "label": "Name"
+        },
+        {
+          "id": 4,
+          "label": "FPS"
+        },
+        {
+          "id": 5,
+          "label": "Audio Stream"
+        }
+      ]
+    },
+    {
+      "schemaId": "chainner:image:save_video",
+      "kind": "collector",
+      "inputs": [
+        {
+          "id": 0,
+          "label": "Image Sequence"
+        },
+        {
+          "id": 1,
+          "label": "Directory"
+        },
+        {
+          "id": 2,
+          "label": "Video Name",
+          "def": null
+        },
+        {
+          "id": 16,
+          "label": "Simplicity",
+          "def": 0
+        },
+        {
+          "id": 4,
+          "label": "Format",
+          "def": "mkv"
+        },
+        {
+          "id": 3,
+          "label": "Encoder",
+          "def": "libx264"
+        },
+        {
+          "id": 8,
+          "label": "Preset",
+          "def": "medium"
+        },
+        {
+          "id": 9,
+          "label": "CRF",
+          "def": 23
+        },
+        {
+          "id": 13,
+          "label": "Additional parameters",
+          "def": null
+        },
+        {
+          "id": 17,
+          "label": "Video Format",
+          "def": "mp4_h264"
+        },
+        {
+          "id": 18,
+          "label": "Quality",
+          "def": 75
+        },
+        {
+          "id": 14,
+          "label": "FPS",
+          "def": 30
+        },
+        {
+          "id": 15,
+          "label": "Audio Stream"
+        },
+        {
+          "id": 10,
+          "label": "Audio",
+          "def": "auto"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "schemaId": "chainner:image:crop",
+      "kind": "regularNode",
+      "inputs": [
+        {
+          "id": 0,
+          "label": "Image"
+        },
+        {
+          "id": 1,
+          "label": "Crop Mode",
+          "def": 0
+        },
+        {
+          "id": 2,
+          "label": "Amount",
+          "def": 0
+        },
+        {
+          "id": 4,
+          "label": "Left",
+          "def": 0
+        },
+        {
+          "id": 3,
+          "label": "Top",
+          "def": 0
+        },
+        {
+          "id": 6,
+          "label": "Right",
+          "def": 0
+        },
+        {
+          "id": 5,
+          "label": "Bottom",
+          "def": 0
+        },
+        {
+          "id": 8,
+          "label": "Width",
+          "def": 100
+        },
+        {
+          "id": 7,
+          "label": "Height",
+          "def": 100
+        }
+      ],
+      "outputs": [
+        {
+          "id": 0,
+          "label": "Image"
+        }
+      ]
+    },
+    {
+      "schemaId": "chainner:image:resize",
+      "kind": "regularNode",
+      "inputs": [
+        {
+          "id": 0,
+          "label": "Image"
+        },
+        {
+          "id": 1,
+          "label": "Image Resize Mode",
+          "def": 0
+        },
+        {
+          "id": 2,
+          "label": "Percentage",
+          "def": 100.0
+        },
+        {
+          "id": 3,
+          "label": "Width",
+          "def": 1
+        },
+        {
+          "id": 4,
+          "label": "Height",
+          "def": 1
+        },
+        {
+          "id": 5,
+          "label": "Interpolation Method",
+          "def": -1
+        },
+        {
+          "id": 6,
+          "label": "Separate Alpha",
+          "def": 0
+        }
+      ],
+      "outputs": [
+        {
+          "id": 0,
+          "label": "Image"
+        }
+      ]
+    },
+    {
+      "schemaId": "chainner:utility:math",
+      "kind": "regularNode",
+      "inputs": [
+        {
+          "id": 1,
+          "label": "Math Operation",
+          "def": "add"
+        },
+        {
+          "id": 0,
+          "label": "A",
+          "def": 0
+        },
+        {
+          "id": 2,
+          "label": "B",
+          "def": 0
+        }
+      ],
+      "outputs": [
+        {
+          "id": 0,
+          "label": "Result"
+        }
+      ]
+    }
+  ]
+}

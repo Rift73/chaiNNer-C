@@ -1,0 +1,12 @@
+{
+ "pL": {
+  "pattern": "\\pL{{{n}}}",
+  "flip": 105,
+  "message": "Invalid regex: Compiled regex exceeds size limit of 10485760 bytes."
+ },
+ "az": {
+  "pattern": "[a-z]{{{n}}}",
+  "flip": 262145,
+  "message": "Invalid regex: Compiled regex exceeds size limit of 10485760 bytes."
+ }
+}

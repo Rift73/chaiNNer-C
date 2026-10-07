@@ -8,8 +8,12 @@ import numpy as np
 import navi
 from api import Generator, IteratorOutputInfo, NodeContext, OutputId
 from nodes.groups import Condition, if_group
-from nodes.impl.ffmpeg import FFMpegEnv
-from nodes.impl.video import VideoLoader, VideoMetadata
+
+# `x as x` imports: the native mirror reads these names in native/src/video_io.cpp
+from nodes.impl.ffmpeg import FFMpegEnv as FFMpegEnv
+from nodes.impl.native_graph import graph
+from nodes.impl.video import VideoLoader as VideoLoader
+from nodes.impl.video import VideoMetadata
 from nodes.properties.inputs import BoolInput, NumberInput, VideoFileInput
 from nodes.properties.outputs import (
     AudioStreamOutput,
@@ -18,7 +22,7 @@ from nodes.properties.outputs import (
     ImageOutput,
     NumberOutput,
 )
-from nodes.utils.utils import split_file_path
+from nodes.utils.utils import split_file_path as split_file_path
 
 from .. import video_frames_group
 
@@ -76,28 +80,4 @@ def load_video_node(
     use_limit: bool,
     limit: int,
 ) -> tuple[Generator[tuple[np.ndarray, int]], Path, str, float, Any]:
-    video_dir, video_name, _ = split_file_path(path)
-
-    loader = VideoLoader(path, FFMpegEnv.get_integrated(node_context.storage_dir))
-    frame_count = loader.metadata.frame_count
-    if use_limit:
-        frame_count = min(frame_count, limit)
-
-    audio_stream = loader.get_audio_stream()
-
-    def iterator():
-        for index, frame in enumerate(loader.stream_frames()):
-            yield frame, index
-
-            if use_limit and index + 1 >= limit:
-                break
-
-    return (
-        Generator.from_iter(
-            supplier=iterator, expected_length=frame_count
-        ).with_metadata(loader.metadata),
-        video_dir,
-        video_name,
-        loader.metadata.fps,
-        audio_stream,
-    )
+    return graph().video_load(globals(), node_context, path, use_limit, limit)

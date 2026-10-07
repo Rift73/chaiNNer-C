@@ -4,10 +4,17 @@ from enum import Enum
 
 import cv2
 import numpy as np
-import pymatting
 
 from nodes.groups import if_enum_group, linked_inputs_group
 from nodes.impl.color.color import Color
+from nodes.impl.native_matting import (
+    erode_mask,
+    estimate_alpha,
+    estimate_foreground,
+    output,
+    trimap_output,
+)
+from nodes.impl.native_transparency import chroma_key, chroma_trimap, matting_input
 from nodes.properties.inputs import (
     BoolInput,
     ColorInput,
@@ -92,6 +99,8 @@ def chroma_key_node(
 
 
 def binary_keying(img: np.ndarray, key_color: Color, threshold: float) -> np.ndarray:
+    if img.dtype == np.float32:
+        return chroma_key(img, key_color.value, threshold)
     h, w, _ = get_h_w_c(img)
 
     diff = np.abs(img - key_color.to_image(w, h))
@@ -112,46 +121,37 @@ def trimap_matting_keying(
 ) -> np.ndarray:
     h, w, _ = get_h_w_c(img)
 
-    diff = np.abs(img - key_color.to_image(w, h))
-    diff = np.sum(diff, axis=-1) / 3
-
-    # determine in and out
-    bg_mask = np.where(diff <= threshold_bg, 255, 0).astype(np.uint8)
-    fg_mask = np.where(diff > threshold_fg, 255, 0).astype(np.uint8)
+    if img.dtype == np.float32:
+        bg_mask, fg_mask = chroma_key(img, key_color.value, threshold_bg, threshold_fg)
+    else:
+        diff = np.abs(img - key_color.to_image(w, h))
+        diff = np.sum(diff, axis=-1) / 3
+        bg_mask = np.where(diff <= threshold_bg, 255, 0).astype(np.uint8)
+        fg_mask = np.where(diff > threshold_fg, 255, 0).astype(np.uint8)
     if confusion_bg > 0:
-        element = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (2 * confusion_bg + 1,) * 2
-        )
-        cv2.erode(bg_mask, element, iterations=1, dst=bg_mask)
+        bg_mask = erode_mask(bg_mask, confusion_bg)
     if confusion_fg > 0:
-        element = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (2 * confusion_fg + 1,) * 2
-        )
-        cv2.erode(fg_mask, element, iterations=1, dst=fg_mask)
+        fg_mask = erode_mask(fg_mask, confusion_fg)
 
     # must be float64
-    trimap = np.full((h, w), 0.5, dtype=np.float64)
-    trimap[bg_mask > 128] = 0
-    trimap[fg_mask > 128] = 1
+    trimap = chroma_trimap(bg_mask, fg_mask)
 
     if output_trimap:
+        if img.dtype == np.float32:
+            return trimap_output(img, trimap)
         return np.dstack((img, trimap.astype(np.float32)))
 
     # convert to rgb
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = img.astype(np.float64)
+    if img.dtype == np.float32:
+        img, trimap = matting_input(img, trimap)
+    else:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = img.astype(np.float64)
 
     assert img.dtype == np.float64
     assert trimap.dtype == np.float64
-    alpha = pymatting.estimate_alpha_cf(img, trimap)
-    foreground = pymatting.estimate_foreground_ml(img, alpha)
+    alpha = estimate_alpha(img, trimap)
+    foreground = estimate_foreground(img, alpha)
     assert isinstance(foreground, np.ndarray)
 
-    # convert to bgr
-    foreground = cv2.cvtColor(foreground, cv2.COLOR_RGB2BGR)
-    return np.dstack(
-        (
-            foreground.astype(np.float32),
-            alpha.astype(np.float32),
-        )
-    )
+    return output(foreground, alpha, float64_output=False)

@@ -1,6 +1,5 @@
-from random import Random
-
 from nodes.groups import seed_group
+from nodes.impl.native_utility_random import random_number
 from nodes.properties.inputs import NumberInput, SeedInput
 from nodes.properties.outputs import NumberOutput
 from nodes.utils.seed import Seed
@@ -23,4 +22,4 @@ from .. import random_group
     ],
 )
 def random_number_node(min_val: int, max_val: int, seed: Seed) -> int:
-    return Random(seed.value).randint(min_val, max_val)
+    return random_number(min_val, max_val, seed)

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import cv2
 import numpy as np
 
+from nodes.impl.native_bilateral import surface
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
-from nodes.utils.utils import get_h_w_c
 
 from .. import blur_group
 
@@ -32,33 +31,4 @@ def surface_blur_node(
     if radius == 0 or sigma_color == 0 or sigma_space == 0:
         return img
 
-    sigma_color_adjusted = sigma_color / 255
-    diameter = radius * 2 + 1
-
-    _, _, c = get_h_w_c(img)
-    if c == 4:
-        rgb = img[:, :, :3]
-        alpha = img[:, :, 3]
-        rgb = cv2.bilateralFilter(
-            rgb,
-            diameter,
-            sigma_color_adjusted,
-            sigma_space,
-            borderType=cv2.BORDER_REFLECT_101,
-        )
-        alpha = cv2.bilateralFilter(
-            alpha,
-            diameter,
-            sigma_color_adjusted,
-            sigma_space,
-            borderType=cv2.BORDER_REFLECT_101,
-        )
-        return np.dstack((rgb, alpha))
-
-    return cv2.bilateralFilter(
-        img,
-        diameter,
-        sigma_color_adjusted,
-        sigma_space,
-        borderType=cv2.BORDER_REFLECT_101,
-    )
+    return surface(img, radius, sigma_color, sigma_space)

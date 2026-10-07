@@ -3,10 +3,13 @@ from __future__ import annotations
 import math
 from math import ceil
 
-import cv2
 import numpy as np
 
 from nodes.groups import linked_inputs_group
+from nodes.impl.native_box import kernel_2d, separable_box
+from nodes.impl.native_buffers import freeze_normalized
+from nodes.impl.native_convolution import box_blur
+from nodes.impl.native_spectral_filter import filter2d
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -28,22 +31,7 @@ def get_kernel_1d(radius: float) -> np.ndarray:
 
 
 def get_kernel_2d(radius_x: float, radius_y: float) -> np.ndarray:
-    # Create kernel of dims h * w, rounded up to the closest odd integer
-    kernel = np.ones((ceil(radius_y) * 2 + 1, ceil(radius_x) * 2 + 1), np.float32) / (
-        (2 * radius_y + 1) * (2 * radius_x + 1)
-    )
-
-    # Modify edges of kernel by fractional amount if kernel size (2r+1) is not odd integer
-    x_d = radius_x % 1
-    y_d = radius_y % 1
-    if y_d != 0:
-        kernel[0, :] *= y_d
-        kernel[-1, :] *= y_d
-    if x_d != 0:
-        kernel[:, 0] *= x_d
-        kernel[:, -1] *= x_d
-
-    return kernel
+    return kernel_2d(radius_x, radius_y)
 
 
 @blur_group.register(
@@ -86,6 +74,10 @@ def box_blur_node(
     if radius_x == 0 and radius_y == 0:
         return img
 
+    # Every other return is a helper's fresh float32 array, clamped in place as the
+    # output enforce would convert it, frozen and registered (freeze_normalized), so
+    # the enforce can borrow it.
+
     # you can't tell the difference between a float and an integer when the radius is large enough
     radius_x = round(radius_x) if radius_x > 200 else radius_x
     radius_y = round(radius_y) if radius_y > 200 else radius_y
@@ -95,24 +87,18 @@ def box_blur_node(
 
     if use_optimized_int:
         # we can use an optimized box blur implementation
-        radius_x = int(round(radius_x))
-        radius_y = int(round(radius_y))
-        return cv2.blur(
-            img, (radius_x * 2 + 1, radius_y * 2 + 1), borderType=cv2.BORDER_REFLECT_101
-        )
+        radius_x = round(radius_x)
+        radius_y = round(radius_y)
+        return freeze_normalized(box_blur(img, radius_x, radius_y), clamp=True)
 
     # cv2.blur is so much faster than the other methods, that it's worth manually separating the kernel.
     # the idea here is that we blur with cv2.blur in x or y if we can
     threshold = 15
     if radius_x >= threshold and int(radius_x) == radius_x:
-        img = cv2.blur(
-            img, (int(radius_x) * 2 + 1, 1), borderType=cv2.BORDER_REFLECT_101
-        )
+        img = box_blur(img, int(radius_x), 0)
         radius_x = 1
     if radius_y >= threshold and int(radius_y) == radius_y:
-        img = cv2.blur(
-            img, (1, int(radius_y) * 2 + 1), borderType=cv2.BORDER_REFLECT_101
-        )
+        img = box_blur(img, 0, int(radius_y))
         radius_y = 1
 
     # Separable filter is faster for relatively small kernels, but after a certain size it becomes
@@ -121,17 +107,8 @@ def box_blur_node(
     use_sep = avg_radius < 70
 
     if use_sep:
-        return cv2.sepFilter2D(
-            img,
-            -1,
-            get_kernel_1d(radius_x),
-            get_kernel_1d(radius_y),
-            borderType=cv2.BORDER_REFLECT_101,
-        )
+        return freeze_normalized(separable_box(img, radius_x, radius_y), clamp=True)
     else:
-        return cv2.filter2D(
-            img,
-            -1,
-            get_kernel_2d(radius_x, radius_y),
-            borderType=cv2.BORDER_REFLECT_101,
+        return freeze_normalized(
+            filter2d(img, get_kernel_2d(radius_x, radius_y)), clamp=True
         )

@@ -220,8 +220,10 @@ const NodeInner = memo(({ data, selected }: NodeProps) => {
         if (fileInput && fileInput.kind === 'file' && event.dataTransfer.types.includes('Files')) {
             event.stopPropagation();
 
+            // A locked node or a connected file input takes no drop.
             // eslint-disable-next-line no-param-reassign
-            event.dataTransfer.dropEffect = 'move';
+            event.dataTransfer.dropEffect =
+                nodeState.isLocked || nodeState.connectedInputs.has(fileInput.id) ? 'none' : 'copy';
         }
     };
 
@@ -230,6 +232,7 @@ const NodeInner = memo(({ data, selected }: NodeProps) => {
 
         if (fileInput && fileInput.kind === 'file' && event.dataTransfer.types.includes('Files')) {
             event.stopPropagation();
+            if (nodeState.isLocked || nodeState.connectedInputs.has(fileInput.id)) return;
 
             const p = getSingleFileWithExtension(event.dataTransfer, fileInput.filetypes);
             if (p) {

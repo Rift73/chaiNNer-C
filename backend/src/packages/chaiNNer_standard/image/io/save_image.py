@@ -2,27 +2,32 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Literal
 
 import cv2
 import numpy as np
 import pillow_avif  # type: ignore # noqa: F401
-from PIL import Image
-from sanic.log import logger
+
+# `x as x` imports: the native mirror reads these names in native/src/image_io.cpp
+from PIL import Image as Image
+from sanic.log import logger as logger
 
 from api import KeyInfo, Lazy
 from nodes.groups import Condition, if_enum_group, if_group
 from nodes.impl.dds.format import (
     BC7_FORMATS,
     BC123_FORMATS,
-    LEGACY_TO_DXGI,
-    PREFER_DX9,
     WITH_ALPHA,
     DDSFormat,
-    to_dxgi,
 )
-from nodes.impl.dds.texconv import save_as_dds
-from nodes.impl.image_utils import cv_save_image, to_uint8, to_uint16
+from nodes.impl.dds.format import LEGACY_TO_DXGI as LEGACY_TO_DXGI
+from nodes.impl.dds.format import PREFER_DX9 as PREFER_DX9
+from nodes.impl.dds.format import to_dxgi as to_dxgi
+from nodes.impl.dds.texconv import save_as_dds as save_as_dds
+from nodes.impl.image_utils import to_uint8 as to_uint8
+from nodes.impl.image_utils import to_uint16 as to_uint16
+from nodes.impl.item_window import Prepared, register_phases
+from nodes.impl.native_graph import graph
+from nodes.impl.native_image_io import cv_save_image as cv_save_image
 from nodes.properties.inputs import (
     BoolInput,
     DirectoryInput,
@@ -33,7 +38,7 @@ from nodes.properties.inputs import (
     RelativePathInput,
     SliderInput,
 )
-from nodes.utils.utils import get_h_w_c
+from nodes.utils.utils import get_h_w_c as get_h_w_c
 
 from .. import io_group
 
@@ -335,108 +340,32 @@ def save_image_node(
     avif_chroma_subsampling: AvifSubsampling,
     skip_existing_files: bool,
 ) -> None:
-    full_path = get_full_path(base_directory, relative_path, filename, image_format)
-
-    if full_path.exists():
-        if skip_existing_files:
-            logger.debug(f"Skipping existing file: {full_path}")
-            return
-    else:
-        # Create directory if it doesn't exist
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-
-    logger.debug(f"Writing image to path: {full_path}")
-    img = lazy_image.value
-
-    # DDS files are handled separately
-    if image_format == ImageFormat.DDS:
-        # we only support 8bits of precision for DDS
-        img = to_uint8(img, normalized=True)
-
-        # remap legacy DX9 formats
-        legacy_dds = dds_format in LEGACY_TO_DXGI or dds_format in PREFER_DX9
-
-        save_as_dds(
-            full_path,
-            img,
-            to_dxgi(dds_format),
-            mipmap_levels=dds_mipmap_levels,
-            dithering=dds_dithering,
-            uniform_weighting=dds_error_metric == DDSErrorMetric.UNIFORM,
-            minimal_compression=dds_bc7_compression == BC7Compression.BEST_SPEED,
-            maximum_compression=dds_bc7_compression == BC7Compression.BEST_QUALITY,
-            dx9=legacy_dds,
-            separate_alpha=dds_separate_alpha,
-        )
-        return
-
-    # Some formats are handled by PIL
-    if image_format in (ImageFormat.GIF, ImageFormat.TGA, ImageFormat.AVIF):
-        # we only support 8bits of precision for those formats
-        img = to_uint8(img, normalized=True)
-        args = {}
-
-        if image_format == ImageFormat.AVIF:
-            args["quality"] = quality
-            args["subsampling"] = avif_chroma_subsampling.value
-
-        channels = get_h_w_c(img)[2]
-        if channels == 1:
-            # PIL supports grayscale images just fine, so we don't need to do any conversion
-            pass
-        elif channels == 3:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        elif channels == 4:
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
-        else:
-            raise RuntimeError(
-                f"Unsupported number of channels. Saving .{image_format.extension} images is only supported for "
-                f"grayscale, RGB, and RGBA images."
-            )
-
-        with Image.fromarray(img) as image:
-            image.save(full_path, **args)
-
-    else:
-        params: list[int]
-        if image_format == ImageFormat.JPG:
-            params = [
-                cv2.IMWRITE_JPEG_QUALITY,
-                quality,
-                cv2.IMWRITE_JPEG_SAMPLING_FACTOR,
-                jpeg_chroma_subsampling.value,
-                cv2.IMWRITE_JPEG_PROGRESSIVE,
-                int(jpeg_progressive),
-            ]
-        elif image_format == ImageFormat.WEBP:
-            params = [cv2.IMWRITE_WEBP_QUALITY, 101 if webp_lossless else quality]
-        elif (
-            image_format == ImageFormat.TIFF and tiff_color_depth != TiffColorDepth.F32
-        ):
-            params = [cv2.IMWRITE_TIFF_COMPRESSION, tiff_compression.cv2_code]
-        else:
-            params = []
-
-        # the bit depth depends on the image format and settings
-        precision: Literal["u8", "u16", "f32"] = "u8"
-        if image_format == ImageFormat.PNG:
-            if png_color_depth == PngColorDepth.U16:
-                precision = "u16"
-        elif image_format == ImageFormat.TIFF:
-            if tiff_color_depth == TiffColorDepth.U16:
-                precision = "u16"
-            elif tiff_color_depth == TiffColorDepth.F32:
-                precision = "f32"
-
-        if precision == "u8":
-            img = to_uint8(img, normalized=True)
-        elif precision == "u16":
-            img = to_uint16(img, normalized=True)
-        elif precision == "f32":
-            # chainner images are always f32
-            pass
-
-        cv_save_image(full_path, img, params)
+    return graph().image_io_save(
+        globals(),
+        (
+            lazy_image,
+            base_directory,
+            relative_path,
+            filename,
+            image_format,
+            png_color_depth,
+            webp_lossless,
+            quality,
+            jpeg_chroma_subsampling,
+            jpeg_progressive,
+            tiff_color_depth,
+            tiff_compression,
+            dds_format,
+            dds_bc7_compression,
+            dds_error_metric,
+            dds_dithering,
+            dds_mipmap_levels,
+            dds_separate_alpha,
+            avif_chroma_subsampling,
+            skip_existing_files,
+        ),
+        None,
+    )
 
 
 def get_full_path(
@@ -445,8 +374,20 @@ def get_full_path(
     filename: str,
     image_format: ImageFormat,
 ) -> Path:
-    file = f"{filename}.{image_format.extension}"
-    if relative_path and relative_path != ".":
-        base_directory = base_directory / relative_path
-    full_path = base_directory / file
-    return full_path.resolve()
+    return graph().image_io_full_path(
+        base_directory, relative_path, filename, image_format
+    )
+
+
+def prepare_save_image(inputs: list[object]) -> bytes | None:
+    """The bytes Save Image would write for these inputs, input 0 being the image;
+    None for DDS, which texconv writes itself (SP3-P9)."""
+    return graph().image_io_save_prepare(globals(), tuple(inputs))
+
+
+def commit_save_image(inputs: list[object], prepared: Prepared) -> None:
+    """Save Image with its prepared bytes in place of the conversion and encoder."""
+    return graph().image_io_save(globals(), tuple(inputs), prepared)
+
+
+register_phases("chainner:image:save", prepare_save_image, commit_save_image)

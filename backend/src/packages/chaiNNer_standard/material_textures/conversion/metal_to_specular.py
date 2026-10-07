@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from nodes.impl.native_channels import combine_rgb_alpha
+from nodes.impl.native_color_ops import linear, material
 from nodes.impl.resize import ResizeFilter, resize
 from nodes.properties.inputs import ImageInput
 from nodes.properties.outputs import ImageOutput
@@ -24,8 +26,7 @@ def metal_to_spec(
 
     # This uses the conversion method described here:
     # https://marmoset.co/posts/pbr-texture-conversion/
-    metal3 = np.dstack((metal,) * 3)
-    metal3_inv = 1 - metal3
+    metal3_inv = material(metal, 0)
 
     albedo_size = get_size(albedo)
     metal_size = get_size(metal)
@@ -34,18 +35,18 @@ def metal_to_spec(
         metal3_inv_scaled = metal3_inv
     else:
         metal3_inv_scaled = resize(metal3_inv, albedo_size, ResizeFilter.LANCZOS)
-    diff = albedo * metal3_inv_scaled
+    diff = material(albedo, 1, b=metal3_inv_scaled)
 
     if metal_size == albedo_size:
         scaled_albedo = albedo
     else:
         scaled_albedo = resize(albedo, metal_size, ResizeFilter.LANCZOS)
-    spec = metal3 * scaled_albedo + metal3_inv * 0.22
+    spec = material(scaled_albedo, 2, mask=metal)
 
     if roughness is None:
         gloss = np.zeros((1, 1), np.float32) + 0.5
     else:
-        gloss = 1 - roughness
+        gloss = linear(roughness, -1, 1)
 
     return diff, spec, gloss
 
@@ -90,6 +91,6 @@ def metal_to_specular_node(
     diff, spec, gloss = metal_to_spec(albedo, metal, roughness)
 
     if albedo_alpha is not None:
-        diff = np.dstack((diff, albedo_alpha))
+        diff = combine_rgb_alpha(diff, albedo_alpha)
 
     return diff, spec, gloss

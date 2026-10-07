@@ -42,7 +42,7 @@ export const useNodesMenu = (nodes: Node<NodeData>[]): UseContextMenu => {
             <MenuDivider />
             <MenuItem
                 as="a"
-                className="useNodeMenu-container"
+                className="use-node-menu-container"
                 closeOnSelect={false}
                 icon={<CloseIcon />}
                 ref={resetMenuParentRef}
@@ -53,7 +53,7 @@ export const useNodesMenu = (nodes: Node<NodeData>[]): UseContextMenu => {
                     <ChevronRightIcon />
                 </HStack>
             </MenuItem>
-            <div className="useNodeMenu-child">
+            <div className="use-node-menu-child">
                 <MenuList
                     className="nodrag"
                     left={resetMenuParentRef.current?.offsetWidth || 0}

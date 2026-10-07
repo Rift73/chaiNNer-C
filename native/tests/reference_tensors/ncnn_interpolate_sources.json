@@ -1,0 +1,7 @@
+{
+  "reference_commit": "b3ca7ff586d4071dbe8601bc4000493560503f21",
+  "reference_path": "backend/src/packages/chaiNNer_ncnn/ncnn/utility/interpolate_models.py",
+  "reference_sha256": "aad5527b9e014c2a8ee881e700e9da07eb93c9a72a1b1c748ab4708585ea1101",
+  "installed_path": "C:\\Users\\PC\\AppData\\Local\\chaiNNer\\app-0.25.1-nightly2025-10-21\\resources\\src\\packages\\chaiNNer_ncnn\\ncnn\\utility\\interpolate_models.py",
+  "installed_sha256": "7dedb85b2ac44ff0443ed0e913d9514136ea06714ef7ae625d9a58e7473725e2"
+}

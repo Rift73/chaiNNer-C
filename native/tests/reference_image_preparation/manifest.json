@@ -1,0 +1,31 @@
+{
+  "lens_blur.py": {
+    "source": "native\\reports\\all-node-optimization-20260921\\before-project\\backend-src\\packages\\chaiNNer_standard\\image_filter\\blur\\lens_blur.py",
+    "sha256": "48572e6276047ae48100a10c52cd60f0c160343842d8221bfec9678045b3b5ae"
+  },
+  "palette_from_image.py": {
+    "source": "native\\reports\\all-node-optimization-20260921\\before-project\\backend-src\\packages\\chaiNNer_standard\\image_utility\\miscellaneous\\palette_from_image.py",
+    "sha256": "1a672bc0fadf0988cda6ecb2fbe560b0f79f91b459cf85bf58458555a9bb5bdb"
+  },
+  "split_r_g_b_a.py": {
+    "source": "native\\reports\\all-node-optimization-20260921\\before-project\\backend-src\\packages\\chaiNNer_standard\\image_channel\\all\\split_r_g_b_a.py",
+    "sha256": "7224a9ff5d2edfb378e24e5d41f72bb337aca2769fa2f064fe9668c5e11a7c50"
+  },
+  "native_neighborhood.py": {
+    "source": "native\\reports\\all-node-optimization-20260921\\before-project\\backend-src\\nodes\\impl\\native_neighborhood.py",
+    "sha256": "75da4f2f3d4d4652e3300c594b103aca1b609e5dae95300af11272c84b977690"
+  },
+  "native_normal_kernel.py": {
+    "source": "native\\reports\\all-node-optimization-20260921\\before-project\\backend-src\\nodes\\impl\\native_normal_kernel.py",
+    "sha256": "a543fd9de76d72140d37d29e7c6c14bc35a52bbacfba6e3a7d9e62dc6dc911d2",
+    "edited": "2026-10-06: the cn_normal_sharpen binding and sharpen() removed with the export (R2 M-4); gaussian_kernel and kernel_pair unchanged"
+  },
+  "native_spectral_filter.py": {
+    "source": "native\\reports\\all-node-optimization-20260921\\before-project\\backend-src\\nodes\\impl\\native_spectral_filter.py",
+    "sha256": "2b74f1339995ac22f3f32b92393ca499f0f0cacf192240bbd57ce44fe96cdb63"
+  },
+  "caption.py": {
+    "source": "native\\reports\\all-node-optimization-20260921\\before-project\\backend-src\\nodes\\impl\\caption.py",
+    "sha256": "cc28aac03c742cfda4cd5b08b4de1f236eb52147a0c82a6a5552e38ff20d6844"
+  }
+}

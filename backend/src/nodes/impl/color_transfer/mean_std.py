@@ -7,6 +7,10 @@ from enum import Enum
 import cv2
 import numpy as np
 
+from ..native_analysis import channel_stats
+from ..native_color_complete import cvt_color
+from ..native_transfer_complete import mean_std_apply, supported
+
 __author__ = "Adrian Rosebrock"
 __copyright__ = "Copyright 2014, Adrian Rosebrock"
 __credits__ = ["Adrian Rosebrock", "theflyingzamboni"]
@@ -28,6 +32,9 @@ class OverflowMethod(Enum):
 
 def image_stats(img: np.ndarray):
     """Get means and standard deviations of channels"""
+
+    if img.dtype == np.float32 and img.ndim == 2 and img.shape[1] == 3:
+        return tuple(channel_stats(img))
 
     # Compute the mean and standard deviation of each channel
     channel_a, channel_b, channel_c = np.split(img, 3, 1)
@@ -116,8 +123,8 @@ def mean_std_transfer(
         a_clip_min, a_clip_max = (0, 100)
         b_clip_min, b_clip_max = (-127, 127)
         c_clip_min, c_clip_max = (-127, 127)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-        ref_img = cv2.cvtColor(ref_img, cv2.COLOR_BGR2LAB)
+        img = cvt_color(img, cv2.COLOR_BGR2LAB)
+        ref_img = cvt_color(ref_img, cv2.COLOR_BGR2LAB)
     elif colorspace == TransferColorSpace.RGB:
         a_clip_min, a_clip_max = (0, 1)
         b_clip_min, b_clip_max = (0, 1)
@@ -127,6 +134,24 @@ def mean_std_transfer(
     else:
         raise ValueError(f"Invalid color space {colorspace}")
 
+    if img.dtype == np.float32 and supported(
+        img, ref_img, valid_indices, ref_valid_indices
+    ):
+        transfer = mean_std_apply(
+            img,
+            ref_img,
+            valid_indices,
+            ref_valid_indices,
+            (a_clip_min, a_clip_max, b_clip_min, b_clip_max, c_clip_min, c_clip_max),
+            reciprocal=reciprocal_scale,
+            scale=overflow_method == OverflowMethod.SCALE,
+        )
+        if colorspace == TransferColorSpace.LAB:
+            transfer = cvt_color(transfer, cv2.COLOR_LAB2BGR)
+        return transfer
+
+    # Original public-helper compatibility outside the float32 image/mask
+    # node contract; this NumPy/OpenCV path is not counted as converted C.
     # Compute color statistics for the source and target images
     (
         a_mean_tar,

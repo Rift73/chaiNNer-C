@@ -1,11 +1,11 @@
-.useNodeMenu-child {
+.use-node-menu-child {
     display: none;
 }
 
-.useNodeMenu-container:hover + .useNodeMenu-child {
+.use-node-menu-container:hover + .use-node-menu-child {
     display: block;
 }
 
-.useNodeMenu-child:hover {
+.use-node-menu-child:hover {
     display: block;
 }

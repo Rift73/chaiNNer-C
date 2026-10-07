@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import BoolInput, TextInput
 
 from .. import text_group
@@ -23,4 +24,4 @@ from .. import text_group
     outputs=[],
 )
 def note_node(_text: str | None, display_markdown: bool) -> None:
-    return
+    return graph().execution_note(_text, display_markdown)

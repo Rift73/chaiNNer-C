@@ -1,20 +1,23 @@
 from __future__ import annotations
 
-import os
+# `x as x` imports: the native mirror reads these names in native/src/video_io.cpp
+import os as os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from subprocess import Popen
 from typing import Any, Literal
 
-import ffmpeg
+import ffmpeg as ffmpeg
 import numpy as np
-from sanic.log import logger
+from sanic.log import logger as logger
 
 from api import Collector, IteratorInputInfo, KeyInfo, NodeContext
 from nodes.groups import Condition, if_enum_group, if_group
 from nodes.impl.ffmpeg import FFMpegEnv
 from nodes.impl.image_utils import to_uint8
+from nodes.impl.item_window import Prepared, register_phases
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import (
     DirectoryInput,
     EnumInput,
@@ -25,7 +28,7 @@ from nodes.properties.inputs import (
 )
 from nodes.properties.inputs.generic_inputs import AudioStreamInput
 from nodes.properties.inputs.numeric_inputs import NumberInput
-from nodes.utils.utils import get_h_w_c
+from nodes.utils.utils import get_h_w_c as get_h_w_c
 
 from .. import video_frames_group
 
@@ -44,25 +47,7 @@ class VideoFormat(Enum):
 
     @property
     def encoders(self) -> tuple[VideoEncoder, ...]:
-        if self == VideoFormat.MKV:
-            return (
-                VideoEncoder.H264,
-                VideoEncoder.H265,
-                VideoEncoder.VP9,
-                VideoEncoder.FFV1,
-            )
-        elif self == VideoFormat.MP4:
-            return VideoEncoder.H264, VideoEncoder.H265, VideoEncoder.VP9
-        elif self == VideoFormat.MOV:
-            return VideoEncoder.H264, VideoEncoder.H265
-        elif self == VideoFormat.WEBM:
-            return (VideoEncoder.VP9,)
-        elif self == VideoFormat.AVI:
-            return (VideoEncoder.H264,)
-        elif self == VideoFormat.GIF:
-            return ()
-        else:
-            raise ValueError(f"Unknown container: {self}")
+        return graph().video_container_encoders(globals(), self)
 
 
 class VideoEncoder(Enum):
@@ -73,11 +58,7 @@ class VideoEncoder(Enum):
 
     @property
     def formats(self) -> tuple[VideoFormat, ...]:
-        formats: list[VideoFormat] = []
-        for format in VideoFormat:
-            if self in format.encoders:
-                formats.append(format)
-        return tuple(formats)
+        return graph().video_encoder_formats(globals(), self)
 
 
 class VideoPreset(Enum):
@@ -112,38 +93,7 @@ class SimpleVideoFormat(Enum):
 def get_simple_format(
     simple_video_format: SimpleVideoFormat, quality: int
 ) -> tuple[VideoFormat, VideoEncoder, VideoPreset, int]:
-    container = {
-        SimpleVideoFormat.MP4_H264: VideoFormat.MP4,
-        SimpleVideoFormat.MP4_H265: VideoFormat.MP4,
-        SimpleVideoFormat.WEBM: VideoFormat.WEBM,
-        SimpleVideoFormat.GIF: VideoFormat.GIF,
-    }[simple_video_format]
-
-    encoder = {
-        SimpleVideoFormat.MP4_H264: VideoEncoder.H264,
-        SimpleVideoFormat.MP4_H265: VideoEncoder.H265,
-        SimpleVideoFormat.WEBM: VideoEncoder.VP9,
-        # Encoder will be ignored when GIF, it just needs to be any value
-        SimpleVideoFormat.GIF: VideoEncoder.H264,
-    }[simple_video_format]
-
-    crf = int((100 - quality) / 100 * 51)
-
-    if quality > 95:
-        video_preset = VideoPreset.VERY_SLOW
-    elif quality > 80:
-        video_preset = VideoPreset.SLOWER
-    elif quality > 60:
-        video_preset = VideoPreset.SLOW
-    elif quality >= 50:
-        video_preset = VideoPreset.MEDIUM
-    elif quality > 35:
-        video_preset = VideoPreset.FAST
-    elif quality > 20:
-        video_preset = VideoPreset.VERY_FAST
-    else:
-        video_preset = VideoPreset.ULTRA_FAST
-    return container, encoder, video_preset, crf
+    return graph().video_simple_format(globals(), simple_video_format, quality)
 
 
 PARAMETERS: dict[VideoEncoder, list[Literal["preset", "crf"]]] = {
@@ -169,93 +119,21 @@ class Writer:
 
     def start(self, width: int, height: int):
         # Create the writer and run process
-        if self.out is None:
-            # Verify some parameters
-            if self.encoder in (VideoEncoder.H264, VideoEncoder.H265):
-                assert (
-                    height % 2 == 0 and width % 2 == 0
-                ), f'The "{self.encoder.value}" encoder requires an even-number frame resolution.'
+        graph().video_writer_start(globals(), self, width, height)
 
-            try:
-                self.out = (
-                    ffmpeg.input(
-                        "pipe:",
-                        format="rawvideo",
-                        pix_fmt="bgr24",
-                        s=f"{width}x{height}",
-                        r=self.fps,
-                        loglevel="error",
-                    )
-                    .output(**self.output_params, loglevel="error")
-                    .overwrite_output()
-                    .global_args(*self.global_params)
-                    .run_async(
-                        pipe_stdin=True, pipe_stdout=False, cmd=self.ffmpeg_env.ffmpeg
-                    )
-                )
-
-            except Exception as e:
-                logger.warning("Failed to open video writer", exc_info=e)
-
-    def write_frame(self, img: np.ndarray):
+    def write_frame(self, img: np.ndarray, prepared: Prepared | None = None):
         # Create the writer and run process
-        if self.out is None:
-            h, w, _ = get_h_w_c(img)
-            self.start(w, h)
-
-        out_frame = to_uint8(img, normalized=True)
-        if self.out is not None and self.out.stdin is not None:
-            self.out.stdin.write(out_frame.tobytes())
-        else:
-            raise RuntimeError("Failed to open video writer")
+        graph().video_writer_frame(globals(), self, img, prepared)
 
     def close(self):
-        if self.out is not None:
-            if self.out.stdin is not None:
-                self.out.stdin.close()
-            self.out.wait()
+        graph().video_writer_close_installed(globals(), self)
 
-        if self.audio is not None:
-            video_path = self.save_path
-            base, ext = os.path.splitext(video_path)
-            audio_video_path = f"{base}_av{ext}"
 
-            # Default and auto -> copy
-            output_params = {
-                "vcodec": "copy",
-                "acodec": "copy",
-            }
-            if self.container == VideoFormat.WEBM:
-                if self.audio_settings in (AudioSettings.TRANSCODE, AudioSettings.AUTO):
-                    output_params["acodec"] = "libopus"
-                    output_params["b:a"] = "320k"
-                else:
-                    raise ValueError(f"WebM does not support {self.audio_settings}")
-            elif self.audio_settings == AudioSettings.TRANSCODE:
-                output_params["acodec"] = "aac"
-                output_params["b:a"] = "320k"
+@dataclass
+class VideoCollector(Collector[np.ndarray, None]):
+    """Save Video's collector; its commit phase writes prepared frames to `writer`."""
 
-            try:
-                video_stream = ffmpeg.input(video_path)
-                output_video = ffmpeg.output(
-                    self.audio,
-                    video_stream,
-                    audio_video_path,
-                    **output_params,
-                ).overwrite_output()
-                ffmpeg.run(output_video)
-                # delete original, rename new
-                os.remove(video_path)
-                os.rename(audio_video_path, video_path)
-            except Exception:
-                logger.warning(
-                    "Failed to copy audio to video, input file probably contains "
-                    "no audio or audio stream is supported by this container. Ignoring audio settings."
-                )
-                try:
-                    os.remove(audio_video_path)
-                except Exception:
-                    pass
+    writer: Writer
 
 
 @video_frames_group.register(
@@ -409,74 +287,36 @@ def save_video_node(
     audio: Any,
     audio_settings: AudioSettings,
 ) -> Collector[np.ndarray, None]:
-    if simplicity == Simplicity.SIMPLE:
-        container, encoder, video_preset, crf = get_simple_format(
-            simple_video_format, quality
-        )
-
-    save_path = (save_dir / f"{video_name}.{container.ext}").resolve()
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Common output settings
-    output_params = {
-        "filename": str(save_path),
-        "pix_fmt": "yuv420p",
-        "r": fps,
-        "movflags": "faststart",
-    }
-
-    # Append parameters
-    if encoder in container.encoders:
-        output_params["vcodec"] = encoder.value
-
-        parameters = PARAMETERS[encoder]
-        if "preset" in parameters:
-            output_params["preset"] = video_preset.value
-        if "crf" in parameters:
-            output_params["crf"] = crf
-
-    # Append additional parameters
-    global_params: list[str] = []
-    if simplicity == Simplicity.ADVANCED and additional_parameters is not None:
-        additional_parameters = " " + " ".join(additional_parameters.split())
-        additional_parameters_array = additional_parameters.split(" -")[1:]
-        non_overridable_params = ["filename", "vcodec", "crf", "preset", "c:"]
-        for parameter in additional_parameters_array:
-            key, value = parameter, None
-            try:
-                key, value = parameter.split(" ")
-            except Exception:
-                pass
-
-            if value is not None:
-                for nop in non_overridable_params:
-                    if not key.startswith(nop):
-                        output_params[key] = value
-                    else:
-                        raise ValueError(f"Duplicate parameter: -{parameter}")
-            else:
-                global_params.append(f"-{parameter}")
-
-    # Audio
-    if container == VideoFormat.GIF:
-        audio = None
-
-    writer = Writer(
-        container=container,
-        encoder=encoder,
-        fps=fps,
-        audio=audio,
-        audio_settings=audio_settings,
-        save_path=str(save_path),
-        output_params=output_params,
-        global_params=global_params,
-        ffmpeg_env=FFMpegEnv.get_integrated(node_context.storage_dir),
+    return graph().video_save(
+        globals(),
+        node_context,
+        _,
+        save_dir,
+        video_name,
+        simplicity,
+        container,
+        encoder,
+        video_preset,
+        crf,
+        additional_parameters,
+        simple_video_format,
+        quality,
+        fps,
+        audio,
+        audio_settings,
     )
 
-    def on_iterate(img: np.ndarray):
-        writer.write_frame(img)
 
-    def on_complete():
-        writer.close()
+def prepare_video_frame(inputs: list[np.ndarray]) -> np.ndarray:
+    """The uint8 frame Save Video would write for this iteration (SP3-P9)."""
+    return to_uint8(inputs[0], normalized=True)
 
-    return Collector(on_iterate=on_iterate, on_complete=on_complete)
+
+def commit_video_frame(
+    collector: VideoCollector, inputs: list[np.ndarray], prepared: Prepared
+) -> None:
+    """Save Video's iteration with its prepared frame as the pipe payload."""
+    collector.writer.write_frame(inputs[0], prepared)
+
+
+register_phases("chainner:image:save_video", prepare_video_frame, commit_video_frame)

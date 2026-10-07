@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from api import Generator, IteratorOutputInfo, KeyInfo
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import BoolInput, NumberInput
 from nodes.properties.outputs import NumberOutput
 
@@ -53,9 +54,6 @@ def range_node(
     end: int,
     end_inclusive: bool,
 ) -> Generator[int]:
-    if not start_inclusive:
-        start += 1
-    if end_inclusive:
-        end += 1
-    count = end - start
-    return Generator.from_range(count, lambda i: start + i)
+    return graph().execution_range(
+        globals(), start, start_inclusive, end, end_inclusive
+    )

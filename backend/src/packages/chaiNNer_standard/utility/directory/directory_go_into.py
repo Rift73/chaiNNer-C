@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from nodes.groups import optional_list_group
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import DirectoryInput, RelativePathInput
 from nodes.properties.outputs import DirectoryOutput
 
@@ -58,7 +59,4 @@ from .. import directory_group
     ],
 )
 def directory_go_into_node(directory: Path, *folders: str | None) -> Path:
-    for folder in folders:
-        if folder is not None:
-            directory = (directory / folder).resolve()
-    return directory
+    return graph().execution_directory_into(directory, folders)

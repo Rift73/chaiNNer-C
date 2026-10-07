@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import gc
+
 import numpy as np
-import onnxruntime as ort
 from sanic.log import logger
 
 from api import NodeContext
 from nodes.groups import Condition, if_enum_group, if_group
 from nodes.impl.onnx.auto_split import onnx_auto_split
 from nodes.impl.onnx.model import OnnxGeneric, SizeReq
-from nodes.impl.onnx.session import get_input_shape, get_onnx_session, get_output_shape
+from nodes.impl.onnx.session import (
+    OnnxSession,
+    get_input_shape,
+    get_onnx_session,
+    get_output_shape,
+)
 from nodes.impl.upscale.auto_split_tiles import (
     CUSTOM,
     TILE_SIZE_256,
@@ -33,14 +39,14 @@ from .. import processing_group
 
 def upscale(
     img: np.ndarray,
-    session: ort.InferenceSession,
+    session: OnnxSession,
     tile_size: TileSize,
     change_shape: bool,
     exact_size: tuple[int, int] | None,
     size_req: SizeReq | None,
+    collect_after: bool = True,
 ) -> np.ndarray:
     logger.debug("Upscaling image")
-
     if exact_size is None:
 
         def estimate():
@@ -49,63 +55,43 @@ def upscale(
         tiler = parse_tile_size_input(tile_size, estimate)
     else:
         tiler = ExactTileSize(exact_size)
-
     return onnx_auto_split(
-        img, session, change_shape=change_shape, tiler=tiler, size_req=size_req
+        img,
+        session,
+        change_shape=change_shape,
+        tiler=tiler,
+        size_req=size_req,
+        collect_after=collect_after,
     )
 
 
 @processing_group.register(
     schema_id="chainner:onnx:upscale_image",
-    description=(
-        "Upscales an image using an ONNX Super-Resolution model. ONNX does"
-        " not support automatic out-of-memory handling via automatic tiling."
-        "  Therefore, you must set a Smart Tiling Mode manually. If you get an"
-        " out-of-memory error, try picking a setting further down the list."
-    ),
+    description="Upscales an image using an ONNX Super-Resolution model. ONNX does not support automatic out-of-memory handling via automatic tiling.  Therefore, you must set a Smart Tiling Mode manually. If you get an out-of-memory error, try picking a setting further down the list.",
     inputs=[
         ImageInput().with_id(1),
         OnnxGenericModelInput().with_id(0),
         TileSizeDropdown(estimate=False, default=TILE_SIZE_256)
         .with_id(2)
         .with_docs(
-            "Tiled upscaling is used to allow large images to be upscaled without"
-            " hitting memory limits.",
-            "This works by splitting the image into tiles (with overlap), upscaling"
-            " each tile individually, and seamlessly recombining them.",
-            "Generally it's recommended to use the largest tile size possible for best"
-            " performance, but depending on the model and image size, this may not be"
-            " possible.",
-            "ONNX upscaling does not support an automatic mode, meaning you may need to"
-            " manually select a tile size for it to work.",
+            "Tiled upscaling is used to allow large images to be upscaled without hitting memory limits.",
+            "This works by splitting the image into tiles (with overlap), upscaling each tile individually, and seamlessly recombining them.",
+            "Generally it's recommended to use the largest tile size possible for best performance, but depending on the model and image size, this may not be possible.",
+            "ONNX upscaling does not support an automatic mode, meaning you may need to manually select a tile size for it to work.",
         ),
         if_enum_group(2, CUSTOM)(
             NumberInput(
-                "Custom Tile Size",
-                min=1,
-                max=None,
-                default=TILE_SIZE_256,
-                unit="px",
+                "Custom Tile Size", min=1, max=None, default=TILE_SIZE_256, unit="px"
             )
         ),
         if_group(Condition.type(1, "Image { channels: 4 } "))(
             BoolInput("Separate Alpha", default=False).with_docs(
-                "Upscale alpha separately from color. Enabling this option will cause the alpha of"
-                " the upscaled image to be less noisy and more accurate to the alpha of the original"
-                " image, but the image may suffer from dark borders near transparency edges"
-                " (transition from fully transparent to fully opaque).",
-                "Whether enabling this option will improve the upscaled image depends on the original"
-                " image. We generally recommend this option for images with smooth transitions between"
-                " transparent and opaque regions.",
+                "Upscale alpha separately from color. Enabling this option will cause the alpha of the upscaled image to be less noisy and more accurate to the alpha of the original image, but the image may suffer from dark borders near transparency edges (transition from fully transparent to fully opaque).",
+                "Whether enabling this option will improve the upscaled image depends on the original image. We generally recommend this option for images with smooth transitions between transparent and opaque regions.",
             )
         ),
     ],
-    outputs=[
-        ImageOutput(
-            "Image",
-            image_type="convenientUpscaleOnnx(Input0, Input1)",
-        )
-    ],
+    outputs=[ImageOutput("Image", image_type="convenientUpscaleOnnx(Input0, Input1)")],
     name="Upscale Image",
     icon="ONNX",
     node_context=True,
@@ -119,6 +105,7 @@ def upscale_image_node(
     separate_alpha: bool,
 ) -> np.ndarray:
     settings = get_settings(context)
+    context.add_cleanup(_collect_garbage, after="chain")
     session = get_onnx_session(
         model,
         settings.gpu_index,
@@ -126,26 +113,21 @@ def upscale_image_node(
         settings.tensorrt_fp16_mode,
         settings.tensorrt_cache_path,
     )
-
     input_shape, in_nc, req_width, req_height = get_input_shape(session)
     _, out_nc, _, _ = get_output_shape(session)
     change_shape = input_shape == "BHWC"
-
     exact_size = None
     if req_width is not None:
-        exact_size = req_width, req_height or req_width
+        exact_size = (req_width, req_height or req_width)
     elif req_height is not None:
-        exact_size = req_width or req_height, req_height
-
+        exact_size = (req_width or req_height, req_height)
     h, w, c = get_h_w_c(img)
     logger.debug(f"Image is {h}x{w}x{c}")
-
     use_size_req = (
         exact_size is None
         and model.info.scale_width is not None
-        and model.info.scale_height is not None
+        and (model.info.scale_height is not None)
     )
-
     return convenient_upscale(
         img,
         in_nc,
@@ -157,6 +139,11 @@ def upscale_image_node(
             change_shape,
             exact_size,
             model.info.size_req if use_size_req else None,
+            collect_after=False,
         ),
         separate_alpha,
     )
+
+
+def _collect_garbage() -> None:
+    gc.collect()

@@ -1,0 +1,15 @@
+{
+  "upstream": "https://github.com/microsoft/onnxruntime",
+  "tag": "v1.22.0",
+  "api": 22,
+  "files": [
+    {
+      "file": "onnxruntime_c_api.h",
+      "sha256": "d683537d0fdc29e977b5520f7f15d87a0ac212ae6d94fa9be8893a52655621ae"
+    },
+    {
+      "file": "LICENSE",
+      "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
+    }
+  ]
+}

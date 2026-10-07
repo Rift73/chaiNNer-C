@@ -4,6 +4,7 @@ import { Menu, MenuItemConstructorOptions, app, dialog } from 'electron/main';
 import os from 'os';
 import path from 'path';
 import { links } from '../../common/links';
+import { chainnerCVersion } from '../../common/version';
 import { isMac } from '../env';
 import { getLogsFolder } from '../platform';
 import { BrowserWindowWithSafeIpc } from '../safeIpc';
@@ -27,7 +28,7 @@ export const setMainMenu = ({ mainWindow, menuData, enabled = false }: MainMenuA
     const showAboutDialog = async () => {
         const response = await dialog.showMessageBox(mainWindow, {
             title: 'About chaiNNer',
-            message: `chaiNNer ${app.getVersion()}`,
+            message: `chaiNNer v${chainnerCVersion}`,
             detail: `chaiNNer is an open source (GPLv3 licensed) tool created by @joeyballentine, with support from other community members. Support the project by donating to my Ko-Fi via the button below. Also, many thanks to these members specifically: @RunDevelopment and @theflyingzamboni for ongoing development, and @Kim2091 for testing.`,
             buttons: ['Open Ko-Fi', 'Close'],
             defaultId: 0,
@@ -425,14 +426,6 @@ export const setMainMenu = ({ mainWindow, menuData, enabled = false }: MainMenuA
                 },
                 { type: 'separator' },
                 ...(!isMac ? [{ label: 'About chaiNNer', click: showAboutDialog }] : []),
-                {
-                    label: 'Release Notes',
-                    click: async () => {
-                        await shell.openExternal(
-                            `https://github.com/chaiNNer-org/chaiNNer/releases/tag/v${app.getVersion()}`
-                        );
-                    },
-                },
 
                 { type: 'separator' },
                 {
@@ -442,7 +435,8 @@ export const setMainMenu = ({ mainWindow, menuData, enabled = false }: MainMenuA
 
                         const information: Record<string, unknown> = {
                             app: {
-                                version: app.getVersion(),
+                                version: chainnerCVersion,
+                                upstream: app.getVersion(),
                                 packaged: app.isPackaged,
                                 path: app.getAppPath(),
                             },

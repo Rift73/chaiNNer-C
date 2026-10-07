@@ -1,18 +1,11 @@
 from __future__ import annotations
 
+import gc
 from contextlib import contextmanager
 
 import cv2
 import numpy as np
-
-try:
-    from ncnn_vulkan import ncnn
-
-    use_gpu = True
-except ImportError:
-    from ncnn import ncnn  # type: ignore
-
-    use_gpu = False
+from ncnn import ncnn
 from sanic.log import logger
 
 from api import NodeContext
@@ -43,6 +36,8 @@ from system import is_mac
 from ...settings import NcnnSettings, get_settings
 from .. import processing_group
 
+use_gpu = ncnn.get_gpu_count() > 0
+
 
 @contextmanager
 def managed_blob_vkallocator(vkdev: ncnn.VulkanDevice):
@@ -50,6 +45,10 @@ def managed_blob_vkallocator(vkdev: ncnn.VulkanDevice):
         blob_vkallocator = vkdev.acquire_blob_allocator()
     except Exception:
         blob_vkallocator = ncnn.VkBlobAllocator(vkdev)
+    if not isinstance(blob_vkallocator, ncnn.VkBlobAllocator):
+        raise TypeError(
+            f"NCNN acquired a {type(blob_vkallocator).__name__} as its blob allocator, not a VkBlobAllocator."
+        )
     try:
         yield blob_vkallocator
     finally:
@@ -63,8 +62,12 @@ def ncnn_allocators(vkdev: ncnn.VulkanDevice):
             staging_vkallocator = vkdev.acquire_staging_allocator()
         except Exception:
             staging_vkallocator = ncnn.VkStagingAllocator(vkdev)
+        if not isinstance(staging_vkallocator, ncnn.VkStagingAllocator):
+            raise TypeError(
+                f"NCNN acquired a {type(staging_vkallocator).__name__} as its staging allocator, not a VkStagingAllocator."
+            )
         try:
-            yield blob_vkallocator, staging_vkallocator
+            yield (blob_vkallocator, staging_vkallocator)
         finally:
             staging_vkallocator.clear()
 
@@ -76,48 +79,35 @@ def upscale_impl(
     input_name: str,
     output_name: str,
     tile_size: TileSize,
+    collect_after: bool = True,
 ):
     net = get_ncnn_net(model, settings=settings)
-    # Try/except block to catch errors
     try:
 
         def estimate():
             heap_budget_bytes = settings.budget_limit * 1024**3
-
-            # 0 means no limit, we approximate that here by picking 1 PiB,
-            # which presumably no one will ever hit.
             if heap_budget_bytes == 0:
                 heap_budget_bytes = 1024**5
-
             model_size_estimate = model.model.bin_length
-
             if use_gpu:
                 if is_mac:
-                    # the actual estimate frequently crashes on mac, so we just use 256
                     return MaxTileSize(256)
-
                 heap_budget_bytes = min(
                     heap_budget_bytes, vkdev.get_heap_budget() * 1024 * 1024 * 0.8
                 )
             else:
-                # Empirically determined (TODO do a more thorough job here)
                 model_size_estimate = model_size_estimate * 5 / 3
                 if net.opt.use_winograd_convolution:
                     model_size_estimate = model_size_estimate * 11 / 5
                 elif net.opt.use_sgemm_convolution:
                     model_size_estimate = model_size_estimate * 40 / 5
-
             return MaxTileSize(
                 estimate_tile_size(heap_budget_bytes, int(model_size_estimate), img, 4)
             )
 
         if use_gpu:
             vkdev = ncnn.get_gpu_device(settings.gpu_index)
-
-            with ncnn_allocators(vkdev) as (
-                blob_vkallocator,
-                staging_vkallocator,
-            ):
+            with ncnn_allocators(vkdev) as (blob_vkallocator, staging_vkallocator):
                 return ncnn_auto_split(
                     img,
                     net,
@@ -126,6 +116,7 @@ def upscale_impl(
                     blob_vkallocator=blob_vkallocator,
                     staging_vkallocator=staging_vkallocator,
                     tiler=parse_tile_size_input(tile_size, estimate),
+                    collect_after=collect_after,
                 )
         else:
             return ncnn_auto_split(
@@ -136,6 +127,7 @@ def upscale_impl(
                 blob_vkallocator=None,
                 staging_vkallocator=None,
                 tiler=parse_tile_size_input(tile_size, estimate),
+                collect_after=collect_after,
             )
     except (RuntimeError, ValueError):
         raise
@@ -147,8 +139,7 @@ def upscale_impl(
 @processing_group.register(
     schema_id="chainner:ncnn:upscale_image",
     name="Upscale Image",
-    description="Upscale an image with NCNN. Unlike PyTorch, NCNN has GPU support on all devices, assuming your drivers support Vulkan. \
-            Select a manual number of tiles or set a memory budget limit if you are having issues with the automatic mode.",
+    description="Upscale an image with NCNN. Unlike PyTorch, NCNN has GPU support on all devices, assuming your drivers support Vulkan.             Select a manual number of tiles or set a memory budget limit if you are having issues with the automatic mode.",
     icon="NCNN",
     inputs=[
         ImageInput().with_id(1),
@@ -163,11 +154,7 @@ def upscale_impl(
         ),
         if_enum_group(2, CUSTOM)(
             NumberInput(
-                "Custom Tile Size",
-                min=1,
-                max=None,
-                default=TILE_SIZE_256,
-                unit="px",
+                "Custom Tile Size", min=1, max=None, default=TILE_SIZE_256, unit="px"
             )
         ),
         if_group(
@@ -180,19 +167,12 @@ def upscale_impl(
             )
         )(
             BoolInput("Separate Alpha", default=False).with_docs(
-                "Upscale alpha separately from color. Enabling this option will cause the alpha of"
-                " the upscaled image to be less noisy and more accurate to the alpha of the original"
-                " image, but the image may suffer from dark borders near transparency edges"
-                " (transition from fully transparent to fully opaque).",
-                "Whether enabling this option will improve the upscaled image depends on the original"
-                " image. We generally recommend this option for images with smooth transitions between"
-                " transparent and opaque regions.",
+                "Upscale alpha separately from color. Enabling this option will cause the alpha of the upscaled image to be less noisy and more accurate to the alpha of the original image, but the image may suffer from dark borders near transparency edges (transition from fully transparent to fully opaque).",
+                "Whether enabling this option will improve the upscaled image depends on the original image. We generally recommend this option for images with smooth transitions between transparent and opaque regions.",
             )
         ),
     ],
-    outputs=[
-        ImageOutput(image_type="""convenientUpscale(Input0, Input1)"""),
-    ],
+    outputs=[ImageOutput(image_type="convenientUpscale(Input0, Input1)")],
     limited_to_8bpc=True,
     node_context=True,
 )
@@ -205,6 +185,7 @@ def upscale_image_node(
     separate_alpha: bool,
 ) -> np.ndarray:
     settings = get_settings(context)
+    context.add_cleanup(_collect_garbage, after="chain")
 
     def upscale(i: np.ndarray) -> np.ndarray:
         ic = get_h_w_c(i)[2]
@@ -219,6 +200,7 @@ def upscale_image_node(
             model.model.layers[0].outputs[0],
             model.model.layers[-1].outputs[0],
             TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
+            collect_after=False,
         )
         if ic == 3:
             i = cv2.cvtColor(i, cv2.COLOR_RGB2BGR)
@@ -227,3 +209,7 @@ def upscale_image_node(
         return i
 
     return convenient_upscale(img, model.in_nc, model.out_nc, upscale, separate_alpha)
+
+
+def _collect_garbage() -> None:
+    gc.collect()

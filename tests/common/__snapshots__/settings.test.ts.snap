@@ -4,7 +4,6 @@ exports[`Migrate settings 1`] = `
 {
   "allowMultipleInstances": false,
   "animateChain": true,
-  "checkForUpdatesOnStartup": true,
   "experimentalFeatures": true,
   "favoriteNodes": [
     "chainner:image:preview",
@@ -101,6 +100,7 @@ exports[`Migrate settings 1`] = `
 exports[`Migrate settings 2`] = `
 Set {
   "check-upd-on-strtup",
+  "check-upd-on-strtup-2",
   "disable-hw-accel",
   "is-cpu",
   "is-fp16",

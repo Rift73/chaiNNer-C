@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import cv2
 import numpy as np
 
 from nodes.impl.image_utils import fast_gaussian_blur
+from nodes.impl.native_analysis import binary
+from nodes.impl.native_unsharp import weighted
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -62,10 +63,8 @@ def unsharp_mask_node(
 
     threshold /= 100
     if threshold == 0:
-        img = cv2.addWeighted(img, amount + 1, blurred, -amount, 0)
+        img = weighted(img, blurred, amount)
     else:
-        diff = img - blurred
-        diff = np.sign(diff) * np.maximum(0, np.abs(diff) - threshold)
-        img = img + diff * amount
+        img = binary(img, blurred, 1, amount, threshold)
 
     return img

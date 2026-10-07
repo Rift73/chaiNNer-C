@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import numpy as np
-from chainner_ext import Clipboard
 
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import ClipboardInput
 
 from .. import clipboard_group
@@ -21,7 +21,4 @@ from .. import clipboard_group
     limited_to_8bpc="The image will be copied to clipboard with 8 bits/channel.",
 )
 def copy_to_clipboard_node(value: str | np.ndarray) -> None:
-    if isinstance(value, np.ndarray):
-        Clipboard.create_instance().write_image(value, "BGR")
-    else:
-        Clipboard.create_instance().write_text(value)
+    graph().utility_copy_to_clipboard(value, np.ndarray)
