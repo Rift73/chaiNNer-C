@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 import tensorrt as trt
 from cuda.bindings import runtime as cudart
+from sanic.log import logger
 
 from api import NodeId
 
@@ -103,6 +104,13 @@ class TensorRTSession:
             self._loaded.release()
             raise
         self.context = context
+        # A fixed-shape engine's execution is replayed from a CUDA graph captured after
+        # its first run: TensorRT's per-launch host work happens once (DUAL's AOT
+        # plugins cost ~0.3 ms of it per launch, 5x the GPU time without a graph).
+        self._static = (mins[2], mins[3]) == (maxs[2], maxs[3])
+        self._graph: cudart.cudaGraph_t | None = None
+        self._graph_exec: cudart.cudaGraphExec_t | None = None
+        self._graph_failed = False
 
         self._stream = check_cuda(cudart.cudaStreamCreate())
         self._events = [
@@ -130,6 +138,8 @@ class TensorRTSession:
         ):
             # in-flight work may still read or write the old buffers
             check_cuda(cudart.cudaStreamSynchronize(self._stream))
+            # a captured graph holds the old addresses
+            self._drop_graph()
         if act_nbytes > self._d_act_nbytes:
             if self._d_act:
                 check_cuda(cudart.cudaFree(self._d_act))
@@ -191,8 +201,7 @@ class TensorRTSession:
         )
         self.context.set_tensor_address(self.input_name, self._d_in)
         self.context.set_tensor_address(self.output_name, self._d_out)
-        if not self.context.execute_async_v3(int(self._stream)):
-            raise RuntimeError("TensorRT failed to enqueue inference.")
+        self._execute()
         check_cuda(
             cudart.cudaMemcpyAsync(
                 h_out.ptr,
@@ -205,6 +214,51 @@ class TensorRTSession:
         check_cuda(cudart.cudaEventRecord(self._events[slot], self._stream))
         self._queue.append((slot, out_shape))
         self._submitted += 1
+
+    def _execute(self) -> None:
+        """Enqueue the engine on the stream: the captured graph when there is one, else
+        TensorRT's enqueue; a fixed-shape engine is captured after its first run."""
+        if self._graph_exec is not None:
+            check_cuda(cudart.cudaGraphLaunch(self._graph_exec, self._stream))
+            return
+        if not self.context.execute_async_v3(int(self._stream)):
+            raise RuntimeError("TensorRT failed to enqueue inference.")
+        if self._static and not self._graph_failed:
+            self._capture()
+
+    def _capture(self) -> None:
+        """Capture one execution (not run: the stream only records it). A capture that
+        fails leaves the session on TensorRT's enqueue, with a warning."""
+        check_cuda(cudart.cudaStreamSynchronize(self._stream))
+        mode = cudart.cudaStreamCaptureMode.cudaStreamCaptureModeThreadLocal
+        (error,) = cudart.cudaStreamBeginCapture(self._stream, mode)
+        enqueued = False
+        if error == cudart.cudaError_t.cudaSuccess:
+            enqueued = self.context.execute_async_v3(int(self._stream))
+            error, graph = cudart.cudaStreamEndCapture(self._stream)
+            if error == cudart.cudaError_t.cudaSuccess:
+                self._graph = graph
+                if enqueued:
+                    error, graph_exec = cudart.cudaGraphInstantiate(graph, 0)
+                    if error == cudart.cudaError_t.cudaSuccess:
+                        self._graph_exec = graph_exec
+                        return
+        self._drop_graph()
+        self._graph_failed = True
+        logger.warning(
+            "TensorRT engine not captured in a CUDA graph (enqueued %s, %s); it runs"
+            " without one",
+            enqueued,
+            error,
+        )
+
+    def _drop_graph(self) -> None:
+        if self._graph_exec is not None:
+            check_cuda(cudart.cudaGraphExecDestroy(self._graph_exec))
+            self._graph_exec = None
+        if self._graph is not None:
+            check_cuda(cudart.cudaGraphDestroy(self._graph))
+            self._graph = None
 
     def collect(self, height: int, width: int) -> np.ndarray:
         """Wait for the oldest tile; returns its top-left `height` x `width`
@@ -224,6 +278,7 @@ class TensorRTSession:
     def close(self) -> None:
         check_cuda(cudart.cudaStreamSynchronize(self._stream))
         self._queue.clear()
+        self._drop_graph()
         for buf in (*self._h_in, *self._h_out):
             buf.free()
         del self.context
