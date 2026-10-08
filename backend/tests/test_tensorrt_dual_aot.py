@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 from onnx import TensorProto, helper, numpy_helper
@@ -92,6 +94,18 @@ def test_lowering_replaces_every_plugin_node_with_stand_ins():
         assert set(plugin.outputs) <= produced  # every plugin output has a stand-in
     read = {n.input[0] for n in graph.node if n.name in lowered.readers}
     assert {"gamma", "beta", "tau", "wdw", "wp", "x", "qkv"} <= read
+
+
+def test_kernels_load_whole_16_byte_vectors():
+    # TensorRT's buffers are 16-byte aligned; unless the compile is told so, Triton loads
+    # one element at a time and the core runs about 14x slower.
+    kernel = dual_aot.compile_kernel(
+        dual_aot.vendored_kernels().cell_stats,
+        {"X": "*bf16", "WEIGHT": "*bf16", "STATS": "*fp32"},
+        {"H": 32, "W": 48, "C": 128, "BT": 256},
+        120,
+    )
+    assert re.search(r"ld\.global\S*\.v4\.", kernel.asm["ptx"])
 
 
 def test_the_residual_norm_variant_is_refused():

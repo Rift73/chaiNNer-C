@@ -95,7 +95,7 @@ def copy_kernel(
 
 
 @cache
-def _kernels() -> ModuleType:
+def vendored_kernels() -> ModuleType:
     """The vendored Triton kernels (a standalone module)."""
     spec = importlib.util.spec_from_file_location("dual_tensorrt_kernels", KERNELS)
     if spec is None or spec.loader is None:
@@ -115,10 +115,19 @@ def _resolved(function: F) -> F:
     return function
 
 
-def _compile(fn: Any, pointers: dict[str, str], constants: dict[str, Any], sm: int):
+def compile_kernel(
+    fn: Any, pointers: dict[str, str], constants: dict[str, Any], sm: int
+):
     signature = {**pointers, **dict.fromkeys(constants, "constexpr")}
+    # TensorRT's buffers are 16-byte aligned. A launch tells Triton's JIT so; an AOT
+    # compile must, or every load and store moves one element (the core ran ~14x slower).
+    aligned = {
+        (fn.arg_names.index(name),): [["tt.divisibility", 16]]
+        for name, kind in pointers.items()
+        if kind.startswith("*")
+    }
     kernel = triton.compile(
-        ASTSource(fn=fn, signature=signature, constexprs=constants),
+        ASTSource(fn=fn, signature=signature, constexprs=constants, attrs=aligned),
         target=GPUTarget("cuda", sm, 32),
         options=OPTIONS,
     )
@@ -210,7 +219,7 @@ def register(key: str) -> None:
     }
     pixels = h * w
     sm = _sm()
-    kernels = _kernels()
+    kernels = vendored_kernels()
 
     def plugin(name: str) -> str:
         return f"{NAMESPACE}::{name}_{key}"
@@ -237,7 +246,7 @@ def register(key: str) -> None:
         tactic: int,
     ) -> Launch:
         count = _elements(x) // c
-        kernel = _compile(
+        kernel = compile_kernel(
             norm_kernel,
             {
                 "x_ptr": "*bf16",
@@ -270,7 +279,7 @@ def register(key: str) -> None:
         outputs: tuple[trtp.TensorDesc],
         tactic: int,
     ) -> Launch:
-        kernel = _compile(
+        kernel = compile_kernel(
             kernels.cell_stats,
             {"X": "*bf16", "WEIGHT": "*bf16", "STATS": "*fp32"},
             {**common, "BT": 256},
@@ -291,7 +300,7 @@ def register(key: str) -> None:
         outputs: tuple[trtp.TensorDesc],
         tactic: int,
     ) -> Launch:
-        kernel = _compile(
+        kernel = compile_kernel(
             kernels.region_stats,
             {"STATS": "*fp32", "TAU": "*fp32", "A": "*bf16"},
             split,
@@ -316,7 +325,7 @@ def register(key: str) -> None:
         outputs: tuple[trtp.TensorDesc],
         tactic: int,
     ) -> Launch:
-        kernel = _compile(
+        kernel = compile_kernel(
             kernels.apply_dw,
             {"X": "*bf16", "WEIGHT": "*bf16", "A": "*bf16", "OUT": "*bf16"},
             {**split, "BT": APPLY_BT},
@@ -340,7 +349,7 @@ def register(key: str) -> None:
         outputs: tuple[trtp.TensorDesc],
         tactic: int,
     ) -> Launch:
-        kernel = _compile(
+        kernel = compile_kernel(
             kernels.project_add,
             {"X": "*bf16", "WEIGHT": "*bf16", "RESIDUAL": "*bf16", "OUT": "*bf16"},
             {
@@ -369,7 +378,7 @@ def _register_barrier(sm: int) -> None:
         x: trtp.TensorDesc, outputs: tuple[trtp.TensorDesc], tactic: int
     ) -> Launch:
         count = _elements(x)
-        kernel = _compile(
+        kernel = compile_kernel(
             copy_kernel,
             {"x_ptr": "*bf16", "count": "i32", "y_ptr": "*bf16"},
             {"block": COPY_BLOCK},
@@ -531,4 +540,14 @@ def attach(network: trt.INetworkDefinition, lowered: Lowered) -> None:
                 network.mark_output(replacement)
 
 
-__all__ = ["NAMESPACE", "Geometry", "Lowered", "Plugin", "attach", "lower", "register"]
+__all__ = [
+    "NAMESPACE",
+    "Geometry",
+    "Lowered",
+    "Plugin",
+    "attach",
+    "compile_kernel",
+    "lower",
+    "register",
+    "vendored_kernels",
+]
