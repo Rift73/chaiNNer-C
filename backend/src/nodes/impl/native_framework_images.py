@@ -32,6 +32,7 @@ def _api():
         "cn_framework_trimap": [p, p, z, z, f, f, z],
         "cn_framework_cloth_labels": [p, p, z, z, i, p],
         "cn_framework_cloth_masks": [p, p, z],
+        "cn_planar_to_interleaved_f32": [p, i, z, z, z, z, z, i, p],
     }
     for name, signature in signatures.items():
         function = getattr(dll, name)
@@ -140,6 +141,37 @@ def _assemble_four(image: np.ndarray) -> np.ndarray:
         )
         _report(events.value, "cast")
     return out
+
+
+def planar_to_interleaved(planes: np.ndarray, reverse: bool) -> np.ndarray:
+    """(C, H, W) float16 or float32 planes as a new (H, W, C) float32 image, every
+    value exact (NumPy's cast). Rows may be cropped from a wider buffer (positive
+    strides, contiguous within a row). reverse flips the channel order."""
+    if planes.ndim != 3 or planes.dtype not in (
+        np.dtype(np.float16),
+        np.dtype(np.float32),
+    ):
+        raise ValueError("Planar conversion needs (C, H, W) float16 or float32 planes")
+    item = planes.itemsize
+    plane_stride, row_stride, column_stride = planes.strides
+    if column_stride != item or plane_stride % item or row_stride % item:
+        raise ValueError("Planar conversion needs rows of contiguous samples")
+    channels, h, w = planes.shape
+    result = np.empty((h, w, channels), np.float32)
+    check(
+        _api().cn_planar_to_interleaved_f32(
+            planes.ctypes.data,
+            int(planes.dtype == np.float16),
+            plane_stride // item,
+            row_stride // item,
+            h,
+            w,
+            channels,
+            int(reverse),
+            result.ctypes.data,
+        )
+    )
+    return result
 
 
 def ncnn_input(image: np.ndarray) -> np.ndarray:

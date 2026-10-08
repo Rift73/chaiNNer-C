@@ -9,6 +9,7 @@ context is never used by two streams at once.
 from __future__ import annotations
 
 import ctypes
+import threading
 from collections import deque
 from contextlib import AbstractContextManager
 from typing import Any
@@ -19,21 +20,14 @@ from cuda.bindings import runtime as cudart
 
 from api import NodeId
 
+from ..native_framework_images import planar_to_interleaved
+from ..native_tensors import cast_into
+from .bfloat16 import bf16_bits_to_float32, float32_to_bf16_bits
 from .cache import SharedCache
 from .engine_info import deserialize_engine
 from .memory import check_cuda
 from .model import TensorRTEngine
 from .tiling import ShapeBounds
-
-
-def _float32_to_bf16_bits(x: np.ndarray) -> np.ndarray:
-    bits = np.ascontiguousarray(x, dtype=np.float32).view(np.uint32)
-    rounded = bits + np.uint32(0x7FFF) + ((bits >> np.uint32(16)) & np.uint32(1))
-    return (rounded >> np.uint32(16)).astype(np.uint16)
-
-
-def _bf16_bits_to_float32(x: np.ndarray) -> np.ndarray:
-    return (x.astype(np.uint32) << np.uint32(16)).view(np.float32)
 
 
 class _IoDtype:
@@ -125,6 +119,10 @@ class TensorRTSession:
         self._h_out = [_Pinned(), _Pinned()]
         self._queue: deque[tuple[int, tuple[int, ...]]] = deque()
         self._submitted = 0
+        # One image at a time: the item window may run the node for several items at
+        # once (execution_scheduler.LOCKED_DEVICE_NODES), and the context, stream and
+        # buffers serve one tiled upscale.
+        self.lock = threading.Lock()
 
     def _ensure_device(self, in_nbytes: int, out_nbytes: int, act_nbytes: int) -> None:
         if act_nbytes > self._d_act_nbytes or (
@@ -178,9 +176,9 @@ class TensorRTSession:
             chw = chw[::-1]  # BGR -> RGB
         dst = h_in.array(self._in.storage, in_shape)[0]
         if self._in.is_bf16:
-            dst[...] = _float32_to_bf16_bits(chw)
+            dst[...] = float32_to_bf16_bits(chw)
         else:
-            np.copyto(dst, chw, casting="same_kind")
+            cast_into(chw, dst)
 
         check_cuda(
             cudart.cudaMemcpyAsync(
@@ -208,18 +206,20 @@ class TensorRTSession:
         self._queue.append((slot, out_shape))
         self._submitted += 1
 
-    def collect(self) -> np.ndarray:
-        """Wait for the oldest tile; returns an HWC float32 BGR view or array."""
+    def collect(self, height: int, width: int) -> np.ndarray:
+        """Wait for the oldest tile; returns its top-left `height` x `width`
+        output pixels as a new HWC float32 BGR array."""
         slot, out_shape = self._queue.popleft()
         check_cuda(cudart.cudaEventSynchronize(self._events[slot]))
         chw = self._h_out[slot].array(self._out.storage, out_shape)[0]
+        chw = chw[:, :height, :width]
+        bgr = chw.shape[0] == 3  # RGB -> BGR
         if self._out.is_bf16:
-            chw = _bf16_bits_to_float32(chw)
-        elif chw.dtype != np.float32:
-            chw = chw.astype(np.float32)
-        if chw.shape[0] == 3:
-            chw = chw[::-1]  # RGB -> BGR
-        return chw.transpose(1, 2, 0)
+            if bgr:
+                chw = chw[::-1]
+            return np.ascontiguousarray(bf16_bits_to_float32(chw).transpose(1, 2, 0))
+        # One pass from the pinned planar buffer into interleaved float32.
+        return planar_to_interleaved(chw, reverse=bgr)
 
     def close(self) -> None:
         check_cuda(cudart.cudaStreamSynchronize(self._stream))

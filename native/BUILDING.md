@@ -11,7 +11,7 @@ The developer reference that used to live in the root README. The full command r
 - The Python backend (`backend/src`) is upstream's with the native paths wired in; nodes without one run upstream's
   Python unchanged. The GPU nodes keep their engines (PyTorch, ONNX Runtime, NCNN, TensorRT); the ONNX CPU session
   adapter, the ONNX-to-NCNN converter, NCNN param handling and tiling control are native.
-- `src/` and `tests/` are upstream's frontend at `d56e507f` with chaiNNer-C's UI changes (no updates, `v0.3.0`, the
+- `src/` and `tests/` are upstream's frontend at `d56e507f` with chaiNNer-C's UI changes (no updates, `v0.3.1`, the
   drop repairs, the TensorRT types and Clear item), its integrated Python moved to CPython 3.14.8 and its own
   `%APPDATA%\chaiNNer-C`. The local portable package uses an installed upstream nightly's UI with reviewed patches.
 

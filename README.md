@@ -21,8 +21,8 @@ chaiNNer-org. For chaiNNer itself, its documentation and its community, see the
   overlapping tiles automatically, with no visible seams, and engines stay loaded between runs (right-click the node
   and choose **Clear** to free the memory).
 - **An up-to-date Python stack:** Python 3.14, NumPy 2, OpenCV 5, current PyTorch and ONNX Runtime.
-- **Lives next to chaiNNer.** chaiNNer-C keeps its settings and its Python in its own folder
-  (`%APPDATA%\chaiNNer-C`), so an existing chaiNNer install is never touched.
+- **Lives next to chaiNNer.** chaiNNer-C keeps its settings and its Python in its own folder (the folder you
+  unzip it to; `%APPDATA%\chaiNNer-C` when run from source), so an existing chaiNNer install is never touched.
 
 ## Download and run
 

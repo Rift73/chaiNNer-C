@@ -10,6 +10,7 @@ from nodes.impl.onnx.model import OnnxModel
 from nodes.impl.tensorrt.engine_builder import BuildConfig, build_engine_from_onnx
 from nodes.impl.tensorrt.model import TensorRTEngine
 from nodes.properties.inputs import (
+    BoolInput,
     EnumInput,
     NumberInput,
     OnnxModelInput,
@@ -148,6 +149,13 @@ if utility_group is not None:
                 "Maximum GPU memory for building. Larger values may allow better optimizations.",
                 hint=True,
             ),
+            BoolInput("Allow TF32", default=False).with_docs(
+                "Lets TensorRT run the convolutions and matrix products of FP32 layers in TF32 on"
+                " tensor cores: FP32's range, but inputs rounded to a 10-bit mantissa, about FP16's"
+                " precision. Faster on RTX 30-series and newer GPUs.",
+                "Off keeps FP32 layers fully FP32. It applies to every FP32 layer, including those"
+                " of mixed-precision models.",
+            ),
         ],
         outputs=[
             TensorRTEngineOutput(),
@@ -168,6 +176,7 @@ if utility_group is not None:
         static_height: int,
         static_width: int,
         workspace: float,
+        allow_tf32: bool,
     ) -> TensorRTEngine:
         settings = get_settings(context)
         gpu_index = settings.gpu_index
@@ -200,13 +209,15 @@ if utility_group is not None:
             opt_shape=(opt_height, opt_width),
             max_shape=(max_height, max_width),
             use_dynamic_shapes=use_dynamic,
+            allow_tf32=allow_tf32,
         )
 
         logger.info(
-            "Building TensorRT engine: precision=%s, dynamic=%s, workspace=%.1fGB",
+            "Building TensorRT engine: precision=%s, dynamic=%s, workspace=%.1fGB, tf32=%s",
             precision.value,
             use_dynamic,
             workspace,
+            allow_tf32,
         )
 
         engine = build_engine_from_onnx(

@@ -66,10 +66,11 @@ if processing_group is not None:
         h, w, c = get_h_w_c(img)
         logger.debug("Upscaling a %dx%dx%d image with TensorRT", h, w, c)
 
-        # The session outlives the run; clearing this node frees it.
+        # The session outlives the run; clearing this node frees it. Its lock lets
+        # items computed ahead share it.
         with use_tensorrt_session(
             engine, settings.gpu_index, context.node_id
-        ) as session:
+        ) as session, session.lock:
             return convenient_upscale(
                 img,
                 engine.input_channels,

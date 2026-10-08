@@ -1,8 +1,8 @@
 # chaiNNer-C: build, test, package, bench
 
-chaiNNer-C v0.3.0, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
+chaiNNer-C v0.3.1, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
 installed nightly `0.25.1-nightly.2025-10-21` UI with pinned bundle patches, the single backend in `backend/src`, and a
-native C17/C++20 layer. The UI shows v0.3.0 (header, About, startup log, system information with `app.upstream`), while
+native C17/C++20 layer. The UI shows v0.3.1 (header, About, startup log, system information with `app.upstream`), while
 `app.getVersion()` stays upstream's, so saved chains keep the upstream version stamp and upstream's migrations read
 them correctly. Design: `ARCHITECTURE.md`. State and
 decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. Run every command in PowerShell from
@@ -80,12 +80,12 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 `CHAINNER_C_EXT_OUTPUT_DIR`, default `backend/src/chainner_ext`), replacing the only known-good copies. Copy them to
 `native\build\held\` first and check `Get-FileHash` against those copies. The build is reproducible: the same sources
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
-map, `.gitattributes`). This source's binaries (the portable build, 2026-10-07; a package refresh ships them), for reference:
+map, `.gitattributes`). This source's binaries (the portable build, 2026-10-08, shipped in v0.3.1), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
-| `chainner_native.dll` | `b3f730b451fa9303b41951ac1db96e604dd7fbb76bec9075228d236e18e1c9f2` |
-| `_chainner_graph.pyd` | `29d686aac38bdad2781b867e09e58d19f332e47be626358e0ea17d1e2eabbf19` |
+| `chainner_native.dll` | `6da1217311bb59a67d1a7ad50e20007ef733b5dbce763ed6bfcf708271cfecf5` |
+| `_chainner_graph.pyd` | `db143a020277900475a16fc20531e331d84e4adf46ff862820d9114818dad587` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 
 `generate_onnx_converter.py`, `generate_pixel_art_tables.py` and `generate_tiling_cpp.py` in `native/tools` turn pinned

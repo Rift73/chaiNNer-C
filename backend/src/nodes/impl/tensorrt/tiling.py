@@ -45,11 +45,9 @@ class TileRunner(Protocol):
         """Start upscaling one HWC float32 tile."""
         ...
 
-    def collect(self) -> np.ndarray:
-        """Wait for the oldest submitted tile and return its HWC float32 result.
-
-        The result may be a view that is only valid until the next `submit`.
-        """
+    def collect(self, height: int, width: int) -> np.ndarray:
+        """Wait for the oldest submitted tile and return the top-left `height` x
+        `width` pixels of its HWC float32 result as an array the caller owns."""
         ...
 
 
@@ -142,8 +140,7 @@ def _blend(
     if result is None:
         result = np.zeros((out_h, out_w, tile_out.shape[2]), dtype=np.float32)
     weight = wy[:, None, None] * wx[None, :, None]
-    region = tile_out[: wy.size, : wx.size]
-    result[y0 : y0 + wy.size, x0 : x0 + wx.size] += region * weight
+    result[y0 : y0 + wy.size, x0 : x0 + wx.size] += tile_out * weight
     return result
 
 
@@ -161,6 +158,23 @@ def tiled_upscale(
     tile_w = _tile_extent(bounds.max_w, bounds.min_w)
     ys = tile_starts(h, tile_h, overlap)
     xs = tile_starts(w, tile_w, overlap)
+    if len(ys) == 1 and len(xs) == 1:
+        # One tile: every blend weight is exactly 1, so the cropped output is
+        # the result (blending would only re-read it).
+        if progress is not None:
+            progress.check_aborted()
+        runner.submit(
+            _pad_tile(
+                img,
+                _padded_extent(h, bounds.min_h, tile_h),
+                _padded_extent(w, bounds.min_w, tile_w),
+            )
+        )
+        single = runner.collect(h * scale, w * scale)
+        if progress is not None:
+            progress.set_progress(1)
+        return single
+
     wys = axis_weights(ys, tile_h, h, scale, overlap)
     wxs = axis_weights(xs, tile_w, w, scale, overlap)
     jobs = [(iy, ix) for iy in range(len(ys)) for ix in range(len(xs))]
@@ -183,7 +197,7 @@ def tiled_upscale(
             py, px = pending.popleft()
             result = _blend(
                 result,
-                runner.collect(),
+                runner.collect(wys[py].size, wxs[px].size),
                 ys[py] * scale,
                 xs[px] * scale,
                 wys[py],
