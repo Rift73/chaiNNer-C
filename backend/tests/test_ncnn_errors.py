@@ -14,7 +14,9 @@ from nodes.impl.native_framework_images import ncnn_input
 from nodes.impl.ncnn.auto_split import ncnn_auto_split
 from nodes.impl.ncnn.model import NcnnModel, NcnnModelWrapper
 from nodes.impl.ncnn.session import create_ncnn_net
+from nodes.impl.upscale.auto_split_tiles import NO_TILING
 from nodes.impl.upscale.tiler import MaxTileSize
+from packages.chaiNNer_ncnn.ncnn.processing import upscale_image
 from packages.chaiNNer_ncnn.settings import NcnnSettings
 
 BACKEND = Path(__file__).resolve().parents[1] / "src"
@@ -100,15 +102,25 @@ def test_failures_of_the_real_binding_raise_instead_of_crashing(tmp_path: Path):
     ]
 
 
-class Extractor:
-    """Upscales 2x by repeating pixels, or returns the error `code` for an input of
-    more than `limit` pixels, as PyPI ncnn's Extractor does: no exception, and an
-    output that must not be read."""
+class Net:
+    """Upscales 2x by repeating pixels, then drops `crop` pixels from each side, as a
+    waifu2x-ncnn-vulkan model's unpadded convolutions do. For an input of more than
+    `limit` pixels it returns the error `code` as PyPI ncnn's Extractor does: no
+    exception, and an output that must not be read."""
 
-    def __init__(self, code: int, limit: int, sizes: list[tuple[int, int]]):
+    def __init__(self, code: int = 0, limit: int = 2**62, crop: int = 0):
         self.code = code
         self.limit = limit
-        self.sizes = sizes
+        self.crop = crop
+        self.sizes: list[tuple[int, int]] = []
+
+    def create_extractor(self) -> Extractor:
+        return Extractor(self)
+
+
+class Extractor:
+    def __init__(self, net: Net):
+        self.net = net
         self.image = np.zeros((3, 0, 0), np.float32)
 
     def input(self, name: str, mat: ncnn.Mat) -> int:
@@ -117,24 +129,16 @@ class Extractor:
 
     def extract(self, name: str) -> tuple[int, np.ndarray | None]:
         _, h, w = self.image.shape
-        self.sizes.append((w, h))
-        if w * h > self.limit:
-            return self.code, None
-        return 0, self.image.repeat(2, axis=1).repeat(2, axis=2)
-
-
-class Net:
-    def __init__(self, code: int, limit: int):
-        self.code = code
-        self.limit = limit
-        self.sizes: list[tuple[int, int]] = []
-
-    def create_extractor(self) -> Extractor:
-        return Extractor(self.code, self.limit, self.sizes)
+        self.net.sizes.append((w, h))
+        if w * h > self.net.limit:
+            return self.net.code, None
+        c = self.net.crop
+        upscaled = self.image.repeat(2, axis=1).repeat(2, axis=2)
+        return 0, upscaled[:, c : 2 * h - c, c : 2 * w - c]
 
 
 def test_out_of_memory_retries_with_smaller_tiles():
-    net = Net(-100, 64 * 64)
+    net = Net(code=-100, limit=64 * 64)
     image = np.random.default_rng(0).random((100, 120, 3), dtype=np.float32)
     result = ncnn_auto_split(
         image, cast(ncnn.Net, net), "data", "out", None, None, MaxTileSize()
@@ -148,10 +152,48 @@ def test_out_of_memory_retries_with_smaller_tiles():
 
 
 def test_other_failures_raise_their_code_without_retrying():
-    net = Net(-1, 0)
+    net = Net(code=-1, limit=0)
     image = np.zeros((10, 12, 3), np.float32)
     with pytest.raises(RuntimeError, match=r"NCNN failed with error code -1\."):
         ncnn_auto_split(
             image, cast(ncnn.Net, net), "data", "out", None, None, MaxTileSize()
         )
     assert net.sizes == [(12, 10)]
+
+
+@pytest.mark.parametrize(
+    ("tile_size", "sizes"),
+    [(2**31, "a 1564x1164 image for a 800x600 image"), (256, r"a \d+x\d+ image")],
+)
+def test_a_model_that_crops_its_output_is_refused(tile_size: int, sizes: str):
+    # 2x less 36 pixels: whole, 800x600 gives 1564x1164; every tile is cropped too.
+    net = Net(crop=18)
+    image = np.zeros((600, 800, 3), np.float32)
+    with pytest.raises(ValueError, match=f"returned {sizes}.*whole multiple"):
+        ncnn_auto_split(
+            image,
+            cast(ncnn.Net, net),
+            "data",
+            "out",
+            None,
+            None,
+            MaxTileSize(tile_size),
+        )
+
+
+def test_an_unexpected_error_is_logged_and_kept_as_the_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    # A bare assert of the tiler used to reach the log as an empty "ERROR ''".
+    def fail(*args: object, **kwargs: object) -> np.ndarray:
+        raise AssertionError
+
+    monkeypatch.setattr(upscale_image, "ncnn_auto_split", fail)
+    image = np.zeros((8, 8, 3), np.float32)
+    with pytest.raises(RuntimeError, match="unexpected error") as raised:
+        upscale_image.upscale_impl(
+            SETTINGS, image, tiny_model(tmp_path), "data", "out", NO_TILING
+        )
+    assert isinstance(raised.value.__cause__, AssertionError)
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert [r.exc_info[0] for r in errors if r.exc_info] == [AssertionError]

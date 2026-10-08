@@ -132,8 +132,10 @@ def upscale_impl(
     except (RuntimeError, ValueError):
         raise
     except Exception as e:
-        logger.error(e)
-        raise RuntimeError("An unexpected error occurred during NCNN processing.")  # noqa: B904
+        logger.exception("An unexpected error occurred during NCNN processing.")
+        raise RuntimeError(
+            "An unexpected error occurred during NCNN processing."
+        ) from e
 
 
 @processing_group.register(

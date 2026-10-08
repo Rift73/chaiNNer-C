@@ -106,6 +106,15 @@ def ncnn_auto_split(
         )
         del ex, mat_in, mat_out
         clear_vkallocators()
+        h, w = img.shape[:2]
+        out_h, out_w = result.shape[:2]
+        if out_h % h or out_w % w or out_h // h != out_w // w:
+            raise ValueError(
+                f"The NCNN model returned a {out_w}x{out_h} image for a {w}x{h} image,"
+                " but an upscale must return a whole multiple of the input's size."
+                " Models that expect a padded input, such as waifu2x-ncnn-vulkan's,"
+                " are not supported."
+            )
         return result
 
     try:
