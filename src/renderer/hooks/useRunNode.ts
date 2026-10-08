@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useContext } from 'use-context-selector';
+import { useContext, useContextSelector } from 'use-context-selector';
 import { NodeData } from '../../common/common-types';
 import { log } from '../../common/log';
 import { delay, mapInputValues } from '../../common/util';
 import { AlertBoxContext } from '../contexts/AlertBoxContext';
 import { BackendContext } from '../contexts/BackendContext';
-import { GlobalContext } from '../contexts/GlobalNodeState';
+import { GlobalContext, GlobalVolatileContext } from '../contexts/GlobalNodeState';
 import { useAsyncEffect } from './useAsyncEffect';
 import { useAutomaticFeatures } from './useAutomaticFeatures';
 import { useSettings } from './useSettings';
@@ -26,6 +26,9 @@ export const useRunNode = (
 
     const [reloadCounter, setReloadCounter] = useState(0);
     const reload = useCallback(() => setReloadCounter((c) => c + 1), []);
+    // Loading a chain clears all output data, so a node that is kept with the same inputs has to
+    // run again.
+    const chainLoads = useContextSelector(GlobalVolatileContext, (c) => c.chainLoads);
 
     const schema = schemata.get(schemaId);
 
@@ -36,8 +39,8 @@ export const useRunNode = (
         [inputData, schema]
     );
     const inputHash = useMemo(
-        () => `${reloadCounter};${JSON.stringify(inputs)}`,
-        [reloadCounter, inputs]
+        () => `${reloadCounter};${chainLoads};${JSON.stringify(inputs)}`,
+        [reloadCounter, chainLoads, inputs]
     );
     const lastInputHash = useRef<string>();
 

@@ -95,6 +95,7 @@ const EMPTY_CONNECTED: readonly [IdSet<InputId>, IdSet<OutputId>] = [IdSet.empty
 interface GlobalVolatile {
     nodeChanges: ChangeCounter;
     edgeChanges: ChangeCounter;
+    chainLoads: ChangeCounter;
     typeState: TypeState;
     getConnected: (id: string) => readonly [IdSet<InputId>, IdSet<OutputId>];
     isValidConnection: (connection: Readonly<Connection>) => Validity;
@@ -183,6 +184,7 @@ export const GlobalProvider = memo(
 
         const [nodeChanges, addNodeChanges, nodeChangesRef] = useChangeCounter();
         const [edgeChanges, addEdgeChanges, edgeChangesRef] = useChangeCounter();
+        const [chainLoads, addChainLoads] = useChangeCounter();
         const {
             setViewport,
             getViewport,
@@ -595,6 +597,9 @@ export const GlobalProvider = memo(
                 }
 
                 outputDataActions.clear();
+                // React Flow reuses the nodes that keep their id, so they have to run again to
+                // get back the output data that was just cleared
+                addChainLoads();
                 setLastSavedChanges([
                     nextChangeCount(nodeChangesRef.current),
                     nextChangeCount(edgeChangesRef.current),
@@ -608,6 +613,7 @@ export const GlobalProvider = memo(
                 pushOpenPath(path);
             },
             [
+                addChainLoads,
                 changeEdges,
                 changeNodes,
                 edgeChangesRef,
@@ -1259,6 +1265,7 @@ export const GlobalProvider = memo(
         const globalVolatileValue = useMemoObject<GlobalVolatile>({
             nodeChanges,
             edgeChanges,
+            chainLoads,
             typeState,
             getConnected,
             effectivelyDisabledNodes,
