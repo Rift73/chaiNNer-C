@@ -1,4 +1,3 @@
-import { readFile } from 'fs/promises';
 import { extname } from 'path';
 import {
     EdgeData,
@@ -12,6 +11,7 @@ import { InputOverrideId } from '../common/input-override-common';
 import { log } from '../common/log';
 import { SchemaMap } from '../common/SchemaMap';
 import { joinEnglish } from '../common/util';
+import { readTextFile } from './util';
 import type { Edge, Node } from 'reactflow';
 
 const isValidInputOverrideId = (id: InputOverrideId) => /^#[a-f0-9-]{36}:\d+$/.test(id);
@@ -29,7 +29,7 @@ export interface OverrideFile {
 }
 
 export const readOverrideFile = async (filePath: string): Promise<OverrideFile> => {
-    const content = await readFile(filePath, { encoding: 'utf-8' });
+    const content = await readTextFile(filePath);
     const data = JSON.parse(content) as unknown;
     if (typeof data !== 'object')
         throw new Error('Expected the override file to contain an object');
