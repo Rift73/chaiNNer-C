@@ -19,6 +19,7 @@ from cuda.bindings import runtime as cudart
 
 from api import NodeId
 
+from ..native_framework_images import planar_to_interleaved
 from ..native_tensors import cast_into
 from .cache import SharedCache
 from .engine_info import deserialize_engine
@@ -216,14 +217,13 @@ class TensorRTSession:
         check_cuda(cudart.cudaEventSynchronize(self._events[slot]))
         chw = self._h_out[slot].array(self._out.storage, out_shape)[0]
         chw = chw[:, :height, :width]
-        if chw.shape[0] == 3:
-            chw = chw[::-1]  # RGB -> BGR
+        bgr = chw.shape[0] == 3  # RGB -> BGR
         if self._out.is_bf16:
+            if bgr:
+                chw = chw[::-1]
             return np.ascontiguousarray(_bf16_bits_to_float32(chw).transpose(1, 2, 0))
         # One pass from the pinned planar buffer into interleaved float32.
-        out = np.empty((height, width, chw.shape[0]), np.float32)
-        cast_into(chw.transpose(1, 2, 0), out)
-        return out
+        return planar_to_interleaved(chw, reverse=bgr)
 
     def close(self) -> None:
         check_cuda(cudart.cudaStreamSynchronize(self._stream))
