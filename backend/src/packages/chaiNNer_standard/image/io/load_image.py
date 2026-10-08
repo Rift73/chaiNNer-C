@@ -9,7 +9,7 @@ from typing import Callable, Iterable, Union
 import cv2 as cv2
 import numpy as np
 import pillow_avif  # type: ignore # noqa: F401
-from PIL import Image
+from PIL import Image, TiffImagePlugin
 from sanic.log import logger as logger
 
 from nodes.impl.dds.texconv import dds_to_png_texconv as dds_to_png_texconv
@@ -63,12 +63,35 @@ def _read_dds(path: Path) -> np.ndarray | None:
     return graph().image_io_read_dds(globals(), path)
 
 
+def _read_tiff_straight_alpha(path: Path) -> np.ndarray | None:
+    """
+    OpenCV reads 8-bit TIFFs through libtiff's RGBA interface, which premultiplies
+    unassociated (straight) alpha (upstream chaiNNer #409), so Pillow decodes 8-bit
+    RGBA TIFFs that declare it. Both apply the Orientation tag, but Pillow 12.3 does
+    not transpose orientations 5-8; those and every other TIFF stay with OpenCV.
+    """
+    # The plugin class reads only the header; Image.open's size check would also warn
+    # on large TIFFs that this decoder leaves to OpenCV.
+    im = TiffImagePlugin.TiffImageFile(path)
+    with im:
+        tags = im.tag_v2
+        if (
+            im.mode != "RGBA"
+            or set(tags.get(258, ())) != {8}  # BitsPerSample
+            or tags.get(338) != (2,)  # ExtraSamples: unassociated alpha
+            or tags.get(274, 1) > 4  # Orientation
+        ):
+            return None
+        return cv2.cvtColor(np.array(im), cv2.COLOR_RGBA2BGRA)
+
+
 def _for_ext(ext: str | Iterable[str], decoder: _Decoder) -> _Decoder:
     return graph().image_io_for_ext(ext, decoder, get_ext)
 
 
 _decoders: list[tuple[str, _Decoder]] = [
     ("pil-jpeg", _for_ext([".jpg", ".jpeg"], _read_pil)),
+    ("pil-tiff-alpha", _for_ext([".tif", ".tiff"], _read_tiff_straight_alpha)),
     ("cv", _read_cv),
     ("texconv-dds", _read_dds),
     ("pil", _read_pil),
