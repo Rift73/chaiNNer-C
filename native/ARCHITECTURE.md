@@ -274,6 +274,10 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   chaiNNer-C neither emits nor parses MemoryData, so that fusion only ever raised, and outside a first layer the
   searches end where upstream's do (`test_corrected_oracle_departs_from_upstream_only_as_recorded` checks the whole
   pass corpus).
+- Load Image and Load Images decode 8-bit RGBA TIFFs with unassociated alpha (ExtraSamples 2, orientation 1-4) with
+  Pillow, keeping straight colour, where upstream's OpenCV path premultiplies it and loses the colour under alpha 0
+  (upstream chaiNNer #409; owner-approved 2026-10-09). Every other file, associated alpha included, takes the OpenCV
+  path as before (`backend/tests/test_load_image_tiff_alpha.py`).
 - Sibling event order (SP2): inputs awaited together (`owned_gather`, section 4) start and finish in pool-timing
   order, where upstream awaits inputs in turn (`start a, finish a, start b, finish b`). The event multiset and each
   node's final state are identical (`verify_runtime.event_contract` and `sse_contract` compare no order); item order

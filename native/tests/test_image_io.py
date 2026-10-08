@@ -32,7 +32,7 @@ import numpy as np
 import pillow_avif as pillow_avif
 import pytest
 from numpy.typing import DTypeLike
-from PIL import Image
+from PIL import Image, TiffImagePlugin
 
 from nodes.impl import image_formats, image_utils, native_image_io
 from nodes.impl.dds import format as dds_format
@@ -85,6 +85,7 @@ def modules(current):
         "np": np,
         "cv2": cv2,
         "Image": Image,
+        "TiffImagePlugin": TiffImagePlugin,
         "Enum": Enum,
         "Path": Path,
         "Callable": Callable,
