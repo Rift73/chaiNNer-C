@@ -90,3 +90,13 @@ test(`Migrate settings`, () => {
     expect(settings).toMatchSnapshot();
     expect(unusedKeys).toMatchSnapshot();
 });
+
+test(`Saved system Python settings are switched off`, () => {
+    const settings = migrateSettings({
+        useSystemPython: true,
+        systemPythonLocation: 'C:\\Python312\\python.exe',
+    });
+
+    expect(settings.useSystemPython).toBe(false);
+    expect(settings.systemPythonLocation).toBe('');
+});

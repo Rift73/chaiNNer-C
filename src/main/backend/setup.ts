@@ -6,8 +6,7 @@ import { log } from '../../common/log';
 import { CriticalError } from '../../common/ui/error';
 import { ProgressToken } from '../../common/ui/progress';
 import { getBackendStorageFolder } from '../platform';
-import { checkPythonPaths } from '../python/checkPythonPaths';
-import { getIntegratedPython, getIntegratedPythonExecutable } from '../python/integratedPython';
+import { getIntegratedPython } from '../python/integratedPython';
 import { BackendProcess, BorrowedBackendProcess, OwnedBackendProcess } from './process';
 
 const getValidPort = async () => {
@@ -27,83 +26,14 @@ const getValidPort = async () => {
     return port;
 };
 
-interface PythonSetupConfig {
-    integratedPythonFolder: string;
-    systemPythonLocation: string | undefined | null;
-}
-const getSystemPythonInfo = async (token: ProgressToken, config: PythonSetupConfig) => {
-    log.info('Attempting to check system Python env...');
-
-    const { integratedPythonFolder } = config;
-    let { systemPythonLocation } = config;
-
-    if (systemPythonLocation) {
-        try {
-            systemPythonLocation = path.normalize(systemPythonLocation);
-        } catch (error) {
-            log.error(`Ignoring system python location because of error: ${String(error)}`);
-
-            systemPythonLocation = null;
-        }
-    }
-
-    const integratedPython = getIntegratedPythonExecutable(integratedPythonFolder);
-
-    try {
-        const pythonInfo = await checkPythonPaths([
-            ...(systemPythonLocation ? [systemPythonLocation] : []),
-            'python3',
-            'python',
-            // Fall back to integrated python if all else fails
-            integratedPython,
-        ]);
-
-        if (pythonInfo.python === integratedPython) {
-            log.info('System python not found. Using integrated Python');
-            await token.submitInterrupt({
-                type: 'warning',
-                title: 'System Python not installed or invalid version',
-                message:
-                    'It seems like you do not have a valid version of Python installed on your system, or something went wrong with your installed instance.' +
-                    ' Please install Python (3.8+) if you would like to use system Python. You can get Python from https://www.python.org/downloads/.' +
-                    ' Be sure to select the add to PATH option.' +
-                    '\n\nChaiNNer will start using its integrated Python for now.' +
-                    ' You can change this later in the settings.',
-                options: [
-                    {
-                        title: 'Get Python',
-                        action: { type: 'open-url', url: 'https://www.python.org/downloads/' },
-                    },
-                ],
-            });
-        }
-
-        return pythonInfo;
-    } catch (error) {
-        log.error(error);
-        throw new CriticalError({
-            title: 'Error checking for valid Python instance',
-            message:
-                'It seems like you do not have a valid version of Python installed on your system, or something went wrong with your installed instance.' +
-                ' Please install Python (3.8+) to use this application. You can get Python from https://www.python.org/downloads/. Be sure to select the add to PATH option.',
-            options: [
-                {
-                    title: 'Get Python',
-                    action: { type: 'open-url', url: 'https://www.python.org/downloads/' },
-                },
-            ],
-        });
-    }
-};
+// chaiNNer-C runs only on its integrated CPython 3.14: its native modules link python314.dll and
+// the host imports packages that a system Python would not have.
 const getIntegratedPythonInfo = async (
     token: ProgressToken,
-    config: PythonSetupConfig
+    integratedPythonFolder: string
 ): Promise<PythonInfo> => {
     log.info('Attempting to check integrated Python env...');
 
-    const { integratedPythonFolder } = config;
-
-    // User is using integrated python
     try {
         return await getIntegratedPython(integratedPythonFolder, (percentage, stage) => {
             token.submitProgress({
@@ -120,7 +50,6 @@ const getIntegratedPythonInfo = async (
 
         enum Action {
             Retry,
-            System,
             Crash,
         }
         let action: Action = Action.Crash as Action;
@@ -129,7 +58,6 @@ const getIntegratedPythonInfo = async (
             title: 'Unable to install integrated Python',
             message:
                 'chaiNNer needs a stable internet connection to install its integrated Python environment. Please make sure you have a stable internet connection and try again.' +
-                "\n\nAlternatively, if you have Python 3.8 or later installed, chaiNNer can use your system's Python environment instead. (If you choose this option, chaiNNer will install packages into your system Python environment.)" +
                 '\n\nchaiNNer requires a valid Python environment to run. Please choose one of the following options:',
             options: [
                 {
@@ -138,15 +66,6 @@ const getIntegratedPythonInfo = async (
                         type: 'run',
                         action: () => {
                             action = Action.Retry;
-                        },
-                    },
-                },
-                {
-                    title: 'Use System Python instead',
-                    action: {
-                        type: 'run',
-                        action: () => {
-                            action = Action.System;
                         },
                     },
                 },
@@ -163,10 +82,7 @@ const getIntegratedPythonInfo = async (
         });
 
         if (action === Action.Retry) {
-            return getIntegratedPythonInfo(token, config);
-        }
-        if (action === Action.System) {
-            return getSystemPythonInfo(token, config);
+            return getIntegratedPythonInfo(token, integratedPythonFolder);
         }
 
         throw new CriticalError({
@@ -177,20 +93,11 @@ const getIntegratedPythonInfo = async (
         });
     }
 };
-const getPythonInfo = async (
-    token: ProgressToken,
-    useSystemPython: boolean,
-    systemPythonLocation: string | undefined | null,
-    rootDir: string
-) => {
-    const config: PythonSetupConfig = {
-        integratedPythonFolder: path.normalize(path.join(rootDir, 'python')),
-        systemPythonLocation,
-    };
-
-    const pythonInfo = useSystemPython
-        ? await getSystemPythonInfo(token, config)
-        : await getIntegratedPythonInfo(token, config);
+const getPythonInfo = async (token: ProgressToken, rootDir: string) => {
+    const pythonInfo = await getIntegratedPythonInfo(
+        token,
+        path.normalize(path.join(rootDir, 'python'))
+    );
 
     log.info(`Final Python binary: ${pythonInfo.python}`);
     log.info(pythonInfo);
@@ -215,8 +122,6 @@ const spawnBackend = (port: number, pythonInfo: PythonInfo) => {
 
 const setupOwnedBackend = async (
     token: ProgressToken,
-    useSystemPython: boolean,
-    systemPythonLocation: string | undefined | null,
     rootDir: string
 ): Promise<OwnedBackendProcess> => {
     token.submitProgress({
@@ -229,7 +134,7 @@ const setupOwnedBackend = async (
         status: t('setup.checkingPython', 'Checking system environment for valid Python...'),
         totalProgress: 0.3,
     });
-    const pythonInfo = await getPythonInfo(token, useSystemPython, systemPythonLocation, rootDir);
+    const pythonInfo = await getPythonInfo(token, rootDir);
 
     token.submitProgress({
         status: t('setup.startingBackend', 'Starting up backend process...'),
@@ -253,6 +158,8 @@ const setupBorrowedBackend = async (
 
 export const setupBackend = async (
     token: ProgressToken,
+    // Ignored, and always off since the settings migration: chaiNNer-C runs only on its
+    // integrated Python. They stay until the callers in cli/run.ts and gui/main-window.ts drop them.
     useSystemPython: boolean,
     systemPythonLocation: string | undefined | null,
     rootDir: string,
@@ -262,7 +169,7 @@ export const setupBackend = async (
 
     const backend = remoteBackend
         ? await setupBorrowedBackend(token, remoteBackend)
-        : await setupOwnedBackend(token, useSystemPython, systemPythonLocation, rootDir);
+        : await setupOwnedBackend(token, rootDir);
 
     token.submitProgress({ totalProgress: 1 });
     return backend;

@@ -59,7 +59,7 @@ const extractPython = async (
     );
 };
 
-export const getIntegratedPythonExecutable = (directory: string): string => {
+const getIntegratedPythonExecutable = (directory: string): string => {
     const platform = getPlatform();
     const { path: relativePath } = downloads[platform];
     return path.resolve(path.join(directory, relativePath));

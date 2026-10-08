@@ -209,20 +209,6 @@ const PythonSettings = memo(() => {
     const { packages } = useContext(BackendContext);
     const [packageSettings, setPackageSettings] = useMutSetting('packageSettings');
 
-    const [useSystemPython, setUseSystemPython] = useMutSetting('useSystemPython');
-    const [systemPythonLocation, setSystemPythonLocation] = useMutSetting('systemPythonLocation');
-    const [lastDirectory, setLastDirectory] = useState(systemPythonLocation || '');
-
-    const onButtonClick = useCallback(async () => {
-        const fileDir = systemPythonLocation ? path.dirname(systemPythonLocation) : lastDirectory;
-        const { canceled, filePaths } = await ipcRenderer.invoke('file-select', [], false, fileDir);
-        const selectedPath = filePaths[0];
-        if (!canceled && selectedPath) {
-            setSystemPythonLocation(selectedPath);
-            setLastDirectory(path.dirname(selectedPath));
-        }
-    }, [systemPythonLocation, lastDirectory, setSystemPythonLocation]);
-
     const packagesWithSettings = packages.filter((pkg) => pkg.settings.length);
 
     return (
@@ -231,12 +217,6 @@ const PythonSettings = memo(() => {
             px={0}
         >
             <TabList>
-                <Tab>
-                    <HStack cursor="pointer">
-                        <Icon as={FaPython} />
-                        <Text cursor="pointer">General</Text>
-                    </HStack>
-                </Tab>
                 {packagesWithSettings.map((pkg) => (
                     <Tab key={pkg.name}>
                         <HStack cursor="pointer">
@@ -248,68 +228,6 @@ const PythonSettings = memo(() => {
             </TabList>
 
             <TabPanels px={0}>
-                <TabPanel px={0}>
-                    <VStack
-                        divider={<StackDivider />}
-                        w="full"
-                    >
-                        <ToggleSetting
-                            setValue={setUseSystemPython}
-                            setting={{
-                                label: 'Use system Python (requires restart)',
-                                description:
-                                    "Use system Python for chaiNNer's processing instead of the bundled Python (not recommended)",
-                            }}
-                            value={useSystemPython}
-                        />
-                        {useSystemPython && (
-                            <SettingContainer
-                                description="If wanted, use a specific python binary rather than the default one invoked by 'python3' or 'python'. This is useful if you have multiple python versions installed and want to pick a specific one."
-                                title="System Python location (optional)"
-                            >
-                                <HStack>
-                                    <Tooltip
-                                        borderRadius={8}
-                                        label={systemPythonLocation}
-                                        maxW="auto"
-                                        openDelay={500}
-                                        px={2}
-                                        py={0}
-                                    >
-                                        <InputGroup>
-                                            <InputLeftElement pointerEvents="none">
-                                                <Icon as={FaPython} />
-                                            </InputLeftElement>
-
-                                            <Input
-                                                isReadOnly
-                                                alt="Pick system python location"
-                                                className="nodrag"
-                                                cursor="pointer"
-                                                draggable={false}
-                                                placeholder="Select a file..."
-                                                textOverflow="ellipsis"
-                                                value={
-                                                    systemPythonLocation
-                                                        ? path.parse(systemPythonLocation).base
-                                                        : ''
-                                                }
-                                                // eslint-disable-next-line @typescript-eslint/no-misused-promises
-                                                onClick={onButtonClick}
-                                            />
-                                        </InputGroup>
-                                    </Tooltip>
-                                    <IconButton
-                                        aria-label="clear"
-                                        icon={<SmallCloseIcon />}
-                                        size="xs"
-                                        onClick={() => setSystemPythonLocation('')}
-                                    />
-                                </HStack>
-                            </SettingContainer>
-                        )}
-                    </VStack>
-                </TabPanel>
                 {packagesWithSettings.map((pkg) => (
                     <TabPanel
                         key={pkg.name}

@@ -68,8 +68,16 @@ const newThemeSystem: SettingsMigration = (settings) => {
     return settings;
 };
 
+// chaiNNer-C only runs on its integrated CPython 3.14 (its native modules link python314.dll), so
+// a "use system Python" saved by upstream chaiNNer or an older chaiNNer-C is switched off.
+const integratedPythonOnly: SettingsMigration = (settings) => ({
+    ...settings,
+    useSystemPython: false,
+    systemPythonLocation: '',
+});
+
 type SettingsMigration = (settings: Partial<ChainnerSettings>) => Partial<ChainnerSettings>;
-const migrations: SettingsMigration[] = [newThemeSystem];
+const migrations: SettingsMigration[] = [newThemeSystem, integratedPythonOnly];
 export const migrateSettings = (settings: Partial<ChainnerSettings>): ChainnerSettings => {
     for (const migration of migrations) {
         // eslint-disable-next-line no-param-reassign
