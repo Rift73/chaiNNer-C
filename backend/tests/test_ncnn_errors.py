@@ -3,7 +3,8 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -11,6 +12,7 @@ from ncnn import ncnn
 
 from nodes.impl.image_utils import to_uint8
 from nodes.impl.native_framework_images import ncnn_input
+from nodes.impl.ncnn import session
 from nodes.impl.ncnn.auto_split import ncnn_auto_split
 from nodes.impl.ncnn.model import NcnnModel, NcnnModelWrapper
 from nodes.impl.ncnn.session import create_ncnn_net
@@ -47,10 +49,29 @@ def test_a_model_ncnn_loads_is_accepted(tmp_path: Path):
     )
 
 
+class VulkanNet:
+    """Stands in for ncnn.Net on the Vulkan branch: the tests hide every GPU, so the
+    Vulkan settings go nowhere and the loads run on a CPU net."""
+
+    def __init__(self):
+        self.net = ncnn.Net()
+        self.opt = SimpleNamespace()
+
+    def set_vulkan_device(self, index: int) -> None:
+        pass
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.net, name)
+
+
+@pytest.mark.parametrize("gpu", [False, True])
 @pytest.mark.parametrize("broken", ["param", "bin"])
 def test_a_model_ncnn_cannot_load_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: str, gpu: bool
 ):
+    if gpu:
+        monkeypatch.setattr(session, "use_gpu", True)
+        monkeypatch.setattr(session, "ncnn", SimpleNamespace(Net=VulkanNet))
     model = tiny_model(tmp_path)
     if broken == "param":
         # The header counts a layer the param lacks, as a converted SPAN model's does.

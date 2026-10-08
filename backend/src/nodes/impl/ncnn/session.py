@@ -38,24 +38,21 @@ def create_ncnn_net(model: NcnnModelWrapper, settings: NcnnSettings) -> ncnn.Net
         net.opt.openmp_blocktime = settings.blocktime
 
     # Load model param and bin. PyPI ncnn reports a failure only by a non-zero return
-    # code; it prints the reason to stderr, which the log keeps.
+    # code; it prints the reason to stderr, which the log keeps. The bin loads from a
+    # file on the GPU as well: PyPI ncnn's load_model_mem returns no code to check.
     ret = net.load_param_mem(model.model.write_param())
     if ret != 0:
         raise ValueError(
             f"NCNN could not load the model's .param (error code {ret}). Its reason is in chaiNNer's log."
         )
-    if use_gpu:
-        # PyPI ncnn's load_model_mem returns no code to check.
-        net.load_model_mem(model.model.bin)
-    else:
-        with tempfile.TemporaryDirectory() as tmp_model_dir:
-            bin_filename = tmp_model_dir + "/ncnn-model.bin"
-            model.model.write_bin(bin_filename)
-            ret = net.load_model(bin_filename)
-        if ret != 0:
-            raise ValueError(
-                f"NCNN could not load the model's .bin (error code {ret}). Its reason is in chaiNNer's log."
-            )
+    with tempfile.TemporaryDirectory() as tmp_model_dir:
+        bin_filename = tmp_model_dir + "/ncnn-model.bin"
+        model.model.write_bin(bin_filename)
+        ret = net.load_model(bin_filename)
+    if ret != 0:
+        raise ValueError(
+            f"NCNN could not load the model's .bin (error code {ret}). Its reason is in chaiNNer's log."
+        )
 
     return net
 
