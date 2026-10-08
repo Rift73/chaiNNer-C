@@ -81,23 +81,26 @@ const createBackend = async (
 };
 
 const getBackendNodes = async (backend: Backend): Promise<NodeSchema[]> => {
-    // this implements an exponential back off strategy to
-    const maxTries = 50;
+    // Retry with an exponential back-off, capped at `maxSleep`, until the backend answers. Its
+    // worker process gets 5 minutes to start, so wait as long before giving up.
+    const timeout = 5 * 60 * 1000;
     const startSleep = 1;
     const maxSleep = 250;
 
-    for (let i = 0; i < maxTries; i += 1) {
+    const deadline = Date.now() + timeout;
+    let lastError: unknown;
+    for (let i = 0; Date.now() < deadline; i += 1) {
         try {
             // eslint-disable-next-line no-await-in-loop
             return (await backend.nodes()).nodes;
-        } catch {
-            // ignore error
+        } catch (error) {
+            lastError = error;
         }
         // eslint-disable-next-line no-await-in-loop
-        await delay(Math.max(maxSleep, startSleep * 2 ** i));
+        await delay(Math.min(maxSleep, startSleep * 2 ** i));
     }
 
-    throw new Error('Unable to connect to backend server');
+    throw new Error(`Unable to connect to backend server: ${String(lastError)}`);
 };
 
 interface ReadyBackend {
