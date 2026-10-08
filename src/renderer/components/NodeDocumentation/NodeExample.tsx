@@ -83,7 +83,7 @@ export const NodeExample = memo(({ selectedSchema }: NodeExampleProps) => {
     );
     const setWidth = useCallback(
         (width: number): void => {
-            setNodeWidth((prev) => (prev === undefined ? width : Math.max(prev, width)));
+            setNodeWidth(() => width);
         },
         [setNodeWidth]
     );
