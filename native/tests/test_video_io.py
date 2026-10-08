@@ -462,6 +462,70 @@ INTENDED_MUX = (
 )
 
 
+# Save Video's colours depart from both frozen references too (owner-approved fix for
+# upstream chaiNNer #3053; ARCHITECTURE section 7): (i) YUV output other than GIF gets
+# all four colour tags, BT.601 for SD and BT.709 for HD (width >= 1280 or height >
+# 576), the user's tags winning, and a scale filter converting to the final matrix and
+# range after the user's -vf.
+INTENDED_COLOURS = [
+    (
+        """@dataclass
+class Writer:
+""",
+        """def colour_options(container, params, width, height):  # (i)
+    if container == VideoFormat.GIF or "pix_fmt" not in params:
+        return params
+    if not str(params["pix_fmt"]).startswith(("yuv", "nv")):
+        return params
+    if "colorspace" in params:
+        bt709 = str(params["colorspace"]) == "bt709"
+    else:
+        bt709 = width >= 1280 or height > 576
+    primaries = "bt709" if bt709 else "bt470bg" if height == 576 else "smpte170m"
+    params.setdefault("colorspace", "bt709" if bt709 else "smpte170m")
+    params.setdefault("color_primaries", primaries)
+    params.setdefault("color_trc", "bt709" if bt709 else "smpte170m")
+    params.setdefault("color_range", "tv")
+    matrices = {
+        "bt709": "bt709",
+        "smpte170m": "smpte170m",
+        "bt470bg": "bt470",
+        "fcc": "fcc",
+        "smpte240m": "smpte240m",
+        "bt2020nc": "bt2020",
+        "bt2020_ncl": "bt2020",
+        "bt2020c": "bt2020",
+        "bt2020_cl": "bt2020",
+    }
+    matrix, colour_range = str(params["colorspace"]), str(params["color_range"])
+    filters = [params.pop(key) for key in ("vf", "filter:v") if key in params]
+    scale = "scale="
+    if matrix in matrices:
+        scale += f"out_color_matrix={matrices[matrix]}:"
+    if colour_range in ("tv", "mpeg", "pc", "jpeg"):
+        scale += f"out_range={colour_range}:"
+    params["vf"] = ",".join([*filters, scale + "flags=accurate_rnd+full_chroma_int"])
+    return params
+
+
+@dataclass
+class Writer:
+""",
+    ),
+    (
+        """                    .output(**self.output_params, loglevel="error")""",
+        """                    .output(
+                        **colour_options(
+                            self.container,
+                            {**self.output_params, "loglevel": "error"},
+                            width,
+                            height,
+                        )
+                    )""",
+    ),
+]
+
+
 def load(kind, component, env=None):
     rel = "nodes/impl/video.py" if component == "video" else NODE + component + ".py"
     path = (
@@ -506,9 +570,9 @@ def load(kind, component, env=None):
     )
     text = path.read_text(encoding="utf-8")
     if kind == "intended" and component == "save_video":
-        frozen, corrected = INTENDED_MUX
-        assert text.count(frozen) == 1
-        text = text.replace(frozen, corrected)
+        for frozen, corrected in [INTENDED_MUX, *INTENDED_COLOURS]:
+            assert text.count(frozen) == 1
+            text = text.replace(frozen, corrected)
     tree = ast.parse(text)
     body: list[ast.stmt] = [
         ast.ImportFrom(
@@ -1201,6 +1265,57 @@ def test_node_parameters_all_container_encoder_pairs(tmp_path, container, encode
         result = outcome(c.on_complete)
         results.append((result, env.events.copy()))
     assert results[0] == results[1]
+
+
+@pytest.mark.parametrize("container", ["MP4", "GIF"])
+@pytest.mark.parametrize(
+    "additional",
+    [
+        None,
+        "-vf hflip",
+        "-colorspace bt709",
+        "-color_range pc -filter:v vflip",
+        "-colorspace rgb",
+        "-pix_fmt bgr0",
+    ],
+)
+@pytest.mark.parametrize(
+    "height,width", [(480, 720), (576, 720), (534, 1280), (578, 1024)]
+)
+def test_colour_options_follow_size_and_user_tags(
+    tmp_path, container, additional, height, width
+):
+    # (i): BT.601 for SD, BT.709 for HD, all four tags; user tags win; GIF and RGB
+    # output keep FFmpeg's own conversion.
+    results = []
+    for kind in ("intended", "native"):
+        env = FakeFFmpeg()
+        g = load(kind, "save_video", env)
+        c = g["save_video_node"](
+            **node_args(
+                g,
+                Context(),
+                tmp_path,
+                container=g["VideoFormat"][container],
+                encoder=g["VideoEncoder"]["H264"],
+                additional_parameters=additional,
+            )
+        )
+        c.on_iterate(np.zeros((height, width, 3), np.float32))
+        output = dict(next(e for e in env.events if e[0] == "output")[2])
+        results.append((output, env.events.copy()))
+    assert results[0] == results[1]
+    output = results[1][0]
+    if container == "GIF" or additional == "-pix_fmt bgr0":
+        assert "color_primaries" not in output
+        assert not output.get("vf", "").endswith("full_chroma_int")
+        return
+    hd = width >= 1280 or height > 576
+    expected = "bt709" if hd or additional == "-colorspace bt709" else "smpte170m"
+    if additional != "-colorspace rgb":
+        assert output["colorspace"] == expected
+    assert {"color_primaries", "color_trc", "color_range"} <= output.keys()
+    assert output["vf"].endswith("flags=accurate_rnd+full_chroma_int")
 
 
 def test_writer_context_abort_no_mux_and_reaps_after_pipe_error(tmp_path):

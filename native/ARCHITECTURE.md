@@ -316,6 +316,19 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   packets are unchanged; the stream order and, where a PATH FFmpeg differed, the audio encoder's build change. The
   tests' oracle is the frozen v0.25.1 mux with these departures (`INTENDED_MUX`, `native/tests/test_video_io.py`), and
   the video verifier compares the oracle's files video stream first (`verify_video_runtime.video_first`).
+- Video colours (owner-approved 2026-10-09, upstream chaiNNer #3053): players disagree on untagged video (FFmpeg
+  assumes BT.601 at every size, mpv, Media Foundation and browsers BT.709 for HD) and some ignore a matrix tag alone,
+  so upstream's untagged BT.601 output showed HD colours up to 40 levels off. Save Video's YUV output carries all four
+  tags (matrix, primaries, transfer, range `tv`): BT.601 (`smpte170m`; `bt470bg` primaries at 576 lines) for SD, BT.709
+  for HD (width ≥ 1280 or height > 576, mpv's guess), and an explicit `scale` filter with
+  `accurate_rnd+full_chroma_int` converts to them, where FFmpeg 5.1.2's default point-sampled chroma and turned grey
+  128 into (125,128,125). Colour tags given in Additional parameters win and the conversion follows the final matrix
+  and range; a user `-vf` runs before it. GIF and RGB output are unchanged. Load Video honours a file's matrix tag, as
+  before, and reads untagged HD video as BT.709 by the same size rule (`input_matrix` on the loader, from the probe
+  that gives the metadata), in both readers, which stay byte-identical. Every saved YUV file's bytes change; untagged
+  HD sources read up to 28 levels differently (39 for BT.601 data, towards what players show). The tests' oracle adds
+  the writer's departure (`INTENDED_COLOURS`, `native/tests/test_video_io.py`); `backend/tests/test_save_video_colours.py`
+  checks tags and round trips on the integrated FFmpeg.
 - Sibling event order (SP2): inputs awaited together (`owned_gather`, section 4) start and finish in pool-timing
   order, where upstream awaits inputs in turn (`start a, finish a, start b, finish b`). The event multiset and each
   node's final state are identical (`verify_runtime.event_contract` and `sse_contract` compare no order); item order

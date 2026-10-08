@@ -102,11 +102,18 @@ bool quarter_turn(const O&stream) {
     return false;
 }
 
-O metadata(const py::dict&g,const O&path,const O&env) {
+// Players disagree on untagged video, and a matrix tag alone is ignored by some (upstream
+// chaiNNer #3053), so a W x H frame's YUV is BT.709 when HD (width >= 1280 or height > 576,
+// mpv's guess, which Load Video applies to untagged video) and BT.601 otherwise.
+bool high_definition(const O&width,const O&height) {
+    return cmp(width,py::int_(1280),Py_GE) || cmp(height,py::int_(576),Py_GT);
+}
+// VideoMetadata from ffprobe; `video` receives the video stream's probe entry.
+O probe_metadata(const py::dict&g,const O&path,const O&env,O&video) {
     O probe = global(g,"ffmpeg").attr("probe")(path, py::arg("cmd")=env.attr("ffprobe"));
     O format=probe.attr("get")("format",py::none());
     if(format.is_none())fail(PyExc_RuntimeError,"Failed to get video format. Please report.");
-    O video=py::none();
+    video=py::none();
     for(py::handle sh:probe[py::str("streams")]) {
         O stream=py::reinterpret_borrow<O>(sh);
         if(eq(stream[py::str("codec_type")],py::str("video"))) {video=stream;break;}
@@ -135,9 +142,17 @@ O metadata(const py::dict&g,const O&path,const O&env) {
     return global(g,"VideoMetadata")(py::arg("width")=width,py::arg("height")=height,
         py::arg("fps")=fps,py::arg("frame_count")=count);
 }
+O metadata(const py::dict&g,const O&path,const O&env) {O video;return probe_metadata(g,path,env,video);}
 void loader_init(const py::dict&g,const O&self,const O&path,const O&env) {
     self.attr("path")=path; self.attr("ffmpeg_env")=env;
-    self.attr("metadata")=global(g,"VideoMetadata").attr("from_file")(path,env);
+    O video;
+    self.attr("metadata")=probe_metadata(g,path,env,video);
+    // Both readers convert YUV by the file's matrix tag; untagged HD video (the stored
+    // size, as mpv guesses) is BT.709, as players show it, where FFmpeg assumes BT.601
+    // (upstream chaiNNer #3053, owner-approved 2026-10-09). None keeps FFmpeg's choice.
+    O space=video.attr("get")("color_space","unknown");
+    const bool untagged=eq(space,py::str("unknown")) || eq(space,py::str("unspecified"));
+    self.attr("input_matrix")=untagged && high_definition(builtin("int")(video[py::str("width")]),builtin("int")(video[py::str("height")]))?O(py::str("bt709")):O(py::none());
 }
 O audio_stream(const py::dict&g,const O&self) {return global(g,"ffmpeg").attr("input")(self.attr("path")).attr("audio");}
 
@@ -338,6 +353,35 @@ std::shared_ptr<WriterResource> resource(const O&self) {
     auto owned=std::make_shared<WriterResource>();
     self.attr("_native_video_resource")=py::cast(owned); return owned;
 }
+// Save Video's YUV output (owner-approved 2026-10-09) carries all four colour tags and is
+// converted to match them with filtered chroma and exact rounding, where FFmpeg 5.1.2's
+// default point-samples chroma and turns grey 128 into (125,128,125). A tag the user gives
+// in Additional parameters wins, the conversion follows the final matrix and range, and a
+// user -vf runs before it. GIF and RGB output keep FFmpeg's own conversion.
+void colour_options(const py::dict&g,const O&self,py::dict&params,const O&width,const O&height) {
+    if(eq(self.attr("container"),member(g,"VideoFormat","GIF")) || !params.contains("pix_fmt"))return;
+    if(!truth(builtin("str")(params["pix_fmt"]).attr("startswith")(py::make_tuple("yuv","nv"))))return;
+    const bool user_matrix=params.contains("colorspace");
+    const bool bt709=user_matrix?eq(builtin("str")(params["colorspace"]),py::str("bt709")):high_definition(width,height);
+    const char*primaries=bt709?"bt709":eq(height,py::int_(576))?"bt470bg":"smpte170m";
+    const char*defaults[][2]={{"colorspace",bt709?"bt709":"smpte170m"},{"color_primaries",primaries},
+        {"color_trc",bt709?"bt709":"smpte170m"},{"color_range","tv"}};
+    for(const auto&tag:defaults)if(!params.contains(tag[0]))params[tag[0]]=tag[1];
+    // scale's names for the matrices FFmpeg can tag; another tag converts as FFmpeg's default.
+    const py::dict matrices=dict({{"bt709",py::str("bt709")},{"smpte170m",py::str("smpte170m")},
+        {"bt470bg",py::str("bt470")},{"fcc",py::str("fcc")},{"smpte240m",py::str("smpte240m")},
+        {"bt2020nc",py::str("bt2020")},{"bt2020_ncl",py::str("bt2020")},{"bt2020c",py::str("bt2020")},
+        {"bt2020_cl",py::str("bt2020")}});
+    const py::tuple ranges=py::make_tuple("tv","mpeg","pc","jpeg");
+    O matrix=builtin("str")(params["colorspace"]),range=builtin("str")(params["color_range"]);
+    py::list filters;
+    for(const char*key: {"vf","filter:v"})if(params.contains(key))filters.append(params.attr("pop")(key));
+    std::string scale="scale=";
+    if(matrices.contains(matrix))scale+="out_color_matrix="+matrices[matrix].cast<std::string>()+":";
+    if(graphpy::contains(ranges,range))scale+="out_range="+range.cast<std::string>()+":";
+    filters.append(py::str(scale+"flags=accurate_rnd+full_chroma_int"));
+    params["vf"]=py::str(",").attr("join")(filters);
+}
 void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
     if(!self.attr("out").is_none())return;
     if(resource(self)->aborted)fail(PyExc_RuntimeError,"Video writer was aborted");
@@ -354,6 +398,7 @@ void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
             graphpy::raise(PyExc_TypeError,label);
         }
         params["loglevel"]="error";
+        colour_options(g,self,params,width,height);
         stream=call(output,py::tuple(),params).attr("overwrite_output")();
         O global_args=stream.attr("global_args");
         stream=call(global_args,star_arguments(global_args,self.attr("global_params")));
@@ -574,10 +619,15 @@ class FrameIterator {
     bool started_=false,entered_=false,closed_=false,running_=false;
     void start() {
         started_=true;
-        process_=global(globals_,"ffmpeg").attr("input")(loader_.attr("path"))
-            .attr("output")("pipe:",py::arg("format")="rawvideo",py::arg("pix_fmt")="bgr24",
-                py::arg("sws_flags")="lanczos+accurate_rnd+full_chroma_int+full_chroma_inp+bitexact",
-                py::arg("loglevel")="error")
+        const char*flags="lanczos+accurate_rnd+full_chroma_int+full_chroma_inp+bitexact";
+        py::dict options=dict({{"format",py::str("rawvideo")},{"pix_fmt",py::str("bgr24")},{"sws_flags",py::str(flags)}});
+        // The loader's matrix for untagged HD video (loader_init); a loader without one
+        // converts as FFmpeg chooses.
+        O matrix=py::getattr(loader_,"input_matrix",py::none());
+        if(!matrix.is_none())options["vf"]=py::str("scale=in_color_matrix={}:flags={}").attr("format")(matrix,flags);
+        options["loglevel"]="error";
+        O output=global(globals_,"ffmpeg").attr("input")(loader_.attr("path")).attr("output");
+        process_=call(output,py::make_tuple("pipe:"),options)
             .attr("run_async")(py::arg("pipe_stdout")=true,py::arg("pipe_stderr")=false,
                 py::arg("cmd")=loader_.attr("ffmpeg_env").attr("ffmpeg"));
         if(!truth(builtin("isinstance")(process_,global(globals_,"subprocess").attr("Popen")))) {PyErr_SetNone(PyExc_AssertionError);throw py::error_already_set();}
