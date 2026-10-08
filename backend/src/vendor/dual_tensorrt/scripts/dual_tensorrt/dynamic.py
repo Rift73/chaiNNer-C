@@ -20,6 +20,7 @@ width-only key (DualCore_c128_TRT), which chaiNNer-C lowers to its dynamic plugi
 import argparse
 import json
 import math
+from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -47,6 +48,8 @@ class DynamicGraph(Graph):
             ),
         )
         self.alignment = alignment
+        # The tail's current scale against the network input, while in the tail.
+        self.in_tail, self.tail_scale = False, Fraction(1)
 
     # Run-time integer helpers: [1]-shaped int64 for shape vectors, 0-d for Range.
     def i(self, value):
@@ -346,7 +349,35 @@ class DynamicGraph(Graph):
         rows = [self.op("Concat", outputs[i : i + 2], axis=2) for i in (0, 2)]
         return self.op("Concat", rows, axis=1)
 
+    def exact(self, x, channels, scale):
+        """x reshaped to the size it has, [1, channels, scale*H, scale*W] of the network
+        input: an identity, but computed from the input's shape TensorRT bounds the tail
+        exactly. Through the graph's shape chain its fusion compiler finds no kernel for
+        the large tail convolutions above ~512x1024 input (found by Codex, 2026-10-09)."""
+        hw = self.op("Shape", ["input"], start=2, end=4)
+        hw = self.div(self.mul(hw, self.i(scale.numerator)), self.i(scale.denominator))
+        return self.shape(x, [self.i(1), self.i(channels), hw])
+
+    def tail_sequence(self, x, layers):
+        self.in_tail = True
+        try:
+            return super().tail_sequence(x, layers)
+        finally:
+            self.in_tail = False
+
+    def conv(self, x, mod, nhwc=False, weight=None, bias=None):
+        if self.in_tail:
+            channels = (mod.weight if weight is None else weight).shape[1]
+            x = self.exact(x, channels, self.tail_scale)
+        return super().conv(x, mod, nhwc, weight, bias)
+
+    def shuffle(self, x, scale):
+        if self.in_tail:
+            self.tail_scale *= scale
+        return super().shuffle(x, scale)
+
     def build(self, model):
+        self.tail_scale = Fraction(1, 2) if model.unshuffle else Fraction(1)
         onnx_model = super().build(model)
         for value, prefix in (
             (onnx_model.graph.input[0], "in"),
