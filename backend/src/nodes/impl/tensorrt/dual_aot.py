@@ -36,6 +36,8 @@ from onnx import TensorProto, helper, numpy_helper
 from triton.backends.compiler import GPUTarget
 from triton.compiler import ASTSource
 
+from . import dual_dynamic_kernels
+
 KERNELS = (
     Path(__file__).resolve().parents[3]
     / "vendor/dual_tensorrt/scripts/dual_tensorrt/kernels.py"
@@ -137,8 +139,11 @@ def compile_kernel(
     return kernel
 
 
+Size = Union[int, trtp.ShapeExpr]
+
+
 def _launch(
-    kernel: Any, grid: tuple[int, int, int], extra: list[int] | None = None
+    kernel: Any, grid: tuple[Size, Size, Size], extra: list[Size] | None = None
 ) -> Launch:
     params = trtp.KernelLaunchParams()
     params.grid_x, params.grid_y, params.grid_z = grid
@@ -387,6 +392,243 @@ def _register_barrier(sm: int) -> None:
         return _launch(kernel, ((count + COPY_BLOCK - 1) // COPY_BLOCK, 1, 1), [count])
 
 
+def _trunk(
+    qkv: trtp.TensorDesc,
+) -> tuple[trtp.ShapeExpr, trtp.ShapeExpr, trtp.ShapeExpr, list[trtp.ShapeExpr]]:
+    """A run-time trunk's height, width, RCA cell count and region counts."""
+    s = qkv.shape_expr
+    height, width = s[1], s[2]
+    cells = trtp.cdiv(height, 16) * trtp.cdiv(width, 16)
+    counts = [
+        trtp.cdiv(height + sy, 32) * trtp.cdiv(width + sx, 32)
+        for sy, sx in ((0, 0), (0, 16), (16, 0), (16, 16))
+    ]
+    return height, width, cells, counts
+
+
+@cache
+def register_dynamic(channels: int) -> None:
+    """Register one width's dynamic-shape plugins (and the shared dynamic barrier)
+    once: sizes, grids and scalar arguments are shape expressions of the inputs."""
+    heads = channels // 32
+    sm = _sm()
+
+    def plugin(name: str) -> str:
+        return f"{NAMESPACE}::{name}_c{channels}"
+
+    @trtp.register(plugin("norm"))
+    @_resolved
+    def dynamic_norm_shape(
+        x: trtp.TensorDesc,
+        gamma: trtp.TensorDesc,
+        beta: trtp.TensorDesc,
+        epsilon: float,
+    ) -> tuple[trtp.TensorDesc, trtp.TensorDesc]:
+        s = x.shape_expr
+        return x.like(), trtp.from_shape_expr((s[0], s[1], s[2], 1), trt.float32)
+
+    @trtp.aot_impl(plugin("norm"))
+    @_resolved
+    def dynamic_norm_launch(
+        x: trtp.TensorDesc,
+        gamma: trtp.TensorDesc,
+        beta: trtp.TensorDesc,
+        epsilon: float,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        s = x.shape_expr
+        pixels = s[0] * s[1] * s[2]
+        kernel = compile_kernel(
+            dual_dynamic_kernels.norm,
+            {
+                "x_ptr": "*bf16",
+                "gamma_ptr": "*fp32",
+                "beta_ptr": "*fp32",
+                "pixels": "i32",
+                "y_ptr": "*bf16",
+                "sigma_ptr": "*fp32",
+            },
+            {
+                "channels": channels,
+                "block_c": 1 << (channels - 1).bit_length(),
+                "block_p": NORM_PIXELS,
+                "eps": epsilon,
+            },
+            sm,
+        )
+        return _launch(kernel, (trtp.cdiv(pixels, NORM_PIXELS), 1, 1), [pixels])
+
+    @trtp.register(plugin("cell"))
+    @_resolved
+    def dynamic_cell_shape(
+        qkv: trtp.TensorDesc, weight: trtp.TensorDesc
+    ) -> trtp.TensorDesc:
+        _, _, cells, _ = _trunk(qkv)
+        return trtp.from_shape_expr((cells * (heads * 1088),), trt.float32)
+
+    @trtp.aot_impl(plugin("cell"))
+    @_resolved
+    def dynamic_cell_launch(
+        qkv: trtp.TensorDesc,
+        weight: trtp.TensorDesc,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        height, width, cells, _ = _trunk(qkv)
+        kernel = compile_kernel(
+            dual_dynamic_kernels.cell_stats,
+            {
+                "x_ptr": "*bf16",
+                "weight_ptr": "*bf16",
+                "height": "i32",
+                "width": "i32",
+                "stats_ptr": "*fp32",
+            },
+            {"channels": channels, "block": 256},
+            sm,
+        )
+        return _launch(kernel, (cells, heads, 1), [height, width])
+
+    @trtp.register(plugin("region"))
+    @_resolved
+    def dynamic_region_shape(
+        stats: trtp.TensorDesc, tau: trtp.TensorDesc, qkv: trtp.TensorDesc
+    ) -> trtp.TensorDesc:
+        _, _, _, counts = _trunk(qkv)
+        regions = counts[0] + counts[1] + counts[2] + counts[3]
+        return trtp.from_shape_expr((regions * (heads * 1024),), trt.bfloat16)
+
+    @trtp.aot_impl(plugin("region"))
+    @_resolved
+    def dynamic_region_launch(
+        stats: trtp.TensorDesc,
+        tau: trtp.TensorDesc,
+        qkv: trtp.TensorDesc,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        height, width, _, counts = _trunk(qkv)
+        kernel = compile_kernel(
+            dual_dynamic_kernels.region_stats,
+            {
+                "stats_ptr": "*fp32",
+                "tau_ptr": "*fp32",
+                "qkv_ptr": "*bf16",
+                "height": "i32",
+                "width": "i32",
+                "n0": "i32",
+                "n1": "i32",
+                "n2": "i32",
+                "matrices_ptr": "*bf16",
+            },
+            {"channels": channels},
+            sm,
+        )
+        regions = counts[0] + counts[1] + counts[2] + counts[3]
+        return _launch(kernel, (regions, heads, 1), [height, width, *counts[:3]])
+
+    @trtp.register(plugin("apply"))
+    @_resolved
+    def dynamic_apply_shape(
+        qkv: trtp.TensorDesc, weight: trtp.TensorDesc, matrices: trtp.TensorDesc
+    ) -> trtp.TensorDesc:
+        s = qkv.shape_expr
+        return trtp.from_shape_expr((s[0], s[1], s[2], channels), trt.bfloat16)
+
+    @trtp.aot_impl(plugin("apply"))
+    @_resolved
+    def dynamic_apply_launch(
+        qkv: trtp.TensorDesc,
+        weight: trtp.TensorDesc,
+        matrices: trtp.TensorDesc,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        height, width, cells, counts = _trunk(qkv)
+        kernel = compile_kernel(
+            dual_dynamic_kernels.apply_dw,
+            {
+                "x_ptr": "*bf16",
+                "weight_ptr": "*bf16",
+                "matrices_ptr": "*bf16",
+                "height": "i32",
+                "width": "i32",
+                "n0": "i32",
+                "n1": "i32",
+                "n2": "i32",
+                "out_ptr": "*bf16",
+            },
+            {"channels": channels, "block": APPLY_BT},
+            sm,
+        )
+        return _launch(
+            kernel,
+            (cells, heads, 256 // APPLY_BT),
+            [height, width, *counts[:3]],
+        )
+
+    @trtp.register(plugin("project"))
+    @_resolved
+    def dynamic_project_shape(
+        x: trtp.TensorDesc, weight: trtp.TensorDesc, residual: trtp.TensorDesc
+    ) -> trtp.TensorDesc:
+        return residual.like()
+
+    @trtp.aot_impl(plugin("project"))
+    @_resolved
+    def dynamic_project_launch(
+        x: trtp.TensorDesc,
+        weight: trtp.TensorDesc,
+        residual: trtp.TensorDesc,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        s = x.shape_expr
+        pixels = s[0] * s[1] * s[2]
+        kernel = compile_kernel(
+            dual_dynamic_kernels.project_add,
+            {
+                "x_ptr": "*bf16",
+                "weight_ptr": "*bf16",
+                "residual_ptr": "*bf16",
+                "pixels": "i32",
+                "out_ptr": "*bf16",
+            },
+            {
+                "channels": channels,
+                "block_c": 1 << (channels - 1).bit_length(),
+                "block_m": PROJECT_BM,
+            },
+            sm,
+        )
+        return _launch(kernel, (trtp.cdiv(pixels, PROJECT_BM), 1, 1), [pixels])
+
+    _register_dynamic_barrier(sm)
+
+
+@cache
+def _register_dynamic_barrier(sm: int) -> None:
+    @trtp.register(f"{NAMESPACE}::barrier_dynamic")
+    @_resolved
+    def dynamic_barrier_shape(x: trtp.TensorDesc) -> trtp.TensorDesc:
+        return x.like()
+
+    @trtp.aot_impl(f"{NAMESPACE}::barrier_dynamic")
+    @_resolved
+    def dynamic_barrier_launch(
+        x: trtp.TensorDesc, outputs: tuple[trtp.TensorDesc], tactic: int
+    ) -> Launch:
+        count = x.shape_expr.numel()
+        kernel = compile_kernel(
+            copy_kernel,
+            {"x_ptr": "*bf16", "count": "i32", "y_ptr": "*bf16"},
+            {"block": COPY_BLOCK},
+            sm,
+        )
+        return _launch(kernel, (trtp.cdiv(count, COPY_BLOCK), 1, 1), [count])
+
+
 @dataclass
 class Plugin:
     """One plugin to attach: its op, input and output tensor names, attributes."""
@@ -407,8 +649,16 @@ class Lowered:
 
 def lower(model: onnx.ModelProto, key: str) -> Lowered:
     """The model with each of the guide's plugin nodes replaced by stand-in operators
-    of the same output shapes and types, and the plugins to attach in their place."""
-    g = Geometry.of(key)
+    of the same output shapes and types, and the plugins to attach in their place.
+    A width-only key (c<C>) is a dynamic-shape model: only plugins read the core's
+    statistics and matrices, so their stand-ins are single elements."""
+    dynamic = "_h" not in key
+    channels = int(key.partition("_")[0][1:])
+    stats_size, matrices_size = (
+        (1, 1)
+        if dynamic
+        else (Geometry.of(key).stats_size, Geometry.of(key).matrices_size)
+    )
     nodes: list[onnx.NodeProto] = []
     initializers: list[onnx.TensorProto] = []
     plugins: list[Plugin] = []
@@ -457,15 +707,17 @@ def lower(model: onnx.ModelProto, key: str) -> Lowered:
         elif op == f"DualCore_{key}_TRT":
             qkv, weight, tau = inputs
             stats, matrices = f"{name}/stats", f"{name}/matrices"
-            zeros(stats, g.stats_size, TensorProto.FLOAT)
-            zeros(matrices, g.matrices_size, TensorProto.BFLOAT16)
+            zeros(stats, stats_size, TensorProto.FLOAT)
+            zeros(matrices, matrices_size, TensorProto.BFLOAT16)
             starts = constant(f"{name}/starts", np.array([0], np.int64))
-            ends = constant(f"{name}/ends", np.array([g.channels], np.int64))
+            ends = constant(f"{name}/ends", np.array([channels], np.int64))
             axes = constant(f"{name}/axes", np.array([3], np.int64))
             nodes.append(helper.make_node("Slice", [qkv, starts, ends, axes], outputs))
+            # The dynamic region plugin reads the trunk's size from qkv's shape.
+            region_inputs = [stats, tau, qkv] if dynamic else [stats, tau]
             plugins += [
                 Plugin(f"cell_{key}", [qkv, weight], [stats]),
-                Plugin(f"region_{key}", [stats, tau], [matrices]),
+                Plugin(f"region_{key}", region_inputs, [matrices]),
                 Plugin(f"apply_{key}", [qkv, weight, matrices], outputs),
             ]
         elif op == f"DualProject_{key}_TRT":
@@ -473,7 +725,8 @@ def lower(model: onnx.ModelProto, key: str) -> Lowered:
             plugins.append(Plugin(f"project_{key}", inputs, outputs))
         elif op == "DualAttentionBarrier_TRT":
             identity(inputs[0], outputs[0])
-            plugins.append(Plugin("barrier", inputs, outputs))
+            barrier = "barrier_dynamic" if dynamic else "barrier"
+            plugins.append(Plugin(barrier, inputs, outputs))
         elif op.startswith("Dual") and op.endswith("_TRT"):
             raise ValueError(f"Unexpected DUAL plugin node {op}")
         else:
@@ -549,5 +802,6 @@ __all__ = [
     "compile_kernel",
     "lower",
     "register",
+    "register_dynamic",
     "vendored_kernels",
 ]

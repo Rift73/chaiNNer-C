@@ -96,6 +96,25 @@ def test_lowering_replaces_every_plugin_node_with_stand_ins():
     assert {"gamma", "beta", "tau", "wdw", "wp", "x", "qkv"} <= read
 
 
+def test_a_width_only_key_lowers_to_the_dynamic_plugins():
+    dynamic = "c128"
+    model = _guide_model()
+    for node in model.graph.node:
+        node.op_type = node.op_type.replace(KEY, dynamic)
+    lowered = dual_aot.lower(model, dynamic)
+    assert [p.op for p in lowered.plugins] == [
+        "norm_c128",
+        "cell_c128",
+        "region_c128",
+        "apply_c128",
+        "project_c128",
+        "barrier_dynamic",
+    ]
+    cell, region = lowered.plugins[1:3]
+    # The region plugin takes qkv only to see the trunk's run-time size.
+    assert region.inputs == [cell.outputs[0], "tau", "qkv"]
+
+
 def test_kernels_load_whole_16_byte_vectors():
     # TensorRT's buffers are 16-byte aligned; unless the compile is told so, Triton loads
     # one element at a time and the core runs about 14x slower.
