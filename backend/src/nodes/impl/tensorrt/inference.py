@@ -21,21 +21,12 @@ from api import NodeId
 
 from ..native_framework_images import planar_to_interleaved
 from ..native_tensors import cast_into
+from .bfloat16 import bf16_bits_to_float32, float32_to_bf16_bits
 from .cache import SharedCache
 from .engine_info import deserialize_engine
 from .memory import check_cuda
 from .model import TensorRTEngine
 from .tiling import ShapeBounds
-
-
-def _float32_to_bf16_bits(x: np.ndarray) -> np.ndarray:
-    bits = np.ascontiguousarray(x, dtype=np.float32).view(np.uint32)
-    rounded = bits + np.uint32(0x7FFF) + ((bits >> np.uint32(16)) & np.uint32(1))
-    return (rounded >> np.uint32(16)).astype(np.uint16)
-
-
-def _bf16_bits_to_float32(x: np.ndarray) -> np.ndarray:
-    return (x.astype(np.uint32) << np.uint32(16)).view(np.float32)
 
 
 class _IoDtype:
@@ -180,7 +171,7 @@ class TensorRTSession:
             chw = chw[::-1]  # BGR -> RGB
         dst = h_in.array(self._in.storage, in_shape)[0]
         if self._in.is_bf16:
-            dst[...] = _float32_to_bf16_bits(chw)
+            dst[...] = float32_to_bf16_bits(chw)
         else:
             cast_into(chw, dst)
 
@@ -221,7 +212,7 @@ class TensorRTSession:
         if self._out.is_bf16:
             if bgr:
                 chw = chw[::-1]
-            return np.ascontiguousarray(_bf16_bits_to_float32(chw).transpose(1, 2, 0))
+            return np.ascontiguousarray(bf16_bits_to_float32(chw).transpose(1, 2, 0))
         # One pass from the pinned planar buffer into interleaved float32.
         return planar_to_interleaved(chw, reverse=bgr)
 
