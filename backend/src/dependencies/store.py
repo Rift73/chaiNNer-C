@@ -85,7 +85,7 @@ def filter_necessary_to_install(dependencies: Iterable[DependencyInfo]):
         if version:
             installed_version = coerce_semver(version)
             dep_version = coerce_semver(dependency.version)
-            # A local label (spandrel 0.4.2+c1, the fork's build) is a different
+            # A local label (spandrel 0.4.2+c2, the fork's build) is a different
             # build of the same numbers: only that exact version satisfies it.
             if installed_version < dep_version or (
                 "+" in dependency.version and version != dependency.version

@@ -13,8 +13,8 @@ from dependencies.store import DependencyInfo, filter_necessary_to_install, pin
 
 FORK = DependencyInfo(
     package_name="spandrel",
-    version="0.4.2+c1",
-    url="https://example.invalid/spandrel-0.4.2%2Bc1-py3-none-any.whl",
+    version="0.4.2+c2",
+    url="https://example.invalid/spandrel-0.4.2%2Bc2-py3-none-any.whl",
 )
 
 
@@ -31,8 +31,8 @@ def test_a_dependency_with_a_url_installs_that_wheel():
         (None, True),
         ("0.4.2", True),  # PyPI's build, not the fork's
         ("0.4.3", True),  # a newer PyPI release lacks the fork's architectures
-        ("0.4.2+c0", True),
-        ("0.4.2+c1", False),
+        ("0.4.2+c1", True),  # the fork's previous build
+        ("0.4.2+c2", False),
     ],
 )
 def test_a_local_label_needs_exactly_that_build(
