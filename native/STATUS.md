@@ -96,6 +96,12 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   64x64..512x1024: gate passes at 7 sizes; +11 % vs static at 512x512. Limit: above 512x1024 TensorRT has no kernel
   for the last tail conv in a dynamic build (static 576x1024 builds; a row-split try failed). Not wired into the
   nodes or TensorRTSession (per-shape CUDA graphs) yet. Waiting on the owner: continue or drop the branch.
+  Update (owner chose to continue after Codex's finding): `8f7f3d18` lifts the limit (each tail conv's input
+  reshaped to sizes computed from the network input; Codex) — one engine 64x64..1088x1920 passes the gate at 8
+  sizes, +3.5 % vs static at 1088x1920; `7a590eba` wires it in (Convert To ONNX "TensorRT Shape", default Dynamic;
+  Build Engine profile checked against the 64-px alignment; TensorRTSession: a CUDA graph per input shape, up to 4).
+  Through chaiNNer's tiler: 1080p in one tile, 197 ms per image; engine vs PyTorch on the same padded input within
+  the BF16 floor. Not merged; not in D:\chaiNNer.
 
 ## Last CPU comparison
 
