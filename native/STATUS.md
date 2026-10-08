@@ -91,6 +91,11 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   traiNNer's). Through chaiNNer-C's build, GPU-only replay: 23.93 -> 15.64 ms; gate 6 passes at 512x512, errors
   unchanged. The remaining ~1.3 ms vs DUAL3 is DUAL3X's dynamic convolutions. Owner-postponed: dynamic-shape DUAL
   engines (ask before starting).
+- DUAL dynamic engines (owner 2026-10-09, 2 h box; branch `dual-dynamic`, WIP): dynamic plugins (`e146bc73`,
+  bit-identical to the fixed-size kernels) and exporter + worker profile (`7f9140a2`). Light x4, one engine
+  64x64..512x1024: gate passes at 7 sizes; +11 % vs static at 512x512. Limit: above 512x1024 TensorRT has no kernel
+  for the last tail conv in a dynamic build (static 576x1024 builds; a row-split try failed). Not wired into the
+  nodes or TensorRTSession (per-shape CUDA graphs) yet. Waiting on the owner: continue or drop the branch.
 
 ## Last CPU comparison
 
