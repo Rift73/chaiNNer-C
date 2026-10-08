@@ -71,19 +71,17 @@ def test_a_folded_xs_exports_a_fixed_size_tensorrt_onnx(tmp_path: Path):
     assert (info.scale_height, info.input_channels, info.output_channels) == (1, 3, 3)
 
 
-def test_the_sdk_comes_from_tensorrt_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setenv("PATH", "")
-    monkeypatch.delenv("TENSORRT_ROOT", raising=False)
-    with pytest.raises(RuntimeError, match="TENSORRT_ROOT"):
-        dual.tensorrt_sdk()
+def test_plugins_compile_against_the_bundled_headers_or_a_given_sdk(tmp_path: Path):
+    bundled = dual.headers_root(None)
+    assert (bundled / "include" / "NvInfer.h").is_file()
+    assert (bundled / "LICENSE").is_file()
+    with pytest.raises(ValueError, match="not a TensorRT SDK"):
+        dual.headers_root(tmp_path)
     (tmp_path / "include").mkdir()
-    (tmp_path / "include" / "NvInfer.h").write_text("")
-    (tmp_path / "bin").mkdir()
-    (tmp_path / "bin" / "trtexec.exe").write_text("")
-    monkeypatch.setenv("TENSORRT_ROOT", str(tmp_path))
-    assert dual.tensorrt_sdk() == tmp_path
+    (tmp_path / "include" / "NvInfer.h").write_text("// another version")
+    assert dual.headers_root(tmp_path) == tmp_path
+    # other headers make other plugins: they get their own bundle
+    assert dual.bundle_id(tmp_path) != dual.bundle_id(bundled)
 
 
 def test_a_cached_plugin_bundle_is_reused_and_checked(tmp_path: Path):
@@ -92,14 +90,15 @@ def test_a_cached_plugin_bundle_is_reused_and_checked(tmp_path: Path):
     specialization = {"plugin_key": "c128_h64_w64"}
     (export / "export.json").write_text(json.dumps({"specialization": specialization}))
     cache = tmp_path / "cache"
-    bundle = cache / f"c128_h64_w64_sm120_{dual.bundle_id()}"
+    root = dual.headers_root(None)
+    bundle = cache / f"c128_h64_w64_sm120_{dual.bundle_id(root)}"
     library = bundle / "plugins" / "Release" / "DualNorm.dll"
     library.parent.mkdir(parents=True)
     library.write_bytes(b"plugin")
     entry = {"path": str(library), "sha256": hashlib.sha256(b"plugin").hexdigest()}
     plugins = bundle / "plugins" / "plugins.json"
     plugins.write_text(json.dumps({"libraries": [entry]}))
-    assert dual.plugin_bundle(export, 120, cache) == plugins
+    assert dual.plugin_bundle(export, 120, cache, root) == plugins
     library.write_bytes(b"changed")
     with pytest.raises(RuntimeError, match="were modified"):
-        dual.plugin_bundle(export, 120, cache)
+        dual.plugin_bundle(export, 120, cache, root)

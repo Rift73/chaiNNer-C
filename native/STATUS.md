@@ -68,15 +68,19 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   pip freeze writes it (`read_lock` takes the wheel's version). The local overlay is retired by the owner (only the
   three architectures are used); the repo runtime and D:\chaiNNer carry the fork, D:\chaiNNer's old spandrel is
   in `D:\chaiNNer-spandrel-backup-20261008`.
-- DUAL to TensorRT (owner, 2026-10-08, 1.5 h): traiNNer-redux's DUAL TensorRT tooling is vendored unchanged in
+- DUAL to TensorRT (owner, 2026-10-08, 1.5 h): traiNNer-redux's DUAL TensorRT tooling is vendored in
   `backend/src/vendor/dual_tensorrt` (canonical `dual_arch.py` SHA `a7c579c5…`, exporter, Triton kernels, IPluginV3
-  plugins; its guide is the README). Convert To ONNX gives a DUAL preset a fixed-size TensorRT ONNX (CPU child
-  process); Build Engine compiles the kernels (triton-windows 3.5.1.post22, a TensorRT-package dependency) and the
-  four plugin DLLs once per size and SM (cache setting, short staging folder for nvcc's path limit), then trtexec
-  with the guide's policy; the engine embeds the plugins. Needs `TENSORRT_ROOT` (TensorRT SDK) plus CUDA Toolkit,
-  CMake and VS 2022 Build Tools. Gate 6 (fresh process vs folded PyTorch FP32): Light x4 (owner checkpoint) and
-  XS x4 (synthetic, nonzero experts) at 256x256 pass on all six inputs, error at or under the BF16 floor, max abs
-  <= 0.0125, repeatable. TensorRT loads embedded plugins without `engine_host_code_allowed`, so no trust gate.
+  plugins; its guide is the README), unchanged but for the plugin CMake project's TensorRT library, now optional
+  (the plugins call no TensorRT function). Convert To ONNX gives a DUAL preset a fixed-size TensorRT ONNX (CPU
+  child process); Build Engine compiles the kernels (triton-windows 3.5.1.post22, a TensorRT-package dependency)
+  and the four plugin DLLs once per size, SM and headers (cache setting, short staging folder for nvcc's path
+  limit) against TensorRT 11.2's headers from NVIDIA's open-source repository (`backend/src/vendor/tensorrt`,
+  Apache-2.0, content equal to the SDK's) or an optional TensorRT SDK Path, then builds with chaiNNer-C's TensorRT
+  Python API in a child process (`dual_engine_worker.py`, the guide's trtexec policy); the engine embeds the
+  plugins. No TensorRT SDK needed; CUDA Toolkit, CMake and VS 2022 Build Tools are. Gate 6 (fresh process vs folded
+  PyTorch FP32): Light x4 (owner checkpoint) and XS x4 (synthetic, nonzero experts) at 256x256 pass on all six
+  inputs, error at or under the BF16 floor, max abs <= 0.0125, repeatable; same with the SDK-free build. TensorRT
+  loads embedded plugins without `engine_host_code_allowed`, so no trust gate.
 
 ## Last CPU comparison
 

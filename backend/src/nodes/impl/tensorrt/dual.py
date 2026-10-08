@@ -19,6 +19,8 @@ from sanic.log import logger
 
 # backend/src/vendor/dual_tensorrt: its own layout, so the guide's commands run as is.
 VENDOR = Path(__file__).resolve().parents[3] / "vendor" / "dual_tensorrt"
+# TensorRT 11.2's public headers (NVIDIA's open-source release, Apache-2.0).
+TENSORRT_HEADERS = VENDOR.parent / "tensorrt"
 # spandrel's DUAL preset tag -> the guide's canonical factory
 FACTORIES = {
     "Light": "dual_light",
@@ -57,12 +59,17 @@ def factory_of(tags: list[str]) -> str:
 
 
 def _run(module: str, *arguments: str, cpu_only: bool = False) -> str:
-    """Run a vendored module in a child process; its output, or an error with the
+    """Run a vendored module in a child process."""
+    command = [sys.executable, "-m", f"scripts.dual_tensorrt.{module}", *arguments]
+    return _child(command, module, cpu_only=cpu_only)
+
+
+def _child(command: list[str], label: str, *, cpu_only: bool = False) -> str:
+    """Run a child process from the vendored tree; its output, or an error with the
     output's end."""
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     if cpu_only:
         env["CUDA_VISIBLE_DEVICES"] = ""
-    command = [sys.executable, "-m", f"scripts.dual_tensorrt.{module}", *arguments]
     result = subprocess.run(
         command,
         cwd=VENDOR,
@@ -77,7 +84,7 @@ def _run(module: str, *arguments: str, cpu_only: bool = False) -> str:
     output = result.stdout + result.stderr
     if result.returncode != 0:
         raise RuntimeError(
-            f"DUAL {module} failed (exit {result.returncode}):\n{output[-3000:]}"
+            f"DUAL {label} failed (exit {result.returncode}):\n{output[-3000:]}"
         )
     return output
 
@@ -131,41 +138,35 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def bundle_id() -> str:
+def headers_root(sdk: Path | None) -> Path:
+    """The TensorRT root the plugins compile against: an SDK given by the user (its
+    headers, and its import library when it has one), else the bundled TensorRT 11.2
+    headers (the plugins call no TensorRT function, so they need no library)."""
+    if sdk is None:
+        return TENSORRT_HEADERS
+    if not (sdk / "include" / "NvInfer.h").is_file():
+        raise ValueError(f"{sdk} is not a TensorRT SDK: it has no include/NvInfer.h")
+    return sdk
+
+
+def bundle_id(root: Path) -> str:
+    """The identity of what a plugin bundle is built from, besides its key and SM: the
+    canonical source, kernels and plugin sources, and the TensorRT headers."""
     digest = hashlib.sha256()
     for name in BUNDLE_SOURCES:
         digest.update(name.encode() + b"\0" + _sha256(VENDOR / name).encode())
+    for header in sorted((root / "include").glob("NvInfer*.h")):
+        digest.update(header.name.encode() + b"\0" + _sha256(header).encode())
     return digest.hexdigest()[:12]
 
 
-def tensorrt_sdk() -> Path:
-    """The TensorRT SDK (headers, import libraries, trtexec) the plugins build
-    against: TENSORRT_ROOT, else the folder above a trtexec on PATH."""
-    candidates = []
-    if root := os.environ.get("TENSORRT_ROOT"):
-        candidates.append(Path(root))
-    if trtexec := shutil.which("trtexec"):
-        candidates.append(Path(trtexec).resolve().parent.parent)
-    for root in candidates:
-        if (root / "include" / "NvInfer.h").is_file() and (
-            root / "bin" / "trtexec.exe"
-        ).is_file():
-            return root
-    raise RuntimeError(
-        "Building a DUAL engine needs the TensorRT SDK (the version chaiNNer-C uses),"
-        " the CUDA Toolkit, CMake and Visual Studio 2022 Build Tools. Set the"
-        " TENSORRT_ROOT environment variable to the SDK folder (the one holding"
-        " include\\NvInfer.h and bin\\trtexec.exe)."
-    )
-
-
-def plugin_bundle(export_dir: Path, sm: int, cache: Path) -> Path:
+def plugin_bundle(export_dir: Path, sm: int, cache: Path, root: Path) -> Path:
     """plugins.json of the bundle for this export's specialization and SM: cached, or
     built (AOT kernels, then the four plugin libraries) into a new folder."""
     key = json.loads((export_dir / "export.json").read_text(encoding="utf-8"))[
         "specialization"
     ]["plugin_key"]
-    bundle = cache / f"{key}_sm{sm}_{bundle_id()}"
+    bundle = cache / f"{key}_sm{sm}_{bundle_id(root)}"
     plugins = bundle / "plugins" / "plugins.json"
     if plugins.is_file():
         record = json.loads(plugins.read_text(encoding="utf-8"))
@@ -177,7 +178,6 @@ def plugin_bundle(export_dir: Path, sm: int, cache: Path) -> Path:
             logger.info("DUAL plugins %s: cached in %s", key, bundle)
             return plugins
         raise RuntimeError(f"The cached DUAL plugins in {bundle} were modified")
-    sdk = tensorrt_sdk()
     # A short build folder: nvcc's intermediate files fail past Windows' 260-character
     # path limit, which a deep cache folder reaches inside CMake's build tree.
     staging = Path(tempfile.mkdtemp(prefix="cdt-"))
@@ -190,7 +190,7 @@ def plugin_bundle(export_dir: Path, sm: int, cache: Path) -> Path:
         "plugins",
         f"--export-dir={export_dir}",
         f"--aot-dir={staging / 'aot'}",
-        f"--trt-root={sdk}",
+        f"--trt-root={root}",
         f"--output={staging / 'plugins'}",
         "--execute",
     )
@@ -207,15 +207,19 @@ def plugin_bundle(export_dir: Path, sm: int, cache: Path) -> Path:
 
 
 def build_engine(
-    onnx_bytes: bytes, manifest: dict[str, Any], sm: int, cache: Path
+    onnx_bytes: bytes,
+    manifest: dict[str, Any],
+    sm: int,
+    gpu_index: int,
+    cache: Path,
+    sdk: Path | None = None,
 ) -> bytes:
     """A TensorRT engine of a DUAL ONNX with its plugins serialized into it, built by
-    trtexec with the guide's policy (strongly typed, no TF32, optimization level 3,
-    8 GiB workspace, a fresh timing cache)."""
+    chaiNNer-C's TensorRT (the version that loads it) in dual_engine_worker.py."""
+    root = headers_root(sdk)
     cache.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="chainner-dual-engine-") as temporary:
-        root = Path(temporary)
-        export_dir = root / "export"
+        export_dir = Path(temporary) / "export"
         export_dir.mkdir()
         (export_dir / "model.onnx").write_bytes(onnx_bytes)
         # The weights are embedded here: the manifest's file identity is this file's.
@@ -226,18 +230,24 @@ def build_engine(
         (export_dir / "export.json").write_text(
             json.dumps(record, indent=2) + "\n", encoding="utf-8"
         )
-        plugins = plugin_bundle(export_dir, sm, cache)
-        output = root / "engine"
-        _run(
-            "build",
-            "engine",
-            f"--export-dir={export_dir}",
-            f"--plugins-file={plugins}",
-            f"--output={output}",
-            f"--trtexec={tensorrt_sdk() / 'bin' / 'trtexec.exe'}",
-            "--execute",
+        plugins = plugin_bundle(export_dir, sm, cache, root)
+        libraries = [
+            entry["path"]
+            for entry in json.loads(plugins.read_text(encoding="utf-8"))["libraries"]
+        ]
+        engine = Path(temporary) / "model.engine"
+        _child(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("dual_engine_worker.py")),
+                str(export_dir / "model.onnx"),
+                str(engine),
+                str(gpu_index),
+                *libraries,
+            ],
+            "engine build",
         )
-        return (output / "model.engine").read_bytes()
+        return engine.read_bytes()
 
 
 __all__ = ["build_engine", "export_manifest", "export_onnx", "factory_of"]
