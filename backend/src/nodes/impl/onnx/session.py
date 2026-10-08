@@ -44,7 +44,7 @@ def create_inference_session(
     execution_provider: str,
     should_tensorrt_fp16: bool = False,
     tensorrt_cache_path: str | None = None,
-) -> OnnxSession:
+) -> NativeSession | ort.InferenceSession:
     if execution_provider == "CPUExecutionProvider" and supports_model(model.bytes):
         # The native adapter implements the image-session surface below; model
         # values outside dense numeric tensors and all other providers retain
@@ -110,13 +110,35 @@ def get_onnx_session(
 ) -> OnnxSession:
     cached = __session_cache.get(model)
     if cached is None:
-        cached = create_inference_session(
+        session = create_inference_session(
             model,
             gpu_index,
             execution_provider,
             should_tensorrt_fp16,
             tensorrt_cache_path,
         )
+        providers = session.get_providers()
+        if execution_provider not in providers:
+            # ORT falls back to the next provider when one cannot start (TensorRT
+            # onto CUDA, CUDA onto the CPU) and only logs why.
+            message = (
+                "ONNX Runtime could not start the execution provider chosen in the"
+                f" ONNX settings ({execution_provider}), so it would run this model on"
+                f" {', '.join(providers)} instead. The log has ONNX Runtime's reason."
+            )
+            if execution_provider == "TensorrtExecutionProvider":
+                # onnxruntime_providers_tensorrt.dll of onnxruntime-gpu 1.30.0
+                # imports nvinfer_10.dll; the TensorRT package ships nvinfer_11.dll.
+                message += (
+                    " Its TensorRT provider needs TensorRT 10 (nvinfer_10.dll) on the"
+                    " PATH; chaiNNer-C's TensorRT package installs TensorRT 11, which"
+                    " only the TensorRT nodes use. Choose CUDA in the ONNX settings,"
+                    " or use the TensorRT nodes."
+                )
+            else:
+                message += " Choose another execution provider in the ONNX settings."
+            raise RuntimeError(message)
+        cached = session
         __session_cache[model] = cached
     return cached
 
