@@ -49,6 +49,10 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   fps; ffmpeg decodes and converts at 132 fps to a file, the 25 MB-per-frame pipe into Python is the limit). By the
   owner's rule the work stopped there. D:\chaiNNer rebuilt from chaiNNer-C's own UI (`npm run make`) at `e13ebdef`
   with the local PGO icelake binaries; the previous build is `D:\chaiNNer-prev-20261008`.
+- In-process video decoding (owner, 2026-10-08, 1 h): Load Video reads through PyAV 19.0.1 (FFmpeg 9.0.2 in-process,
+  the same libswscale conversion to bgr24), the FFmpeg CLI pipe reader is the fallback (rotated or variable-rate files,
+  PyAV missing, open errors; `CHAINNER_C_VIDEO_READER=cli` forces it). Read path 26.7 -> 68.1 fps; `tensorrt-video.chn`
+  19-20 -> 23.5 fps; frames identical (375 on the owner's 4K HEVC clip, `test_video_pyav` on h264/ffv1/mjpeg/bt601).
 
 ## Last CPU comparison
 

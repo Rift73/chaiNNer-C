@@ -484,7 +484,9 @@ def test_enum_compatibility(enum_name):
         [OSError("read failed")],
     ],
 )
-def test_reader_lazy_frames_and_errors(chunks):
+def test_reader_lazy_frames_and_errors(chunks, monkeypatch):
+    # The FFmpeg CLI reader's own semantics: keep PyAV's in-process reader out.
+    monkeypatch.setenv("CHAINNER_C_VIDEO_READER", "cli")
     results = []
     for kind in ("installed", "native"):
         env = FakeFFmpeg(chunks=chunks)
@@ -1139,7 +1141,9 @@ def test_reader_exit_failure_still_reaps_owned_child():
     assert any(e[0] == "terminate" for e in env.events)
 
 
-def test_context_manager_suppression_and_closed_generator():
+def test_context_manager_suppression_and_closed_generator(monkeypatch):
+    # The FFmpeg CLI reader's own semantics: keep PyAV's in-process reader out.
+    monkeypatch.setenv("CHAINNER_C_VIDEO_READER", "cli")
     results = []
     for kind in ("installed", "native"):
         env = FakeFFmpeg(chunks=[b"1"])
@@ -1294,6 +1298,8 @@ def test_real_cpu_all_exposed_encoder_container_pairs(tmp_path, container, encod
 
 @pytest.mark.skipif(not FFMPEG or not FFPROBE, reason="CPU FFmpeg/ffprobe unavailable")
 def test_real_cpu_abandoned_reader_and_writer_owned_processes(tmp_path, monkeypatch):
+    # The FFmpeg CLI reader's own semantics: keep PyAV's in-process reader out.
+    monkeypatch.setenv("CHAINNER_C_VIDEO_READER", "cli")
     owned = []
     original_popen = subprocess.Popen
 

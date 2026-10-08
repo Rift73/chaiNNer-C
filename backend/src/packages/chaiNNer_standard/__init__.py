@@ -43,6 +43,13 @@ package = add_package(
             import_name="ffmpeg",
         ),
         Dependency(
+            display_name="PyAV",
+            pypi_name="av",
+            version="19.0.1",
+            size_estimate=27 * MB,
+            import_name="av",
+        ),
+        Dependency(
             display_name="Requests",
             pypi_name="requests",
             version="2.34.2",
