@@ -54,6 +54,9 @@ def convert_to_onnx_impl(
         m = FakeModel(model)
 
     with BytesIO() as f:
+        # The TorchScript exporter, which the opsets and dynamic_axes here are written
+        # for. Torch's default exporter (dynamo, since torch 2.9) needs onnxscript,
+        # which chaiNNer does not install.
         torch.onnx.export(
             m,
             (dummy_input,),
@@ -64,6 +67,7 @@ def convert_to_onnx_impl(
             output_names=[output_name],
             dynamic_axes=dynamic_axes,
             do_constant_folding=True,
+            dynamo=False,
         )
         f.seek(0)
         return f.read()
