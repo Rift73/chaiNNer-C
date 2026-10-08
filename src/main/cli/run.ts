@@ -16,7 +16,7 @@ import { SchemaMap } from '../../common/SchemaMap';
 import { ChainnerSettings } from '../../common/settings/settings';
 import { FunctionDefinition } from '../../common/types/function';
 import { ProgressController, ProgressMonitor, ProgressToken } from '../../common/ui/progress';
-import { EMPTY_MAP, assertNever, delay } from '../../common/util';
+import { EMPTY_MAP, assertNever, delay, lazy } from '../../common/util';
 import { RunArguments } from '../arguments';
 import { BackendProcess } from '../backend/process';
 import { setupBackend } from '../backend/setup';
@@ -193,24 +193,11 @@ const addEventListener = <K extends keyof BackendEventMap>(
     });
 };
 
-export const runChainInCli = async (args: RunArguments) => {
-    const progressController = new ProgressController();
-    addProgressListeners(progressController);
-
-    const settings = readSettings();
-
-    const backendProcess = await createBackend(progressController, args, settings);
-    if (backendProcess.owned) {
-        backendProcess.addErrorListener((error) => {
-            log.error(
-                `The Python backend encountered an unexpected error. ChaiNNer will now exit. Error: ${String(
-                    error
-                )}`
-            );
-            app.exit(1);
-        });
-    }
-
+const runChain = async (
+    args: RunArguments,
+    settings: ChainnerSettings,
+    backendProcess: BackendProcess
+) => {
     const { backend, schemata, functionDefinitions, eventSource } = await connectToBackend(
         backendProcess
     );
@@ -287,4 +274,49 @@ export const runChainInCli = async (args: RunArguments) => {
     }
 
     log.info('Done.');
+};
+
+export const runChainInCli = async (args: RunArguments) => {
+    const progressController = new ProgressController();
+    addProgressListeners(progressController);
+
+    const settings = readSettings();
+
+    const backendProcess = await createBackend(progressController, args, settings);
+    if (!backendProcess.owned) {
+        await runChain(args, settings, backendProcess);
+        return;
+    }
+
+    // Stop the backend on every way out, as the GUI does on quit. Exiting alone only ends the
+    // backend's host process; its worker process would keep running and holding memory.
+    const stopBackend = lazy(async () => {
+        backendProcess.clearErrorListeners();
+        await backendProcess.tryKill();
+    });
+    const stopBackendAndExit = () => {
+        stopBackend()
+            .finally(() => app.exit(1))
+            .catch(log.error);
+    };
+    backendProcess.addErrorListener((error) => {
+        log.error(
+            `The Python backend encountered an unexpected error. ChaiNNer will now exit. Error: ${String(
+                error
+            )}`
+        );
+        stopBackendAndExit();
+    });
+    const onInterrupt = () => {
+        log.warn('Interrupted. Stopping the backend...');
+        stopBackendAndExit();
+    };
+    process.once('SIGINT', onInterrupt);
+
+    try {
+        await runChain(args, settings, backendProcess);
+    } finally {
+        process.off('SIGINT', onInterrupt);
+        await stopBackend();
+    }
 };
