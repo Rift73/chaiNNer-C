@@ -5,10 +5,11 @@ guide's trtexec command (vendor/dual_tensorrt/scripts/dual_tensorrt/build.py, en
 strongly typed, TF32 off, optimization level 3, no auxiliary streams, an 8 GiB
 workspace, detailed profiling verbosity and a fresh timing cache. A width-only key
 (c<C>) is a dynamic-shape ONNX: its engine gets one optimization profile, minimum,
-optimum and maximum input sizes given as HxW.
+optimum and maximum input sizes given as HxW, and its input is named for the ONNX's
+input alignment (dual.aligned_input_name), which Upscale Image's tiler reads.
 
     python -m nodes.impl.tensorrt.dual_engine_worker ONNX ENGINE GPU_INDEX PLUGIN_KEY
-        [MIN OPT MAX]
+        [MIN OPT MAX ALIGNMENT]
 """
 
 from __future__ import annotations
@@ -23,12 +24,12 @@ def main(
     import tensorrt as trt
     from cuda.bindings import runtime as cudart
 
-    from . import dual_aot
+    from . import dual, dual_aot
 
     dynamic = "_h" not in key
-    if len(profile) != (3 if dynamic else 0):
+    if len(profile) != (4 if dynamic else 0):
         raise ValueError(
-            "A dynamic DUAL ONNX needs MIN OPT MAX sizes; a fixed one none"
+            "A dynamic DUAL ONNX needs MIN OPT MAX ALIGNMENT; a fixed one none"
         )
     (error,) = cudart.cudaSetDevice(int(gpu_index))
     if error != cudart.cudaError_t.cudaSuccess:
@@ -56,11 +57,11 @@ def main(
     config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
     config.set_timing_cache(config.create_timing_cache(b""), ignore_mismatch=False)
     if dynamic:
-        sizes = [tuple(int(v) for v in size.split("x")) for size in profile]
+        image = network.get_input(0)
+        image.name = dual.aligned_input_name(int(profile[3]))
+        sizes = [tuple(int(v) for v in size.split("x")) for size in profile[:3]]
         optimization = builder.create_optimization_profile()
-        optimization.set_shape(
-            network.get_input(0).name, *((1, 3, h, w) for h, w in sizes)
-        )
+        optimization.set_shape(image.name, *((1, 3, h, w) for h, w in sizes))
         config.add_optimization_profile(optimization)
     engine = builder.build_serialized_network(network, config)
     if engine is None:

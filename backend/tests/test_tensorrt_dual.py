@@ -125,6 +125,12 @@ def test_a_folded_xs_exports_one_tensorrt_onnx_for_every_size(tmp_path: Path):
     }
 
 
+def test_a_dynamic_engines_input_name_carries_its_alignment():
+    assert dual.input_alignment(dual.aligned_input_name(4)) == 4
+    assert dual.input_alignment("input") is None
+    assert dual.input_alignment("input_aligned_x") is None
+
+
 @pytest.mark.parametrize(
     ("low", "opt", "high", "message"),
     [

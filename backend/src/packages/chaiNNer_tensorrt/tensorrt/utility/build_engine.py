@@ -58,7 +58,7 @@ if utility_group is not None:
             "Building an engine can take several minutes depending on the model size and optimization settings.",
             "The built engine is optimized specifically for your GPU and TensorRT version.",
             "It is recommended to save the built engine for reuse, as building is slow.",
-            "A DUAL ONNX from Convert To ONNX builds in its own precision with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 64 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Upscale Image replays DUAL engines from a CUDA graph per input size.",
+            "A DUAL ONNX from Convert To ONNX builds in its own precision with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Upscale Image replays DUAL engines from a CUDA graph per input size.",
         ],
         icon="BsNvidia",
         inputs=[

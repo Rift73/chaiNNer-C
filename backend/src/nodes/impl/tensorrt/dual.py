@@ -29,10 +29,22 @@ FACTORIES = {
 }
 # The exporter's manifest (export.json), carried in the ONNX model's metadata.
 METADATA_KEY = "chainner_c.dual_tensorrt.export"
-# A dynamic DUAL ONNX is exact only for input sizes that are multiples of this: its
-# windows are laid out for them. chaiNNer's tiler feeds only such sizes
-# (tiling.TILE_ALIGNMENT), and Build Engine's profile must keep to them.
-ALIGNMENT = 64
+# A dynamic DUAL ONNX takes input sizes that are multiples of this (as the PyTorch
+# model pads its input), so images need no more padding than PyTorch gives them. Its
+# engine's input is named for it (aligned_input_name), so that Upscale Image's tiler
+# pads to it instead of its default 64 px; Build Engine's profile must keep to it.
+ALIGNMENT = 4
+ALIGNED_INPUT = "input_aligned_"
+
+
+def aligned_input_name(alignment: int) -> str:
+    return f"{ALIGNED_INPUT}{alignment}"
+
+
+def input_alignment(name: str) -> int | None:
+    """The alignment an engine input's name carries; None for other engines."""
+    suffix = name.removeprefix(ALIGNED_INPUT)
+    return int(suffix) if suffix != name and suffix.isdigit() else None
 
 
 def factory_of(tags: list[str]) -> str:
@@ -163,10 +175,14 @@ def build_engine(
     kernels compiled for this GPU) embedded, built by chaiNNer-C's TensorRT, the version
     that loads it, in dual_engine_worker.py. A dynamic ONNX takes its engine's
     (minimum, optimal, maximum) (height, width) profile (see check_profile)."""
-    dynamic = manifest["specialization"].get("dynamic", False)
-    if dynamic != (profile is not None):
+    spec = manifest["specialization"]
+    if spec.get("dynamic", False) != (profile is not None):
         raise ValueError("Only a dynamic DUAL ONNX takes a size profile.")
-    sizes = [] if profile is None else [f"{h}x{w}" for h, w in profile]
+    sizes = (
+        []
+        if profile is None
+        else [*(f"{h}x{w}" for h, w in profile), str(spec["alignment"])]
+    )
     with tempfile.TemporaryDirectory(prefix="chainner-dual-engine-") as temporary:
         model = Path(temporary) / "model.onnx"
         model.write_bytes(onnx_bytes)
@@ -189,9 +205,11 @@ def build_engine(
 
 __all__ = [
     "ALIGNMENT",
+    "aligned_input_name",
     "build_engine",
     "check_profile",
     "export_manifest",
     "export_onnx",
     "factory_of",
+    "input_alignment",
 ]

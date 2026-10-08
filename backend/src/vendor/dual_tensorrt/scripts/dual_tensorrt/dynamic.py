@@ -411,8 +411,10 @@ def export_dynamic(
     model.prepare_for_export()
     if sha256(checkpoint) != checkpoint_sha:
         raise RuntimeError("Checkpoint changed during export")
-    if alignment % (8 if model.unshuffle else 4):
-        raise ValueError("The input alignment must keep the trunk a multiple of 4")
+    if alignment % 4:
+        # As the canonical model pads its input: PU2's unshuffles, the coarse branch's
+        # stride-2 downsample and the slot packs need an even trunk.
+        raise ValueError("The input alignment must be a multiple of 4")
     graph = DynamicGraph(
         arch, model.embed_dim, alignment // (2 if model.unshuffle else 1)
     )

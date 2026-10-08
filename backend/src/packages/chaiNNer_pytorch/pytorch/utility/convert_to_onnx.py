@@ -91,9 +91,10 @@ IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" }')
                 "DUAL converts to a TensorRT-only ONNX. Its precision is fixed (BF16"
                 " body, FP32 input and output) and it uses opset 20 with DUAL's TensorRT"
                 " plugins, so FP Mode must be FP32 and Opset and Verify do not apply.",
-                "Dynamic: one ONNX for every input size that is a multiple of 64 px;"
-                " Build Engine's shape inputs choose the engine's sizes (e.g. 64x64 to"
-                " 1920x1088 for whole 1080p frames).",
+                "Dynamic: one ONNX for every input size that is a multiple of 4 px (as"
+                " DUAL pads its input), so images are not padded further; Build Engine's"
+                " shape inputs choose the engine's sizes (e.g. 64x64 to 1920x1088 for"
+                " whole 1080p frames).",
                 "Fixed: an ONNX for one input size (a multiple of 4); Upscale Image tiles"
                 " at that size, padding smaller images. DUAL pools over its whole input,"
                 " so tiles and padding can change its output slightly against one whole"

@@ -25,13 +25,16 @@ from ..native_framework_images import planar_to_interleaved
 from ..native_tensors import cast_into
 from .bfloat16 import bf16_bits_to_float32, float32_to_bf16_bits
 from .cache import SharedCache
+from .dual import input_alignment
 from .engine_info import deserialize_engine
 from .memory import check_cuda
 from .model import TensorRTEngine
-from .tiling import ShapeBounds
+from .tiling import TILE_ALIGNMENT, ShapeBounds
 
-# CUDA graphs kept per session, one per input shape (see TensorRTSession).
+# CUDA graphs kept per session, one per input shape, and input shapes remembered to
+# capture on their second run (see TensorRTSession).
 MAX_GRAPHS = 4
+MAX_SEEN = 32
 
 
 class _IoDtype:
@@ -102,18 +105,23 @@ class TensorRTSession:
             self._out = _IoDtype(cuda_engine.get_tensor_dtype(self.output_name))
 
             mins, _, maxs = cuda_engine.get_tensor_profile_shape(self.input_name, 0)
-            self.bounds = ShapeBounds(mins[2], mins[3], maxs[2], maxs[3])
+            # A dynamic DUAL engine's input names the multiple its sizes must be.
+            alignment = input_alignment(self.input_name) or TILE_ALIGNMENT
+            self.bounds = ShapeBounds(mins[2], mins[3], maxs[2], maxs[3], alignment)
         except BaseException:
             self._loaded.release()
             raise
         self.context = context
-        # Each input shape's execution is replayed from a CUDA graph captured after its
-        # first run: TensorRT's per-launch host work happens once (DUAL's AOT plugins
-        # cost ~0.3 ms of it per launch, 5x the GPU time without a graph). Tiles mostly
-        # share a shape, so a few graphs, the least recently used dropped first.
+        # An input shape seen again is captured in a CUDA graph after that run and
+        # replayed from then on: TensorRT's per-launch host work happens once (DUAL's AOT
+        # plugins cost ~0.3 ms of it per launch, 5x the GPU time without a graph). A
+        # capture costs one more enqueue of host work, so a shape seen once (images of
+        # assorted sizes) is not captured. Tiles mostly share a shape: a few graphs are
+        # kept, the least recently used dropped first.
         self._graphs: OrderedDict[
             tuple[int, ...], tuple[cudart.cudaGraph_t, cudart.cudaGraphExec_t]
         ] = OrderedDict()
+        self._seen: OrderedDict[tuple[int, ...], None] = OrderedDict()
         self._graph_failed = False
 
         self._stream = check_cuda(cudart.cudaStreamCreate())
@@ -221,7 +229,7 @@ class TensorRTSession:
 
     def _execute(self, shape: tuple[int, ...]) -> None:
         """Enqueue the engine on the stream: the shape's captured graph when there is
-        one, else TensorRT's enqueue, after which the shape is captured."""
+        one, else TensorRT's enqueue, after which a shape seen before is captured."""
         graph = self._graphs.get(shape)
         if graph is not None:
             self._graphs.move_to_end(shape)
@@ -229,7 +237,11 @@ class TensorRTSession:
             return
         if not self.context.execute_async_v3(int(self._stream)):
             raise RuntimeError("TensorRT failed to enqueue inference.")
-        if not self._graph_failed:
+        if shape not in self._seen:
+            self._seen[shape] = None
+            if len(self._seen) > MAX_SEEN:
+                self._seen.popitem(last=False)
+        elif not self._graph_failed:
             self._capture(shape)
 
     def _capture(self, shape: tuple[int, ...]) -> None:

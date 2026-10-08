@@ -101,6 +101,23 @@ def test_single_tile_is_the_cropped_model_output():
     np.testing.assert_array_equal(out, fake_model(padded)[:1200, :800])
 
 
+def test_an_engines_alignment_sets_the_padding_and_tile_size():
+    # A dynamic DUAL engine takes multiples of 4: a 300x202 image runs unpadded but for
+    # 2 columns, and a 4-aligned maximum is the tile size.
+    bounds = ShapeBounds(64, 64, 1084, 1916, alignment=4)
+    engine = FakeEngine(bounds)
+    img = _image()[:300, :202]
+
+    out = tiled_upscale(img, SCALE, bounds, engine)
+
+    assert engine.shapes == [(300, 204)]
+    padded = np.pad(img, ((0, 0), (0, 2), (0, 0)), mode="reflect")
+    np.testing.assert_array_equal(out, fake_model(padded)[:1200, :808])
+    engine = FakeEngine(bounds)
+    tiled_upscale(np.zeros((2000, 3000, 3), np.float32), SCALE, bounds, engine)
+    assert set(engine.shapes) == {(1084, 1916)}
+
+
 def test_axis_weights_partition_of_unity():
     for length in (513, 1000, 1024, 1500, 2049):
         starts = tile_starts(length, 512)
