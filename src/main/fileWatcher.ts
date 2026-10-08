@@ -14,7 +14,9 @@ const watcher = new FSWatcher({
     disableGlobbing: true,
     awaitWriteFinish: true,
     ignoreInitial: true,
-    persistent: false,
+    // chokidar only handles the errors of persistent watches. A non-persistent watch throws an
+    // uncaught error when a watched file's folder is deleted (EPERM) or its drive goes away.
+    persistent: true,
 });
 
 const sendEvent = (window: BrowserWindowWithSafeIpc, eventType: EventType, path: string) => {
