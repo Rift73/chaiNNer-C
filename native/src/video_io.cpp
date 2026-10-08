@@ -6,6 +6,9 @@
 #include "graph_python.hpp"
 #include "graph_exception.hpp"
 #include <chrono>
+#include <cmath>
+#include <numbers>
+#include <vector>
 #include <condition_variable>
 #include <memory>
 #include <exception>
@@ -73,6 +76,32 @@ py::tuple star_arguments(const O&f,const O&values) {
     return py::tuple(values);
 }
 
+// True when the CLI reader's autorotation transposes the frames, so they are height x
+// width: a display matrix (ffprobe's text form, 9 integers in 16.16) whose rotation, as
+// fftools get_rotation derives it from av_display_rotation_get, is a quarter turn.
+// The PyAV reader (video.py _upright_filters) inserts the same filters.
+bool quarter_turn(const O&stream) {
+    for(py::handle sh:stream.attr("get")("side_data_list",py::list())) {
+        O text=py::reinterpret_borrow<O>(sh).attr("get")("displaymatrix",py::none());
+        if(text.is_none())continue;
+        std::vector<double> m;
+        for(py::handle line:text.attr("splitlines")()) {
+            O parts=py::reinterpret_borrow<O>(line).attr("split")(":");
+            if(py::len(parts)!=2)continue;
+            for(py::handle v:parts[py::int_(1)].attr("split")())
+                m.push_back(builtin("float")(builtin("int")(v)).cast<double>()/65536.0);
+        }
+        if(m.size()!=9)return false;
+        double sx=std::hypot(m[0],m[3]),sy=std::hypot(m[1],m[4]);
+        if(sx==0.0||sy==0.0)return false;
+        double rotation=-(std::atan2(m[1]/sy,m[0]/sx)*180/std::numbers::pi);
+        double theta=-std::round(rotation);
+        theta-=360*std::floor(theta/360+0.9/360);
+        return std::fabs(theta-90)<1.0||std::fabs(theta-270)<1.0;
+    }
+    return false;
+}
+
 O metadata(const py::dict&g,const O&path,const O&env) {
     O probe = global(g,"ffmpeg").attr("probe")(path, py::arg("cmd")=env.attr("ffprobe"));
     O format=probe.attr("get")("format",py::none());
@@ -89,6 +118,7 @@ O metadata(const py::dict&g,const O&path,const O&env) {
     O height=video.attr("get")("height",py::none());
     if(height.is_none())fail(PyExc_RuntimeError,"No height found in video stream");
     height=builtin("int")(height);
+    if(quarter_turn(video))std::swap(width,height);
     O rate=video.attr("get")("r_frame_rate",py::none());
     if(rate.is_none())fail(PyExc_RuntimeError,"No fps found in video stream");
     O numerator=builtin("int")(rate.attr("split")("/")[py::int_(0)]);

@@ -12,7 +12,9 @@ import copy
 import gc
 import hashlib
 import io
+import itertools
 import json
+import math
 import os
 import runpy
 import shutil
@@ -275,6 +277,8 @@ def load(kind, component, env=None):
             "Path": Path,
             "np": np,
             "os": os,
+            "math": math,
+            "itertools": itertools,
             "ffmpeg": env,
             "logger": Logger(env.events),
             "BufferedIOBase": io.BufferedIOBase,

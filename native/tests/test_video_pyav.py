@@ -1,5 +1,6 @@
 """Load Video's in-process reader (PyAV): byte-identical frames to the FFmpeg CLI
-reader, and the CLI reader for files PyAV would read differently or cannot open."""
+reader (rotated files upright in both), and the CLI reader for variable-rate files
+or files PyAV cannot open."""
 
 from __future__ import annotations
 
@@ -84,17 +85,34 @@ def test_pyav_frames_equal_the_cli_reader(tmp_path, monkeypatch, case):
         np.testing.assert_array_equal(frame, reference)
 
 
-def test_rotated_and_variable_rate_files_use_the_cli_reader(tmp_path, monkeypatch):
-    plain = _clip(tmp_path / "plain.mp4", *CASES["h264-420"])
-    rotated = _clip(
-        tmp_path / "rotated.mp4",
-        "-display_rotation",
-        "90",
-        "-i",
-        str(plain),
-        "-c",
-        "copy",
-    )
+ROTATIONS = {
+    "rotate-90": (["-display_rotation", "90"], lambda frame: np.rot90(frame, 1)),
+    "rotate-180": (["-display_rotation", "180"], lambda frame: np.rot90(frame, 2)),
+    "rotate-270": (["-display_rotation", "270"], lambda frame: np.rot90(frame, -1)),
+    "mirror": (["-display_hflip"], lambda frame: frame[:, ::-1]),
+    "rotate-90-mirror": (["-display_rotation", "90", "-display_hflip"], None),
+}
+
+
+@pytest.mark.parametrize("case", sorted(ROTATIONS))
+def test_rotated_files_are_upright_in_both_readers(tmp_path, monkeypatch, case):
+    options, upright = ROTATIONS[case]
+    source = (*_source("320x240"), "-c:v", "libx264", "-pix_fmt", "yuv444p")
+    plain = _clip(tmp_path / "plain.mp4", *source)
+    rotated = _clip(tmp_path / "rotated.mp4", *options, "-i", str(plain), "-c", "copy")
+    in_process, frames = _read(rotated, monkeypatch, cli=False)
+    piped, expected = _read(rotated, monkeypatch, cli=True)
+    _, stored = _read(plain, monkeypatch, cli=False)
+    assert in_process and not piped
+    assert len(frames) == len(expected) == 30
+    for frame, reference, original in zip(frames, expected, stored, strict=True):
+        np.testing.assert_array_equal(frame, reference)
+        if upright is not None:
+            # 4:4:4 has no chroma to interpolate, so converting and turning commute.
+            np.testing.assert_array_equal(frame, upright(original))
+
+
+def test_variable_rate_files_use_the_cli_reader(tmp_path, monkeypatch):
     variable = _clip(
         tmp_path / "variable.mp4",
         *_source("640x360"),
@@ -105,9 +123,8 @@ def test_rotated_and_variable_rate_files_use_the_cli_reader(tmp_path, monkeypatc
         "-c:v",
         "libx264",
     )
-    for path in (rotated, variable):
-        in_process, _ = _read(path, monkeypatch, cli=False)
-        assert not in_process, path
+    in_process, _ = _read(variable, monkeypatch, cli=False)
+    assert not in_process
 
 
 def test_without_pyav_the_cli_reader_is_used(tmp_path, monkeypatch):
