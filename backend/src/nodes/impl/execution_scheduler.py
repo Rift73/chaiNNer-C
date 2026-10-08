@@ -73,6 +73,13 @@ async def owned_gather(coroutines: list[Awaitable[T]]) -> list[T]:
     return [cast(T, value) for _, value in results]
 
 
+# Nodes outside the image/utility CPU rule that may still run ahead of earlier items
+# or beside other branches: free of side effects, they use their context only per
+# call (settings, node id, progress) and serialize their device work under their own
+# lock (native/reports/sp3/thread-safety-audit.md, "Locked device nodes").
+LOCKED_DEVICE_NODES: frozenset[str] = frozenset({"chainner:tensorrt:upscale_image"})
+
+
 def pure_cpu_dependency(
     executor: DependencyExecutor, node_id: NodeId, visiting: set[NodeId] | None = None
 ) -> bool:
@@ -81,11 +88,15 @@ def pure_cpu_dependency(
         return True
     node = executor.chain.nodes[node_id]
     data = node.data
+    locked_device = data.schema_id in LOCKED_DEVICE_NODES
     if (
         data.kind != "regularNode"
         or data.side_effects
-        or data.node_context
-        or not data.schema_id.startswith(("chainner:image:", "chainner:utility:"))
+        or (data.node_context and not locked_device)
+        or not (
+            locked_device
+            or data.schema_id.startswith(("chainner:image:", "chainner:utility:"))
+        )
         or any(item.lazy for item in data.inputs)
     ):
         return False

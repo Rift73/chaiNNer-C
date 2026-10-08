@@ -56,6 +56,7 @@ from api import (
 )
 from chain.chain import Chain, Edge, EdgeSource, EdgeTarget
 from nodes.impl import item_window
+from nodes.impl.execution_scheduler import LOCKED_DEVICE_NODES
 from nodes.impl.item_window import (
     SERIAL_PRODUCER_VARIABLE,
     Candidate,
@@ -1587,8 +1588,9 @@ def test_dependents_of_a_stored_error_meet_it_at_the_nesting_point(
     assert stripped(runs["3"].events) == stripped(runs["1"].events)
 
 
-# The 113 schema ids admitted by pure_cpu_dependency's per-node conditions, each
-# audited in native/reports/sp3/thread-safety-audit.md (SP3 Task 4).
+# The 114 schema ids admitted by pure_cpu_dependency's per-node conditions, each
+# audited in native/reports/sp3/thread-safety-audit.md (SP3 Task 4; the locked device
+# node, 2026-10-08).
 AUDITED_SPECULATION_IDS: frozenset[str] = frozenset(
     [
         f"chainner:image:{name}"
@@ -1620,6 +1622,7 @@ AUDITED_SPECULATION_IDS: frozenset[str] = frozenset(
         text_pattern text_replace text_slice
         """.split()
     ]
+    + ["chainner:tensorrt:upscale_image"]
 )
 
 
@@ -1682,11 +1685,17 @@ def speculation_eligible_ids():
 
                 schema_id = ast.literal_eval(schema)
                 inputs = keywords.get("inputs")
+                locked_device = schema_id in LOCKED_DEVICE_NODES
                 if (
                     flag("kind", "regularNode") == "regularNode"
                     and flag("side_effects", False) is False
-                    and flag("node_context", False) is False
-                    and schema_id.startswith(("chainner:image:", "chainner:utility:"))
+                    and (flag("node_context", False) is False or locked_device)
+                    and (
+                        locked_device
+                        or schema_id.startswith(
+                            ("chainner:image:", "chainner:utility:")
+                        )
+                    )
                     and (inputs is None or not make_lazy_lines(inputs, bindings))
                 ):
                     ids.add(schema_id)

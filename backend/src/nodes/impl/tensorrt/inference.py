@@ -9,6 +9,7 @@ context is never used by two streams at once.
 from __future__ import annotations
 
 import ctypes
+import threading
 from collections import deque
 from contextlib import AbstractContextManager
 from typing import Any
@@ -118,6 +119,10 @@ class TensorRTSession:
         self._h_out = [_Pinned(), _Pinned()]
         self._queue: deque[tuple[int, tuple[int, ...]]] = deque()
         self._submitted = 0
+        # One image at a time: the item window may run the node for several items at
+        # once (execution_scheduler.LOCKED_DEVICE_NODES), and the context, stream and
+        # buffers serve one tiled upscale.
+        self.lock = threading.Lock()
 
     def _ensure_device(self, in_nbytes: int, out_nbytes: int, act_nbytes: int) -> None:
         if act_nbytes > self._d_act_nbytes or (
