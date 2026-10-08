@@ -1,6 +1,6 @@
 import decompress from 'decompress';
+import { app, session } from 'electron/main';
 import fs from 'fs/promises';
-import Downloader from 'nodejs-file-downloader';
 import path from 'path';
 import semver from 'semver';
 import { PythonInfo } from '../../common/common-types';
@@ -36,6 +36,62 @@ const downloads: Record<SupportedPlatform, PythonDownload> = {
         version: '3.14.8',
         path: 'python/python.exe',
     },
+};
+
+/**
+ * Downloads `url` to `filePath` with Electron's network stack, which follows the system's proxy
+ * settings (on Windows the Internet settings, PAC scripts included). HTTPS_PROXY and NO_PROXY, if
+ * set, take precedence, as they do for pip.
+ */
+const download = async (
+    url: string,
+    filePath: string,
+    onProgress: (percentage: number) => void
+) => {
+    // the CLI gets here before Electron is ready, and the network stack needs it
+    await app.whenReady();
+
+    let downloadSession = session.defaultSession;
+    const proxy = process.env.HTTPS_PROXY;
+    if (proxy) {
+        downloadSession = session.fromPartition('integrated-python-download');
+        // Chromium takes scheme://host:port; the variable may also have a path or no scheme
+        const { protocol, host } = new URL(proxy.includes('://') ? proxy : `http://${proxy}`);
+        await downloadSession.setProxy({
+            proxyRules: `${protocol}//${host}`,
+            proxyBypassRules: process.env.NO_PROXY,
+        });
+    }
+
+    const response = await downloadSession.fetch(url);
+    if (!response.ok || !response.body) {
+        throw new Error(
+            `Downloading ${url} failed: HTTP ${response.status} ${response.statusText}`
+        );
+    }
+    const totalBytes = Number(response.headers.get('content-length'));
+    let receivedBytes = 0;
+
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    const file = await fs.open(filePath, 'w');
+    try {
+        await response.body.pipeTo(
+            new WritableStream<Uint8Array>({
+                write: async (chunk) => {
+                    await file.write(chunk);
+                    receivedBytes += chunk.byteLength;
+                    if (totalBytes > 0) {
+                        onProgress((receivedBytes / totalBytes) * 100);
+                    }
+                },
+            })
+        );
+    } catch (error) {
+        await file.close();
+        await fs.rm(filePath, { force: true });
+        throw error;
+    }
+    await file.close();
 };
 
 const extractPython = async (
@@ -100,13 +156,7 @@ export const getIntegratedPython = async (
 
     log.info('Downloading integrated Python...');
     onProgress(0, 'download');
-    await new Downloader({
-        url,
-        directory,
-        fileName: tarName,
-        cloneFiles: false,
-        onProgress: (percentage) => onProgress(Number(percentage), 'download'),
-    }).download();
+    await download(url, tarPath, (percentage) => onProgress(percentage, 'download'));
 
     log.info('Extracting integrated Python...');
     onProgress(0, 'extract');

@@ -134,7 +134,6 @@
     "mathjs": "^12.4.1",
     "minisearch": "^6.1.0",
     "node-localstorage": "^2.2.1",
-    "nodejs-file-downloader": "^4.9.3",
     "os-utils": "^0.0.14",
     "portfinder": "^1.0.32",
     "re-resizable": "^6.9.9",

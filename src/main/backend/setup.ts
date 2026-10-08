@@ -58,6 +58,8 @@ const getIntegratedPythonInfo = async (
             title: 'Unable to install integrated Python',
             message:
                 'chaiNNer needs a stable internet connection to install its integrated Python environment. Please make sure you have a stable internet connection and try again.' +
+                " The download uses your system's proxy settings, or HTTPS_PROXY if it is set." +
+                `\n\nError: ${error instanceof Error ? error.message : String(error)}` +
                 '\n\nchaiNNer requires a valid Python environment to run. Please choose one of the following options:',
             options: [
                 {
