@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from enum import Enum
 
+import tensorrt as trt
 from sanic.log import logger
 
 from api import NodeContext
 from nodes.groups import if_enum_group
 from nodes.impl.onnx.model import OnnxModel
+from nodes.impl.tensorrt import dual
 from nodes.impl.tensorrt.engine_builder import BuildConfig, build_engine_from_onnx
-from nodes.impl.tensorrt.model import TensorRTEngine
+from nodes.impl.tensorrt.memory import get_cuda_compute_capability
+from nodes.impl.tensorrt.model import TensorRTEngine, TensorRTEngineInfo
 from nodes.properties.inputs import (
     BoolInput,
     EnumInput,
@@ -17,7 +20,7 @@ from nodes.properties.inputs import (
 )
 from nodes.properties.outputs import TensorRTEngineOutput
 
-from ...settings import get_settings
+from ...settings import TensorRTSettings, get_settings
 from .. import utility_group
 
 
@@ -55,6 +58,7 @@ if utility_group is not None:
             "Building an engine can take several minutes depending on the model size and optimization settings.",
             "The built engine is optimized specifically for your GPU and TensorRT version.",
             "It is recommended to save the built engine for reuse, as building is slow.",
+            "A DUAL ONNX from Convert To ONNX builds with its own fixed size and precision and its TensorRT plugins, which are compiled once per size and GPU (this needs the TensorRT SDK, the CUDA Toolkit, CMake and Visual Studio 2022 Build Tools; see TENSORRT_ROOT). The engine carries the plugins' native code: only load engines you trust.",
         ],
         icon="BsNvidia",
         inputs=[
@@ -181,6 +185,10 @@ if utility_group is not None:
         settings = get_settings(context)
         gpu_index = settings.gpu_index
 
+        manifest = dual.export_manifest(onnx_model.bytes)
+        if manifest is not None:
+            return build_dual_engine(onnx_model, manifest, settings)
+
         # Determine timing cache path
         timing_cache_path = None
         if settings.timing_cache_path:
@@ -228,3 +236,40 @@ if utility_group is not None:
         )
 
         return engine
+
+
+def build_dual_engine(
+    onnx_model: OnnxModel, manifest: dict, settings: TensorRTSettings
+) -> TensorRTEngine:
+    """DUAL's specialized engine: the ONNX's size and precision; the node's precision,
+    shape, workspace and TF32 inputs do not apply."""
+    major, minor = get_cuda_compute_capability(settings.gpu_index)
+    spec = manifest["specialization"]
+    logger.info(
+        "Building a DUAL engine (%s x%d, %dx%d, plugins %s, SM %d%d); the node's"
+        " precision, shape, workspace and TF32 inputs do not apply",
+        spec["factory"],
+        spec["scale"],
+        spec["width"],
+        spec["height"],
+        spec["plugin_key"],
+        major,
+        minor,
+    )
+    engine_bytes = dual.build_engine(
+        onnx_model.bytes, manifest, major * 10 + minor, settings.dual_plugin_cache
+    )
+    shape = (1, 3, spec["height"], spec["width"])
+    info = TensorRTEngineInfo(
+        precision="bf16",
+        input_channels=3,
+        output_channels=3,
+        scale=spec["scale"],
+        gpu_architecture=f"sm_{major}{minor}",
+        tensorrt_version=trt.__version__,
+        has_dynamic_shapes=False,
+        min_shape=shape,
+        opt_shape=shape,
+        max_shape=shape,
+    )
+    return TensorRTEngine(engine_bytes, info)

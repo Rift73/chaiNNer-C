@@ -38,6 +38,14 @@ package = add_package(
             version="13.4.1",
             size_estimate=20 * MB,
         ),
+        # Compiles DUAL's TensorRT plugin kernels (Build Engine, in a child process).
+        Dependency(
+            display_name="Triton",
+            pypi_name="triton-windows",
+            version="3.5.1.post22",
+            size_estimate=45 * MB,
+            import_name="triton",
+        ),
     ],
     icon="BsNvidia",
     color="#76B900",

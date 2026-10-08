@@ -22,7 +22,8 @@
 		"native/tests/reference_*",
 		"native/.venv",
 		"native/runtime",
-		"native/build"
+		"native/build",
+		"backend/src/vendor"
 	],
 	"stubPath": "stubs",
 	"ignore": [],
