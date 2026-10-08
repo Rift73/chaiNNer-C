@@ -309,8 +309,9 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   container cannot hold the copy (PCM in MP4 on the integrated FFmpeg 5.1.2), transcodes it with Transcode's options
   (AAC at 320 kb/s; upstream has no fallback). Audio the mux cannot carry fails the run instead of leaving a silent
   video, where upstream logs: Copy names the codec and container and suggests Auto or Transcode, a failed transcode
-  names its encoder (mono audio into WebM's fixed 320 kb/s Opus fails so, the bitrate is the owner's call); a WebM
-  Copy still raises before the mux, as in the nightly. Only a source file without audio saves the video without it.
+  names its encoder; a WebM Copy still raises before the mux, as in the nightly. WebM's Opus gets
+  min(320 kb/s, 256 kb/s × channels), libopus's per-channel ceiling (owner-approved 2026-10-09): mono gets 256 kb/s,
+  where upstream's fixed 320 kb/s fails, and two or more channels keep 320 kb/s. Only a source file without audio saves the video without it.
   The temporary file never stays behind, and `os.replace` swaps the files, so a failed swap keeps the video. Video
   packets are unchanged; the stream order and, where a PATH FFmpeg differed, the audio encoder's build change. The
   tests' oracle is the frozen v0.25.1 mux with these departures (`INTENDED_MUX`, `native/tests/test_video_io.py`), and

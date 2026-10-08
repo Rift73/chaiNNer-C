@@ -271,7 +271,8 @@ class Context:
 # (upstream's PATH fallback is dead: Writer requires ffmpeg_env); (f) audio the mux
 # cannot carry raises instead of logging, and only a source without audio (probed
 # after a failure) saves the video without it; (g) os.replace swaps the files
-# atomically, so a failed swap keeps the video.
+# atomically, so a failed swap keeps the video; (h) Opus gets min(320k, 256k x
+# channels), libopus's per-channel ceiling, so mono into WebM works (owner-approved).
 INTENDED_MUX = (
     """        if self.audio is not None:
             video_path = self.save_path
@@ -351,12 +352,20 @@ INTENDED_MUX = (
 """,
     """        if self.audio is not None:
 
+            def audio_streams():
+                source = self.audio.node.kwargs["filename"]
+                probe = ffmpeg.probe(source, cmd=self.ffmpeg_env.ffprobe)
+                return [s for s in probe["streams"] if s.get("codec_type") == "audio"]
+
             def options(settings):
                 params = {"vcodec": "copy", "acodec": "copy"}
                 if self.container == VideoFormat.WEBM:
                     if settings in (AudioSettings.TRANSCODE, AudioSettings.AUTO):
                         params["acodec"] = "libopus"
                         params["b:a"] = "320k"
+                        for stream in audio_streams():  # (h)
+                            if stream.get("channels") == 1:
+                                params["b:a"] = "256k"
                     else:
                         raise ValueError(f"WebM does not support {settings}")
                 elif settings == AudioSettings.TRANSCODE:
@@ -409,19 +418,15 @@ INTENDED_MUX = (
                             message = str(e)
                         else:
                             message = e.stderr.decode("utf-8", "replace").strip()
-                        source = self.audio.node.kwargs["filename"]
-                        probe = ffmpeg.probe(source, cmd=self.ffmpeg_env.ffprobe)
-                        codec = None
-                        for stream in probe["streams"]:
-                            if stream.get("codec_type") == "audio":
-                                codec = stream.get("codec_name", "unknown")
-                                break
-                        if codec is None:
+                        streams = audio_streams()
+                        if not streams:
+                            source = self.audio.node.kwargs["filename"]
                             logger.warning(
                                 "The audio source has no audio stream, so the video"
                                 f" is saved without audio: {source}"
                             )
                             break
+                        codec = streams[0].get("codec_name", "unknown")
                         container = self.container.value
                         if transcode_on_failure:
                             logger.info(
@@ -993,6 +998,27 @@ def test_failed_copy_transcodes_on_auto_and_raises_otherwise(setting, source_aud
         assert "the unknown audio" in result[1][1]
         assert ("Set Audio to Auto or Transcode" in result[1][1]) == (setting == "COPY")
         assert len(options) == 1
+
+
+@pytest.mark.parametrize("channels", [None, 1, 2, 6])
+@pytest.mark.parametrize("setting", ["AUTO", "TRANSCODE"])
+def test_webm_opus_bitrate_follows_the_channel_count(channels, setting):
+    # (h): min(320k, 256k x channels); a stream without a channel count keeps 320k.
+    probe = valid_probe()
+    if channels is not None:
+        probe["streams"][0]["channels"] = channels
+    results = []
+    for kind in ("intended", "native"):
+        env = FakeFFmpeg(probe=probe)
+        g = load(kind, "save_video", env)
+        g["os"] = mock_os(env)
+        w = writer(
+            g, container="WEBM", audio=FakeStream(env, "audio"), audio_settings=setting
+        )
+        results.append((outcome(w.close), env.events.copy()))
+    assert results[0] == results[1]
+    mux = next(e for e in results[1][1] if e[0] == "output")
+    assert dict(mux[2])["b:a"] == ("256k" if channels == 1 else "320k")
 
 
 @pytest.mark.parametrize("encoder", [None, "H264", "H265", "VP9", "FFV1"])
@@ -1824,21 +1850,14 @@ def test_real_cpu_audio_transcode_policies(
             )
             for x in probe["streams"]
         ]
-        if channels == 1 and container == "WEBM":
-            # The fixed 320 kb/s Opus setting rejects mono input (the bitrate is
-            # the owner's call). The run fails and keeps the video without audio.
-            assert result[0] == "error" and result[1][0] == "RuntimeError"
-            assert "transcode the pcm_s16le audio to libopus" in result[1][1]
-            assert [item[0] for item in streams] == ["video"]
-            audio = None
-        else:
-            assert result == ("ok", None)
-            assert [item[0] for item in streams] == ["video", "audio"]
-            audio, _ = (
-                ffmpeg.input(str(path))
-                .output("pipe:", format="s16le", acodec="pcm_s16le", loglevel="error")
-                .run(cmd=FFMPEG, capture_stdout=True, capture_stderr=True)
-            )
+        # Mono into WebM works: 256 kb/s Opus, libopus's ceiling for one channel.
+        assert result == ("ok", None)
+        assert [item[0] for item in streams] == ["video", "audio"]
+        audio, _ = (
+            ffmpeg.input(str(path))
+            .output("pipe:", format="s16le", acodec="pcm_s16le", loglevel="error")
+            .run(cmd=FFMPEG, capture_stdout=True, capture_stderr=True)
+        )
         assert not path.with_name(path.stem + "_av" + path.suffix).exists()
         outputs.append(
             (

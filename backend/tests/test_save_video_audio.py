@@ -192,14 +192,12 @@ def test_webm_copy_is_an_error(tmp_path: Path):
         save(tmp_path, src, VideoFormat.WEBM, AudioSettings.COPY)
 
 
-def test_mono_into_webm_is_an_error(tmp_path: Path):
-    # libopus refuses 320 kb/s for one channel; the bitrate is the owner's call, but
-    # the failure must not leave a silent video behind.
+@pytest.mark.parametrize("audio", [AudioSettings.AUTO, AudioSettings.TRANSCODE])
+def test_mono_into_webm_transcodes_to_opus(tmp_path: Path, audio: AudioSettings):
+    # libopus takes at most 256 kb/s per channel, so mono gets 256k instead of 320k.
     src = source(tmp_path, "src.mp4", "aac", channels=1)
-    message = r"transcode the aac audio to libopus for the \.webm file"
-    with pytest.raises(RuntimeError, match=message):
-        save(tmp_path, src, VideoFormat.WEBM, AudioSettings.AUTO)
-    assert streams(saved(tmp_path, VideoFormat.WEBM)) == ["video:vp9"]
+    save(tmp_path, src, VideoFormat.WEBM, audio)
+    assert streams(saved(tmp_path, VideoFormat.WEBM)) == ["video:vp9", "audio:opus"]
 
 
 @pytest.mark.parametrize("audio", list(AudioSettings))

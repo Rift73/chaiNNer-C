@@ -419,26 +419,33 @@ void writer_frame(const py::dict&g,const O&self,const O&image,const O&prepared) 
     else fail(PyExc_RuntimeError,"Failed to open video writer");
 }
 
+// Load Video's audio is ffmpeg.input(path).audio: the file the mux reads it from.
+O audio_source(const O&self) {return self.attr("audio").attr("node").attr("kwargs")[py::str("filename")];}
+py::list audio_streams(const py::dict&g,const O&self) {
+    // The audio streams of the audio's source file, as ffprobe reports them.
+    O probe=global(g,"ffmpeg").attr("probe")(audio_source(self),py::arg("cmd")=self.attr("ffmpeg_env").attr("ffprobe"));
+    py::list streams;
+    for(py::handle sh:probe[py::str("streams")]) {
+        O stream=py::reinterpret_borrow<O>(sh);
+        if(eq(stream.attr("get")("codec_type"),py::str("audio")))streams.append(stream);
+    }
+    return streams;
+}
 py::dict audio_options(const py::dict&g,const O&self,const O&settings) {
     py::dict p=dict({{"vcodec",py::str("copy")},{"acodec",py::str("copy")}});
     if(eq(self.attr("container"),member(g,"VideoFormat","WEBM"))) {
         if(graphpy::contains(py::make_tuple(member(g,"AudioSettings","TRANSCODE"),member(g,"AudioSettings","AUTO")),settings)) {
+            // libopus takes at most 256 kb/s per channel, so min(320k, 256k x channels):
+            // mono gets 256k, where 320k failed; two or more channels keep 320k.
             p["acodec"]="libopus";p["b:a"]="320k";
+            for(py::handle sh:audio_streams(g,self))
+                if(eq(py::reinterpret_borrow<O>(sh).attr("get")("channels"),py::int_(1)))p["b:a"]="256k";
         } else graphpy::raise(PyExc_ValueError,fmt("WebM does not support {}",settings));
     } else if(eq(settings,member(g,"AudioSettings","TRANSCODE"))) {
         p["acodec"]="aac";p["b:a"]="320k";
     }
     p["loglevel"]="error"; // FFmpeg's stderr is then its error alone, which a failed mux reports.
     return p;
-}
-O first_audio_codec(const py::dict&g,const O&self,const O&source) {
-    // The codec of the first audio stream in `source`, or None when it has no audio.
-    O probe=global(g,"ffmpeg").attr("probe")(source,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffprobe"));
-    for(py::handle sh:probe[py::str("streams")]) {
-        O stream=py::reinterpret_borrow<O>(sh);
-        if(eq(stream.attr("get")("codec_type"),py::str("audio")))return stream.attr("get")("codec_name","unknown");
-    }
-    return py::none();
 }
 void mux_audio(const py::dict&g,const O&self) {
     // chaiNNer's own FFmpeg muxes the audio after the video (upstream chaiNNer v0.25.1).
@@ -475,13 +482,12 @@ void mux_audio(const py::dict&g,const O&self) {
                 GraphHandledException handled(e);
                 O stderr_bytes=e.value().attr("stderr");
                 O message=stderr_bytes.is_none()?O(builtin("str")(e.value())):O(stderr_bytes.attr("decode")("utf-8","replace").attr("strip")());
-                // Load Video's audio is ffmpeg.input(path).audio: probe that file.
-                O source=self.attr("audio").attr("node").attr("kwargs")[py::str("filename")];
-                O codec=first_audio_codec(g,self,source);
-                if(codec.is_none()) {
-                    logger.attr("warning")(fmt("The audio source has no audio stream, so the video is saved without audio: {}",source));
+                py::list streams=audio_streams(g,self);
+                if(streams.empty()) {
+                    logger.attr("warning")(fmt("The audio source has no audio stream, so the video is saved without audio: {}",audio_source(self)));
                     break;
                 }
+                O codec=streams[0].attr("get")("codec_name","unknown");
                 O ext=container.attr("value");
                 if(transcode_on_failure) {
                     logger.attr("info")(py::str("Auto transcodes the {} audio, which the .{} file cannot hold as a copy: {}").attr("format")(codec,ext,message));
