@@ -106,18 +106,33 @@ const NoteNodeInner = memo(({ data, selected }: NodeProps) => {
     const value = inputData[textInputId];
 
     const [tempText, setTempText] = useState(value ?? '');
+    // The last text this note wrote to its input. Only changes from elsewhere (opening a chain
+    // that reuses this node's id, undo/redo, paste) are copied into the text area, so the echo of
+    // a debounced write cannot overwrite keystrokes typed after it.
+    const sentText = useRef(value);
 
     const handleChange = useDebouncedCallback(
         (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+            sentText.current = event.target.value;
             setInputValue(textInputId, event.target.value);
         },
         500
     );
 
-    const [editorMode, setEditorMode] = useState(inputData[editorModeInputId] ?? EditorMode.Text);
     useEffect(() => {
-        setInputValue(editorModeInputId, editorMode);
-    }, [editorMode, setInputValue]);
+        if (value !== sentText.current) {
+            sentText.current = value;
+            // a pending write belongs to the replaced text
+            handleChange.cancel();
+            setTempText(value ?? '');
+        }
+    }, [value, handleChange]);
+
+    const editorMode = inputData[editorModeInputId] ?? EditorMode.Text;
+    const setEditorMode = useCallback(
+        (mode: EditorMode) => setInputValue(editorModeInputId, mode),
+        [editorModeInputId, setInputValue]
+    );
 
     const { t } = useTranslation();
     const textAreaContextMenu = useContextMenu(() => (
