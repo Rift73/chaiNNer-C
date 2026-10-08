@@ -297,6 +297,16 @@ export const runChainInCli = async (args: RunArguments) => {
         );
         stopBackendAndExit();
     });
+    // A backend that stops on its own (e.g. it could not start) would otherwise only be noticed
+    // when the CLI gives up connecting to it.
+    backendProcess.addExitListener(({ code, signal, stderrTail }) => {
+        const exitStatus = code !== null ? `exit code ${code}` : `signal ${String(signal)}`;
+        const lastOutput = stderrTail ? ` Its last output:\n${stderrTail}` : '';
+        log.error(
+            `The Python backend stopped (${exitStatus}). ChaiNNer will now exit.${lastOutput}`
+        );
+        stopBackendAndExit();
+    });
     const onInterrupt = () => {
         log.warn('Interrupted. Stopping the backend...');
         stopBackendAndExit();

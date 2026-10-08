@@ -3,6 +3,7 @@ import { getBackend } from '../../../src/common/Backend';
 import { CategoryId, NodeGroupId, NodeSchema, SchemaId } from '../../../src/common/common-types';
 import { delay } from '../../../src/common/util';
 import { RunArguments } from '../../../src/main/arguments';
+import { OwnedBackendProcess } from '../../../src/main/backend/process';
 import { setupBackend } from '../../../src/main/backend/setup';
 import { Exit } from '../../../src/main/cli/exit';
 import { runChainInCli } from '../../../src/main/cli/run';
@@ -61,14 +62,21 @@ const args: RunArguments = {
     refresh: false,
 };
 
+type BackendExit = Parameters<Parameters<OwnedBackendProcess['addExitListener']>[0]>[0];
+
 const createOwnedBackendProcess = () => {
     const errorListeners: ((error: Error) => void)[] = [];
+    const exitListeners: ((exit: BackendExit) => void)[] = [];
     return {
         owned: true as const,
         url: 'http://127.0.0.1:1',
         errorListeners,
         addErrorListener: (listener: (error: Error) => void) => {
             errorListeners.push(listener);
+        },
+        exitListeners,
+        addExitListener: (listener: (exit: BackendExit) => void) => {
+            exitListeners.push(listener);
         },
         clearErrorListeners: vi.fn(() => {
             errorListeners.length = 0;
@@ -217,6 +225,42 @@ describe('runChainInCli', () => {
 
         finishRun();
         await running;
+    });
+
+    test('stops the backend, then exits at once, when the backend process stops during startup', async () => {
+        const backendProcess = createOwnedBackendProcess();
+        mockBackendProcess(backendProcess);
+        let refuse = () => {};
+        const nodes = vi
+            .fn()
+            .mockReturnValueOnce(
+                new Promise((_, reject) => {
+                    refuse = () => reject(new Error('connect ECONNREFUSED'));
+                })
+            )
+            .mockRejectedValue(new Error('connect ECONNREFUSED'));
+        mockBackend({ nodes });
+
+        const running = runChainInCli(args);
+        await vi.waitFor(() => expect(nodes).toHaveBeenCalled());
+        backendProcess.exitListeners[0]({
+            code: 1,
+            signal: null,
+            stderrTail: "ModuleNotFoundError: No module named 'numpy'",
+        });
+        await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
+
+        // it did not wait for the connection deadline
+        expect(now).toBe(0);
+        expect(backendProcess.tryKill).toHaveBeenCalledTimes(1);
+        expect(backendProcess.tryKill.mock.invocationCallOrder[0]).toBeLessThan(
+            exit.mock.invocationCallOrder[0]
+        );
+
+        // app.exit ends the real CLI here; the mocked one lets the connection attempts run out
+        refuse();
+        await expect(running).rejects.toThrow('Unable to connect to backend server');
+        expect(backendProcess.tryKill).toHaveBeenCalledTimes(1);
     });
 
     test('leaves a remote backend running', async () => {

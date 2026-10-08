@@ -46,6 +46,9 @@ type ExitListener = (exit: BackendExit) => void;
 
 const STDERR_TAIL_LINES = 12;
 
+/** How long kill() waits for the backend to shut down by itself. */
+export const SHUTDOWN_TIMEOUT_MS = 10_000;
+
 export interface SpawnOptions {
     port: number;
     python: PythonInfo;
@@ -189,9 +192,8 @@ export class OwnedBackendProcess implements BaseBackendProcess {
     }
 
     /**
-     * Kills the current backend process.
-     *
-     * @throws If the backend process couldn't exit
+     * Kills the current backend process. The process ends even if the backend cannot be asked
+     * to shut down.
      */
     async kill() {
         log.info('Attempting to kill backend...');
@@ -211,9 +213,26 @@ export class OwnedBackendProcess implements BaseBackendProcess {
             return;
         }
 
-        await getBackend(this.url).shutdown();
-        if (backend.kill()) {
-            log.info('Successfully killed backend.');
+        // The backend stops its worker process on /shutdown, so ask first. A backend that cannot
+        // answer (e.g. still installing its dependencies) is ended without it.
+        let timeout: NodeJS.Timeout | undefined;
+        try {
+            await Promise.race([
+                getBackend(this.url).shutdown(),
+                new Promise((_, reject) => {
+                    timeout = setTimeout(
+                        () => reject(new Error('The shutdown request timed out.')),
+                        SHUTDOWN_TIMEOUT_MS
+                    );
+                }),
+            ]);
+        } catch (error) {
+            log.warn('The backend did not shut down by itself, so it will be killed.', error);
+        } finally {
+            clearTimeout(timeout);
+            if (backend.kill()) {
+                log.info('Successfully killed backend.');
+            }
         }
     }
 

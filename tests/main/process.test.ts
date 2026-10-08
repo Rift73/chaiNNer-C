@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { PythonInfo } from '../../src/common/common-types';
 import { delay } from '../../src/common/util';
+import { SHUTDOWN_TIMEOUT_MS } from '../../src/main/backend/process';
 
 const { shutdown, pythonInfo } = vi.hoisted(() => ({
     shutdown: vi.fn<[], Promise<void>>(),
@@ -34,6 +35,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+    vi.useRealTimers();
     Reflect.deleteProperty(process, 'resourcesPath');
     vi.resetModules();
     shutdown.mockReset();
@@ -75,6 +77,63 @@ test('a backend stopped by kill() is not reported, even if it exits during the s
 
     expect(shutdown).toHaveBeenCalledOnce();
     expect(exitListener).not.toHaveBeenCalled();
+});
+
+// A backend that runs until it is killed, and says which process it is.
+const runForeverScript = `
+    require('fs').writeFileSync(require('path').join(__dirname, 'pid'), String(process.pid));
+    setInterval(() => {}, 1000);
+`;
+
+const readPid = async (): Promise<number> => {
+    const pidFile = path.join(resourcesPath, 'src', 'pid');
+    return vi.waitFor(async () => Number(await readFile(pidFile, 'utf-8')), { timeout: 5000 });
+};
+
+const isRunning = (pid: number): boolean => {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+const expectStopped = async (pid: number) => {
+    try {
+        await vi.waitFor(() => expect(isRunning(pid)).toBe(false), { timeout: 5000 });
+    } finally {
+        // don't leave the process behind when the test fails
+        if (isRunning(pid)) {
+            process.kill(pid);
+        }
+    }
+};
+
+test('kill() ends the process when the backend cannot be asked to shut down', async () => {
+    // e.g. the backend is still installing its dependencies and not listening yet
+    shutdown.mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:1'));
+    const backend = await spawnBackend(runForeverScript);
+    const pid = await readPid();
+
+    await backend.kill();
+
+    expect(shutdown).toHaveBeenCalledOnce();
+    await expectStopped(pid);
+});
+
+test('kill() ends the process when the shutdown request gets no answer', async () => {
+    shutdown.mockImplementation(() => new Promise(() => {}));
+    const backend = await spawnBackend(runForeverScript);
+    const pid = await readPid();
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const killing = backend.kill();
+    await vi.advanceTimersByTimeAsync(SHUTDOWN_TIMEOUT_MS);
+    await killing;
+    vi.useRealTimers();
+
+    await expectStopped(pid);
 });
 
 test('a borrowed backend asks for its Python only until the backend answers', async () => {
