@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import math
 
 import numpy as np
 import torch
@@ -69,6 +70,11 @@ def _into_tensor(
         img.flags.writeable = writeable
 
 
+def _is_finite(img: np.ndarray) -> bool:
+    # NaN propagates through min and max: two passes and no temporary array
+    return math.isfinite(img.min()) and math.isfinite(img.max())
+
+
 @torch.inference_mode()
 def pytorch_auto_split(
     img: np.ndarray,
@@ -122,4 +128,18 @@ def pytorch_auto_split(
                 # Re-raise the exception if not an OOM error
                 raise
 
-    return auto_split(img, upscale, tiler)
+    result = auto_split(img, upscale, tiler)
+    # Saving turns NaN into black pixels. NaN already in the input passes through;
+    # NaN the model made from a finite image is an error.
+    if not _is_finite(result) and _is_finite(img):
+        message = (
+            f"The {model.architecture.name} model returned invalid values (NaN or"
+            " infinity), which would be saved as black pixels."
+        )
+        if use_fp16:
+            message += (
+                " Models can overflow in FP16: turn off 'Use FP16 Mode' in the"
+                " PyTorch settings to run this model in FP32."
+            )
+        raise RuntimeError(message)
+    return result
