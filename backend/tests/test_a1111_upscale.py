@@ -1,5 +1,6 @@
 """The Automatic1111 Upscale node against a stand-in for A1111's API (upstream chaiNNer
-#2999). Images travel as their (height, width), so no PNG coding is involved."""
+#2999 and #3226). Images travel as their (height, width), so no PNG coding is
+involved."""
 
 from __future__ import annotations
 
@@ -17,6 +18,8 @@ from packages.chaiNNer_external.external_stable_diffusion.automatic1111 import (
 )
 from packages.chaiNNer_external.web_ui import (
     STABLE_DIFFUSION_EXTRA_SINGLE_IMAGE_PATH,
+    STABLE_DIFFUSION_UPSCALERS_PATH,
+    ExternalServiceHTTPError,
     UpscalerName,
 )
 
@@ -24,19 +27,50 @@ ScaleBy = node.UpscalerMode.SCALE_BY
 ScaleTo = node.UpscalerMode.SCALE_TO
 
 
+# A1111's upscaler list before ScuNET GAN's first use, and after it, once the model
+# is saved as ScuNET.pth (extensions-builtin/ScuNET/scripts/scunet_model.py).
+UPSCALERS = ["None", "Lanczos", "Nearest", "ESRGAN_4x", "ScuNET GAN", "ScuNET PSNR"]
+UPSCALERS_AFTER_SCUNET_USE = [
+    "None",
+    "Lanczos",
+    "Nearest",
+    "ESRGAN_4x",
+    "ScuNET",
+    "ScuNET PSNR",
+]
+
+
 class FakeA1111:
     """Sizes the result as A1111's /extra-single-image does: modules/upscaler.py
     (`int((w * scale) // 8 * 8)` from 1.4 on, `int(w * scale)` before) with
-    scripts/postprocessing_upscale.py's scale-to ratio and crop canvas."""
+    scripts/postprocessing_upscale.py's scale-to ratio and crop canvas. Upscalers
+    are looked up by their exact name, as scripts/postprocessing_upscale.py does."""
 
-    def __init__(self, rounds: bool = True, returns: tuple[int, int] | None = None):
+    def __init__(
+        self,
+        rounds: bool = True,
+        returns: tuple[int, int] | None = None,
+        upscalers: list[str] = UPSCALERS,
+    ):
         self.rounds = rounds
         self.returns = returns
+        self.upscalers = upscalers
+        self.got: list[str] = []
         self.posted: list[dict[str, Any]] = []
+
+    def get(self, path: str) -> list[dict[str, Any]]:
+        assert path == STABLE_DIFFUSION_UPSCALERS_PATH
+        self.got.append(path)
+        return [{"name": name, "scale": 4} for name in self.upscalers]
 
     def post(self, path: str, json_data: dict[str, Any]) -> dict[str, Any]:
         assert path == STABLE_DIFFUSION_EXTRA_SINGLE_IMAGE_PATH
         self.posted.append(json_data)
+        for key in ("upscaler_1", "upscaler_2"):
+            if json_data[key] not in self.upscalers:
+                raise ExternalServiceHTTPError(
+                    f"could not find upscaler named {json_data[key]}"
+                )
         ih, iw = json_data["image"]
         if json_data["resize_mode"] == 1:
             width, height = (
@@ -83,12 +117,22 @@ def upscale(
     height: int = 512,
     crop: bool = False,
     upscaler: UpscalerName = UpscalerName.LANCZOS,
+    second: UpscalerName | None = None,
 ) -> tuple[int, int]:
     """The node's result for an in_w x in_h image, as (width, height)."""
     run = inspect.unwrap(node.upscale_node)  # without the node's output cache
     image = np.zeros((in_h, in_w, 3), np.float32)
     result = run(
-        image, mode, factor, width, height, crop, upscaler, False, upscaler, 0.0
+        image,
+        mode,
+        factor,
+        width,
+        height,
+        crop,
+        upscaler,
+        second is not None,
+        second or upscaler,
+        0.5,
     )
     return result.shape[1], result.shape[0]
 
@@ -126,3 +170,30 @@ def test_wrong_size_names_the_expected_sizes(a1111: InstallA1111):
         "Expected the returned image to be 2128x1600px or 2132x1604px but found"
         " 100x100px instead"
     )
+
+
+# Upstream chaiNNer #3226: ScuNET GAN under the name A1111 lists it by.
+
+
+def test_scunet_gan_is_sent_as_scunet_once_a1111_lists_it_so(a1111: InstallA1111):
+    api = a1111(upscalers=UPSCALERS_AFTER_SCUNET_USE)
+    gan = UpscalerName.SCUNET_GAN
+    assert upscale(64, 48, ScaleBy, upscaler=gan, second=gan) == (256, 192)
+    assert (api.posted[0]["upscaler_1"], api.posted[0]["upscaler_2"]) == (
+        "ScuNET",
+        "ScuNET",
+    )
+
+
+def test_scunet_gan_keeps_its_name_while_a1111_lists_it(a1111: InstallA1111):
+    api = a1111()
+    upscale(64, 48, ScaleBy, upscaler=UpscalerName.SCUNET_GAN)
+    assert api.posted[0]["upscaler_1"] == "ScuNET GAN"
+
+
+def test_other_upscalers_are_sent_without_reading_the_list(a1111: InstallA1111):
+    api = a1111(upscalers=UPSCALERS_AFTER_SCUNET_USE)
+    upscale(64, 48, ScaleBy, upscaler=UpscalerName.SCUNET_PSNR)
+    assert api.posted[0]["upscaler_1"] == "ScuNET PSNR"
+    assert api.posted[0]["upscaler_2"] == "None"
+    assert api.got == []

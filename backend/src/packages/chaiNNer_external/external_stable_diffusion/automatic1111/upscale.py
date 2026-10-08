@@ -20,7 +20,10 @@ from ...features import web_ui
 from ...util import decode_base64_image, encode_base64_image, nearest_valid_size
 from ...web_ui import (
     STABLE_DIFFUSION_EXTRA_SINGLE_IMAGE_PATH,
+    STABLE_DIFFUSION_UPSCALERS_PATH,
     UPSCALE_NAME_LABELS,
+    UPSCALER_NAME_ALIASES,
+    Api,
     UpscalerName,
     get_api,
 )
@@ -36,6 +39,15 @@ UPSCALER_MODE_LABELS = {
     UpscalerMode.SCALE_BY: "Scale by",
     UpscalerMode.SCALE_TO: "Scale to",
 }
+
+
+def get_upscaler_name(api: Api, upscaler: UpscalerName) -> str:
+    """The name `upscaler` has in the API's list of upscalers."""
+    aliases = UPSCALER_NAME_ALIASES.get(upscaler)
+    if aliases is None:
+        return upscaler.value
+    listed = {u["name"] for u in api.get(STABLE_DIFFUSION_UPSCALERS_PATH)}
+    return next((name for name in aliases if name in listed), upscaler.value)
 
 
 @auto1111_group.register(
@@ -146,8 +158,9 @@ def upscale_node(
     else:
         resize_mode = 1
 
+    api = get_api()
     if use_second_upscaler:
-        u2 = upscaler_2.value
+        u2 = get_upscaler_name(api, upscaler_2)
     else:
         u2 = "None"
 
@@ -161,13 +174,13 @@ def upscale_node(
         "upscaling_resize_w": width,
         "upscaling_resize_h": height,
         "upscaling_crop": crop,
-        "upscaler_1": upscaler_1.value,
+        "upscaler_1": get_upscaler_name(api, upscaler_1),
         "upscaler_2": u2,
         "extras_upscaler_2_visibility": upscaler_2_visibility,
         "upscale_first": False,
         "image": encode_base64_image(image),
     }
-    response = get_api().post(
+    response = api.post(
         path=STABLE_DIFFUSION_EXTRA_SINGLE_IMAGE_PATH, json_data=request_data
     )
     result = decode_base64_image(response["image"])
