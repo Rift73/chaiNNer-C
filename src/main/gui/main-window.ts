@@ -25,7 +25,7 @@ import { BackendProcess } from '../backend/process';
 import { setupBackend } from '../backend/setup';
 import { isArmMac, isMac } from '../env';
 import { addBrowserWindow, addFile, addFiles, removeFile, removeFiles } from '../fileWatcher';
-import { getRootDir, installDir } from '../platform';
+import { getLogsFolder, getRootDir, installDir } from '../platform';
 import { BrowserWindowWithSafeIpc, ipcMain } from '../safeIpc';
 import { SaveData, SaveFile, openSaveFile } from '../SaveFile';
 import { writeSettings } from '../setting-storage';
@@ -321,6 +321,28 @@ const registerEventHandlerPostSetup = (
                 message: `The Python backend encountered an unexpected error. ChaiNNer will now exit. Error: ${String(
                     error
                 )}`,
+            });
+            app.exit(1);
+        });
+
+        // Until the renderer reports the backend ready, the user sees only the splash screen,
+        // which would wait forever for a backend that has stopped.
+        let backendReady = false;
+        ipcMain.once('backend-ready', () => {
+            backendReady = true;
+        });
+        backend.addExitListener(({ code, signal, stderrTail }) => {
+            if (backendReady) {
+                return;
+            }
+            const exitStatus = code !== null ? `exit code ${code}` : `signal ${String(signal)}`;
+            const lastOutput = stderrTail ? `\n\nIts last output:\n${stderrTail}` : '';
+            dialog.showMessageBoxSync({
+                type: 'error',
+                title: 'Unable to start the backend',
+                message:
+                    `The Python backend stopped while chaiNNer was starting (${exitStatus}). ChaiNNer will now exit.` +
+                    `${lastOutput}\n\nThe full log is in ${getLogsFolder()}.`,
             });
             app.exit(1);
         });

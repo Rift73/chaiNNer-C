@@ -35,6 +35,17 @@ type Env = Readonly<Partial<Record<string, string>>>;
 
 type ErrorListener = (error: Error) => void;
 
+/** How a backend process ended that neither kill() nor restart() stopped. */
+interface BackendExit {
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    /** The last lines the process wrote to stderr, usually a Python traceback. */
+    stderrTail: string;
+}
+type ExitListener = (exit: BackendExit) => void;
+
+const STDERR_TAIL_LINES = 12;
+
 export interface SpawnOptions {
     port: number;
     python: PythonInfo;
@@ -58,6 +69,8 @@ export class OwnedBackendProcess implements BaseBackendProcess {
     private process?: ChildProcessWithoutNullStreams;
 
     private errorListeners: ErrorListener[] = [];
+
+    private exitListeners: ExitListener[] = [];
 
     private constructor(options: SpawnOptions, process: ChildProcessWithoutNullStreams) {
         this.options = options;
@@ -125,8 +138,26 @@ export class OwnedBackendProcess implements BaseBackendProcess {
         this.errorListeners = [];
     }
 
+    /**
+     * Adds a listener for the backend process ending on its own, i.e. not stopped by kill() or
+     * restart(): a crash, or a backend that could not start.
+     */
+    addExitListener(listener: ExitListener) {
+        this.exitListeners.push(listener);
+    }
+
     private setNewProcess(process: ChildProcessWithoutNullStreams): void {
         this.process = process;
+
+        let stderrTail: string[] = [];
+        process.stderr.on('data', (data) => {
+            const lines = String(data)
+                .split(/\r?\n/)
+                .filter((line) => line.trim() !== '');
+            stderrTail = [...stderrTail, ...lines].slice(-STDERR_TAIL_LINES);
+        });
+
+        let exitedOnItsOwn = false;
 
         process.on('error', (error) => {
             log.error(`Python subprocess encountered an unexpected error: ${String(error)}`);
@@ -143,6 +174,16 @@ export class OwnedBackendProcess implements BaseBackendProcess {
             if (this.process === process) {
                 // reset process
                 this.process = undefined;
+                // kill() detaches the process before it stops it
+                exitedOnItsOwn = true;
+            }
+        });
+        // 'close' follows 'exit' once stderr has been read to its end, so the tail is complete
+        process.on('close', (code, signal) => {
+            if (exitedOnItsOwn) {
+                for (const listener of this.exitListeners) {
+                    listener({ code, signal, stderrTail: stderrTail.join('\n') });
+                }
             }
         });
     }
@@ -155,21 +196,23 @@ export class OwnedBackendProcess implements BaseBackendProcess {
     async kill() {
         log.info('Attempting to kill backend...');
 
-        if (!this.process) {
+        const backend = this.process;
+        if (!backend) {
             // No process to kill
             log.warn('Process has already been killed');
             return;
         }
-        if (this.process.exitCode !== null) {
+        // Detach the process first, so its exit (even during the shutdown request) is not
+        // reported to the exit listeners.
+        this.process = undefined;
+        if (backend.exitCode !== null) {
             // process was killed by something on the outside and we missed it
             log.warn('Process has already been killed');
-            this.process = undefined;
             return;
         }
 
         await getBackend(this.url).shutdown();
-        if (this.process.kill()) {
-            this.process = undefined;
+        if (backend.kill()) {
             log.info('Successfully killed backend.');
         }
     }

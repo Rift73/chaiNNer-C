@@ -82,6 +82,7 @@ export const Main = memo(() => {
         ipcRenderer.send(isBackendReady ? 'enable-menu' : 'disable-menu');
         if (isBackendReady) {
             setOverallProgress(1);
+            ipcRenderer.send('backend-ready');
         }
     }, [isBackendReady]);
 

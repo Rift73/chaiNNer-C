@@ -113,6 +113,7 @@ export interface InvokeChannels {
 export interface SendChannels {
     'setup-progress': SendChannelInfo<[progress: Progress]>;
     'backend-started': SendChannelInfo;
+    'backend-ready': SendChannelInfo;
     'file-new': SendChannelInfo;
     'file-open': SendChannelInfo<[FileOpenResult<ParsedSaveData>]>;
     'file-save-as': SendChannelInfo;
