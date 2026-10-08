@@ -626,7 +626,10 @@ def _register_dynamic_barrier(sm: int) -> None:
             {"block": COPY_BLOCK},
             sm,
         )
-        return _launch(kernel, (trtp.cdiv(count, COPY_BLOCK), 1, 1), [count])
+        # An absent retrieval class is empty: launch one block, which copies nothing
+        # (a launch of zero blocks is an error).
+        blocks = trtp.max(trtp.cdiv(count, COPY_BLOCK), 1)
+        return _launch(kernel, (blocks, 1, 1), [count])
 
 
 @dataclass

@@ -400,3 +400,10 @@ Primary technical references (consulted 2026-10-08; recheck against the toolchai
 - [Triton explicit-target AOT compile tool](https://github.com/triton-lang/triton/blob/main/python/triton/tools/compile.py).
 
 These sources explain API behavior and portability; they do not substitute for local binary/runtime validation.
+
+## chaiNNer-C additions (not traiNNer's)
+
+- `scripts/dual_tensorrt/dynamic.py`: the dynamic-shape exporter (one ONNX for every input size; plugin
+  nodes keyed by width only, `DualCore_c128_TRT`). It overrides only graph.py's size-dependent parts; see its
+  docstring and chaiNNer-C's `nodes/impl/tensorrt/dual_aot.py` (`register_dynamic`) for the plugins.
+- `graph.py`: only the RGB readout moves ahead of its pixel shuffle (`c0de1572`).
