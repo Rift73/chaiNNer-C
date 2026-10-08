@@ -274,6 +274,13 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   chaiNNer-C neither emits nor parses MemoryData, so that fusion only ever raised, and outside a first layer the
   searches end where upstream's do (`test_corrected_oracle_departs_from_upstream_only_as_recorded` checks the whole
   pass corpus).
+- NCNN param schema: Reduction's `reduce_all` (param 1) defaults to 1, ncnn's own default, where upstream's schema
+  says 0 (owner-approved 2026-10-09). Parameters equal to their default are not written, so upstream omitted the `1=0`
+  of a per-axis reduction, both when Convert To NCNN made one and when a loaded `.param` (ncnn's tools write `1=0`)
+  was handed to ncnn, and ncnn reduced over everything (a converted channel mean was off by 1.26). Only such
+  silently wrong models change; `1=1` and an omitted `1=` stay global. The differential tests' oracle reads the
+  frozen `param_schema.json` with this default corrected (`SCHEMA_CORRECTIONS` in `native/tests/test_ncnn_graph.py`;
+  `backend/tests/test_ncnn_reduction.py` compares a converted model with ONNX Runtime).
 - Load Image and Load Images decode 8-bit RGBA TIFFs with unassociated alpha (ExtraSamples 2, orientation 1-4) with
   Pillow, keeping straight colour, where upstream's OpenCV path premultiplies it and loses the colour under alpha 0
   (upstream chaiNNer #409; owner-approved 2026-10-09). 8-bit grey+alpha TIFFs under the same conditions load as BGRA

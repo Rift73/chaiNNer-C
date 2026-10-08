@@ -2,6 +2,8 @@
 
 The optimizer oracle is the frozen optimizer.py with the CORRECTIONS of
 reference_ncnn/generate_optimizer_cpp.py, the source the native passes translate.
+The oracle's param schema is the frozen param_schema.json with SCHEMA_CORRECTIONS,
+the defaults the shipped schema corrects.
 These tests do not import or execute the NCNN inference engine.
 """
 
@@ -27,6 +29,13 @@ package = types.ModuleType(PACKAGE)
 package.__path__ = [str(Path(__file__).with_name("reference_ncnn"))]
 sys.modules[PACKAGE] = package
 reference = importlib.import_module(PACKAGE + ".model")
+# (op, param id, frozen default, corrected default), as native/ARCHITECTURE.md section 7
+# records. ncnn's Reduction defaults reduce_all to 1; upstream's schema said 0, so a
+# per-axis reduction omitted its 1=0 when written and ncnn reduced over everything.
+SCHEMA_CORRECTIONS = (("Reduction", "1", 0, 1),)
+for op, pid, frozen_default, corrected_default in SCHEMA_CORRECTIONS:
+    assert reference.param_schema[op][pid]["defaultValue"] == frozen_default
+    reference.param_schema[op][pid]["defaultValue"] = corrected_default
 FrozenOptimizer = importlib.import_module(PACKAGE + ".optimizer").NcnnOptimizer
 generator = importlib.import_module(PACKAGE + ".generate_optimizer_cpp")
 corrected = types.ModuleType(PACKAGE + ".corrected_optimizer")

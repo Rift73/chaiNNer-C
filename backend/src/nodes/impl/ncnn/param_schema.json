@@ -2568,7 +2568,7 @@
     "1": {
       "paramId": "1",
       "paramPhase": "reduce_all",
-      "defaultValue": 0
+      "defaultValue": 1
     },
     "2": {
       "paramId": "2",
