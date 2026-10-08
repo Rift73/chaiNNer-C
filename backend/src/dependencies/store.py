@@ -24,6 +24,9 @@ DEP_MAX_PROGRESS = 0.8
 
 # How many of pip's last output lines a failed run's message can carry.
 PIP_REASON_LINES = 10
+# How an OSError for a full disk reads in pip's output (POSIX; Windows' disk full
+# and handle disk full).
+DISK_FULL_ERRORS = ("[Errno 28]", "[WinError 112]", "[WinError 39]")
 
 ENV = {
     **os.environ,
@@ -110,7 +113,8 @@ def pip_error_message(action: str, last_lines: Iterable[str]) -> str:
     """The message of a failed pip run, with pip's reason: its last lines from its
     first error on, plus the warning just before it (the last retry of an
     unreachable index). A report too long for the lines kept (a crash's traceback)
-    is shown by its end."""
+    is shown by its end. A full disk is named first, as pip's report reads like any
+    other OSError."""
     lines = list(last_lines)
     first_error = next(
         (i for i, line in enumerate(lines) if line.startswith(("ERROR:", "error:"))),
@@ -118,9 +122,14 @@ def pip_error_message(action: str, last_lines: Iterable[str]) -> str:
     )
     if first_error > 0 and lines[first_error - 1].startswith("WARNING:"):
         first_error -= 1
-    return "\n".join(
-        [f"An error occurred while {action} dependencies.", *lines[first_error:]]
-    )
+    if any(error in line for line in lines for error in DISK_FULL_ERRORS):
+        summary = (
+            f"Disk space ran out while {action} dependencies."
+            " Please free up disk space and try again."
+        )
+    else:
+        summary = f"An error occurred while {action} dependencies."
+    return "\n".join([summary, *lines[first_error:]])
 
 
 def install_dependencies_sync(

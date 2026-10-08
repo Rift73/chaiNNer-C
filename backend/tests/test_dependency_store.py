@@ -181,3 +181,30 @@ def test_a_failed_uninstall_reports_pips_reason(
         "An error occurred while uninstalling dependencies.",
         *(line.strip() for line in UNINSTALL_LOCKED[2:]),
     ]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "[Errno 28] No space left on device",
+        "[WinError 112] There is not enough space on the disk: 'C:/Temp/pip-unpack-1'",
+    ],
+)
+def test_a_full_disk_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, error: str
+):
+    # pip's report names the full drive's path; the first line says what to do.
+    output = [
+        "Installing collected packages: ncnn",
+        f"ERROR: Could not install packages due to an OSError: {error}",
+    ]
+    fail_like_pip(monkeypatch, tmp_path, output)
+    with pytest.raises(ValueError) as error_info:
+        asyncio.run(store.install_dependencies([NCNN], ignore_progress))
+    assert str(error_info.value).splitlines() == [
+        (
+            "Disk space ran out while installing dependencies."
+            " Please free up disk space and try again."
+        ),
+        output[-1],
+    ]
