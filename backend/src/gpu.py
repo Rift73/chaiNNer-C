@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Callable, Sequence
@@ -22,6 +23,10 @@ _FP16_ARCH_ABILITY_MAP = {
     nv.NVML_DEVICE_ARCH_UNKNOWN: False,
 }
 
+# CUdevice_attribute values (cuda.h) CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID, _PCI_BUS_ID and
+# _PCI_DEVICE_ID: the device's PCI domain, bus and device (slot), as NVML's PCI info.
+_CU_PCI_ADDRESS_ATTRIBUTES = (50, 33, 34)
+
 
 @dataclass
 class MemoryUsage:
@@ -33,13 +38,12 @@ class MemoryUsage:
 @dataclass(frozen=True)
 class NvDevice:
     index: int
+    """CUDA's index of the device, which PyTorch, ONNX Runtime and TensorRT take."""
     handle: _Pointer[nv.struct_c_nvmlDevice_t]  # nv.c_nvmlDevice_t's type
     name: str
 
     @staticmethod
-    def from_index(index: int) -> NvDevice:
-        handle = nv.nvmlDeviceGetHandleByIndex(index)
-
+    def from_handle(index: int, handle: _Pointer[nv.struct_c_nvmlDevice_t]) -> NvDevice:
         return NvDevice(
             index=index,
             handle=handle,
@@ -134,13 +138,60 @@ def _try_nvml_shutdown():
         logger.warn("Failed to shut down Nvidia GPU.", exc_info=True)
 
 
-def _get_nvidia_info() -> NvInfo:
+def cuda_pci_addresses() -> list[tuple[int, int, int]]:
+    """The PCI address (domain, bus, device) of each CUDA device, by CUDA index.
+    Empty when the CUDA driver is missing or fails."""
+    try:
+        cuda = ctypes.CDLL("nvcuda.dll")
+    except OSError:
+        return []
+    count = ctypes.c_int()
+    if cuda.cuInit(0) != 0 or cuda.cuDeviceGetCount(ctypes.pointer(count)) != 0:
+        return []
+    addresses: list[tuple[int, int, int]] = []
+    for index in range(count.value):
+        device = ctypes.c_int()
+        if cuda.cuDeviceGet(ctypes.pointer(device), index) != 0:
+            return []
+        address: list[int] = []
+        for attribute in _CU_PCI_ADDRESS_ATTRIBUTES:
+            value = ctypes.c_int()
+            if cuda.cuDeviceGetAttribute(ctypes.pointer(value), attribute, device) != 0:
+                return []
+            address.append(value.value)
+        domain, bus, slot = address
+        addresses.append((domain, bus, slot))
+    return addresses
+
+
+def _in_cuda_order(
+    handles: list[_Pointer[nv.struct_c_nvmlDevice_t]],
+) -> list[_Pointer[nv.struct_c_nvmlDevice_t]]:
+    """NVML's devices in CUDA's order. CUDA numbers devices by CUDA_DEVICE_ORDER
+    (fastest first by default) and CUDA_VISIBLE_DEVICES, not as NVML lists them.
+    Devices CUDA does not list follow in NVML's order."""
+    cuda = cuda_pci_addresses()
+
+    def position(nvml_index: int) -> int:
+        pci = nv.nvmlDeviceGetPciInfo(handles[nvml_index])
+        address = (int(pci.domain), int(pci.bus), int(pci.device))
+        return cuda.index(address) if address in cuda else len(cuda) + nvml_index
+
+    return [handles[i] for i in sorted(range(len(handles)), key=position)]
+
+
+def get_nvidia_info() -> NvInfo:
     if not _try_nvml_init():
         return NvInfo.unavailable()
 
     try:
         device_count = nv.nvmlDeviceGetCount()
-        devices = [NvDevice.from_index(i) for i in range(device_count)]
+        handles = [nv.nvmlDeviceGetHandleByIndex(i) for i in range(device_count)]
+        if len(handles) > 1:
+            # The GPU settings list these devices, and the index chosen there goes
+            # to CUDA, so the list takes CUDA's numbering.
+            handles = _in_cuda_order(handles)
+        devices = [NvDevice.from_handle(i, h) for i, h in enumerate(handles)]
         return NvInfo(devices, _try_nvml_shutdown)
     except Exception as e:
         logger.info(f"Unknown error occurred when trying to initialize Nvidia GPU: {e}")
@@ -148,7 +199,7 @@ def _get_nvidia_info() -> NvInfo:
         return NvInfo.unavailable()
 
 
-nvidia = _get_nvidia_info()
+nvidia = get_nvidia_info()
 
 
 __all__ = ["MemoryUsage", "NvDevice", "NvInfo", "nvidia"]
