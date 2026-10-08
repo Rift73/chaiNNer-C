@@ -19,6 +19,7 @@ from cuda.bindings import runtime as cudart
 
 from api import NodeId
 
+from ..native_tensors import cast_into
 from .cache import SharedCache
 from .engine_info import deserialize_engine
 from .memory import check_cuda
@@ -180,7 +181,7 @@ class TensorRTSession:
         if self._in.is_bf16:
             dst[...] = _float32_to_bf16_bits(chw)
         else:
-            np.copyto(dst, chw, casting="same_kind")
+            cast_into(chw, dst)
 
         check_cuda(
             cudart.cudaMemcpyAsync(
@@ -208,18 +209,21 @@ class TensorRTSession:
         self._queue.append((slot, out_shape))
         self._submitted += 1
 
-    def collect(self) -> np.ndarray:
-        """Wait for the oldest tile; returns an HWC float32 BGR view or array."""
+    def collect(self, height: int, width: int) -> np.ndarray:
+        """Wait for the oldest tile; returns its top-left `height` x `width`
+        output pixels as a new HWC float32 BGR array."""
         slot, out_shape = self._queue.popleft()
         check_cuda(cudart.cudaEventSynchronize(self._events[slot]))
         chw = self._h_out[slot].array(self._out.storage, out_shape)[0]
-        if self._out.is_bf16:
-            chw = _bf16_bits_to_float32(chw)
-        elif chw.dtype != np.float32:
-            chw = chw.astype(np.float32)
+        chw = chw[:, :height, :width]
         if chw.shape[0] == 3:
             chw = chw[::-1]  # RGB -> BGR
-        return chw.transpose(1, 2, 0)
+        if self._out.is_bf16:
+            return np.ascontiguousarray(_bf16_bits_to_float32(chw).transpose(1, 2, 0))
+        # One pass from the pinned planar buffer into interleaved float32.
+        out = np.empty((height, width, chw.shape[0]), np.float32)
+        cast_into(chw.transpose(1, 2, 0), out)
+        return out
 
     def close(self) -> None:
         check_cuda(cudart.cudaStreamSynchronize(self._stream))

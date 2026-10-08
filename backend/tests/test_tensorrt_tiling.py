@@ -45,8 +45,8 @@ class FakeEngine:
         self.shapes.append((h, w))
         self.queue.append(fake_model(tile))
 
-    def collect(self) -> np.ndarray:
-        return self.queue.popleft()
+    def collect(self, height: int, width: int) -> np.ndarray:
+        return self.queue.popleft()[:height, :width]
 
 
 def _image() -> np.ndarray:
@@ -88,6 +88,17 @@ def test_small_image_is_padded_to_profile_minimum_and_cropped():
     assert out.shape == (40, 28, 3)
     assert engine.shapes == [(64, 64)]
     np.testing.assert_allclose(out, 0.5, atol=1e-6)
+
+
+def test_single_tile_is_the_cropped_model_output():
+    img = _image()[:300, :200]
+    engine = FakeEngine(DYNAMIC_64_512)
+
+    out = tiled_upscale(img, SCALE, DYNAMIC_64_512, engine)
+
+    assert engine.shapes == [(320, 256)]
+    padded = np.pad(img, ((0, 20), (0, 56), (0, 0)), mode="reflect")
+    np.testing.assert_array_equal(out, fake_model(padded)[:1200, :800])
 
 
 def test_axis_weights_partition_of_unity():

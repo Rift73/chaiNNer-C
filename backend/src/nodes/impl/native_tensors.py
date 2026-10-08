@@ -212,10 +212,16 @@ def cast_numpy(value: np.ndarray, dtype: np.dtype) -> np.ndarray:
             stacklevel=2,
         )
     out = np.empty_like(source, dtype=dtype, order="K", subok=False)
+    cast_into(source, out)
+    return out
+
+
+def cast_into(source: np.ndarray, out: np.ndarray) -> None:
+    """Numeric cast of `source` into `out` (same shape, any strides, negative
+    ones included), split across the native thread pool."""
     events = ct.c_int()
     check(_api().cn_tensor_cast_typed(_view(source), _view(out), ct.byref(events)))
     _report_fp(events.value, "cast")
-    return out
 
 
 @lru_cache(maxsize=1)
