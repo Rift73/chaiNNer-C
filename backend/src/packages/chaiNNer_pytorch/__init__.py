@@ -1,6 +1,5 @@
 import os
 
-import torch
 from sanic.log import logger
 
 from api import GB, KB, MB, Dependency, add_package
@@ -11,6 +10,21 @@ general = "PyTorch uses .pth models to upscale images."
 
 
 def _enable_tf32() -> None:
+    # Importing torch here, before load_nodes imports any node module, also makes the
+    # system msvcp140.dll the worker's C++ runtime (native/ARCHITECTURE.md). A torch
+    # that is not installed, or fails to load (a DLL error), costs only the PyTorch
+    # nodes, which then fail to import one by one; the package stays registered, so
+    # the dependency manager can install or repair it.
+    try:
+        import torch
+    except Exception as error:
+        if not (isinstance(error, ModuleNotFoundError) and error.name == "torch"):
+            logger.error(
+                "Failed to import PyTorch; the PyTorch nodes are unavailable.",
+                exc_info=True,
+            )
+        return
+
     # Best effort: enable TF32 paths for FP32 matmul/conv where supported.
     try:
         if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):

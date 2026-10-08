@@ -83,6 +83,13 @@ deps: list[DependencyInfo] = [
         package_name="aiohttp",
         version="3.14.4",
     ),
+    # The host and the worker import NumPy at startup (process.py's item window,
+    # nodes.impl.native), before the worker has listed the packages whose
+    # dependencies the host installs. Same pin as packages/chaiNNer_standard.
+    DependencyInfo(
+        package_name="numpy",
+        version="2.5.3",
+    ),
 ]
 
 install_dependencies_sync(deps)
