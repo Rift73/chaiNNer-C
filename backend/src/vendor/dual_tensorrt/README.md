@@ -5,13 +5,13 @@ Updated: 2026-10-08. Canonical implementation: `traiNNer/archs/dual_arch.py` in 
 Windows source path:
 
 ```text
-\\wsl.localhost\Ubuntu\home\rift\workspace\traiNNer-redux\traiNNer\archs\dual_arch.py
+<traiNNer-redux>\traiNNer\archs\dual_arch.py
 ```
 
 Linux source path:
 
 ```text
-/home/rift/workspace/traiNNer-redux/traiNNer/archs/dual_arch.py
+<traiNNer-redux>/traiNNer/archs/dual_arch.py
 ```
 
 Reviewed source SHA-256:
@@ -221,7 +221,7 @@ Run commands from this repository root. These are integration instructions, **no
 WSL/Linux example:
 
 ```bash
-cd /home/rift/workspace/traiNNer-redux
+cd <traiNNer-redux>
 CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 \
   ./venv/bin/python -m scripts.dual_tensorrt.export \
   --factory dual_light --scale 4 --height 512 --width 512 \
@@ -373,18 +373,18 @@ No new GPU/device validation was run for this delivery. No user dataset, checkpo
 
 ## 10. Historical record and primary references
 
-The final historical XS wrapper is `C:/Users/PC/research/dual3x_consolidation_20261007/benchmark_xs.py`; its helper was `C:/Users/PC/research/fdat_dual3_trt_20261004/bench.py`. The graph builder was `scripts/dual2_plus/export.py`, with C128 plugins under `tensorrt_plugins/dual2_plus` and the barrier under `tensorrt_plugins/graft_xg`.
+The final historical XS wrapper is `<research>/dual3x_consolidation_20261007/benchmark_xs.py`; its helper was `<research>/fdat_dual3_trt_20261004/bench.py`. The graph builder was `scripts/dual2_plus/export.py`, with C128 plugins under `tensorrt_plugins/dual2_plus` and the barrier under `tensorrt_plugins/graft_xg`.
 
 Exact historical artifacts:
 
 ```text
-/home/rift/workspace/dual3x-consolidation_20261007/xs_d16/optimized/model.onnx
-/home/rift/workspace/dual3x-consolidation_20261007/xs_d16/optimized/model.engine
-/home/rift/workspace/dual3x-consolidation_20261007/xs_d16/optimized/build_command.json
-/home/rift/workspace/dual3x-consolidation_20261007/xs_d16/optimized/export.json
-/home/rift/workspace/dual3x-consolidation_20261007/xs_d16/optimized/runtime.json
-C:/Users/PC/research/dual3x_consolidation_20261007/HANDOFF.txt
-C:/Users/PC/research/dual3x_consolidation_20261007/FINAL_AUDIT.json
+<workspace>/dual3x-consolidation_20261007/xs_d16/optimized/model.onnx
+<workspace>/dual3x-consolidation_20261007/xs_d16/optimized/model.engine
+<workspace>/dual3x-consolidation_20261007/xs_d16/optimized/build_command.json
+<workspace>/dual3x-consolidation_20261007/xs_d16/optimized/export.json
+<workspace>/dual3x-consolidation_20261007/xs_d16/optimized/runtime.json
+<research>/dual3x_consolidation_20261007/HANDOFF.txt
+<research>/dual3x_consolidation_20261007/FINAL_AUDIT.json
 ```
 
 Historic engine SHA-256: `65966653cd948e1db593a855070908cab106a0ddeb3fb73c29566e8152aaf4a8`.
@@ -407,3 +407,4 @@ These sources explain API behavior and portability; they do not substitute for l
   nodes keyed by width only, `DualCore_c128_TRT`). It overrides only graph.py's size-dependent parts; see its
   docstring and chaiNNer-C's `nodes/impl/tensorrt/dual_aot.py` (`register_dynamic`) for the plugins.
 - `graph.py`: only the RGB readout moves ahead of its pixel shuffle (`c0de1572`).
+- This guide: the author's local paths are placeholders (`<traiNNer-redux>`, `<workspace>`, `<research>`).
