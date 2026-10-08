@@ -247,6 +247,8 @@ class Dependency:
     size_estimate: int | float
     auto_update: bool = True
     extra_index_url: str | None = None
+    # A wheel to install instead of the PyPI release (a fork's build of version).
+    url: str | None = None
 
     import_name: str | None = None
 
@@ -258,6 +260,7 @@ class Dependency:
             "sizeEstimate": int(self.size_estimate),
             "autoUpdate": self.auto_update,
             "findLink": self.extra_index_url,
+            "url": self.url,
         }
 
     @staticmethod
@@ -269,6 +272,7 @@ class Dependency:
             size_estimate=data["sizeEstimate"],
             auto_update=data["autoUpdate"],
             extra_index_url=data["findLink"],
+            url=data["url"],
         )
 
 

@@ -61,6 +61,13 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   TensorRT node ahead (`d59b4b1d`, `execution_scheduler.LOCKED_DEVICE_NODES`, session under its lock; owner's call
   after the probe missed its +20 % keep rule): 23.5-24.5 -> 26.6-26.8 fps, frames identical. With identical
   output the chain is throughput-bound at about 27 fps on this PC.
+- Spandrel fork (owner, 2026-10-08): the PyTorch package's Spandrel is `0.4.2+c1`, the wheel on
+  github.com/Rift73/spandrel (release `v0.4.2-c1`, SHA-256 `fe884dc1…`): upstream 0.4.2 plus DRFT, DUAL and
+  SST/SST-Real. `Dependency.url` installs a wheel instead of the PyPI release; a version with a local label is
+  satisfied only by that exact build, so existing installs switch at the next start. The lock pins the wheel as
+  pip freeze writes it (`read_lock` takes the wheel's version). The local overlay is retired by the owner (only the
+  three architectures are used); the repo runtime and D:\chaiNNer carry the fork, D:\chaiNNer's old spandrel is
+  in `D:\chaiNNer-spandrel-backup-20261008`.
 
 ## Last CPU comparison
 

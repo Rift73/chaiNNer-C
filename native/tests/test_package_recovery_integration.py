@@ -1000,6 +1000,8 @@ def test_the_lock_reads_its_header_and_pins_and_hashes_as_git_stores_it(tmp_path
         "# pip: 26.2.1 (installed; pip freeze does not list it)\n"
         "aiofiles==25.1.0\n"
         "google-re2==1.1.20251105  # oracle/reference only\n"
+        "spandrel @ https://example.invalid/v1/spandrel-0.4.2%2Bc1-py3-none-any.whl"
+        "#sha256=" + "cd" * 32 + "\n"
         "torch==2.14.1+cu132\n"
     )
     lock.write_bytes(text.encode())
@@ -1011,6 +1013,7 @@ def test_the_lock_reads_its_header_and_pins_and_hashes_as_git_stores_it(tmp_path
         "pins": {
             "aiofiles": "25.1.0",
             "google-re2": "1.1.20251105",
+            "spandrel": "0.4.2+c1",
             "torch": "2.14.1+cu132",
         },
     }

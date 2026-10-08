@@ -37,6 +37,7 @@ class DependencyInfo:
     display_name: str | None = None
     from_file: str | None = None
     extra_index_url: str | None = None
+    url: str | None = None
 
 
 def pin(dependency: DependencyInfo) -> str:
@@ -46,6 +47,9 @@ def pin(dependency: DependencyInfo) -> str:
         whl_file = f"{dir_path}/whls/{package_name}/{dependency.from_file}"
         if os.path.isfile(whl_file):
             return whl_file
+
+    if dependency.url is not None:
+        return f"{package_name} @ {dependency.url}"
 
     return f"{package_name}=={dependency.version}"
 
@@ -74,7 +78,11 @@ def filter_necessary_to_install(dependencies: Iterable[DependencyInfo]):
         if version:
             installed_version = coerce_semver(version)
             dep_version = coerce_semver(dependency.version)
-            if installed_version < dep_version:
+            # A local label (spandrel 0.4.2+c1, the fork's build) is a different
+            # build of the same numbers: only that exact version satisfies it.
+            if installed_version < dep_version or (
+                "+" in dependency.version and version != dependency.version
+            ):
                 dependencies_to_install.append(dependency)
         elif not version:
             dependencies_to_install.append(dependency)
