@@ -661,7 +661,8 @@ def test_memorydata_split_fusion(name):
 
 def test_corrected_oracle_departs_from_upstream_only_as_recorded():
     """The pass corpus cases where the corrected oracle's result differs from the
-    frozen one's: the MemoryData fusion changes none."""
+    frozen one's: the MemoryData fusion changes none, and the first-layer searches
+    only those whose layer comes first."""
     differ = []
     runs = [(n, m, mutated(n, m)) for n in CASES for m in MUTATIONS]
     runs += [(p.values[0], p.id, p.values[1]) for p in branch_variants()]
@@ -673,7 +674,43 @@ def test_corrected_oracle_departs_from_upstream_only_as_recorded():
             results.append((result, snapshot(model)))
         if results[0] != results[1]:
             differ.append((name, label))
-    assert differ == []
+    assert differ == [
+        ("fuse_binaryop_eltwise", "reverse"),
+        ("eliminate_dropout", "reverse"),
+    ]
+
+
+FIRST_LAYER = {
+    "eliminate_dropout": spec("Dropout", "first", ("input",), ("a",), {0: 1.0}),
+    "eliminate_pooling1x1": spec(
+        "Pooling",
+        "first",
+        ("input",),
+        ("a",),
+        {0: 0, 1: 1, 11: 1, 2: 1, 12: 1, 3: 0, 13: 0, 14: 0, 15: 0, 4: 0},
+    ),
+    "eliminate_split": spec("Split", "first", ("input",), ("a", "unused")),
+    "fuse_binaryop_eltwise": spec("BinaryOp", "first", ("in0", "in1"), ("a",), {0: 0}),
+}
+
+
+@pytest.mark.parametrize("name", FIRST_LAYER)
+def test_first_layer_search_finds_no_producer(name):
+    """Upstream chaiNNer #2397: a first layer's search ended on -2 (1 for the Eltwise
+    fusion) instead of "not found" and rewired another layer. Nothing may change."""
+    specification = [
+        FIRST_LAYER[name],
+        spec("BinaryOp", "mul", ("a",), ("b",), {0: 2, 1: 1, 2: 3.0}),
+        spec("ReLU", "relu", ("b",), ("out",)),
+    ]
+    upstream = build(reference, specification)
+    outcome(getattr(FrozenOptimizer(upstream), "_NcnnOptimizer__" + name))
+    assert snapshot(upstream) != snapshot(build(reference, specification))
+    model = build(port, specification)
+    before = snapshot(model)
+    result = outcome(getattr(NcnnOptimizer(model), "_NcnnOptimizer__" + name))
+    assert result == ("ok", None)
+    assert snapshot(model) == before
 
 
 def test_generator_reproduces_the_committed_passes(tmp_path, monkeypatch):

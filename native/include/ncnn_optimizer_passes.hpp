@@ -546,7 +546,7 @@ void pass_fuse_binaryop_eltwise(const O &model, const O &types) {
             }
             input0 = item(attr(layer, "inputs"), py::int_(0));
             input1 = item(attr(layer, "inputs"), py::int_(1));
-            j0 = py::int_(0);
+            j0 = negative(py::int_(1));
             bool cn_40 = false;
             for (py::handle cn_41 : py::reinterpret_borrow<py::iterable>(builtin("range")(i))) {
                 j0 = py::reinterpret_borrow<O>(cn_41);
@@ -567,7 +567,7 @@ void pass_fuse_binaryop_eltwise(const O &model, const O &types) {
             if (!cn_40) {
                 j0 = inplace(j0, py::int_(1), Op::add);
             }
-            j1 = py::int_(0);
+            j1 = negative(py::int_(1));
             bool cn_42 = false;
             for (py::handle cn_43 : py::reinterpret_borrow<py::iterable>(builtin("range")(i))) {
                 j1 = py::reinterpret_borrow<O>(cn_43);
@@ -636,7 +636,7 @@ void pass_eliminate_dropout(const O &model, const O &types) {
                 continue;
             }
             dropout_input = item(attr(layer, "inputs"), py::int_(0));
-            j = binary(i, py::int_(1), Op::sub);
+            j = i;
             bool cn_46 = false;
             for (py::handle cn_47 : py::reinterpret_borrow<py::iterable>(builtin("range")(binary(i, py::int_(1), Op::sub), negative(py::int_(1)), negative(py::int_(1))))) {
                 j = py::reinterpret_borrow<O>(cn_47);
@@ -685,7 +685,7 @@ void pass_eliminate_pooling1x1(const O &model, const O &types) {
             }
             pooling_input = item(attr(layer, "inputs"), py::int_(0));
             top_i = negative(py::int_(1));
-            j = binary(i, py::int_(1), Op::sub);
+            j = i;
             bool cn_50 = false;
             for (py::handle cn_51 : py::reinterpret_borrow<py::iterable>(builtin("range")(binary(i, py::int_(1), Op::sub), negative(py::int_(1)), negative(py::int_(1))))) {
                 j = py::reinterpret_borrow<O>(cn_51);
@@ -801,7 +801,7 @@ void pass_eliminate_split(const O &model, const O &types) {
             }
             split_input = item(attr(layer, "inputs"), py::int_(0));
             top_i = negative(py::int_(1));
-            j = binary(i, py::int_(1), Op::sub);
+            j = i;
             bool cn_64 = false;
             for (py::handle cn_65 : py::reinterpret_borrow<py::iterable>(builtin("range")(binary(i, py::int_(1), Op::sub), negative(py::int_(1)), negative(py::int_(1))))) {
                 j = py::reinterpret_borrow<O>(cn_65);

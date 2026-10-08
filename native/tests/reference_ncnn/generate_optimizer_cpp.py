@@ -28,6 +28,15 @@ CORRECTIONS = (
         'if self.model.layers[i].op_type != "MemoryData":',
         'if self.model.layers[i].op_type == "MemoryData":',
     ),
+    # A for/else search starts one step before its first index, so an empty range (the
+    # layer is first) ends on the not-found value, as a search that finds nothing does.
+    # Upstream started these on the first index (upstream chaiNNer #2397): a first
+    # layer overwrote layers[-2] or fused layers[1].
+    ("__fuse_binaryop_eltwise", "j0 = 0", "j0 = -1"),
+    ("__fuse_binaryop_eltwise", "j1 = 0", "j1 = -1"),
+    ("__eliminate_dropout", "j = i - 1", "j = i"),
+    ("__eliminate_pooling1x1", "j = i - 1", "j = i"),
+    ("__eliminate_split", "j = i - 1", "j = i"),
 )
 
 
