@@ -276,8 +276,10 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   pass corpus).
 - Load Image and Load Images decode 8-bit RGBA TIFFs with unassociated alpha (ExtraSamples 2, orientation 1-4) with
   Pillow, keeping straight colour, where upstream's OpenCV path premultiplies it and loses the colour under alpha 0
-  (upstream chaiNNer #409; owner-approved 2026-10-09). Every other file, associated alpha included, takes the OpenCV
-  path as before (`backend/tests/test_load_image_tiff_alpha.py`).
+  (upstream chaiNNer #409; owner-approved 2026-10-09). 8-bit grey+alpha TIFFs under the same conditions load as BGRA
+  with the grey in B, G and R, exactly as a grey+alpha PNG loads, where upstream's OpenCV path drops the alpha and
+  returns one channel (owner-approved 2026-10-09). Every other file, associated alpha included, takes the OpenCV path
+  as before (`backend/tests/test_load_image_tiff_alpha.py`).
 - Save Video's audio mux (owner-approved, upstream chaiNNer #3331): chaiNNer's own FFmpeg muxes the audio after the
   video, as upstream v0.25.1 does, where the frozen nightly ran the `ffmpeg` on `PATH` with the audio first and only
   logged a failure, so without FFmpeg on `PATH` every saved video was silent. Auto copies the audio and, when the

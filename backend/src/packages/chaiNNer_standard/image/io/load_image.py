@@ -66,9 +66,11 @@ def _read_dds(path: Path) -> np.ndarray | None:
 def _read_tiff_straight_alpha(path: Path) -> np.ndarray | None:
     """
     OpenCV reads 8-bit TIFFs through libtiff's RGBA interface, which premultiplies
-    unassociated (straight) alpha (upstream chaiNNer #409), so Pillow decodes 8-bit
-    RGBA TIFFs that declare it. Both apply the Orientation tag, but Pillow 12.3 does
-    not transpose orientations 5-8; those and every other TIFF stay with OpenCV.
+    unassociated (straight) alpha (upstream chaiNNer #409), and drops the alpha of
+    grey+alpha TIFFs, so Pillow decodes 8-bit RGBA and LA TIFFs that declare it. LA
+    loads as BGRA with the grey in B, G and R, as OpenCV loads a grey+alpha PNG. Both
+    apply the Orientation tag, but Pillow 12.3 does not transpose orientations 5-8;
+    those and every other TIFF stay with OpenCV.
     """
     # The plugin class reads only the header; Image.open's size check would also warn
     # on large TIFFs that this decoder leaves to OpenCV.
@@ -76,13 +78,14 @@ def _read_tiff_straight_alpha(path: Path) -> np.ndarray | None:
     with im:
         tags = im.tag_v2
         if (
-            im.mode != "RGBA"
+            im.mode not in ("RGBA", "LA")
             or set(tags.get(258, ())) != {8}  # BitsPerSample
             or tags.get(338) != (2,)  # ExtraSamples: unassociated alpha
             or tags.get(274, 1) > 4  # Orientation
         ):
             return None
-        return cv2.cvtColor(np.array(im), cv2.COLOR_RGBA2BGRA)
+        rgba = im.convert("RGBA") if im.mode == "LA" else im
+        return cv2.cvtColor(np.array(rgba), cv2.COLOR_RGBA2BGRA)
 
 
 def _for_ext(ext: str | Iterable[str], decoder: _Decoder) -> _Decoder:
