@@ -860,6 +860,8 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
                     duration: 10_000,
                     title: failureTitle,
                     description: error instanceof Error ? error.message : String(error),
+                    // The message ends with pip's own lines (dependencies/store.py).
+                    containerStyle: { whiteSpace: 'pre-line' },
                 });
             })
             .finally(() => {

@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import deque
 from dataclasses import dataclass
 from logging import Logger
 from typing import Iterable
@@ -20,6 +21,9 @@ COLLECTING_REGEX = re.compile(r"Collecting ([a-zA-Z0-9-_]+)")
 UNINSTALLING_REGEX = re.compile(r"Uninstalling ([a-zA-Z0-9-_]+)-+")
 
 DEP_MAX_PROGRESS = 0.8
+
+# How many of pip's last output lines a failed run's message can carry.
+PIP_REASON_LINES = 10
 
 ENV = {
     **os.environ,
@@ -102,6 +106,23 @@ def extra_index_args(dependencies: Iterable[DependencyInfo]) -> list[str]:
     return [arg for url in urls for arg in ("--extra-index-url", url)]
 
 
+def pip_error_message(action: str, last_lines: Iterable[str]) -> str:
+    """The message of a failed pip run, with pip's reason: its last lines from its
+    first error on, plus the warning just before it (the last retry of an
+    unreachable index). A report too long for the lines kept (a crash's traceback)
+    is shown by its end."""
+    lines = list(last_lines)
+    first_error = next(
+        (i for i, line in enumerate(lines) if line.startswith(("ERROR:", "error:"))),
+        0,
+    )
+    if first_error > 0 and lines[first_error - 1].startswith("WARNING:"):
+        first_error -= 1
+    return "\n".join(
+        [f"An error occurred while {action} dependencies.", *lines[first_error:]]
+    )
+
+
 def install_dependencies_sync(
     dependencies: list[DependencyInfo],
 ):
@@ -179,17 +200,19 @@ async def install_dependencies(
         encoding="utf-8",
         env=ENV,
     )
+    assert process.stdout is not None
+    last_lines: deque[str] = deque(maxlen=PIP_REASON_LINES)
     installing_name = "Unknown"
-    while True:
-        nextline = process.stdout.readline()  # type: ignore
-        if process.poll() is not None:
-            break
+    # Up to the end of the output, which holds pip's error lines when it fails.
+    for nextline in process.stdout:
         line = nextline.strip()
         if not line:
             continue
 
-        if logger is not None and not line.startswith("Progress:"):
-            logger.info(line)
+        if not line.startswith("Progress:"):
+            last_lines.append(line)
+            if logger is not None:
+                logger.info(line)
 
         # The Collecting step of pip. It tells us what package is being installed.
         if "Collecting" in line:
@@ -238,7 +261,7 @@ async def install_dependencies(
 
     exit_code = process.wait()
     if exit_code != 0:
-        raise ValueError("An error occurred while installing dependencies.")
+        raise ValueError(pip_error_message("installing", last_lines))
 
     await update_progress_cb("Finished installing dependencies...", 1, None)
 
@@ -315,17 +338,19 @@ async def uninstall_dependencies(
         encoding="utf-8",
         env=ENV,
     )
+    assert process.stdout is not None
+    last_lines: deque[str] = deque(maxlen=PIP_REASON_LINES)
     uninstalling_name = "Unknown"
-    while True:
-        nextline = process.stdout.readline()  # type: ignore
-        if process.poll() is not None:
-            break
+    # Up to the end of the output, which holds pip's error lines when it fails.
+    for nextline in process.stdout:
         line = nextline.strip()
         if not line:
             continue
 
-        if logger is not None and not line.startswith("Progress:"):
-            logger.info(line)
+        if not line.startswith("Progress:"):
+            last_lines.append(line)
+            if logger is not None:
+                logger.info(line)
 
         # The Uninstalling step of pip. It tells us what package is being UNinstalled.
         if "Uninstalling" in line:
@@ -353,7 +378,7 @@ async def uninstall_dependencies(
 
     exit_code = process.wait()
     if exit_code != 0:
-        raise ValueError("An error occurred while uninstalling dependencies.")
+        raise ValueError(pip_error_message("uninstalling", last_lines))
 
     await update_progress_cb("Finished uninstalling dependencies...", 1, None)
 
