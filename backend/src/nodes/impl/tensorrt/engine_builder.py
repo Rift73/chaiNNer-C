@@ -23,6 +23,7 @@ class BuildConfig:
     opt_shape: tuple[int, int]  # (height, width)
     max_shape: tuple[int, int]  # (height, width)
     use_dynamic_shapes: bool
+    allow_tf32: bool
 
 
 _PRECISION_DTYPES = {
@@ -143,6 +144,11 @@ def build_engine_from_onnx(
     builder_config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_bytes)
 
     _apply_precision(builder_config, network, config.precision)
+    if not config.allow_tf32:
+        # TF32 is a math mode, not a tensor type, so strongly typed networks keep it:
+        # on by default, it runs float32 convolutions and matrix products with
+        # 10-bit mantissa inputs (about FP16's precision).
+        builder_config.clear_flag(trt.BuilderFlag.TF32)
 
     # Configure dynamic shapes if needed
     has_dynamic = any(d == -1 for d in input_shape)
