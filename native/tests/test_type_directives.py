@@ -34,7 +34,6 @@ INVENTORY = Counter(
     {
         # Consult 14 D-29: mangled private reads.
         ("test_execution_cleanup.py", "reportAttributeAccessIssue", MANGLING): 1,
-        ("test_ncnn_graph.py", "reportAttributeAccessIssue", MANGLING): 1,
         # D-26 and D-33: protocol fixtures that break typeshed's declarations.
         ("test_utility_scalar.py", "reportAssignmentType", UNHASHABLE): 1,
         (
@@ -158,7 +157,7 @@ def test_every_pyright_directive_is_recorded():
         for _, comment in comments(path)
         if (match := DIRECTIVE.search(comment))
     )
-    assert sum(INVENTORY.values()) == 33
+    assert sum(INVENTORY.values()) == 32
     assert found == INVENTORY
 
 
