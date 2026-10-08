@@ -149,7 +149,9 @@ if ($Relock) {
         'PyMatting==1.1.16', 'pillow-avif-plugin', 'ffmpeg-python', 'requests', 'wcmatch',
         'google-re2',  # oracle/reference only (upstream's onnx/load.py imports re2)
         'Sanic-Cors==2.2.0',  # oracle/reference only (upstream's server imports sanic_cors)
-        'spandrel==0.4.2', 'spandrel_extra_arches', 'facexlib', 'einops', 'safetensors',
+        # spandrel: the fork's build (DRFT, DUAL, SST), the wheel on its release
+        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c1/spandrel-0.4.2%2Bc1-py3-none-any.whl#sha256=fe884dc115d86c4b6278e8108a6dfa23355dc2f7b3a4ca1f9334a64d61a6c5ab',
+        'spandrel_extra_arches', 'facexlib', 'einops', 'safetensors',
         'onnxruntime-gpu==1.30.0', 'onnx', 'onnxoptimizer', 'protobuf', 'ncnn==1.0.20260526',
         'sanic==25.12.1', 'aiofiles', 'html5tagger', 'sanic-routing', 'tracerite', 'websockets', 'typing_extensions',
         'nvidia-ml-py', 'psutil', 'aiohttp',
@@ -203,7 +205,8 @@ if ($Relock) {
         "# pip: $PipVersion (installed; pip freeze does not list it)",
         '# Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.ps1 (torch and',
         '# torchvision from https://download.pytorch.org/whl/cu132, chainner-pip from the bundled wheel in',
-        '# backend/src/dependencies/whls/chainner-pip/, the rest from PyPI).'
+        '# backend/src/dependencies/whls/chainner-pip/, spandrel from its fork''s release wheel',
+        '# (github.com/Rift73/spandrel), the rest from PyPI).'
     )
     foreach ($Pin in $Freeze) {
         $Note = $Notes[($Pin -split '==')[0]]

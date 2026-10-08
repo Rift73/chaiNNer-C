@@ -30,12 +30,14 @@ TILE_OVERLAP = 16
 
 @dataclass(frozen=True)
 class ShapeBounds:
-    """The input height/width range of an engine's optimization profile."""
+    """The input height/width range of an engine's optimization profile, and the
+    multiple its input sizes must be (a DUAL dynamic engine names it; others 64)."""
 
     min_h: int
     min_w: int
     max_h: int
     max_w: int
+    alignment: int = TILE_ALIGNMENT
 
 
 class TileRunner(Protocol):
@@ -55,14 +57,14 @@ def _align_up(value: int, alignment: int) -> int:
     return -(-value // alignment) * alignment
 
 
-def _tile_extent(max_size: int, min_size: int) -> int:
-    aligned = max_size // TILE_ALIGNMENT * TILE_ALIGNMENT
+def _tile_extent(max_size: int, min_size: int, alignment: int) -> int:
+    aligned = max_size // alignment * alignment
     return aligned if aligned >= min_size else max_size
 
 
-def _padded_extent(length: int, min_size: int, tile: int) -> int:
+def _padded_extent(length: int, min_size: int, tile: int, alignment: int) -> int:
     """The engine input size used for a tile of `length` real pixels."""
-    return min(max(_align_up(length, TILE_ALIGNMENT), min_size), tile)
+    return min(max(_align_up(length, alignment), min_size), tile)
 
 
 def tile_starts(length: int, tile: int, overlap: int = TILE_OVERLAP) -> list[int]:
@@ -154,8 +156,8 @@ def tiled_upscale(
 ) -> np.ndarray:
     """Upscale an HWC float32 image by tiling it within the engine's profile."""
     h, w = img.shape[:2]
-    tile_h = _tile_extent(bounds.max_h, bounds.min_h)
-    tile_w = _tile_extent(bounds.max_w, bounds.min_w)
+    tile_h = _tile_extent(bounds.max_h, bounds.min_h, bounds.alignment)
+    tile_w = _tile_extent(bounds.max_w, bounds.min_w, bounds.alignment)
     ys = tile_starts(h, tile_h, overlap)
     xs = tile_starts(w, tile_w, overlap)
     if len(ys) == 1 and len(xs) == 1:
@@ -166,8 +168,8 @@ def tiled_upscale(
         runner.submit(
             _pad_tile(
                 img,
-                _padded_extent(h, bounds.min_h, tile_h),
-                _padded_extent(w, bounds.min_w, tile_w),
+                _padded_extent(h, bounds.min_h, tile_h, bounds.alignment),
+                _padded_extent(w, bounds.min_w, tile_w, bounds.alignment),
             )
         )
         single = runner.collect(h * scale, w * scale)
@@ -188,8 +190,8 @@ def tiled_upscale(
         th, tw = min(tile_h, h - y), min(tile_w, w - x)
         tile = _pad_tile(
             img[y : y + th, x : x + tw],
-            _padded_extent(th, bounds.min_h, tile_h),
-            _padded_extent(tw, bounds.min_w, tile_w),
+            _padded_extent(th, bounds.min_h, tile_h, bounds.alignment),
+            _padded_extent(tw, bounds.min_w, tile_w, bounds.alignment),
         )
         runner.submit(tile)
         pending.append((iy, ix))

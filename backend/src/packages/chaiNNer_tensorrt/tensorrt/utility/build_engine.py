@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from enum import Enum
 
+import tensorrt as trt
 from sanic.log import logger
 
 from api import NodeContext
 from nodes.groups import if_enum_group
 from nodes.impl.onnx.model import OnnxModel
+from nodes.impl.tensorrt import dual
 from nodes.impl.tensorrt.engine_builder import BuildConfig, build_engine_from_onnx
-from nodes.impl.tensorrt.model import TensorRTEngine
+from nodes.impl.tensorrt.memory import get_cuda_compute_capability
+from nodes.impl.tensorrt.model import TensorRTEngine, TensorRTEngineInfo
 from nodes.properties.inputs import (
     BoolInput,
     EnumInput,
@@ -17,7 +20,7 @@ from nodes.properties.inputs import (
 )
 from nodes.properties.outputs import TensorRTEngineOutput
 
-from ...settings import get_settings
+from ...settings import TensorRTSettings, get_settings
 from .. import utility_group
 
 
@@ -55,6 +58,7 @@ if utility_group is not None:
             "Building an engine can take several minutes depending on the model size and optimization settings.",
             "The built engine is optimized specifically for your GPU and TensorRT version.",
             "It is recommended to save the built engine for reuse, as building is slow.",
+            "A DUAL ONNX from Convert To ONNX builds in its own precision with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Upscale Image replays DUAL engines from a CUDA graph per input size.",
         ],
         icon="BsNvidia",
         inputs=[
@@ -181,6 +185,20 @@ if utility_group is not None:
         settings = get_settings(context)
         gpu_index = settings.gpu_index
 
+        use_dynamic = shape_mode == ShapeMode.DYNAMIC
+        if not use_dynamic:
+            min_height = opt_height = max_height = static_height
+            min_width = opt_width = max_width = static_width
+
+        manifest = dual.export_manifest(onnx_model.bytes)
+        if manifest is not None:
+            profile = (
+                (min_height, min_width),
+                (opt_height, opt_width),
+                (max_height, max_width),
+            )
+            return build_dual_engine(onnx_model, manifest, settings, profile)
+
         # Determine timing cache path
         timing_cache_path = None
         if settings.timing_cache_path:
@@ -191,16 +209,6 @@ if utility_group is not None:
             timing_cache_path = (
                 f"{settings.timing_cache_path}/timing_{model_hash}.cache"
             )
-
-        use_dynamic = shape_mode == ShapeMode.DYNAMIC
-
-        if not use_dynamic:
-            min_height = static_height
-            min_width = static_width
-            opt_height = static_height
-            opt_width = static_width
-            max_height = static_height
-            max_width = static_width
 
         config = BuildConfig(
             precision=precision.value,
@@ -228,3 +236,55 @@ if utility_group is not None:
         )
 
         return engine
+
+
+def build_dual_engine(
+    onnx_model: OnnxModel,
+    manifest: dict,
+    settings: TensorRTSettings,
+    profile: tuple[tuple[int, int], tuple[int, int], tuple[int, int]],
+) -> TensorRTEngine:
+    """DUAL's specialized engine, in the ONNX's precision. A dynamic DUAL ONNX takes the
+    node's shape inputs as its (height, width) profile; a fixed one has its own size.
+    The node's precision, workspace and TF32 inputs do not apply."""
+    major, minor = get_cuda_compute_capability(settings.gpu_index)
+    spec = manifest["specialization"]
+    if spec.get("dynamic", False):
+        dual.check_profile(manifest, *profile)
+    else:
+        size = (spec["height"], spec["width"])
+        profile = (size, size, size)
+    low, high = profile[0], profile[2]
+    logger.info(
+        "Building a DUAL engine (%s x%d, %dx%d to %dx%d, plugins %s, SM %d%d); the"
+        " node's precision, workspace and TF32 inputs do not apply",
+        spec["factory"],
+        spec["scale"],
+        low[1],
+        low[0],
+        high[1],
+        high[0],
+        spec["plugin_key"],
+        major,
+        minor,
+    )
+    engine_bytes = dual.build_engine(
+        onnx_model.bytes,
+        manifest,
+        settings.gpu_index,
+        profile if spec.get("dynamic", False) else None,
+    )
+    min_shape, opt_shape, max_shape = ((1, 3, h, w) for h, w in profile)
+    info = TensorRTEngineInfo(
+        precision="bf16",
+        input_channels=3,
+        output_channels=3,
+        scale=spec["scale"],
+        gpu_architecture=f"sm_{major}{minor}",
+        tensorrt_version=trt.__version__,
+        has_dynamic_shapes=min_shape != max_shape,
+        min_shape=min_shape,
+        opt_shape=opt_shape,
+        max_shape=max_shape,
+    )
+    return TensorRTEngine(engine_bytes, info)

@@ -366,6 +366,10 @@ export interface PyPiPackage {
     readonly version: Version;
     readonly findLink?: string | null;
     /**
+     * A wheel to install instead of the PyPI release (a fork's build of the version).
+     */
+    readonly url?: string | null;
+    /**
      * A size estimate (in bytes) for the whl file to download.
      */
     readonly sizeEstimate: number;

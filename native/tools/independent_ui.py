@@ -19,7 +19,7 @@ MAIN = "resources/app/.vite/build/main.js"
 CSS = "resources/app/.vite/renderer/main_window/index.css"
 # The product version shown in the header. The package manifest's app_version
 # stays the installed UI baseline (upstream package.json); this is display only.
-PRODUCT_VERSION = "0.3.0"
+PRODUCT_VERSION = "0.3.2"
 BASELINE_HASHES = {
     RENDERER: "50f22a101c16c97fd1db413e3e0becf647c360b817f09b8a3089fa649fd16877",
     MAIN: "df979a26746d814f4dd8e4ce555f6114304a0b7f72cef429de783c646ad26f10",

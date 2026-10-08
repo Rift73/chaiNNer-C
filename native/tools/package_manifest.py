@@ -29,6 +29,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import package_files
 
@@ -51,6 +52,12 @@ LOCK_FIELDS = {
 }
 # A pin, with an optional note after it ("google-re2==1.1  # oracle/reference only").
 PIN = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]*)==(\S+)(?:  # .*)?")
+# A wheel installed from a URL, as pip freeze writes it ("spandrel @ https://.../
+# spandrel-0.4.2%2Bc1-py3-none-any.whl#sha256=..."): its version is the wheel's.
+URL_PIN = re.compile(
+    r"([A-Za-z0-9][A-Za-z0-9._-]*) @ \S+/[^/\s-]+-([^/\s-]+)-[^/\s]+\.whl(?:#\S*)?"
+    r"(?:  # .*)?"
+)
 # The native toolchain's pins, relative to the project: CMakeLists.txt refuses any
 # other clang-cl, toolchain.cmake any other MSVC toolset or Windows SDK (Consult 14
 # D-30), so they name the versions every native binary of the tree is built with.
@@ -76,7 +83,8 @@ def lock_sha256(path: Path) -> str:
 
 
 def read_lock(path: Path) -> dict[str, Any]:
-    """The lock's header fields and its pins, {name: version} as pip froze them."""
+    """The lock's header fields and its pins, {name: version} as pip froze them (a
+    wheel installed from a URL: the wheel's version)."""
     fields: dict[str, Any] = {}
     pins = {}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -85,9 +93,12 @@ def read_lock(path: Path) -> dict[str, Any]:
                 if match := pattern.fullmatch(line):
                     fields[key] = match.group(1)
         elif line:
-            if not (match := PIN.fullmatch(line)):
+            if match := PIN.fullmatch(line):
+                pins[match.group(1)] = match.group(2)
+            elif match := URL_PIN.fullmatch(line):
+                pins[match.group(1)] = unquote(match.group(2))
+            else:
                 raise ValueError(f"Unreadable pin in {path}: {line!r}")
-            pins[match.group(1)] = match.group(2)
     missing = sorted(set(LOCK_FIELDS) - set(fields))
     if missing:
         raise ValueError(

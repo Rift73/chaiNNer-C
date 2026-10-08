@@ -16,7 +16,7 @@ const { CSS, INSTALLED_SHA256, MAIN, RENDERER, count, loadBundles, region, runCh
 const FORBIDDEN_RENDERER = ['api.github.com', '/releases/latest', '/releases?per_page=', 'Update Available (', 'th("checkForUpdatesOnStartup")'];
 // The product version shown in the header (independent_ui.PRODUCT_VERSION); the
 // package's own package.json keeps the upstream baseline version.
-const PRODUCT_VERSION = '0.3.0';
+const PRODUCT_VERSION = '0.3.2';
 // Upstream keeps the integrated Python only when its version equals the 3.11.5
 // download table (xrA); the port keeps any 3.14.0 or newer. s is the probed
 // Python, I the table version, gR the bundled semver.
@@ -371,7 +371,7 @@ runChecks('verify_independent_ui', async (check) => {
         }
     });
 
-    await check('version display shows v0.3.0 with the upstream base; app.getVersion() and the saved-chain stamp unchanged', () => {
+    await check('version display shows v0.3.2 with the upstream base; app.getVersion() and the saved-chain stamp unchanged', () => {
         const installedJson = JSON.parse(fs.readFileSync(path.join(roots.installedApp, 'resources/app/package.json'), 'utf8'));
         assert.equal(installedJson.version, UPSTREAM_VERSION, 'installed package.json version is the shown upstream base');
         assert.equal(packageJson.version, installedJson.version, 'package.json version');

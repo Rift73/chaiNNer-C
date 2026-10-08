@@ -3,7 +3,7 @@ import { Version } from './common-types';
 
 // chaiNNer-C's product version, shown in the header, About, the startup log and system
 // information. app.getVersion() stays upstream's: it stamps saved chains, and migrations read it.
-export const chainnerCVersion = '0.3.1';
+export const chainnerCVersion = '0.3.2';
 
 export const parse = (v: string): Version => {
     const version = semver.coerce(v);

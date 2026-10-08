@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import ctypes
 import threading
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import AbstractContextManager
 from typing import Any
 
 import numpy as np
 import tensorrt as trt
 from cuda.bindings import runtime as cudart
+from sanic.log import logger
 
 from api import NodeId
 
@@ -24,10 +25,16 @@ from ..native_framework_images import planar_to_interleaved
 from ..native_tensors import cast_into
 from .bfloat16 import bf16_bits_to_float32, float32_to_bf16_bits
 from .cache import SharedCache
+from .dual import input_alignment
 from .engine_info import deserialize_engine
 from .memory import check_cuda
 from .model import TensorRTEngine
-from .tiling import ShapeBounds
+from .tiling import TILE_ALIGNMENT, ShapeBounds
+
+# CUDA graphs kept per session, one per input shape, and input shapes remembered to
+# capture on their second run (see TensorRTSession).
+MAX_GRAPHS = 4
+MAX_SEEN = 32
 
 
 class _IoDtype:
@@ -98,11 +105,24 @@ class TensorRTSession:
             self._out = _IoDtype(cuda_engine.get_tensor_dtype(self.output_name))
 
             mins, _, maxs = cuda_engine.get_tensor_profile_shape(self.input_name, 0)
-            self.bounds = ShapeBounds(mins[2], mins[3], maxs[2], maxs[3])
+            # A dynamic DUAL engine's input names the multiple its sizes must be.
+            alignment = input_alignment(self.input_name) or TILE_ALIGNMENT
+            self.bounds = ShapeBounds(mins[2], mins[3], maxs[2], maxs[3], alignment)
         except BaseException:
             self._loaded.release()
             raise
         self.context = context
+        # An input shape seen again is captured in a CUDA graph after that run and
+        # replayed from then on: TensorRT's per-launch host work happens once (DUAL's AOT
+        # plugins cost ~0.3 ms of it per launch, 5x the GPU time without a graph). A
+        # capture costs one more enqueue of host work, so a shape seen once (images of
+        # assorted sizes) is not captured. Tiles mostly share a shape: a few graphs are
+        # kept, the least recently used dropped first.
+        self._graphs: OrderedDict[
+            tuple[int, ...], tuple[cudart.cudaGraph_t, cudart.cudaGraphExec_t]
+        ] = OrderedDict()
+        self._seen: OrderedDict[tuple[int, ...], None] = OrderedDict()
+        self._graph_failed = False
 
         self._stream = check_cuda(cudart.cudaStreamCreate())
         self._events = [
@@ -130,6 +150,8 @@ class TensorRTSession:
         ):
             # in-flight work may still read or write the old buffers
             check_cuda(cudart.cudaStreamSynchronize(self._stream))
+            # captured graphs hold the old addresses
+            self._drop_graphs()
         if act_nbytes > self._d_act_nbytes:
             if self._d_act:
                 check_cuda(cudart.cudaFree(self._d_act))
@@ -191,8 +213,7 @@ class TensorRTSession:
         )
         self.context.set_tensor_address(self.input_name, self._d_in)
         self.context.set_tensor_address(self.output_name, self._d_out)
-        if not self.context.execute_async_v3(int(self._stream)):
-            raise RuntimeError("TensorRT failed to enqueue inference.")
+        self._execute(in_shape)
         check_cuda(
             cudart.cudaMemcpyAsync(
                 h_out.ptr,
@@ -205,6 +226,60 @@ class TensorRTSession:
         check_cuda(cudart.cudaEventRecord(self._events[slot], self._stream))
         self._queue.append((slot, out_shape))
         self._submitted += 1
+
+    def _execute(self, shape: tuple[int, ...]) -> None:
+        """Enqueue the engine on the stream: the shape's captured graph when there is
+        one, else TensorRT's enqueue, after which a shape seen before is captured."""
+        graph = self._graphs.get(shape)
+        if graph is not None:
+            self._graphs.move_to_end(shape)
+            check_cuda(cudart.cudaGraphLaunch(graph[1], self._stream))
+            return
+        if not self.context.execute_async_v3(int(self._stream)):
+            raise RuntimeError("TensorRT failed to enqueue inference.")
+        if shape not in self._seen:
+            self._seen[shape] = None
+            if len(self._seen) > MAX_SEEN:
+                self._seen.popitem(last=False)
+        elif not self._graph_failed:
+            self._capture(shape)
+
+    def _capture(self, shape: tuple[int, ...]) -> None:
+        """Capture one execution (not run: the stream only records it). A capture that
+        fails leaves the session on TensorRT's enqueue, with a warning."""
+        check_cuda(cudart.cudaStreamSynchronize(self._stream))
+        mode = cudart.cudaStreamCaptureMode.cudaStreamCaptureModeThreadLocal
+        (error,) = cudart.cudaStreamBeginCapture(self._stream, mode)
+        enqueued = False
+        if error == cudart.cudaError_t.cudaSuccess:
+            enqueued = self.context.execute_async_v3(int(self._stream))
+            error, graph = cudart.cudaStreamEndCapture(self._stream)
+            if error == cudart.cudaError_t.cudaSuccess:
+                if enqueued:
+                    error, graph_exec = cudart.cudaGraphInstantiate(graph, 0)
+                    if error == cudart.cudaError_t.cudaSuccess:
+                        self._graphs[shape] = (graph, graph_exec)
+                        if len(self._graphs) > MAX_GRAPHS:
+                            self._destroy(self._graphs.popitem(last=False)[1])
+                        return
+                check_cuda(cudart.cudaGraphDestroy(graph))
+        self._drop_graphs()
+        self._graph_failed = True
+        logger.warning(
+            "TensorRT engine not captured in a CUDA graph (enqueued %s, %s); it runs"
+            " without one",
+            enqueued,
+            error,
+        )
+
+    @staticmethod
+    def _destroy(graph: tuple[cudart.cudaGraph_t, cudart.cudaGraphExec_t]) -> None:
+        check_cuda(cudart.cudaGraphExecDestroy(graph[1]))
+        check_cuda(cudart.cudaGraphDestroy(graph[0]))
+
+    def _drop_graphs(self) -> None:
+        while self._graphs:
+            self._destroy(self._graphs.popitem()[1])
 
     def collect(self, height: int, width: int) -> np.ndarray:
         """Wait for the oldest tile; returns its top-left `height` x `width`
@@ -224,6 +299,7 @@ class TensorRTSession:
     def close(self) -> None:
         check_cuda(cudart.cudaStreamSynchronize(self._stream))
         self._queue.clear()
+        self._drop_graphs()
         for buf in (*self._h_in, *self._h_out):
             buf.free()
         del self.context

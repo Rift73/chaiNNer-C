@@ -61,6 +61,51 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   TensorRT node ahead (`d59b4b1d`, `execution_scheduler.LOCKED_DEVICE_NODES`, session under its lock; owner's call
   after the probe missed its +20 % keep rule): 23.5-24.5 -> 26.6-26.8 fps, frames identical. With identical
   output the chain is throughput-bound at about 27 fps on this PC.
+- Spandrel fork (owner, 2026-10-08): the PyTorch package's Spandrel is `0.4.2+c1`, the wheel on
+  github.com/Rift73/spandrel (release `v0.4.2-c1`, SHA-256 `fe884dc1…`): upstream 0.4.2 plus DRFT, DUAL and
+  SST/SST-Real. `Dependency.url` installs a wheel instead of the PyPI release; a version with a local label is
+  satisfied only by that exact build, so existing installs switch at the next start. The lock pins the wheel as
+  pip freeze writes it (`read_lock` takes the wheel's version). The local overlay is retired by the owner (only the
+  three architectures are used); the repo runtime and D:\chaiNNer carry the fork, D:\chaiNNer's old spandrel is
+  in `D:\chaiNNer-spandrel-backup-20261008`.
+- DUAL to TensorRT (owner, 2026-10-08, 1.5 h + 2 h): traiNNer-redux's DUAL exporter is vendored in
+  `backend/src/vendor/dual_tensorrt` (canonical `dual_arch.py` SHA `a7c579c5…`, export/graph/spec/kernels, its
+  contract tests and `build.py` for them; its guide is the README). Convert To ONNX gives a DUAL preset a
+  fixed-size TensorRT ONNX (CPU child process, the guide's C++ plugin nodes). Build Engine runs
+  `dual_engine_worker.py` in a child process: `dual_aot.lower` swaps the plugin nodes for stand-in operators
+  (TensorRT 11.2's ONNX parser mixes up Python plugin instances), `attach` adds the plugins as AOT Python plugins
+  (`tensorrt.plugin`): the vendored Triton kernels plus Triton Norm and barrier, Core split into three, compiled to
+  PTX by triton-windows 3.5.1.post22 (a TensorRT-package dependency) for the GPU and embedded in the engine; the
+  guide's builder policy. No C++ compiler, CUDA Toolkit or TensorRT SDK. AOT plugins cost ~0.3 ms host time per
+  launch, so TensorRTSession replays fixed-shape engines from a CUDA graph (Light x4 256x256 per tile: 48 ms plain,
+  9.0 ms replayed; C++ plugins 9.2 / 8.0 ms); through the session 11.6 vs 10.9 ms (256x256) and 72.7 vs 72.0 ms
+  (540x300) against the C++ plugins. Gate 6 (fresh process without plugin registration vs folded PyTorch FP32):
+  Light x4 (owner checkpoint) and XS x4 (synthetic, nonzero experts) at 256x256 pass on all six inputs, error at or
+  under the BF16 floor, max abs <= 0.0116. The C++ plugin route (CMake + nvcc + MSVC, vendored TensorRT headers,
+  TensorRT SDK Path) was removed in the commit after `cb735a43`; reverting that commit restores it (Fable ruling).
+  TensorRT loads embedded plugins without `engine_host_code_allowed`, so no trust gate.
+- DUAL speed (owner, 2026-10-09): Light x4 512x512 was ~2x the 2026-10-04 DUAL3 PU2 D16 engine (14.33 ms). Per-layer
+  profiles: (1) AOT kernels compiled without Triton's 16-byte pointer-alignment hint (scalar loads; core 2.13 vs
+  0.156 ms per layer), fixed in `5ca20024`; (2) the exporter moved every 3x3 after a PixelShuffle ahead of it (4x work
+  for Light's 64->256 tail conv), now only the RGB readout, `c0de1572` (vendored `graph.py` now differs from
+  traiNNer's). Through chaiNNer-C's build, GPU-only replay: 23.93 -> 15.64 ms; gate 6 passes at 512x512, errors
+  unchanged. The remaining ~1.3 ms vs DUAL3 is DUAL3X's dynamic convolutions. Owner-postponed: dynamic-shape DUAL
+  engines (ask before starting).
+- DUAL dynamic engines (owner 2026-10-09, 2 h box; branch `dual-dynamic`, WIP): dynamic plugins (`e146bc73`,
+  bit-identical to the fixed-size kernels) and exporter + worker profile (`7f9140a2`). Light x4, one engine
+  64x64..512x1024: gate passes at 7 sizes; +11 % vs static at 512x512. Limit: above 512x1024 TensorRT has no kernel
+  for the last tail conv in a dynamic build (static 576x1024 builds; a row-split try failed). Not wired into the
+  nodes or TensorRTSession (per-shape CUDA graphs) yet. Waiting on the owner: continue or drop the branch.
+  Update (owner chose to continue after Codex's finding): `8f7f3d18` lifts the limit (each tail conv's input
+  reshaped to sizes computed from the network input; Codex) — one engine 64x64..1088x1920 passes the gate at 8
+  sizes, +3.5 % vs static at 1088x1920; `7a590eba` wires it in (Convert To ONNX "TensorRT Shape", default Dynamic;
+  Build Engine profile checked against the 64-px alignment; TensorRTSession: a CUDA graph per input shape, up to 4).
+  Through chaiNNer's tiler: 1080p in one tile, 197 ms per image; engine vs PyTorch on the same padded input within
+  the BF16 floor. Merged into `chaiNNer-C` and copied to D:\chaiNNer (owner, 2026-10-09).
+  `009e9d80`: dynamic DUAL ONNX takes any multiple of 4 (input named `input_aligned_4`, the tiler pads to it),
+  so 1080p runs unpadded and matches whole-image PyTorch (max 0.0022); +3.4 % vs alignment 64 at mid sizes,
+  equal at 1088x1920. Session captures a shape's CUDA graph on its second run. One unexplained dynamic build
+  failure in five attempts (no log kept); rebuilding worked.
 
 ## Last CPU comparison
 

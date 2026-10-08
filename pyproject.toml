@@ -13,7 +13,7 @@ indent-width = 4
 src = ["backend/src"]
 
 # ignore vendored code
-extend-exclude = ["**/pytorch/architecture/**"]
+extend-exclude = ["**/pytorch/architecture/**", "backend/src/vendor/**"]
 
 unsafe-fixes = true
 

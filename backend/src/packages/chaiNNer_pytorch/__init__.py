@@ -127,8 +127,14 @@ package = add_package(
         Dependency(
             display_name="Spandrel",
             pypi_name="spandrel",
-            version="0.4.2",
-            size_estimate=264 * KB,
+            # The fork's build of 0.4.2: adds DRFT, DUAL and SST.
+            version="0.4.2+c1",
+            size_estimate=530 * KB,
+            url=(
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c1/"
+                "spandrel-0.4.2%2Bc1-py3-none-any.whl"
+                "#sha256=fe884dc115d86c4b6278e8108a6dfa23355dc2f7b3a4ca1f9334a64d61a6c5ab"
+            ),
         ),
         Dependency(
             display_name="Spandrel extra architectures",

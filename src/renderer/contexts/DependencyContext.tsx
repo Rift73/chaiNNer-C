@@ -83,7 +83,7 @@ const getFindLinks = (dependencies: readonly PyPiPackage[]): string[] => {
 };
 const getInstallCommand = (packages: readonly Package[], pythonInfo: PythonInfo): string => {
     const deps = packages.flatMap((pkg) =>
-        pkg.dependencies.map((p) => `${p.pypiName}==${p.version}`)
+        pkg.dependencies.map((p) => p.url ?? `${p.pypiName}==${p.version}`)
     );
     const findLinks = packages.flatMap((pkg) =>
         getFindLinks(pkg.dependencies).flatMap((l) => ['--extra-index-url', l])
