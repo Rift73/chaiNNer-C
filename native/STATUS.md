@@ -101,7 +101,11 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   sizes, +3.5 % vs static at 1088x1920; `7a590eba` wires it in (Convert To ONNX "TensorRT Shape", default Dynamic;
   Build Engine profile checked against the 64-px alignment; TensorRTSession: a CUDA graph per input shape, up to 4).
   Through chaiNNer's tiler: 1080p in one tile, 197 ms per image; engine vs PyTorch on the same padded input within
-  the BF16 floor. Not merged; not in D:\chaiNNer.
+  the BF16 floor. Merged into `chaiNNer-C` and copied to D:\chaiNNer (owner, 2026-10-09).
+  `009e9d80`: dynamic DUAL ONNX takes any multiple of 4 (input named `input_aligned_4`, the tiler pads to it),
+  so 1080p runs unpadded and matches whole-image PyTorch (max 0.0022); +3.4 % vs alignment 64 at mid sizes,
+  equal at 1088x1920. Session captures a shape's CUDA graph on its second run. One unexplained dynamic build
+  failure in five attempts (no log kept); rebuilding worked.
 
 ## Last CPU comparison
 
