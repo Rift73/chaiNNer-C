@@ -2,12 +2,16 @@ import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { PythonInfo } from '../../src/common/common-types';
 import { delay } from '../../src/common/util';
 
-const { shutdown } = vi.hoisted(() => ({ shutdown: vi.fn<[], Promise<void>>() }));
+const { shutdown, pythonInfo } = vi.hoisted(() => ({
+    shutdown: vi.fn<[], Promise<void>>(),
+    pythonInfo: vi.fn<[], Promise<PythonInfo>>(),
+}));
 
 vi.mock('electron/main', () => ({ app: { getAppPath: () => '' } }));
-vi.mock('../../src/common/Backend', () => ({ getBackend: () => ({ shutdown }) }));
+vi.mock('../../src/common/Backend', () => ({ getBackend: () => ({ shutdown, pythonInfo }) }));
 
 // The backend is started as `<python> <resourcesPath>/src/run.py <port>`. Node stands in for
 // Python here, and run.py is a script that behaves like the backend under test.
@@ -33,6 +37,7 @@ afterEach(async () => {
     Reflect.deleteProperty(process, 'resourcesPath');
     vi.resetModules();
     shutdown.mockReset();
+    pythonInfo.mockReset();
     await rm(resourcesPath, { recursive: true, force: true });
 });
 
@@ -70,4 +75,16 @@ test('a backend stopped by kill() is not reported, even if it exits during the s
 
     expect(shutdown).toHaveBeenCalledOnce();
     expect(exitListener).not.toHaveBeenCalled();
+});
+
+test('a borrowed backend asks for its Python only until the backend answers', async () => {
+    const python: PythonInfo = { python: 'python.exe', version: '3.14.8' };
+    // the backend is still starting at the first try
+    pythonInfo.mockRejectedValueOnce(new Error('connect ECONNREFUSED')).mockResolvedValue(python);
+
+    const { BorrowedBackendProcess } = await import('../../src/main/backend/process');
+    const backend = await BorrowedBackendProcess.fromUrl('http://127.0.0.1:8000');
+
+    expect(backend.python).toEqual(python);
+    expect(pythonInfo).toHaveBeenCalledTimes(2);
 });

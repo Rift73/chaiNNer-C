@@ -262,6 +262,7 @@ export class BorrowedBackendProcess implements BaseBackendProcess {
             try {
                 // eslint-disable-next-line no-await-in-loop
                 python = await backend.pythonInfo();
+                break;
             } catch {
                 // eslint-disable-next-line no-await-in-loop
                 await delay(Math.max(maxSleep, startSleep * 2 ** i));
