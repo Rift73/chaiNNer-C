@@ -17,7 +17,7 @@ from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
 
 from ...features import web_ui
-from ...util import decode_base64_image, encode_base64_image
+from ...util import decode_base64_image, encode_base64_image, nearest_valid_size
 from ...web_ui import (
     STABLE_DIFFUSION_EXTRA_SINGLE_IMAGE_PATH,
     UPSCALE_NAME_LABELS,
@@ -92,7 +92,7 @@ UPSCALER_MODE_LABELS = {
     outputs=[
         ImageOutput(
             image_type="""
-                def nearest_valid(n: number) = max(1, floor(n));
+                def nearest_valid(n: number) = floor(n / 8) * 8;
 
                 let in_w = Input0.width;
                 let in_h = Input0.height;
@@ -174,25 +174,21 @@ def upscale_node(
 
     ih, iw, _ = get_h_w_c(image)
     rh, rw, _ = get_h_w_c(result)
-    ratio_w = width / iw
-    ratio_h = height / ih
-    if ratio_w > ratio_h:
-        larger_ratio = ratio_w
+    if mode == UpscalerMode.SCALE_TO and crop:
+        expected = [(width, height)]
     else:
-        larger_ratio = ratio_h
-
-    if mode == UpscalerMode.SCALE_TO:
-        if crop:
-            assert (rw, rh) == (width, height), (
-                f"Expected the returned image to be {width}x{height}px but found {rw}x{rh}px instead "
-            )
+        if mode == UpscalerMode.SCALE_TO:
+            scale = max(width / iw, height / ih)
         else:
-            assert (rw, rh) == (int(iw * larger_ratio), int(ih * larger_ratio)), (
-                f"Expected the returned image to be {width}x{height}px but found {rw}x{rh}px instead "
-            )
-    else:
-        assert (rw, rh) == (int(iw * upscaling_resize), int(ih * upscaling_resize)), (
-            f"Expected the returned image to be {width}x{height}px but found {rw}x{rh}px instead "
-        )
+            scale = upscaling_resize
+        size = (int(iw * scale), int(ih * scale))
+        # A1111 1.4 and later round the size down to a multiple of 8
+        # (modules/upscaler.py); earlier releases do not.
+        expected = list(dict.fromkeys([nearest_valid_size(*size), size]))
+
+    sizes = " or ".join(f"{w}x{h}px" for w, h in expected)
+    assert (rw, rh) in expected, (
+        f"Expected the returned image to be {sizes} but found {rw}x{rh}px instead "
+    )
 
     return result
