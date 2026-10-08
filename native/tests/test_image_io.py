@@ -619,7 +619,9 @@ def test_pillow_channel_buffer_permutation(dtype, channels, kind):
     # reaches the native permutation for all codec-supported buffer depths.
     def run(current):
         module = modules(current).load
-        module.Image = SimpleNamespace(open=lambda path: SimpleNamespace(mode="RGB"))
+        module.Image = SimpleNamespace(
+            open=lambda path: SimpleNamespace(mode="RGB", info={})
+        )
         module.np = SimpleNamespace(array=lambda im: value)
         return module._read_pil(Path("fixture.png"))
 
@@ -866,7 +868,9 @@ def test_concurrent_larger_channel_permutation(dtype, channels, kind):
 
     def decoder(current):
         module = modules(current).load
-        module.Image = SimpleNamespace(open=lambda path: SimpleNamespace(mode="RGB"))
+        module.Image = SimpleNamespace(
+            open=lambda path: SimpleNamespace(mode="RGB", info={})
+        )
         module.np = SimpleNamespace(array=lambda im: value)
         return module._read_pil
 
