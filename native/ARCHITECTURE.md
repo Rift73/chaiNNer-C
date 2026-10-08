@@ -338,10 +338,10 @@ verified copy, lock probe, atomic replace) and `package_manifest.py` (schema, id
    download table) becomes `gR.gte(s.version,"3.14.0")`, so a shipped CPython 3.14.x is kept. A missing runtime, or
    one below 3.14, no longer takes upstream's branch that deletes it and downloads 3.11.5: it throws "chaiNNer-C's
    integrated Python is missing or older than 3.14; reinstall chaiNNer-C", which upstream's setup catch logs and
-   offers Retry, system Python or exit (Consult 2 Q6). Main shows chaiNNer-C's version (About `chaiNNer v0.3.1`, the
-   startup log `chaiNNer-C 0.3.1 (upstream 0.25.1-nightly.2025-10-21)`, system information `app.version` 0.3.1 plus
+   offers Retry, system Python or exit (Consult 2 Q6). Main shows chaiNNer-C's version (About `chaiNNer v0.3.2`, the
+   startup log `chaiNNer-C 0.3.2 (upstream 0.25.1-nightly.2025-10-21)`, system information `app.version` 0.3.2 plus
    `app.upstream`), drops the Release Notes item and leaves `app.getVersion()` upstream's, since it stamps saved chains
-   (Consult 2 Q5). The renderer replaces the update header with the logo, the title and a `v0.3.1` tag (no Alpha
+   (Consult 2 Q5). The renderer replaces the update header with the logo, the title and a `v0.3.2` tag (no Alpha
    badge; the manifest's `app_version` stays the upstream baseline), removes the update toggle and rejects
    release-API strings. The renderer then applies the 11 drop edits in `input-drop.json`
    (own baseline pin): directory drops with toasts, locked/connected guards for file and node drops, directory

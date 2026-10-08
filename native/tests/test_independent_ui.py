@@ -75,7 +75,7 @@ def test_header_shows_the_product_version_without_the_alpha_badge(patched_bundle
     renderer = patched_bundles[independent_ui.RENDERER]
     start = renderer.index(",llr=W.memo(")
     header = renderer[start : renderer.index(",clr=W.memo(", start)]
-    assert header.count('children:"v0.3.0"') == 1
+    assert header.count('children:"v0.3.2"') == 1
     assert header.count("_.jsx(") == 3  # logo, title and version only
     assert "Alpha" not in header
     assert "VTt" not in header
@@ -130,9 +130,9 @@ def test_main_patch_fails_if_release_or_download_behavior_remains(monkeypatch):
 def test_main_shows_chainner_c_and_keeps_app_get_version(patched_bundles):
     main = patched_bundles[independent_ui.MAIN]
     for shown in (
-        'title:"About chaiNNer",message:"chaiNNer v0.3.0",detail:"chaiNNer is an open',
-        '_g.info("chaiNNer-C 0.3.0 (upstream 0.25.1-nightly.2025-10-21)"),eP(',
-        'd={app:{version:"0.3.0",upstream:"0.25.1-nightly.2025-10-21",packaged:',
+        'title:"About chaiNNer",message:"chaiNNer v0.3.2",detail:"chaiNNer is an open',
+        '_g.info("chaiNNer-C 0.3.2 (upstream 0.25.1-nightly.2025-10-21)"),eP(',
+        'd={app:{version:"0.3.2",upstream:"0.25.1-nightly.2025-10-21",packaged:',
         '...xs?[]:[{label:"About chaiNNer",click:C}],{type:"separator"},',
     ):
         assert main.count(shown) == 1, shown
