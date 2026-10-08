@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import onnx
 import pytest
 import torch
 from onnx import TensorProto, helper
 from spandrel import ModelLoader
+from spandrel.architectures.DUAL.__arch import dual_arch
 from spandrel.architectures.DUAL.__arch.dual_arch import dual_xs
 
 from nodes.impl.onnx.load import load_onnx_model
@@ -40,6 +43,33 @@ def _plain_onnx() -> bytes:
 
 def test_only_a_dual_export_has_a_manifest():
     assert dual.export_manifest(_plain_onnx()) is None
+
+
+def test_only_the_rgb_readout_moves_ahead_of_its_pixel_shuffle():
+    # Moving a 3x3 convolution ahead of a x2 shuffle keeps its result but quadruples its
+    # work; for the 64-to-256 tail convolution that cost Light ~4.5 ms at 512x512.
+    spec = importlib.util.spec_from_file_location(
+        "dual_tensorrt_graph", dual.VENDOR / "scripts/dual_tensorrt/graph.py"
+    )
+    assert spec is not None and spec.loader is not None
+    graph_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(graph_module)
+    tail = torch.nn.Sequential(
+        torch.nn.Conv2d(64, 256, 3, padding=1),
+        torch.nn.PixelShuffle(2),
+        torch.nn.Conv2d(64, 256, 3, padding=1),
+        torch.nn.PixelShuffle(2),
+        torch.nn.Conv2d(64, 3, 3, padding=1),
+    )
+    graph = graph_module.Graph(dual_arch, SimpleNamespace(channels=128, trunk=(8, 8)))
+    graph.tail_sequence("x", tail)
+    weights = {constant.name: tuple(constant.dims) for constant in graph.constants}
+    convolutions = [node for node in graph.nodes if node.op_type == "Conv"]
+    assert [weights[node.input[1]] for node in convolutions] == [
+        (256, 64, 3, 3),
+        (256, 64, 3, 3),
+        (12, 256, 3, 3),
+    ]
 
 
 def test_a_folded_xs_exports_a_fixed_size_tensorrt_onnx(tmp_path: Path):

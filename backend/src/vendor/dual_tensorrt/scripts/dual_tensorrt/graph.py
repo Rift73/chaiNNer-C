@@ -512,8 +512,9 @@ class Graph:
             elif isinstance(module, torch.nn.LeakyReLU):
                 x = self.op("LeakyRelu", [x], alpha=module.negative_slope)
             elif isinstance(module, torch.nn.PixelShuffle):
-                # Move a following RGB/readout 3x3 before the final shuffle.
-                if index + 1 < len(layers) and isinstance(
+                # Move a following RGB/readout 3x3 before the final shuffle. Only
+                # the readout: a moved 3x3 does scale**2 times the dense work.
+                if index + 2 == len(layers) and isinstance(
                     layers[index + 1], torch.nn.Conv2d
                 ):
                     next_conv = layers[index + 1]
