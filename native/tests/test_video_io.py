@@ -3,6 +3,8 @@
 Reference AST execution is test-only. Production contains no reference evaluator.
 Native cleanup deliberately terminates abandoned owned children, and successful
 writer completion/mux is idempotent; comparisons keep these corrections explicit.
+Save Video's audio mux compares with INTENDED_MUX instead of the installed nightly
+(upstream chaiNNer #3331).
 """
 
 from __future__ import annotations
@@ -160,6 +162,8 @@ class FakeProcess:
 class FakeStream:
     def __init__(self, env, label):
         self.env, self.label = env, label
+        # ffmpeg.input(path).audio keeps its file in its input node's kwargs.
+        self.node = types.SimpleNamespace(kwargs={"filename": label + "-source.mkv"})
 
     @property
     def audio(self):
@@ -257,12 +261,208 @@ class Context:
             callback()
 
 
+# Save Video's audio mux departs from both frozen references (owner-approved fix for
+# upstream chaiNNer #3331; ARCHITECTURE section 7). The "intended" oracle is the
+# frozen source snapshot, upstream v0.25.1's mux, with this block replaced. Against
+# upstream: (a) the options come first, so a WebM Copy raises before the mux as in
+# the installed nightly; (b) FFmpeg logs errors only, so its stderr is the error; (c)
+# Auto transcodes as Transcode does when the container cannot hold a copy; (d) the
+# temporary file never stays behind; (e) the command is always chaiNNer's FFmpeg
+# (upstream's PATH fallback is dead: Writer requires ffmpeg_env); (f) audio the mux
+# cannot carry raises instead of logging, and only a source without audio (probed
+# after a failure) saves the video without it; (g) os.replace swaps the files
+# atomically, so a failed swap keeps the video.
+INTENDED_MUX = (
+    """        if self.audio is not None:
+            video_path = self.save_path
+            if not os.path.exists(video_path):
+                logger.error(f"Video file not found at {video_path}")
+                return
+
+            base, ext = os.path.splitext(video_path)
+            audio_video_path = f"{base}_av{ext}"
+
+            # Default and auto -> copy
+            output_params = {
+                "vcodec": "copy",
+                "acodec": "copy",
+            }
+
+            try:
+                logger.debug(f"Attempting to process audio from: {self.audio}")
+
+                # Create video stream
+                video_stream = ffmpeg.input(str(video_path))
+
+                # Handle WebM specific settings
+                if self.container == VideoFormat.WEBM:
+                    if self.audio_settings in (
+                        AudioSettings.TRANSCODE,
+                        AudioSettings.AUTO,
+                    ):
+                        output_params["acodec"] = "libopus"
+                        output_params["b:a"] = "320k"
+                    else:
+                        raise ValueError(f"WebM does not support {self.audio_settings}")
+                elif self.audio_settings == AudioSettings.TRANSCODE:
+                    output_params["acodec"] = "aac"
+                    output_params["b:a"] = "320k"
+
+                # Use the ffmpeg environment from the class
+                cmd = (
+                    self.ffmpeg_env.ffmpeg if hasattr(self, "ffmpeg_env") else "ffmpeg"
+                )
+
+                output_video = ffmpeg.output(
+                    video_stream,  # video first
+                    self.audio,  # audio second (already an input stream)
+                    str(audio_video_path),
+                    **output_params,
+                ).overwrite_output()
+
+                try:
+                    ffmpeg.run(
+                        output_video, cmd=cmd, capture_stdout=True, capture_stderr=True
+                    )
+                except ffmpeg.Error as e:
+                    error_msg = e.stderr.decode() if hasattr(e, "stderr") else str(e)
+                    logger.error(f"FFmpeg error: {error_msg}")
+                    return
+
+                if os.path.exists(audio_video_path):
+                    os.remove(video_path)
+                    os.rename(audio_video_path, video_path)
+                else:
+                    logger.error(
+                        f"Expected output file not created: {audio_video_path}"
+                    )
+
+            except Exception as e:
+                error_msg = f"Failed to copy audio to video: {e!s}"
+                logger.warning(error_msg)
+
+                if os.path.exists(audio_video_path):
+                    try:
+                        os.remove(audio_video_path)
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            f"Failed to cleanup temporary file: {cleanup_error!s}"
+                        )
+""",
+    """        if self.audio is not None:
+
+            def options(settings):
+                params = {"vcodec": "copy", "acodec": "copy"}
+                if self.container == VideoFormat.WEBM:
+                    if settings in (AudioSettings.TRANSCODE, AudioSettings.AUTO):
+                        params["acodec"] = "libopus"
+                        params["b:a"] = "320k"
+                    else:
+                        raise ValueError(f"WebM does not support {settings}")
+                elif settings == AudioSettings.TRANSCODE:
+                    params["acodec"] = "aac"
+                    params["b:a"] = "320k"
+                params["loglevel"] = "error"  # (b)
+                return params
+
+            output_params = options(self.audio_settings)  # (a)
+            transcode_on_failure = (  # (c)
+                self.audio_settings == AudioSettings.AUTO
+                and output_params["acodec"] == "copy"
+            )
+            video_path = self.save_path
+            if not os.path.exists(video_path):
+                logger.error(f"Video file not found at {video_path}")
+                return
+
+            base, ext = os.path.splitext(video_path)
+            audio_video_path = f"{base}_av{ext}"
+
+            def discard():  # (d)
+                if os.path.exists(audio_video_path):
+                    try:
+                        os.remove(audio_video_path)
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            f"Failed to cleanup temporary file: {cleanup_error!s}"
+                        )
+
+            try:
+                logger.debug(f"Attempting to process audio from: {self.audio}")
+                video_stream = ffmpeg.input(str(video_path))
+                muxed = False
+                while True:
+                    output_video = ffmpeg.output(
+                        video_stream, self.audio, str(audio_video_path), **output_params
+                    ).overwrite_output()
+                    try:
+                        ffmpeg.run(
+                            output_video,
+                            cmd=self.ffmpeg_env.ffmpeg,  # (e)
+                            capture_stdout=True,
+                            capture_stderr=True,
+                        )
+                        muxed = True
+                        break
+                    except ffmpeg.Error as e:  # (f)
+                        if e.stderr is None:
+                            message = str(e)
+                        else:
+                            message = e.stderr.decode("utf-8", "replace").strip()
+                        source = self.audio.node.kwargs["filename"]
+                        probe = ffmpeg.probe(source, cmd=self.ffmpeg_env.ffprobe)
+                        codec = None
+                        for stream in probe["streams"]:
+                            if stream.get("codec_type") == "audio":
+                                codec = stream.get("codec_name", "unknown")
+                                break
+                        if codec is None:
+                            logger.warning(
+                                "The audio source has no audio stream, so the video"
+                                f" is saved without audio: {source}"
+                            )
+                            break
+                        container = self.container.value
+                        if transcode_on_failure:
+                            logger.info(
+                                f"Auto transcodes the {codec} audio, which the"
+                                f" .{container} file cannot hold as a copy: {message}"
+                            )
+                        elif output_params["acodec"] == "copy":
+                            raise RuntimeError(
+                                f"Save Video could not copy the {codec} audio into the"
+                                f" .{container} file. Set Audio to Auto or Transcode"
+                                f" to re-encode it. FFmpeg: {message}"
+                            )
+                        else:
+                            raise RuntimeError(
+                                f"Save Video could not transcode the {codec} audio to"
+                                f" {output_params['acodec']} for the .{container}"
+                                f" file. FFmpeg: {message}"
+                            )
+                    output_params = options(AudioSettings.TRANSCODE)
+                    transcode_on_failure = False
+                if not muxed:
+                    discard()
+                elif os.path.exists(audio_video_path):
+                    os.replace(audio_video_path, video_path)  # (g)
+                else:
+                    raise RuntimeError(
+                        f"Expected output file not created: {audio_video_path}"
+                    )
+            except Exception:
+                discard()
+                raise
+""",
+)
+
+
 def load(kind, component, env=None):
     rel = "nodes/impl/video.py" if component == "video" else NODE + component + ".py"
     path = (
         ROOT / "backend/src" / rel
         if kind.startswith("native")
-        else REFERENCE / kind / rel
+        else REFERENCE / ("source" if kind == "intended" else kind) / rel
     )
     namespace = types.ModuleType(f"video_test_{len(MODULES)}")
     MODULES.append(namespace)
@@ -299,7 +499,12 @@ def load(kind, component, env=None):
             ),
         }
     )
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    if kind == "intended" and component == "save_video":
+        frozen, corrected = INTENDED_MUX
+        assert text.count(frozen) == 1
+        text = text.replace(frozen, corrected)
+    tree = ast.parse(text)
     body: list[ast.stmt] = [
         ast.ImportFrom(
             module="__future__", names=[ast.alias(name="annotations")], level=0
@@ -347,7 +552,9 @@ def writer(
         save_path="owned/video." + container.lower(),
         output_params={"filename": "owned/video.mkv", "vcodec": "ffv1"},
         global_params=["-nostdin"],
-        ffmpeg_env=types.SimpleNamespace(ffmpeg="integrated-ffmpeg"),
+        ffmpeg_env=types.SimpleNamespace(
+            ffmpeg="integrated-ffmpeg", ffprobe="integrated-ffprobe"
+        ),
         out=out,
     )
 
@@ -359,6 +566,9 @@ def mock_os(env, exists=True):
     def rename(a, b):
         env.record("rename", a, b)
 
+    def replace(a, b):
+        env.record("replace", a, b)
+
     def path_exists(path):
         env.record("exists", path)
         return exists
@@ -367,6 +577,7 @@ def mock_os(env, exists=True):
         path=types.SimpleNamespace(splitext=os.path.splitext, exists=path_exists),
         remove=remove,
         rename=rename,
+        replace=replace,
     )
 
 
@@ -685,8 +896,9 @@ def test_frames_from_a_pipe_written_in_parts_arrive_whole():
 @pytest.mark.parametrize("container", ["MKV", "MP4", "MOV", "WEBM", "AVI", "GIF"])
 @pytest.mark.parametrize("audio_setting", ["AUTO", "COPY", "TRANSCODE"])
 def test_audio_policies_exact(container, audio_setting):
+    # The audio mux follows INTENDED_MUX, not the installed nightly (#3331).
     results = []
-    for kind in ("installed", "native"):
+    for kind in ("intended", "native"):
         env = FakeFFmpeg()
         g = load(kind, "save_video", env)
         g["os"] = mock_os(env)
@@ -698,23 +910,89 @@ def test_audio_policies_exact(container, audio_setting):
         )
         results.append((outcome(w.close), env.events.copy()))
     assert results[0] == results[1]
+    result, events = results[1]
+    if result[0] == "ok":
+        mux = next(e for e in events if e[0] == "output")
+        assert mux[1][:2] == (("stream", "input"), ("stream", "audio"))
+        run = next(e for e in events if e[0] == "run")
+        assert ("cmd", "integrated-ffmpeg") in run[2]
+    else:
+        assert (container, audio_setting) == ("WEBM", "COPY")
+
+
+RUN_ERROR = ffmpeg.Error("ffmpeg", b"out", b"error details")
 
 
 @pytest.mark.parametrize(
-    "step", ["input", "output", "overwrite", "run", "remove", "rename"]
+    "step", ["input", "output", "overwrite", "run", "probe", "replace", "remove"]
 )
-@pytest.mark.parametrize(
-    "error", [OSError("failure"), ffmpeg.Error("ffmpeg", b"out", b"error details")]
-)
-def test_audio_errors_exact(step, error):
+@pytest.mark.parametrize("error", [OSError("failure"), RUN_ERROR])
+@pytest.mark.parametrize("setting", ["AUTO", "COPY", "TRANSCODE"])
+def test_audio_errors_exact(step, error, setting):
+    # INTENDED_MUX (#3331): every failure reaches the caller after the temporary
+    # file is removed. The probe runs only after a failed mux, so it fails with one.
+    failures = {step: error} if step != "probe" else {"run": RUN_ERROR, step: error}
     results = []
-    for kind in ("installed", "native"):
-        env = FakeFFmpeg(failures={step: error})
+    for kind in ("intended", "native"):
+        env = FakeFFmpeg(failures=failures)
         g = load(kind, "save_video", env)
         g["os"] = mock_os(env)
-        w = writer(g, audio=FakeStream(env, "audio"))
+        w = writer(g, audio=FakeStream(env, "audio"), audio_settings=setting)
         results.append((outcome(w.close), env.events.copy()))
     assert results[0] == results[1]
+    if step != "remove":
+        assert results[1][0][0] == "error"
+        assert results[1][1][-1] == ("remove", "owned/video_av.mkv")
+
+
+class FailFirstMux(FakeFFmpeg):
+    """FFmpeg whose first mux fails as 5.1.2's does for PCM audio in MP4."""
+
+    def run(self, *args, **kwargs):
+        first = not any(e[0] == "run" for e in self.events)
+        self.record("run", args, kwargs)
+        if first:
+            raise ffmpeg.Error("ffmpeg", b"", b"Could not find tag for codec\n")
+
+
+@pytest.mark.parametrize("setting", ["AUTO", "COPY", "TRANSCODE"])
+@pytest.mark.parametrize("source_audio", [True, False])
+def test_failed_copy_transcodes_on_auto_and_raises_otherwise(setting, source_audio):
+    # #3331: Auto retries once with Transcode's options; Copy and Transcode raise;
+    # a source without audio has nothing to lose, so its video is kept quietly.
+    probe = valid_probe() if source_audio else {"streams": [{"codec_type": "video"}]}
+    results = []
+    for kind in ("intended", "native"):
+        env = FailFirstMux(probe=probe)
+        g = load(kind, "save_video", env)
+        g["os"] = mock_os(env)
+        w = writer(
+            g, container="MP4", audio=FakeStream(env, "audio"), audio_settings=setting
+        )
+        results.append((outcome(w.close), env.events.copy()))
+    assert results[0] == results[1]
+    result, events = results[1]
+    options = [dict(e[2]) for e in events if e[0] == "output"]
+    probes = [e for e in events if e[0] == "probe"]
+    assert probes[0] == (
+        "probe",
+        ("audio-source.mkv",),
+        (("cmd", "integrated-ffprobe"),),
+    )
+    if not source_audio:
+        assert result == ("ok", None) and len(options) == 1
+        assert not any(e[0] == "replace" for e in events)
+        assert any(e[0] == "warning" for e in events)
+    elif setting == "AUTO":
+        assert result == ("ok", None)
+        assert [o["acodec"] for o in options] == ["copy", "aac"]
+        assert options[1]["b:a"] == "320k"
+        assert events[-1] == ("replace", "owned/video_av.mp4", "owned/video.mp4")
+    else:
+        assert result[0] == "error" and result[1][0] == "RuntimeError"
+        assert "the unknown audio" in result[1][1]
+        assert ("Set Audio to Auto or Transcode" in result[1][1]) == (setting == "COPY")
+        assert len(options) == 1
 
 
 @pytest.mark.parametrize("encoder", [None, "H264", "H265", "VP9", "FFV1"])
@@ -877,8 +1155,9 @@ def test_additional_argument_policy(tmp_path, additional):
 @pytest.mark.parametrize("container", ["MKV", "MP4", "MOV", "WEBM", "AVI", "GIF"])
 @pytest.mark.parametrize("encoder", ["H264", "H265", "VP9", "FFV1"])
 def test_node_parameters_all_container_encoder_pairs(tmp_path, container, encoder):
+    # The node's audio mux follows INTENDED_MUX (#3331); the rest equals installed.
     results = []
-    for kind in ("installed", "native"):
+    for kind in ("intended", "native"):
         env = FakeFFmpeg()
         g = load(kind, "save_video", env)
         c = g["save_video_node"](
@@ -1047,13 +1326,15 @@ def test_real_cpu_lossless_decode_encode_and_audio(tmp_path):
         subprocess.run(
             command, check=True, stdin=subprocess.DEVNULL, capture_output=True
         )
+        # The audio mux follows INTENDED_MUX (#3331): video first, PATH-free.
         muxed = []
-        for kind in ("installed", "native"):
+        for kind, video in (("intended", "installed"), ("native", "native")):
             g = real_module(kind, "save_video")
             path = tmp_path / (kind + "-audio.mkv")
-            shutil.copyfile(tmp_path / (kind + ".mkv"), path)
+            shutil.copyfile(tmp_path / (video + ".mkv"), path)
             w = writer(g, audio=ffmpeg.input(str(audio_path)).audio)
             w.save_path = str(path)
+            w.ffmpeg_env = types.SimpleNamespace(ffmpeg=FFMPEG, ffprobe=FFPROBE)
             w.close()
             probe = ffmpeg.probe(str(path), cmd=FFPROBE)
             streams = [
@@ -1076,7 +1357,7 @@ def test_real_cpu_lossless_decode_encode_and_audio(tmp_path):
             )
             assert not path.with_name(path.stem + "_av.mkv").exists()
         assert muxed[0] == muxed[1]
-        assert [x[0] for x in muxed[0][0]] == ["audio", "video"]
+        assert [x[0] for x in muxed[0][0]] == ["video", "audio"]
     finally:
         for process in owned:
             if process.poll() is None:
@@ -1088,8 +1369,9 @@ def test_real_cpu_lossless_decode_encode_and_audio(tmp_path):
 
 @pytest.mark.parametrize("exists", [False, True])
 def test_missing_audio_video_exists_policy(exists):
+    # INTENDED_MUX (#3331): no video file, so no audio to lose; upstream's error log.
     results = []
-    for kind in ("installed", "native"):
+    for kind in ("intended", "native"):
         env = FakeFFmpeg()
         g = load(kind, "save_video", env)
         g["os"] = mock_os(env, exists=exists)
@@ -1104,10 +1386,10 @@ def test_missing_audio_video_exists_policy(exists):
 
 @pytest.mark.parametrize("setting", ["AUTO", "COPY", "TRANSCODE"])
 def test_audio_cleanup_nested_errors_and_ffmpeg_stderr(setting):
-    # Captured stderr=None; the installed policy catches only once. Retain its
-    # nested error policy and cleanup exception handling.
+    # Captured stderr=None, so the message is str(error); a cleanup failure is
+    # logged and the mux's own error still reaches the caller (INTENDED_MUX, #3331).
     results = []
-    for kind in ("installed", "native"):
+    for kind in ("intended", "native"):
         env = FakeFFmpeg(
             failures={
                 "run": ffmpeg.Error("ffmpeg", None, None),
@@ -1186,7 +1468,7 @@ def test_writer_external_process_not_owned():
     # A direct caller-supplied process is closed only by explicit Writer.close,
     # never by native owned-process resource cleanup/destruction.
     graph().video_writer_start(g, w, 2, 2)
-    graph().video_writer_close_installed(g, writer(g))
+    graph().video_writer_close(g, writer(g))
     del w
     gc.collect()
     assert external.returncode is None
@@ -1502,11 +1784,14 @@ def test_real_cpu_audio_transcode_policies(
         wav.setsampwidth(2)
         wav.setframerate(8000)
         wav.writeframes(np.repeat(np.arange(8000, dtype=np.int16), channels).tobytes())
+    # The audio mux follows INTENDED_MUX (#3331): video first.
     outputs = []
-    for kind in ("installed", "native"):
+    for kind in ("intended", "native"):
         g = real_module(kind, "save_video")
         g["FFMpegEnv"] = types.SimpleNamespace(
-            get_integrated=lambda _: types.SimpleNamespace(ffmpeg=FFMPEG)
+            get_integrated=lambda _: types.SimpleNamespace(
+                ffmpeg=FFMPEG, ffprobe=FFPROBE
+            )
         )
         context = Context()
         c = g["save_video_node"](
@@ -1525,7 +1810,7 @@ def test_real_cpu_audio_transcode_policies(
         try:
             for value in (0.25, 0.75):
                 c.on_iterate(np.full((24, 32, 3), value, np.float32))
-            c.on_complete()
+            result = outcome(c.on_complete)
         finally:
             context.cleanup()
         path = tmp_path / kind / ("clip." + container.lower())
@@ -1540,12 +1825,15 @@ def test_real_cpu_audio_transcode_policies(
             for x in probe["streams"]
         ]
         if channels == 1 and container == "WEBM":
-            # The installed fixed 320 kb/s Opus setting rejects mono input.
-            # Both paths must catch mux failure and preserve video without audio.
+            # The fixed 320 kb/s Opus setting rejects mono input (the bitrate is
+            # the owner's call). The run fails and keeps the video without audio.
+            assert result[0] == "error" and result[1][0] == "RuntimeError"
+            assert "transcode the pcm_s16le audio to libopus" in result[1][1]
             assert [item[0] for item in streams] == ["video"]
             audio = None
         else:
-            assert [item[0] for item in streams] == ["audio", "video"]
+            assert result == ("ok", None)
+            assert [item[0] for item in streams] == ["video", "audio"]
             audio, _ = (
                 ffmpeg.input(str(path))
                 .output("pipe:", format="s16le", acodec="pcm_s16le", loglevel="error")
@@ -1553,7 +1841,12 @@ def test_real_cpu_audio_transcode_policies(
             )
         assert not path.with_name(path.stem + "_av" + path.suffix).exists()
         outputs.append(
-            (streams, audio, [x.tobytes() for x in decode("native", path)[1]])
+            (
+                result[0],
+                streams,
+                audio,
+                [x.tobytes() for x in decode("native", path)[1]],
+            )
         )
     assert outputs[0] == outputs[1]
 

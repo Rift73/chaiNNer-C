@@ -419,80 +419,98 @@ void writer_frame(const py::dict&g,const O&self,const O&image,const O&prepared) 
     else fail(PyExc_RuntimeError,"Failed to open video writer");
 }
 
-py::dict audio_options(const py::dict&g,const O&self) {
+py::dict audio_options(const py::dict&g,const O&self,const O&settings) {
     py::dict p=dict({{"vcodec",py::str("copy")},{"acodec",py::str("copy")}});
     if(eq(self.attr("container"),member(g,"VideoFormat","WEBM"))) {
-        if(graphpy::contains(py::make_tuple(member(g,"AudioSettings","TRANSCODE"),member(g,"AudioSettings","AUTO")),self.attr("audio_settings"))) {
+        if(graphpy::contains(py::make_tuple(member(g,"AudioSettings","TRANSCODE"),member(g,"AudioSettings","AUTO")),settings)) {
             p["acodec"]="libopus";p["b:a"]="320k";
-        } else graphpy::raise(PyExc_ValueError,fmt("WebM does not support {}",self.attr("audio_settings")));
-    } else if(eq(self.attr("audio_settings"),member(g,"AudioSettings","TRANSCODE"))) {
+        } else graphpy::raise(PyExc_ValueError,fmt("WebM does not support {}",settings));
+    } else if(eq(settings,member(g,"AudioSettings","TRANSCODE"))) {
         p["acodec"]="aac";p["b:a"]="320k";
     }
+    p["loglevel"]="error"; // FFmpeg's stderr is then its error alone, which a failed mux reports.
     return p;
 }
-void close_installed(const py::dict&g,const O&self) {
-    if(self.attr("audio").is_none())return;
-    O path=self.attr("save_path"),os=global(g,"os"),ffmpeg=global(g,"ffmpeg");
-    O parts=os.attr("path").attr("splitext")(path);
-    O av=py::str("{}_av{}").attr("format")(parts[py::int_(0)],parts[py::int_(1)]);
-    py::dict params=audio_options(g,self); // Installed WebM COPY error precedes try.
-    try {
-        O video=ffmpeg.attr("input")(path);
-        O output=call(ffmpeg.attr("output"),py::make_tuple(self.attr("audio"),video,av),params).attr("overwrite_output")();
-        ffmpeg.attr("run")(output); // Installed audio-first and PATH command policy.
-        os.attr("remove")(path);
-        os.attr("rename")(av,path);
-    } catch(const py::error_already_set&e) {
-        if(!e.matches(PyExc_Exception))throw;
-        GraphHandledException handled(e);
-        global(g,"logger").attr("warning")("Failed to copy audio to video, input file probably contains no audio or audio stream is supported by this container. Ignoring audio settings.");
-        try {os.attr("remove")(av);}
-        catch(const py::error_already_set&cleanup) {if(!cleanup.matches(PyExc_Exception))throw;}
+O first_audio_codec(const py::dict&g,const O&self,const O&source) {
+    // The codec of the first audio stream in `source`, or None when it has no audio.
+    O probe=global(g,"ffmpeg").attr("probe")(source,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffprobe"));
+    for(py::handle sh:probe[py::str("streams")]) {
+        O stream=py::reinterpret_borrow<O>(sh);
+        if(eq(stream.attr("get")("codec_type"),py::str("audio")))return stream.attr("get")("codec_name","unknown");
     }
+    return py::none();
 }
-void close_source(const py::dict&g,const O&self) {
+void mux_audio(const py::dict&g,const O&self) {
+    // chaiNNer's own FFmpeg muxes the audio after the video (upstream chaiNNer v0.25.1).
+    // Auto copies the audio and, when the container cannot hold the copy, transcodes it
+    // as Transcode does. Audio the mux cannot carry fails the run instead of leaving a
+    // silent video (upstream chaiNNer #3331); a source without audio has none to carry.
     if(self.attr("audio").is_none())return;
+    O container=self.attr("container");
+    py::dict params=audio_options(g,self,self.attr("audio_settings")); // A WebM Copy raises before the mux.
+    bool transcode_on_failure=eq(self.attr("audio_settings"),member(g,"AudioSettings","AUTO")) && eq(params["acodec"],py::str("copy"));
     O path=self.attr("save_path"),os=global(g,"os"),ffmpeg=global(g,"ffmpeg"),logger=global(g,"logger");
     if(!truth(os.attr("path").attr("exists")(path))) {logger.attr("error")(fmt("Video file not found at {}",path));return;}
     O parts=os.attr("path").attr("splitext")(path);
     O av=py::str("{}_av{}").attr("format")(parts[py::int_(0)],parts[py::int_(1)]);
+    auto discard=[&]() {
+        // A failed mux can leave FFmpeg's empty or partial output behind.
+        if(!truth(os.attr("path").attr("exists")(av)))return;
+        try {os.attr("remove")(av);}
+        catch(const py::error_already_set&cleanup) {
+            if(!cleanup.matches(PyExc_Exception))throw;
+            GraphHandledException cleanup_handled(cleanup);
+            logger.attr("warning")(fmt("Failed to cleanup temporary file: {}",builtin("str")(cleanup.value())));
+        }
+    };
     try {
         logger.attr("debug")(fmt("Attempting to process audio from: {}",self.attr("audio")));
         O video=ffmpeg.attr("input")(builtin("str")(path));
-        py::dict params=audio_options(g,self);
-        O command=py::hasattr(self,"ffmpeg_env")?O(self.attr("ffmpeg_env").attr("ffmpeg")):O(py::str("ffmpeg"));
-        O output=call(ffmpeg.attr("output"),py::make_tuple(video,self.attr("audio"),builtin("str")(av)),params).attr("overwrite_output")();
-        try {ffmpeg.attr("run")(output,py::arg("cmd")=command,py::arg("capture_stdout")=true,py::arg("capture_stderr")=true);}
-        catch(const py::error_already_set&e) {
-            if(!e.matches(ffmpeg.attr("Error").ptr()))throw;
-            GraphHandledException handled(e);
-            O message=py::hasattr(e.value(),"stderr")?O(e.value().attr("stderr").attr("decode")()):O(builtin("str")(e.value()));
-            logger.attr("error")(fmt("FFmpeg error: {}",message));return;
+        bool muxed=false;
+        for(;;) {
+            O output=call(ffmpeg.attr("output"),py::make_tuple(video,self.attr("audio"),builtin("str")(av)),params).attr("overwrite_output")();
+            try {ffmpeg.attr("run")(output,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffmpeg"),py::arg("capture_stdout")=true,py::arg("capture_stderr")=true);muxed=true;break;}
+            catch(const py::error_already_set&e) {
+                if(!e.matches(ffmpeg.attr("Error").ptr()))throw;
+                GraphHandledException handled(e);
+                O stderr_bytes=e.value().attr("stderr");
+                O message=stderr_bytes.is_none()?O(builtin("str")(e.value())):O(stderr_bytes.attr("decode")("utf-8","replace").attr("strip")());
+                // Load Video's audio is ffmpeg.input(path).audio: probe that file.
+                O source=self.attr("audio").attr("node").attr("kwargs")[py::str("filename")];
+                O codec=first_audio_codec(g,self,source);
+                if(codec.is_none()) {
+                    logger.attr("warning")(fmt("The audio source has no audio stream, so the video is saved without audio: {}",source));
+                    break;
+                }
+                O ext=container.attr("value");
+                if(transcode_on_failure) {
+                    logger.attr("info")(py::str("Auto transcodes the {} audio, which the .{} file cannot hold as a copy: {}").attr("format")(codec,ext,message));
+                } else if(eq(params["acodec"],py::str("copy"))) {
+                    graphpy::raise(PyExc_RuntimeError,py::str("Save Video could not copy the {} audio into the .{} file. Set Audio to Auto or Transcode to re-encode it. FFmpeg: {}").attr("format")(codec,ext,message));
+                } else {
+                    graphpy::raise(PyExc_RuntimeError,py::str("Save Video could not transcode the {} audio to {} for the .{} file. FFmpeg: {}").attr("format")(codec,params["acodec"],ext,message));
+                }
+            }
+            params=audio_options(g,self,member(g,"AudioSettings","TRANSCODE"));transcode_on_failure=false;
         }
-        if(truth(os.attr("path").attr("exists")(av))) {os.attr("remove")(path);os.attr("rename")(av,path);}
-        else logger.attr("error")(fmt("Expected output file not created: {}",av));
+        if(!muxed)discard();
+        else if(truth(os.attr("path").attr("exists")(av)))os.attr("replace")(av,path); // Atomic: the video survives a failure.
+        else graphpy::raise(PyExc_RuntimeError,fmt("Expected output file not created: {}",av));
     } catch(const py::error_already_set&e) {
         if(!e.matches(PyExc_Exception))throw;
         GraphHandledException handled(e);
-        logger.attr("warning")(fmt("Failed to copy audio to video: {}",builtin("str")(e.value())));
-        if(truth(os.attr("path").attr("exists")(av))) {
-            try {os.attr("remove")(av);}
-            catch(const py::error_already_set&cleanup) {
-                if(!cleanup.matches(PyExc_Exception))throw;
-                GraphHandledException cleanup_handled(cleanup);
-                logger.attr("warning")(fmt("Failed to cleanup temporary file: {}",builtin("str")(cleanup.value())));
-            }
-        }
+        discard();
+        throw;
     }
 }
-void writer_close(const py::dict&g,const O&self,bool installed) {
+void writer_close(const py::dict&g,const O&self) {
     auto state=resource(self);
     if(state->completed || state->aborted)return; // Completion/mux occurs once; abort never commits.
     if(!self.attr("out").is_none()) {
         if(!self.attr("out").attr("stdin").is_none())self.attr("out").attr("stdin").attr("close")();
         self.attr("out").attr("wait")();
     }
-    if(installed)close_installed(g,self);else close_source(g,self);
+    mux_audio(g,self);
     state->completed=true;
 }
 
@@ -702,7 +720,6 @@ void cn_bind_video_io(pybind11::module_&m) {
     m.def("video_stream_frames",[](const py::dict&g,const O&loader){return std::make_shared<FrameIterator>(g,loader);});
     m.def("video_container_encoders",&container_encoders);m.def("video_encoder_formats",&encoder_formats);
     m.def("video_simple_format",&simple_format);m.def("video_writer_start",&writer_start);m.def("video_writer_frame",&writer_frame);
-    m.def("video_writer_close_source",[](const py::dict&g,const O&self){writer_close(g,self,false);});
-    m.def("video_writer_close_installed",[](const py::dict&g,const O&self){writer_close(g,self,true);});
+    m.def("video_writer_close",&writer_close);
     m.def("video_load",&load_video);m.def("video_save",&save_video);
 }

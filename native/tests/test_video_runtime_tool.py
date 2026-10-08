@@ -151,6 +151,32 @@ def test_pixel_or_fps_difference_fails_comparison(field):
     assert not compare(old, new)["success"]
 
 
+AUDIO = {"codec_type": "audio", "codec_name": "pcm_s16le", "channels": 2}
+VIDEO = {"codec_type": "video", "codec_name": "ffv1", "width": 32}
+
+
+@pytest.mark.parametrize(
+    ("port", "equal"),
+    [
+        ([VIDEO, AUDIO], True),
+        ([AUDIO, VIDEO], False),
+        ([VIDEO, {**AUDIO, "channels": 1}], False),
+        ([VIDEO], False),
+    ],
+    ids=["video-first", "oracle-order", "audio-differs", "audio-lost"],
+)
+def test_audio_mux_compares_the_oracle_video_first(port, equal):
+    """The port muxes the audio after the video (upstream chaiNNer #3331); every
+    stream must still equal the oracle's."""
+    old = run_fixture()
+    new = copy.deepcopy(old)
+    semantic = old["fixtures"][0]["attempts"][0]["files"]["video.mkv"]["semantic"]
+    semantic["streams"] = [AUDIO, VIDEO]
+    port_semantic = new["fixtures"][0]["attempts"][0]["files"]["video.mkv"]["semantic"]
+    port_semantic["streams"] = port
+    assert compare(old, new)["success"] == equal
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

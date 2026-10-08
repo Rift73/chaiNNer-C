@@ -278,6 +278,18 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   Pillow, keeping straight colour, where upstream's OpenCV path premultiplies it and loses the colour under alpha 0
   (upstream chaiNNer #409; owner-approved 2026-10-09). Every other file, associated alpha included, takes the OpenCV
   path as before (`backend/tests/test_load_image_tiff_alpha.py`).
+- Save Video's audio mux (owner-approved, upstream chaiNNer #3331): chaiNNer's own FFmpeg muxes the audio after the
+  video, as upstream v0.25.1 does, where the frozen nightly ran the `ffmpeg` on `PATH` with the audio first and only
+  logged a failure, so without FFmpeg on `PATH` every saved video was silent. Auto copies the audio and, when the
+  container cannot hold the copy (PCM in MP4 on the integrated FFmpeg 5.1.2), transcodes it with Transcode's options
+  (AAC at 320 kb/s; upstream has no fallback). Audio the mux cannot carry fails the run instead of leaving a silent
+  video, where upstream logs: Copy names the codec and container and suggests Auto or Transcode, a failed transcode
+  names its encoder (mono audio into WebM's fixed 320 kb/s Opus fails so, the bitrate is the owner's call); a WebM
+  Copy still raises before the mux, as in the nightly. Only a source file without audio saves the video without it.
+  The temporary file never stays behind, and `os.replace` swaps the files, so a failed swap keeps the video. Video
+  packets are unchanged; the stream order and, where a PATH FFmpeg differed, the audio encoder's build change. The
+  tests' oracle is the frozen v0.25.1 mux with these departures (`INTENDED_MUX`, `native/tests/test_video_io.py`), and
+  the video verifier compares the oracle's files video stream first (`verify_video_runtime.video_first`).
 - Sibling event order (SP2): inputs awaited together (`owned_gather`, section 4) start and finish in pool-timing
   order, where upstream awaits inputs in turn (`start a, finish a, start b, finish b`). The event multiset and each
   node's final state are identical (`verify_runtime.event_contract` and `sse_contract` compare no order); item order

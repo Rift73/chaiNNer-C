@@ -776,6 +776,24 @@ def run_backend(
     return result
 
 
+def video_first(semantic: object) -> object:
+    """A decoded video file's semantic with its video streams before the rest.
+
+    Save Video muxes the source's audio after the video (owner-approved fix for
+    upstream chaiNNer #3331; ARCHITECTURE section 7) where the installed oracle put
+    it first. The port's file must match the oracle's stream for stream; only their
+    order moves. Every other semantic passes unchanged.
+    """
+    if not isinstance(semantic, dict) or "streams" not in semantic:
+        return semantic
+    streams = semantic["streams"]
+    return {
+        **semantic,
+        "streams": [s for s in streams if s["codec_type"] == "video"]
+        + [s for s in streams if s["codec_type"] != "video"],
+    }
+
+
 def compare_runs(baseline: dict, converted: dict) -> dict:
     comparisons = {}
     for old, new in zip(baseline["fixtures"], converted["fixtures"], strict=True):
@@ -789,7 +807,7 @@ def compare_runs(baseline: dict, converted: dict) -> dict:
             continue
         a, b = old["attempts"][0], new["attempts"][0]
         semantics = {
-            key: value.get("semantic") for key, value in a["files"].items()
+            key: video_first(value.get("semantic")) for key, value in a["files"].items()
         } == {key: value.get("semantic") for key, value in b["files"].items()}
         oracle = {
             **a,
