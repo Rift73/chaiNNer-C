@@ -372,18 +372,21 @@ const PackagesSection = memo(
         progress,
     }: PackagesSectionProps) => {
         const infos = packages.map((p) => new PackageUpdateInfo(p, installedPyPi || {}));
+        // A disabled package's own Install and Update buttons are disabled (TensorRT
+        // without an NVIDIA GPU), so the All button leaves it out too.
+        const enabledInfos = infos.filter((_, i) => !packages[i].disabled);
 
-        const canUpdate = infos.filter((i) => i.canUpdate).length;
-        const canInstall = infos.filter((i) => i.canInstall).length;
+        const canUpdate = enabledInfos.filter((i) => i.canUpdate).length;
+        const canInstall = enabledInfos.filter((i) => i.canInstall).length;
 
         const operationsForAll = [
             ...(canUpdate ? ['Update'] : []),
             ...(canInstall ? ['Install'] : []),
         ].join('/');
         const showAll = canUpdate + canInstall > 1;
-        const allOperationPackages = packages.filter((_, i) => {
+        const allOperationPackages = packages.filter((p, i) => {
             const info = infos[i];
-            return info.canInstall || info.canUpdate;
+            return !p.disabled && (info.canInstall || info.canUpdate);
         });
 
         return (
@@ -934,14 +937,16 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
 
     const availableUpdates = useMemo((): number => {
         if (!installedPyPi) return 0;
-        return packages.filter(({ dependencies }) =>
-            dependencies.some(({ version, pypiName }) => {
-                const installed = installedPyPi[pypiName];
-                if (!installed) {
-                    return true;
-                }
-                return versionGt(version, installed);
-            })
+        return packages.filter(
+            ({ dependencies, disabled }) =>
+                !disabled &&
+                dependencies.some(({ version, pypiName }) => {
+                    const installed = installedPyPi[pypiName];
+                    if (!installed) {
+                        return true;
+                    }
+                    return versionGt(version, installed);
+                })
         ).length;
     }, [packages, installedPyPi]);
 

@@ -46,3 +46,33 @@ def test_a_plain_version_is_a_floor(
     dependency = DependencyInfo(package_name="einops", version="0.8.2")
     monkeypatch.setattr(store, "installed_packages", {"einops": installed})
     assert (filter_necessary_to_install([dependency]) == [dependency]) is needed
+
+
+def test_each_extra_index_url_gets_its_own_flag(monkeypatch: pytest.MonkeyPatch):
+    # pip reads a comma-joined list as one URL, so a batch of packages from two
+    # indexes (Install All) would find neither's wheels.
+    commands: list[list[str]] = []
+
+    def check_call(command: list[str], **_kwargs: object) -> int:
+        commands.append(command)
+        return 0
+
+    monkeypatch.setattr(store, "installed_packages", {})
+    monkeypatch.setattr(store.subprocess, "check_call", check_call)
+    store.install_dependencies_sync(
+        [
+            DependencyInfo("torch", "2.14.1", extra_index_url="https://b.invalid/whl"),
+            DependencyInfo(
+                "onnxruntime", "1.30.0", extra_index_url="https://a.invalid"
+            ),
+            DependencyInfo("einops", "0.8.2"),
+        ]
+    )
+    [command] = commands
+    first = command.index("--extra-index-url")
+    assert command[first:] == [
+        "--extra-index-url",
+        "https://a.invalid",
+        "--extra-index-url",
+        "https://b.invalid/whl",
+    ]

@@ -89,22 +89,25 @@ def filter_necessary_to_install(dependencies: Iterable[DependencyInfo]):
     return dependencies_to_install
 
 
+def extra_index_args(dependencies: Iterable[DependencyInfo]) -> list[str]:
+    """pip's --extra-index-url arguments, one per URL: pip takes a comma-joined
+    list as a single URL, which matches nothing."""
+    urls = sorted(
+        {
+            dep_info.extra_index_url
+            for dep_info in dependencies
+            if dep_info.extra_index_url
+        }
+    )
+    return [arg for url in urls for arg in ("--extra-index-url", url)]
+
+
 def install_dependencies_sync(
     dependencies: list[DependencyInfo],
 ):
     dependencies_to_install = filter_necessary_to_install(dependencies)
     if len(dependencies_to_install) == 0:
         return 0
-
-    extra_index_urls = {
-        dep_info.extra_index_url
-        for dep_info in dependencies_to_install
-        if dep_info.extra_index_url
-    }
-
-    extra_index_args = []
-    if len(extra_index_urls) > 0:
-        extra_index_args.extend(["--extra-index-url", ",".join(extra_index_urls)])
 
     exit_code = subprocess.check_call(
         [
@@ -115,7 +118,7 @@ def install_dependencies_sync(
             *[pin(dep_info) for dep_info in dependencies_to_install],
             "--disable-pip-version-check",
             "--no-warn-script-location",
-            *extra_index_args,
+            *extra_index_args(dependencies_to_install),
         ],
         env=ENV,
     )
@@ -149,16 +152,6 @@ async def install_dependencies(
     deps_counter = 0
     transitive_deps_counter = 0
 
-    extra_index_urls = {
-        dep_info.extra_index_url
-        for dep_info in dependencies_to_install
-        if dep_info.extra_index_url
-    }
-
-    extra_index_args = []
-    if len(extra_index_urls) > 0:
-        extra_index_args.extend(["--extra-index-url", ",".join(extra_index_urls)])
-
     def get_progress_amount():
         transitive_progress = 1 - 1 / (2**transitive_deps_counter)
         progress = (deps_counter + transitive_progress) / (deps_count + 1)
@@ -179,7 +172,7 @@ async def install_dependencies(
             "--no-warn-script-location",
             "--progress-bar=json",
             "--no-cache-dir",
-            *extra_index_args,
+            *extra_index_args(dependencies_to_install),
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
