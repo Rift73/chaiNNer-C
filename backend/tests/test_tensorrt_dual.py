@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 
 import onnx
@@ -69,36 +67,3 @@ def test_a_folded_xs_exports_a_fixed_size_tensorrt_onnx(tmp_path: Path):
     info = load_onnx_model(onnx_bytes).info
     assert (info.fixed_input_height, info.fixed_input_width) == (32, 64)
     assert (info.scale_height, info.input_channels, info.output_channels) == (1, 3, 3)
-
-
-def test_plugins_compile_against_the_bundled_headers_or_a_given_sdk(tmp_path: Path):
-    bundled = dual.headers_root(None)
-    assert (bundled / "include" / "NvInfer.h").is_file()
-    assert (bundled / "LICENSE").is_file()
-    with pytest.raises(ValueError, match="not a TensorRT SDK"):
-        dual.headers_root(tmp_path)
-    (tmp_path / "include").mkdir()
-    (tmp_path / "include" / "NvInfer.h").write_text("// another version")
-    assert dual.headers_root(tmp_path) == tmp_path
-    # other headers make other plugins: they get their own bundle
-    assert dual.bundle_id(tmp_path) != dual.bundle_id(bundled)
-
-
-def test_a_cached_plugin_bundle_is_reused_and_checked(tmp_path: Path):
-    export = tmp_path / "export"
-    export.mkdir()
-    specialization = {"plugin_key": "c128_h64_w64"}
-    (export / "export.json").write_text(json.dumps({"specialization": specialization}))
-    cache = tmp_path / "cache"
-    root = dual.headers_root(None)
-    bundle = cache / f"c128_h64_w64_sm120_{dual.bundle_id(root)}"
-    library = bundle / "plugins" / "Release" / "DualNorm.dll"
-    library.parent.mkdir(parents=True)
-    library.write_bytes(b"plugin")
-    entry = {"path": str(library), "sha256": hashlib.sha256(b"plugin").hexdigest()}
-    plugins = bundle / "plugins" / "plugins.json"
-    plugins.write_text(json.dumps({"libraries": [entry]}))
-    assert dual.plugin_bundle(export, 120, cache, root) == plugins
-    library.write_bytes(b"changed")
-    with pytest.raises(RuntimeError, match="were modified"):
-        dual.plugin_bundle(export, 120, cache, root)

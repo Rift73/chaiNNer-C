@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from enum import Enum
-from pathlib import Path
 
 import tensorrt as trt
 from sanic.log import logger
@@ -15,7 +14,6 @@ from nodes.impl.tensorrt.memory import get_cuda_compute_capability
 from nodes.impl.tensorrt.model import TensorRTEngine, TensorRTEngineInfo
 from nodes.properties.inputs import (
     BoolInput,
-    DirectoryInput,
     EnumInput,
     NumberInput,
     OnnxModelInput,
@@ -60,7 +58,7 @@ if utility_group is not None:
             "Building an engine can take several minutes depending on the model size and optimization settings.",
             "The built engine is optimized specifically for your GPU and TensorRT version.",
             "It is recommended to save the built engine for reuse, as building is slow.",
-            "A DUAL ONNX from Convert To ONNX builds with its own fixed size and precision and its TensorRT plugins, which are compiled once per size and GPU (this needs the CUDA Toolkit, CMake and Visual Studio 2022 Build Tools). The engine carries the plugins' native code: only load engines you trust.",
+            "A DUAL ONNX from Convert To ONNX builds with its own fixed size and precision and its TensorRT plugins, which are compiled once per size and GPU (its plugins are Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). Upscale Image replays such fixed-size engines from a CUDA graph.",
         ],
         icon="BsNvidia",
         inputs=[
@@ -162,14 +160,6 @@ if utility_group is not None:
                 "Off keeps FP32 layers fully FP32. It applies to every FP32 layer, including those"
                 " of mixed-precision models.",
             ),
-            DirectoryInput("TensorRT SDK Path", has_handle=False)
-            .make_optional()
-            .with_docs(
-                "DUAL only: a TensorRT SDK folder (holding include\\NvInfer.h) whose headers"
-                " and library its plugins compile against. Empty uses the TensorRT 11.2"
-                " headers bundled with chaiNNer-C.",
-                hint=True,
-            ),
         ],
         outputs=[
             TensorRTEngineOutput(),
@@ -191,14 +181,13 @@ if utility_group is not None:
         static_width: int,
         workspace: float,
         allow_tf32: bool,
-        tensorrt_sdk: Path | None,
     ) -> TensorRTEngine:
         settings = get_settings(context)
         gpu_index = settings.gpu_index
 
         manifest = dual.export_manifest(onnx_model.bytes)
         if manifest is not None:
-            return build_dual_engine(onnx_model, manifest, settings, tensorrt_sdk)
+            return build_dual_engine(onnx_model, manifest, settings)
 
         # Determine timing cache path
         timing_cache_path = None
@@ -253,7 +242,6 @@ def build_dual_engine(
     onnx_model: OnnxModel,
     manifest: dict,
     settings: TensorRTSettings,
-    tensorrt_sdk: Path | None,
 ) -> TensorRTEngine:
     """DUAL's specialized engine: the ONNX's size and precision; the node's precision,
     shape, workspace and TF32 inputs do not apply."""
@@ -270,14 +258,7 @@ def build_dual_engine(
         major,
         minor,
     )
-    engine_bytes = dual.build_engine(
-        onnx_model.bytes,
-        manifest,
-        major * 10 + minor,
-        settings.gpu_index,
-        settings.dual_plugin_cache,
-        tensorrt_sdk,
-    )
+    engine_bytes = dual.build_engine(onnx_model.bytes, manifest, settings.gpu_index)
     shape = (1, 3, spec["height"], spec["width"])
     info = TensorRTEngineInfo(
         precision="bf16",

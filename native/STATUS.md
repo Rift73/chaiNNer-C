@@ -68,19 +68,22 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   pip freeze writes it (`read_lock` takes the wheel's version). The local overlay is retired by the owner (only the
   three architectures are used); the repo runtime and D:\chaiNNer carry the fork, D:\chaiNNer's old spandrel is
   in `D:\chaiNNer-spandrel-backup-20261008`.
-- DUAL to TensorRT (owner, 2026-10-08, 1.5 h): traiNNer-redux's DUAL TensorRT tooling is vendored in
-  `backend/src/vendor/dual_tensorrt` (canonical `dual_arch.py` SHA `a7c579c5…`, exporter, Triton kernels, IPluginV3
-  plugins; its guide is the README), unchanged but for the plugin CMake project's TensorRT library, now optional
-  (the plugins call no TensorRT function). Convert To ONNX gives a DUAL preset a fixed-size TensorRT ONNX (CPU
-  child process); Build Engine compiles the kernels (triton-windows 3.5.1.post22, a TensorRT-package dependency)
-  and the four plugin DLLs once per size, SM and headers (cache setting, short staging folder for nvcc's path
-  limit) against TensorRT 11.2's headers from NVIDIA's open-source repository (`backend/src/vendor/tensorrt`,
-  Apache-2.0, content equal to the SDK's) or an optional TensorRT SDK Path, then builds with chaiNNer-C's TensorRT
-  Python API in a child process (`dual_engine_worker.py`, the guide's trtexec policy); the engine embeds the
-  plugins. No TensorRT SDK needed; CUDA Toolkit, CMake and VS 2022 Build Tools are. Gate 6 (fresh process vs folded
-  PyTorch FP32): Light x4 (owner checkpoint) and XS x4 (synthetic, nonzero experts) at 256x256 pass on all six
-  inputs, error at or under the BF16 floor, max abs <= 0.0125, repeatable; same with the SDK-free build. TensorRT
-  loads embedded plugins without `engine_host_code_allowed`, so no trust gate.
+- DUAL to TensorRT (owner, 2026-10-08, 1.5 h + 2 h): traiNNer-redux's DUAL exporter is vendored in
+  `backend/src/vendor/dual_tensorrt` (canonical `dual_arch.py` SHA `a7c579c5…`, export/graph/spec/kernels, its
+  contract tests and `build.py` for them; its guide is the README). Convert To ONNX gives a DUAL preset a
+  fixed-size TensorRT ONNX (CPU child process, the guide's C++ plugin nodes). Build Engine runs
+  `dual_engine_worker.py` in a child process: `dual_aot.lower` swaps the plugin nodes for stand-in operators
+  (TensorRT 11.2's ONNX parser mixes up Python plugin instances), `attach` adds the plugins as AOT Python plugins
+  (`tensorrt.plugin`): the vendored Triton kernels plus Triton Norm and barrier, Core split into three, compiled to
+  PTX by triton-windows 3.5.1.post22 (a TensorRT-package dependency) for the GPU and embedded in the engine; the
+  guide's builder policy. No C++ compiler, CUDA Toolkit or TensorRT SDK. AOT plugins cost ~0.3 ms host time per
+  launch, so TensorRTSession replays fixed-shape engines from a CUDA graph (Light x4 256x256 per tile: 48 ms plain,
+  9.0 ms replayed; C++ plugins 9.2 / 8.0 ms); through the session 11.6 vs 10.9 ms (256x256) and 72.7 vs 72.0 ms
+  (540x300) against the C++ plugins. Gate 6 (fresh process without plugin registration vs folded PyTorch FP32):
+  Light x4 (owner checkpoint) and XS x4 (synthetic, nonzero experts) at 256x256 pass on all six inputs, error at or
+  under the BF16 floor, max abs <= 0.0116. The C++ plugin route (CMake + nvcc + MSVC, vendored TensorRT headers,
+  TensorRT SDK Path) was removed in the commit after `cb735a43`; reverting that commit restores it (Fable ruling).
+  TensorRT loads embedded plugins without `engine_host_code_allowed`, so no trust gate.
 
 ## Last CPU comparison
 
