@@ -12,7 +12,7 @@ from typing import Any, Literal
 class TensorRTEngineInfo:
     """Metadata about a TensorRT engine."""
 
-    precision: Literal["fp32", "fp16", "bf16", "int8"]
+    precision: Literal["fp32", "fp16", "bf16", "int8", "mixed"]
     input_channels: int
     output_channels: int
     scale: int | None
@@ -93,7 +93,7 @@ class TensorRTEngine:
             self.deserialized.release()
 
     @property
-    def precision(self) -> Literal["fp32", "fp16", "bf16", "int8"]:
+    def precision(self) -> Literal["fp32", "fp16", "bf16", "int8", "mixed"]:
         return self.info.precision
 
     @property

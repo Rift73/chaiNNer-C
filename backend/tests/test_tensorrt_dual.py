@@ -13,6 +13,7 @@ from spandrel.architectures.DUAL.__arch import dual_arch
 from spandrel.architectures.DUAL.__arch.dual_arch import dual_xs
 
 from nodes.impl.onnx.load import load_onnx_model
+from nodes.impl.onnx.model import MIXED
 from nodes.impl.tensorrt import dual
 
 
@@ -43,6 +44,7 @@ def _plain_onnx() -> bytes:
 
 def test_only_a_dual_export_has_a_manifest():
     assert dual.export_manifest(_plain_onnx()) is None
+    assert dual.export_manifest(onnx.load_from_string(_plain_onnx())) is None
 
 
 def test_only_the_rgb_readout_moves_ahead_of_its_pixel_shuffle():
@@ -80,11 +82,16 @@ def _folded_xs(tmp_path: Path):
     return ModelLoader("cpu").load_from_file(path)  # folded on load
 
 
-def test_a_folded_xs_exports_a_fixed_size_tensorrt_onnx(tmp_path: Path):
-    descriptor = _folded_xs(tmp_path)
-    onnx_bytes = dual.export_onnx(
+@pytest.fixture(scope="module")
+def fixed_xs_onnx(tmp_path_factory: pytest.TempPathFactory) -> bytes:
+    descriptor = _folded_xs(tmp_path_factory.mktemp("xs"))
+    return dual.export_onnx(
         descriptor.model.state_dict(), descriptor.tags, descriptor.scale, (32, 64)
     )
+
+
+def test_a_folded_xs_exports_a_fixed_size_tensorrt_onnx(fixed_xs_onnx: bytes):
+    onnx_bytes = fixed_xs_onnx
     manifest = dual.export_manifest(onnx_bytes)
     assert manifest is not None
     spec = manifest["specialization"]
@@ -96,11 +103,19 @@ def test_a_folded_xs_exports_a_fixed_size_tensorrt_onnx(tmp_path: Path):
     )
     assert spec["plugin_key"] == "c128_h32_w64"
     assert manifest["checkpoint_folded"] is True
-    domains = {node.domain for node in onnx.load_from_string(onnx_bytes).graph.node}
-    assert "trt" in domains
-    info = load_onnx_model(onnx_bytes).info
+    model = onnx.load_from_string(onnx_bytes)
+    assert "trt" in {node.domain for node in model.graph.node}
+    assert dual.export_manifest(model) == manifest
+
+
+def test_chainner_loads_a_dual_onnx_as_mixed_precision(fixed_xs_onnx: bytes):
+    # Loading runs in the native backend, which GitHub's checks do not build.
+    pytest.importorskip("nodes.impl._chainner_graph")
+    info = load_onnx_model(fixed_xs_onnx).info
     assert (info.fixed_input_height, info.fixed_input_width) == (32, 64)
     assert (info.scale_height, info.input_channels, info.output_channels) == (1, 3, 3)
+    assert info.dtype == MIXED
+    assert load_onnx_model(_plain_onnx()).info.dtype == "fp32"
 
 
 def test_a_folded_xs_exports_one_tensorrt_onnx_for_every_size(tmp_path: Path):
@@ -125,7 +140,7 @@ def test_a_folded_xs_exports_one_tensorrt_onnx_for_every_size(tmp_path: Path):
     }
 
 
-def test_a_dynamic_engines_input_name_carries_its_alignment():
+def test_a_dual_engines_input_name_carries_its_alignment():
     assert dual.input_alignment(dual.aligned_input_name(4)) == 4
     assert dual.input_alignment("input") is None
     assert dual.input_alignment("input_aligned_x") is None

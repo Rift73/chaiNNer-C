@@ -8,6 +8,7 @@ import tensorrt as trt
 from cuda.bindings import runtime as cudart
 from sanic.log import logger
 
+from .dual import input_alignment
 from .memory import check_cuda, get_cuda_compute_capability
 from .model import DeserializedEngine, TensorRTEngineInfo
 
@@ -73,8 +74,10 @@ def read_engine_info(loaded: DeserializedEngine) -> TensorRTEngineInfo:
         )
 
     input_dtype = engine.get_tensor_dtype(input_name)
-    precision: Literal["fp32", "fp16", "bf16"] = "fp32"
-    if input_dtype == trt.DataType.HALF:
+    precision: Literal["fp32", "fp16", "bf16", "mixed"] = "fp32"
+    if input_alignment(input_name) is not None:  # DUAL's (dual.ALIGNMENT)
+        precision = "mixed"
+    elif input_dtype == trt.DataType.HALF:
         precision = "fp16"
     elif input_dtype == trt.DataType.BF16:
         precision = "bf16"
