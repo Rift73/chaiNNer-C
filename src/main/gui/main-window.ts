@@ -23,6 +23,7 @@ import { chainnerCVersion } from '../../common/version';
 import { OpenArguments, parseArgs } from '../arguments';
 import { BackendProcess } from '../backend/process';
 import { setupBackend } from '../backend/setup';
+import { readClipboardImageAsPng } from '../clipboardImage';
 import { isArmMac, isMac } from '../env';
 import { addBrowserWindow, addFile, addFiles, removeFile, removeFiles } from '../fileWatcher';
 import { getLogsFolder, getRootDir, installDir } from '../platform';
@@ -285,8 +286,7 @@ const registerEventHandlerPreSetup = (
     ipcMain.handle('clipboard-readHTML', () => clipboard.readHTML());
     ipcMain.handle('clipboard-readRTF', () => clipboard.readRTF());
     ipcMain.handle('clipboard-readImage-and-store', async () => {
-        const clipboardData = clipboard.readImage();
-        const imgData = clipboardData.toPNG();
+        const imgData = readClipboardImageAsPng(clipboard);
         const imgPath = path.join(os.tmpdir(), `chaiNNer-clipboard-${uuid4()}.png`);
         await fs.writeFile(imgPath, imgData);
         return imgPath;
