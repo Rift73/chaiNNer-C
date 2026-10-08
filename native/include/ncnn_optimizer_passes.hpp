@@ -1,4 +1,5 @@
-// Fixed C++ translation of the frozen installed optimizer. Do not hand-edit.
+// Fixed C++ translation of the frozen installed optimizer with the CORRECTIONS
+// of generate_optimizer_cpp.py. Do not hand-edit.
 // Source SHA256: 3b79fe76f4f1b8d5317b838e1471b41a27a281bab21ead47b39427143e4bd4ca
 // Frozen installed optimizer.py:13
 void pass_fuse_batchnorm_scale(const O &model, const O &types) {
@@ -430,7 +431,7 @@ void pass_fuse_memorydata_binaryop(const O &model, const O &types) {
     }
     i = py::int_(0);
     while (contains(builtin("range")(py::int_(py::len(attr(model, "layers")))), i)) {
-        if (compare(attr(item(attr(model, "layers"), i), "op_type"), py::str("MemoryData"), Py_NE)) {
+        if (compare(attr(item(attr(model, "layers"), i), "op_type"), py::str("MemoryData"), Py_EQ)) {
             output = item(attr(item(attr(model, "layers"), i), "outputs"), py::int_(0));
             j0 = i;
             bool cn_33 = false;

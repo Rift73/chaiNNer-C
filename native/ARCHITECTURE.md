@@ -263,6 +263,13 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   `Mat.from_pixels` reads the raw buffer, a permuted one as interleaved pixels. No node output changes: Upscale Image's
   cvtColor hands the reader a C copy of 3 and 4 channels, and one channel has one order, so Lens Blur's planar layout
   never reached that read through the node (VERIFIED on CPU, upstream's node and the port's).
+- NCNN optimizer: lines of upstream's `optimizer.py` are corrected before translation and in the tests' oracle
+  (`CORRECTIONS` in `native/tests/reference_ncnn/generate_optimizer_cpp.py`). MemoryData–Split–BinaryOp fusion starts
+  from MemoryData layers only, as ncnnoptimize does; upstream's inverted test sent any other layer that feeds a Split
+  and a two-input BinaryOp into it, which raised `KeyError` (`'0'`, `'1'` or `'data'`) after a partial mutation, so
+  such ONNX graphs failed to convert (`d = x - mean(x); d * d`; 15 of `test_branching_chain`'s 30 graphs). No graph
+  that converts or loads correctly upstream changes: chaiNNer-C neither emits nor parses MemoryData, so that fusion
+  only ever raised (`test_corrected_oracle_departs_from_upstream_only_as_recorded` checks the whole pass corpus).
 - Sibling event order (SP2): inputs awaited together (`owned_gather`, section 4) start and finish in pool-timing
   order, where upstream awaits inputs in turn (`start a, finish a, start b, finish b`). The event multiset and each
   node's final state are identical (`verify_runtime.event_contract` and `sse_contract` compare no order); item order

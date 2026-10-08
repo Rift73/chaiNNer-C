@@ -157,6 +157,18 @@ def test_binary_weight_modes(op, weights, size):
     check(source, success=not weights)
 
 
+@pytest.mark.parametrize("memory", [False, True])
+def test_squared_deviation_converts(memory):
+    """d = x - mean(x); d * d. Upstream's inverted MemoryData test in the optimizer took
+    the Sub - Split - Mul chain for a MemoryData fusion and raised KeyError: 'data'."""
+    nodes = [
+        helper.make_node("ReduceMean", ["x"], ["m"], name="mean", axes=[1]),
+        helper.make_node("Sub", ["x", "m"], ["d"], name="sub"),
+        helper.make_node("Mul", ["d", "d"], ["y"], name="square"),
+    ]
+    check(model(nodes), memory=memory, success=True)
+
+
 @pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64])
 @pytest.mark.parametrize("op", ["Conv", "ConvTranspose"])
 @pytest.mark.parametrize("group", [1, 2])
@@ -201,9 +213,10 @@ def test_branching_chain(seed):
         output = "v" + str(i)
         nodes.append(helper.make_node(op, inputs, [output], name="layer" + str(i)))
         names.append(output)
-    # Baseline optimizer rejects some otherwise valid random branch patterns;
-    # this family also verifies their errors and partially mutated state.
-    check(model(nodes, outputs=names[-3:]))
+    # Upstream's optimizer rejected 15 of these seeds (KeyError on '0', '1' or 'data'):
+    # its inverted MemoryData test (reference_ncnn CORRECTIONS) sent any layer feeding
+    # a Split and a two-input BinaryOp into the MemoryData fusion. All now convert.
+    check(model(nodes, outputs=names[-3:]), success=True)
 
 
 @pytest.mark.parametrize(

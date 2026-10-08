@@ -1,5 +1,7 @@
 """Exact NCNN graph differential tests against the frozen installed source.
 
+The optimizer oracle is the frozen optimizer.py with the CORRECTIONS of
+reference_ncnn/generate_optimizer_cpp.py, the source the native passes translate.
 These tests do not import or execute the NCNN inference engine.
 """
 
@@ -25,7 +27,12 @@ package = types.ModuleType(PACKAGE)
 package.__path__ = [str(Path(__file__).with_name("reference_ncnn"))]
 sys.modules[PACKAGE] = package
 reference = importlib.import_module(PACKAGE + ".model")
-ReferenceOptimizer = importlib.import_module(PACKAGE + ".optimizer").NcnnOptimizer
+FrozenOptimizer = importlib.import_module(PACKAGE + ".optimizer").NcnnOptimizer
+generator = importlib.import_module(PACKAGE + ".generate_optimizer_cpp")
+corrected = types.ModuleType(PACKAGE + ".corrected_optimizer")
+corrected.__package__ = PACKAGE
+exec(compile(generator.corrected_source(), generator.SOURCE, "exec"), vars(corrected))
+ReferenceOptimizer = corrected.NcnnOptimizer
 
 
 def snapshot(value, seen=None):
@@ -253,14 +260,17 @@ def cases():
 
 
 CASES = cases()
+MUTATIONS = [
+    "none",
+    "empty",
+    "unmatched",
+    "reverse",
+    "missing_outputs",
+    "missing_inputs",
+]
 
 
-@pytest.mark.parametrize("name", CASES)
-@pytest.mark.parametrize(
-    "mutate",
-    ["none", "empty", "unmatched", "reverse", "missing_outputs", "missing_inputs"],
-)
-def test_every_pass_exact_state_and_errors(name, mutate):
+def mutated(name, mutate):
     specification = copy.deepcopy(CASES[name])
     if mutate == "empty":
         specification = []
@@ -275,6 +285,13 @@ def test_every_pass_exact_state_and_errors(name, mutate):
         specification = [spec(s[0], s[1], s[2], [], s[4], s[5]) for s in specification]
     elif mutate == "missing_inputs":
         specification = [spec(s[0], s[1], [], s[3], s[4], s[5]) for s in specification]
+    return specification
+
+
+@pytest.mark.parametrize("name", CASES)
+@pytest.mark.parametrize("mutate", MUTATIONS)
+def test_every_pass_exact_state_and_errors(name, mutate):
+    specification = mutated(name, mutate)
     a, b = build(reference, specification), build(port, specification)
     ra = outcome(getattr(ReferenceOptimizer(a), "_NcnnOptimizer__" + name))
     rb = outcome(getattr(NcnnOptimizer(b), "_NcnnOptimizer__" + name))
@@ -606,10 +623,13 @@ def test_original_failed_batchnorm_fusion_retains_inserted_bias(op):
     assert snapshot(a) == snapshot(b)
 
 
-@pytest.mark.parametrize("name", ["binary", "scalar_split", "unmatched"])
-def test_memorydata_split_historical_condition(name):
+@pytest.mark.parametrize("name", ["memorydata", "other_layer", "unmatched"])
+def test_memorydata_split_fusion(name):
+    """MemoryData - Split - BinaryOp fusion starts from MemoryData layers only, as in
+    ncnnoptimize. Upstream's inverted test started from every other layer: this
+    "data"-carrying Input fused, and one without the weight raised KeyError."""
     data = spec(
-        "Input",
+        "Input" if name == "other_layer" else "MemoryData",
         "data",
         (),
         ("a",),
@@ -617,22 +637,52 @@ def test_memorydata_split_historical_condition(name):
         {"data": (np.array([0.3], np.float32), b"")},
     )
     split = spec("Split", "split", ("a",), ("b", "c"))
-    mode = 2 if name == "scalar_split" else 0
     binary = spec(
         "BinaryOp",
         "bin",
         ("b" if name != "unmatched" else "missing", "other"),
         ("out",),
-        {0: mode},
+        {0: 0},
     )
     a, b = build(reference, [data, split, binary]), build(port, [data, split, binary])
-    # The frozen individual-pass oracle, then the individual native pass.
-    ra = outcome(
-        lambda: ReferenceOptimizer(a)._NcnnOptimizer__fuse_memorydata_binaryop()
-    )
-    rb = outcome(lambda: NcnnOptimizer(b)._NcnnOptimizer__fuse_memorydata_binaryop())  # pyright: ignore[reportAttributeAccessIssue] -- pyright has no model of name mangling outside the class; the test drives the real private method
-    assert ra == rb
+    before = snapshot(b)
+    method = "_NcnnOptimizer__fuse_memorydata_binaryop"
+    ra = outcome(getattr(ReferenceOptimizer(a), method))
+    rb = outcome(getattr(NcnnOptimizer(b), method))
+    assert ra == rb == ("ok", None)
     assert snapshot(a) == snapshot(b)
+    if name == "memorydata":
+        assert b.layers[2].inputs == ["other"]
+        assert b.layers[2].params[1].value == 1
+        assert b.layers[1].outputs == ["c"]
+    else:
+        assert snapshot(b) == before
+
+
+def test_corrected_oracle_departs_from_upstream_only_as_recorded():
+    """The pass corpus cases where the corrected oracle's result differs from the
+    frozen one's: the MemoryData fusion changes none."""
+    differ = []
+    runs = [(n, m, mutated(n, m)) for n in CASES for m in MUTATIONS]
+    runs += [(p.values[0], p.id, p.values[1]) for p in branch_variants()]
+    for name, label, specification in runs:
+        results = []
+        for optimizer in (FrozenOptimizer, ReferenceOptimizer):
+            model = build(reference, specification)
+            result = outcome(getattr(optimizer(model), "_NcnnOptimizer__" + name))
+            results.append((result, snapshot(model)))
+        if results[0] != results[1]:
+            differ.append((name, label))
+    assert differ == []
+
+
+def test_generator_reproduces_the_committed_passes(tmp_path, monkeypatch):
+    monkeypatch.setattr(generator, "OUTPUT", tmp_path / "ncnn_optimizer_passes.hpp")
+    generator.main()
+    committed = Path(__file__).parents[1] / "include" / "ncnn_optimizer_passes.hpp"
+    assert generator.OUTPUT.read_bytes() == committed.read_bytes().replace(
+        b"\r\n", b"\n"
+    )
 
 
 @pytest.mark.parametrize(

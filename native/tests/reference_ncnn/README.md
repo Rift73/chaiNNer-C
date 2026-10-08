@@ -15,10 +15,16 @@ Original byte SHA-256:
 dependency. The emitted C++ calls native weight operations and CPython object
 primitives. The original Python passes are never called by the port.
 
-Differential tests deliberately preserve observed upstream quirks: Scale's
-decoded `weight` versus fusion's `scale` key, invalid fixed-axis BatchNorm
-transposes, the non-MemoryData condition in split fusion, and original partial
-mutations before exceptions. They are not silently repaired by the conversion.
+The generator first applies its `CORRECTIONS`, single-line repairs of upstream
+defects that keep every line number (`native/ARCHITECTURE.md` section 7).
+`optimizer.py` itself stays unmodified; the differential tests run the corrected
+source as their oracle, and a test regenerates the header and compares it with
+the committed one.
+
+Differential tests deliberately preserve the other observed upstream quirks:
+Scale's decoded `weight` versus fusion's `scale` key, invalid fixed-axis
+BatchNorm transposes, and original partial mutations before exceptions. They are
+not silently repaired by the conversion; a repair is a recorded correction.
 
 Inference fixtures are synthetic tiny networks run through the same installed
 NCNN public binding with Vulkan explicitly disabled. No downloaded models,

@@ -89,7 +89,8 @@ map, `.gitattributes`). This source's binaries (the portable build, 2026-10-08, 
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 
 `generate_onnx_converter.py`, `generate_pixel_art_tables.py` and `generate_tiling_cpp.py` in `native/tools` turn pinned
-sources into C++ and never run in the application. Rerun one only when its pinned input changes, and review the diff.
+sources into C++ and never run in the application, as `native/tests/reference_ncnn/generate_optimizer_cpp.py` does for
+the NCNN optimizer with its recorded corrections. Rerun one only when its pinned input changes, and review the diff.
 
 ## Test
 
