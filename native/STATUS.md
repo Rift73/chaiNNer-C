@@ -84,6 +84,13 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   under the BF16 floor, max abs <= 0.0116. The C++ plugin route (CMake + nvcc + MSVC, vendored TensorRT headers,
   TensorRT SDK Path) was removed in the commit after `cb735a43`; reverting that commit restores it (Fable ruling).
   TensorRT loads embedded plugins without `engine_host_code_allowed`, so no trust gate.
+- DUAL speed (owner, 2026-10-09): Light x4 512x512 was ~2x the 2026-10-04 DUAL3 PU2 D16 engine (14.33 ms). Per-layer
+  profiles: (1) AOT kernels compiled without Triton's 16-byte pointer-alignment hint (scalar loads; core 2.13 vs
+  0.156 ms per layer), fixed in `5ca20024`; (2) the exporter moved every 3x3 after a PixelShuffle ahead of it (4x work
+  for Light's 64->256 tail conv), now only the RGB readout, `c0de1572` (vendored `graph.py` now differs from
+  traiNNer's). Through chaiNNer-C's build, GPU-only replay: 23.93 -> 15.64 ms; gate 6 passes at 512x512, errors
+  unchanged. The remaining ~1.3 ms vs DUAL3 is DUAL3X's dynamic convolutions. Owner-postponed: dynamic-shape DUAL
+  engines (ask before starting).
 
 ## Last CPU comparison
 
