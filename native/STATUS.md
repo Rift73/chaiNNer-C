@@ -53,6 +53,13 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   the same libswscale conversion to bgr24), the FFmpeg CLI pipe reader is the fallback (rotated or variable-rate files,
   PyAV missing, open errors; `CHAINNER_C_VIDEO_READER=cli` forces it). Read path 26.7 -> 68.1 fps; `tensorrt-video.chn`
   19-20 -> 23.5 fps; frames identical (375 on the owner's 4K HEVC clip, `test_video_pyav` on h264/ffv1/mjpeg/bt601).
+- Rotated videos (`ba3ebc86`): metadata reports the displayed size (a quarter-turn display matrix swaps width and
+  height) and the PyAV reader inserts the CLI's autorotate filters; both readers give identical, upright frames.
+- Chain limit (2026-10-08): per 4K frame, CPU ms (wall ms) alone: decode + conversion 140 (9.3), uint8 -> float32
+  87 (7.3), Resize 105 (4.9), TensorRT node 168 (17.2), Resize 64 (5.1); in the chain about 0.95 CPU-s per frame,
+  25 of 32 threads busy. Window size (K 4/8/12) and a 4 GiB NumPy-pool cap are neutral. Probe (parked, below its
+  +20 % keep rule): letting the item window run the TensorRT node ahead (session under a lock) gave 24.5 -> 26.8
+  fps, frames identical. With identical output the chain is throughput-bound at about 25-27 fps on this PC.
 
 ## Last CPU comparison
 
