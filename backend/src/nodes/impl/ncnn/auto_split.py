@@ -65,14 +65,11 @@ def ncnn_auto_split(
                     lr_img_fix, pixel_type, lr_img_fix.shape[1], lr_img_fix.shape[0]
                 )
                 mat_in.substract_mean_normalize([], [1 / 255.0] * lr_c)
-            ex.input(input_name, mat_in)
-            _, mat_out = ex.extract(output_name)
-            result = cast_numpy(
-                np.asarray(mat_out).transpose(1, 2, 0), np.dtype(np.float32)
-            )
-            del ex, mat_in, mat_out
-            clear_vkallocators()
-            return result
+            # PyPI ncnn reports a failure only by a non-zero return code; it prints
+            # the reason to stderr, which the log keeps.
+            if ex.input(input_name, mat_in):
+                raise ValueError(f"The NCNN model has no blob named {input_name}.")
+            ret, mat_out = ex.extract(output_name)
         except Exception as e:
             if "vkQueueSubmit" in str(e):
                 ex = None
@@ -91,6 +88,25 @@ def ncnn_auto_split(
                 return Split()
             else:
                 raise
+        if ret != 0:
+            # The output is empty; reading it would crash the process.
+            del ex, mat_in, mat_out
+            clear_vkallocators()
+            if ret == -100:  # an allocation failed
+                logger.debug("NCNN out of memory, clearing memory and splitting.")
+                return Split()
+            message = (
+                f"NCNN failed with error code {ret}. Its reason is in chaiNNer's log."
+            )
+            if use_gpu:
+                message += " You may need to restart chaiNNer in order for NCNN upscaling to start working again."
+            raise RuntimeError(message)
+        result = cast_numpy(
+            np.asarray(mat_out).transpose(1, 2, 0), np.dtype(np.float32)
+        )
+        del ex, mat_in, mat_out
+        clear_vkallocators()
+        return result
 
     try:
         return auto_split(img, upscale, tiler)
