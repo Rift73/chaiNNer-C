@@ -43,6 +43,19 @@ OPSET_LABELS: dict[Opset, str] = {
 }
 
 
+class DualShape(Enum):
+    DYNAMIC = "dynamic"
+    FIXED = "fixed"
+
+
+DUAL_SHAPE_LABELS: dict[DualShape, str] = {
+    DualShape.DYNAMIC: "Dynamic (any size)",
+    DualShape.FIXED: "Fixed (one size)",
+}
+
+IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" }')
+
+
 @utility_group.register(
     schema_id="chainner:pytorch:convert_to_onnx",
     name="Convert To ONNX",
@@ -66,22 +79,35 @@ OPSET_LABELS: dict[Opset, str] = {
             "Verification requires ONNX to be installed.",
             hint=True,
         ),
-        if_group(Condition.type(0, 'PyTorchModel { arch: "DUAL" }'))(
-            NumberInput("TensorRT Height", default=512, min=4, step=4, unit="px")
-            .with_id(4)
+        if_group(IS_DUAL)(
+            EnumInput(
+                DualShape,
+                label="TensorRT Shape",
+                default=DualShape.DYNAMIC,
+                option_labels=DUAL_SHAPE_LABELS,
+            )
+            .with_id(6)
             .with_docs(
-                "DUAL converts to a TensorRT-only ONNX for one fixed input size (a"
-                " multiple of 4); Upscale Image tiles at that size, padding smaller"
-                " images. DUAL pools over its whole input, so tiles and padding can"
-                " change its output slightly against one whole image. Its precision is"
-                " fixed (BF16 body, FP32 input and output) and it uses opset 20 with"
-                " DUAL's TensorRT plugins, so FP Mode must be FP32 and Opset and"
-                " Verify do not apply.",
+                "DUAL converts to a TensorRT-only ONNX. Its precision is fixed (BF16"
+                " body, FP32 input and output) and it uses opset 20 with DUAL's TensorRT"
+                " plugins, so FP Mode must be FP32 and Opset and Verify do not apply.",
+                "Dynamic: one ONNX for every input size that is a multiple of 64 px;"
+                " Build Engine's shape inputs choose the engine's sizes (e.g. 64x64 to"
+                " 1920x1088 for whole 1080p frames).",
+                "Fixed: an ONNX for one input size (a multiple of 4); Upscale Image tiles"
+                " at that size, padding smaller images. DUAL pools over its whole input,"
+                " so tiles and padding can change its output slightly against one whole"
+                " image.",
                 hint=True,
             ),
-            NumberInput(
-                "TensorRT Width", default=512, min=4, step=4, unit="px"
-            ).with_id(5),
+        ),
+        if_group(IS_DUAL & Condition.enum(6, DualShape.FIXED))(
+            NumberInput("TensorRT Height", default=512, min=4, step=4, unit="px")
+            .with_id(4)
+            .with_docs("The fixed input height (a multiple of 4)."),
+            NumberInput("TensorRT Width", default=512, min=4, step=4, unit="px")
+            .with_id(5)
+            .with_docs("The fixed input width (a multiple of 4)."),
         ),
     ],
     outputs=[
@@ -114,6 +140,7 @@ def convert_to_onnx_node(
     is_fp16: int,
     opset: Opset,
     verify: bool,
+    dual_shape: DualShape,
     dual_height: int,
     dual_width: int,
 ) -> tuple[OnnxGeneric, str, str]:
@@ -123,14 +150,15 @@ def convert_to_onnx_node(
                 "DUAL's TensorRT ONNX fixes its own precision (BF16 body, FP32 input"
                 " and output): choose FP32."
             )
-        if dual_height % 4 or dual_width % 4:
-            raise ValueError("DUAL's TensorRT height and width must be multiples of 4.")
+        size = None
+        if dual_shape == DualShape.FIXED:
+            if dual_height % 4 or dual_width % 4:
+                raise ValueError(
+                    "DUAL's TensorRT height and width must be multiples of 4."
+                )
+            size = (dual_height, dual_width)
         onnx_bytes = dual.export_onnx(
-            model.model.state_dict(),
-            model.tags,
-            model.scale,
-            dual_height,
-            dual_width,
+            model.model.state_dict(), model.tags, model.scale, size
         )
         onnx_model = load_onnx_model(onnx_bytes)
         assert onnx_model.sub_type == "Generic"

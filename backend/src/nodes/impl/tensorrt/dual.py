@@ -29,6 +29,10 @@ FACTORIES = {
 }
 # The exporter's manifest (export.json), carried in the ONNX model's metadata.
 METADATA_KEY = "chainner_c.dual_tensorrt.export"
+# A dynamic DUAL ONNX is exact only for input sizes that are multiples of this: its
+# windows are laid out for them. chaiNNer's tiler feeds only such sizes
+# (tiling.TILE_ALIGNMENT), and Build Engine's profile must keep to them.
+ALIGNMENT = 64
 
 
 def factory_of(tags: list[str]) -> str:
@@ -70,10 +74,14 @@ def _child(
 
 
 def export_onnx(
-    state_dict: dict[str, Any], tags: list[str], scale: int, height: int, width: int
+    state_dict: dict[str, Any],
+    tags: list[str],
+    scale: int,
+    size: tuple[int, int] | None,
 ) -> bytes:
     """The TensorRT-specific ONNX of a folded DUAL model (spandrel folds on load), with
-    its weights embedded and the exporter's manifest in its metadata."""
+    its weights embedded and the exporter's manifest in its metadata: for one input
+    size (height, width), or for every size (None; scripts/dual_tensorrt/dynamic.py)."""
     import onnx
     from safetensors.torch import save_file
 
@@ -83,14 +91,21 @@ def export_onnx(
         checkpoint = root / "folded.safetensors"
         save_file({k: v.contiguous() for k, v in state_dict.items()}, str(checkpoint))
         export = root / "export"
+        if size is None:
+            exporter = ["scripts.dual_tensorrt.dynamic", f"--alignment={ALIGNMENT}"]
+        else:
+            height, width = size
+            exporter = [
+                "scripts.dual_tensorrt.export",
+                f"--height={height}",
+                f"--width={width}",
+            ]
         _child(
             [
                 "-m",
-                "scripts.dual_tensorrt.export",
+                *exporter,
                 f"--factory={factory}",
                 f"--scale={scale}",
-                f"--height={height}",
-                f"--width={width}",
                 f"--checkpoint={checkpoint}",
                 "--folded",
                 f"--output={export}",
@@ -119,10 +134,39 @@ def export_manifest(onnx_bytes: bytes) -> dict[str, Any] | None:
     return None
 
 
-def build_engine(onnx_bytes: bytes, manifest: dict[str, Any], gpu_index: int) -> bytes:
+Size = tuple[int, int]
+
+
+def check_profile(manifest: dict[str, Any], low: Size, opt: Size, high: Size) -> None:
+    """Refuse a dynamic DUAL engine's (height, width) profile that the ONNX is not
+    exact for, or that is not ordered."""
+    alignment = manifest["specialization"]["alignment"]
+    for name, (h, w) in (("minimum", low), ("optimal", opt), ("maximum", high)):
+        if h % alignment or w % alignment:
+            raise ValueError(
+                f"A dynamic DUAL engine's {name} size must be a multiple of"
+                f" {alignment} px (got {h}x{w})."
+            )
+    if not (low[0] <= opt[0] <= high[0] and low[1] <= opt[1] <= high[1]):
+        raise ValueError(
+            "A dynamic DUAL engine needs minimum <= optimal <= maximum sizes."
+        )
+
+
+def build_engine(
+    onnx_bytes: bytes,
+    manifest: dict[str, Any],
+    gpu_index: int,
+    profile: tuple[Size, Size, Size] | None = None,
+) -> bytes:
     """A TensorRT engine of a DUAL ONNX with its plugins (AOT Python plugins, Triton
     kernels compiled for this GPU) embedded, built by chaiNNer-C's TensorRT, the version
-    that loads it, in dual_engine_worker.py."""
+    that loads it, in dual_engine_worker.py. A dynamic ONNX takes its engine's
+    (minimum, optimal, maximum) (height, width) profile (see check_profile)."""
+    dynamic = manifest["specialization"].get("dynamic", False)
+    if dynamic != (profile is not None):
+        raise ValueError("Only a dynamic DUAL ONNX takes a size profile.")
+    sizes = [] if profile is None else [f"{h}x{w}" for h, w in profile]
     with tempfile.TemporaryDirectory(prefix="chainner-dual-engine-") as temporary:
         model = Path(temporary) / "model.onnx"
         model.write_bytes(onnx_bytes)
@@ -135,6 +179,7 @@ def build_engine(onnx_bytes: bytes, manifest: dict[str, Any], gpu_index: int) ->
                 str(engine),
                 str(gpu_index),
                 manifest["specialization"]["plugin_key"],
+                *sizes,
             ],
             "engine build",
             SOURCE,
@@ -142,4 +187,11 @@ def build_engine(onnx_bytes: bytes, manifest: dict[str, Any], gpu_index: int) ->
         return engine.read_bytes()
 
 
-__all__ = ["build_engine", "export_manifest", "export_onnx", "factory_of"]
+__all__ = [
+    "ALIGNMENT",
+    "build_engine",
+    "check_profile",
+    "export_manifest",
+    "export_onnx",
+    "factory_of",
+]

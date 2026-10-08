@@ -72,14 +72,18 @@ def test_only_the_rgb_readout_moves_ahead_of_its_pixel_shuffle():
     ]
 
 
-def test_a_folded_xs_exports_a_fixed_size_tensorrt_onnx(tmp_path: Path):
+def _folded_xs(tmp_path: Path):
     torch.manual_seed(0)
     model = dual_xs(scale=1).eval()
     path = tmp_path / "xs.pth"
     torch.save(model.state_dict(), path)
-    descriptor = ModelLoader("cpu").load_from_file(path)  # folded on load
+    return ModelLoader("cpu").load_from_file(path)  # folded on load
+
+
+def test_a_folded_xs_exports_a_fixed_size_tensorrt_onnx(tmp_path: Path):
+    descriptor = _folded_xs(tmp_path)
     onnx_bytes = dual.export_onnx(
-        descriptor.model.state_dict(), descriptor.tags, descriptor.scale, 32, 64
+        descriptor.model.state_dict(), descriptor.tags, descriptor.scale, (32, 64)
     )
     manifest = dual.export_manifest(onnx_bytes)
     assert manifest is not None
@@ -97,3 +101,47 @@ def test_a_folded_xs_exports_a_fixed_size_tensorrt_onnx(tmp_path: Path):
     info = load_onnx_model(onnx_bytes).info
     assert (info.fixed_input_height, info.fixed_input_width) == (32, 64)
     assert (info.scale_height, info.input_channels, info.output_channels) == (1, 3, 3)
+
+
+def test_a_folded_xs_exports_one_tensorrt_onnx_for_every_size(tmp_path: Path):
+    descriptor = _folded_xs(tmp_path)
+    onnx_bytes = dual.export_onnx(
+        descriptor.model.state_dict(), descriptor.tags, descriptor.scale, None
+    )
+    manifest = dual.export_manifest(onnx_bytes)
+    assert manifest is not None
+    spec = manifest["specialization"]
+    assert (spec["factory"], spec["scale"], spec["dynamic"]) == ("dual_xs", 1, True)
+    assert (spec["alignment"], spec["plugin_key"]) == (dual.ALIGNMENT, "c128")
+    graph = onnx.load_from_string(onnx_bytes).graph
+    dims = graph.input[0].type.tensor_type.shape.dim
+    assert [d.dim_value or d.dim_param for d in dims] == [1, 3, "in_height", "in_width"]
+    plugins = {node.op_type for node in graph.node if node.domain == "trt"}
+    assert plugins == {
+        "DualNorm_c128_TRT",
+        "DualCore_c128_TRT",
+        "DualProject_c128_TRT",
+        "DualAttentionBarrier_TRT",
+    }
+
+
+@pytest.mark.parametrize(
+    ("low", "opt", "high", "message"),
+    [
+        ((64, 64), (512, 512), (1088, 1920), None),
+        ((64, 64), (512, 500), (1088, 1920), "multiple of 64"),
+        ((64, 64), (2048, 512), (1088, 1920), "minimum <= optimal <= maximum"),
+    ],
+)
+def test_a_dynamic_engines_profile_keeps_to_the_onnxs_alignment(
+    low: tuple[int, int],
+    opt: tuple[int, int],
+    high: tuple[int, int],
+    message: str | None,
+):
+    manifest = {"specialization": {"dynamic": True, "alignment": 64}}
+    if message is None:
+        dual.check_profile(manifest, low, opt, high)
+    else:
+        with pytest.raises(ValueError, match=message):
+            dual.check_profile(manifest, low, opt, high)

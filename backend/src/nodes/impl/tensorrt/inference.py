@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import ctypes
 import threading
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import AbstractContextManager
 from typing import Any
 
@@ -29,6 +29,9 @@ from .engine_info import deserialize_engine
 from .memory import check_cuda
 from .model import TensorRTEngine
 from .tiling import ShapeBounds
+
+# CUDA graphs kept per session, one per input shape (see TensorRTSession).
+MAX_GRAPHS = 4
 
 
 class _IoDtype:
@@ -104,12 +107,13 @@ class TensorRTSession:
             self._loaded.release()
             raise
         self.context = context
-        # A fixed-shape engine's execution is replayed from a CUDA graph captured after
-        # its first run: TensorRT's per-launch host work happens once (DUAL's AOT
-        # plugins cost ~0.3 ms of it per launch, 5x the GPU time without a graph).
-        self._static = (mins[2], mins[3]) == (maxs[2], maxs[3])
-        self._graph: cudart.cudaGraph_t | None = None
-        self._graph_exec: cudart.cudaGraphExec_t | None = None
+        # Each input shape's execution is replayed from a CUDA graph captured after its
+        # first run: TensorRT's per-launch host work happens once (DUAL's AOT plugins
+        # cost ~0.3 ms of it per launch, 5x the GPU time without a graph). Tiles mostly
+        # share a shape, so a few graphs, the least recently used dropped first.
+        self._graphs: OrderedDict[
+            tuple[int, ...], tuple[cudart.cudaGraph_t, cudart.cudaGraphExec_t]
+        ] = OrderedDict()
         self._graph_failed = False
 
         self._stream = check_cuda(cudart.cudaStreamCreate())
@@ -138,8 +142,8 @@ class TensorRTSession:
         ):
             # in-flight work may still read or write the old buffers
             check_cuda(cudart.cudaStreamSynchronize(self._stream))
-            # a captured graph holds the old addresses
-            self._drop_graph()
+            # captured graphs hold the old addresses
+            self._drop_graphs()
         if act_nbytes > self._d_act_nbytes:
             if self._d_act:
                 check_cuda(cudart.cudaFree(self._d_act))
@@ -201,7 +205,7 @@ class TensorRTSession:
         )
         self.context.set_tensor_address(self.input_name, self._d_in)
         self.context.set_tensor_address(self.output_name, self._d_out)
-        self._execute()
+        self._execute(in_shape)
         check_cuda(
             cudart.cudaMemcpyAsync(
                 h_out.ptr,
@@ -215,18 +219,20 @@ class TensorRTSession:
         self._queue.append((slot, out_shape))
         self._submitted += 1
 
-    def _execute(self) -> None:
-        """Enqueue the engine on the stream: the captured graph when there is one, else
-        TensorRT's enqueue; a fixed-shape engine is captured after its first run."""
-        if self._graph_exec is not None:
-            check_cuda(cudart.cudaGraphLaunch(self._graph_exec, self._stream))
+    def _execute(self, shape: tuple[int, ...]) -> None:
+        """Enqueue the engine on the stream: the shape's captured graph when there is
+        one, else TensorRT's enqueue, after which the shape is captured."""
+        graph = self._graphs.get(shape)
+        if graph is not None:
+            self._graphs.move_to_end(shape)
+            check_cuda(cudart.cudaGraphLaunch(graph[1], self._stream))
             return
         if not self.context.execute_async_v3(int(self._stream)):
             raise RuntimeError("TensorRT failed to enqueue inference.")
-        if self._static and not self._graph_failed:
-            self._capture()
+        if not self._graph_failed:
+            self._capture(shape)
 
-    def _capture(self) -> None:
+    def _capture(self, shape: tuple[int, ...]) -> None:
         """Capture one execution (not run: the stream only records it). A capture that
         fails leaves the session on TensorRT's enqueue, with a warning."""
         check_cuda(cudart.cudaStreamSynchronize(self._stream))
@@ -237,13 +243,15 @@ class TensorRTSession:
             enqueued = self.context.execute_async_v3(int(self._stream))
             error, graph = cudart.cudaStreamEndCapture(self._stream)
             if error == cudart.cudaError_t.cudaSuccess:
-                self._graph = graph
                 if enqueued:
                     error, graph_exec = cudart.cudaGraphInstantiate(graph, 0)
                     if error == cudart.cudaError_t.cudaSuccess:
-                        self._graph_exec = graph_exec
+                        self._graphs[shape] = (graph, graph_exec)
+                        if len(self._graphs) > MAX_GRAPHS:
+                            self._destroy(self._graphs.popitem(last=False)[1])
                         return
-        self._drop_graph()
+                check_cuda(cudart.cudaGraphDestroy(graph))
+        self._drop_graphs()
         self._graph_failed = True
         logger.warning(
             "TensorRT engine not captured in a CUDA graph (enqueued %s, %s); it runs"
@@ -252,13 +260,14 @@ class TensorRTSession:
             error,
         )
 
-    def _drop_graph(self) -> None:
-        if self._graph_exec is not None:
-            check_cuda(cudart.cudaGraphExecDestroy(self._graph_exec))
-            self._graph_exec = None
-        if self._graph is not None:
-            check_cuda(cudart.cudaGraphDestroy(self._graph))
-            self._graph = None
+    @staticmethod
+    def _destroy(graph: tuple[cudart.cudaGraph_t, cudart.cudaGraphExec_t]) -> None:
+        check_cuda(cudart.cudaGraphExecDestroy(graph[1]))
+        check_cuda(cudart.cudaGraphDestroy(graph[0]))
+
+    def _drop_graphs(self) -> None:
+        while self._graphs:
+            self._destroy(self._graphs.popitem()[1])
 
     def collect(self, height: int, width: int) -> np.ndarray:
         """Wait for the oldest tile; returns its top-left `height` x `width`
@@ -278,7 +287,7 @@ class TensorRTSession:
     def close(self) -> None:
         check_cuda(cudart.cudaStreamSynchronize(self._stream))
         self._queue.clear()
-        self._drop_graph()
+        self._drop_graphs()
         for buf in (*self._h_in, *self._h_out):
             buf.free()
         del self.context
