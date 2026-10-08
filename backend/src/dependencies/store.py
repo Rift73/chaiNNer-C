@@ -353,9 +353,9 @@ async def uninstall_dependencies(
 
     exit_code = process.wait()
     if exit_code != 0:
-        raise ValueError("An error occurred while installing dependencies.")
+        raise ValueError("An error occurred while uninstalling dependencies.")
 
-    await update_progress_cb("Finished installing dependencies...", 1, None)
+    await update_progress_cb("Finished uninstalling dependencies...", 1, None)
 
     for dep_info in dependencies:
         del installed_packages[dep_info.package_name]

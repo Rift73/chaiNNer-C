@@ -837,11 +837,14 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
         }
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-shadow
-    const changePackages = (packages: Package[], supplier: () => Promise<void>) => {
+    const changePackages = (
+        changing: readonly Package[],
+        failureTitle: string,
+        supplier: () => Promise<void>
+    ) => {
         if (isRunningShell) throw new Error('Cannot run two pip commands at once');
 
-        setModifyingPackages(packages.map((pkg) => pkg.id));
+        setModifyingPackages(changing.map((pkg) => pkg.id));
         setIsRunningShell(true);
         setOverallProgress(0);
         setIndividualProgress(0);
@@ -851,6 +854,13 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
             .catch((error) => {
                 logOutput(String(error));
                 log.error(error);
+                // The console is hidden under Advanced by default.
+                sendToast({
+                    status: 'error',
+                    duration: 10_000,
+                    title: failureTitle,
+                    description: error instanceof Error ? error.message : String(error),
+                });
             })
             .finally(() => {
                 refetchInstalledPyPi()
@@ -894,7 +904,9 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
         const name = joinEnglish(packages.map((pkg) => pkg.name));
 
         logOutput(`Installing ${name}...`);
-        changePackages(packages, () => backend.installPackages(packages.map((pkg) => pkg.id)));
+        changePackages(packages, `Failed to install ${name}`, () =>
+            backend.installPackages(packages.map((pkg) => pkg.id))
+        );
     };
 
     // eslint-disable-next-line @typescript-eslint/no-shadow
@@ -929,7 +941,9 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
         }
 
         logOutput(`Uninstalling ${name}...`);
-        changePackages(packages, () => backend.uninstallPackages(packages.map((pkg) => pkg.id)));
+        changePackages(packages, `Failed to uninstall ${name}`, () =>
+            backend.uninstallPackages(packages.map((pkg) => pkg.id))
+        );
     };
 
     // whether we are current installing/uninstalling packages or refreshing the list of installed packages
