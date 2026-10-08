@@ -66,18 +66,8 @@ const addProgressListeners = (monitor: ProgressMonitor) => {
     });
 };
 
-const createBackend = async (
-    token: ProgressToken,
-    args: RunArguments,
-    settings: ChainnerSettings
-) => {
-    return setupBackend(
-        token,
-        settings.useSystemPython,
-        settings.systemPythonLocation,
-        getRootDir(),
-        args.remoteBackend
-    );
+const createBackend = async (token: ProgressToken, args: RunArguments) => {
+    return setupBackend(token, getRootDir(), args.remoteBackend);
 };
 
 const getBackendNodes = async (backend: Backend): Promise<NodeSchema[]> => {
@@ -282,7 +272,7 @@ export const runChainInCli = async (args: RunArguments) => {
 
     const settings = readSettings();
 
-    const backendProcess = await createBackend(progressController, args, settings);
+    const backendProcess = await createBackend(progressController, args);
     if (!backendProcess.owned) {
         await runChain(args, settings, backendProcess);
         return;

@@ -160,10 +160,6 @@ const setupBorrowedBackend = async (
 
 export const setupBackend = async (
     token: ProgressToken,
-    // Ignored, and always off since the settings migration: chaiNNer-C runs only on its
-    // integrated Python. They stay until the callers in cli/run.ts and gui/main-window.ts drop them.
-    useSystemPython: boolean,
-    systemPythonLocation: string | undefined | null,
     rootDir: string,
     remoteBackend: string | undefined
 ): Promise<BackendProcess> => {

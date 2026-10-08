@@ -447,20 +447,10 @@ const registerEventHandlerPostSetup = (
     });
 };
 
-const createBackend = async (
-    token: ProgressToken,
-    args: OpenArguments,
-    settings: ChainnerSettings
-) => {
+const createBackend = async (token: ProgressToken, args: OpenArguments) => {
     log.info(`chaiNNer-C ${chainnerCVersion} (upstream ${version})`);
 
-    return setupBackend(
-        token,
-        settings.useSystemPython,
-        settings.systemPythonLocation,
-        getRootDir(),
-        args.remoteBackend
-    );
+    return setupBackend(token, getRootDir(), args.remoteBackend);
 };
 
 const setupProgressListeners = (
@@ -582,11 +572,7 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
 
     try {
         registerEventHandlerPreSetup(mainWindow, args, settings);
-        const backend = await createBackend(
-            SubProgress.slice(progressController, 0, 0.25),
-            args,
-            settings
-        );
+        const backend = await createBackend(SubProgress.slice(progressController, 0, 0.25), args);
         registerEventHandlerPostSetup(mainWindow, backend);
 
         const sse = new EventSource(`${backend.url}/setup-sse`, {
