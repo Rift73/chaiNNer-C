@@ -198,20 +198,29 @@ bool temp_file_signature(const O& data) {
         view.starts_with("\x59\xA6\x6A\x95") || view.starts_with("\x76\x2F\x31\x01") ||
         (view.size()>=3 && view[0]=='P' && (view[1]=='f' || view[1]=='F') && space(static_cast<unsigned char>(view[2])));
 }
+// A classic TIFF structure ("II" little-endian or "MM" big-endian, magic 42): valid
+// when the header and its first IFD's entry count lie in the n bytes; the IFD's
+// entries are 12 bytes each from ifd+2.
+struct ClassicTiff {
+    const uint8_t* p; size_t n; bool little=false,valid=false; size_t ifd=0;
+    ClassicTiff(const uint8_t* bytes,size_t size):p(bytes),n(size) {
+        if(n<8 || !((p[0]=='I'&&p[1]=='I')||(p[0]=='M'&&p[1]=='M')))return;
+        little=p[0]=='I';ifd=u32(4);
+        valid=u16(2)==42 && ifd<=n-2;
+    }
+    uint32_t u16(size_t at) const {return little?uint32_t(p[at]|p[at+1]<<8):uint32_t(p[at]<<8|p[at+1]);}
+    uint32_t u32(size_t at) const {return little?u16(at)|u16(at+2)<<16:u16(at)<<16|u16(at+2);}
+};
 // EXIF Orientation (tag 274) of an EXIF block, the TIFF header and IFD0 after an
 // optional "Exif\0\0": 2-8, or 1 when it is absent, malformed or out of range.
 int exif_orientation(const uint8_t* p,size_t n) {
     if(n>=6 && std::memcmp(p,"Exif\0\0",6)==0){p+=6;n-=6;}
-    if(n<8 || !((p[0]=='I'&&p[1]=='I')||(p[0]=='M'&&p[1]=='M')))return 1;
-    const bool little=p[0]=='I';
-    const auto u16=[&](size_t at){return little?uint32_t(p[at]|p[at+1]<<8):uint32_t(p[at]<<8|p[at+1]);};
-    const auto u32=[&](size_t at){return little?u16(at)|u16(at+2)<<16:u16(at)<<16|u16(at+2);};
-    const size_t ifd=u32(4);
-    if(u16(2)!=42 || ifd>n-2)return 1;
-    for(size_t entry=ifd+2,end=entry+size_t(u16(ifd))*12;entry<end && entry+12<=n;entry+=12) {
-        if(u16(entry)!=274)continue;
-        const uint32_t type=u16(entry+2);
-        const uint32_t value=u32(entry+4)!=1?0:type==3?u16(entry+8):type==4?u32(entry+8):0;
+    const ClassicTiff tiff(p,n);
+    if(!tiff.valid)return 1;
+    for(size_t entry=tiff.ifd+2,end=entry+size_t(tiff.u16(tiff.ifd))*12;entry<end && entry+12<=n;entry+=12) {
+        if(tiff.u16(entry)!=274)continue;
+        const uint32_t type=tiff.u16(entry+2);
+        const uint32_t value=tiff.u32(entry+4)!=1?0:type==3?tiff.u16(entry+8):type==4?tiff.u32(entry+8):0;
         return value>=2&&value<=8?int(value):1;
     }
     return 1;
@@ -392,6 +401,45 @@ Encoding encoding(py::dict g,O image,py::tuple args) {
     result.image=image;
     return result;
 }
+// OpenCV writes 4-sample RGB TIFFs without ExtraSamples (tag 338), which TIFF 6.0
+// requires, so readers may take the fourth sample for an unknown one (upstream
+// chaiNNer #2950). Adds 338 = SHORT 2 (unassociated alpha: chaiNNer's straight
+// alpha) to a classic TIFF's first IFD: a copy of the IFD with the entry in tag
+// order goes to the end of the file, on a word boundary, and the header points to
+// it; every other byte stays where it was. Other buffers are returned as they are.
+O add_extra_samples(O buffer) {
+    py::array array=py::reinterpret_borrow<py::array>(buffer);
+    const auto* p=static_cast<const uint8_t*>(array.data());
+    const size_t n=static_cast<size_t>(array.nbytes());
+    const ClassicTiff tiff(p,n);
+    if(!tiff.valid)return buffer;
+    const size_t entries=tiff.ifd+2,count=tiff.u16(tiff.ifd);
+    if(count*12+4>n-entries)return buffer;
+    uint32_t samples=0,photometric=0;
+    size_t insert=count;
+    for(size_t i=0;i<count;++i) {
+        const size_t entry=entries+i*12;
+        const uint32_t tag=tiff.u16(entry);
+        if(tag==338)return buffer;
+        if(tag==277)samples=tiff.u16(entry+8);
+        if(tag==262)photometric=tiff.u16(entry+8);
+        if(tag>338 && insert==count)insert=i;
+    }
+    const size_t moved=n+(n&1),size=moved+2+(count+1)*12+4;
+    if(samples!=4 || photometric!=2 || count==0xFFFF || moved>UINT32_MAX)return buffer;
+    O result=own(PyBytes_FromStringAndSize(nullptr,static_cast<Py_ssize_t>(size)));
+    auto* out=reinterpret_cast<uint8_t*>(PyBytes_AS_STRING(result.ptr()));
+    uint8_t* at=out+n;
+    const auto put=[&](uint32_t value,int bytes){for(int i=0;i<bytes;++i)*at++=uint8_t(value>>(8*(tiff.little?i:bytes-1-i)));};
+    std::memcpy(out,p,n);
+    if(n&1)*at++=0;
+    put(uint32_t(count+1),2);
+    std::memcpy(at,p+entries,insert*12);at+=insert*12;
+    put(338,2);put(3,2);put(1,4);put(2,2);put(0,2);
+    std::memcpy(at,p+entries+insert*12,(count-insert)*12+4); // and the next IFD's offset
+    at=out+4;put(uint32_t(moved),4);
+    return result;
+}
 // The codec of cv_save for a file extension: fpng for a default PNG, else
 // OpenCV's imencode. Returns bytes, or imencode's buffer array.
 O encode(py::dict g,O extension,O image,O params) {
@@ -404,6 +452,8 @@ O encode(py::dict g,O extension,O image,O params) {
     if(buffer.is_none()) {
         O encoded=name(g,"cv2").attr("imencode")(format(".{}",extension),image,params);
         buffer=index(encoded,1);
+        O lower=extension.attr("lower")();
+        if(equal(lower,py::str(".tiff")) || equal(lower,py::str(".tif")))buffer=add_extra_samples(buffer);
     }
     return buffer;
 }

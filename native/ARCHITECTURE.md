@@ -293,6 +293,11 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   the channel order; `read_cv` finds the tag by walking the file's segments or chunks (a PNG's eXIf before or after
   IDAT), `read_pil` in the metadata Pillow already read. TIFFs, which OpenCV and the #409 path already orient, and
   files without the tag or with Orientation 1 load as before (`backend/tests/test_load_image_orientation.py`).
+- Save Image's RGBA TIFFs (U8, U16, F32) carry ExtraSamples = 2 (unassociated alpha), which TIFF 6.0 requires and
+  OpenCV's encoder omits (upstream chaiNNer #2950; owner-approved 2026-10-09): `add_extra_samples` in `image_io.cpp`
+  appends a copy of the first IFD with the tag and points the header at it, so the file is OpenCV's plus one IFD;
+  pixels, compression and predictor are unchanged, RGB and grey TIFFs are byte-identical
+  (`backend/tests/test_save_image_tiff_extra_samples.py`).
 - Save Video's audio mux (owner-approved, upstream chaiNNer #3331): chaiNNer's own FFmpeg muxes the audio after the
   video, as upstream v0.25.1 does, where the frozen nightly ran the `ffmpeg` on `PATH` with the audio first and only
   logged a failure, so without FFmpeg on `PATH` every saved video was silent. Auto copies the audio and, when the

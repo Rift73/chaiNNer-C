@@ -11,6 +11,7 @@ import logging
 import os
 import platform
 import shutil
+import struct
 import subprocess
 import time
 import uuid
@@ -344,6 +345,13 @@ def test_real_cpu_codec_save_load(tmp_path, fmt, options, channels, kind):
                 np.frombuffer(paths[1].read_bytes(), np.uint8), cv2.IMREAD_UNCHANGED
             ),
         )
+    elif fmt == "TIFF" and channels == 4:
+        # Owner-approved (upstream chaiNNer #2950): the old file plus ExtraSamples = 2
+        # in a copy of the first IFD after it (backend/tests/test_save_image_tiff_extra_samples.py).
+        old, new = paths[0].read_bytes(), paths[1].read_bytes()
+        assert new[:4] == old[:4] and new[8 : len(old)] == old[8:]
+        assert struct.unpack("<I", new[4:8]) == (len(old) + len(old) % 2,)
+        assert struct.pack("<HHIHH", 338, 3, 1, 2, 0) in new[len(old) :]
     else:
         assert paths[0].read_bytes() == paths[1].read_bytes()
     old_loaded, old_status, old_warnings = recorded(
