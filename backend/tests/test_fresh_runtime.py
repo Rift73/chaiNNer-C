@@ -19,11 +19,31 @@ BACKEND = Path(__file__).resolve().parents[1] / "src"
 
 # The top-level modules of every package Dependency, but NumPy's (a server dependency).
 ABSENT = [
-    "cv2", "PIL", "pillow_avif", "ffmpeg", "av", "requests", "scipy", "wcmatch",
-    "numba", "pymatting", "torch", "torchvision", "facexlib", "einops", "safetensors",
-    "spandrel", "spandrel_extra_arches", "onnx", "onnxoptimizer", "onnxruntime", "ncnn",
-    "tensorrt", "cuda", "triton",
-]  # fmt: skip
+    "cv2",
+    "PIL",
+    "pillow_avif",
+    "ffmpeg",
+    "av",
+    "requests",
+    "scipy",
+    "wcmatch",
+    "numba",
+    "pymatting",
+    "torch",
+    "torchvision",
+    "facexlib",
+    "einops",
+    "safetensors",
+    "spandrel",
+    "spandrel_extra_arches",
+    "onnx",
+    "onnxoptimizer",
+    "onnxruntime",
+    "ncnn",
+    "tensorrt",
+    "cuda",
+    "triton",
+]
 
 # argv: the absent modules as JSON, then the modules whose import raises OSError.
 STARTUP = """
