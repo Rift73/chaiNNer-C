@@ -16,7 +16,7 @@ from nodes.impl.ncnn import session
 from nodes.impl.ncnn.auto_split import ncnn_auto_split
 from nodes.impl.ncnn.model import NcnnModel, NcnnModelWrapper
 from nodes.impl.ncnn.session import create_ncnn_net
-from nodes.impl.upscale.auto_split_tiles import NO_TILING
+from nodes.impl.upscale.auto_split_tiles import NO_TILING, TileSize
 from nodes.impl.upscale.tiler import MaxTileSize
 from packages.chaiNNer_ncnn.ncnn.processing import upscale_image
 from packages.chaiNNer_ncnn.settings import NcnnSettings
@@ -124,15 +124,25 @@ def test_failures_of_the_real_binding_raise_instead_of_crashing(tmp_path: Path):
 
 
 class Net:
-    """Upscales 2x by repeating pixels, then drops `crop` pixels from each side, as a
-    waifu2x-ncnn-vulkan model's unpadded convolutions do. For an input of more than
-    `limit` pixels it returns the error `code` as PyPI ncnn's Extractor does: no
-    exception, and an output that must not be read."""
+    """Upscales `scale_x` times across and `scale_y` times down (nearest pixel),
+    then drops `crop` pixels from each side, as a waifu2x-ncnn-vulkan model's unpadded
+    convolutions do. For an input of more than `limit` pixels it returns the error
+    `code` as PyPI ncnn's Extractor does: no exception, and an output that must not
+    be read."""
 
-    def __init__(self, code: int = 0, limit: int = 2**62, crop: int = 0):
+    def __init__(
+        self,
+        code: int = 0,
+        limit: int = 2**62,
+        crop: int = 0,
+        scale_x: float = 2,
+        scale_y: float = 2,
+    ):
         self.code = code
         self.limit = limit
         self.crop = crop
+        self.scale_x = scale_x
+        self.scale_y = scale_y
         self.sizes: list[tuple[int, int]] = []
 
     def create_extractor(self) -> Extractor:
@@ -154,8 +164,11 @@ class Extractor:
         if w * h > self.net.limit:
             return self.net.code, None
         c = self.net.crop
-        upscaled = self.image.repeat(2, axis=1).repeat(2, axis=2)
-        return 0, upscaled[:, c : 2 * h - c, c : 2 * w - c]
+        out_h, out_w = round(h * self.net.scale_y), round(w * self.net.scale_x)
+        rows = np.arange(out_h) * h // out_h
+        columns = np.arange(out_w) * w // out_w
+        upscaled = self.image[:, rows][:, :, columns]
+        return 0, upscaled[:, c : out_h - c, c : out_w - c]
 
 
 def test_out_of_memory_retries_with_smaller_tiles():
@@ -182,24 +195,64 @@ def test_other_failures_raise_their_code_without_retrying():
     assert net.sizes == [(12, 10)]
 
 
+def upscale_with(
+    monkeypatch: pytest.MonkeyPatch,
+    net: Net,
+    scale: int,
+    image: np.ndarray,
+    tile_size: TileSize = NO_TILING,
+) -> np.ndarray:
+    """NCNN Upscale Image's upscale with the fake `net`, for a model of `scale`."""
+    monkeypatch.setattr(upscale_image, "get_ncnn_net", lambda model, settings: net)
+    model = cast(NcnnModelWrapper, SimpleNamespace(scale=scale))
+    return upscale_image.upscale_impl(SETTINGS, image, model, "data", "out", tile_size)
+
+
 @pytest.mark.parametrize(
-    ("tile_size", "sizes"),
-    [(2**31, "a 1564x1164 image for a 800x600 image"), (256, r"a \d+x\d+ image")],
+    ("tile_size", "message"),
+    [
+        (NO_TILING, "a 1564x1164 image for a 800x600 image, 36 pixels short of its 2x"),
+        (TileSize(256), r"a \d+x\d+ image for a \d+x\d+ tile.*whole multiple"),
+    ],
 )
-def test_a_model_that_crops_its_output_is_refused(tile_size: int, sizes: str):
+def test_a_model_that_crops_its_output_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tile_size: TileSize, message: str
+):
     # 2x less 36 pixels: whole, 800x600 gives 1564x1164; every tile is cropped too.
-    net = Net(crop=18)
     image = np.zeros((600, 800, 3), np.float32)
-    with pytest.raises(ValueError, match=f"returned {sizes}.*whole multiple"):
-        ncnn_auto_split(
-            image,
-            cast(ncnn.Net, net),
-            "data",
-            "out",
-            None,
-            None,
-            MaxTileSize(tile_size),
-        )
+    with pytest.raises(ValueError, match=message):
+        upscale_with(monkeypatch, Net(crop=18), 2, image, tile_size)
+
+
+@pytest.mark.parametrize(
+    ("scale_x", "scale_y", "scale", "height", "width"),
+    [
+        pytest.param(0.5, 0.5, 1, 60, 80, id="downscale"),
+        pytest.param(0.5, 0.5, 1, 64, 64, id="downscale-square"),
+        pytest.param(2, 1, 2, 60, 80, id="uneven"),
+        pytest.param(1.5, 1.5, 1, 64, 64, id="non-integer"),
+        pytest.param(2, 2, 4, 60, 80, id="less-than-its-scale"),
+    ],
+)
+def test_other_sizes_are_returned_as_the_model_made_them_without_tiling(
+    monkeypatch: pytest.MonkeyPatch,
+    scale_x: float,
+    scale_y: float,
+    scale: int,
+    height: int,
+    width: int,
+):
+    image = np.random.default_rng(0).random((height, width, 3), dtype=np.float32)
+    net = Net(scale_x=scale_x, scale_y=scale_y)
+    result = upscale_with(monkeypatch, net, scale, image)
+
+    pixels = ncnn_input(to_uint8(image))
+    extractor = Extractor(net)
+    extractor.image = pixels
+    _, expected = extractor.extract("out")
+    assert expected is not None
+    assert result.shape[:2] == (round(height * scale_y), round(width * scale_x))
+    np.testing.assert_array_equal(result, expected.transpose(1, 2, 0))
 
 
 def test_an_unexpected_error_is_logged_and_kept_as_the_cause(

@@ -38,6 +38,8 @@ def ncnn_auto_split(
         if staging_vkallocator is not None:
             staging_vkallocator.clear()
 
+    whole_image = img
+
     def upscale(img: np.ndarray, _: object):
         if use_gpu:
             with _net_opt_lock:
@@ -106,12 +108,18 @@ def ncnn_auto_split(
         )
         del ex, mat_in, mat_out
         clear_vkallocators()
+        # The tiler needs every tile upscaled by the same whole multiple on both axes,
+        # and fails a bare assert otherwise. The whole image (passed as itself, a tile
+        # is a view) is returned as it is; upscale_impl checks it against the model's
+        # scale.
         h, w = img.shape[:2]
         out_h, out_w = result.shape[:2]
-        if out_h % h or out_w % w or out_h // h != out_w // w:
+        if img is not whole_image and (
+            out_h % h or out_w % w or out_h // h != out_w // w
+        ):
             raise ValueError(
-                f"The NCNN model returned a {out_w}x{out_h} image for a {w}x{h} image,"
-                " but an upscale must return a whole multiple of the input's size."
+                f"The NCNN model returned a {out_w}x{out_h} image for a {w}x{h} tile,"
+                " but tiling needs a whole multiple of the tile's size."
                 " Models that expect a padded input, such as waifu2x-ncnn-vulkan's,"
                 " are not supported."
             )

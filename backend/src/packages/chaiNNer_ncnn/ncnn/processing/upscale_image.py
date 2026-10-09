@@ -108,7 +108,7 @@ def upscale_impl(
         if use_gpu:
             vkdev = ncnn.get_gpu_device(settings.gpu_index)
             with ncnn_allocators(vkdev) as (blob_vkallocator, staging_vkallocator):
-                return ncnn_auto_split(
+                result = ncnn_auto_split(
                     img,
                     net,
                     input_name=input_name,
@@ -119,7 +119,7 @@ def upscale_impl(
                     collect_after=collect_after,
                 )
         else:
-            return ncnn_auto_split(
+            result = ncnn_auto_split(
                 img,
                 net,
                 input_name=input_name,
@@ -136,6 +136,26 @@ def upscale_impl(
         raise RuntimeError(
             "An unexpected error occurred during NCNN processing."
         ) from e
+
+    # A waifu2x-ncnn-vulkan model expects an input padded by the border its unpadded
+    # convolutions use up, so it returns its scale's size less that border, the same
+    # on both axes. Any other size is returned as the model made it.
+    h, w = img.shape[:2]
+    out_h, out_w = result.shape[:2]
+    border = h * model.scale - out_h
+    whole_multiple = out_h % h == 0 and out_w % w == 0 and out_h // h == out_w // w
+    if (
+        not whole_multiple
+        and 0 < border == w * model.scale - out_w
+        and 2 * border < min(h, w) * model.scale
+    ):
+        raise ValueError(
+            f"The NCNN model returned a {out_w}x{out_h} image for a {w}x{h} image,"
+            f" {border} pixels short of its {model.scale}x scale on both axes."
+            " Models that expect a padded input, such as waifu2x-ncnn-vulkan's,"
+            " are not supported."
+        )
+    return result
 
 
 @processing_group.register(
