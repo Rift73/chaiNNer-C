@@ -298,6 +298,11 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   appends a copy of the first IFD with the tag and points the header at it, so the file is OpenCV's plus one IFD;
   pixels, compression and predictor are unchanged, RGB and grey TIFFs are byte-identical
   (`backend/tests/test_save_image_tiff_extra_samples.py`).
+- Save Image's lossless WebP of an RGBA image is Pillow's with `exact=True` (owner-approved 2026-10-09; side finding
+  of upstream chaiNNer #2914), where OpenCV's libwebp call drops the colour under alpha 0; every sample round-trips.
+  The file grows only by that colour: +0.1 % when transparent pixels are uniform, +55 % on a synthetic worst case
+  (a third transparent with noisy colour). RGB lossless and every lossy WebP stay OpenCV's bytes
+  (`backend/tests/test_save_image_webp_exact.py`).
 - Save Video's audio mux (owner-approved, upstream chaiNNer #3331): chaiNNer's own FFmpeg muxes the audio after the
   video, as upstream v0.25.1 does, where the frozen nightly ran the `ffmpeg` on `PATH` with the audio first and only
   logged a failure, so without FFmpeg on `PATH` every saved video was silent. Auto copies the audio and, when the

@@ -365,8 +365,9 @@ O full_path(O base,O relative,O filename,O format_type) {
     return path_join(base,file).attr("resolve")();
 }
 // Save Image's conversion for every format but DDS, in today's order: Pillow
-// formats (GIF, TGA, AVIF) get a uint8 image in RGB(A) order and their save
-// options; OpenCV formats get their parameters and the precision conversion.
+// formats (GIF, TGA, AVIF) and lossless WebP with alpha get a uint8 image in
+// RGB(A) order and their save options; OpenCV formats get their parameters and
+// the precision conversion.
 struct Encoding {O image; bool pillow=false; py::dict options; py::list params;};
 bool pillow_format(const py::dict& g,const O& format_type) {
     return option(g,format_type,"ImageFormat","GIF")||option(g,format_type,"ImageFormat","TGA")||option(g,format_type,"ImageFormat","AVIF");
@@ -374,9 +375,14 @@ bool pillow_format(const py::dict& g,const O& format_type) {
 Encoding encoding(py::dict g,O image,py::tuple args) {
     O format_type=args[4];
     Encoding result;
-    if(pillow_format(g,format_type)) {
+    // OpenCV's lossless WebP lets libwebp change the colour under alpha 0; Pillow's
+    // exact=True keeps every sample (an RGB image has no such pixels).
+    const bool exact_webp=option(g,format_type,"ImageFormat","WEBP") && truth(args[6]) &&
+        equal(index(name(g,"get_h_w_c")(image),2),py::int_(4));
+    if(pillow_format(g,format_type) || exact_webp) {
         image=name(g,"to_uint8")(image,py::arg("normalized")=true);
         if(option(g,format_type,"ImageFormat","AVIF")){result.options["quality"]=args[7];result.options["subsampling"]=O(args[18]).attr("value");}
+        if(exact_webp){result.options["lossless"]=py::bool_(true);result.options["exact"]=py::bool_(true);}
         O channels=index(name(g,"get_h_w_c")(image),2);
         if(equal(channels,py::int_(3)))image=swap_channels(g,image,"COLOR_BGR2RGB");
         else if(equal(channels,py::int_(4)))image=swap_channels(g,image,"COLOR_BGRA2RGBA");
