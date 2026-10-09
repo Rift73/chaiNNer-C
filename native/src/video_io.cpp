@@ -388,13 +388,30 @@ std::shared_ptr<WriterResource> resource(const O&self) {
     auto owned=std::make_shared<WriterResource>();
     self.attr("_native_video_resource")=py::cast(owned); return owned;
 }
+// The user's -vf (or -filter:v) runs first, then this chain.
+void append_filter(py::dict&params,const std::string&filter) {
+    py::list filters;
+    for(const char*key: {"vf","filter:v"})if(params.contains(key))filters.append(params.attr("pop")(key));
+    filters.append(py::str(filter));
+    params["vf"]=py::str(",").attr("join")(filters);
+}
 // Save Video's YUV output (owner-approved 2026-10-09) carries all four colour tags and is
 // converted to match them with filtered chroma and exact rounding, where FFmpeg 5.1.2's
 // default point-samples chroma and turns grey 128 into (125,128,125). A tag the user gives
 // in Additional parameters wins, the conversion follows the final matrix and range, and a
-// user -vf runs before it. GIF and RGB output keep FFmpeg's own conversion.
+// user -vf runs before it. RGB output keeps FFmpeg's own conversion.
+// GIF (owner-approved 2026-10-09) gets a palette made for each frame, where FFmpeg
+// replaces the node's yuv420p with the fixed 3-3-2 palette of bgr8 (grey 128 is 43 levels
+// off, gradients more). Frames reach FFmpeg one at a time, so the per-frame palette needs no
+// buffering. A user -vf runs first; a user pixel format keeps FFmpeg's conversion.
 void colour_options(const py::dict&g,const O&self,py::dict&params,const O&width,const O&height) {
-    if(eq(self.attr("container"),member(g,"VideoFormat","GIF")) || !params.contains("pix_fmt"))return;
+    if(!params.contains("pix_fmt"))return;
+    if(eq(self.attr("container"),member(g,"VideoFormat","GIF"))) {
+        if(!eq(builtin("str")(params["pix_fmt"]),py::str("yuv420p")))return;
+        params["pix_fmt"]="pal8";
+        append_filter(params,"split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1");
+        return;
+    }
     if(!truth(builtin("str")(params["pix_fmt"]).attr("startswith")(py::make_tuple("yuv","nv"))))return;
     const bool user_matrix=params.contains("colorspace");
     const bool bt709=user_matrix?eq(builtin("str")(params["colorspace"]),py::str("bt709")):high_definition(width,height);
@@ -409,13 +426,10 @@ void colour_options(const py::dict&g,const O&self,py::dict&params,const O&width,
         {"bt2020_cl",py::str("bt2020")}});
     const py::tuple ranges=py::make_tuple("tv","mpeg","pc","jpeg");
     O matrix=builtin("str")(params["colorspace"]),range=builtin("str")(params["color_range"]);
-    py::list filters;
-    for(const char*key: {"vf","filter:v"})if(params.contains(key))filters.append(params.attr("pop")(key));
     std::string scale="scale=";
     if(matrices.contains(matrix))scale+="out_color_matrix="+matrices[matrix].cast<std::string>()+":";
     if(graphpy::contains(ranges,range))scale+="out_range="+range.cast<std::string>()+":";
-    filters.append(py::str(scale+"flags=accurate_rnd+full_chroma_int"));
-    params["vf"]=py::str(",").attr("join")(filters);
+    append_filter(params,scale+"flags=accurate_rnd+full_chroma_int");
 }
 void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
     if(!self.attr("out").is_none())return;

@@ -344,12 +344,21 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   for HD (width ≥ 1280 or height > 576, mpv's guess), and an explicit `scale` filter with
   `accurate_rnd+full_chroma_int` converts to them, where FFmpeg 5.1.2's default point-sampled chroma and turned grey
   128 into (125,128,125). Colour tags given in Additional parameters win and the conversion follows the final matrix
-  and range; a user `-vf` runs before it. GIF and RGB output are unchanged. Load Video honours a file's matrix tag, as
-  before, and reads untagged HD video as BT.709 by the same size rule (`input_matrix` on the loader, from the probe
+  and range; a user `-vf` runs before it. RGB output is unchanged; GIF is the next bullet. Load Video honours a
+  file's matrix tag, as before, and reads untagged HD video as BT.709 by the same size rule (`input_matrix` on the loader, from the probe
   that gives the metadata), in both readers, which stay byte-identical. Every saved YUV file's bytes change; untagged
   HD sources read up to 28 levels differently (39 for BT.601 data, towards what players show). The tests' oracle adds
   the writer's departure (`INTENDED_COLOURS`, `native/tests/test_video_io.py`); `backend/tests/test_save_video_colours.py`
   checks tags and round trips on the integrated FFmpeg.
+- GIF palette (owner-approved 2026-10-09): FFmpeg cannot encode GIF from the node's `yuv420p` and falls back to
+  `bgr8`, a fixed 3-3-2 palette with no palette generation, so upstream's GIFs came back 43 levels off on grey 128 and
+  up to 88 on colour gradients. Save Video writes GIF as `pal8` with
+  `split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1`: a palette made for each frame, since frames
+  reach FFmpeg one at a time and a whole-clip palette would have to buffer them. Grey and grey ramps come back exact,
+  colour gradients within 33 levels (means under 5); frame count and timing are unchanged. A user `-vf` runs
+  before it; a user `-pix_fmt` keeps FFmpeg's conversion. Every GIF's bytes change; other formats' arguments are
+  unchanged. Oracle departure (k) in `INTENDED_COLOURS`; `test_gif_gets_a_palette_per_frame` checks it on the
+  integrated FFmpeg.
 - Save Video's encoder errors (upstream chaiNNer #3109): the encoder's stderr is piped and drained on a daemon thread
   that keeps its last 4 KiB (from its own duplicate of the pipe, so no cleanup races it). A frame write or the final
   flush that fails once FFmpeg has exited raises `RuntimeError` naming FFmpeg, its exit code and that message, chained

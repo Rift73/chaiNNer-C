@@ -252,3 +252,43 @@ def test_untagged_video_is_read_by_the_size_rule(
     frames = [read(path, monkeypatch, cli) for cli in (False, True)]
     np.testing.assert_array_equal(frames[0], frames[1])
     assert np.abs(centres(frames[0]) - original).max() <= 2
+
+
+def gradient(width: int, height: int) -> np.ndarray:
+    """Red across, green down, blue at half: float BGR in 0..1."""
+    y, x = np.mgrid[0:height, 0:width].astype(np.float32)
+    return np.stack([np.full_like(x, 0.5), y / (height - 1), x / (width - 1)], axis=-1)
+
+
+@pytest.mark.parametrize("pattern", ["gradient", "grey"])
+def test_gif_gets_a_palette_per_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pattern: str
+):
+    # FFmpeg replaced the node's yuv420p with bgr8's fixed 3-3-2 palette: both came back
+    # up to 43 levels off, grey 128 as (144, 144, 170). Frames and timing are unchanged.
+    if pattern == "grey":
+        image = np.full((48, 64, 3), 128 / 255, np.float32)
+    else:
+        image = gradient(160, 120)
+    path = save(tmp_path, image, VideoFormat.GIF, VideoEncoder.H264)
+    probe = subprocess.run(
+        [
+            FFPROBE,
+            "-v",
+            "error",
+            "-show_entries",
+            "frame=pts",
+            "-of",
+            "json",
+            str(path),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert [frame["pts"] for frame in json.loads(probe)["frames"]] == [0, 50]
+    original = np.round(image * 255).astype(int)
+    for cli in (False, True):
+        error = np.abs(read(path, monkeypatch, cli).astype(int) - original)
+        assert error.max() <= (0 if pattern == "grey" else 30)
+        assert error.mean() <= 5

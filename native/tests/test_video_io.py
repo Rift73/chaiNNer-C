@@ -467,16 +467,26 @@ INTENDED_MUX = (
 # upstream chaiNNer #3053; ARCHITECTURE section 7): (i) YUV output other than GIF gets
 # all four colour tags, BT.601 for SD and BT.709 for HD (width >= 1280 or height >
 # 576), the user's tags winning, and a scale filter converting to the final matrix and
-# range after the user's -vf.
+# range after the user's -vf; (k) GIF with the node's yuv420p (which FFmpeg replaces with
+# the fixed bgr8 palette) is written as pal8 with a palette made for each frame, after
+# the user's -vf; a user pixel format keeps FFmpeg's conversion.
 INTENDED_COLOURS = [
     (
         """@dataclass
 class Writer:
 """,
-        """def colour_options(container, params, width, height):  # (i)
+        """def colour_options(container, params, width, height):  # (i), (k)
     if not isinstance(params, dict):
         return params  # The caller's ** raises its own TypeError.
-    if container == VideoFormat.GIF or "pix_fmt" not in params:
+    if "pix_fmt" not in params:
+        return params
+    if container == VideoFormat.GIF:
+        if str(params["pix_fmt"]) != "yuv420p":
+            return params
+        params["pix_fmt"] = "pal8"
+        filters = [params.pop(key) for key in ("vf", "filter:v") if key in params]
+        palette = "split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1"
+        params["vf"] = ",".join([*filters, palette])
         return params
     if not str(params["pix_fmt"]).startswith(("yuv", "nv")):
         return params
@@ -1361,8 +1371,9 @@ def test_node_parameters_all_container_encoder_pairs(tmp_path, container, encode
 def test_colour_options_follow_size_and_user_tags(
     tmp_path, container, additional, height, width
 ):
-    # (i): BT.601 for SD, BT.709 for HD, all four tags; user tags win; GIF and RGB
-    # output keep FFmpeg's own conversion.
+    # (i): BT.601 for SD, BT.709 for HD, all four tags; user tags win; RGB output keeps
+    # FFmpeg's own conversion. (k): GIF gets a palette per frame after the user's filter
+    # and no tags; a user pixel format keeps FFmpeg's conversion.
     results = []
     for kind in ("intended", "native"):
         env = FakeFFmpeg()
@@ -1382,6 +1393,17 @@ def test_colour_options_follow_size_and_user_tags(
         results.append((output, env.events.copy()))
     assert results[0] == results[1]
     output = results[1][0]
+    if container == "GIF" and additional != "-pix_fmt bgr0":
+        assert "color_primaries" not in output
+        assert output["pix_fmt"] == "pal8"
+        user_filter = {
+            "-vf hflip": "hflip,",
+            "-color_range pc -filter:v vflip": "vflip,",
+        }
+        assert output["vf"] == user_filter.get(str(additional), "") + (
+            "split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1"
+        )
+        return
     if container == "GIF" or additional == "-pix_fmt bgr0":
         assert "color_primaries" not in output
         assert not output.get("vf", "").endswith("full_chroma_int")
@@ -1823,6 +1845,12 @@ def test_real_cpu_all_exposed_encoder_container_pairs(tmp_path, container, encod
         metadata, decoded = decode("native", path)
         outputs.append((vars(metadata), [x.tobytes() for x in decoded]))
         assert len(decoded) == 2 if container != "GIF" else len(decoded) > 0
+    if container == "GIF":
+        # (k): the per-frame palette departs from the installed reference's bgr8; the
+        # colours are judged in backend/tests/test_save_video_colours.py.
+        assert outputs[0][0] == outputs[1][0]
+        assert len(outputs[0][1]) == len(outputs[1][1])
+        return
     assert outputs[0] == outputs[1]
 
 
