@@ -80,12 +80,13 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 `CHAINNER_C_EXT_OUTPUT_DIR`, default `backend/src/chainner_ext`), replacing the only known-good copies. Copy them to
 `native\build\held\` first and check `Get-FileHash` against those copies. The build is reproducible: the same sources
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
-map, `.gitattributes`). This source's binaries (the portable build, 2026-10-08, shipped in v0.3.1 and v0.3.2), for reference:
+map, `.gitattributes`). This source's binaries (the portable build of 2026-10-09; `chainner_native.dll` and `chainner_ext.pyd` are
+unchanged since v0.3.1 and v0.3.2), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
 | `chainner_native.dll` | `6da1217311bb59a67d1a7ad50e20007ef733b5dbce763ed6bfcf708271cfecf5` |
-| `_chainner_graph.pyd` | `7a0373ba2f285606d9b8baf8968461179a60978d99db37c80ac489a90ea6687d` |
+| `_chainner_graph.pyd` | `9ede6c6d3f91b7c01bb22a2b6ab7a38feb775761b6c2c40683632d6ae2738499` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 
 `generate_onnx_converter.py`, `generate_pixel_art_tables.py` and `generate_tiling_cpp.py` in `native/tools` turn pinned
