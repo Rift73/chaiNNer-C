@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import errno
 import gc
 import hashlib
 import io
@@ -473,6 +474,8 @@ INTENDED_COLOURS = [
 class Writer:
 """,
         """def colour_options(container, params, width, height):  # (i)
+    if not isinstance(params, dict):
+        return params  # The caller's ** raises its own TypeError.
     if container == VideoFormat.GIF or "pix_fmt" not in params:
         return params
     if not str(params["pix_fmt"]).startswith(("yuv", "nv")):
@@ -517,11 +520,76 @@ class Writer:
         """                    .output(
                         **colour_options(
                             self.container,
-                            {**self.output_params, "loglevel": "error"},
+                            {**self.output_params, "loglevel": "error"}
+                            if isinstance(self.output_params, dict)
+                            else self.output_params,
                             width,
                             height,
                         )
                     )""",
+    ),
+]
+
+
+# (j) The encoder's stderr is piped (native code drains its tail on a thread; the fakes
+# have no stderr pipe), and a dead-pipe error (EPIPE, or EINVAL as Windows reports it)
+# once FFmpeg has exited names FFmpeg and its exit code (upstream chaiNNer #3109).
+INTENDED_ENCODER_ERRORS = [
+    (
+        """                        pipe_stdin=True, pipe_stdout=False, cmd=self.ffmpeg_env.ffmpeg
+""",
+        """                        pipe_stdin=True,
+                        pipe_stdout=False,
+                        pipe_stderr=True,
+                        cmd=self.ffmpeg_env.ffmpeg,
+""",
+    ),
+    (
+        """            self.out.stdin.write(out_frame.tobytes())
+""",
+        """            try:
+                self.out.stdin.write(out_frame.tobytes())
+            except OSError as error:
+                encoder_stopped(self.out, error)
+                raise
+""",
+    ),
+    (
+        """            if self.out.stdin is not None:
+                self.out.stdin.close()
+            self.out.wait()
+""",
+        """            if self.out.stdin is not None:
+                try:
+                    self.out.stdin.close()
+                except OSError as error:
+                    encoder_stopped(self.out, error)
+                    raise
+            self.out.wait()
+""",
+    ),
+    (
+        """@dataclass
+class Writer:
+""",
+        """def encoder_stopped(out, error):  # (j)
+    import errno
+    import subprocess
+
+    if error.errno not in (errno.EPIPE, errno.EINVAL):
+        return  # Not the OS's dead-pipe error.
+    try:
+        code = out.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        return
+    raise RuntimeError(
+        f"FFmpeg stopped while Save Video was writing the video (exit code {code})"
+    ) from error
+
+
+@dataclass
+class Writer:
+""",
     ),
 ]
 
@@ -570,7 +638,11 @@ def load(kind, component, env=None):
     )
     text = path.read_text(encoding="utf-8")
     if kind == "intended" and component == "save_video":
-        for frozen, corrected in [INTENDED_MUX, *INTENDED_COLOURS]:
+        for frozen, corrected in [
+            INTENDED_MUX,
+            *INTENDED_COLOURS,
+            *INTENDED_ENCODER_ERRORS,
+        ]:
             assert text.count(frozen) == 1
             text = text.replace(frozen, corrected)
     tree = ast.parse(text)
@@ -1091,7 +1163,7 @@ def test_webm_opus_bitrate_follows_the_channel_count(channels, setting):
 )
 def test_writer_frames_and_even_contract(encoder, shape):
     results = []
-    for kind in ("installed", "native"):
+    for kind in ("intended", "native"):
         env = FakeFFmpeg()
         g = load(kind, "save_video", env)
         w = writer(g, encoder=encoder)
@@ -1114,7 +1186,7 @@ def test_writer_foreign_layouts(layout):
         image = np.asfortranarray(image)
     before = image.tobytes()
     results = []
-    for kind in ("installed", "native"):
+    for kind in ("intended", "native"):
         env = FakeFFmpeg()
         g = load(kind, "save_video", env)
         w = writer(g)
@@ -1140,8 +1212,8 @@ def test_writer_foreign_layouts(layout):
 )
 def test_writer_failure_contract(step):
     results = []
-    for kind in ("installed", "native"):
-        env = FakeFFmpeg(failures={step: BrokenPipeError(step)})
+    for kind in ("intended", "native"):
+        env = FakeFFmpeg(failures={step: BrokenPipeError(errno.EPIPE, step)})
         g = load(kind, "save_video", env)
         w = writer(g)
         result = outcome(
@@ -1152,6 +1224,10 @@ def test_writer_failure_contract(step):
         if w.out is not None:
             w.close()
     assert results[0] == results[1]
+    # (j): a pipe error once FFmpeg has exited names FFmpeg (upstream chaiNNer #3109).
+    if step in ("write", "stdin.close"):
+        assert results[1][0][1][0] == "RuntimeError"
+        assert "FFmpeg stopped" in results[1][0][1][1]
 
 
 def test_successful_close_mux_once_deliberate_correction():
@@ -1508,6 +1584,33 @@ def test_real_cpu_lossless_decode_encode_and_audio(tmp_path):
     assert all(p.poll() is not None for p in owned)
 
 
+@pytest.mark.skipif(not FFMPEG, reason="CPU FFmpeg unavailable")
+def test_real_encoder_that_exits_early_is_named_with_its_message(tmp_path):
+    # x264 rejects the preset when its encoder opens, at the first frame, and FFmpeg
+    # exits; later writes fail on the dead pipe (upstream chaiNNer #3109).
+    g = real_module("native", "save_video")
+    w = writer(g, encoder="H264")
+    w.ffmpeg_env = types.SimpleNamespace(ffmpeg=FFMPEG)
+    w.save_path = str(tmp_path / "early.mkv")
+    w.output_params = {
+        "filename": w.save_path,
+        "vcodec": "libx264",
+        "preset": "no-such-preset",
+    }
+    try:
+        with pytest.raises(RuntimeError, match=r"FFmpeg stopped") as raised:
+            for _ in range(64):
+                w.write_frame(np.zeros((256, 256, 3), np.float32))
+            w.close()
+        message = str(raised.value)
+        assert f"(exit code {w.out.returncode})" in message
+        assert w.out.returncode != 0
+        assert "no-such-preset" in message
+        assert isinstance(raised.value.__cause__, OSError)
+    finally:
+        w._native_video_resource.abort()
+
+
 @pytest.mark.parametrize("exists", [False, True])
 def test_missing_audio_video_exists_policy(exists):
     # INTENDED_MUX (#3331): no video file, so no audio to lose; upstream's error log.
@@ -1788,7 +1891,7 @@ def test_real_cpu_abandoned_reader_and_writer_owned_processes(tmp_path, monkeypa
 
 def test_writer_empty_close_followed_by_first_frame_preserves_owned_lifecycle():
     results = []
-    for kind in ("installed", "native"):
+    for kind in ("intended", "native"):
         env = FakeFFmpeg()
         g = load(kind, "save_video", env)
         w = writer(g)
@@ -2017,7 +2120,7 @@ def test_indexed_reader_reentrant_close_does_not_poison_iteration():
 @pytest.mark.parametrize("value", [None, 2, [], [("filename", "x")], {1: "bad"}, "str"])
 def test_writer_keyword_and_star_parameter_protocol(field, value):
     results = []
-    for kind in ("installed", "native"):
+    for kind in ("intended", "native"):
         env = FakeFFmpeg()
         g = load(kind, "save_video", env)
         w = writer(g)

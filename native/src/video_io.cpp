@@ -329,9 +329,44 @@ void abort_writer(const O&p) {
 
 // Own only processes created by this writer; never a process merely assigned
 // by an external caller. Abandonment stops the owned encoder but never muxes.
+// FFmpeg's stderr (errors only: -loglevel error) drains on a daemon thread into its last
+// 4 KiB, so the encoder never blocks on a full pipe. The thread reads its own duplicate
+// of the pipe, which no other cleanup closes, and ends when FFmpeg exits.
+struct EncoderLog {
+    O thread=py::none(),tail=py::bytearray();
+    void start(const O&process) {
+        O pipe=process.attr("stderr");
+        if(pipe.is_none())return; // A caller-supplied process without a stderr pipe.
+        O os=py::module_::import("os");
+        O fd=os.attr("dup")(pipe.attr("fileno")());
+        O read=os.attr("read"),close=os.attr("close"),buffer=tail;
+        O drain=py::cpp_function([read,close,fd,buffer]() {
+            try {
+                for(O chunk=read(fd,65536);truth(chunk);chunk=read(fd,65536)) {
+                    buffer.attr("extend")(chunk);
+                    const Py_ssize_t excess=PyObject_Length(buffer.ptr())-4096;
+                    if(excess>0 && PySequence_DelSlice(buffer.ptr(),0,excess)<0)throw py::error_already_set();
+                }
+            } catch(...) {close(fd);throw;}
+            close(fd);
+        });
+        try {
+            thread=py::module_::import("threading").attr("Thread")(py::arg("target")=drain,py::arg("daemon")=true);
+            thread.attr("start")();
+        } catch(...) {thread=py::none();close(fd);throw;}
+    }
+    // FFmpeg's message once it has exited: what the drain kept, decoded.
+    O text() {
+        if(!thread.is_none())thread.attr("join")(py::arg("timeout")=5);
+        O lines=builtin("bytes")(tail).attr("decode")("utf-8","replace").attr("splitlines")();
+        return py::str("\n").attr("join")(lines).attr("strip")();
+    }
+};
+
 class WriterResource {
 public:
     O process=py::none();
+    EncoderLog log;
     bool completed=false;
     bool aborted=false;
     void abort() {
@@ -402,8 +437,12 @@ void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
         stream=call(output,py::tuple(),params).attr("overwrite_output")();
         O global_args=stream.attr("global_args");
         stream=call(global_args,star_arguments(global_args,self.attr("global_params")));
-        O process=stream.attr("run_async")(py::arg("pipe_stdin")=true,py::arg("pipe_stdout")=false,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffmpeg"));
+        O process=stream.attr("run_async")(py::arg("pipe_stdin")=true,py::arg("pipe_stdout")=false,
+            py::arg("pipe_stderr")=true,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffmpeg"));
         auto state=resource(self);state->process=process;state->completed=false;
+        state->log=EncoderLog();
+        try {state->log.start(process);}
+        catch(...) {state->abort();throw;} // Undrained stderr could block the encoder.
         self.attr("out")=process;
     } catch(const py::error_already_set&e) {
         if(!e.matches(PyExc_Exception))throw;
@@ -450,6 +489,28 @@ void write_frame_payload(const O&write,const O&payload) {
         remaining=view[py::slice(py::int_(offset),py::int_(total),py::int_(1))];
     }
 }
+// An encoder that exits early (a rejected option, a crash, a full disk) closes its end
+// of the pipe, so writing fails as Broken pipe or, on Windows, [Errno 22]. Once FFmpeg
+// has exited, name it, its exit code and its message instead (upstream chaiNNer #3109);
+// while it still runs, the pipe error stands.
+void raise_if_encoder_stopped(const O&self,const py::error_already_set&error) {
+    if(!error.matches(PyExc_OSError))return;
+    // Only the OS's dead-pipe errors, not this writer's own short-write errors.
+    O number=error.value().attr("errno"),errno_codes=py::module_::import("errno");
+    if(!eq(number,errno_codes.attr("EPIPE")) && !eq(number,errno_codes.attr("EINVAL")))return;
+    O code;
+    try {code=self.attr("out").attr("wait")(py::arg("timeout")=5);}
+    catch(const py::error_already_set&e) {
+        if(e.matches(py::module_::import("subprocess").attr("TimeoutExpired").ptr()))return;
+        throw;
+    }
+    O message=resource(self)->log.text();
+    O text=py::str("FFmpeg stopped while Save Video was writing the video (exit code {})").attr("format")(code);
+    if(truth(message))text=py::str("{}: {}").attr("format")(text,message);
+    py::error_already_set original=error;
+    py::raise_from(original,PyExc_RuntimeError,text.cast<std::string>().c_str());
+    throw py::error_already_set();
+}
 void writer_frame(const py::dict&g,const O&self,const O&image,const O&prepared) {
     if(self.attr("out").is_none()) {
         O shape=global(g,"get_h_w_c")(image);
@@ -458,8 +519,9 @@ void writer_frame(const py::dict&g,const O&self,const O&image,const O&prepared) 
     // A prepared frame (SP3-P9) is to_uint8's result computed ahead: only the payload.
     O frame=prepared.is_none()?O(global(g,"to_uint8")(image,py::arg("normalized")=true)):O(prepared.attr("result")());
     if(!self.attr("out").is_none() && !self.attr("out").attr("stdin").is_none()) {
-        O write=self.attr("out").attr("stdin").attr("write");
-        write_frame_payload(write,frame_payload(g,frame));
+        O write=self.attr("out").attr("stdin").attr("write"),payload=frame_payload(g,frame);
+        try {write_frame_payload(write,payload);}
+        catch(const py::error_already_set&e) {raise_if_encoder_stopped(self,e);throw;}
     }
     else fail(PyExc_RuntimeError,"Failed to open video writer");
 }
@@ -558,8 +620,15 @@ void writer_close(const py::dict&g,const O&self) {
     auto state=resource(self);
     if(state->completed || state->aborted)return; // Completion/mux occurs once; abort never commits.
     if(!self.attr("out").is_none()) {
-        if(!self.attr("out").attr("stdin").is_none())self.attr("out").attr("stdin").attr("close")();
+        if(!self.attr("out").attr("stdin").is_none()) {
+            // Closing flushes the last buffered frames into the pipe.
+            try {self.attr("out").attr("stdin").attr("close")();}
+            catch(const py::error_already_set&e) {raise_if_encoder_stopped(self,e);throw;}
+        }
         self.attr("out").attr("wait")();
+        // The exit code stays unchecked, as upstream; FFmpeg's message stays in the log.
+        O message=state->log.text();
+        if(truth(message))global(g,"logger").attr("warning")(fmt("FFmpeg: {}",message));
     }
     mux_audio(g,self);
     state->completed=true;

@@ -329,6 +329,12 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   HD sources read up to 28 levels differently (39 for BT.601 data, towards what players show). The tests' oracle adds
   the writer's departure (`INTENDED_COLOURS`, `native/tests/test_video_io.py`); `backend/tests/test_save_video_colours.py`
   checks tags and round trips on the integrated FFmpeg.
+- Save Video's encoder errors (upstream chaiNNer #3109): the encoder's stderr is piped and drained on a daemon thread
+  that keeps its last 4 KiB (from its own duplicate of the pipe, so no cleanup races it). A frame write or the final
+  flush that fails once FFmpeg has exited raises `RuntimeError` naming FFmpeg, its exit code and that message, chained
+  to the pipe error, where upstream surfaces only `Broken pipe` or `[Errno 22]`; while FFmpeg still runs, the pipe
+  error stands. The exit code at a successful close stays unchecked, as upstream; anything FFmpeg printed is logged as
+  a warning instead of going to the backend's stderr. Output bytes are unchanged (`INTENDED_ENCODER_ERRORS`).
 - Sibling event order (SP2): inputs awaited together (`owned_gather`, section 4) start and finish in pool-timing
   order, where upstream awaits inputs in turn (`start a, finish a, start b, finish b`). The event multiset and each
   node's final state are identical (`verify_runtime.event_contract` and `sse_contract` compare no order); item order
