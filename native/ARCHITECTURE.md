@@ -363,7 +363,8 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   unchanged. Oracle departure (k) in `INTENDED_COLOURS`; `test_gif_gets_a_palette_per_frame` checks it on the
   integrated FFmpeg.
 - Save Video's encoder errors (upstream chaiNNer #3109): the encoder's stderr is piped and drained on a daemon thread
-  that keeps its last 4 KiB (from its own duplicate of the pipe, so no cleanup races it). A frame write or the final
+  that keeps its last 4 KiB (from its own duplicate of the pipe, so no cleanup races it); FFmpeg's own pipe closes
+  once the thread has joined. A frame write or the final
   flush that fails once FFmpeg has exited raises `RuntimeError` naming FFmpeg, its exit code and that message, chained
   to the pipe error, where upstream surfaces only `Broken pipe` or `[Errno 22]`; while FFmpeg still runs, the pipe
   error stands. The exit code at a successful close stays unchecked, as upstream; anything FFmpeg printed is logged as

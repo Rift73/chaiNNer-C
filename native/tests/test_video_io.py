@@ -1575,6 +1575,8 @@ def test_real_cpu_lossless_decode_encode_and_audio(tmp_path):
                 if w.out not in owned:
                     owned.append(w.out)
             w.close()
+            if kind == "native":  # FFmpeg's stderr pipe is closed once drained.
+                assert w.out.stderr.closed
             assert w.out.poll() == 0
             before = decode("installed", path)
             native = decode("native", path)

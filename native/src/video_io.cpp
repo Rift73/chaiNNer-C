@@ -333,9 +333,9 @@ void abort_writer(const O&p) {
 // 4 KiB, so the encoder never blocks on a full pipe. The thread reads its own duplicate
 // of the pipe, which no other cleanup closes, and ends when FFmpeg exits.
 struct EncoderLog {
-    O thread=py::none(),tail=py::bytearray();
+    O thread=py::none(),tail=py::bytearray(),pipe=py::none();
     void start(const O&process) {
-        O pipe=process.attr("stderr");
+        pipe=process.attr("stderr");
         if(pipe.is_none())return; // A caller-supplied process without a stderr pipe.
         O os=py::module_::import("os");
         O fd=os.attr("dup")(pipe.attr("fileno")());
@@ -355,9 +355,11 @@ struct EncoderLog {
             thread.attr("start")();
         } catch(...) {thread=py::none();close(fd);throw;}
     }
-    // FFmpeg's message once it has exited: what the drain kept, decoded.
+    // FFmpeg's message once it has exited: what the drain kept, decoded. The drain read
+    // its own duplicate, so FFmpeg's pipe closes here.
     O text() {
         if(!thread.is_none())thread.attr("join")(py::arg("timeout")=5);
+        if(!pipe.is_none())pipe.attr("close")();
         O lines=builtin("bytes")(tail).attr("decode")("utf-8","replace").attr("splitlines")();
         return py::str("\n").attr("join")(lines).attr("strip")();
     }
