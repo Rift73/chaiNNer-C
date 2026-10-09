@@ -94,6 +94,8 @@ def test_a_provider_that_starts_gets_its_session(
 
 
 def test_the_cpu_provider_gets_its_session():
+    # Runs native code, which GitHub's checks do not build.
+    pytest.importorskip("nodes.impl._chainner_graph")
     model = identity_model()
     session = get_onnx_session(model, 0, CPU, False)
     image = np.ones((1, 3, 4, 4), np.float32)

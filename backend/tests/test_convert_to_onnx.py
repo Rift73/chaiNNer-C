@@ -73,6 +73,8 @@ def test_convert_to_onnx_matches_pytorch(arch: str, sizes: list[tuple[int, int]]
 # MixDehazeNet's graph pads with shape operations, which NCNN does not support.
 @pytest.mark.parametrize("arch", ["Compact", "ESRGAN"])
 def test_convert_to_ncnn_matches_pytorch(arch: str, tmp_path: Path):
+    # Runs native code, which GitHub's checks do not build.
+    pytest.importorskip("nodes.impl._chainner_graph")
     # PyTorch's Convert To NCNN: an fp32 ONNX intermediate, then the ONNX converter.
     model = tiny_model(arch)
     onnx_bytes = convert_to_onnx_impl(model, torch.device("cpu"), False, "data")

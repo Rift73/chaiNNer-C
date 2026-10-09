@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import pytest
 
+# The node's modules load the native backend, which GitHub's checks do not build.
+pytest.importorskip("nodes.impl._chainner_graph")
+
 from packages.chaiNNer_standard.utility.text.text_pattern import text_pattern_node
 
 

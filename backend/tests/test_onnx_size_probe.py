@@ -16,6 +16,9 @@ from spandrel.architectures.ESRGAN import ESRGAN
 from spandrel.architectures.RealCUGAN import UpCunet2x
 from spandrel.architectures.SwinIR import SwinIR
 
+# The node's modules load the native backend, which GitHub's checks do not build.
+pytest.importorskip("nodes.impl._chainner_graph")
+
 from api import NodeContext, SettingsParser
 from nodes.impl.onnx import size_probe
 from nodes.impl.onnx.auto_split import onnx_auto_split

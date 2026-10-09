@@ -15,6 +15,9 @@ from typing import cast
 import numpy as np
 import pytest
 
+# The node's modules load the native backend, which GitHub's checks do not build.
+pytest.importorskip("nodes.impl._chainner_graph")
+
 from api import NodeContext
 from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
 from nodes.impl.video import VideoLoader

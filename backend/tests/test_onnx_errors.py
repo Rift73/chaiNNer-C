@@ -4,6 +4,9 @@ import numpy as np
 import pytest
 from onnx import TensorProto, helper, numpy_helper
 
+# The node's modules load the native backend, which GitHub's checks do not build.
+pytest.importorskip("nodes.impl._chainner_graph")
+
 from nodes.impl.onnx.auto_split import onnx_auto_split
 from nodes.impl.onnx.model import OnnxGeneric, OnnxInfo
 from nodes.impl.onnx.session import create_inference_session

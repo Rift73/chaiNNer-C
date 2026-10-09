@@ -12,6 +12,9 @@ import psutil
 import pytest
 from ncnn import ncnn
 
+# The node's modules load the native backend, which GitHub's checks do not build.
+pytest.importorskip("nodes.impl._chainner_graph")
+
 from nodes.impl.image_utils import to_uint8
 from nodes.impl.native_framework_images import ncnn_input
 from nodes.impl.ncnn import session

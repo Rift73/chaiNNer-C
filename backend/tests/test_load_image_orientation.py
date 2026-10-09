@@ -14,6 +14,9 @@ import numpy as np
 import pytest
 from PIL import Image, ImageOps
 
+# The node's modules load the native backend, which GitHub's checks do not build.
+pytest.importorskip("nodes.impl._chainner_graph")
+
 from packages.chaiNNer_standard.image.batch_processing.load_images import (
     load_images_node,
 )

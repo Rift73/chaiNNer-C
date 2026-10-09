@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
+import pytest
 from ncnn import ncnn
 from onnx import ModelProto, TensorProto, helper
 
@@ -60,6 +61,8 @@ def run_ncnn(model: NcnnModel, directory: Path) -> np.ndarray:
 
 
 def test_a_converted_reduction_keeps_its_axes(tmp_path: Path):
+    # Runs native code, which GitHub's checks do not build.
+    pytest.importorskip("nodes.impl._chainner_graph")
     onnx_model = squared_deviation()
     (expected,) = ort.InferenceSession(
         onnx_model.SerializeToString(), providers=["CPUExecutionProvider"]

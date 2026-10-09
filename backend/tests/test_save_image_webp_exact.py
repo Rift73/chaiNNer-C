@@ -11,6 +11,9 @@ import numpy as np
 import pytest
 from PIL import Image
 
+# The node's modules load the native backend, which GitHub's checks do not build.
+pytest.importorskip("nodes.impl._chainner_graph")
+
 from api import Lazy
 from nodes.impl.image_utils import to_uint8
 from packages.chaiNNer_standard.image.io import save_image

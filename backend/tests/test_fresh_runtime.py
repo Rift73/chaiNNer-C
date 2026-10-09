@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 BACKEND = Path(__file__).resolve().parents[1] / "src"
 
 # The top-level modules of every package Dependency, but NumPy's (a server dependency).
@@ -119,6 +121,8 @@ def test_the_worker_lists_every_package_without_their_dependencies():
 
 
 def test_a_torch_that_fails_to_load_costs_only_the_pytorch_nodes():
+    # Runs native code, which GitHub's checks do not build.
+    pytest.importorskip("nodes.impl._chainner_graph")
     # The standard package's dependencies are installed; the GPU frameworks other
     # than torch are absent, so nothing here loads a GPU runtime.
     gpu = ["ncnn", "onnx", "onnxoptimizer", "onnxruntime", "tensorrt", "cuda", "triton"]
