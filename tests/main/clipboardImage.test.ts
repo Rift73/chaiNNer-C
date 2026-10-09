@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { readClipboardImageAsPng } from '../../src/main/clipboardImage';
 
 const pngFile = (content: string) =>
@@ -12,10 +12,14 @@ const readImagePng = pngFile("readImage()'s PNG");
 // readImage()'s bitmap: 4 bytes per pixel, alpha last
 const bitmap = (...alphas: number[]) => Buffer.from(alphas.flatMap((alpha) => [0, 200, 0, alpha]));
 
-const fakeClipboard = (pixels: Buffer, formats: Partial<Record<string, Buffer>>) => ({
-    readImage: () => ({ toBitmap: () => pixels, toPNG: () => readImagePng }),
-    readBuffer: (format: string) => formats[format] ?? Buffer.alloc(0),
-});
+const fakeClipboard = (pixels: Buffer, formats: Partial<Record<string, Buffer>>) => {
+    const toBitmap = vi.fn(() => pixels);
+    return {
+        toBitmap,
+        readImage: () => ({ toBitmap, toPNG: () => readImagePng }),
+        readBuffer: (format: string) => formats[format] ?? Buffer.alloc(0),
+    };
+};
 
 // upstream chaiNNer #1511: readImage() is premultiplied, so its PNG has black under transparent pixels
 test.each([
@@ -41,7 +45,12 @@ test("an opaque image keeps readImage()'s PNG, as before", () => {
 });
 
 test("without a PNG from the app, an image with transparency keeps readImage()'s PNG", () => {
-    expect(readClipboardImageAsPng(fakeClipboard(bitmap(0), {}))).toBe(readImagePng);
+    const empty = fakeClipboard(bitmap(0), {});
+    expect(readClipboardImageAsPng(empty)).toBe(readImagePng);
     const notPng = fakeClipboard(bitmap(0), { PNG: Buffer.from('BM, a bitmap file') });
     expect(readClipboardImageAsPng(notPng)).toBe(readImagePng);
+
+    // the bitmap, a full copy of the image, is not read when there is no PNG to prefer
+    expect(empty.toBitmap).not.toHaveBeenCalled();
+    expect(notPng.toBitmap).not.toHaveBeenCalled();
 });

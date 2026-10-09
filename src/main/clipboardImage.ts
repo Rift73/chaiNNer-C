@@ -26,16 +26,21 @@ interface ImageClipboard {
  * is therefore taken from the PNG the copying app put on the clipboard, when there is one. An
  * opaque image keeps `readImage()`'s PNG, which is RGB: the app's own PNG may have an all-opaque
  * alpha channel or 16-bit samples, which would change what Load Image outputs.
+ *
+ * The bitmap (a full copy of the image) is read for its alpha only when the app's PNG exists.
  */
 export const readClipboardImageAsPng = (clipboard: ImageClipboard): Buffer => {
-    const image = clipboard.readImage();
-    if (hasTransparency(image.toBitmap())) {
-        for (const format of PNG_FORMATS) {
-            const png = clipboard.readBuffer(format);
-            if (png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
-                return png;
-            }
+    let appPng: Buffer | undefined;
+    for (const format of PNG_FORMATS) {
+        const png = clipboard.readBuffer(format);
+        if (png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+            appPng = png;
+            break;
         }
+    }
+    const image = clipboard.readImage();
+    if (appPng && hasTransparency(image.toBitmap())) {
+        return appPng;
     }
     return image.toPNG();
 };
