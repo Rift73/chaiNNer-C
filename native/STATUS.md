@@ -111,6 +111,17 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   its type); every DUAL engine, fixed ones too, names its input `input_aligned_4`, which Load Engine reads as
   "mixed". Fixed engines built before this still read as FP32. The fork's backend-tests check failed since the
   dynamic push (the ONNX-load assertion needs the native build, which GitHub does not make); it now skips there.
+- Upstream bug fixes (2026-10-09, branch `fix/upstream-issues`, decisions D1-D15 by the owner's stand-in in
+  `native/reports/fable-decisions.md`): 70 open upstream bug and unlabelled issues plus 82 enhancement issues triaged
+  against chaiNNer-C (reports in the session scratchpad), fixed in about 60 commits, worst first. Highlights: a fresh
+  install starts again (NumPy with the server packages; a missing or broken torch costs only the PyTorch nodes;
+  verified with a real first start of an `npm run make` build, where v0.3.2 dies on `numpy`); Convert To ONNX/NCNN
+  export with `dynamo=False` (torch 2.14 needed onnxscript); NCNN return codes checked; Save Video audio on chaiNNer's
+  FFmpeg, never silent; Save/Load Video colours by size with full tags; ONNX tile padding found by running the model;
+  EXIF orientation; straight-alpha and grey+alpha TIFFs; TIFF ExtraSamples; lossless WebP `exact`; CLI ends its
+  backend; system-Python option removed; Python download honours the proxy; pip's errors reach the UI; Spandrel
+  `0.4.2+c2` (fork release `v0.4.2-c2`, SHA-256 `e030832f…`: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
+  padding per input for 12). Deviations: ARCHITECTURE section 7.
 
 ## Last CPU comparison
 
@@ -139,6 +150,7 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | GPU-dependent work (the GPU lease and its unittest were removed on 2026-10-05, owner's decision; `GPU-DEFERRED.md` item 2 retired). Item 1, the GPU provider paths, was verified by U4-light on 2026-10-07 and removed: NCNN on Vulkan, ONNX Runtime's CUDA execution provider and PyTorch CUDA work on the 3.14 stack (`default.chn` on the GPU included; peak per-process VRAM 1.87 GB); ONNX Runtime's DirectML and TensorRT providers were not exercised | `GPU-DEFERRED.md`, under the owner's rule of 2026-10-07: no GPU benchmarks, at most 3 GB VRAM |
 | SP0 deferred follow-ups | `docs/superpowers/plans/2026-10-01-sp0-foundation.md`, "Deferred follow-ups" |
 | Upstream-parity items still listed (owner directive 4, 2026-10-04): the C1-class pins not yet checked against chaiNNer; lens power's input `maxss(+0, x)`, output-invisible and VERIFIED equal to chaiNNer's chain; compose's NaN selection, positions-level by rule (spec 4.4); suite-wide ±0-aware bitwise comparators (the suite's `assert_array_equal` treats ±0 as equal). Closed: the normalize/enforce clamp follows `np.clip` on the tested stack, −0 kept (ARCHITECTURE section 7, Consult 11 R-p) | SP5a, or the next task that touches them |
+| Upstream-bug follow-ups (2026-10-09): CPU-only NCNN proactive tiling (D8, approved, not started); GIF palette per frame (approved, after D1); the bundled `chainner_pip` 23.2 downloads PEP 658 wheels twice (needs pip's pypa/pip#11847 fix in the bundled wheel); the NaN check per tile instead of at the end (D15 note); SCUNet ONNX export unblocking (needs a real-model test); ONNX Runtime's TensorRT provider needs TensorRT 10 (owner: ship it or drop the option); a regression test running the app's schema check over the backend's real node list (one bad type expression blanked the node list on 2026-10-09); the real first-start check needs a fixed, firewall-allowed folder | `native/reports/fable-decisions.md` (D1-D15) |
 
 ## Decision log
 

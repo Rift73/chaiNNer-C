@@ -85,7 +85,7 @@ map, `.gitattributes`). This source's binaries (the portable build, 2026-10-08, 
 | Binary | SHA-256 |
 | --- | --- |
 | `chainner_native.dll` | `6da1217311bb59a67d1a7ad50e20007ef733b5dbce763ed6bfcf708271cfecf5` |
-| `_chainner_graph.pyd` | `db143a020277900475a16fc20531e331d84e4adf46ff862820d9114818dad587` |
+| `_chainner_graph.pyd` | `7a0373ba2f285606d9b8baf8968461179a60978d99db37c80ac489a90ea6687d` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 
 `generate_onnx_converter.py`, `generate_pixel_art_tables.py` and `generate_tiling_cpp.py` in `native/tools` turn pinned

@@ -303,6 +303,22 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   The file grows only by that colour: +0.1 % when transparent pixels are uniform, +55 % on a synthetic worst case
   (a third transparent with noisy colour). RGB lossless and every lossy WebP stay OpenCV's bytes
   (`backend/tests/test_save_image_webp_exact.py`).
+- ONNX Upscale Image pads each tile only to the size requirement it finds by running the model once on a CPU session
+  (64x64, then (64+m)x(64+3m) for m = 1, 2, 4, ..., 64; the first exactly scaled result wins; shape inference's answer
+  is the fallback; cached per model), where upstream pads to the multiple of 16 that shape inference reports for
+  nearly every model (upstream chaiNNer #3106; owner's stand-in 2026-10-09). Convolution models' edges on images or
+  tiles that are not a multiple of 16 now equal PyTorch's and NCNN's, and window-attention exports run at any size
+  (`backend/tests/test_onnx_size_probe.py`).
+- PyTorch Upscale Image raises when the model turns a finite image into NaN or Inf (an fp16 overflow; the message
+  says to turn FP16 off), where upstream saves NaN as black and clips Inf (upstream chaiNNer #3071; owner's stand-in
+  D15; `backend/tests/test_pytorch_nan_output.py`).
+- NCNN: a failed inference or model load raises (out of memory retries with smaller tiles), where upstream's binding
+  ignored ncnn's return codes; a tile whose result is not a whole multiple of its input raises, and without tiling only
+  the waifu2x-style crop (the same border short of the model's scale on both axes) is refused, naming both sizes
+  (upstream chaiNNer #3011, #2486; `backend/tests/test_ncnn_errors.py`).
+- ONNX sessions raise when the chosen execution provider did not start (ONNX Runtime 1.30's TensorRT provider needs
+  TensorRT 10, which chaiNNer-C does not ship), where upstream silently ran on CUDA or the CPU (upstream chaiNNer #2715;
+  `backend/tests/test_onnx_session_providers.py`).
 - Save Video's audio mux (owner-approved, upstream chaiNNer #3331): chaiNNer's own FFmpeg muxes the audio after the
   video, as upstream v0.25.1 does, where the frozen nightly ran the `ffmpeg` on `PATH` with the audio first and only
   logged a failure, so without FFmpeg on `PATH` every saved video was silent. Auto copies the audio and, when the
