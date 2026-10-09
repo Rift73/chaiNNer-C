@@ -413,19 +413,33 @@ void colour_options(const py::dict&g,const O&self,py::dict&params,const O&width,
         return;
     }
     if(!truth(builtin("str")(params["pix_fmt"]).attr("startswith")(py::make_tuple("yuv","nv"))))return;
-    const bool user_matrix=params.contains("colorspace");
-    const bool bt709=user_matrix?eq(builtin("str")(params["colorspace"]),py::str("bt709")):high_definition(width,height);
-    const char*primaries=bt709?"bt709":eq(height,py::int_(576))?"bt470bg":"smpte170m";
-    const char*defaults[][2]={{"colorspace",bt709?"bt709":"smpte170m"},{"color_primaries",primaries},
-        {"color_trc",bt709?"bt709":"smpte170m"},{"color_range","tv"}};
-    for(const auto&tag:defaults)if(!params.contains(tag[0]))params[tag[0]]=tag[1];
+    // Without a user matrix, primaries or transfer, the size picks BT.601 or BT.709. A user
+    // matrix picks the missing primaries and transfer of its own family (BT.2020: bt2020
+    // primaries and BT.709's curve, which H.273 makes BT.2020's at 8 bits); primaries or a
+    // transfer without a matrix, or a matrix of no family here, add neither.
+    std::string family;
+    if(!params.contains("colorspace") && !params.contains("color_primaries") && !params.contains("color_trc"))
+        family=high_definition(width,height)?"bt709":"smpte170m";
+    else if(params.contains("colorspace")) {
+        const std::string user=builtin("str")(params["colorspace"]).cast<std::string>();
+        if(user=="bt709")family="bt709";
+        else if(user=="smpte170m" || user=="bt470bg")family="smpte170m";
+        else if(user=="bt2020nc" || user=="bt2020_ncl" || user=="bt2020c" || user=="bt2020_cl")family="bt2020";
+    }
+    if(!family.empty()) {
+        const std::string primaries=family!="smpte170m"?family:eq(height,py::int_(576))?"bt470bg":"smpte170m";
+        const std::string defaults[][2]={{"colorspace",family},{"color_primaries",primaries},
+            {"color_trc",family=="bt2020"?"bt709":family}};
+        for(const auto&tag:defaults)if(!params.contains(tag[0].c_str()))params[tag[0].c_str()]=tag[1];
+    }
+    if(!params.contains("color_range"))params["color_range"]="tv";
     // scale's names for the matrices FFmpeg can tag; another tag converts as FFmpeg's default.
     const py::dict matrices=dict({{"bt709",py::str("bt709")},{"smpte170m",py::str("smpte170m")},
         {"bt470bg",py::str("bt470")},{"fcc",py::str("fcc")},{"smpte240m",py::str("smpte240m")},
         {"bt2020nc",py::str("bt2020")},{"bt2020_ncl",py::str("bt2020")},{"bt2020c",py::str("bt2020")},
         {"bt2020_cl",py::str("bt2020")}});
     const py::tuple ranges=py::make_tuple("tv","mpeg","pc","jpeg");
-    O matrix=builtin("str")(params["colorspace"]),range=builtin("str")(params["color_range"]);
+    O matrix=builtin("str")(params.attr("get")("colorspace","")),range=builtin("str")(params["color_range"]);
     std::string scale="scale=";
     if(matrices.contains(matrix))scale+="out_color_matrix="+matrices[matrix].cast<std::string>()+":";
     if(graphpy::contains(ranges,range))scale+="out_range="+range.cast<std::string>()+":";

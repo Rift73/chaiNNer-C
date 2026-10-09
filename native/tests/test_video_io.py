@@ -490,14 +490,26 @@ class Writer:
         return params
     if not str(params["pix_fmt"]).startswith(("yuv", "nv")):
         return params
-    if "colorspace" in params:
-        bt709 = str(params["colorspace"]) == "bt709"
-    else:
-        bt709 = width >= 1280 or height > 576
-    primaries = "bt709" if bt709 else "bt470bg" if height == 576 else "smpte170m"
-    params.setdefault("colorspace", "bt709" if bt709 else "smpte170m")
-    params.setdefault("color_primaries", primaries)
-    params.setdefault("color_trc", "bt709" if bt709 else "smpte170m")
+    family = None
+    if not {"colorspace", "color_primaries", "color_trc"} & params.keys():
+        family = "bt709" if width >= 1280 or height > 576 else "smpte170m"
+    elif "colorspace" in params:
+        family = {
+            "bt709": "bt709",
+            "smpte170m": "smpte170m",
+            "bt470bg": "smpte170m",
+            "bt2020nc": "bt2020",
+            "bt2020_ncl": "bt2020",
+            "bt2020c": "bt2020",
+            "bt2020_cl": "bt2020",
+        }.get(str(params["colorspace"]))
+    if family is not None:
+        primaries = family
+        if family == "smpte170m" and height == 576:
+            primaries = "bt470bg"
+        params.setdefault("colorspace", family)
+        params.setdefault("color_primaries", primaries)
+        params.setdefault("color_trc", "bt709" if family == "bt2020" else family)
     params.setdefault("color_range", "tv")
     matrices = {
         "bt709": "bt709",
@@ -510,7 +522,7 @@ class Writer:
         "bt2020c": "bt2020",
         "bt2020_cl": "bt2020",
     }
-    matrix, colour_range = str(params["colorspace"]), str(params["color_range"])
+    matrix, colour_range = str(params.get("colorspace", "")), str(params["color_range"])
     filters = [params.pop(key) for key in ("vf", "filter:v") if key in params]
     scale = "scale="
     if matrix in matrices:
@@ -1362,6 +1374,8 @@ def test_node_parameters_all_container_encoder_pairs(tmp_path, container, encode
         "-colorspace bt709",
         "-color_range pc -filter:v vflip",
         "-colorspace rgb",
+        "-colorspace bt2020nc",
+        "-color_primaries bt2020",
         "-pix_fmt bgr0",
     ],
 )
@@ -1394,7 +1408,7 @@ def test_colour_options_follow_size_and_user_tags(
     assert results[0] == results[1]
     output = results[1][0]
     if container == "GIF" and additional != "-pix_fmt bgr0":
-        assert "color_primaries" not in output
+        assert "color_trc" not in output
         assert output["pix_fmt"] == "pal8"
         user_filter = {
             "-vf hflip": "hflip,",
@@ -1410,9 +1424,16 @@ def test_colour_options_follow_size_and_user_tags(
         return
     hd = width >= 1280 or height > 576
     expected = "bt709" if hd or additional == "-colorspace bt709" else "smpte170m"
-    if additional != "-colorspace rgb":
+    if additional == "-colorspace bt2020nc":
+        # A user matrix picks its own family's missing tags, whatever the size.
+        assert (output["color_primaries"], output["color_trc"]) == ("bt2020", "bt709")
+    elif additional in ("-colorspace rgb", "-color_primaries bt2020"):
+        # No family to take them from: none is added.
+        assert len({"colorspace", "color_primaries", "color_trc"} & output.keys()) == 1
+    else:
         assert output["colorspace"] == expected
-    assert {"color_primaries", "color_trc", "color_range"} <= output.keys()
+        assert {"color_primaries", "color_trc"} <= output.keys()
+    assert "color_range" in output
     assert output["vf"].endswith("flags=accurate_rnd+full_chroma_int")
 
 

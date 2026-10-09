@@ -178,13 +178,28 @@ def test_grey_stays_grey(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert (read(path, monkeypatch, cli=True)[24, 32] == 128).all()
 
 
+@pytest.mark.parametrize(
+    ("size", "additional", "expected"),
+    [
+        (
+            (720, 480),
+            "-colorspace bt709 -color_primaries bt709 -color_trc bt709",
+            BT709,
+        ),
+        # A user matrix alone takes its own family's primaries and transfer.
+        ((1280, 720), "-colorspace bt2020nc", ("bt2020nc", "bt2020", "bt709", "tv")),
+    ],
+)
 def test_user_tags_win_and_drive_the_conversion(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    size: tuple[int, int],
+    additional: str,
+    expected: tuple[str, ...],
 ):
-    image = bars(720, 480)
-    additional = "-colorspace bt709 -color_primaries bt709 -color_trc bt709"
+    image = bars(*size)
     path = save(tmp_path, image, VideoFormat.MP4, VideoEncoder.H264, additional)
-    assert tags(path) == BT709
+    assert tags(path) == expected
     original = centres(np.round(image * 255).astype(np.uint8))
     assert np.abs(centres(read(path, monkeypatch, cli=True)) - original).max() <= 2
 

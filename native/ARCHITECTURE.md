@@ -344,7 +344,9 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   for HD (width ≥ 1280 or height > 576, mpv's guess), and an explicit `scale` filter with
   `accurate_rnd+full_chroma_int` converts to them, where FFmpeg 5.1.2's default point-sampled chroma and turned grey
   128 into (125,128,125). Colour tags given in Additional parameters win and the conversion follows the final matrix
-  and range; a user `-vf` runs before it. RGB output is unchanged; GIF is the next bullet. Load Video honours a
+  and range; a user matrix alone takes its own family's primaries and transfer whatever the size (BT.2020: `bt2020`
+  and BT.709's curve, which H.273 makes BT.2020's at 8 bits), while primaries or a transfer without a matrix, or a
+  matrix of no family here, add no other tag but the range. A user `-vf` runs before the conversion. RGB output is unchanged; GIF is the next bullet. Load Video honours a
   file's matrix tag, as before, and reads untagged HD video as BT.709 by the same size rule (`input_matrix` on the loader, from the probe
   that gives the metadata), in both readers, which stay byte-identical. Every saved YUV file's bytes change; untagged
   HD sources read up to 28 levels differently (39 for BT.601 data, towards what players show). The tests' oracle adds
