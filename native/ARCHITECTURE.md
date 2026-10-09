@@ -321,9 +321,13 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   budget is 1 PiB without a Memory Budget Limit and ncnn aborts the process when an allocation fails (owner's stand-in
   D8, 2026-10-09). An image whose estimate fits is split exactly as before: whole without a limit, as the limit splits
   it with one (`backend/tests/test_ncnn_errors.py`).
-- ONNX sessions raise when the chosen execution provider did not start (ONNX Runtime 1.30's TensorRT provider needs
-  TensorRT 10, which chaiNNer-C does not ship), where upstream silently ran on CUDA or the CPU (upstream chaiNNer #2715;
-  `backend/tests/test_onnx_session_providers.py`).
+- ONNX sessions raise when the chosen execution provider did not start, where upstream silently ran on CUDA or the CPU
+  (upstream chaiNNer #2715; `backend/tests/test_onnx_session_providers.py`). On Windows with NVIDIA, the ONNX package
+  installs `onnxruntime-gpu 1.30.0+trt11` (the owner's fork release `v1.30.0-trt11`: the unmodified v1.30.0 source
+  rebuilt against TensorRT 11, decisions D19/D20), whose TensorRT provider uses the TensorRT package's TensorRT 11
+  (loaded through `tensorrt_libs` before the session; without that package the error says to install it). The
+  TensorRT session leaves out upstream's `trt_dump_subgraphs`, which wrote two copies of the model per session, and
+  `trt_fp16_enable` has no effect with TensorRT 11 (engines follow the model's precision).
 - Save Video fails when FFmpeg exits non-zero at a normal close, naming its exit code and message (as an early exit
   does, upstream chaiNNer #3109), before the audio mux and keeping the file FFmpeg wrote, where upstream leaves the
   exit code unchecked (owner's stand-in D18; `test_writer_nonzero_exit_code_original_policy`).

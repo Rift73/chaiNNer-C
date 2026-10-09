@@ -76,7 +76,7 @@ if not is_arm_mac:
         ToggleSetting(
             label="Use TensorRT FP16 Mode",
             key="tensorrt_fp16_mode",
-            description="Runs TensorRT in half-precision (FP16) mode for less VRAM usage. RTX GPUs also get a speedup.",
+            description="No effect with TensorRT 11, which builds each engine in the model's own precision. For FP16 speed and lower VRAM use, convert the model to fp16 (Convert To ONNX).",
             default=should_fp16,
             disabled="TensorrtExecutionProvider" not in execution_providers,
         )

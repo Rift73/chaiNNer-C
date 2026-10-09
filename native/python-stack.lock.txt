@@ -53,7 +53,7 @@ numpy==2.5.3
 nvidia-ml-py==13.615.71
 onnx==1.23.2
 onnxoptimizer==0.4.2
-onnxruntime-gpu==1.30.0
+onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11-cp314-cp314-win_amd64.whl#sha256=443287192cb0add06e1faa7022f1badf9ead0e77b82cd6deb0fc2192af5a96d3
 opencv-python==5.0.0.93
 packaging==26.3
 pillow==12.3.0

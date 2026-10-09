@@ -498,7 +498,13 @@ def test_explicit_provider_retention_without_gpu_execution(monkeypatch):
             )
             is sentinel
         )
-        assert calls.pop() == actual
+        expected = calls.pop()
+        # chaiNNer-C's TensorRT session leaves out upstream's trt_dump_subgraphs, which
+        # wrote two copies of the model into the working folder per session.
+        for entry in expected[1]["providers"]:
+            if isinstance(entry, tuple) and entry[0] == "TensorrtExecutionProvider":
+                entry[1].pop("trt_dump_subgraphs")
+        assert expected == actual
 
 
 def test_string_graph_retains_original_binding():

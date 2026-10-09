@@ -6,12 +6,14 @@ a GPU: the GPU sessions are stand-ins that report the providers ORT registered."
 from __future__ import annotations
 
 from collections.abc import Sequence
+from types import SimpleNamespace
 
 import numpy as np
 import onnxruntime as ort
 import pytest
 from onnx import TensorProto, helper
 
+from nodes.impl.onnx import session as session_module
 from nodes.impl.onnx.model import OnnxGeneric, OnnxInfo
 from nodes.impl.onnx.session import get_onnx_session
 
@@ -47,10 +49,24 @@ def ort_registers(monkeypatch: pytest.MonkeyPatch, providers: Sequence[str]) -> 
     )
 
 
-def test_tensorrt_that_cannot_load_is_reported_not_run_on_cuda(
+def tensorrt_package(monkeypatch: pytest.MonkeyPatch, installed: bool) -> list[str]:
+    """Stands in for the TensorRT package; returns the modules imported through it."""
+    imported: list[str] = []
+    monkeypatch.setattr(
+        session_module, "_tensorrt_package_installed", lambda: installed
+    )
+    monkeypatch.setattr(
+        session_module, "importlib", SimpleNamespace(import_module=imported.append)
+    )
+    return imported
+
+
+def test_tensorrt_without_the_tensorrt_package_is_reported_not_run_on_cuda(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    # ORT 1.30's TensorRT provider needs nvinfer_10.dll; without it ORT runs on CUDA.
+    # The provider imports nvinfer_11.dll, which only the TensorRT package installs;
+    # without it ORT runs on CUDA.
+    imported = tensorrt_package(monkeypatch, installed=False)
     ort_registers(monkeypatch, [CUDA, CPU])
     model = identity_model()
     for _ in range(2):  # not cached: the next run tries again
@@ -59,8 +75,42 @@ def test_tensorrt_that_cannot_load_is_reported_not_run_on_cuda(
         message = str(raised.value)
         assert f"({TENSORRT})" in message
         assert f"{CUDA}, {CPU} instead" in message
-        assert "TensorRT 10 (nvinfer_10.dll)" in message
-        assert "TensorRT nodes" in message
+        assert "Install the TensorRT package" in message
+    assert imported == []
+
+
+def test_tensorrt_that_cannot_start_with_the_package_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    tensorrt_package(monkeypatch, installed=True)
+    ort_registers(monkeypatch, [CUDA, CPU])
+    with pytest.raises(RuntimeError) as raised:
+        get_onnx_session(identity_model(), 0, TENSORRT, False)
+    message = str(raised.value)
+    assert f"{CUDA}, {CPU} instead" in message
+    assert "Choose another execution provider" in message
+    assert "Install the TensorRT package" not in message
+
+
+def test_tensorrt_is_loaded_from_the_package_before_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    events = tensorrt_package(monkeypatch, installed=True)
+
+    def session(*args: object, **kwargs: object) -> RegisteredSession:
+        events.append("session")
+        return RegisteredSession([TENSORRT, CUDA, CPU])
+
+    monkeypatch.setattr(ort, "InferenceSession", session)
+    get_onnx_session(identity_model(), 0, TENSORRT, False)
+    assert events == ["tensorrt_libs", "session"]
+
+
+def test_cuda_does_not_load_tensorrt(monkeypatch: pytest.MonkeyPatch):
+    imported = tensorrt_package(monkeypatch, installed=True)
+    ort_registers(monkeypatch, [CUDA, CPU])
+    get_onnx_session(identity_model(), 0, CUDA, False)
+    assert imported == []
 
 
 def test_cuda_that_cannot_load_is_reported_not_run_on_the_cpu(

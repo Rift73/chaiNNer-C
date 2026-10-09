@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import warnings
 from typing import Any, Dict, Protocol, Sequence, Tuple, Union
 from weakref import WeakKeyDictionary
@@ -38,6 +40,19 @@ class OnnxSession(Protocol):
     ) -> Sequence[object]: ...
 
 
+def _tensorrt_package_installed() -> bool:
+    return importlib.util.find_spec("tensorrt_libs") is not None
+
+
+def _load_tensorrt() -> None:
+    """ORT's TensorRT provider imports nvinfer_11.dll and nvonnxparser_11.dll by name.
+    Importing the TensorRT package's tensorrt_libs loads its TensorRT 11 by full path,
+    so the provider finds those modules without a PATH change, and the TensorRT nodes
+    use the same ones."""
+    if _tensorrt_package_installed():
+        importlib.import_module("tensorrt_libs")
+
+
 def create_inference_session(
     model: OnnxModel,
     gpu_index: int,
@@ -63,7 +78,6 @@ def create_inference_session(
             "trt_engine_cache_enable": tensorrt_cache_path is not None,
             "trt_engine_cache_path": tensorrt_cache_path,
             "trt_fp16_enable": should_tensorrt_fp16,
-            "trt_dump_subgraphs": tensorrt_cache_path is not None,
             "trt_timing_cache_enable": tensorrt_cache_path is not None,
             "trt_timing_cache_path": tensorrt_cache_path,
         },
@@ -83,6 +97,7 @@ def create_inference_session(
     cpu: ProviderDesc = "CPUExecutionProvider"
 
     if execution_provider == "TensorrtExecutionProvider":
+        _load_tensorrt()
         providers = [tensorrt, cuda, cpu]
     elif execution_provider == "CUDAExecutionProvider":
         providers = [cuda, cpu]
@@ -126,14 +141,14 @@ def get_onnx_session(
                 f" ONNX settings ({execution_provider}), so it would run this model on"
                 f" {', '.join(providers)} instead. The log has ONNX Runtime's reason."
             )
-            if execution_provider == "TensorrtExecutionProvider":
-                # onnxruntime_providers_tensorrt.dll of onnxruntime-gpu 1.30.0
-                # imports nvinfer_10.dll; the TensorRT package ships nvinfer_11.dll.
+            if (
+                execution_provider == "TensorrtExecutionProvider"
+                and not _tensorrt_package_installed()
+            ):
                 message += (
-                    " Its TensorRT provider needs TensorRT 10 (nvinfer_10.dll) on the"
-                    " PATH; chaiNNer-C's TensorRT package installs TensorRT 11, which"
-                    " only the TensorRT nodes use. Choose CUDA in the ONNX settings,"
-                    " or use the TensorRT nodes."
+                    " Its TensorRT provider uses the TensorRT that chaiNNer-C's"
+                    " TensorRT package installs. Install the TensorRT package in the"
+                    " Dependency Manager, or choose CUDA in the ONNX settings."
                 )
             else:
                 message += " Choose another execution provider in the ONNX settings."
