@@ -102,9 +102,12 @@ def get_upscaler_name(api: Api, upscaler: UpscalerName) -> str:
         ),
     ],
     outputs=[
+        # A1111 1.4 and later round the size down to a multiple of 8, which is never 0
+        # for an image A1111 returns; earlier releases do not round. As upscale_node's
+        # check, the type allows both sizes.
         ImageOutput(
             image_type="""
-                def nearest_valid(n: number) = floor(n / 8) * 8;
+                def nearest_valid(n: number) = max(1, floor(n)) | (floor(n / 8) * 8 & int(1..));
 
                 let in_w = Input0.width;
                 let in_h = Input0.height;
