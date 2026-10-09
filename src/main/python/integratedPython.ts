@@ -38,10 +38,14 @@ const downloads: Record<SupportedPlatform, PythonDownload> = {
     },
 };
 
+/** An environment variable as pip reads it: the lower-case name first, then the upper-case one. */
+const getProxyEnv = (name: string): string | undefined =>
+    process.env[name] || process.env[name.toUpperCase()];
+
 /**
  * Downloads `url` to `filePath` with Electron's network stack, which follows the system's proxy
- * settings (on Windows the Internet settings, PAC scripts included). HTTPS_PROXY and NO_PROXY, if
- * set, take precedence, as they do for pip.
+ * settings (on Windows the Internet settings, PAC scripts included). A proxy in https_proxy or
+ * else all_proxy, and no_proxy, if set, take precedence, as they do for pip.
  */
 const download = async (
     url: string,
@@ -52,14 +56,14 @@ const download = async (
     await app.whenReady();
 
     let downloadSession = session.defaultSession;
-    const proxy = process.env.HTTPS_PROXY;
+    const proxy = getProxyEnv('https_proxy') || getProxyEnv('all_proxy');
     if (proxy) {
         downloadSession = session.fromPartition('integrated-python-download');
         // Chromium takes scheme://host:port; the variable may also have a path or no scheme
         const { protocol, host } = new URL(proxy.includes('://') ? proxy : `http://${proxy}`);
         await downloadSession.setProxy({
             proxyRules: `${protocol}//${host}`,
-            proxyBypassRules: process.env.NO_PROXY,
+            proxyBypassRules: getProxyEnv('no_proxy'),
         });
     }
 

@@ -34,8 +34,12 @@ afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
 });
 
+// pip reads the lower-case name first; on Windows the two names are one variable, so the
+// lower-case one is cleared before the upper-case one is set.
 test('HTTPS_PROXY routes the download through that proxy', async () => {
+    vi.stubEnv('https_proxy', '');
     vi.stubEnv('HTTPS_PROXY', '127.0.0.1:3128/');
+    vi.stubEnv('no_proxy', '');
     vi.stubEnv('NO_PROXY', 'localhost');
     proxySession.fetch.mockResolvedValue(
         new Response('Not Found', { status: 404, statusText: 'Not Found' })
@@ -54,8 +58,44 @@ test('HTTPS_PROXY routes the download through that proxy', async () => {
     expect(defaultSession.fetch).not.toHaveBeenCalled();
 });
 
-test('without HTTPS_PROXY the download reports progress and removes a partial file', async () => {
+test('ALL_PROXY is the proxy when no HTTPS proxy is set', async () => {
+    vi.stubEnv('https_proxy', '');
     vi.stubEnv('HTTPS_PROXY', '');
+    vi.stubEnv('all_proxy', '');
+    vi.stubEnv('ALL_PROXY', 'socks5://127.0.0.1:1080');
+    proxySession.fetch.mockResolvedValue(new Response('Not Found', { status: 404 }));
+
+    const { getIntegratedPython } = await import('../../src/main/python/integratedPython');
+
+    await expect(getIntegratedPython(directory, () => {})).rejects.toThrow(/HTTP 404/);
+    expect(proxySession.setProxy).toHaveBeenCalledWith(
+        expect.objectContaining({ proxyRules: 'socks5://127.0.0.1:1080' })
+    );
+});
+
+test.skipIf(process.platform === 'win32')(
+    'the lower-case proxy variables take precedence, as for pip',
+    async () => {
+        vi.stubEnv('https_proxy', 'http://127.0.0.1:3128');
+        vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:8080');
+        vi.stubEnv('no_proxy', 'localhost');
+        vi.stubEnv('NO_PROXY', 'example.com');
+        proxySession.fetch.mockResolvedValue(new Response('Not Found', { status: 404 }));
+
+        const { getIntegratedPython } = await import('../../src/main/python/integratedPython');
+
+        await expect(getIntegratedPython(directory, () => {})).rejects.toThrow(/HTTP 404/);
+        expect(proxySession.setProxy).toHaveBeenCalledWith({
+            proxyRules: 'http://127.0.0.1:3128',
+            proxyBypassRules: 'localhost',
+        });
+    }
+);
+
+test('without a proxy variable the download reports progress and removes a partial file', async () => {
+    for (const name of ['https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']) {
+        vi.stubEnv(name, '');
+    }
     let pulls = 0;
     const body = new ReadableStream<Uint8Array>({
         pull: (controller) => {
