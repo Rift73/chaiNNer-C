@@ -140,7 +140,7 @@ Checklists for changing any of this: `MAINTAINING.md`.
   profile inside its folder (`portable` marker). An installed chaiNNer's `%APPDATA%\chaiNNer` is never touched.
 - **No update check.** An independent edition never checks upstream releases, and old settings cannot re-enable it.
   `src/renderer/components/Header/AppInfo.tsx`; both bundle patches force `checkForUpdatesOnStartup` off.
-- **Version label.** The UI shows `v0.3.2` (header, About, startup log, system information) while `app.getVersion()`
+- **Version label.** The UI shows `v0.3.3` (header, About, startup log, system information) while `app.getVersion()`
   stays upstream's, since it stamps saved chains that upstream's migrations read. `src/common/version.ts`,
   `independent_ui.PRODUCT_VERSION`.
 
