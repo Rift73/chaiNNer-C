@@ -3,6 +3,7 @@ from __future__ import annotations
 import weakref
 
 import numpy as np
+import psutil
 import torch
 from sanic.log import logger
 from spandrel import ImageModelDescriptor, ModelTiling
@@ -16,7 +17,6 @@ from nodes.impl.upscale.auto_split_tiles import (
     NO_TILING,
     TILE_SIZE_256,
     TileSize,
-    cpu_memory_budget,
     estimate_tile_size,
     parse_tile_size_input,
 )
@@ -84,9 +84,10 @@ def upscale(
                     )
                 )
             elif device.type == "cpu":
-                budget = cpu_memory_budget()
+                free = psutil.virtual_memory().available
                 if options.budget_limit > 0:
-                    budget = min(int(options.budget_limit * 1024**3 * 0.8), budget)
+                    free = min(options.budget_limit * 1024**3, free)
+                budget = int(free * 0.8)
                 return MaxTileSize(
                     estimate_tile_size(
                         budget,

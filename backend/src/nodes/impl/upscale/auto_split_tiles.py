@@ -47,7 +47,8 @@ def estimate_tile_size(
 
 def cpu_memory_budget() -> int:
     """The memory an upscale on the CPU may use: 80% of the RAM available now, to be
-    conservative."""
+    conservative. The same rule as PyTorch's CPU path, whose code a native test pins to
+    upstream's."""
     return int(psutil.virtual_memory().available * 0.8)
 
 
