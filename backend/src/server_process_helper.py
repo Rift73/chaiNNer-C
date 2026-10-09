@@ -31,7 +31,9 @@ def _port_in_use(port: int):
 
 SANIC_LOG_REGEX = re.compile(r"^\s*\[[^\[\]]*\] \[\d*\] \[(\w*)\] (.*)")
 
-ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+# backslashreplace: a log line with a lone surrogate (an undecodable Windows file
+# name) is written escaped instead of being dropped.
+ENV = {**os.environ, "PYTHONIOENCODING": "utf-8:backslashreplace"}
 
 
 class _WorkerProcess:
