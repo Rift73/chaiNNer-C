@@ -81,15 +81,24 @@ def _upright_filters(matrix: np.ndarray | None) -> list[tuple[str, str | None]]:
 
 
 def _converter(
-    av: ModuleType, stream: VideoStream, filters: list[tuple[str, str | None]]
+    av: ModuleType,
+    stream: VideoStream,
+    filters: list[tuple[str, str | None]],
+    matrix: str | None,
 ):
     """buffer -> the upright filters -> scale -> bgr24 -> buffersink, as the CLI
-    reader converts: its -sws_flags (video_io.cpp FrameIterator)."""
+    reader converts: its -sws_flags and, for untagged HD video, its scale filter's
+    input matrix (video_io.cpp FrameIterator)."""
     graph = av.filter.Graph()
     flags = "lanczos+accurate_rnd+full_chroma_int+full_chroma_inp+bitexact"
+    scale = (
+        f"flags={flags}"
+        if matrix is None
+        else f"in_color_matrix={matrix}:flags={flags}"
+    )
     chain = [graph.add_buffer(template=stream)]
     chain += [graph.add(name, arguments) for name, arguments in filters]
-    chain += [graph.add("scale", f"flags={flags}"), graph.add("format", "bgr24")]
+    chain += [graph.add("scale", scale), graph.add("format", "bgr24")]
     chain.append(graph.add("buffersink"))
     for upstream, downstream in itertools.pairwise(chain):
         upstream.link_to(downstream)
@@ -98,7 +107,7 @@ def _converter(
 
 
 def _pyav_frames(
-    path: Path, width: int, height: int, av: ModuleType
+    path: Path, width: int, height: int, matrix: str | None, av: ModuleType
 ) -> Generator[np.ndarray, None, None]:
     """Frames decoded in-process, the bytes the CLI reader produces: FFmpeg's decoder
     and the same libswscale conversion to bgr24, without the pipe. Raises
@@ -124,8 +133,10 @@ def _pyav_frames(
                 if convert is None:
                     # The CLI configures its filters from the first frame too.
                     side = frame.side_data.get(display)
-                    matrix = None if side is None else np.frombuffer(bytes(side), "<i4")
-                    convert = _converter(av, stream, _upright_filters(matrix))
+                    rotation = (
+                        None if side is None else np.frombuffer(bytes(side), "<i4")
+                    )
+                    convert = _converter(av, stream, _upright_filters(rotation), matrix)
                 convert.push(frame)
                 image = np.ascontiguousarray(convert.pull().to_ndarray())
                 if image.shape != (height, width, 3):
@@ -163,11 +174,13 @@ class VideoLoader:
         forces the CLI."""
         av = None if os.environ.get("CHAINNER_C_VIDEO_READER") == "cli" else _pyav()
         if av is not None:
-            # path and metadata are set by video_loader_init (native/src/video_io.cpp).
+            # path, metadata and input_matrix (the matrix for untagged HD video) are
+            # set by video_loader_init (native/src/video_io.cpp).
             attributes = vars(self)
             path: Path = attributes["path"]
             metadata: VideoMetadata = attributes["metadata"]
-            frames = _pyav_frames(path, metadata.width, metadata.height, av)
+            matrix: str | None = attributes["input_matrix"]
+            frames = _pyav_frames(path, metadata.width, metadata.height, matrix, av)
             try:
                 first = next(frames)
             except StopIteration:

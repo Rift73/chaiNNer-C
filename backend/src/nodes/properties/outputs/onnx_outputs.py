@@ -4,7 +4,7 @@ import navi
 from api import BaseOutput, OutputKind
 from nodes.utils.format import format_channel_numbers
 
-from ...impl.onnx.model import OnnxModel
+from ...impl.onnx.model import MIXED, OnnxModel
 
 
 class OnnxModelOutput(BaseOutput):
@@ -26,7 +26,7 @@ class OnnxModelOutput(BaseOutput):
             tags.append(format_channel_numbers(i.input_channels, i.output_channels))
 
         tags.append(f"opset{i.opset}")
-        tags.append(i.dtype)
+        tags.append("mixed (BF16/FP32)" if i.dtype == MIXED else i.dtype)
 
         return {"tags": tags}
 
@@ -36,6 +36,8 @@ class OnnxModelOutput(BaseOutput):
         }
 
         i = value.info
+        if i.dtype == MIXED:
+            fields["arch"] = navi.literal("DUAL")
         if i.scale_width is not None:
             fields["scaleWidth"] = i.scale_width
         if i.scale_height is not None:

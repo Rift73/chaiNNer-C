@@ -1,6 +1,5 @@
 import os
 
-import torch
 from sanic.log import logger
 
 from api import GB, KB, MB, Dependency, add_package
@@ -11,6 +10,21 @@ general = "PyTorch uses .pth models to upscale images."
 
 
 def _enable_tf32() -> None:
+    # Importing torch here, before load_nodes imports any node module, also makes the
+    # system msvcp140.dll the worker's C++ runtime (native/ARCHITECTURE.md). A torch
+    # that is not installed, or fails to load (a DLL error), costs only the PyTorch
+    # nodes, which then fail to import one by one; the package stays registered, so
+    # the dependency manager can install or repair it.
+    try:
+        import torch
+    except Exception as error:
+        if not (isinstance(error, ModuleNotFoundError) and error.name == "torch"):
+            logger.error(
+                "Failed to import PyTorch; the PyTorch nodes are unavailable.",
+                exc_info=True,
+            )
+        return
+
     # Best effort: enable TF32 paths for FP32 matmul/conv where supported.
     try:
         if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
@@ -127,13 +141,14 @@ package = add_package(
         Dependency(
             display_name="Spandrel",
             pypi_name="spandrel",
-            # The fork's build of 0.4.2: adds DRFT, DUAL and SST.
-            version="0.4.2+c1",
+            # The fork's build of 0.4.2: adds DRFT, DUAL and SST; c2 computes fp16
+            # LayerNorm statistics in fp32 and pads exported ONNX graphs per input.
+            version="0.4.2+c2",
             size_estimate=530 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c1/"
-                "spandrel-0.4.2%2Bc1-py3-none-any.whl"
-                "#sha256=fe884dc115d86c4b6278e8108a6dfa23355dc2f7b3a4ca1f9334a64d61a6c5ab"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c2/"
+                "spandrel-0.4.2%2Bc2-py3-none-any.whl"
+                "#sha256=e030832fad968ad0dd2be4d03fa6596d99fb3f9333359c45fee387c57377c039"
             ),
         ),
         Dependency(

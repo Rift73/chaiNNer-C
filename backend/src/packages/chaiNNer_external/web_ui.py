@@ -197,6 +197,13 @@ UPSCALE_NAME_LABELS = {
     UpscalerName.SWIN_IR_4: "SwinIR 4x",
 }
 
+# Every name A1111 may list an upscaler under, preferred first. A1111 saves ScuNET
+# GAN's model as ScuNET.pth on first use and lists the file as "ScuNET" after that
+# (extensions-builtin/ScuNET/scripts/scunet_model.py).
+UPSCALER_NAME_ALIASES: dict[UpscalerName, tuple[str, ...]] = {
+    UpscalerName.SCUNET_GAN: ("ScuNET GAN", "ScuNET"),
+}
+
 
 class SamplerName(Enum):
     EULER = "Euler"

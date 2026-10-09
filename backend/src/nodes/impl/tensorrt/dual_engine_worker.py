@@ -56,9 +56,9 @@ def main(
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 8 << 30)
     config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
     config.set_timing_cache(config.create_timing_cache(b""), ignore_mismatch=False)
+    image = network.get_input(0)
+    image.name = dual.aligned_input_name(int(profile[3]) if dynamic else dual.ALIGNMENT)
     if dynamic:
-        image = network.get_input(0)
-        image.name = dual.aligned_input_name(int(profile[3]))
         sizes = [tuple(int(v) for v in size.split("x")) for size in profile[:3]]
         optimization = builder.create_optimization_profile()
         optimization.set_shape(image.name, *((1, 3, h, w) for h, w in sizes))

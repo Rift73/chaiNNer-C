@@ -1,4 +1,5 @@
-// Fixed C++ translation of the frozen installed optimizer. Do not hand-edit.
+// Fixed C++ translation of the frozen installed optimizer with the CORRECTIONS
+// of generate_optimizer_cpp.py. Do not hand-edit.
 // Source SHA256: 3b79fe76f4f1b8d5317b838e1471b41a27a281bab21ead47b39427143e4bd4ca
 // Frozen installed optimizer.py:13
 void pass_fuse_batchnorm_scale(const O &model, const O &types) {
@@ -430,7 +431,7 @@ void pass_fuse_memorydata_binaryop(const O &model, const O &types) {
     }
     i = py::int_(0);
     while (contains(builtin("range")(py::int_(py::len(attr(model, "layers")))), i)) {
-        if (compare(attr(item(attr(model, "layers"), i), "op_type"), py::str("MemoryData"), Py_NE)) {
+        if (compare(attr(item(attr(model, "layers"), i), "op_type"), py::str("MemoryData"), Py_EQ)) {
             output = item(attr(item(attr(model, "layers"), i), "outputs"), py::int_(0));
             j0 = i;
             bool cn_33 = false;
@@ -545,7 +546,7 @@ void pass_fuse_binaryop_eltwise(const O &model, const O &types) {
             }
             input0 = item(attr(layer, "inputs"), py::int_(0));
             input1 = item(attr(layer, "inputs"), py::int_(1));
-            j0 = py::int_(0);
+            j0 = negative(py::int_(1));
             bool cn_40 = false;
             for (py::handle cn_41 : py::reinterpret_borrow<py::iterable>(builtin("range")(i))) {
                 j0 = py::reinterpret_borrow<O>(cn_41);
@@ -566,7 +567,7 @@ void pass_fuse_binaryop_eltwise(const O &model, const O &types) {
             if (!cn_40) {
                 j0 = inplace(j0, py::int_(1), Op::add);
             }
-            j1 = py::int_(0);
+            j1 = negative(py::int_(1));
             bool cn_42 = false;
             for (py::handle cn_43 : py::reinterpret_borrow<py::iterable>(builtin("range")(i))) {
                 j1 = py::reinterpret_borrow<O>(cn_43);
@@ -635,7 +636,7 @@ void pass_eliminate_dropout(const O &model, const O &types) {
                 continue;
             }
             dropout_input = item(attr(layer, "inputs"), py::int_(0));
-            j = binary(i, py::int_(1), Op::sub);
+            j = i;
             bool cn_46 = false;
             for (py::handle cn_47 : py::reinterpret_borrow<py::iterable>(builtin("range")(binary(i, py::int_(1), Op::sub), negative(py::int_(1)), negative(py::int_(1))))) {
                 j = py::reinterpret_borrow<O>(cn_47);
@@ -684,7 +685,7 @@ void pass_eliminate_pooling1x1(const O &model, const O &types) {
             }
             pooling_input = item(attr(layer, "inputs"), py::int_(0));
             top_i = negative(py::int_(1));
-            j = binary(i, py::int_(1), Op::sub);
+            j = i;
             bool cn_50 = false;
             for (py::handle cn_51 : py::reinterpret_borrow<py::iterable>(builtin("range")(binary(i, py::int_(1), Op::sub), negative(py::int_(1)), negative(py::int_(1))))) {
                 j = py::reinterpret_borrow<O>(cn_51);
@@ -800,7 +801,7 @@ void pass_eliminate_split(const O &model, const O &types) {
             }
             split_input = item(attr(layer, "inputs"), py::int_(0));
             top_i = negative(py::int_(1));
-            j = binary(i, py::int_(1), Op::sub);
+            j = i;
             bool cn_64 = false;
             for (py::handle cn_65 : py::reinterpret_borrow<py::iterable>(builtin("range")(binary(i, py::int_(1), Op::sub), negative(py::int_(1)), negative(py::int_(1))))) {
                 j = py::reinterpret_borrow<O>(cn_65);

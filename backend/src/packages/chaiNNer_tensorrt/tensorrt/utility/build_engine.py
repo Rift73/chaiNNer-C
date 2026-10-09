@@ -6,7 +6,7 @@ import tensorrt as trt
 from sanic.log import logger
 
 from api import NodeContext
-from nodes.groups import if_enum_group
+from nodes.groups import Condition, if_enum_group, if_group
 from nodes.impl.onnx.model import OnnxModel
 from nodes.impl.tensorrt import dual
 from nodes.impl.tensorrt.engine_builder import BuildConfig, build_engine_from_onnx
@@ -47,6 +47,12 @@ SHAPE_MODE_LABELS = {
     ShapeMode.DYNAMIC: "Dynamic (Variable Sizes)",
 }
 
+# Shown until the ONNX is known to be DUAL's, which keeps its own precision and build
+# settings
+NOT_DUAL = Condition.type(
+    0, 'OnnxModel { arch: invStrSet("DUAL") }', if_not_connected=True
+)
+
 
 if utility_group is not None:
 
@@ -58,20 +64,22 @@ if utility_group is not None:
             "Building an engine can take several minutes depending on the model size and optimization settings.",
             "The built engine is optimized specifically for your GPU and TensorRT version.",
             "It is recommended to save the built engine for reuse, as building is slow.",
-            "A DUAL ONNX from Convert To ONNX builds in its own precision with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Upscale Image replays DUAL engines from a CUDA graph per input size.",
+            "A DUAL ONNX from Convert To ONNX builds in its own mixed precision (BF16 body, FP32 input and output) with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Precision, Workspace and Allow TF32 do not apply and are hidden. Upscale Image replays DUAL engines from a CUDA graph per input size.",
         ],
         icon="BsNvidia",
         inputs=[
             OnnxModelInput("ONNX Model"),
-            EnumInput(
-                Precision,
-                label="Precision",
-                default=Precision.FP16,
-                option_labels=PRECISION_LABELS,
-            ).with_docs(
-                "FP16: lower precision but faster and uses less memory, especially on RTX GPUs. FP16 also does not work with certain models.",
-                "BF16: same exponent range as FP32 with reduced mantissa. Better numerical stability than FP16 while still being faster than FP32. Good for models that produce NaN/artifacts with FP16.",
-                "FP32: higher precision but slower. Use especially if FP16 fails.",
+            if_group(NOT_DUAL)(
+                EnumInput(
+                    Precision,
+                    label="Precision",
+                    default=Precision.FP16,
+                    option_labels=PRECISION_LABELS,
+                ).with_docs(
+                    "FP16: lower precision but faster and uses less memory, especially on RTX GPUs. FP16 also does not work with certain models.",
+                    "BF16: same exponent range as FP32 with reduced mantissa. Better numerical stability than FP16 while still being faster than FP32. Good for models that produce NaN/artifacts with FP16.",
+                    "FP32: higher precision but slower. Use especially if FP16 fails.",
+                ),
             ),
             EnumInput(
                 ShapeMode,
@@ -142,23 +150,25 @@ if utility_group is not None:
                     unit="px",
                 ).with_docs("Fixed input width."),
             ),
-            NumberInput(
-                "Workspace (GB)",
-                default=4.0,
-                min=1.0,
-                max=32.0,
-                precision=1,
-                step=0.5,
-            ).with_docs(
-                "Maximum GPU memory for building. Larger values may allow better optimizations.",
-                hint=True,
-            ),
-            BoolInput("Allow TF32", default=False).with_docs(
-                "Lets TensorRT run the convolutions and matrix products of FP32 layers in TF32 on"
-                " tensor cores: FP32's range, but inputs rounded to a 10-bit mantissa, about FP16's"
-                " precision. Faster on RTX 30-series and newer GPUs.",
-                "Off keeps FP32 layers fully FP32. It applies to every FP32 layer, including those"
-                " of mixed-precision models.",
+            if_group(NOT_DUAL)(
+                NumberInput(
+                    "Workspace (GB)",
+                    default=4.0,
+                    min=1.0,
+                    max=32.0,
+                    precision=1,
+                    step=0.5,
+                ).with_docs(
+                    "Maximum GPU memory for building. Larger values may allow better optimizations.",
+                    hint=True,
+                ),
+                BoolInput("Allow TF32", default=False).with_docs(
+                    "Lets TensorRT run the convolutions and matrix products of FP32 layers in TF32 on"
+                    " tensor cores: FP32's range, but inputs rounded to a 10-bit mantissa, about FP16's"
+                    " precision. Faster on RTX 30-series and newer GPUs.",
+                    "Off keeps FP32 layers fully FP32. It applies to every FP32 layer, including those"
+                    " of mixed-precision models.",
+                ),
             ),
         ],
         outputs=[
@@ -244,9 +254,9 @@ def build_dual_engine(
     settings: TensorRTSettings,
     profile: tuple[tuple[int, int], tuple[int, int], tuple[int, int]],
 ) -> TensorRTEngine:
-    """DUAL's specialized engine, in the ONNX's precision. A dynamic DUAL ONNX takes the
-    node's shape inputs as its (height, width) profile; a fixed one has its own size.
-    The node's precision, workspace and TF32 inputs do not apply."""
+    """DUAL's specialized engine, in the ONNX's mixed precision. A dynamic DUAL ONNX
+    takes the node's shape inputs as its (height, width) profile; a fixed one has its
+    own size. The node's precision, workspace and TF32 inputs do not apply (hidden)."""
     major, minor = get_cuda_compute_capability(settings.gpu_index)
     spec = manifest["specialization"]
     if spec.get("dynamic", False):
@@ -276,7 +286,7 @@ def build_dual_engine(
     )
     min_shape, opt_shape, max_shape = ((1, 3, h, w) for h, w in profile)
     info = TensorRTEngineInfo(
-        precision="bf16",
+        precision="mixed",
         input_channels=3,
         output_channels=3,
         scale=spec["scale"],

@@ -4,7 +4,7 @@ CLI mode lets you use ChaiNNer without a GUI. This is useful for running ChaiNNe
 
 **IMPORTANT:** CLI mode is **experimental** and may change in the future. It is not recommended to use it in production. All of its features are subject to change.
 
-**IMPORTANT:** CLI mode currently has a bug that prevents you from seeing the console outputs of `chainner.exe`. This is a known issue and will be fixed in the future.
+**IMPORTANT:** On Windows, run CLI commands through `chaiNNer-cli.cmd`, which is next to `chaiNNer.exe` in the release zip. `chaiNNer.exe` is a GUI program, so cmd and PowerShell neither wait for it nor get its exit code: its output would appear after the next prompt. `chaiNNer-cli.cmd` makes them wait, so the output appears in order and the exit code (`%ERRORLEVEL%`, `$LASTEXITCODE`) is set.
 
 ## Introduction
 
@@ -17,15 +17,15 @@ Conceptually, CLI mode simply opens a `.chn` chain file and runs it. It's the sa
 The basic command of CLI mode is this:
 
 ```
-chainner.exe run "path/to/your-chain.chn"
+chaiNNer-cli.cmd run "path/to/your-chain.chn"
 ```
 
-This will run the chain as is, without changing any inputs. The exit code of the program will be `0` if the chain ran successfully, and non-zero if it failed.
+This will run the chain as is, without changing any inputs. The exit code of the program will be `0` if the chain ran successfully, and non-zero if it failed. chaiNNer stops its backend when it exits, also after an error or Ctrl+C.
 
 If you want to change the inputs of nodes within the chain, you can specify a file with input overrides like so:
 
 ```
-chainner.exe run "path/to/your-chain.chn" --override "path/to/your-input-overrides.json"
+chaiNNer-cli.cmd run "path/to/your-chain.chn" --override "path/to/your-input-overrides.json"
 ```
 
 ## Input overrides

@@ -191,6 +191,12 @@ const config = {
                 switch (process.platform) {
                     case 'win32':
                         zip.addFile('portable', Buffer.alloc(0));
+                        // cmd and PowerShell neither wait for a GUI program like chaiNNer.exe nor
+                        // get its exit code, but they do for a batch file that starts it (CLI mode)
+                        zip.addFile(
+                            `${packageJson.productName}-cli.cmd`,
+                            Buffer.from(`@"%~dp0${packageJson.productName}.exe" %*\r\n`)
+                        );
                         break;
                     case 'linux':
                         zip.addFile('chaiNNer-linux-x64/portable', Buffer.alloc(0));

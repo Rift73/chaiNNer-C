@@ -126,7 +126,7 @@ class Writer:
         graph().video_writer_frame(globals(), self, img, prepared)
 
     def close(self):
-        graph().video_writer_close_installed(globals(), self)
+        graph().video_writer_close(globals(), self)
 
 
 @dataclass

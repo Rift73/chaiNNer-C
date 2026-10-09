@@ -263,6 +263,119 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   `Mat.from_pixels` reads the raw buffer, a permuted one as interleaved pixels. No node output changes: Upscale Image's
   cvtColor hands the reader a C copy of 3 and 4 channels, and one channel has one order, so Lens Blur's planar layout
   never reached that read through the node (VERIFIED on CPU, upstream's node and the port's).
+- NCNN optimizer: lines of upstream's `optimizer.py` are corrected before translation and in the tests' oracle
+  (`CORRECTIONS` in `native/tests/reference_ncnn/generate_optimizer_cpp.py`). MemoryData–Split–BinaryOp fusion starts
+  from MemoryData layers only, as ncnnoptimize does; upstream's inverted test sent any other layer that feeds a Split
+  and a two-input BinaryOp into it, which raised `KeyError` (`'0'`, `'1'` or `'data'`) after a partial mutation, so
+  such ONNX graphs failed to convert (`d = x - mean(x); d * d`; 15 of `test_branching_chain`'s 30 graphs). The
+  backward searches of Dropout, 1x1 Pooling and Split elimination and of the BinaryOp→Eltwise fusion find no producer
+  for a first layer (upstream chaiNNer #2397: they ended on −2, or 1, and rewired another layer; only a hand-written
+  `.param` without an Input layer starts with one). No graph that converts or loads correctly upstream changes:
+  chaiNNer-C neither emits nor parses MemoryData, so that fusion only ever raised, and outside a first layer the
+  searches end where upstream's do (`test_corrected_oracle_departs_from_upstream_only_as_recorded` checks the whole
+  pass corpus).
+- NCNN param schema: Reduction's `reduce_all` (param 1) defaults to 1, ncnn's own default, where upstream's schema
+  says 0 (owner-approved 2026-10-09). Parameters equal to their default are not written, so upstream omitted the `1=0`
+  of a per-axis reduction, both when Convert To NCNN made one and when a loaded `.param` (ncnn's tools write `1=0`)
+  was handed to ncnn, and ncnn reduced over everything (a converted channel mean was off by 1.26). Only such
+  silently wrong models change; `1=1` and an omitted `1=` stay global. The differential tests' oracle reads the
+  frozen `param_schema.json` with this default corrected (`SCHEMA_CORRECTIONS` in `native/tests/test_ncnn_graph.py`;
+  `backend/tests/test_ncnn_reduction.py` compares a converted model with ONNX Runtime).
+- Load Image and Load Images decode 8-bit RGBA TIFFs with unassociated alpha (ExtraSamples 2, orientation 1-4) with
+  Pillow, keeping straight colour, where upstream's OpenCV path premultiplies it and loses the colour under alpha 0
+  (upstream chaiNNer #409; owner-approved 2026-10-09). 8-bit grey+alpha TIFFs under the same conditions load as BGRA
+  with the grey in B, G and R, exactly as a grey+alpha PNG loads, where upstream's OpenCV path drops the alpha and
+  returns one channel (owner-approved 2026-10-09). Every other file, associated alpha included, takes the OpenCV path
+  as before (`backend/tests/test_load_image_tiff_alpha.py`).
+- Load Image and Load Images turn JPEG, PNG, WebP and AVIF files upright as their EXIF Orientation (2-8) asks, as
+  `ImageOps.exif_transpose` does (5-8 swap height and width), where upstream ignores it (upstream chaiNNer #1312;
+  owner-approved 2026-10-09). Both read paths (`read_cv`, `read_pil` in `image_io.cpp`) apply one transform that keeps
+  the channel order; `read_cv` finds the tag by walking the file's segments or chunks (a PNG's eXIf before or after
+  IDAT), `read_pil` in the metadata Pillow already read. TIFFs, which OpenCV and the #409 path already orient, and
+  files without the tag or with Orientation 1 load as before (`backend/tests/test_load_image_orientation.py`).
+- Save Image's RGBA TIFFs (U8, U16, F32) carry ExtraSamples = 2 (unassociated alpha), which TIFF 6.0 requires and
+  OpenCV's encoder omits (upstream chaiNNer #2950; owner-approved 2026-10-09): `add_extra_samples` in `image_io.cpp`
+  appends a copy of the first IFD with the tag and points the header at it, so the file is OpenCV's plus one IFD;
+  pixels, compression and predictor are unchanged, RGB and grey TIFFs are byte-identical
+  (`backend/tests/test_save_image_tiff_extra_samples.py`).
+- Save Image's lossless WebP of an RGBA image is Pillow's with `exact=True` (owner-approved 2026-10-09; side finding
+  of upstream chaiNNer #2914), where OpenCV's libwebp call drops the colour under alpha 0; every sample round-trips.
+  The file grows only by that colour: +0.1 % when transparent pixels are uniform, +55 % on a synthetic worst case
+  (a third transparent with noisy colour). RGB lossless and every lossy WebP stay OpenCV's bytes
+  (`backend/tests/test_save_image_webp_exact.py`).
+- ONNX Upscale Image pads each tile only to the size requirement it finds by running the model once on a CPU session
+  (64x64, then (64+m)x(64+3m) for m = 1, 2, 4, ..., 64; the first exactly scaled result wins; shape inference's answer
+  is the fallback; cached per model), where upstream pads to the multiple of 16 that shape inference reports for
+  nearly every model (upstream chaiNNer #3106; owner's stand-in 2026-10-09). Convolution models' edges on images or
+  tiles that are not a multiple of 16 now equal PyTorch's and NCNN's, and window-attention exports run at any size
+  (`backend/tests/test_onnx_size_probe.py`).
+- PyTorch Upscale Image raises when the model turns a finite image into NaN or Inf (an fp16 overflow; the message
+  says to turn FP16 off), where upstream saves NaN as black and clips Inf (upstream chaiNNer #3071; owner's stand-in
+  D15; `backend/tests/test_pytorch_nan_output.py`).
+- NCNN: a failed inference or model load raises (out of memory retries with smaller tiles), where upstream's binding
+  ignored ncnn's return codes; a tile whose result is not a whole multiple of its input raises, and without tiling only
+  the waifu2x-style crop (the same border short of the model's scale on both axes) is refused, naming both sizes
+  (upstream chaiNNer #3011, #2486; `backend/tests/test_ncnn_errors.py`).
+- NCNN Upscale Image on the CPU (no Vulkan GPU), with automatic tile size, tiles an image whose memory estimate
+  exceeds 80 % of the available RAM, the budget PyTorch's CPU path uses (`cpu_memory_budget`), where upstream's CPU
+  budget is 1 PiB without a Memory Budget Limit and ncnn aborts the process when an allocation fails (owner's stand-in
+  D8, 2026-10-09). An image whose estimate fits is split exactly as before: whole without a limit, as the limit splits
+  it with one (`backend/tests/test_ncnn_errors.py`).
+- ONNX sessions raise when the chosen execution provider did not start, where upstream silently ran on CUDA or the CPU
+  (upstream chaiNNer #2715; `backend/tests/test_onnx_session_providers.py`). On Windows with NVIDIA, the ONNX package
+  installs `onnxruntime-gpu 1.30.0+trt11` (the owner's fork release `v1.30.0-trt11`: the unmodified v1.30.0 source
+  rebuilt against TensorRT 11, decisions D19/D20), whose TensorRT provider uses the TensorRT package's TensorRT 11
+  (loaded through `tensorrt_libs` before the session; without that package the error says to install it). The
+  TensorRT session leaves out upstream's `trt_dump_subgraphs`, which wrote two copies of the model per session, and
+  `trt_fp16_enable` has no effect with TensorRT 11 (engines follow the model's precision).
+- Save Video fails when FFmpeg exits non-zero at a normal close, naming its exit code and message (as an early exit
+  does, upstream chaiNNer #3109), before the audio mux and keeping the file FFmpeg wrote, where upstream leaves the
+  exit code unchecked (owner's stand-in D18; `test_writer_nonzero_exit_code_original_policy`).
+- Save Video's audio mux (owner-approved, upstream chaiNNer #3331): chaiNNer's own FFmpeg muxes the audio after the
+  video, as upstream v0.25.1 does, where the frozen nightly ran the `ffmpeg` on `PATH` with the audio first and only
+  logged a failure, so without FFmpeg on `PATH` every saved video was silent. Auto copies the audio and, when the
+  container cannot hold the copy (PCM in MP4 on the integrated FFmpeg 5.1.2), transcodes it with Transcode's options
+  (AAC at 320 kb/s; upstream has no fallback). Audio the mux cannot carry fails the run instead of leaving a silent
+  video, where upstream logs: Copy names the codec and container and suggests Auto or Transcode, a failed transcode
+  names its encoder; a WebM Copy still raises before the mux, as in the nightly. WebM's Opus gets
+  min(320 kb/s, 256 kb/s × channels) per stream, libopus's per-channel ceiling (owner-approved 2026-10-09): a mono
+  stream gets 256 kb/s (`b:a:N`), where upstream's fixed 320 kb/s fails, and streams of two or more channels keep
+  320 kb/s, also beside a mono stream. Only a source file without audio saves the video without it.
+  The temporary file never stays behind, and `os.replace` swaps the files, so a failed swap keeps the video. Video
+  packets are unchanged; the stream order and, where a PATH FFmpeg differed, the audio encoder's build change. The
+  tests' oracle is the frozen v0.25.1 mux with these departures (`INTENDED_MUX`, `native/tests/test_video_io.py`), and
+  the video verifier compares the oracle's files video stream first (`verify_video_runtime.video_first`).
+- Video colours (owner-approved 2026-10-09, upstream chaiNNer #3053): players disagree on untagged video (FFmpeg
+  assumes BT.601 at every size, mpv, Media Foundation and browsers BT.709 for HD) and some ignore a matrix tag alone,
+  so upstream's untagged BT.601 output showed HD colours up to 40 levels off. Save Video's YUV output carries all four
+  tags (matrix, primaries, transfer, range `tv`): BT.601 (`smpte170m`; `bt470bg` primaries at 576 lines) for SD, BT.709
+  for HD (width ≥ 1280 or height > 576, mpv's guess), and an explicit `scale` filter with
+  `accurate_rnd+full_chroma_int` converts to them, where FFmpeg 5.1.2's default point-sampled chroma and turned grey
+  128 into (125,128,125). Colour tags given in Additional parameters win and the conversion follows the final matrix
+  and range; a user matrix alone takes its own family's primaries and transfer whatever the size (BT.2020: `bt2020`
+  and BT.709's curve, which H.273 makes BT.2020's at 8 bits), while primaries or a transfer without a matrix, or a
+  matrix of no family here, add no other tag but the range. A user `-vf` runs before the conversion. RGB output is unchanged; GIF is the next bullet. Load Video honours a
+  file's matrix tag, as before, and reads untagged HD video as BT.709 by the same size rule (`input_matrix` on the loader, from the probe
+  that gives the metadata), in both readers, which stay byte-identical. Every saved YUV file's bytes change; untagged
+  HD sources read up to 28 levels differently (39 for BT.601 data, towards what players show). The tests' oracle adds
+  the writer's departure (`INTENDED_COLOURS`, `native/tests/test_video_io.py`); `backend/tests/test_save_video_colours.py`
+  checks tags and round trips on the integrated FFmpeg.
+- GIF palette (owner-approved 2026-10-09): FFmpeg cannot encode GIF from the node's `yuv420p` and falls back to
+  `bgr8`, a fixed 3-3-2 palette with no palette generation, so upstream's GIFs came back 43 levels off on grey 128 and
+  up to 88 on colour gradients. Save Video writes GIF as `pal8` with
+  `split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1`: a palette made for each frame, since frames
+  reach FFmpeg one at a time and a whole-clip palette would have to buffer them. Grey and grey ramps come back exact,
+  colour gradients within 33 levels (means under 5); frame count and timing are unchanged. A user `-vf` runs
+  before it; a user `-pix_fmt` keeps FFmpeg's conversion. Every GIF's bytes change; other formats' arguments are
+  unchanged. Oracle departure (k) in `INTENDED_COLOURS`; `test_gif_gets_a_palette_per_frame` checks it on the
+  integrated FFmpeg.
+- Save Video's encoder errors (upstream chaiNNer #3109): the encoder's stderr is piped and drained on a daemon thread
+  that keeps its last 4 KiB (from its own duplicate of the pipe, so no cleanup races it); FFmpeg's own pipe closes
+  once the thread has joined. A frame write or the final
+  flush that fails once FFmpeg has exited raises `RuntimeError` naming FFmpeg, its exit code and that message, chained
+  to the pipe error, where upstream surfaces only `Broken pipe` or `[Errno 22]`; while FFmpeg still runs, the pipe
+  error stands. The exit code at a successful close stays unchecked, as upstream; anything FFmpeg printed is logged as
+  a warning instead of going to the backend's stderr. Output bytes are unchanged (`INTENDED_ENCODER_ERRORS`).
 - Sibling event order (SP2): inputs awaited together (`owned_gather`, section 4) start and finish in pool-timing
   order, where upstream awaits inputs in turn (`start a, finish a, start b, finish b`). The event multiset and each
   node's final state are identical (`verify_runtime.event_contract` and `sse_contract` compare no order); item order
@@ -338,10 +451,10 @@ verified copy, lock probe, atomic replace) and `package_manifest.py` (schema, id
    download table) becomes `gR.gte(s.version,"3.14.0")`, so a shipped CPython 3.14.x is kept. A missing runtime, or
    one below 3.14, no longer takes upstream's branch that deletes it and downloads 3.11.5: it throws "chaiNNer-C's
    integrated Python is missing or older than 3.14; reinstall chaiNNer-C", which upstream's setup catch logs and
-   offers Retry, system Python or exit (Consult 2 Q6). Main shows chaiNNer-C's version (About `chaiNNer v0.3.2`, the
-   startup log `chaiNNer-C 0.3.2 (upstream 0.25.1-nightly.2025-10-21)`, system information `app.version` 0.3.2 plus
+   offers Retry, system Python or exit (Consult 2 Q6). Main shows chaiNNer-C's version (About `chaiNNer v0.3.3`, the
+   startup log `chaiNNer-C 0.3.3 (upstream 0.25.1-nightly.2025-10-21)`, system information `app.version` 0.3.3 plus
    `app.upstream`), drops the Release Notes item and leaves `app.getVersion()` upstream's, since it stamps saved chains
-   (Consult 2 Q5). The renderer replaces the update header with the logo, the title and a `v0.3.2` tag (no Alpha
+   (Consult 2 Q5). The renderer replaces the update header with the logo, the title and a `v0.3.3` tag (no Alpha
    badge; the manifest's `app_version` stays the upstream baseline), removes the update toggle and rejects
    release-API strings. The renderer then applies the 11 drop edits in `input-drop.json`
    (own baseline pin): directory drops with toasts, locked/connected guards for file and node drops, directory

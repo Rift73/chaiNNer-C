@@ -31,7 +31,9 @@ class TensorRTEngineOutput(BaseOutput):
             tags.append(f"{i.scale}x")
 
         # Add precision
-        tags.append(i.precision.upper())
+        tags.append(
+            "mixed (BF16/FP32)" if i.precision == "mixed" else i.precision.upper()
+        )
 
         # Add architecture
         # tags.append(i.gpu_architecture)

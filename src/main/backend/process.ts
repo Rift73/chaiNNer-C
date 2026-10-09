@@ -35,6 +35,20 @@ type Env = Readonly<Partial<Record<string, string>>>;
 
 type ErrorListener = (error: Error) => void;
 
+/** How a backend process ended that neither kill() nor restart() stopped. */
+interface BackendExit {
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    /** The last lines the process wrote to stderr, usually a Python traceback. */
+    stderrTail: string;
+}
+type ExitListener = (exit: BackendExit) => void;
+
+const STDERR_TAIL_LINES = 12;
+
+/** How long kill() waits for the backend to shut down by itself. */
+export const SHUTDOWN_TIMEOUT_MS = 10_000;
+
 export interface SpawnOptions {
     port: number;
     python: PythonInfo;
@@ -58,6 +72,8 @@ export class OwnedBackendProcess implements BaseBackendProcess {
     private process?: ChildProcessWithoutNullStreams;
 
     private errorListeners: ErrorListener[] = [];
+
+    private exitListeners: ExitListener[] = [];
 
     private constructor(options: SpawnOptions, process: ChildProcessWithoutNullStreams) {
         this.options = options;
@@ -125,8 +141,26 @@ export class OwnedBackendProcess implements BaseBackendProcess {
         this.errorListeners = [];
     }
 
+    /**
+     * Adds a listener for the backend process ending on its own, i.e. not stopped by kill() or
+     * restart(): a crash, or a backend that could not start.
+     */
+    addExitListener(listener: ExitListener) {
+        this.exitListeners.push(listener);
+    }
+
     private setNewProcess(process: ChildProcessWithoutNullStreams): void {
         this.process = process;
+
+        let stderrTail: string[] = [];
+        process.stderr.on('data', (data) => {
+            const lines = String(data)
+                .split(/\r?\n/)
+                .filter((line) => line.trim() !== '');
+            stderrTail = [...stderrTail, ...lines].slice(-STDERR_TAIL_LINES);
+        });
+
+        let exitedOnItsOwn = false;
 
         process.on('error', (error) => {
             log.error(`Python subprocess encountered an unexpected error: ${String(error)}`);
@@ -143,34 +177,62 @@ export class OwnedBackendProcess implements BaseBackendProcess {
             if (this.process === process) {
                 // reset process
                 this.process = undefined;
+                // kill() detaches the process before it stops it
+                exitedOnItsOwn = true;
+            }
+        });
+        // 'close' follows 'exit' once stderr has been read to its end, so the tail is complete
+        process.on('close', (code, signal) => {
+            if (exitedOnItsOwn) {
+                for (const listener of this.exitListeners) {
+                    listener({ code, signal, stderrTail: stderrTail.join('\n') });
+                }
             }
         });
     }
 
     /**
-     * Kills the current backend process.
-     *
-     * @throws If the backend process couldn't exit
+     * Kills the current backend process. The process ends even if the backend cannot be asked
+     * to shut down.
      */
     async kill() {
         log.info('Attempting to kill backend...');
 
-        if (!this.process) {
+        const backend = this.process;
+        if (!backend) {
             // No process to kill
             log.warn('Process has already been killed');
             return;
         }
-        if (this.process.exitCode !== null) {
+        // Detach the process first, so its exit (even during the shutdown request) is not
+        // reported to the exit listeners.
+        this.process = undefined;
+        if (backend.exitCode !== null) {
             // process was killed by something on the outside and we missed it
             log.warn('Process has already been killed');
-            this.process = undefined;
             return;
         }
 
-        await getBackend(this.url).shutdown();
-        if (this.process.kill()) {
-            this.process = undefined;
-            log.info('Successfully killed backend.');
+        // The backend stops its worker process on /shutdown, so ask first. A backend that cannot
+        // answer (e.g. still installing its dependencies) is ended without it.
+        let timeout: NodeJS.Timeout | undefined;
+        try {
+            await Promise.race([
+                getBackend(this.url).shutdown(),
+                new Promise((_, reject) => {
+                    timeout = setTimeout(
+                        () => reject(new Error('The shutdown request timed out.')),
+                        SHUTDOWN_TIMEOUT_MS
+                    );
+                }),
+            ]);
+        } catch (error) {
+            log.warn('The backend did not shut down by itself, so it will be killed.', error);
+        } finally {
+            clearTimeout(timeout);
+            if (backend.kill()) {
+                log.info('Successfully killed backend.');
+            }
         }
     }
 
@@ -219,6 +281,7 @@ export class BorrowedBackendProcess implements BaseBackendProcess {
             try {
                 // eslint-disable-next-line no-await-in-loop
                 python = await backend.pythonInfo();
+                break;
             } catch {
                 // eslint-disable-next-line no-await-in-loop
                 await delay(Math.max(maxSleep, startSleep * 2 ** i));

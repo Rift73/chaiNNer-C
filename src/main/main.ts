@@ -27,6 +27,18 @@ const startApp = () => {
         },
     });
 
+    // Writing to a terminal or pipe that has gone away fails (EIO, EPIPE). Unhandled, that error
+    // becomes an error dialog (GUI) or ends the run (CLI). Stop logging to the console instead;
+    // the log file keeps everything, including this error.
+    const stopConsoleLogging = (error: Error) => {
+        if (electronLog.transports.console.level !== false) {
+            electronLog.transports.console.level = false;
+            log.warn('Stopped logging to the console after a write error.', error);
+        }
+    };
+    process.stdout.on('error', stopConsoleLogging);
+    process.stderr.on('error', stopConsoleLogging);
+
     process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
 
     app.setPath('userData', getRootDir());

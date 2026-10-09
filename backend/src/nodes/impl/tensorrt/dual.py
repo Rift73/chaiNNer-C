@@ -12,7 +12,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import onnx
 
 # backend/src, and backend/src/vendor/dual_tensorrt (its own layout, so the guide's
 # commands run as is)
@@ -30,9 +33,11 @@ FACTORIES = {
 # The exporter's manifest (export.json), carried in the ONNX model's metadata.
 METADATA_KEY = "chainner_c.dual_tensorrt.export"
 # A dynamic DUAL ONNX takes input sizes that are multiples of this (as the PyTorch
-# model pads its input), so images need no more padding than PyTorch gives them. Its
-# engine's input is named for it (aligned_input_name), so that Upscale Image's tiler
-# pads to it instead of its default 64 px; Build Engine's profile must keep to it.
+# model pads its input), so images need no more padding than PyTorch gives them. Every
+# DUAL engine's input is named for it (aligned_input_name; a fixed size is a multiple of
+# it too): the name marks the engine as DUAL's, in mixed precision, when it is loaded
+# again, and Upscale Image's tiler pads to it instead of its default 64 px; Build
+# Engine's profile must keep to it.
 ALIGNMENT = 4
 ALIGNED_INPUT = "input_aligned_"
 
@@ -135,11 +140,13 @@ def export_onnx(
     return model.SerializeToString()
 
 
-def export_manifest(onnx_bytes: bytes) -> dict[str, Any] | None:
-    """The exporter's manifest of a DUAL ONNX; None for any other model."""
+def export_manifest(model: bytes | onnx.ModelProto) -> dict[str, Any] | None:
+    """The exporter's manifest of a DUAL ONNX (its bytes or the parsed model); None for
+    any other model."""
     import onnx
 
-    model = onnx.load_from_string(onnx_bytes)
+    if isinstance(model, bytes):
+        model = onnx.load_from_string(model)
     for entry in model.metadata_props:
         if entry.key == METADATA_KEY:
             return json.loads(entry.value)

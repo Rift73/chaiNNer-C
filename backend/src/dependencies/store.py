@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import subprocess
 import sys
+from collections import deque
 from dataclasses import dataclass
 from logging import Logger
 from typing import Iterable
@@ -20,6 +22,12 @@ COLLECTING_REGEX = re.compile(r"Collecting ([a-zA-Z0-9-_]+)")
 UNINSTALLING_REGEX = re.compile(r"Uninstalling ([a-zA-Z0-9-_]+)-+")
 
 DEP_MAX_PROGRESS = 0.8
+
+# How many of pip's last output lines a failed run's message can carry.
+PIP_REASON_LINES = 10
+# How an OSError for a full disk reads in pip's output (POSIX; Windows' disk full
+# and handle disk full).
+DISK_FULL_ERRORS = ("[Errno 28]", "[WinError 112]", "[WinError 39]")
 
 ENV = {
     **os.environ,
@@ -78,7 +86,7 @@ def filter_necessary_to_install(dependencies: Iterable[DependencyInfo]):
         if version:
             installed_version = coerce_semver(version)
             dep_version = coerce_semver(dependency.version)
-            # A local label (spandrel 0.4.2+c1, the fork's build) is a different
+            # A local label (spandrel 0.4.2+c2, the fork's build) is a different
             # build of the same numbers: only that exact version satisfies it.
             if installed_version < dep_version or (
                 "+" in dependency.version and version != dependency.version
@@ -89,22 +97,48 @@ def filter_necessary_to_install(dependencies: Iterable[DependencyInfo]):
     return dependencies_to_install
 
 
+def extra_index_args(dependencies: Iterable[DependencyInfo]) -> list[str]:
+    """pip's --extra-index-url arguments, one per URL: pip takes a comma-joined
+    list as a single URL, which matches nothing."""
+    urls = sorted(
+        {
+            dep_info.extra_index_url
+            for dep_info in dependencies
+            if dep_info.extra_index_url
+        }
+    )
+    return [arg for url in urls for arg in ("--extra-index-url", url)]
+
+
+def pip_error_message(action: str, last_lines: Iterable[str]) -> str:
+    """The message of a failed pip run, with pip's reason: its last lines from its
+    first error on, plus the warning just before it (the last retry of an
+    unreachable index). A report too long for the lines kept (a crash's traceback)
+    is shown by its end. A full disk is named first, as pip's report reads like any
+    other OSError."""
+    lines = list(last_lines)
+    first_error = next(
+        (i for i, line in enumerate(lines) if line.startswith(("ERROR:", "error:"))),
+        0,
+    )
+    if first_error > 0 and lines[first_error - 1].startswith("WARNING:"):
+        first_error -= 1
+    if any(error in line for line in lines for error in DISK_FULL_ERRORS):
+        summary = (
+            f"Disk space ran out while {action} dependencies."
+            " Please free up disk space and try again."
+        )
+    else:
+        summary = f"An error occurred while {action} dependencies."
+    return "\n".join([summary, *lines[first_error:]])
+
+
 def install_dependencies_sync(
     dependencies: list[DependencyInfo],
 ):
     dependencies_to_install = filter_necessary_to_install(dependencies)
     if len(dependencies_to_install) == 0:
         return 0
-
-    extra_index_urls = {
-        dep_info.extra_index_url
-        for dep_info in dependencies_to_install
-        if dep_info.extra_index_url
-    }
-
-    extra_index_args = []
-    if len(extra_index_urls) > 0:
-        extra_index_args.extend(["--extra-index-url", ",".join(extra_index_urls)])
 
     exit_code = subprocess.check_call(
         [
@@ -115,7 +149,7 @@ def install_dependencies_sync(
             *[pin(dep_info) for dep_info in dependencies_to_install],
             "--disable-pip-version-check",
             "--no-warn-script-location",
-            *extra_index_args,
+            *extra_index_args(dependencies_to_install),
         ],
         env=ENV,
     )
@@ -149,16 +183,6 @@ async def install_dependencies(
     deps_counter = 0
     transitive_deps_counter = 0
 
-    extra_index_urls = {
-        dep_info.extra_index_url
-        for dep_info in dependencies_to_install
-        if dep_info.extra_index_url
-    }
-
-    extra_index_args = []
-    if len(extra_index_urls) > 0:
-        extra_index_args.extend(["--extra-index-url", ",".join(extra_index_urls)])
-
     def get_progress_amount():
         transitive_progress = 1 - 1 / (2**transitive_deps_counter)
         progress = (deps_counter + transitive_progress) / (deps_count + 1)
@@ -179,24 +203,28 @@ async def install_dependencies(
             "--no-warn-script-location",
             "--progress-bar=json",
             "--no-cache-dir",
-            *extra_index_args,
+            *extra_index_args(dependencies_to_install),
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         encoding="utf-8",
         env=ENV,
     )
+    assert process.stdout is not None
+    last_lines: deque[str] = deque(maxlen=PIP_REASON_LINES)
     installing_name = "Unknown"
-    while True:
-        nextline = process.stdout.readline()  # type: ignore
-        if process.poll() is not None:
-            break
+    # Up to the end of the output, which holds pip's error lines when it fails. Read
+    # in a thread: pip can be silent for a long time (a slow index, its retries), and
+    # the event loop must keep serving progress events and requests meanwhile.
+    while nextline := await asyncio.to_thread(process.stdout.readline):
         line = nextline.strip()
         if not line:
             continue
 
-        if logger is not None and not line.startswith("Progress:"):
-            logger.info(line)
+        if not line.startswith("Progress:"):
+            last_lines.append(line)
+            if logger is not None:
+                logger.info(line)
 
         # The Collecting step of pip. It tells us what package is being installed.
         if "Collecting" in line:
@@ -243,9 +271,9 @@ async def install_dependencies(
         elif "Installing collected packages" in line:
             await update_progress_cb("Installing collected dependencies...", 0.9, None)
 
-    exit_code = process.wait()
+    exit_code = await asyncio.to_thread(process.wait)
     if exit_code != 0:
-        raise ValueError("An error occurred while installing dependencies.")
+        raise ValueError(pip_error_message("installing", last_lines))
 
     await update_progress_cb("Finished installing dependencies...", 1, None)
 
@@ -322,17 +350,21 @@ async def uninstall_dependencies(
         encoding="utf-8",
         env=ENV,
     )
+    assert process.stdout is not None
+    last_lines: deque[str] = deque(maxlen=PIP_REASON_LINES)
     uninstalling_name = "Unknown"
-    while True:
-        nextline = process.stdout.readline()  # type: ignore
-        if process.poll() is not None:
-            break
+    # Up to the end of the output, which holds pip's error lines when it fails. Read
+    # in a thread: pip can be silent for a long time (a slow index, its retries), and
+    # the event loop must keep serving progress events and requests meanwhile.
+    while nextline := await asyncio.to_thread(process.stdout.readline):
         line = nextline.strip()
         if not line:
             continue
 
-        if logger is not None and not line.startswith("Progress:"):
-            logger.info(line)
+        if not line.startswith("Progress:"):
+            last_lines.append(line)
+            if logger is not None:
+                logger.info(line)
 
         # The Uninstalling step of pip. It tells us what package is being UNinstalled.
         if "Uninstalling" in line:
@@ -358,11 +390,11 @@ async def uninstall_dependencies(
                 None,
             )
 
-    exit_code = process.wait()
+    exit_code = await asyncio.to_thread(process.wait)
     if exit_code != 0:
-        raise ValueError("An error occurred while installing dependencies.")
+        raise ValueError(pip_error_message("uninstalling", last_lines))
 
-    await update_progress_cb("Finished installing dependencies...", 1, None)
+    await update_progress_cb("Finished uninstalling dependencies...", 1, None)
 
     for dep_info in dependencies:
         del installed_packages[dep_info.package_name]

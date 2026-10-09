@@ -36,7 +36,7 @@
 
 - Ensure your drivers are up to date. Outdated drivers might not support the CUDA version that PyTorch and ONNX rely on.
 
-- Ensure your GPU isn't too old. Your GPU needs to be able to support CUDA 11.3. If it only supports CUDA 10 for example, you'll need to manually install an older PyTorch version to your system Python and set chaiNNer to use system Python. However, if you do this we cannot guarantee everything will work properly.
+- Ensure your GPU isn't too old. Your GPU needs to be able to support CUDA 11.3. chaiNNer-C runs only on its integrated Python, so it cannot use an older PyTorch installed in a system Python.
 
 ## vkQueueSubmit error with NCNN
 
@@ -50,10 +50,10 @@
 
 - If you do have internet access, try going to your `%appdata%/chaiNNer` (windows), `.config/chaiNNer` (linux), or `Application Support/chaiNNer` folder, and deleting the Python folder that is there. This will force chaiNNer to download Python again if the previous download was corrupt.
 
-- If this all does not work, you can force chaiNNer to use system Python. Right now this is not configurable via the UI without being able to start up first, so you need to go to your data folder mentioned above, go to `/settings`, and either find or create a `use-system-python` text file (with no extension) that just contains the word `true`. In order for this to work, you need to have Python installed to your system.
+- chaiNNer-C cannot use a system Python instead: its native modules need its integrated CPython 3.14. A "use system Python" setting saved by upstream chaiNNer is switched off.
 
 ## Integrated Python downloaded, but failed to start up after installing dependencies
 
 - If you are on an older macOS version, such as any version below 10.15, this is unavoidable and you currently cannot use chaiNNer. This is due to a dependency (opencv) that we simply cannot work around at this time.
 
-- If you are on Windows 7, you can try following the advice for the above message related to forcing system Python, and just install Python 3.8. However, we do not officially support Windows 7 and we recommend you upgrade to at least 10.
+- Windows 7 is not supported; upgrade to at least Windows 10.

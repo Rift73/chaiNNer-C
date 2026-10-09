@@ -12,14 +12,30 @@ if is_arm_mac:
     inst_hint = general
 else:
     package_description = (
-        f"{general} {conversion} It is fastest when CUDA is supported. If TensorRT is"
-        " installed on the system, it can also be configured to use that."
+        f"{general} {conversion} It is fastest when CUDA is supported. With the"
+        " TensorRT package installed, it can also be configured to use TensorRT."
     )
     inst_hint = f"{general} It does not support AMD GPUs, in linux."
 
 
 def get_onnx_runtime():
-    if nvidia.is_available:
+    if nvidia.is_available and is_windows:
+        # onnxruntime-gpu 1.30.0 rebuilt from the unmodified v1.30.0 tag with its
+        # TensorRT provider linked against TensorRT 11 (PyPI's links TensorRT 10). The
+        # provider uses the TensorRT package's TensorRT 11 (see onnx/session.py).
+        return Dependency(
+            display_name="ONNX Runtime (GPU)",
+            pypi_name="onnxruntime-gpu",
+            version="1.30.0+trt11",
+            size_estimate=160 * MB,
+            import_name="onnxruntime",
+            url=(
+                "https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/"
+                "onnxruntime_gpu-1.30.0%2Btrt11-cp314-cp314-win_amd64.whl"
+                "#sha256=443287192cb0add06e1faa7022f1badf9ead0e77b82cd6deb0fc2192af5a96d3"
+            ),
+        )
+    elif nvidia.is_available:
         return Dependency(
             display_name="ONNX Runtime (GPU)",
             pypi_name="onnxruntime-gpu",

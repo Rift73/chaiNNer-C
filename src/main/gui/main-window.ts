@@ -23,9 +23,10 @@ import { chainnerCVersion } from '../../common/version';
 import { OpenArguments, parseArgs } from '../arguments';
 import { BackendProcess } from '../backend/process';
 import { setupBackend } from '../backend/setup';
+import { readClipboardImageAsPng } from '../clipboardImage';
 import { isArmMac, isMac } from '../env';
 import { addBrowserWindow, addFile, addFiles, removeFile, removeFiles } from '../fileWatcher';
-import { getRootDir, installDir } from '../platform';
+import { getLogsFolder, getRootDir, installDir } from '../platform';
 import { BrowserWindowWithSafeIpc, ipcMain } from '../safeIpc';
 import { SaveData, SaveFile, openSaveFile } from '../SaveFile';
 import { writeSettings } from '../setting-storage';
@@ -285,8 +286,7 @@ const registerEventHandlerPreSetup = (
     ipcMain.handle('clipboard-readHTML', () => clipboard.readHTML());
     ipcMain.handle('clipboard-readRTF', () => clipboard.readRTF());
     ipcMain.handle('clipboard-readImage-and-store', async () => {
-        const clipboardData = clipboard.readImage();
-        const imgData = clipboardData.toPNG();
+        const imgData = readClipboardImageAsPng(clipboard);
         const imgPath = path.join(os.tmpdir(), `chaiNNer-clipboard-${uuid4()}.png`);
         await fs.writeFile(imgPath, imgData);
         return imgPath;
@@ -321,6 +321,28 @@ const registerEventHandlerPostSetup = (
                 message: `The Python backend encountered an unexpected error. ChaiNNer will now exit. Error: ${String(
                     error
                 )}`,
+            });
+            app.exit(1);
+        });
+
+        // Until the renderer reports the backend ready, the user sees only the splash screen,
+        // which would wait forever for a backend that has stopped.
+        let backendReady = false;
+        ipcMain.once('backend-ready', () => {
+            backendReady = true;
+        });
+        backend.addExitListener(({ code, signal, stderrTail }) => {
+            if (backendReady) {
+                return;
+            }
+            const exitStatus = code !== null ? `exit code ${code}` : `signal ${String(signal)}`;
+            const lastOutput = stderrTail ? `\n\nIts last output:\n${stderrTail}` : '';
+            dialog.showMessageBoxSync({
+                type: 'error',
+                title: 'Unable to start the backend',
+                message:
+                    `The Python backend stopped while chaiNNer was starting (${exitStatus}). ChaiNNer will now exit.` +
+                    `${lastOutput}\n\nThe full log is in ${getLogsFolder()}.`,
             });
             app.exit(1);
         });
@@ -425,20 +447,10 @@ const registerEventHandlerPostSetup = (
     });
 };
 
-const createBackend = async (
-    token: ProgressToken,
-    args: OpenArguments,
-    settings: ChainnerSettings
-) => {
+const createBackend = async (token: ProgressToken, args: OpenArguments) => {
     log.info(`chaiNNer-C ${chainnerCVersion} (upstream ${version})`);
 
-    return setupBackend(
-        token,
-        settings.useSystemPython,
-        settings.systemPythonLocation,
-        getRootDir(),
-        args.remoteBackend
-    );
+    return setupBackend(token, getRootDir(), args.remoteBackend);
 };
 
 const setupProgressListeners = (
@@ -560,11 +572,7 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
 
     try {
         registerEventHandlerPreSetup(mainWindow, args, settings);
-        const backend = await createBackend(
-            SubProgress.slice(progressController, 0, 0.25),
-            args,
-            settings
-        );
+        const backend = await createBackend(SubProgress.slice(progressController, 0, 0.25), args);
         registerEventHandlerPostSetup(mainWindow, backend);
 
         const sse = new EventSource(`${backend.url}/setup-sse`, {

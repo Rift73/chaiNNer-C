@@ -58,7 +58,6 @@ import {
     useBackendSetupEventSource,
 } from '../hooks/useBackendEventSource';
 import { useMemoObject } from '../hooks/useMemo';
-import { useSettings } from '../hooks/useSettings';
 import { AlertBoxContext, AlertType } from './AlertBoxContext';
 import { BackendContext } from './BackendContext';
 import { GlobalContext } from './GlobalNodeState';
@@ -372,18 +371,21 @@ const PackagesSection = memo(
         progress,
     }: PackagesSectionProps) => {
         const infos = packages.map((p) => new PackageUpdateInfo(p, installedPyPi || {}));
+        // A disabled package's own Install and Update buttons are disabled (TensorRT
+        // without an NVIDIA GPU), so the All button leaves it out too.
+        const enabledInfos = infos.filter((_, i) => !packages[i].disabled);
 
-        const canUpdate = infos.filter((i) => i.canUpdate).length;
-        const canInstall = infos.filter((i) => i.canInstall).length;
+        const canUpdate = enabledInfos.filter((i) => i.canUpdate).length;
+        const canInstall = enabledInfos.filter((i) => i.canInstall).length;
 
         const operationsForAll = [
             ...(canUpdate ? ['Update'] : []),
             ...(canInstall ? ['Install'] : []),
         ].join('/');
         const showAll = canUpdate + canInstall > 1;
-        const allOperationPackages = packages.filter((_, i) => {
+        const allOperationPackages = packages.filter((p, i) => {
             const info = infos[i];
-            return info.canInstall || info.canUpdate;
+            return !p.disabled && (info.canInstall || info.canUpdate);
         });
 
         return (
@@ -620,7 +622,6 @@ interface PythonSectionProps {
 }
 const PythonSection = memo(
     ({ installMode, setInstallMode, isDisabled, consoleOutput }: PythonSectionProps) => {
-        const { useSystemPython } = useSettings();
         const { pythonInfo } = useContext(BackendContext);
 
         const [showMore, setShowMore] = useState(false);
@@ -644,7 +645,7 @@ const PythonSection = memo(
                         flex="1"
                         textAlign="left"
                     >
-                        Python ({pythonInfo.version}) [{useSystemPython ? 'System' : 'Integrated'}]
+                        Python ({pythonInfo.version}) [Integrated]
                     </Text>
 
                     <Tooltip
@@ -834,11 +835,14 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
         }
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-shadow
-    const changePackages = (packages: Package[], supplier: () => Promise<void>) => {
+    const changePackages = (
+        changing: readonly Package[],
+        failureTitle: string,
+        supplier: () => Promise<void>
+    ) => {
         if (isRunningShell) throw new Error('Cannot run two pip commands at once');
 
-        setModifyingPackages(packages.map((pkg) => pkg.id));
+        setModifyingPackages(changing.map((pkg) => pkg.id));
         setIsRunningShell(true);
         setOverallProgress(0);
         setIndividualProgress(0);
@@ -848,6 +852,15 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
             .catch((error) => {
                 logOutput(String(error));
                 log.error(error);
+                // The console is hidden under Advanced by default.
+                sendToast({
+                    status: 'error',
+                    duration: 10_000,
+                    title: failureTitle,
+                    description: error instanceof Error ? error.message : String(error),
+                    // The message ends with pip's own lines (dependencies/store.py).
+                    containerStyle: { whiteSpace: 'pre-line' },
+                });
             })
             .finally(() => {
                 refetchInstalledPyPi()
@@ -891,7 +904,9 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
         const name = joinEnglish(packages.map((pkg) => pkg.name));
 
         logOutput(`Installing ${name}...`);
-        changePackages(packages, () => backend.installPackages(packages.map((pkg) => pkg.id)));
+        changePackages(packages, `Failed to install ${name}`, () =>
+            backend.installPackages(packages.map((pkg) => pkg.id))
+        );
     };
 
     // eslint-disable-next-line @typescript-eslint/no-shadow
@@ -926,7 +941,9 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
         }
 
         logOutput(`Uninstalling ${name}...`);
-        changePackages(packages, () => backend.uninstallPackages(packages.map((pkg) => pkg.id)));
+        changePackages(packages, `Failed to uninstall ${name}`, () =>
+            backend.uninstallPackages(packages.map((pkg) => pkg.id))
+        );
     };
 
     // whether we are current installing/uninstalling packages or refreshing the list of installed packages
@@ -934,14 +951,16 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
 
     const availableUpdates = useMemo((): number => {
         if (!installedPyPi) return 0;
-        return packages.filter(({ dependencies }) =>
-            dependencies.some(({ version, pypiName }) => {
-                const installed = installedPyPi[pypiName];
-                if (!installed) {
-                    return true;
-                }
-                return versionGt(version, installed);
-            })
+        return packages.filter(
+            ({ dependencies, disabled }) =>
+                !disabled &&
+                dependencies.some(({ version, pypiName }) => {
+                    const installed = installedPyPi[pypiName];
+                    if (!installed) {
+                        return true;
+                    }
+                    return versionGt(version, installed);
+                })
         ).length;
     }, [packages, installedPyPi]);
 

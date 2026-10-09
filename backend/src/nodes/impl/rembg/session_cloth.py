@@ -59,7 +59,7 @@ pallete3 = [
 class ClothSession(BaseSession):
     def predict(self, img: np.ndarray) -> list[np.ndarray]:
         h, w, _ = get_h_w_c(img)
-        ort_outs = self.inner_session.run(None, self.normalize(img))
+        ort_outs = self.run(img)
 
         pred = cloth_labels(cast(np.ndarray, ort_outs[0]))
         mask = Image.fromarray(pred, mode="L")

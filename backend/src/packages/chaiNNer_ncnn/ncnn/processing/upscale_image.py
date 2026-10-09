@@ -17,6 +17,8 @@ from nodes.impl.upscale.auto_split_tiles import (
     CUSTOM,
     TILE_SIZE_256,
     TileSize,
+    cpu_memory_budget,
+    estimate_memory_required,
     estimate_tile_size,
     parse_tile_size_input,
 )
@@ -101,6 +103,15 @@ def upscale_impl(
                     model_size_estimate = model_size_estimate * 11 / 5
                 elif net.opt.use_sgemm_convolution:
                     model_size_estimate = model_size_estimate * 40 / 5
+                # ncnn aborts the process when an allocation fails on the CPU, so an
+                # image too big for the RAM PyTorch's CPU path counts on is tiled to
+                # fit it. An image that fits is split as the budget alone splits it.
+                ram_budget = cpu_memory_budget()
+                if (
+                    estimate_memory_required(int(model_size_estimate), img, 4)
+                    > ram_budget
+                ):
+                    heap_budget_bytes = min(heap_budget_bytes, ram_budget)
             return MaxTileSize(
                 estimate_tile_size(heap_budget_bytes, int(model_size_estimate), img, 4)
             )
@@ -108,7 +119,7 @@ def upscale_impl(
         if use_gpu:
             vkdev = ncnn.get_gpu_device(settings.gpu_index)
             with ncnn_allocators(vkdev) as (blob_vkallocator, staging_vkallocator):
-                return ncnn_auto_split(
+                result = ncnn_auto_split(
                     img,
                     net,
                     input_name=input_name,
@@ -119,7 +130,7 @@ def upscale_impl(
                     collect_after=collect_after,
                 )
         else:
-            return ncnn_auto_split(
+            result = ncnn_auto_split(
                 img,
                 net,
                 input_name=input_name,
@@ -132,8 +143,30 @@ def upscale_impl(
     except (RuntimeError, ValueError):
         raise
     except Exception as e:
-        logger.error(e)
-        raise RuntimeError("An unexpected error occurred during NCNN processing.")  # noqa: B904
+        logger.exception("An unexpected error occurred during NCNN processing.")
+        raise RuntimeError(
+            "An unexpected error occurred during NCNN processing."
+        ) from e
+
+    # A waifu2x-ncnn-vulkan model expects an input padded by the border its unpadded
+    # convolutions use up, so it returns its scale's size less that border, the same
+    # on both axes. Any other size is returned as the model made it.
+    h, w = img.shape[:2]
+    out_h, out_w = result.shape[:2]
+    border = h * model.scale - out_h
+    whole_multiple = out_h % h == 0 and out_w % w == 0 and out_h // h == out_w // w
+    if (
+        not whole_multiple
+        and 0 < border == w * model.scale - out_w
+        and 2 * border < min(h, w) * model.scale
+    ):
+        raise ValueError(
+            f"The NCNN model returned a {out_w}x{out_h} image for a {w}x{h} image,"
+            f" {border} pixels short of its {model.scale}x scale on both axes."
+            " Models that expect a padded input, such as waifu2x-ncnn-vulkan's,"
+            " are not supported."
+        )
+    return result
 
 
 @processing_group.register(

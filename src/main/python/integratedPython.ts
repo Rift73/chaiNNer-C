@@ -1,6 +1,6 @@
 import decompress from 'decompress';
+import { app, net, session } from 'electron/main';
 import fs from 'fs/promises';
-import Downloader from 'nodejs-file-downloader';
 import path from 'path';
 import semver from 'semver';
 import { PythonInfo } from '../../common/common-types';
@@ -38,6 +38,94 @@ const downloads: Record<SupportedPlatform, PythonDownload> = {
     },
 };
 
+/** An environment variable as pip reads it: the lower-case name first, then the upper-case one. */
+const getProxyEnv = (name: string): string | undefined =>
+    process.env[name] || process.env[name.toUpperCase()];
+
+/**
+ * Downloads `url` to `filePath` with Electron's network stack, which follows the system's proxy
+ * settings (on Windows the Internet settings, PAC scripts included). A proxy in https_proxy or
+ * else all_proxy, with its credentials, and no_proxy, if set, take precedence, as they do for pip.
+ */
+const download = async (
+    url: string,
+    filePath: string,
+    onProgress: (percentage: number) => void
+) => {
+    // the CLI gets here before Electron is ready, and the network stack needs it
+    await app.whenReady();
+
+    let downloadSession = session.defaultSession;
+    let credentials: [username: string, password: string] | undefined;
+    const proxy = getProxyEnv('https_proxy') || getProxyEnv('all_proxy');
+    if (proxy) {
+        downloadSession = session.fromPartition('integrated-python-download');
+        // Chromium takes scheme://host:port; the variable may also have a path, no scheme or
+        // user:pass@, whose credentials (percent-encoded, as pip reads them) answer the proxy
+        const { protocol, host, username, password } = new URL(
+            proxy.includes('://') ? proxy : `http://${proxy}`
+        );
+        if (username) {
+            credentials = [decodeURIComponent(username), decodeURIComponent(password)];
+        }
+        await downloadSession.setProxy({
+            proxyRules: `${protocol}//${host}`,
+            proxyBypassRules: getProxyEnv('no_proxy'),
+        });
+    }
+
+    // A request, not fetch: fetch cancels every request for credentials, the proxy's included
+    const response = await new Promise<Electron.IncomingMessage>((resolve, reject) => {
+        const request = net.request({ session: downloadSession, url });
+        // once: credentials the proxy rejects are not offered again, and the download fails
+        request.once('login', (authInfo, callback) => {
+            if (authInfo.isProxy && credentials) {
+                callback(...credentials);
+            } else {
+                callback();
+            }
+        });
+        request.on('response', resolve);
+        request.on('error', reject);
+        request.end();
+    });
+    if (response.statusCode < 200 || response.statusCode > 299) {
+        throw new Error(
+            `Downloading ${url} failed: HTTP ${response.statusCode} ${response.statusMessage}`
+        );
+    }
+    const totalBytes = Number(response.headers['content-length']);
+    let receivedBytes = 0;
+    const body = new ReadableStream<Uint8Array>({
+        start: (controller) => {
+            response.on('data', (chunk) => controller.enqueue(chunk));
+            response.on('end', () => controller.close());
+            response.on('error', (error: Error) => controller.error(error));
+        },
+    });
+
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    const file = await fs.open(filePath, 'w');
+    try {
+        await body.pipeTo(
+            new WritableStream<Uint8Array>({
+                write: async (chunk) => {
+                    await file.write(chunk);
+                    receivedBytes += chunk.byteLength;
+                    if (totalBytes > 0) {
+                        onProgress((receivedBytes / totalBytes) * 100);
+                    }
+                },
+            })
+        );
+    } catch (error) {
+        await file.close();
+        await fs.rm(filePath, { force: true });
+        throw error;
+    }
+    await file.close();
+};
+
 const extractPython = async (
     directory: string,
     tarPath: string,
@@ -59,7 +147,7 @@ const extractPython = async (
     );
 };
 
-export const getIntegratedPythonExecutable = (directory: string): string => {
+const getIntegratedPythonExecutable = (directory: string): string => {
     const platform = getPlatform();
     const { path: relativePath } = downloads[platform];
     return path.resolve(path.join(directory, relativePath));
@@ -100,13 +188,7 @@ export const getIntegratedPython = async (
 
     log.info('Downloading integrated Python...');
     onProgress(0, 'download');
-    await new Downloader({
-        url,
-        directory,
-        fileName: tarName,
-        cloneFiles: false,
-        onProgress: (percentage) => onProgress(Number(percentage), 'download'),
-    }).download();
+    await download(url, tarPath, (percentage) => onProgress(percentage, 'download'));
 
     log.info('Extracting integrated Python...');
     onProgress(0, 'extract');

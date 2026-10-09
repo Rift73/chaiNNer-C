@@ -8,13 +8,14 @@ from sanic.log import logger
 from api import NodeContext
 from nodes.groups import Condition, if_enum_group, if_group
 from nodes.impl.onnx.auto_split import onnx_auto_split
-from nodes.impl.onnx.model import OnnxGeneric, SizeReq
+from nodes.impl.onnx.model import OnnxGeneric
 from nodes.impl.onnx.session import (
     OnnxSession,
     get_input_shape,
     get_onnx_session,
     get_output_shape,
 )
+from nodes.impl.onnx.size_probe import get_size_req
 from nodes.impl.upscale.auto_split_tiles import (
     CUSTOM,
     TILE_SIZE_256,
@@ -43,7 +44,7 @@ def upscale(
     tile_size: TileSize,
     change_shape: bool,
     exact_size: tuple[int, int] | None,
-    size_req: SizeReq | None,
+    model: OnnxGeneric,
     collect_after: bool = True,
 ) -> np.ndarray:
     logger.debug("Upscaling image")
@@ -53,8 +54,10 @@ def upscale(
             raise ValueError
 
         tiler = parse_tile_size_input(tile_size, estimate)
+        size_req = get_size_req(model)
     else:
         tiler = ExactTileSize(exact_size)
+        size_req = None
     return onnx_auto_split(
         img,
         session,
@@ -123,11 +126,6 @@ def upscale_image_node(
         exact_size = (req_width or req_height, req_height)
     h, w, c = get_h_w_c(img)
     logger.debug(f"Image is {h}x{w}x{c}")
-    use_size_req = (
-        exact_size is None
-        and model.info.scale_width is not None
-        and (model.info.scale_height is not None)
-    )
     return convenient_upscale(
         img,
         in_nc,
@@ -138,7 +136,7 @@ def upscale_image_node(
             TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
             change_shape,
             exact_size,
-            model.info.size_req if use_size_req else None,
+            model,
             collect_after=False,
         ),
         separate_alpha,

@@ -9,7 +9,7 @@ from spandrel import ImageModelDescriptor
 from api import NodeContext
 from nodes.groups import Condition, if_group
 from nodes.impl.onnx.load import load_onnx_model
-from nodes.impl.onnx.model import OnnxGeneric
+from nodes.impl.onnx.model import MIXED, OnnxGeneric
 from nodes.impl.pytorch.convert_to_onnx_impl import (
     convert_to_onnx_impl,
     is_onnx_supported,
@@ -54,6 +54,10 @@ DUAL_SHAPE_LABELS: dict[DualShape, str] = {
 }
 
 IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" }')
+# Shown until the model is known to be DUAL
+NOT_DUAL = Condition.type(
+    0, 'PyTorchModel { arch: invStrSet("DUAL") }', if_not_connected=True
+)
 
 
 @utility_group.register(
@@ -67,17 +71,19 @@ IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" }')
     icon="ONNX",
     inputs=[
         SrModelInput("PyTorch Model"),
-        OnnxFpDropdown(),
-        EnumInput(
-            Opset,
-            label="Opset",
-            default=Opset.OPSET_14,
-            option_labels=OPSET_LABELS,
-        ),
-        BoolInput("Verify", default=False).with_docs(
-            "Runs the ONNX and PyTorch models to verify that they produce the same output. It's recommended to keep this on to ensure the conversion is correct.",
-            "Verification requires ONNX to be installed.",
-            hint=True,
+        if_group(NOT_DUAL)(
+            OnnxFpDropdown(),
+            EnumInput(
+                Opset,
+                label="Opset",
+                default=Opset.OPSET_14,
+                option_labels=OPSET_LABELS,
+            ),
+            BoolInput("Verify", default=False).with_docs(
+                "Runs the ONNX and PyTorch models to verify that they produce the same output. It's recommended to keep this on to ensure the conversion is correct.",
+                "Verification requires ONNX to be installed.",
+                hint=True,
+            ),
         ),
         if_group(IS_DUAL)(
             EnumInput(
@@ -88,9 +94,10 @@ IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" }')
             )
             .with_id(6)
             .with_docs(
-                "DUAL converts to a TensorRT-only ONNX. Its precision is fixed (BF16"
-                " body, FP32 input and output) and it uses opset 20 with DUAL's TensorRT"
-                " plugins, so FP Mode must be FP32 and Opset and Verify do not apply.",
+                "DUAL converts to a TensorRT-only ONNX. Its precision is fixed and mixed"
+                " (BF16 body, FP32 input and output) and it uses opset 20 with DUAL's"
+                " TensorRT plugins, which ONNX Runtime cannot run, so the node hides Data"
+                " Type, Opset and Verify for DUAL.",
                 "Dynamic: one ONNX for every input size that is a multiple of 4 px (as"
                 " DUAL pads its input), so images are not padded further; Build Engine's"
                 " shape inputs choose the engine's sizes (e.g. 64x64 to 1920x1088 for"
@@ -113,10 +120,18 @@ IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" }')
     ],
     outputs=[
         OnnxModelOutput(
-            model_type="OnnxGenericModel & pytorchToOnnx(Input0)",
+            model_type="OnnxGenericModel & pytorchToOnnx(Input0) & OnnxModel { arch: Input0.arch }",
             label="ONNX Model",
         ),
-        TextOutput("FP Mode", "FpMode::toString(Input1)"),
+        TextOutput(
+            "FP Mode",
+            """
+                match Input0.arch {
+                    "DUAL" => "mixed",
+                    _ => FpMode::toString(Input1),
+                }
+            """,
+        ),
         TextOutput(
             "Opset",
             """
@@ -146,11 +161,6 @@ def convert_to_onnx_node(
     dual_width: int,
 ) -> tuple[OnnxGeneric, str, str]:
     if model.architecture.id == "DUAL":
-        if is_fp16:
-            raise ValueError(
-                "DUAL's TensorRT ONNX fixes its own precision (BF16 body, FP32 input"
-                " and output): choose FP32."
-            )
         size = None
         if dual_shape == DualShape.FIXED:
             if dual_height % 4 or dual_width % 4:
@@ -163,7 +173,7 @@ def convert_to_onnx_node(
         )
         onnx_model = load_onnx_model(onnx_bytes)
         assert onnx_model.sub_type == "Generic"
-        return onnx_model, "fp32", "opset20"
+        return onnx_model, MIXED, "opset20"
 
     assert is_onnx_supported(model), (
         f"{model.architecture} is not supported for ONNX conversion at this time."

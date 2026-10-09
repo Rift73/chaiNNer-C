@@ -1,9 +1,10 @@
 import { createHash } from 'crypto';
-import { readFile, writeFile } from 'fs/promises';
+import { writeFile } from 'fs/promises';
 import { EdgeData, FileOpenResult, NodeData, Version } from '../common/common-types';
 import { log } from '../common/log';
 import { currentMigration, migrate } from '../common/migrations';
 import { versionGt } from '../common/version';
+import { readTextFile } from './util';
 import type { Edge, Node, Viewport } from 'reactflow';
 
 export interface SaveData {
@@ -64,7 +65,7 @@ export class SaveFile {
     }
 
     static async read(path: string): Promise<ParsedSaveData> {
-        return SaveFile.parse(await readFile(path, { encoding: 'utf-8' }));
+        return SaveFile.parse(await readTextFile(path));
     }
 
     static stringify(content: SaveData, version: Version): string {

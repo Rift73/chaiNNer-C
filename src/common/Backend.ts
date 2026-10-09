@@ -91,6 +91,11 @@ export interface BackendStatusResponse {
     ready: boolean;
     worker: null | BackendError | BackendWorkerStatusResponse;
 }
+/**
+ * The reply of `/packages/install` and `/packages/uninstall`. A failure comes with
+ * status 404 or 500, which `fetchJson` returns as data like any other body.
+ */
+type BackendPackagesChangeResponse = { status: 'ok' } | { status: 'error'; message: string };
 
 export type BackendResult<T> = BackendSuccess<T> | BackendError;
 export interface BackendSuccess<T> {
@@ -282,12 +287,24 @@ export class Backend {
         return this.fetchJson('/features', 'GET');
     }
 
+    /**
+     * Rejects with the backend's message when the packages could not be changed.
+     */
+    private async changePackages(path: string, packages: readonly PackageId[]): Promise<void> {
+        const response = await this.fetchJson<BackendPackagesChangeResponse>(path, 'POST', {
+            packages,
+        });
+        if (response.status === 'error') {
+            throw new Error(response.message);
+        }
+    }
+
     installPackages(packages: readonly PackageId[]): Promise<void> {
-        return this.fetchJson('/packages/install', 'POST', { packages });
+        return this.changePackages('/packages/install', packages);
     }
 
     uninstallPackages(packages: readonly PackageId[]): Promise<void> {
-        return this.fetchJson('/packages/uninstall', 'POST', { packages });
+        return this.changePackages('/packages/uninstall', packages);
     }
 
     shutdown(): Promise<void> {

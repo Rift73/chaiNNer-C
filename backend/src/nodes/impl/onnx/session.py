@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import warnings
 from typing import Any, Dict, Protocol, Sequence, Tuple, Union
 from weakref import WeakKeyDictionary
@@ -38,13 +40,26 @@ class OnnxSession(Protocol):
     ) -> Sequence[object]: ...
 
 
+def _tensorrt_package_installed() -> bool:
+    return importlib.util.find_spec("tensorrt_libs") is not None
+
+
+def _load_tensorrt() -> None:
+    """ORT's TensorRT provider imports nvinfer_11.dll and nvonnxparser_11.dll by name.
+    Importing the TensorRT package's tensorrt_libs loads its TensorRT 11 by full path,
+    so the provider finds those modules without a PATH change, and the TensorRT nodes
+    use the same ones."""
+    if _tensorrt_package_installed():
+        importlib.import_module("tensorrt_libs")
+
+
 def create_inference_session(
     model: OnnxModel,
     gpu_index: int,
     execution_provider: str,
     should_tensorrt_fp16: bool = False,
     tensorrt_cache_path: str | None = None,
-) -> OnnxSession:
+) -> NativeSession | ort.InferenceSession:
     if execution_provider == "CPUExecutionProvider" and supports_model(model.bytes):
         # The native adapter implements the image-session surface below; model
         # values outside dense numeric tensors and all other providers retain
@@ -63,7 +78,6 @@ def create_inference_session(
             "trt_engine_cache_enable": tensorrt_cache_path is not None,
             "trt_engine_cache_path": tensorrt_cache_path,
             "trt_fp16_enable": should_tensorrt_fp16,
-            "trt_dump_subgraphs": tensorrt_cache_path is not None,
             "trt_timing_cache_enable": tensorrt_cache_path is not None,
             "trt_timing_cache_path": tensorrt_cache_path,
         },
@@ -83,6 +97,7 @@ def create_inference_session(
     cpu: ProviderDesc = "CPUExecutionProvider"
 
     if execution_provider == "TensorrtExecutionProvider":
+        _load_tensorrt()
         providers = [tensorrt, cuda, cpu]
     elif execution_provider == "CUDAExecutionProvider":
         providers = [cuda, cpu]
@@ -110,13 +125,35 @@ def get_onnx_session(
 ) -> OnnxSession:
     cached = __session_cache.get(model)
     if cached is None:
-        cached = create_inference_session(
+        session = create_inference_session(
             model,
             gpu_index,
             execution_provider,
             should_tensorrt_fp16,
             tensorrt_cache_path,
         )
+        providers = session.get_providers()
+        if execution_provider not in providers:
+            # ORT falls back to the next provider when one cannot start (TensorRT
+            # onto CUDA, CUDA onto the CPU) and only logs why.
+            message = (
+                "ONNX Runtime could not start the execution provider chosen in the"
+                f" ONNX settings ({execution_provider}), so it would run this model on"
+                f" {', '.join(providers)} instead. The log has ONNX Runtime's reason."
+            )
+            if (
+                execution_provider == "TensorrtExecutionProvider"
+                and not _tensorrt_package_installed()
+            ):
+                message += (
+                    " Its TensorRT provider uses the TensorRT that chaiNNer-C's"
+                    " TensorRT package installs. Install the TensorRT package in the"
+                    " Dependency Manager, or choose CUDA in the ONNX settings."
+                )
+            else:
+                message += " Choose another execution provider in the ONNX settings."
+            raise RuntimeError(message)
+        cached = session
         __session_cache[model] = cached
     return cached
 

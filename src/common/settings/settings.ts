@@ -1,9 +1,6 @@
 import { PackageSettings, SchemaId, WindowSize } from '../common-types';
 
 export interface ChainnerSettings {
-    useSystemPython: boolean;
-    systemPythonLocation: string;
-
     // renderer
     theme: string;
     startupTemplate: string;
@@ -27,9 +24,6 @@ export interface ChainnerSettings {
 }
 
 export const defaultSettings: Readonly<ChainnerSettings> = {
-    useSystemPython: false,
-    systemPythonLocation: '',
-
     // renderer
     theme: 'default-dark',
     startupTemplate: '',

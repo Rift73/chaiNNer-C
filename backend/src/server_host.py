@@ -430,8 +430,12 @@ async def import_packages(
 
         if len(restart_flags) > 0 or len(deps_to_install) > 0:
             await worker.stop()
-            await install_dependencies(deps_to_install, update_progress_cb, logger)
-            await worker.start(restart_flags)
+            try:
+                await install_dependencies(deps_to_install, update_progress_cb, logger)
+            finally:
+                # Also after a failed install, as the dependency manager's routes do:
+                # a stopped worker would fail every route until the next start.
+                await worker.start(restart_flags)
         else:
             logger.info("No dependencies to install. Skipping worker restart.")
     except Exception as ex:

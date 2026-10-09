@@ -12,7 +12,10 @@ from .. import text_group
 @text_group.register(
     schema_id="chainner:utility:text_pattern",
     name="Text Pattern",
-    description="Concatenate text using a pattern with a Python-like string interpolation syntax.",
+    description=(
+        "Concatenate text using a pattern: {1} to {9} insert the inputs, and {{ writes"
+        " a literal {. Python format specs such as {1:x} are not supported."
+    ),
     icon="MdTextFields",
     inputs=[
         TextInput("Pattern", has_handle=False, placeholder='E.g. "{1} and {2}"'),

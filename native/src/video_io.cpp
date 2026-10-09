@@ -102,11 +102,18 @@ bool quarter_turn(const O&stream) {
     return false;
 }
 
-O metadata(const py::dict&g,const O&path,const O&env) {
+// Players disagree on untagged video, and a matrix tag alone is ignored by some (upstream
+// chaiNNer #3053), so a W x H frame's YUV is BT.709 when HD (width >= 1280 or height > 576,
+// mpv's guess, which Load Video applies to untagged video) and BT.601 otherwise.
+bool high_definition(const O&width,const O&height) {
+    return cmp(width,py::int_(1280),Py_GE) || cmp(height,py::int_(576),Py_GT);
+}
+// VideoMetadata from ffprobe; `video` receives the video stream's probe entry.
+O probe_metadata(const py::dict&g,const O&path,const O&env,O&video) {
     O probe = global(g,"ffmpeg").attr("probe")(path, py::arg("cmd")=env.attr("ffprobe"));
     O format=probe.attr("get")("format",py::none());
     if(format.is_none())fail(PyExc_RuntimeError,"Failed to get video format. Please report.");
-    O video=py::none();
+    video=py::none();
     for(py::handle sh:probe[py::str("streams")]) {
         O stream=py::reinterpret_borrow<O>(sh);
         if(eq(stream[py::str("codec_type")],py::str("video"))) {video=stream;break;}
@@ -135,9 +142,17 @@ O metadata(const py::dict&g,const O&path,const O&env) {
     return global(g,"VideoMetadata")(py::arg("width")=width,py::arg("height")=height,
         py::arg("fps")=fps,py::arg("frame_count")=count);
 }
+O metadata(const py::dict&g,const O&path,const O&env) {O video;return probe_metadata(g,path,env,video);}
 void loader_init(const py::dict&g,const O&self,const O&path,const O&env) {
     self.attr("path")=path; self.attr("ffmpeg_env")=env;
-    self.attr("metadata")=global(g,"VideoMetadata").attr("from_file")(path,env);
+    O video;
+    self.attr("metadata")=probe_metadata(g,path,env,video);
+    // Both readers convert YUV by the file's matrix tag; untagged HD video (the stored
+    // size, as mpv guesses) is BT.709, as players show it, where FFmpeg assumes BT.601
+    // (upstream chaiNNer #3053, owner-approved 2026-10-09). None keeps FFmpeg's choice.
+    O space=video.attr("get")("color_space","unknown");
+    const bool untagged=eq(space,py::str("unknown")) || eq(space,py::str("unspecified"));
+    self.attr("input_matrix")=untagged && high_definition(builtin("int")(video[py::str("width")]),builtin("int")(video[py::str("height")]))?O(py::str("bt709")):O(py::none());
 }
 O audio_stream(const py::dict&g,const O&self) {return global(g,"ffmpeg").attr("input")(self.attr("path")).attr("audio");}
 
@@ -314,9 +329,46 @@ void abort_writer(const O&p) {
 
 // Own only processes created by this writer; never a process merely assigned
 // by an external caller. Abandonment stops the owned encoder but never muxes.
+// FFmpeg's stderr (errors only: -loglevel error) drains on a daemon thread into its last
+// 4 KiB, so the encoder never blocks on a full pipe. The thread reads its own duplicate
+// of the pipe, which no other cleanup closes, and ends when FFmpeg exits.
+struct EncoderLog {
+    O thread=py::none(),tail=py::bytearray(),pipe=py::none();
+    void start(const O&process) {
+        pipe=process.attr("stderr");
+        if(pipe.is_none())return; // A caller-supplied process without a stderr pipe.
+        O os=py::module_::import("os");
+        O fd=os.attr("dup")(pipe.attr("fileno")());
+        O read=os.attr("read"),close=os.attr("close"),buffer=tail;
+        O drain=py::cpp_function([read,close,fd,buffer]() {
+            try {
+                for(O chunk=read(fd,65536);truth(chunk);chunk=read(fd,65536)) {
+                    buffer.attr("extend")(chunk);
+                    const Py_ssize_t excess=PyObject_Length(buffer.ptr())-4096;
+                    if(excess>0 && PySequence_DelSlice(buffer.ptr(),0,excess)<0)throw py::error_already_set();
+                }
+            } catch(...) {close(fd);throw;}
+            close(fd);
+        });
+        try {
+            thread=py::module_::import("threading").attr("Thread")(py::arg("target")=drain,py::arg("daemon")=true);
+            thread.attr("start")();
+        } catch(...) {thread=py::none();close(fd);throw;}
+    }
+    // FFmpeg's message once it has exited: what the drain kept, decoded. The drain read
+    // its own duplicate, so FFmpeg's pipe closes here.
+    O text() {
+        if(!thread.is_none())thread.attr("join")(py::arg("timeout")=5);
+        if(!pipe.is_none())pipe.attr("close")();
+        O lines=builtin("bytes")(tail).attr("decode")("utf-8","replace").attr("splitlines")();
+        return py::str("\n").attr("join")(lines).attr("strip")();
+    }
+};
+
 class WriterResource {
 public:
     O process=py::none();
+    EncoderLog log;
     bool completed=false;
     bool aborted=false;
     void abort() {
@@ -338,6 +390,63 @@ std::shared_ptr<WriterResource> resource(const O&self) {
     auto owned=std::make_shared<WriterResource>();
     self.attr("_native_video_resource")=py::cast(owned); return owned;
 }
+// The user's -vf (or -filter:v) runs first, then this chain.
+void append_filter(py::dict&params,const std::string&filter) {
+    py::list filters;
+    for(const char*key: {"vf","filter:v"})if(params.contains(key))filters.append(params.attr("pop")(key));
+    filters.append(py::str(filter));
+    params["vf"]=py::str(",").attr("join")(filters);
+}
+// Save Video's YUV output (owner-approved 2026-10-09) carries all four colour tags and is
+// converted to match them with filtered chroma and exact rounding, where FFmpeg 5.1.2's
+// default point-samples chroma and turns grey 128 into (125,128,125). A tag the user gives
+// in Additional parameters wins, the conversion follows the final matrix and range, and a
+// user -vf runs before it. RGB output keeps FFmpeg's own conversion.
+// GIF (owner-approved 2026-10-09) gets a palette made for each frame, where FFmpeg
+// replaces the node's yuv420p with the fixed 3-3-2 palette of bgr8 (grey 128 is 43 levels
+// off, gradients more). Frames reach FFmpeg one at a time, so the per-frame palette needs no
+// buffering. A user -vf runs first; a user pixel format keeps FFmpeg's conversion.
+void colour_options(const py::dict&g,const O&self,py::dict&params,const O&width,const O&height) {
+    if(!params.contains("pix_fmt"))return;
+    if(eq(self.attr("container"),member(g,"VideoFormat","GIF"))) {
+        if(!eq(builtin("str")(params["pix_fmt"]),py::str("yuv420p")))return;
+        params["pix_fmt"]="pal8";
+        append_filter(params,"split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1");
+        return;
+    }
+    if(!truth(builtin("str")(params["pix_fmt"]).attr("startswith")(py::make_tuple("yuv","nv"))))return;
+    // Without a user matrix, primaries or transfer, the size picks BT.601 or BT.709. A user
+    // matrix picks the missing primaries and transfer of its own family (BT.2020: bt2020
+    // primaries and BT.709's curve, which H.273 makes BT.2020's at 8 bits); primaries or a
+    // transfer without a matrix, or a matrix of no family here, add neither.
+    std::string family;
+    if(!params.contains("colorspace") && !params.contains("color_primaries") && !params.contains("color_trc"))
+        family=high_definition(width,height)?"bt709":"smpte170m";
+    else if(params.contains("colorspace")) {
+        const std::string user=builtin("str")(params["colorspace"]).cast<std::string>();
+        if(user=="bt709")family="bt709";
+        else if(user=="smpte170m" || user=="bt470bg")family="smpte170m";
+        else if(user=="bt2020nc" || user=="bt2020_ncl" || user=="bt2020c" || user=="bt2020_cl")family="bt2020";
+    }
+    if(!family.empty()) {
+        const std::string primaries=family!="smpte170m"?family:eq(height,py::int_(576))?"bt470bg":"smpte170m";
+        const std::string defaults[][2]={{"colorspace",family},{"color_primaries",primaries},
+            {"color_trc",family=="bt2020"?"bt709":family}};
+        for(const auto&tag:defaults)if(!params.contains(tag[0].c_str()))params[tag[0].c_str()]=tag[1];
+    }
+    if(!params.contains("color_range"))params["color_range"]="tv";
+    // scale's names for the matrices FFmpeg can tag; another tag converts as FFmpeg's default.
+    const py::dict matrices=dict({{"bt709",py::str("bt709")},{"smpte170m",py::str("smpte170m")},
+        {"bt470bg",py::str("bt470")},{"fcc",py::str("fcc")},{"smpte240m",py::str("smpte240m")},
+        {"bt2020nc",py::str("bt2020")},{"bt2020_ncl",py::str("bt2020")},{"bt2020c",py::str("bt2020")},
+        {"bt2020_cl",py::str("bt2020")}});
+    const py::tuple ranges=py::make_tuple("tv","mpeg","pc","jpeg");
+    O matrix=builtin("str")(params.attr("get")("colorspace","")),range=builtin("str")(params["color_range"]);
+    std::string scale="scale=";
+    if(matrices.contains(matrix))scale+="out_color_matrix="+matrices[matrix].cast<std::string>()+":";
+    if(graphpy::contains(ranges,range))scale+="out_range="+range.cast<std::string>()+":";
+    append_filter(params,scale+"flags=accurate_rnd+full_chroma_int");
+}
 void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
     if(!self.attr("out").is_none())return;
     if(resource(self)->aborted)fail(PyExc_RuntimeError,"Video writer was aborted");
@@ -354,11 +463,16 @@ void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
             graphpy::raise(PyExc_TypeError,label);
         }
         params["loglevel"]="error";
+        colour_options(g,self,params,width,height);
         stream=call(output,py::tuple(),params).attr("overwrite_output")();
         O global_args=stream.attr("global_args");
         stream=call(global_args,star_arguments(global_args,self.attr("global_params")));
-        O process=stream.attr("run_async")(py::arg("pipe_stdin")=true,py::arg("pipe_stdout")=false,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffmpeg"));
+        O process=stream.attr("run_async")(py::arg("pipe_stdin")=true,py::arg("pipe_stdout")=false,
+            py::arg("pipe_stderr")=true,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffmpeg"));
         auto state=resource(self);state->process=process;state->completed=false;
+        state->log=EncoderLog();
+        try {state->log.start(process);}
+        catch(...) {state->abort();throw;} // Undrained stderr could block the encoder.
         self.attr("out")=process;
     } catch(const py::error_already_set&e) {
         if(!e.matches(PyExc_Exception))throw;
@@ -405,6 +519,32 @@ void write_frame_payload(const O&write,const O&payload) {
         remaining=view[py::slice(py::int_(offset),py::int_(total),py::int_(1))];
     }
 }
+// Names FFmpeg, its exit code and the tail of what it printed.
+std::string encoder_stopped(const O&self,const O&code) {
+    O message=resource(self)->log.text();
+    O text=py::str("FFmpeg stopped while Save Video was writing the video (exit code {})").attr("format")(code);
+    if(truth(message))text=py::str("{}: {}").attr("format")(text,message);
+    return text.cast<std::string>();
+}
+// An encoder that exits early (a rejected option, a crash, a full disk) closes its end
+// of the pipe, so writing fails as Broken pipe or, on Windows, [Errno 22]. Once FFmpeg
+// has exited, name it, its exit code and its message instead (upstream chaiNNer #3109);
+// while it still runs, the pipe error stands.
+void raise_if_encoder_stopped(const O&self,const py::error_already_set&error) {
+    if(!error.matches(PyExc_OSError))return;
+    // Only the OS's dead-pipe errors, not this writer's own short-write errors.
+    O number=error.value().attr("errno"),errno_codes=py::module_::import("errno");
+    if(!eq(number,errno_codes.attr("EPIPE")) && !eq(number,errno_codes.attr("EINVAL")))return;
+    O code;
+    try {code=self.attr("out").attr("wait")(py::arg("timeout")=5);}
+    catch(const py::error_already_set&e) {
+        if(e.matches(py::module_::import("subprocess").attr("TimeoutExpired").ptr()))return;
+        throw;
+    }
+    py::error_already_set original=error;
+    py::raise_from(original,PyExc_RuntimeError,encoder_stopped(self,code).c_str());
+    throw py::error_already_set();
+}
 void writer_frame(const py::dict&g,const O&self,const O&image,const O&prepared) {
     if(self.attr("out").is_none()) {
         O shape=global(g,"get_h_w_c")(image);
@@ -413,86 +553,123 @@ void writer_frame(const py::dict&g,const O&self,const O&image,const O&prepared) 
     // A prepared frame (SP3-P9) is to_uint8's result computed ahead: only the payload.
     O frame=prepared.is_none()?O(global(g,"to_uint8")(image,py::arg("normalized")=true)):O(prepared.attr("result")());
     if(!self.attr("out").is_none() && !self.attr("out").attr("stdin").is_none()) {
-        O write=self.attr("out").attr("stdin").attr("write");
-        write_frame_payload(write,frame_payload(g,frame));
+        O write=self.attr("out").attr("stdin").attr("write"),payload=frame_payload(g,frame);
+        try {write_frame_payload(write,payload);}
+        catch(const py::error_already_set&e) {raise_if_encoder_stopped(self,e);throw;}
     }
     else fail(PyExc_RuntimeError,"Failed to open video writer");
 }
 
-py::dict audio_options(const py::dict&g,const O&self) {
+// Load Video's audio is ffmpeg.input(path).audio: the file the mux reads it from.
+O audio_source(const O&self) {return self.attr("audio").attr("node").attr("kwargs")[py::str("filename")];}
+py::list audio_streams(const py::dict&g,const O&self) {
+    // The audio streams of the audio's source file, as ffprobe reports them.
+    O probe=global(g,"ffmpeg").attr("probe")(audio_source(self),py::arg("cmd")=self.attr("ffmpeg_env").attr("ffprobe"));
+    py::list streams;
+    for(py::handle sh:probe[py::str("streams")]) {
+        O stream=py::reinterpret_borrow<O>(sh);
+        if(eq(stream.attr("get")("codec_type"),py::str("audio")))streams.append(stream);
+    }
+    return streams;
+}
+py::dict audio_options(const py::dict&g,const O&self,const O&settings) {
     py::dict p=dict({{"vcodec",py::str("copy")},{"acodec",py::str("copy")}});
     if(eq(self.attr("container"),member(g,"VideoFormat","WEBM"))) {
-        if(graphpy::contains(py::make_tuple(member(g,"AudioSettings","TRANSCODE"),member(g,"AudioSettings","AUTO")),self.attr("audio_settings"))) {
+        if(graphpy::contains(py::make_tuple(member(g,"AudioSettings","TRANSCODE"),member(g,"AudioSettings","AUTO")),settings)) {
+            // libopus takes at most 256 kb/s per channel, so min(320k, 256k x channels) for
+            // each output stream: a mono stream gets 256k (b:a:N, which wins over b:a), where
+            // 320k failed; streams of two or more channels keep 320k.
             p["acodec"]="libopus";p["b:a"]="320k";
-        } else graphpy::raise(PyExc_ValueError,fmt("WebM does not support {}",self.attr("audio_settings")));
-    } else if(eq(self.attr("audio_settings"),member(g,"AudioSettings","TRANSCODE"))) {
+            const py::list streams=audio_streams(g,self);
+            for(size_t i=0;i<streams.size();++i)
+                if(eq(O(streams[i]).attr("get")("channels"),py::int_(1)))p[py::str("b:a:{}").attr("format")(i)]="256k";
+        } else graphpy::raise(PyExc_ValueError,fmt("WebM does not support {}",settings));
+    } else if(eq(settings,member(g,"AudioSettings","TRANSCODE"))) {
         p["acodec"]="aac";p["b:a"]="320k";
     }
+    p["loglevel"]="error"; // FFmpeg's stderr is then its error alone, which a failed mux reports.
     return p;
 }
-void close_installed(const py::dict&g,const O&self) {
+void mux_audio(const py::dict&g,const O&self) {
+    // chaiNNer's own FFmpeg muxes the audio after the video (upstream chaiNNer v0.25.1).
+    // Auto copies the audio and, when the container cannot hold the copy, transcodes it
+    // as Transcode does. Audio the mux cannot carry fails the run instead of leaving a
+    // silent video (upstream chaiNNer #3331); a source without audio has none to carry.
     if(self.attr("audio").is_none())return;
-    O path=self.attr("save_path"),os=global(g,"os"),ffmpeg=global(g,"ffmpeg");
-    O parts=os.attr("path").attr("splitext")(path);
-    O av=py::str("{}_av{}").attr("format")(parts[py::int_(0)],parts[py::int_(1)]);
-    py::dict params=audio_options(g,self); // Installed WebM COPY error precedes try.
-    try {
-        O video=ffmpeg.attr("input")(path);
-        O output=call(ffmpeg.attr("output"),py::make_tuple(self.attr("audio"),video,av),params).attr("overwrite_output")();
-        ffmpeg.attr("run")(output); // Installed audio-first and PATH command policy.
-        os.attr("remove")(path);
-        os.attr("rename")(av,path);
-    } catch(const py::error_already_set&e) {
-        if(!e.matches(PyExc_Exception))throw;
-        GraphHandledException handled(e);
-        global(g,"logger").attr("warning")("Failed to copy audio to video, input file probably contains no audio or audio stream is supported by this container. Ignoring audio settings.");
-        try {os.attr("remove")(av);}
-        catch(const py::error_already_set&cleanup) {if(!cleanup.matches(PyExc_Exception))throw;}
-    }
-}
-void close_source(const py::dict&g,const O&self) {
-    if(self.attr("audio").is_none())return;
+    O container=self.attr("container");
+    py::dict params=audio_options(g,self,self.attr("audio_settings")); // A WebM Copy raises before the mux.
+    bool transcode_on_failure=eq(self.attr("audio_settings"),member(g,"AudioSettings","AUTO")) && eq(params["acodec"],py::str("copy"));
     O path=self.attr("save_path"),os=global(g,"os"),ffmpeg=global(g,"ffmpeg"),logger=global(g,"logger");
     if(!truth(os.attr("path").attr("exists")(path))) {logger.attr("error")(fmt("Video file not found at {}",path));return;}
     O parts=os.attr("path").attr("splitext")(path);
     O av=py::str("{}_av{}").attr("format")(parts[py::int_(0)],parts[py::int_(1)]);
+    auto discard=[&]() {
+        // A failed mux can leave FFmpeg's empty or partial output behind.
+        if(!truth(os.attr("path").attr("exists")(av)))return;
+        try {os.attr("remove")(av);}
+        catch(const py::error_already_set&cleanup) {
+            if(!cleanup.matches(PyExc_Exception))throw;
+            GraphHandledException cleanup_handled(cleanup);
+            logger.attr("warning")(fmt("Failed to cleanup temporary file: {}",builtin("str")(cleanup.value())));
+        }
+    };
     try {
         logger.attr("debug")(fmt("Attempting to process audio from: {}",self.attr("audio")));
         O video=ffmpeg.attr("input")(builtin("str")(path));
-        py::dict params=audio_options(g,self);
-        O command=py::hasattr(self,"ffmpeg_env")?O(self.attr("ffmpeg_env").attr("ffmpeg")):O(py::str("ffmpeg"));
-        O output=call(ffmpeg.attr("output"),py::make_tuple(video,self.attr("audio"),builtin("str")(av)),params).attr("overwrite_output")();
-        try {ffmpeg.attr("run")(output,py::arg("cmd")=command,py::arg("capture_stdout")=true,py::arg("capture_stderr")=true);}
-        catch(const py::error_already_set&e) {
-            if(!e.matches(ffmpeg.attr("Error").ptr()))throw;
-            GraphHandledException handled(e);
-            O message=py::hasattr(e.value(),"stderr")?O(e.value().attr("stderr").attr("decode")()):O(builtin("str")(e.value()));
-            logger.attr("error")(fmt("FFmpeg error: {}",message));return;
+        bool muxed=false;
+        for(;;) {
+            O output=call(ffmpeg.attr("output"),py::make_tuple(video,self.attr("audio"),builtin("str")(av)),params).attr("overwrite_output")();
+            try {ffmpeg.attr("run")(output,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffmpeg"),py::arg("capture_stdout")=true,py::arg("capture_stderr")=true);muxed=true;break;}
+            catch(const py::error_already_set&e) {
+                if(!e.matches(ffmpeg.attr("Error").ptr()))throw;
+                GraphHandledException handled(e);
+                O stderr_bytes=e.value().attr("stderr");
+                O message=stderr_bytes.is_none()?O(builtin("str")(e.value())):O(stderr_bytes.attr("decode")("utf-8","replace").attr("strip")());
+                py::list streams=audio_streams(g,self);
+                if(streams.empty()) {
+                    logger.attr("warning")(fmt("The audio source has no audio stream, so the video is saved without audio: {}",audio_source(self)));
+                    break;
+                }
+                O codec=streams[0].attr("get")("codec_name","unknown");
+                O ext=container.attr("value");
+                if(transcode_on_failure) {
+                    logger.attr("info")(py::str("Auto transcodes the {} audio, which the .{} file cannot hold as a copy: {}").attr("format")(codec,ext,message));
+                } else if(eq(params["acodec"],py::str("copy"))) {
+                    graphpy::raise(PyExc_RuntimeError,py::str("Save Video could not copy the {} audio into the .{} file. Set Audio to Auto or Transcode to re-encode it. FFmpeg: {}").attr("format")(codec,ext,message));
+                } else {
+                    graphpy::raise(PyExc_RuntimeError,py::str("Save Video could not transcode the {} audio to {} for the .{} file. FFmpeg: {}").attr("format")(codec,params["acodec"],ext,message));
+                }
+            }
+            params=audio_options(g,self,member(g,"AudioSettings","TRANSCODE"));transcode_on_failure=false;
         }
-        if(truth(os.attr("path").attr("exists")(av))) {os.attr("remove")(path);os.attr("rename")(av,path);}
-        else logger.attr("error")(fmt("Expected output file not created: {}",av));
+        if(!muxed)discard();
+        else if(truth(os.attr("path").attr("exists")(av)))os.attr("replace")(av,path); // Atomic: the video survives a failure.
+        else graphpy::raise(PyExc_RuntimeError,fmt("Expected output file not created: {}",av));
     } catch(const py::error_already_set&e) {
         if(!e.matches(PyExc_Exception))throw;
         GraphHandledException handled(e);
-        logger.attr("warning")(fmt("Failed to copy audio to video: {}",builtin("str")(e.value())));
-        if(truth(os.attr("path").attr("exists")(av))) {
-            try {os.attr("remove")(av);}
-            catch(const py::error_already_set&cleanup) {
-                if(!cleanup.matches(PyExc_Exception))throw;
-                GraphHandledException cleanup_handled(cleanup);
-                logger.attr("warning")(fmt("Failed to cleanup temporary file: {}",builtin("str")(cleanup.value())));
-            }
-        }
+        discard();
+        throw;
     }
 }
-void writer_close(const py::dict&g,const O&self,bool installed) {
+void writer_close(const py::dict&g,const O&self) {
     auto state=resource(self);
     if(state->completed || state->aborted)return; // Completion/mux occurs once; abort never commits.
     if(!self.attr("out").is_none()) {
-        if(!self.attr("out").attr("stdin").is_none())self.attr("out").attr("stdin").attr("close")();
-        self.attr("out").attr("wait")();
+        if(!self.attr("out").attr("stdin").is_none()) {
+            // Closing flushes the last buffered frames into the pipe.
+            try {self.attr("out").attr("stdin").attr("close")();}
+            catch(const py::error_already_set&e) {raise_if_encoder_stopped(self,e);throw;}
+        }
+        // A non-zero exit fails the run before the audio mux, where upstream leaves it
+        // unchecked (owner-approved 2026-10-09); the file FFmpeg wrote stays. After a
+        // zero exit, anything FFmpeg printed is logged.
+        O code=self.attr("out").attr("wait")();
+        if(!eq(code,py::int_(0)))fail(PyExc_RuntimeError,encoder_stopped(self,code).c_str());
+        O message=state->log.text();
+        if(truth(message))global(g,"logger").attr("warning")(fmt("FFmpeg: {}",message));
     }
-    if(installed)close_installed(g,self);else close_source(g,self);
+    mux_audio(g,self);
     state->completed=true;
 }
 
@@ -550,10 +727,15 @@ class FrameIterator {
     bool started_=false,entered_=false,closed_=false,running_=false;
     void start() {
         started_=true;
-        process_=global(globals_,"ffmpeg").attr("input")(loader_.attr("path"))
-            .attr("output")("pipe:",py::arg("format")="rawvideo",py::arg("pix_fmt")="bgr24",
-                py::arg("sws_flags")="lanczos+accurate_rnd+full_chroma_int+full_chroma_inp+bitexact",
-                py::arg("loglevel")="error")
+        const char*flags="lanczos+accurate_rnd+full_chroma_int+full_chroma_inp+bitexact";
+        py::dict options=dict({{"format",py::str("rawvideo")},{"pix_fmt",py::str("bgr24")},{"sws_flags",py::str(flags)}});
+        // The loader's matrix for untagged HD video (loader_init); a loader without one
+        // converts as FFmpeg chooses.
+        O matrix=py::getattr(loader_,"input_matrix",py::none());
+        if(!matrix.is_none())options["vf"]=py::str("scale=in_color_matrix={}:flags={}").attr("format")(matrix,flags);
+        options["loglevel"]="error";
+        O output=global(globals_,"ffmpeg").attr("input")(loader_.attr("path")).attr("output");
+        process_=call(output,py::make_tuple("pipe:"),options)
             .attr("run_async")(py::arg("pipe_stdout")=true,py::arg("pipe_stderr")=false,
                 py::arg("cmd")=loader_.attr("ffmpeg_env").attr("ffmpeg"));
         if(!truth(builtin("isinstance")(process_,global(globals_,"subprocess").attr("Popen")))) {PyErr_SetNone(PyExc_AssertionError);throw py::error_already_set();}
@@ -702,7 +884,6 @@ void cn_bind_video_io(pybind11::module_&m) {
     m.def("video_stream_frames",[](const py::dict&g,const O&loader){return std::make_shared<FrameIterator>(g,loader);});
     m.def("video_container_encoders",&container_encoders);m.def("video_encoder_formats",&encoder_formats);
     m.def("video_simple_format",&simple_format);m.def("video_writer_start",&writer_start);m.def("video_writer_frame",&writer_frame);
-    m.def("video_writer_close_source",[](const py::dict&g,const O&self){writer_close(g,self,false);});
-    m.def("video_writer_close_installed",[](const py::dict&g,const O&self){writer_close(g,self,true);});
+    m.def("video_writer_close",&writer_close);
     m.def("video_load",&load_video);m.def("video_save",&save_video);
 }

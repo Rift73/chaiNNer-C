@@ -198,12 +198,90 @@ bool temp_file_signature(const O& data) {
         view.starts_with("\x59\xA6\x6A\x95") || view.starts_with("\x76\x2F\x31\x01") ||
         (view.size()>=3 && view[0]=='P' && (view[1]=='f' || view[1]=='F') && space(static_cast<unsigned char>(view[2])));
 }
+// A classic TIFF structure ("II" little-endian or "MM" big-endian, magic 42): valid
+// when the header and its first IFD's entry count lie in the n bytes; the IFD's
+// entries are 12 bytes each from ifd+2.
+struct ClassicTiff {
+    const uint8_t* p; size_t n; bool little=false,valid=false; size_t ifd=0;
+    ClassicTiff(const uint8_t* bytes,size_t size):p(bytes),n(size) {
+        if(n<8 || !((p[0]=='I'&&p[1]=='I')||(p[0]=='M'&&p[1]=='M')))return;
+        little=p[0]=='I';ifd=u32(4);
+        valid=u16(2)==42 && ifd<=n-2;
+    }
+    uint32_t u16(size_t at) const {return little?uint32_t(p[at]|p[at+1]<<8):uint32_t(p[at]<<8|p[at+1]);}
+    uint32_t u32(size_t at) const {return little?u16(at)|u16(at+2)<<16:u16(at)<<16|u16(at+2);}
+};
+// EXIF Orientation (tag 274) of an EXIF block, the TIFF header and IFD0 after an
+// optional "Exif\0\0": 2-8, or 1 when it is absent, malformed or out of range.
+int exif_orientation(const uint8_t* p,size_t n) {
+    if(n>=6 && std::memcmp(p,"Exif\0\0",6)==0){p+=6;n-=6;}
+    const ClassicTiff tiff(p,n);
+    if(!tiff.valid)return 1;
+    for(size_t entry=tiff.ifd+2,end=entry+size_t(tiff.u16(tiff.ifd))*12;entry<end && entry+12<=n;entry+=12) {
+        if(tiff.u16(entry)!=274)continue;
+        const uint32_t type=tiff.u16(entry+2);
+        const uint32_t value=tiff.u32(entry+4)!=1?0:type==3?tiff.u16(entry+8):type==4?tiff.u32(entry+8):0;
+        return value>=2&&value<=8?int(value):1;
+    }
+    return 1;
+}
+// The EXIF block of an encoded JPEG (the first Exif APP1 before the scan), PNG
+// (eXIf, before or after IDAT) or WebP (EXIF chunk) file, found by walking its
+// segments or chunks without decoding; empty for every other format (TIFF's
+// decoders orient it themselves).
+std::string_view exif_block(const uint8_t* p,size_t n) {
+    const auto be32=[&](size_t at){return size_t(p[at])<<24|size_t(p[at+1])<<16|size_t(p[at+2])<<8|p[at+3];};
+    const auto view=[&](size_t at,size_t length){return std::string_view(reinterpret_cast<const char*>(p+at),length);};
+    if(n>=4 && p[0]==0xFF && p[1]==0xD8) {
+        for(size_t at=2;at+4<=n && p[at]==0xFF;) {
+            const uint8_t marker=p[at+1];
+            if(marker==0xFF){++at;continue;} // fill byte
+            if(marker==0xDA || marker==0xD9)break;
+            if(marker==0x01 || (marker>=0xD0 && marker<=0xD7)){at+=2;continue;}
+            const size_t length=size_t(p[at+2])<<8|p[at+3];
+            if(length<2 || length>n-at-2)break;
+            if(marker==0xE1 && length>=8 && std::memcmp(p+at+4,"Exif\0\0",6)==0)return view(at+4,length-2);
+            at+=2+length;
+        }
+    } else if(n>=8 && std::memcmp(p,"\x89PNG\r\n\x1a\n",8)==0) {
+        for(size_t at=8;at+12<=n;) {
+            const size_t length=be32(at);
+            if(length>n-at-12 || std::memcmp(p+at+4,"IEND",4)==0)break;
+            if(std::memcmp(p+at+4,"eXIf",4)==0)return view(at+8,length);
+            at+=12+length;
+        }
+    } else if(n>=12 && std::memcmp(p,"RIFF",4)==0 && std::memcmp(p+8,"WEBP",4)==0) {
+        for(size_t at=12;at+8<=n;) {
+            const size_t length=size_t(p[at+4])|size_t(p[at+5])<<8|size_t(p[at+6])<<16|size_t(p[at+7])<<24;
+            if(length>n-at-8)break;
+            if(std::memcmp(p+at,"EXIF",4)==0)return view(at+8,length);
+            at+=8+length+(length&1);
+        }
+    }
+    return {};
+}
+// Turns decoded pixels upright as EXIF Orientation 2-8 asks, as ImageOps.exif_transpose
+// does (5-8 swap height and width), keeping the channel order; 1 returns the image itself.
+O orient(py::dict g,O image,int orientation) {
+    if(orientation==1)return image;
+    const O all=py::slice(py::none(),py::none(),py::none()),reverse=py::slice(py::none(),py::none(),py::int_(-1));
+    const bool rows=orientation==3||orientation==4||orientation==6||orientation==7;
+    const bool columns=orientation==2||orientation==3||orientation==7||orientation==8;
+    O view=image[py::make_tuple(rows?reverse:all,columns?reverse:all)];
+    if(orientation>=5)view=view.attr("swapaxes")(0,1);
+    return name(g,"np").attr("ascontiguousarray")(view);
+}
 O read_cv(py::dict g,O path) {
     O ext=name(g,"get_ext")(path);
     if(!contains(name(g,"get_opencv_formats")(),ext))return py::none();
     O image=py::none(),cv=name(g,"cv2");
+    // IMREAD_UNCHANGED leaves EXIF Orientation to the caller; read it from the file's bytes.
+    int orientation=1;
     try {
         O data=name(g,"np").attr("fromfile")(path,py::arg("dtype")=name(g,"np").attr("uint8"));
+        py::array bytes=py::reinterpret_borrow<py::array>(data);
+        const std::string_view exif=exif_block(static_cast<const uint8_t*>(bytes.data()),static_cast<size_t>(bytes.size()));
+        orientation=exif_orientation(reinterpret_cast<const uint8_t*>(exif.data()),exif.size());
         // One temp-file decode at a time, process-wide, keyed on the name and on
         // the content. Wait without the GIL: the holder needs it to call into cv2.
         static std::mutex temp_file_decodes;
@@ -227,17 +305,21 @@ O read_cv(py::dict g,O path) {
         }
     }
     if(image.is_none())raise(PyExc_RuntimeError,format("Error reading image image from path \"{}\". Image may be corrupt.",path));
-    return image;
+    return orient(g,image,orientation);
 }
 O read_pil(py::dict g,O path) {
     if(!contains(name(g,"get_pil_formats")(),name(g,"get_ext")(path)))return py::none();
     O im=name(g,"Image").attr("open")(path);
     if(equal(im.attr("mode"),py::str("P")))im=im.attr("convert")(im.attr("palette").attr("mode"));
     O image=name(g,"np").attr("array")(im);
+    // Read after the decode, which also collects a PNG's eXIf after IDAT. Pillow keeps
+    // a TIFF's tags elsewhere, so TIFFs stay as decoded.
+    O exif=im.attr("info").attr("get")("exif");
+    const int orientation=PyBytes_Check(exif.ptr())?exif_orientation(reinterpret_cast<const uint8_t*>(PyBytes_AS_STRING(exif.ptr())),static_cast<size_t>(PyBytes_GET_SIZE(exif.ptr()))):1;
     O channels=index(name(g,"get_h_w_c")(image),2);
-    if(equal(channels,py::int_(3)))return swap_channels(g,image,"COLOR_RGB2BGR");
-    if(equal(channels,py::int_(4)))return swap_channels(g,image,"COLOR_RGBA2BGRA");
-    return image;
+    if(equal(channels,py::int_(3)))image=swap_channels(g,image,"COLOR_RGB2BGR");
+    else if(equal(channels,py::int_(4)))image=swap_channels(g,image,"COLOR_RGBA2BGRA");
+    return orient(g,image,orientation);
 }
 O read_dds(py::dict g,O path) {
     if(!equal(name(g,"get_ext")(path),py::str(".dds")))return py::none();
@@ -283,8 +365,9 @@ O full_path(O base,O relative,O filename,O format_type) {
     return path_join(base,file).attr("resolve")();
 }
 // Save Image's conversion for every format but DDS, in today's order: Pillow
-// formats (GIF, TGA, AVIF) get a uint8 image in RGB(A) order and their save
-// options; OpenCV formats get their parameters and the precision conversion.
+// formats (GIF, TGA, AVIF) and lossless WebP with alpha get a uint8 image in
+// RGB(A) order and their save options; OpenCV formats get their parameters and
+// the precision conversion.
 struct Encoding {O image; bool pillow=false; py::dict options; py::list params;};
 bool pillow_format(const py::dict& g,const O& format_type) {
     return option(g,format_type,"ImageFormat","GIF")||option(g,format_type,"ImageFormat","TGA")||option(g,format_type,"ImageFormat","AVIF");
@@ -292,9 +375,14 @@ bool pillow_format(const py::dict& g,const O& format_type) {
 Encoding encoding(py::dict g,O image,py::tuple args) {
     O format_type=args[4];
     Encoding result;
-    if(pillow_format(g,format_type)) {
+    // OpenCV's lossless WebP lets libwebp change the colour under alpha 0; Pillow's
+    // exact=True keeps every sample (an RGB image has no such pixels).
+    const bool exact_webp=option(g,format_type,"ImageFormat","WEBP") && truth(args[6]) &&
+        equal(index(name(g,"get_h_w_c")(image),2),py::int_(4));
+    if(pillow_format(g,format_type) || exact_webp) {
         image=name(g,"to_uint8")(image,py::arg("normalized")=true);
         if(option(g,format_type,"ImageFormat","AVIF")){result.options["quality"]=args[7];result.options["subsampling"]=O(args[18]).attr("value");}
+        if(exact_webp){result.options["lossless"]=py::bool_(true);result.options["exact"]=py::bool_(true);}
         O channels=index(name(g,"get_h_w_c")(image),2);
         if(equal(channels,py::int_(3)))image=swap_channels(g,image,"COLOR_BGR2RGB");
         else if(equal(channels,py::int_(4)))image=swap_channels(g,image,"COLOR_BGRA2RGBA");
@@ -319,6 +407,45 @@ Encoding encoding(py::dict g,O image,py::tuple args) {
     result.image=image;
     return result;
 }
+// OpenCV writes 4-sample RGB TIFFs without ExtraSamples (tag 338), which TIFF 6.0
+// requires, so readers may take the fourth sample for an unknown one (upstream
+// chaiNNer #2950). Adds 338 = SHORT 2 (unassociated alpha: chaiNNer's straight
+// alpha) to a classic TIFF's first IFD: a copy of the IFD with the entry in tag
+// order goes to the end of the file, on a word boundary, and the header points to
+// it; every other byte stays where it was. Other buffers are returned as they are.
+O add_extra_samples(O buffer) {
+    py::array array=py::reinterpret_borrow<py::array>(buffer);
+    const auto* p=static_cast<const uint8_t*>(array.data());
+    const size_t n=static_cast<size_t>(array.nbytes());
+    const ClassicTiff tiff(p,n);
+    if(!tiff.valid)return buffer;
+    const size_t entries=tiff.ifd+2,count=tiff.u16(tiff.ifd);
+    if(count*12+4>n-entries)return buffer;
+    uint32_t samples=0,photometric=0;
+    size_t insert=count;
+    for(size_t i=0;i<count;++i) {
+        const size_t entry=entries+i*12;
+        const uint32_t tag=tiff.u16(entry);
+        if(tag==338)return buffer;
+        if(tag==277)samples=tiff.u16(entry+8);
+        if(tag==262)photometric=tiff.u16(entry+8);
+        if(tag>338 && insert==count)insert=i;
+    }
+    const size_t moved=n+(n&1),size=moved+2+(count+1)*12+4;
+    if(samples!=4 || photometric!=2 || count==0xFFFF || moved>UINT32_MAX)return buffer;
+    O result=own(PyBytes_FromStringAndSize(nullptr,static_cast<Py_ssize_t>(size)));
+    auto* out=reinterpret_cast<uint8_t*>(PyBytes_AS_STRING(result.ptr()));
+    uint8_t* at=out+n;
+    const auto put=[&](uint32_t value,int bytes){for(int i=0;i<bytes;++i)*at++=uint8_t(value>>(8*(tiff.little?i:bytes-1-i)));};
+    std::memcpy(out,p,n);
+    if(n&1)*at++=0;
+    put(uint32_t(count+1),2);
+    std::memcpy(at,p+entries,insert*12);at+=insert*12;
+    put(338,2);put(3,2);put(1,4);put(2,2);put(0,2);
+    std::memcpy(at,p+entries+insert*12,(count-insert)*12+4); // and the next IFD's offset
+    at=out+4;put(uint32_t(moved),4);
+    return result;
+}
 // The codec of cv_save for a file extension: fpng for a default PNG, else
 // OpenCV's imencode. Returns bytes, or imencode's buffer array.
 O encode(py::dict g,O extension,O image,O params) {
@@ -331,6 +458,8 @@ O encode(py::dict g,O extension,O image,O params) {
     if(buffer.is_none()) {
         O encoded=name(g,"cv2").attr("imencode")(format(".{}",extension),image,params);
         buffer=index(encoded,1);
+        O lower=extension.attr("lower")();
+        if(equal(lower,py::str(".tiff")) || equal(lower,py::str(".tif")))buffer=add_extra_samples(buffer);
     }
     return buffer;
 }

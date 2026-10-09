@@ -31,7 +31,9 @@ def _port_in_use(port: int):
 
 SANIC_LOG_REGEX = re.compile(r"^\s*\[[^\[\]]*\] \[\d*\] \[(\w*)\] (.*)")
 
-ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+# backslashreplace: a log line with a lone surrogate (an undecodable Windows file
+# name) is written escaped instead of being dropped.
+ENV = {**os.environ, "PYTHONIOENCODING": "utf-8:backslashreplace"}
 
 
 class _WorkerProcess:
@@ -46,6 +48,9 @@ class _WorkerProcess:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             encoding="utf-8",
+            # A byte that is not UTF-8 (native code, a tool the worker runs) is shown
+            # escaped instead of ending the reader threads.
+            errors="backslashreplace",
             env=ENV,
         )
         self._stop_event = threading.Event()
