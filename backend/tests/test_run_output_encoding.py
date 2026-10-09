@@ -8,8 +8,13 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+import server_process_helper
 from server_process_helper import ENV, SANIC_LOG_REGEX
 
 SRC = Path(__file__).parent.parent / "src"
@@ -88,3 +93,37 @@ def test_worker_log_line_with_a_lone_surrogate_reaches_the_host():
     ]
     # Escaped as backslashreplace writes it.
     assert logged == [("INFO", "Loaded C:/images/\\udce9.png")]
+
+
+# Stands in for the worker: a byte that is not UTF-8 (from native code or a tool it
+# runs), then an ordinary log line.
+BAD_BYTE_WORKER = r"""
+import sys
+sys.stdout.buffer.write(b"raw \xff byte\n[2026-10-09] [1] [INFO] after it\n")
+sys.stdout.flush()
+"""
+
+
+def test_worker_output_that_is_not_utf8_keeps_the_reader_alive(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    real_popen = subprocess.Popen
+    monkeypatch.setattr(
+        server_process_helper.subprocess,
+        "Popen",
+        lambda _args, **kwargs: real_popen(
+            [sys.executable, "-B", "-c", BAD_BYTE_WORKER], **kwargs
+        ),
+    )
+    logged: list[str] = []
+    record = SimpleNamespace(
+        **dict.fromkeys(("debug", "info", "warning", "error"), logged.append)
+    )
+    monkeypatch.setattr(server_process_helper, "logger", record)
+    worker = vars(server_process_helper)["_WorkerProcess"]([])
+    deadline = time.monotonic() + 60
+    while "[Worker] after it" not in logged and time.monotonic() < deadline:
+        time.sleep(0.05)
+    worker.close()
+    assert "[Worker] raw \\xff byte" in logged
+    assert "[Worker] after it" in logged

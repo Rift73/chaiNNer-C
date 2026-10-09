@@ -48,6 +48,9 @@ class _WorkerProcess:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             encoding="utf-8",
+            # A byte that is not UTF-8 (native code, a tool the worker runs) is shown
+            # escaped instead of ending the reader threads.
+            errors="backslashreplace",
             env=ENV,
         )
         self._stop_event = threading.Event()
