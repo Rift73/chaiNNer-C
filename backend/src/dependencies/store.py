@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -212,8 +213,10 @@ async def install_dependencies(
     assert process.stdout is not None
     last_lines: deque[str] = deque(maxlen=PIP_REASON_LINES)
     installing_name = "Unknown"
-    # Up to the end of the output, which holds pip's error lines when it fails.
-    for nextline in process.stdout:
+    # Up to the end of the output, which holds pip's error lines when it fails. Read
+    # in a thread: pip can be silent for a long time (a slow index, its retries), and
+    # the event loop must keep serving progress events and requests meanwhile.
+    while nextline := await asyncio.to_thread(process.stdout.readline):
         line = nextline.strip()
         if not line:
             continue
@@ -268,7 +271,7 @@ async def install_dependencies(
         elif "Installing collected packages" in line:
             await update_progress_cb("Installing collected dependencies...", 0.9, None)
 
-    exit_code = process.wait()
+    exit_code = await asyncio.to_thread(process.wait)
     if exit_code != 0:
         raise ValueError(pip_error_message("installing", last_lines))
 
@@ -350,8 +353,10 @@ async def uninstall_dependencies(
     assert process.stdout is not None
     last_lines: deque[str] = deque(maxlen=PIP_REASON_LINES)
     uninstalling_name = "Unknown"
-    # Up to the end of the output, which holds pip's error lines when it fails.
-    for nextline in process.stdout:
+    # Up to the end of the output, which holds pip's error lines when it fails. Read
+    # in a thread: pip can be silent for a long time (a slow index, its retries), and
+    # the event loop must keep serving progress events and requests meanwhile.
+    while nextline := await asyncio.to_thread(process.stdout.readline):
         line = nextline.strip()
         if not line:
             continue
@@ -385,7 +390,7 @@ async def uninstall_dependencies(
                 None,
             )
 
-    exit_code = process.wait()
+    exit_code = await asyncio.to_thread(process.wait)
     if exit_code != 0:
         raise ValueError(pip_error_message("uninstalling", last_lines))
 

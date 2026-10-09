@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -126,19 +127,28 @@ NCNN = DependencyInfo("ncnn", "1.0.20240410", display_name="NCNN")
 
 
 def fail_like_pip(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, output: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    output: list[str],
+    silence: float = 0,
 ) -> None:
-    """Replaces store's pip process with one that prints `output` and exits 1."""
+    """Replaces store's pip process with one that prints `output` and exits 1,
+    silent for `silence` seconds after the first line."""
     output_file = tmp_path / "pip_output.txt"
     output_file.write_text("".join(f"{line}\n" for line in output), encoding="utf-8")
     fake_pip = (
-        "import sys; sys.stdout.write(open(sys.argv[1], encoding='utf-8').read());"
-        " sys.exit(1)"
+        "import sys, time;"
+        " lines = open(sys.argv[1], encoding='utf-8').readlines();"
+        " sys.stdout.write(lines[0]); sys.stdout.flush();"
+        " time.sleep(float(sys.argv[2]));"
+        " sys.stdout.write(''.join(lines[1:])); sys.exit(1)"
     )
     popen = subprocess.Popen
 
     def fake_popen(_command: list[str], **kwargs: Any) -> subprocess.Popen[str]:
-        return popen([sys.executable, "-c", fake_pip, str(output_file)], **kwargs)
+        return popen(
+            [sys.executable, "-c", fake_pip, str(output_file), str(silence)], **kwargs
+        )
 
     monkeypatch.setattr(store, "installed_packages", {})
     monkeypatch.setattr(store.subprocess, "Popen", fake_popen)
@@ -169,6 +179,33 @@ def test_a_failed_install_reports_pips_reason(
         "An error occurred while installing dependencies.",
         *(line.strip() for line in reason),
     ]
+
+
+def test_the_event_loop_runs_while_pip_is_silent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    # pip is silent for long stretches (a slow index, its retries); the host's
+    # loop must keep serving progress events and requests meanwhile.
+    silence = 1.5
+    fail_like_pip(monkeypatch, tmp_path, NO_INDEX, silence)
+
+    async def install_with_a_ticker() -> tuple[float, BaseException | None]:
+        install = asyncio.create_task(
+            store.install_dependencies([NCNN], ignore_progress)
+        )
+        longest_gap = 0.0
+        last = time.monotonic()
+        while not install.done():
+            await asyncio.sleep(0.02)
+            now = time.monotonic()
+            longest_gap = max(longest_gap, now - last)
+            last = now
+        return longest_gap, install.exception()
+
+    longest_gap, error = asyncio.run(install_with_a_ticker())
+    assert longest_gap < silence / 3
+    assert isinstance(error, ValueError)
+    assert str(error).splitlines()[1:] == NO_INDEX[-3:]
 
 
 def test_a_failed_uninstall_reports_pips_reason(
