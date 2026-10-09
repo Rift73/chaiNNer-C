@@ -109,8 +109,6 @@ def pytorch_auto_split(
             output_tensor = _into_standard_image_form(output_tensor)
             output_tensor = _rgb_to_bgr(output_tensor)
             result = output_tensor.detach().cpu().detach().float().numpy()
-
-            return result
         except RuntimeError as e:
             # Check to see if its actually the CUDA out of memory error
             if "allocate" in str(e) or "CUDA" in str(e):
@@ -128,18 +126,20 @@ def pytorch_auto_split(
                 # Re-raise the exception if not an OOM error
                 raise
 
-    result = auto_split(img, upscale, tiler)
-    # Saving turns NaN into black pixels. NaN already in the input passes through;
-    # NaN the model made from a finite image is an error.
-    if not _is_finite(result) and _is_finite(img):
-        message = (
-            f"The {model.architecture.name} model returned invalid values (NaN or"
-            " infinity), which would be saved as black pixels."
-        )
-        if use_fp16:
-            message += (
-                " Models can overflow in FP16: turn off 'Use FP16 Mode' in the"
-                " PyTorch settings to run this model in FP32."
+        # Saving turns NaN into black pixels. NaN already in the input passes through;
+        # NaN the model made from a finite tile is an error, raised at the first such
+        # tile instead of after the whole image.
+        if not _is_finite(result) and _is_finite(img):
+            message = (
+                f"The {model.architecture.name} model returned invalid values (NaN or"
+                " infinity), which would be saved as black pixels."
             )
-        raise RuntimeError(message)
-    return result
+            if use_fp16:
+                message += (
+                    " Models can overflow in FP16: turn off 'Use FP16 Mode' in the"
+                    " PyTorch settings to run this model in FP32."
+                )
+            raise RuntimeError(message)
+        return result
+
+    return auto_split(img, upscale, tiler)

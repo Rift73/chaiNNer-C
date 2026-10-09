@@ -14,7 +14,7 @@ pytest.importorskip("nodes.impl._chainner_graph")
 
 from api import Progress
 from nodes.impl.pytorch.auto_split import pytorch_auto_split
-from nodes.impl.upscale.tiler import NoTiling
+from nodes.impl.upscale.tiler import ExactTileSize, NoTiling, Tiler
 
 CPU = torch.device("cpu")
 
@@ -43,10 +43,20 @@ def image() -> np.ndarray:
     return np.random.default_rng(0).random((24, 32, 3), dtype=np.float32)
 
 
-def upscale(img: np.ndarray, model: ImageModelDescriptor, use_fp16: bool):
+def upscale(
+    img: np.ndarray,
+    model: ImageModelDescriptor,
+    use_fp16: bool,
+    tiler: Tiler | None = None,
+):
     return pytorch_auto_split(
-        img, model, CPU, use_fp16, NoTiling(), Progress.noop_progress()
+        img, model, CPU, use_fp16, tiler or NoTiling(), Progress.noop_progress()
     )
+
+
+def tiled_image() -> np.ndarray:
+    """Several tiles at a 32 px tile size."""
+    return np.random.default_rng(0).random((64, 96, 3), dtype=np.float32)
 
 
 def test_finite_result_is_the_model_output_unchanged():
@@ -73,5 +83,27 @@ def test_nan_from_the_input_passes_through():
     img = image()
     img[5, 7] = np.nan
     result = upscale(img, compact(1.0), use_fp16=False)
+    assert np.isnan(result).any()
+    assert np.isfinite(result[-8:, -8:]).all()  # beyond the receptive field
+
+
+def test_tiled_nan_fails_at_the_first_tile():
+    model = compact(float("nan"))
+    tiles = 0
+
+    def count(*_: object) -> None:
+        nonlocal tiles
+        tiles += 1
+
+    model.model.register_forward_hook(count)
+    with pytest.raises(RuntimeError, match="invalid values"):
+        upscale(tiled_image(), model, use_fp16=False, tiler=ExactTileSize((32, 32)))
+    assert tiles == 1
+
+
+def test_tiled_nan_from_the_input_passes_through():
+    img = tiled_image()
+    img[5, 7] = np.nan
+    result = upscale(img, compact(1.0), use_fp16=False, tiler=ExactTileSize((32, 32)))
     assert np.isnan(result).any()
     assert np.isfinite(result[-8:, -8:]).all()  # beyond the receptive field
