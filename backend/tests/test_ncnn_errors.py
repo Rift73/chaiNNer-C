@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 import sys
 from pathlib import Path
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
+import psutil
 import pytest
 from ncnn import ncnn
 
@@ -16,7 +18,7 @@ from nodes.impl.ncnn import session
 from nodes.impl.ncnn.auto_split import ncnn_auto_split
 from nodes.impl.ncnn.model import NcnnModel, NcnnModelWrapper
 from nodes.impl.ncnn.session import create_ncnn_net
-from nodes.impl.upscale.auto_split_tiles import NO_TILING, TileSize
+from nodes.impl.upscale.auto_split_tiles import ESTIMATE, NO_TILING, TileSize
 from nodes.impl.upscale.tiler import MaxTileSize
 from packages.chaiNNer_ncnn.ncnn.processing import upscale_image
 from packages.chaiNNer_ncnn.settings import NcnnSettings
@@ -144,6 +146,9 @@ class Net:
         self.scale_x = scale_x
         self.scale_y = scale_y
         self.sizes: list[tuple[int, int]] = []
+        self.opt = SimpleNamespace(
+            use_winograd_convolution=False, use_sgemm_convolution=False
+        )
 
     def create_extractor(self) -> Extractor:
         return Extractor(self)
@@ -201,11 +206,17 @@ def upscale_with(
     scale: int,
     image: np.ndarray,
     tile_size: TileSize = NO_TILING,
+    settings: NcnnSettings = SETTINGS,
+    bin_length: int = 0,
 ) -> np.ndarray:
-    """NCNN Upscale Image's upscale with the fake `net`, for a model of `scale`."""
+    """NCNN Upscale Image's upscale with the fake `net`, for a model of `scale` whose
+    weights take `bin_length` bytes."""
     monkeypatch.setattr(upscale_image, "get_ncnn_net", lambda model, settings: net)
-    model = cast(NcnnModelWrapper, SimpleNamespace(scale=scale))
-    return upscale_image.upscale_impl(SETTINGS, image, model, "data", "out", tile_size)
+    model = cast(
+        NcnnModelWrapper,
+        SimpleNamespace(scale=scale, model=SimpleNamespace(bin_length=bin_length)),
+    )
+    return upscale_image.upscale_impl(settings, image, model, "data", "out", tile_size)
 
 
 @pytest.mark.parametrize(
@@ -253,6 +264,78 @@ def test_other_sizes_are_returned_as_the_model_made_them_without_tiling(
     assert expected is not None
     assert result.shape[:2] == (round(height * scale_y), round(width * scale_x))
     np.testing.assert_array_equal(result, expected.transpose(1, 2, 0))
+
+
+# On the CPU this model's estimate is 60 bytes per pixel of an RGB image
+# (159744 * 5/3 / (1024 * 52) * 3 * 4), and 80% of 900000 bytes of available RAM
+# holds 12000 pixels: 100x120 fits, 101x120 does not and gets 64-pixel tiles.
+BIN_LENGTH = 159744
+THRESHOLD_RAM = 900000
+
+
+def upscale_on_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+    image: np.ndarray,
+    available: int,
+    budget_limit: int = 0,
+    bin_length: int = BIN_LENGTH,
+) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    """Automatic tiling with `available` bytes of RAM: the result and the sizes the
+    network was given. With 2**60 bytes no image is too big, which is the budget the
+    CPU branch had before it counted the RAM."""
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: SimpleNamespace(available=available)
+    )
+    net = Net()
+    settings = dataclasses.replace(SETTINGS, budget_limit=budget_limit)
+    result = upscale_with(
+        monkeypatch, net, 2, image, ESTIMATE, settings, bin_length=bin_length
+    )
+    return result, net.sizes
+
+
+@pytest.mark.parametrize(
+    ("height", "width"),
+    [(1, 1), (64, 64), (100, 120), (120, 100), (60, 200), (200, 60), (12000, 1)],
+)
+def test_cpu_images_that_fit_in_ram_stay_whole(
+    monkeypatch: pytest.MonkeyPatch, height: int, width: int
+):
+    # Each holds at most 12000 pixels; 60x200 is wider than the 64-pixel tiles the
+    # RAM would give, and stays whole all the same.
+    image = np.random.default_rng(0).random((height, width, 3), dtype=np.float32)
+    result, sizes = upscale_on_cpu(monkeypatch, image, THRESHOLD_RAM)
+    before, sizes_before = upscale_on_cpu(monkeypatch, image, 2**60)
+    assert sizes == sizes_before == [(width, height)]
+    np.testing.assert_array_equal(result, before)
+
+
+@pytest.mark.parametrize(("height", "width"), [(101, 120), (120, 101), (300, 400)])
+def test_cpu_images_too_big_for_ram_are_tiled(
+    monkeypatch: pytest.MonkeyPatch, height: int, width: int
+):
+    image = np.random.default_rng(0).random((height, width, 3), dtype=np.float32)
+    result, sizes = upscale_on_cpu(monkeypatch, image, THRESHOLD_RAM)
+    whole, sizes_before = upscale_on_cpu(monkeypatch, image, 2**60)
+    assert sizes_before == [(width, height)]
+    assert len(sizes) > 1
+    assert max(max(size) for size in sizes) < 100
+    np.testing.assert_allclose(result, whole, rtol=0, atol=1e-6)
+
+
+def test_cpu_budget_limit_splits_an_image_that_fits_in_ram_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A Memory Budget Limit of 1 GiB gives this model 64-pixel tiles, as it did
+    # before, while 2 GiB of RAM would hold the whole image.
+    image = np.random.default_rng(0).random((100, 120, 3), dtype=np.float32)
+    bin_length = BIN_LENGTH * 2**30 // 720000
+    result, sizes = upscale_on_cpu(monkeypatch, image, 2 * 2**30, 1, bin_length)
+    net = Net()
+    expected = upscale_with(monkeypatch, net, 2, image, TileSize(64))
+    assert len(sizes) > 1
+    assert sizes == net.sizes
+    np.testing.assert_array_equal(result, expected)
 
 
 def test_an_unexpected_error_is_logged_and_kept_as_the_cause(

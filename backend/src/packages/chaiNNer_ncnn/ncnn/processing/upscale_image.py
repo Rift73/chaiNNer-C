@@ -17,6 +17,8 @@ from nodes.impl.upscale.auto_split_tiles import (
     CUSTOM,
     TILE_SIZE_256,
     TileSize,
+    cpu_memory_budget,
+    estimate_memory_required,
     estimate_tile_size,
     parse_tile_size_input,
 )
@@ -101,6 +103,15 @@ def upscale_impl(
                     model_size_estimate = model_size_estimate * 11 / 5
                 elif net.opt.use_sgemm_convolution:
                     model_size_estimate = model_size_estimate * 40 / 5
+                # ncnn aborts the process when an allocation fails on the CPU, so an
+                # image too big for the RAM PyTorch's CPU path counts on is tiled to
+                # fit it. An image that fits is split as the budget alone splits it.
+                ram_budget = cpu_memory_budget()
+                if (
+                    estimate_memory_required(int(model_size_estimate), img, 4)
+                    > ram_budget
+                ):
+                    heap_budget_bytes = min(heap_budget_bytes, ram_budget)
             return MaxTileSize(
                 estimate_tile_size(heap_budget_bytes, int(model_size_estimate), img, 4)
             )

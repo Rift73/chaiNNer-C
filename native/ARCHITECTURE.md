@@ -316,6 +316,11 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   ignored ncnn's return codes; a tile whose result is not a whole multiple of its input raises, and without tiling only
   the waifu2x-style crop (the same border short of the model's scale on both axes) is refused, naming both sizes
   (upstream chaiNNer #3011, #2486; `backend/tests/test_ncnn_errors.py`).
+- NCNN Upscale Image on the CPU (no Vulkan GPU), with automatic tile size, tiles an image whose memory estimate
+  exceeds 80 % of the available RAM, the budget PyTorch's CPU path uses (`cpu_memory_budget`), where upstream's CPU
+  budget is 1 PiB without a Memory Budget Limit and ncnn aborts the process when an allocation fails (owner's stand-in
+  D8, 2026-10-09). An image whose estimate fits is split exactly as before: whole without a limit, as the limit splits
+  it with one (`backend/tests/test_ncnn_errors.py`).
 - ONNX sessions raise when the chosen execution provider did not start (ONNX Runtime 1.30's TensorRT provider needs
   TensorRT 10, which chaiNNer-C does not ship), where upstream silently ran on CUDA or the CPU (upstream chaiNNer #2715;
   `backend/tests/test_onnx_session_providers.py`).

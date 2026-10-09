@@ -1,6 +1,7 @@
 from typing import Callable, NewType
 
 import numpy as np
+import psutil
 from sanic.log import logger
 
 from ...utils.utils import get_h_w_c
@@ -9,15 +10,26 @@ from .tiler import MaxTileSize, NoTiling, Tiler
 GB_AMT = 1024**3
 
 
+def estimate_memory_required(
+    model_size: int,
+    img: np.ndarray,
+    img_element_size: int = 4,
+) -> float:
+    h, w, c = get_h_w_c(img)
+    img_bytes = h * w * c * img_element_size
+    return (model_size / (1024 * 52)) * img_bytes
+
+
 def estimate_tile_size(
     budget: float,
     model_size: int,
     img: np.ndarray,
     img_element_size: int = 4,
 ) -> int:
-    h, w, c = get_h_w_c(img)
-    img_bytes = h * w * c * img_element_size
-    mem_required_estimation = (model_size / (1024 * 52)) * img_bytes
+    h, w, _ = get_h_w_c(img)
+    mem_required_estimation = estimate_memory_required(
+        model_size, img, img_element_size
+    )
 
     tile_pixels = w * h * budget / mem_required_estimation
     # the largest power-of-2 tile_size such that tile_size**2 < tile_pixels
@@ -31,6 +43,12 @@ def estimate_tile_size(
     )
 
     return tile_size
+
+
+def cpu_memory_budget() -> int:
+    """The memory an upscale on the CPU may use: 80% of the RAM available now, to be
+    conservative."""
+    return int(psutil.virtual_memory().available * 0.8)
 
 
 TileSize = NewType("TileSize", int)
