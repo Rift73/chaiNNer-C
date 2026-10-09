@@ -86,7 +86,7 @@ unchanged since v0.3.1 and v0.3.2), for reference:
 | Binary | SHA-256 |
 | --- | --- |
 | `chainner_native.dll` | `6da1217311bb59a67d1a7ad50e20007ef733b5dbce763ed6bfcf708271cfecf5` |
-| `_chainner_graph.pyd` | `9ede6c6d3f91b7c01bb22a2b6ab7a38feb775761b6c2c40683632d6ae2738499` |
+| `_chainner_graph.pyd` | `5daa49f67be04b01e04aa3cd467c40aa513451b1560e8a8b866c8f207486fe23` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 
 `generate_onnx_converter.py`, `generate_pixel_art_tables.py` and `generate_tiling_cpp.py` in `native/tools` turn pinned

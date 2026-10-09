@@ -2029,15 +2029,31 @@ def test_simple_node_overrides_and_gif_audio_suppression(tmp_path, simple):
     assert results[0] == results[1]
 
 
-def test_writer_nonzero_exit_code_original_policy():
+def test_writer_nonzero_exit_code_is_an_error():
+    # Owner-approved 2026-10-09: a non-zero exit at a normal close fails the run with
+    # FFmpeg's exit code before the audio mux, where upstream leaves it unchecked and
+    # muxes; nothing removes the file FFmpeg wrote.
     results = []
-    for kind in ("installed", "native"):
+    for kind in ("intended", "native"):
         env = FakeFFmpeg()
         g = load(kind, "save_video", env)
+        g["os"] = mock_os(env)
         p = FakeProcess(env)
         p.returncode = 23
-        results.append((outcome(writer(g, out=p).close), env.events.copy()))
-    assert results[0] == results[1]
+        w = writer(g, out=p, audio=FakeStream(env, "audio"))
+        results.append((outcome(w.close), env.events.copy()))
+    assert results[0][0] == ("ok", None)
+    assert any(e[0] == "run" for e in results[0][1])
+    assert results[1][0] == (
+        "error",
+        (
+            "RuntimeError",
+            "FFmpeg stopped while Save Video was writing the video (exit code 23)",
+        ),
+    )
+    # The same flush and wait, then the error: no mux, no file removed or replaced.
+    assert results[1][1] == results[0][1][: len(results[1][1])]
+    assert not any(e[0] in ("run", "remove", "replace") for e in results[1][1])
 
 
 def test_reader_remaining_frames_metadata_can_differ():

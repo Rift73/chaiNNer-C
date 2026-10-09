@@ -519,6 +519,13 @@ void write_frame_payload(const O&write,const O&payload) {
         remaining=view[py::slice(py::int_(offset),py::int_(total),py::int_(1))];
     }
 }
+// Names FFmpeg, its exit code and the tail of what it printed.
+std::string encoder_stopped(const O&self,const O&code) {
+    O message=resource(self)->log.text();
+    O text=py::str("FFmpeg stopped while Save Video was writing the video (exit code {})").attr("format")(code);
+    if(truth(message))text=py::str("{}: {}").attr("format")(text,message);
+    return text.cast<std::string>();
+}
 // An encoder that exits early (a rejected option, a crash, a full disk) closes its end
 // of the pipe, so writing fails as Broken pipe or, on Windows, [Errno 22]. Once FFmpeg
 // has exited, name it, its exit code and its message instead (upstream chaiNNer #3109);
@@ -534,11 +541,8 @@ void raise_if_encoder_stopped(const O&self,const py::error_already_set&error) {
         if(e.matches(py::module_::import("subprocess").attr("TimeoutExpired").ptr()))return;
         throw;
     }
-    O message=resource(self)->log.text();
-    O text=py::str("FFmpeg stopped while Save Video was writing the video (exit code {})").attr("format")(code);
-    if(truth(message))text=py::str("{}: {}").attr("format")(text,message);
     py::error_already_set original=error;
-    py::raise_from(original,PyExc_RuntimeError,text.cast<std::string>().c_str());
+    py::raise_from(original,PyExc_RuntimeError,encoder_stopped(self,code).c_str());
     throw py::error_already_set();
 }
 void writer_frame(const py::dict&g,const O&self,const O&image,const O&prepared) {
@@ -657,8 +661,11 @@ void writer_close(const py::dict&g,const O&self) {
             try {self.attr("out").attr("stdin").attr("close")();}
             catch(const py::error_already_set&e) {raise_if_encoder_stopped(self,e);throw;}
         }
-        self.attr("out").attr("wait")();
-        // The exit code stays unchecked, as upstream; FFmpeg's message stays in the log.
+        // A non-zero exit fails the run before the audio mux, where upstream leaves it
+        // unchecked (owner-approved 2026-10-09); the file FFmpeg wrote stays. After a
+        // zero exit, anything FFmpeg printed is logged.
+        O code=self.attr("out").attr("wait")();
+        if(!eq(code,py::int_(0)))fail(PyExc_RuntimeError,encoder_stopped(self,code).c_str());
         O message=state->log.text();
         if(truth(message))global(g,"logger").attr("warning")(fmt("FFmpeg: {}",message));
     }

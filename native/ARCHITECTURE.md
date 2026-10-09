@@ -324,6 +324,9 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
 - ONNX sessions raise when the chosen execution provider did not start (ONNX Runtime 1.30's TensorRT provider needs
   TensorRT 10, which chaiNNer-C does not ship), where upstream silently ran on CUDA or the CPU (upstream chaiNNer #2715;
   `backend/tests/test_onnx_session_providers.py`).
+- Save Video fails when FFmpeg exits non-zero at a normal close, naming its exit code and message (as an early exit
+  does, upstream chaiNNer #3109), before the audio mux and keeping the file FFmpeg wrote, where upstream leaves the
+  exit code unchecked (owner's stand-in D18; `test_writer_nonzero_exit_code_original_policy`).
 - Save Video's audio mux (owner-approved, upstream chaiNNer #3331): chaiNNer's own FFmpeg muxes the audio after the
   video, as upstream v0.25.1 does, where the frozen nightly ran the `ffmpeg` on `PATH` with the audio first and only
   logged a failure, so without FFmpeg on `PATH` every saved video was silent. Auto copies the audio and, when the
