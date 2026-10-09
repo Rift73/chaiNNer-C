@@ -42,6 +42,13 @@ def convert_to_onnx_impl(
     m = model.model
 
     if isinstance(model, ImageModelDescriptor):
+        req = model.size_requirements
+        # Spandrel pads an input below the model's minimum size in Python branches, so
+        # for a minimum alone the trace freezes the example's padding into the graph:
+        # for a minimum above the example, every larger input is cropped to the
+        # minimum. (Spandrel exports a multiple or a square requirement dynamically.)
+        pad_to_minimum = req.minimum > size and req.multiple_of == 1 and not req.square
+        scale = model.scale
 
         class FakeModel(torch.nn.Module):
             def __init__(self, model: ImageModelDescriptor):
@@ -49,7 +56,20 @@ def convert_to_onnx_impl(
                 self.model = model
 
             def forward(self, x: torch.Tensor):
-                return self.model(x)
+                if not pad_to_minimum:
+                    return self.model(x)
+                # Spandrel's padding in branch-free arithmetic, which stays dynamic:
+                # reflect (at most size - 1), then replicate the rest.
+                h, w = x.shape[-2:]
+                pad_h = (h < req.minimum) * (req.minimum - h)
+                pad_w = (w < req.minimum) * (req.minimum - w)
+                reflect_h = pad_h - (pad_h > h - 1) * (pad_h - (h - 1))
+                reflect_w = pad_w - (pad_w > w - 1) * (pad_w - (w - 1))
+                x = torch.nn.functional.pad(x, (0, reflect_w, 0, reflect_h), "reflect")
+                x = torch.nn.functional.pad(
+                    x, (0, pad_w - reflect_w, 0, pad_h - reflect_h), "replicate"
+                )
+                return self.model(x)[..., : h * scale, : w * scale]
 
         m = FakeModel(model)
 
