@@ -570,11 +570,13 @@ py::dict audio_options(const py::dict&g,const O&self,const O&settings) {
     py::dict p=dict({{"vcodec",py::str("copy")},{"acodec",py::str("copy")}});
     if(eq(self.attr("container"),member(g,"VideoFormat","WEBM"))) {
         if(graphpy::contains(py::make_tuple(member(g,"AudioSettings","TRANSCODE"),member(g,"AudioSettings","AUTO")),settings)) {
-            // libopus takes at most 256 kb/s per channel, so min(320k, 256k x channels):
-            // mono gets 256k, where 320k failed; two or more channels keep 320k.
+            // libopus takes at most 256 kb/s per channel, so min(320k, 256k x channels) for
+            // each output stream: a mono stream gets 256k (b:a:N, which wins over b:a), where
+            // 320k failed; streams of two or more channels keep 320k.
             p["acodec"]="libopus";p["b:a"]="320k";
-            for(py::handle sh:audio_streams(g,self))
-                if(eq(py::reinterpret_borrow<O>(sh).attr("get")("channels"),py::int_(1)))p["b:a"]="256k";
+            const py::list streams=audio_streams(g,self);
+            for(size_t i=0;i<streams.size();++i)
+                if(eq(O(streams[i]).attr("get")("channels"),py::int_(1)))p[py::str("b:a:{}").attr("format")(i)]="256k";
         } else graphpy::raise(PyExc_ValueError,fmt("WebM does not support {}",settings));
     } else if(eq(settings,member(g,"AudioSettings","TRANSCODE"))) {
         p["acodec"]="aac";p["b:a"]="320k";

@@ -272,8 +272,9 @@ class Context:
 # (upstream's PATH fallback is dead: Writer requires ffmpeg_env); (f) audio the mux
 # cannot carry raises instead of logging, and only a source without audio (probed
 # after a failure) saves the video without it; (g) os.replace swaps the files
-# atomically, so a failed swap keeps the video; (h) Opus gets min(320k, 256k x
-# channels), libopus's per-channel ceiling, so mono into WebM works (owner-approved).
+# atomically, so a failed swap keeps the video; (h) each Opus stream gets min(320k,
+# 256k x channels), libopus's per-channel ceiling, so mono into WebM works
+# (owner-approved).
 INTENDED_MUX = (
     """        if self.audio is not None:
             video_path = self.save_path
@@ -364,9 +365,9 @@ INTENDED_MUX = (
                     if settings in (AudioSettings.TRANSCODE, AudioSettings.AUTO):
                         params["acodec"] = "libopus"
                         params["b:a"] = "320k"
-                        for stream in audio_streams():  # (h)
+                        for index, stream in enumerate(audio_streams()):  # (h)
                             if stream.get("channels") == 1:
-                                params["b:a"] = "256k"
+                                params[f"b:a:{index}"] = "256k"
                     else:
                         raise ValueError(f"WebM does not support {settings}")
                 elif settings == AudioSettings.TRANSCODE:
@@ -1175,8 +1176,26 @@ def test_webm_opus_bitrate_follows_the_channel_count(channels, setting):
         )
         results.append((outcome(w.close), env.events.copy()))
     assert results[0] == results[1]
-    mux = next(e for e in results[1][1] if e[0] == "output")
-    assert dict(mux[2])["b:a"] == ("256k" if channels == 1 else "320k")
+    mux = dict(next(e for e in results[1][1] if e[0] == "output")[2])
+    assert mux["b:a"] == "320k"
+    assert mux.get("b:a:0") == ("256k" if channels == 1 else None)
+
+
+def test_webm_opus_bitrate_is_per_audio_stream():
+    # (h): of a 5.1 + mono source, only the mono stream gets 256k.
+    probe = valid_probe()
+    probe["streams"][0]["channels"] = 6
+    probe["streams"].append({**probe["streams"][0], "channels": 1})
+    results = []
+    for kind in ("intended", "native"):
+        env = FakeFFmpeg(probe=probe)
+        g = load(kind, "save_video", env)
+        g["os"] = mock_os(env)
+        w = writer(g, container="WEBM", audio=FakeStream(env, "audio"))
+        results.append((outcome(w.close), env.events.copy()))
+    assert results[0] == results[1]
+    mux = dict(next(e for e in results[1][1] if e[0] == "output")[2])
+    assert (mux["b:a"], mux.get("b:a:0"), mux["b:a:1"]) == ("320k", None, "256k")
 
 
 @pytest.mark.parametrize("encoder", [None, "H264", "H265", "VP9", "FFV1"])
