@@ -27,9 +27,6 @@ export const migrateOldStorageSettings = (settings: ReadonlyStorage): Partial<Ch
     }
 
     return {
-        useSystemPython: get('use-system-python', false),
-        systemPythonLocation: get<string | null>('use-system-python', null) || '',
-
         theme: get('theme', 'dark'),
         startupTemplate: get<string>('startup-template', '') || '',
         animateChain: get('animate-chain', true),
@@ -69,12 +66,13 @@ const newThemeSystem: SettingsMigration = (settings) => {
 };
 
 // chaiNNer-C only runs on its integrated CPython 3.14 (its native modules link python314.dll), so
-// a "use system Python" saved by upstream chaiNNer or an older chaiNNer-C is switched off.
-const integratedPythonOnly: SettingsMigration = (settings) => ({
-    ...settings,
-    useSystemPython: false,
-    systemPythonLocation: '',
-});
+// the "use system Python" settings saved by upstream chaiNNer or an older chaiNNer-C are dropped.
+const integratedPythonOnly: SettingsMigration = (settings) => {
+    const rest: Partial<Record<string, unknown>> = { ...settings };
+    delete rest.useSystemPython;
+    delete rest.systemPythonLocation;
+    return rest as Partial<ChainnerSettings>;
+};
 
 type SettingsMigration = (settings: Partial<ChainnerSettings>) => Partial<ChainnerSettings>;
 const migrations: SettingsMigration[] = [newThemeSystem, integratedPythonOnly];

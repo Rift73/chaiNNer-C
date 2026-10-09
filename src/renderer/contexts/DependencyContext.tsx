@@ -58,7 +58,6 @@ import {
     useBackendSetupEventSource,
 } from '../hooks/useBackendEventSource';
 import { useMemoObject } from '../hooks/useMemo';
-import { useSettings } from '../hooks/useSettings';
 import { AlertBoxContext, AlertType } from './AlertBoxContext';
 import { BackendContext } from './BackendContext';
 import { GlobalContext } from './GlobalNodeState';
@@ -623,7 +622,6 @@ interface PythonSectionProps {
 }
 const PythonSection = memo(
     ({ installMode, setInstallMode, isDisabled, consoleOutput }: PythonSectionProps) => {
-        const { useSystemPython } = useSettings();
         const { pythonInfo } = useContext(BackendContext);
 
         const [showMore, setShowMore] = useState(false);
@@ -647,7 +645,7 @@ const PythonSection = memo(
                         flex="1"
                         textAlign="left"
                     >
-                        Python ({pythonInfo.version}) [{useSystemPython ? 'System' : 'Integrated'}]
+                        Python ({pythonInfo.version}) [Integrated]
                     </Text>
 
                     <Tooltip

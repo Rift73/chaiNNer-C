@@ -90,9 +90,7 @@ exports[`Migrate settings 1`] = `
       "C:\\Users\\micha\\Desktop\\chains\\crash chain.chn",
     ],
   },
-  "systemPythonLocation": "",
   "theme": "default-dark",
-  "useSystemPython": false,
   "viewportExportPadding": 20,
 }
 `;
@@ -124,5 +122,6 @@ Set {
   "use-last-directory-chainner:onnx:save_model 1",
   "use-last-directory-chainner:pytorch:load_model 0",
   "use-last-directory-chainner:pytorch:save_model 1",
+  "use-system-python",
 }
 `;

@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 import { migrateOldStorageSettings, migrateSettings } from '../../src/common/settings/migration';
+import { defaultSettings } from '../../src/common/settings/settings';
 
 const oldSettingData: Partial<Record<string, string>> = {
     'allow-multiple-instances': 'false',
@@ -91,12 +92,16 @@ test(`Migrate settings`, () => {
     expect(unusedKeys).toMatchSnapshot();
 });
 
-test(`Saved system Python settings are switched off`, () => {
-    const settings = migrateSettings({
+test(`Saved system Python settings are dropped`, () => {
+    // as upstream chaiNNer and older chaiNNer-C releases saved them
+    const saved = {
+        theme: 'default-light',
         useSystemPython: true,
         systemPythonLocation: 'C:\\Python312\\python.exe',
-    });
+    };
+    const settings = migrateSettings(saved);
 
-    expect(settings.useSystemPython).toBe(false);
-    expect(settings.systemPythonLocation).toBe('');
+    expect(settings).toEqual({ ...defaultSettings, theme: 'default-light' });
+    expect(settings).not.toHaveProperty('useSystemPython');
+    expect(settings).not.toHaveProperty('systemPythonLocation');
 });
