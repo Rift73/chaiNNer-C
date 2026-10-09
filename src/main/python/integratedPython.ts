@@ -1,5 +1,5 @@
 import decompress from 'decompress';
-import { app, session } from 'electron/main';
+import { app, net, session } from 'electron/main';
 import fs from 'fs/promises';
 import path from 'path';
 import semver from 'semver';
@@ -45,7 +45,7 @@ const getProxyEnv = (name: string): string | undefined =>
 /**
  * Downloads `url` to `filePath` with Electron's network stack, which follows the system's proxy
  * settings (on Windows the Internet settings, PAC scripts included). A proxy in https_proxy or
- * else all_proxy, and no_proxy, if set, take precedence, as they do for pip.
+ * else all_proxy, with its credentials, and no_proxy, if set, take precedence, as they do for pip.
  */
 const download = async (
     url: string,
@@ -56,30 +56,58 @@ const download = async (
     await app.whenReady();
 
     let downloadSession = session.defaultSession;
+    let credentials: [username: string, password: string] | undefined;
     const proxy = getProxyEnv('https_proxy') || getProxyEnv('all_proxy');
     if (proxy) {
         downloadSession = session.fromPartition('integrated-python-download');
-        // Chromium takes scheme://host:port; the variable may also have a path or no scheme
-        const { protocol, host } = new URL(proxy.includes('://') ? proxy : `http://${proxy}`);
+        // Chromium takes scheme://host:port; the variable may also have a path, no scheme or
+        // user:pass@, whose credentials (percent-encoded, as pip reads them) answer the proxy
+        const { protocol, host, username, password } = new URL(
+            proxy.includes('://') ? proxy : `http://${proxy}`
+        );
+        if (username) {
+            credentials = [decodeURIComponent(username), decodeURIComponent(password)];
+        }
         await downloadSession.setProxy({
             proxyRules: `${protocol}//${host}`,
             proxyBypassRules: getProxyEnv('no_proxy'),
         });
     }
 
-    const response = await downloadSession.fetch(url);
-    if (!response.ok || !response.body) {
+    // A request, not fetch: fetch cancels every request for credentials, the proxy's included
+    const response = await new Promise<Electron.IncomingMessage>((resolve, reject) => {
+        const request = net.request({ session: downloadSession, url });
+        // once: credentials the proxy rejects are not offered again, and the download fails
+        request.once('login', (authInfo, callback) => {
+            if (authInfo.isProxy && credentials) {
+                callback(...credentials);
+            } else {
+                callback();
+            }
+        });
+        request.on('response', resolve);
+        request.on('error', reject);
+        request.end();
+    });
+    if (response.statusCode < 200 || response.statusCode > 299) {
         throw new Error(
-            `Downloading ${url} failed: HTTP ${response.status} ${response.statusText}`
+            `Downloading ${url} failed: HTTP ${response.statusCode} ${response.statusMessage}`
         );
     }
-    const totalBytes = Number(response.headers.get('content-length'));
+    const totalBytes = Number(response.headers['content-length']);
     let receivedBytes = 0;
+    const body = new ReadableStream<Uint8Array>({
+        start: (controller) => {
+            response.on('data', (chunk) => controller.enqueue(chunk));
+            response.on('end', () => controller.close());
+            response.on('error', (error: Error) => controller.error(error));
+        },
+    });
 
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     const file = await fs.open(filePath, 'w');
     try {
-        await response.body.pipeTo(
+        await body.pipeTo(
             new WritableStream<Uint8Array>({
                 write: async (chunk) => {
                     await file.write(chunk);

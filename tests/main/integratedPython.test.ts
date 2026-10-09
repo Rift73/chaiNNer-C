@@ -1,25 +1,56 @@
+import { EventEmitter } from 'events';
 import { mkdtemp, readdir, rm } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-const { defaultSession, proxySession, fromPartition } = vi.hoisted(() => {
-    const createSession = () => ({
-        fetch: vi.fn<[string], Promise<Response>>(),
-        setProxy: vi.fn(() => Promise.resolve()),
-    });
+const { defaultSession, proxySession, fromPartition, request } = vi.hoisted(() => {
+    const createSession = () => ({ setProxy: vi.fn(() => Promise.resolve()) });
     const proxy = createSession();
     return {
         defaultSession: createSession(),
         proxySession: proxy,
         fromPartition: vi.fn(() => proxy),
+        request: vi.fn(),
     };
 });
 
 vi.mock('electron/main', () => ({
     app: { whenReady: () => Promise.resolve(), getPath: () => '' },
+    net: { request },
     session: { defaultSession, fromPartition },
 }));
+
+const incomingMessage = (
+    statusCode: number,
+    statusMessage: string,
+    headers: Record<string, string> = {}
+) => Object.assign(new EventEmitter(), { statusCode, statusMessage, headers });
+
+/**
+ * Answers the download's request with `response`; with `challenge`, the server or proxy first asks
+ * for credentials, and the returned mock is the callback that receives them.
+ */
+const respondWith = (
+    response: ReturnType<typeof incomingMessage>,
+    challenge?: { isProxy: boolean }
+) => {
+    const login = vi.fn();
+    request.mockImplementation(() => {
+        const clientRequest = new EventEmitter();
+        return Object.assign(clientRequest, {
+            end: () => {
+                setImmediate(() => {
+                    if (challenge) {
+                        clientRequest.emit('login', challenge, login);
+                    }
+                    clientRequest.emit('response', response);
+                });
+            },
+        });
+    });
+    return login;
+};
 
 let directory: string;
 
@@ -41,9 +72,7 @@ test('HTTPS_PROXY routes the download through that proxy', async () => {
     vi.stubEnv('HTTPS_PROXY', '127.0.0.1:3128/');
     vi.stubEnv('no_proxy', '');
     vi.stubEnv('NO_PROXY', 'localhost');
-    proxySession.fetch.mockResolvedValue(
-        new Response('Not Found', { status: 404, statusText: 'Not Found' })
-    );
+    const login = respondWith(incomingMessage(404, 'Not Found'), { isProxy: true });
 
     const { getIntegratedPython } = await import('../../src/main/python/integratedPython');
 
@@ -55,7 +84,34 @@ test('HTTPS_PROXY routes the download through that proxy', async () => {
         proxyRules: 'http://127.0.0.1:3128',
         proxyBypassRules: 'localhost',
     });
-    expect(defaultSession.fetch).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ session: proxySession }));
+    // no credentials to offer: the challenge is cancelled
+    expect(login).toHaveBeenCalledWith();
+});
+
+test("the proxy's credentials answer its challenge, as for pip", async () => {
+    vi.stubEnv('https_proxy', '');
+    vi.stubEnv('HTTPS_PROXY', 'http://chai%40nner:p%3Ass@127.0.0.1:3128');
+    const login = respondWith(incomingMessage(404, 'Not Found'), { isProxy: true });
+
+    const { getIntegratedPython } = await import('../../src/main/python/integratedPython');
+
+    await expect(getIntegratedPython(directory, () => {})).rejects.toThrow(/HTTP 404/);
+    expect(proxySession.setProxy).toHaveBeenCalledWith(
+        expect.objectContaining({ proxyRules: 'http://127.0.0.1:3128' })
+    );
+    expect(login).toHaveBeenCalledWith('chai@nner', 'p:ss');
+});
+
+test("a server's challenge gets no proxy credentials", async () => {
+    vi.stubEnv('https_proxy', '');
+    vi.stubEnv('HTTPS_PROXY', 'http://user:pass@127.0.0.1:3128');
+    const login = respondWith(incomingMessage(401, 'Unauthorized'), { isProxy: false });
+
+    const { getIntegratedPython } = await import('../../src/main/python/integratedPython');
+
+    await expect(getIntegratedPython(directory, () => {})).rejects.toThrow(/HTTP 401/);
+    expect(login).toHaveBeenCalledWith();
 });
 
 test('ALL_PROXY is the proxy when no HTTPS proxy is set', async () => {
@@ -63,7 +119,7 @@ test('ALL_PROXY is the proxy when no HTTPS proxy is set', async () => {
     vi.stubEnv('HTTPS_PROXY', '');
     vi.stubEnv('all_proxy', '');
     vi.stubEnv('ALL_PROXY', 'socks5://127.0.0.1:1080');
-    proxySession.fetch.mockResolvedValue(new Response('Not Found', { status: 404 }));
+    respondWith(incomingMessage(404, 'Not Found'));
 
     const { getIntegratedPython } = await import('../../src/main/python/integratedPython');
 
@@ -80,7 +136,7 @@ test.skipIf(process.platform === 'win32')(
         vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:8080');
         vi.stubEnv('no_proxy', 'localhost');
         vi.stubEnv('NO_PROXY', 'example.com');
-        proxySession.fetch.mockResolvedValue(new Response('Not Found', { status: 404 }));
+        respondWith(incomingMessage(404, 'Not Found'));
 
         const { getIntegratedPython } = await import('../../src/main/python/integratedPython');
 
@@ -96,28 +152,23 @@ test('without a proxy variable the download reports progress and removes a parti
     for (const name of ['https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']) {
         vi.stubEnv(name, '');
     }
-    let pulls = 0;
-    const body = new ReadableStream<Uint8Array>({
-        pull: (controller) => {
-            pulls += 1;
-            if (pulls === 1) {
-                controller.enqueue(new Uint8Array(400));
-            } else {
-                controller.error(new Error('net::ERR_CONNECTION_CLOSED'));
-            }
-        },
-    });
-    defaultSession.fetch.mockResolvedValue(
-        new Response(body, { headers: { 'content-length': '1000' } })
-    );
+    const response = incomingMessage(200, 'OK', { 'content-length': '1000' });
+    respondWith(response);
 
     const { getIntegratedPython } = await import('../../src/main/python/integratedPython');
     const progress: [number, string][] = [];
 
-    await expect(
-        getIntegratedPython(directory, (percentage, stage) => progress.push([percentage, stage]))
-    ).rejects.toThrow('net::ERR_CONNECTION_CLOSED');
+    const downloading = getIntegratedPython(directory, (percentage, stage) =>
+        progress.push([percentage, stage])
+    );
+    await vi.waitFor(() => expect(response.listenerCount('error')).toBe(1));
+    response.emit('data', new Uint8Array(400));
+    await vi.waitFor(() => expect(progress).toContainEqual([40, 'download']));
+    response.emit('error', new Error('net::ERR_CONNECTION_CLOSED'));
+
+    await expect(downloading).rejects.toThrow('net::ERR_CONNECTION_CLOSED');
     expect(fromPartition).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ session: defaultSession }));
     expect(progress).toEqual([
         [0, 'download'],
         [40, 'download'],
