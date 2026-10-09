@@ -820,12 +820,23 @@ def test_frozen_snapshot_hashes():
         )
 
 
+# Text Pattern's description is reworded to the grammar it parses (upstream chaiNNer #2106;
+# owner's stand-in D13); the rest of its metadata and its signature still match.
+REWORDED = {"text_pattern"}
+
+
 @pytest.mark.parametrize("name", NAMES)
 def test_node_metadata_and_signatures_unchanged(name):
     def signature(path):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         function = next(node for node in tree.body if isinstance(node, ast.FunctionDef))
         function.body = [ast.Pass()]
+        if name in REWORDED:
+            for decorator in function.decorator_list:
+                if isinstance(decorator, ast.Call):
+                    decorator.keywords = [
+                        k for k in decorator.keywords if k.arg != "description"
+                    ]
         return ast.dump(function)
 
     assert signature(ROOT / "backend/src" / NODE_DIR / f"{name}.py") == signature(

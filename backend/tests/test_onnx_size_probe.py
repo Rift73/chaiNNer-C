@@ -107,6 +107,8 @@ def test_a_convolutional_model_is_not_padded():
 
 
 def test_a_window_8_model_runs_at_any_size():
+    # Spandrel 0.4.2+c2 pads SwinIR per input inside the exported graph, so the probe
+    # finds no multiple; a graph that does need 8 (below) is found to need 8.
     model = exported(
         lambda: SwinIR(
             img_size=32,
@@ -120,9 +122,14 @@ def test_a_window_8_model_runs_at_any_size():
         )
     )
     assert model.info.scale_width is None  # its shapes do not infer
-    assert size_probe.get_size_req(model) == SizeReq(minimum=8, multiple_of=8)
+    found = size_probe.get_size_req(model)
+    assert found is not None and found.multiple_of == 1
     for h, w in [(37, 51), (3, 3)]:
         assert upscale(model, image(h, w)).shape == (2 * h, 2 * w, 3)
+    needs_8 = stub(8)
+    found = size_probe.get_size_req(needs_8)
+    assert found is not None and found.multiple_of == 8
+    assert upscale(needs_8, image(37, 51)).shape == (37, 51, 3)
 
 
 def test_a_model_that_needs_20px_gets_a_minimum_that_runs():
