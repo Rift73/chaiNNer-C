@@ -1038,6 +1038,30 @@ def test_provisioning_reads_the_lock_header_as_the_manifest_does():
     }
 
 
+def test_a_relock_installs_the_locks_url_pins_as_they_are():
+    # The forks' wheels (spandrel, onnxruntime-gpu) are direct-URL pins: a -Relock installs them only
+    # from its $Packages list, so each must be the lock's line, or a relock quietly swaps the wheel.
+    script = REPOSITORY / "native/tools/provision_runtime.ps1"
+    block = re.search(
+        r"\$Packages = @\(\n(.*?)\n\s*\)", script.read_text(encoding="utf-8"), re.S
+    )
+    assert block, "provision_runtime.ps1 has no $Packages block"
+    relock = {
+        name
+        for line in block.group(1).splitlines()
+        if not line.lstrip().startswith("#")
+        for name in re.findall(r"'([^']+)'", line.split("  #")[0])
+    }
+    lock = (REPOSITORY / "native/python-stack.lock.txt").read_text(encoding="utf-8")
+    url_pins = [
+        line.split("  #")[0]
+        for line in lock.splitlines()
+        if " @ " in line and not line.startswith("#")
+    ]
+    assert url_pins, "the lock has no direct-URL pins"
+    assert [pin for pin in url_pins if pin not in relock] == []
+
+
 def test_the_runtime_is_read_as_it_is_now(package_case):
     # importlib.metadata's listing cache is keyed by the directory's mtime, and an
     # install within one timestamp tick of a read would otherwise go unseen.

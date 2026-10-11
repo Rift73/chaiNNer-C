@@ -3,7 +3,8 @@ Provisions the Python runtime chaiNNer-C builds, tests and packages with: python
 native\runtime\cpython-<version> (git-ignored), then the stack the tracked lock native\python-stack.lock.txt records.
 By default the lock is the input. Its header names the interpreter, the build tag, the archive's SHA-256 and pip's
 version; its pins are installed as they stand, without dependency resolution, each from one source (torch and
-torchvision from the PyTorch CUDA index, chainner-pip from the backend's bundled wheel, the rest from PyPI). The run
+torchvision from the PyTorch CUDA index, chainner-pip from the backend's bundled wheel, spandrel and onnxruntime-gpu
+from their forks' release wheels as the lock's direct-URL pins, the rest from PyPI). The run
 fails unless pip check is clean, pip's version is the header's and pip freeze equals the pins line for line. The lock
 is not written.
 -Relock is the deliberate upgrade step, followed by the full acceptance: the archive checked against the release's
@@ -21,6 +22,9 @@ existing runtime extracted from another archive, or with no record, is refused: 
 param([string]$Version, [string]$Tag, [switch]$Relock, [switch]$BuildOnly)
 
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 redraws Invoke-WebRequest's progress bar for every chunk it reads, which slows a download
+# many times over.
+$ProgressPreference = 'SilentlyContinue'
 if ($Relock -and $BuildOnly) { throw '-BuildOnly provisions from the lock; it cannot be combined with -Relock' }
 # Isolated from user state: no user site-packages, no pip user configuration and no PIP_* variables, so
 # every requirement is installed into (and frozen from) the runtime itself.
@@ -150,9 +154,11 @@ if ($Relock) {
         'google-re2',  # oracle/reference only (upstream's onnx/load.py imports re2)
         'Sanic-Cors==2.2.0',  # oracle/reference only (upstream's server imports sanic_cors)
         # spandrel: the fork's build (DRFT, DUAL, SST), the wheel on its release
-        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c1/spandrel-0.4.2%2Bc1-py3-none-any.whl#sha256=fe884dc115d86c4b6278e8108a6dfa23355dc2f7b3a4ca1f9334a64d61a6c5ab',
+        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c2/spandrel-0.4.2%2Bc2-py3-none-any.whl#sha256=e030832fad968ad0dd2be4d03fa6596d99fb3f9333359c45fee387c57377c039',
         'spandrel_extra_arches', 'facexlib', 'einops', 'safetensors',
-        'onnxruntime-gpu==1.30.0', 'onnx', 'onnxoptimizer', 'protobuf', 'ncnn==1.0.20260526',
+        # onnxruntime-gpu: ONNX Runtime 1.30.0 rebuilt for TensorRT 11, the wheel on its fork's release
+        'onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11-cp314-cp314-win_amd64.whl#sha256=443287192cb0add06e1faa7022f1badf9ead0e77b82cd6deb0fc2192af5a96d3',
+        'onnx', 'onnxoptimizer', 'protobuf', 'ncnn==1.0.20260526',
         'sanic==25.12.1', 'aiofiles', 'html5tagger', 'sanic-routing', 'tracerite', 'websockets', 'typing_extensions',
         'nvidia-ml-py', 'psutil', 'aiohttp',
         'pynvml',  # oracle/reference only (upstream's server declares it; nvidia-ml-py provides the module)
@@ -205,8 +211,8 @@ if ($Relock) {
         "# pip: $PipVersion (installed; pip freeze does not list it)",
         '# Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.ps1 (torch and',
         '# torchvision from https://download.pytorch.org/whl/cu132, chainner-pip from the bundled wheel in',
-        '# backend/src/dependencies/whls/chainner-pip/, spandrel from its fork''s release wheel',
-        '# (github.com/Rift73/spandrel), the rest from PyPI).'
+        '# backend/src/dependencies/whls/chainner-pip/, spandrel and onnxruntime-gpu from their forks'' release',
+        '# wheels (github.com/Rift73/spandrel, github.com/Rift73/onnxruntime), the rest from PyPI).'
     )
     foreach ($Pin in $Freeze) {
         $Note = $Notes[($Pin -split '==')[0]]

@@ -54,7 +54,8 @@ A release zip is built with `npm run make` after step 3 (see [`MAINTAINING.md`](
 ## Develop and test
 
 1. Provision the whole tested stack from the lock (torch and torchvision from the PyTorch CUDA 13.2 index,
-   `chainner-pip` from the backend's bundled wheel, the rest from PyPI); it fails unless `pip check` is clean and
+   `chainner-pip` from the backend's bundled wheel, spandrel and `onnxruntime-gpu` from their forks' release wheels,
+   the rest from PyPI); it fails unless `pip check` is clean and
    `pip freeze` equals the lock, and never writes the lock (`-Relock` is the deliberate upgrade step):
    `powershell -NoProfile -File native\tools\provision_runtime.ps1`
 2. Create the test and tool environment (`requirements.txt` adds the lint and type-check tools):
