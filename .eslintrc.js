@@ -169,5 +169,15 @@ module.exports = {
         },
     ],
 
-    ignorePatterns: ['**/antlr4/*.js'],
+    ignorePatterns: [
+        '**/antlr4/*.js',
+        // chaiNNer-C's git-ignored native folders: the Python runtime and venvs carry third-party JavaScript
+        // inside their packages, and the build and scratch folders hold generated files.
+        'native/runtime/',
+        'native/.venv*/',
+        'native/build*/',
+        'native/local/',
+        'native/reports/',
+        'out/',
+    ],
 };

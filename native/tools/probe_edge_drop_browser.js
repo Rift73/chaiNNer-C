@@ -1,6 +1,8 @@
 /* Run in the portable test app's DevTools console. Uses a synthetic OS payload
  * and actual DOM hit-testing/React handlers, never executes the image chain.
- * Restores the input value afterwards. Not proof of Windows OLE delivery. */
+ * Restores the input value afterwards. Not proof of Windows OLE delivery.
+ * The console shows the result as the snippet's resolved value; a failed check
+ * throws with the result in its message. */
 (async () => {
     const input = document.querySelector('.react-flow__node-regularNode input[readonly]');
     const node = input.closest('.react-flow__node');
@@ -74,7 +76,6 @@
         selectionUnchanged: JSON.stringify(selection()) === beforeSelection,
         canvasWarning: document.body.innerText.includes('Unable to transfer dragged item(s).'),
     };
-    console.log(`EDGE_DROP_PROBE ${JSON.stringify(result)}`);
     if (
         !result.accepted ||
         !result.restored ||
@@ -82,7 +83,7 @@
         !result.selectionUnchanged ||
         result.canvasWarning
     ) {
-        throw Error('Edge drop probe failed');
+        throw Error(`Edge drop probe failed: ${JSON.stringify(result)}`);
     }
     return result;
 })();
