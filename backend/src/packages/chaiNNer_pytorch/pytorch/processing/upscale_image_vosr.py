@@ -19,6 +19,7 @@ from nodes.impl.pytorch.vosr2 import (
 )
 from nodes.impl.pytorch.vosr2_cache import lease_bundle, release_bundle
 from nodes.impl.pytorch.vosr2_context import upscale_scene_focus
+from nodes.impl.pytorch.vosr2_download import ensure_model
 from nodes.impl.pytorch.vosr2_engine_cache import ensure_full_engine
 from nodes.impl.pytorch.vosr2_fp8 import ensure_fp8_engine
 from nodes.impl.pytorch.vosr2_memory import vram_budget
@@ -35,7 +36,6 @@ from nodes.properties.inputs import (
     ImageInput,
     NumberInput,
     SeedInput,
-    VosrModelInput,
 )
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.seed import Seed
@@ -56,14 +56,13 @@ TEMPORAL_METHODS = {
     description=[
         "Upscales an RGB image using a VOSR 2.0 generative super-resolution model.",
         "The image is resized to the chosen scale and restored in overlapping windows that share scene context, so focus and fine texture stay consistent; the seed selects the generated detail.",
-        "The TensorRT backends compile their engines on first use and reuse them afterwards.",
+        "The first use downloads the official VOSR 2.0 model (about 7 GB) from Hugging Face into the backend's storage folder; later runs reuse it. The TensorRT backends compile their engines on first use and reuse them afterwards.",
         "Inside a Load Video loop, each frame is also stabilized over time: the restorations of neighbouring frames are aligned with optical flow and combined only where they match reliably, and a detected cut starts afresh.",
         "When the frames ahead cannot be read early (for example, through a node between Load Video and this one that is not computed ahead), only the current and earlier frames are used: Three Frames combines the previous frame alone and Persistent Detail starts each scene from its first frame alone.",
     ],
     icon="PyTorch",
     inputs=[
         ImageInput(channels=3),
-        VosrModelInput(),
         NumberInput("Scale", min=1, max=8, default=4, unit="x"),
         SeedInput(),
         EnumInput(
@@ -81,7 +80,7 @@ TEMPORAL_METHODS = {
             "Low keeps total GPU memory use, including other programs, under 7 GB by streaming the model weights. It is slower and always uses PyTorch.",
             hint=True,
         ),
-        if_group(Condition.enum(5, VosrMemoryMode.DEFAULT))(
+        if_group(Condition.enum(4, VosrMemoryMode.DEFAULT))(
             EnumInput(
                 VosrBackend,
                 "Backend",
@@ -103,13 +102,13 @@ TEMPORAL_METHODS = {
                 default=TemporalMode.THREE_FRAMES,
                 option_labels=TEMPORAL_METHODS,
             )
-            .with_id(7)
+            .with_id(6)
             .with_docs(
                 "Three Frames combines each frame with the previous and the next one. Persistent Detail also carries stable fine texture from earlier frames and starts each scene from up to five frames, so the first output of a scene takes longer.",
                 hint=True,
             ),
             NumberInput("Temporal Strength", min=0, max=100, default=65, unit="%")
-            .with_id(8)
+            .with_id(7)
             .with_docs(
                 "0 % upscales every frame on its own. Keep the same seed for a whole video.",
                 hint=True,
@@ -118,7 +117,7 @@ TEMPORAL_METHODS = {
     ],
     outputs=[
         ImageOutput(
-            image_type="Image { width: Input0.width * Input2, height: Input0.height * Input2 }",
+            image_type="Image { width: Input0.width * Input1, height: Input0.height * Input1 }",
             channels=3,
         )
     ],
@@ -128,7 +127,6 @@ TEMPORAL_METHODS = {
 def upscale_image_vosr_node(
     context: NodeContext,
     img: np.ndarray,
-    model: BundlePaths,
     scale: int,
     seed: Seed,
     color: VosrColorCorrection,
@@ -156,6 +154,7 @@ def upscale_image_vosr_node(
                 raise ValueError(
                     "VOSR 2.0 requires a GPU with BF16 support. Turn on CPU mode in the PyTorch settings to run it on the CPU."
                 )
+    model = ensure_model(context)
 
     def upscale(image: np.ndarray, restore_context: NodeContext) -> np.ndarray:
         return _upscale(

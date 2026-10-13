@@ -5,10 +5,11 @@ User guide: [`VOSR2.md`](VOSR2.md). Follow-ups: [`STATUS.md`](STATUS.md) Pending
 
 ## Modules
 
-Nodes, in `backend/src/packages/chaiNNer_pytorch/pytorch/`: `io/load_vosr_model.py`, `processing/upscale_image_vosr.py`
-(checks before any work, routes Low to PyTorch and Load Video loops to the temporal step). Type `VosrModel`
-(`nodes/properties/*/vosr_*.py`, `src/common/types/chainner-scope.ts`), value `BundlePaths`. In
-`backend/src/nodes/impl/pytorch/`:
+Node, in `backend/src/packages/chaiNNer_pytorch/pytorch/`: `processing/upscale_image_vosr.py` (checks before any
+work, then `ensure_model`; routes Low to PyTorch and Load Video loops to the temporal step). One fixed model, the
+official upload: `vosr2_official.py` pins its revision, files, sizes and SHA-256; `vosr2_download.py` (`ensure_model`
+into `<storage>/vosr2-model/<revision>/`, hashes remembered by `stored_hash`; the resumable, hashed `download` shared
+with FP8). In `backend/src/nodes/impl/pytorch/`:
 
 - `vosr2.py`: bundle paths, pinned configuration (`read_configs`), weights, enums, `MemoryPlan`, input preparation,
   colour correction. `vosr2_cache.py`: weights kept between runs. `vosr2_memory.py`: `vram_budget`.
@@ -31,7 +32,7 @@ In the backend storage folder a set is `<root>/<key>/` (key: SHA-256 of the iden
 `manifest.json` after every stage passed its check; a corrupt set moves to `quarantine-*`, `compile.lock` serializes
 builds across processes, and a build needs 5.5 GB of free GPU memory.
 
-- **BF16**, `vosr2-tensorrt-bf16`: hashes of the five bundle files, `vosr2.py`, `vosr2_export.py`, `vendor/vosr2`,
+- **BF16**, `vosr2-tensorrt-bf16`: the five model files' pinned SHA-256 (not their folder), `vosr2.py`, `vosr2_export.py`, `vendor/vosr2`,
   `vosr2_trt_{models,build,compile,rewrite,plugin}.py` and the plugin DLL; torch, TensorRT, CUDA, driver, GPU,
   profiles, `runtime_contract`. Check: each stage within relative L2 0.03 of PyTorch BF16 (DINO 0.05 of FP32), repeats
   bit-identical.
@@ -54,7 +55,7 @@ RoPE and the Q/K/V layout in the original rounding order; batch 1, 24 heads, 1 t
 SHA-256, pinned as `vosr2_fp8.MANIFEST_SHA256`), uploaded 2026-10-13 with server and public hashes checked: 16 files,
 3,450,737,806 bytes: three FP8 graphs (`dit_kv`, `dit_cached`, `dino`, with `.onnx.data`), seven BF16/FP32 graphs
 (this code's export), `manifest.json` (recipe, source and file SHA-256), `LICENSE` (Apache-2.0),
-`NOTICE` (authors, DINOv2, Qwen-Image VAE, changes). `ensure_fp8_engine` checks GPU, manifest, official bundle,
+`NOTICE` (authors, DINOv2, Qwen-Image VAE, changes). `ensure_fp8_engine` checks GPU, manifest,
 TensorRT, plugin and disk before it downloads (resumable, hashed) and compiles. No ModelOpt at run time.
 
 A new set (notes `99dd0f1a:native/VOSR2-FP8.md`; scripts local, git-ignored, `native/local/vosr2/fp8*`):
@@ -80,7 +81,7 @@ Executor side: ARCHITECTURE section 4.
 
 `backend/src/vendor/vosr2/`: from ComfyUI-VOSR2 `6a21810b` and VOSR `516f292b` (Apache-2.0), `pos_embed.py` from EVA-02
 (MIT); licences and changes in its `NOTICE.md`. Edits rebuild BF16 engines. CPU tests, `native/tests/test_vosr2*`:
-`.py`, `_fp8` (nodes); `_context`, `_streaming`, `_texture`, `_outer_tiling`; `_trt_rewrite`, `_bf16_pipeline`,
-`_acceleration`, `_stage_cache` (engines); `_fp8_fetch`; `_trt_plugin` with `test_package_recovery_integration.py`;
+`.py`, `_fp8` (nodes); `_fp8_fetch` (model and FP8 downloads); `_context`, `_streaming`, `_texture`, `_outer_tiling`; `_trt_rewrite`, `_bf16_pipeline`,
+`_acceleration`, `_stage_cache` (engines); `_trt_plugin` with `test_package_recovery_integration.py`;
 `_temporal`, `_temporal_state`, `_temporal_step`; plus `test_iteration_view.py`, `test_item_window.py`,
 `tests/common/condition.test.ts`. GPU checks are manual.

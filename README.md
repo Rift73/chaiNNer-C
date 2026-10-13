@@ -20,7 +20,7 @@ chaiNNer-org. For chaiNNer itself, its documentation and its community, see the
 - **TensorRT upscaling.** New TensorRT nodes run your `.engine` files on NVIDIA GPUs. Large images are split into
   overlapping tiles automatically, with no visible seams, and engines stay loaded between runs (right-click the node
   and choose **Clear** to free the memory).
-- **VOSR 2.0 generative upscaling.** Two PyTorch nodes run [VOSR 2.0](https://github.com/cswry/VOSR), a one-step
+- **VOSR 2.0 generative upscaling.** A PyTorch node runs [VOSR 2.0](https://github.com/cswry/VOSR), a one-step
   generative super-resolution model, on PyTorch or TensorRT (BF16 or FP8), and stabilize video frames from Load Video
   over time automatically. See the [VOSR guide](native/VOSR2.md).
 - **An up-to-date Python stack:** Python 3.14, NumPy 2, OpenCV 5, current PyTorch and ONNX Runtime.
@@ -50,7 +50,7 @@ Not supported: 32-bit Windows, ARM PCs (such as Snapdragon laptops), macOS and L
 
 **Do my chaiNNer chains work in chaiNNer-C?** Yes. The nodes are the same, so chains open and run as in chaiNNer, and
 chains saved in chaiNNer-C open in chaiNNer too, except chains using the TensorRT nodes, which need a chaiNNer version
-with TensorRT support, or the VOSR nodes, which only chaiNNer-C has.
+with TensorRT support, or the VOSR node, which only chaiNNer-C has.
 
 **Will it affect my existing chaiNNer?** No. chaiNNer-C uses its own folder for its settings and Python.
 
@@ -75,7 +75,7 @@ Details (development setup, tests, packaging, toolchain options) are in [`native
 
 ## Documentation
 
-- [`native/VOSR2.md`](native/VOSR2.md): the VOSR 2.0 nodes (model download, settings, video, speed).
+- [`native/VOSR2.md`](native/VOSR2.md): the VOSR 2.0 node (model download, settings, video, speed).
 - [`native/BUILDING.md`](native/BUILDING.md): build, test and package.
 - [`native/README.md`](native/README.md): the full developer command reference (tests, verifiers, benchmarks).
 - [`native/ARCHITECTURE.md`](native/ARCHITECTURE.md): how it's built and the exactness rules.

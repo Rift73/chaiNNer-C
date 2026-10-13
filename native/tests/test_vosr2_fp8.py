@@ -64,11 +64,11 @@ def test_node_routes_backends_and_low_memory_always_uses_pytorch(
     monkeypatch.setattr(node, "ensure_fp8_engine", select("fp8"))
     monkeypatch.setattr(node, "ensure_full_engine", select("bf16"))
     monkeypatch.setattr(node, "release_full_session", select("pytorch"))
+    monkeypatch.setattr(node, "ensure_model", lambda _: BundlePaths(tmp_path))
     with pytest.raises(SelectedEngine, match=expected):
         node.upscale_image_vosr_node(
             cast(NodeContext, SimpleNamespace(node_id="routing", iteration=None)),
             np.zeros((16, 16, 3), np.float32),
-            BundlePaths(tmp_path),
             4,
             Seed(0),
             VosrColorCorrection.WAVELET,
@@ -88,7 +88,12 @@ def test_unusable_tensorrt_fails_clearly_before_any_work(
     def unexpected(*args, **kwargs):
         pytest.fail("An unusable TensorRT request started work")
 
-    for name in ("prepare_image", "ensure_fp8_engine", "ensure_full_engine"):
+    for name in (
+        "ensure_model",
+        "prepare_image",
+        "ensure_fp8_engine",
+        "ensure_full_engine",
+    ):
         monkeypatch.setattr(node, name, unexpected)
 
     def run(device):
@@ -96,7 +101,6 @@ def test_unusable_tensorrt_fails_clearly_before_any_work(
         node.upscale_image_vosr_node(
             cast(NodeContext, SimpleNamespace(node_id="unusable", iteration=None)),
             np.zeros((16, 16, 3), np.float32),
-            BundlePaths(tmp_path),
             4,
             Seed(0),
             VosrColorCorrection.WAVELET,
@@ -135,6 +139,7 @@ def test_full_trt_node_does_not_load_unused_pytorch_models(
     use_device(monkeypatch, node, "cuda")
     monkeypatch.setattr(node, "find_spec", lambda _: object())
     monkeypatch.setattr(node, "release_bundle", released.append)
+    monkeypatch.setattr(node, "ensure_model", lambda _: BundlePaths(tmp_path))
     calls = []
 
     def engine(*args):
@@ -168,7 +173,6 @@ def test_full_trt_node_does_not_load_unused_pytorch_models(
     result = node.upscale_image_vosr_node(
         context,
         np.zeros((16, 16, 3), np.float32),
-        BundlePaths(tmp_path),
         4,
         Seed(0),
         VosrColorCorrection.WAVELET,

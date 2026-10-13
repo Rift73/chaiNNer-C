@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -10,17 +9,14 @@ from typing import cast
 import numpy as np
 import pytest
 import torch
-from download_vosr2 import fetch
 from safetensors.torch import save_file
 
 from api import Aborted, Progress
-from nodes.impl.pytorch import vosr2
 from nodes.impl.pytorch.vosr2 import (
     BundlePaths,
     VosrBundle,
     VosrColorCorrection,
     VosrMemoryMode,
-    check_weights,
     color_correct,
     gaussian_weights,
     load_weights,
@@ -92,7 +88,7 @@ def test_color_correction_handles_single_pixel(color):
 def test_nonfinite_input_and_missing_bundle_fail_clearly(tmp_path):
     with pytest.raises(ValueError, match="non-finite"):
         prepare_image(np.full((4, 4, 3), np.nan, dtype=np.float32), 4)
-    with pytest.raises(ValueError, match=r"Missing VOSR 2\.0 bundle file"):
+    with pytest.raises(ValueError, match=r"Missing VOSR 2\.0 model file"):
         read_configs(BundlePaths(tmp_path))
 
 
@@ -223,76 +219,11 @@ def test_scene_focus_offloads_the_bundle_when_cancelled():
     assert offloads == [True]
 
 
-def test_load_vosr_model_checks_the_folder_without_loading_weights(
-    monkeypatch, tmp_path
-):
-    from packages.chaiNNer_pytorch.pytorch.io import load_vosr_model as node
-
-    with pytest.raises(ValueError, match=r"Missing VOSR 2\.0 bundle file"):
-        node.load_vosr_model_node(tmp_path)
-    checked = []
-    monkeypatch.setattr(node, "read_configs", checked.append)
-    monkeypatch.setattr(node, "check_weights", checked.append)
-    assert node.load_vosr_model_node(tmp_path) == BundlePaths(tmp_path)
-    assert checked == [BundlePaths(tmp_path)] * 2
-
-
-def weight_files(root):
-    """A bundle of small, whole weight files: safetensors DiT and VAE, a .pth DINO."""
-    paths = BundlePaths(root)
-    for path, tensors in (
-        (paths.dit, {"w": torch.zeros(64)}),
-        (paths.vae, {"w": torch.ones(8, 8)}),
-    ):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        save_file(tensors, str(path))
-    torch.save({"w": torch.zeros(64)}, paths.dino)
-    return paths
-
-
 def test_official_sizes_are_the_shared_download_pins():
     names = [local for _, local, _, _ in FILES]
     root = BundlePaths(Path("bundle"))
     assert names == [p.relative_to(root.root).as_posix() for p in root.files()]
     assert all(size > 0 and len(digest) == 64 for _, _, size, digest in FILES)
-    assert "revision" in inspect.signature(fetch).parameters
-
-
-def test_incomplete_weights_fail_at_loading_and_other_whole_weights_pass(
-    monkeypatch, tmp_path
-):
-    paths = weight_files(tmp_path)
-    # Other compatible weights (not the official sizes) that are whole pass.
-    check_weights(paths)
-    official = {local: size for _, local, size, _ in FILES}
-    for path in (paths.dit, paths.vae, paths.dino):
-        whole = path.read_bytes()
-        path.write_bytes(whole[:-9])
-        size = official[path.relative_to(paths.root).as_posix()]
-        with pytest.raises(ValueError, match="incomplete or damaged") as raised:
-            check_weights(paths)
-        message = f"({len(whole) - 9:,} bytes; the official file has {size:,})"
-        assert message in str(raised.value)
-        path.write_bytes(whole)
-    # A file of its official size passes without reading it.
-    paths.dit.write_bytes(b"\0" * 32)
-    monkeypatch.setattr(
-        vosr2,
-        "OFFICIAL_FILES",
-        [("", "checkpoints/ema_model.safetensors", 32, "")],
-    )
-    check_weights(paths)
-
-
-def test_the_dino_safetensors_variant_is_checked_without_an_official_size(tmp_path):
-    paths = weight_files(tmp_path)
-    variant = tmp_path / "dinov2_vitl14.safetensors"
-    save_file({"w": torch.zeros(64)}, str(variant))
-    assert paths.dino == variant
-    check_weights(paths)
-    variant.write_bytes(variant.read_bytes()[:-1])
-    with pytest.raises(ValueError, match=r"incomplete or damaged \(\d+ bytes\)"):
-        check_weights(paths)
 
 
 def test_a_damaged_configuration_names_its_file(tmp_path):

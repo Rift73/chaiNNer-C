@@ -18,7 +18,3 @@ try:
     from .tensorrt_outputs import *
 except Exception:
     pass
-try:
-    from .vosr_outputs import *
-except Exception:
-    pass

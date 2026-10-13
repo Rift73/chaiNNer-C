@@ -20,7 +20,3 @@ try:
     from .tensorrt_inputs import *
 except Exception:
     pass
-try:
-    from .vosr_inputs import *
-except Exception:
-    pass

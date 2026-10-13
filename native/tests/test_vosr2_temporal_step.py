@@ -555,6 +555,7 @@ def vosr_loop(monkeypatch, tmp_path, frames, window, method, restore, *, source)
     monkeypatch.setattr(
         node, "_upscale", lambda context, image, *_settings: restore(image, context)
     )
+    monkeypatch.setattr(node, "ensure_model", lambda _: BundlePaths(tmp_path))
     pipeline = Pipeline(
         monkeypatch,
         tmp_path,
@@ -572,7 +573,6 @@ def vosr_loop(monkeypatch, tmp_path, frames, window, method, restore, *, source)
         return node.upscale_image_vosr_node(
             context,
             image,
-            BundlePaths(tmp_path),
             2,
             Seed(0),
             VosrColorCorrection.WAVELET,

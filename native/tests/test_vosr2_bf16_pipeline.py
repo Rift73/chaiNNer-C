@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
@@ -17,6 +18,7 @@ from api import NodeContext
 from nodes.impl.pytorch import vosr2_engine_cache, vosr2_trt_pipeline
 from nodes.impl.pytorch.vosr2 import BundlePaths, VosrBundle, load_weights
 from nodes.impl.pytorch.vosr2_export import rotary_tables
+from nodes.impl.pytorch.vosr2_official import FILES
 from nodes.impl.pytorch.vosr2_trt_compile import (
     report_stage,
     store_timing_cache,
@@ -227,17 +229,13 @@ def test_build_stages_are_logged_and_reported_as_the_worker_prints_them(capsys, 
     assert "VOSR TensorRT build: stage 3 of 3, Compiling BF16 stage 3" in caplog.text
 
 
-def test_bf16_bundle_hashes_are_remembered_across_processes(monkeypatch, tmp_path):
+def test_bf16_identity_uses_the_pins_not_the_model_folder(monkeypatch, tmp_path):
     context = cast(
         NodeContext,
         SimpleNamespace(
             storage_dir=tmp_path, node_id="bf16-hashes", suspend=lambda: None
         ),
     )
-    paths = BundlePaths(tmp_path / "bundle")
-    for file in paths.files():
-        file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_bytes(file.name.encode())
     monkeypatch.setattr(vosr2_engine_cache, "read_configs", lambda _: None)
     plugin = tmp_path / "test-plugin.dll"
     plugin.write_bytes(b"test-plugin")
@@ -262,20 +260,17 @@ def test_bf16_bundle_hashes_are_remembered_across_processes(monkeypatch, tmp_pat
         return file_hash(path)
 
     monkeypatch.setattr(vosr2_engine_cache, "file_hash", recorded)
-    args = (context, paths, torch.device("cpu"))
-    path = vosr2_engine_cache.ensure_full_engine(*args)
-    assert set(paths.files()) <= set(hashed)
-    # A new process (no in-memory hashes) reads no bundle file for the identity.
-    monkeypatch.setattr(vosr2_engine_cache, "_HASHES", {})
-    hashed.clear()
-    assert vosr2_engine_cache.ensure_full_engine(*args) == path
-    assert not set(paths.files()) & set(hashed) and len(builds) == 1
-    # A damaged record is hashed again; a changed file is a new engine set.
-    next(tmp_path.glob("vosr2-tensorrt-bf16/checkpoint-*.json")).write_text("{")
-    assert vosr2_engine_cache.ensure_full_engine(*args) == path
-    paths.vae.write_bytes(b"other weights")
-    assert vosr2_engine_cache.ensure_full_engine(*args) != path
-    assert len(builds) == 2
+    device = torch.device("cpu")
+    first = BundlePaths(tmp_path / "bundle")
+    path = vosr2_engine_cache.ensure_full_engine(context, first, device)
+    # A moved model folder keeps its engines: no bundle file is read or rebuilt.
+    moved = BundlePaths(tmp_path / "moved")
+    assert vosr2_engine_cache.ensure_full_engine(context, moved, device) == path
+    assert not {*first.files(), *moved.files()} & set(hashed) and len(builds) == 1
+    identity = json.loads((path / "manifest.json").read_text())["identity"]
+    assert identity["checkpoints"] == {
+        Path(local).name: digest for _, local, _, digest in FILES
+    }
 
 
 def test_bf16_identity_hashes_the_engine_code_not_whole_vosr2_or_the_driver(

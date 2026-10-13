@@ -4,8 +4,8 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
-- VOSR 2.0 (2026-10-13; guide `VOSR2.md`, maintainer page `VOSR2-MAINTAINING.md`): two PyTorch nodes, Load VOSR
-  Model and Upscale Image (VOSR), on a fixed BF16/FP32 policy with GPU Memory Default or Low and the PyTorch, TensorRT
+- VOSR 2.0 (2026-10-13; guide `VOSR2.md`, maintainer page `VOSR2-MAINTAINING.md`): one PyTorch node, Upscale
+  Image (VOSR), which downloads the official model (about 7 GB) on first use (Load VOSR Model removed), on a fixed BF16/FP32 policy with GPU Memory Default or Low and the PyTorch, TensorRT
   and TensorRT FP8 backends. In a Load Video loop the node stabilizes frames (Three Frames or Persistent Detail,
   strength 65 %) with frames ahead from the item window's new look-ahead (`NodeContext.iteration`, the `iterated`
   input condition; ARCHITECTURE section 4), else from past frames only. Gone: VOSR 2.0 Upscale, Temporal Sequence,
@@ -180,15 +180,13 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | VOSR temporal on PyTorch: the next restoration does not overlap the CPU stabilization (about 1.1 s of 4.6 s per 2560×1440 frame); `stabilize` runs on one thread (1.0 s); the next `motion_pair` could run alongside | Paired A/B and a memory check for each |
 | VOSR temporal: each item settles its background restoration, so the GPU idles while downstream nodes (Save Video's encode) run | Owner decision: letting it cross the item boundary relaxes "no GPU work escapes an item" |
 | VOSR engine identities are broader than the engines: all of `vosr2.py` (a message edit rebuilds) and the whole plugin DLL (a metadata-only rebuild rebuilds) | Hash only engine-relevant code and the DLL's SASS/PTX |
-| VOSR BF16 identity reads the five bundle files (about 7 GB) once per process (`file_hash`) | Use `stored_hash`, as the FP8 path does |
 | VOSR engine sets of earlier identities (BF16, the prepared FP8 `f2d7a3da…`) are never removed: 1.7 to 3.5 GB each | A "remove unused VOSR caches" step |
 | VOSR engine builds: about 3 minutes without progress, one stage at a time, no timing cache | Stage count in the log; small stages in parallel; a per-GPU timing cache |
-| VOSR robustness: Load VOSR Model checks presence and configuration only (a truncated weight file fails at the first upscale); the node resizes the image before a minutes-long engine build | Size check against `download_vosr2.py`'s pins; resize after the engine is ready |
-| VOSR FP8: one host and no mirror; a DINOv2 safetensors conversion is refused by the bundle check | A mirror list beside the pin; record that conversion's SHA-256 |
+| VOSR FP8 and model downloads: one host each and no mirror | A mirror list beside the pins |
 | VOSR plugin release: nothing requires `vosr2_qkv.dll` in a release, and the package manifest does not record its TensorRT and CUDA versions | A release flag that requires it; versions in `native_toolchain` |
 | VOSR plugin code: no sm_90/sm_100 SASS (compute_120 PTX cannot run there); no header dependency file for the nvcc step; a dead branch in `qkv.cu` and an `rsqrtf` worth a comment | SASS when those GPUs become targets; `-MD -MF` with `DEPFILE`; code cleanups need GPU revalidation |
 | Look-ahead executor: K is decided at item 0 once a node looks ahead (a later-computed writer folder then forces K = 1 for groups reading per-item files); jobs computed ahead get a fresh context each; `ItemWindow._wake` rechecks every waiter; forced jobs bypass P; the UI's lineage takes the first iterated edge, the backend the first iterated input | A schema-level "looks ahead" flag, a per-node context cache, a per-slot waiter map and a cap, when a measured need appears |
-| VOSR in the local portable package: the nightly UI's patches lack the `VosrModel` type and the iterated condition | A patch JSON once the nightly is restored (first row) |
+| VOSR in the local portable package: the nightly UI's patches lack the iterated condition | A patch JSON once the nightly is restored (first row) |
 | VOSR temporal tests keep the removed generators verbatim as their oracle | Golden float32 outputs of a tiny clip |
 | Loop runs allocate about 60 MB more torch memory than one call (likely a cuBLAS workspace per pool thread) | Pin a GPU node's calls to one thread |
 | `tests/common/backend-nodes.test.ts` imports nodes with `error_on_failed_node=False`, so a node that fails to import disappears silently | Assert a few schema ids or import strictly |

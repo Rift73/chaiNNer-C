@@ -1,7 +1,7 @@
 """The official VOSR 2.0 bundle: its pinned CSWRY/VOSR revision and files.
 
-Load VOSR Model checks the sizes; native/tools/download_vosr2.py fetches and verifies
-the files. Importing this module loads nothing else.
+Upscale Image (VOSR) downloads and verifies them (vosr2_download.ensure_model); the
+TensorRT engine identities use these hashes. Importing this module loads nothing else.
 """
 
 from __future__ import annotations

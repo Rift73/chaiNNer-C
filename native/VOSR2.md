@@ -8,15 +8,16 @@ Hugging Face, Apache-2.0. Maintainer notes: [`VOSR2-MAINTAINING.md`](VOSR2-MAINT
 
 ## Get the model
 
-The model folder holds five files, 6.97 GB, laid out as in `CSWRY/VOSR` at revision `f24b3061` (`args.json`,
-`checkpoints/`, `Qwen-Image-vae-2d/`, `dinov2_vitl14_pretrain.pth`). From a chaiNNer-C checkout, with Python 3.11 or
-newer and `requests`, `python native/tools/download_vosr2.py <model folder>` fetches them, checks size and SHA-256 and
-never replaces a mismatched file. The app never downloads the model itself.
+chaiNNer-C uses one model: the official VOSR 2.0 upload on Hugging Face (`CSWRY/VOSR` at revision `f24b3061`,
+Apache-2.0). The first upscale downloads its five files, about 7 GB (6.97 GB), into the backend's storage folder at
+`vosr2-model/f24b3061b7f350b81e1907bdcfc27f71fb4ff3f3/` (`args.json`, `checkpoints/`, `Qwen-Image-vae-2d/`,
+`dinov2_vitl14_pretrain.pth`), with progress on the node. A stopped or broken download resumes on the next run; each
+file must match its pinned SHA-256 (a mismatch is deleted and reported). Files already there are hashed once and never
+downloaded again.
 
 ## The nodes
 
-**Load VOSR Model** (PyTorch > Input & Output) checks the folder; the weights load at the first upscale. **Upscale
-Image (VOSR)** (PyTorch > Processing) takes an RGB Image (no alpha), the VOSR Model and:
+**Upscale Image (VOSR)** (PyTorch > Processing) takes an RGB Image (no alpha) and:
 
 | Input | Values | Effect |
 | --- | --- | --- |

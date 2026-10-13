@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import zipfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -12,7 +11,6 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
-from safetensors import SafetensorError, safe_open
 from safetensors.torch import load_file
 from torch import nn
 
@@ -22,7 +20,6 @@ from vendor.vosr2.lightningdit import LightningDiT
 from vendor.vosr2.qwenimage_vae2d import AutoencoderKLQwenImage2D
 
 from .resource_cache import file_identity
-from .vosr2_official import FILES as OFFICIAL_FILES
 
 
 class VosrColorCorrection(Enum):
@@ -84,8 +81,7 @@ class BundlePaths:
 
     @property
     def dino(self) -> Path:
-        safe = self.root / "dinov2_vitl14.safetensors"
-        return safe if safe.is_file() else self.root / "dinov2_vitl14_pretrain.pth"
+        return self.root / "dinov2_vitl14_pretrain.pth"
 
     def files(self) -> tuple[Path, ...]:
         return self.args, self.dit, self.vae_config, self.vae, self.dino
@@ -98,8 +94,8 @@ def read_configs(paths: BundlePaths) -> tuple[dict, dict]:
     for path in paths.files():
         if not path.is_file():
             raise ValueError(
-                f"Missing VOSR 2.0 bundle file: {path}. "
-                "See native/VOSR2.md and native/tools/download_vosr2.py."
+                f"Missing VOSR 2.0 model file: {path}. Run Upscale Image (VOSR) "
+                "again to download it."
             )
     documents = []
     for path in (paths.args, paths.vae_config):
@@ -108,7 +104,7 @@ def read_configs(paths: BundlePaths) -> tuple[dict, dict]:
         except ValueError as error:  # not JSON or not UTF-8: incomplete or foreign
             raise ValueError(
                 f"The VOSR 2.0 file {path} is damaged or incomplete ({error}). "
-                "See native/VOSR2.md and native/tools/download_vosr2.py."
+                "Delete it and run Upscale Image (VOSR) again to download it."
             ) from error
     args, config = documents
     if not isinstance(args, dict) or not isinstance(config, dict):
@@ -158,37 +154,6 @@ def read_configs(paths: BundlePaths) -> tuple[dict, dict]:
         if name == "latents_std" and (values <= 0).any():
             raise ValueError("VAE latent standard deviations must be positive.")
     return args, config
-
-
-def check_weights(paths: BundlePaths) -> None:
-    """Fail at loading, not at the first upscale, on an incomplete weight file.
-
-    A file of its official size passes. Other compatible weights stay allowed
-    (native/VOSR2.md), as does the DINO safetensors variant, which has no official
-    size: they must be whole by their own format, a safetensors header that covers
-    the file exactly or a PyTorch zip archive with its end record.
-    """
-    official = {local: size for _, local, size, _ in OFFICIAL_FILES}
-    for path in (paths.dit, paths.vae, paths.dino):
-        size = path.stat().st_size
-        expected = official.get(path.relative_to(paths.root).as_posix())
-        if size == expected:
-            continue
-        cause = None
-        if path.suffix == ".safetensors":
-            try:
-                with safe_open(str(path), "pt"):
-                    continue
-            except SafetensorError as error:
-                cause = error
-        elif zipfile.is_zipfile(path):
-            continue
-        official_size = f"; the official file has {expected:,}" if expected else ""
-        raise ValueError(
-            f"The VOSR 2.0 weight file {path} is incomplete or damaged ({size:,} "
-            f"bytes{official_size}). Download it again: see native/VOSR2.md and "
-            "native/tools/download_vosr2.py."
-        ) from cause
 
 
 def load_weights(model: nn.Module, path: Path, dtype: torch.dtype) -> None:

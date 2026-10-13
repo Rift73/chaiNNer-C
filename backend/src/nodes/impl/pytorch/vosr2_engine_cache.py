@@ -25,6 +25,7 @@ from gpu import nvidia
 
 from .resource_cache import file_identity
 from .vosr2 import BundlePaths, VosrBundle, load_weights, read_configs
+from .vosr2_official import FILES
 from .vosr2_process import OwnedJob
 from .vosr2_trt_compile import STAGE_LINE
 from .vosr2_trt_plugin import plugin_path
@@ -332,8 +333,8 @@ def ensure_full_engine(
             # The whole DLL: its host code (formats, shapes) shapes the engines as much
             # as its kernels, and the build is reproducible (native/README.md, Build).
             plugin_sha256=file_hash(plugin_path()),
-            # Remembered while each file is unchanged: no 7 GB read per process.
-            checkpoints={path.name: stored_hash(path, root) for path in paths.files()},
+            # The official files' pins: Upscale Image (VOSR) verified them on disk.
+            checkpoints={Path(local).name: digest for _, local, _, digest in FILES},
             stages={name: profiles(name) for name in STAGES},
             # The build worker and what it exports, rewrites and compiles; the runtime
             # modules that only run the engines do not count (stage_identity).

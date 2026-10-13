@@ -15,10 +15,10 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
 | `backend/src/` | The only backend; ships byte for byte (stored verbatim as LF, upstream's line ending: `backend/src/** -text`); its `nodes/impl/chainner_native.dll` and `_chainner_graph.pyd` (and `nodes/impl/pytorch/vosr2_qkv.dll` when built) are git-ignored binaries written by the build |
 | `native/src/`, `native/include/`, `native/third_party/` | C17 kernels, C++20 modules; vendored pybind11, fpng 1.0.6, ONNX Runtime C header |
 | `native/tests/` | pytest suites and frozen `reference_*` oracles (stored verbatim: `native/tests/reference_*/** -text`) |
-| `native/tools/` | Packager, UI patches, runtime verifiers, benchmark harness, code generators, `isa_check.py text` (compares two binaries' code sections), `golden_kernels.py` (golden manifests of the SP4 kernels; usage in each docstring), `download_vosr2.py` (the VOSR 2.0 model folder) |
+| `native/tools/` | Packager, UI patches, runtime verifiers, benchmark harness, code generators, `isa_check.py text` (compares two binaries' code sections), `golden_kernels.py` (golden manifests of the SP4 kernels; usage in each docstring) |
 | `native/reports/`, `out/chaiNNer-C/` | Ignored: local evidence (never needed to build or package), and the portable package |
 | `out/chaiNNer-C-py311/` | Ignored: the last CPython 3.11 package, kept read-only as the old-stack bench side and the undo; deleting it is owner-only |
-| `src/`, `tests/` | Upstream frontend at `d56e507f` with the package's two UI patches ported, CPython 3.14.8 as its integrated Python and `%APPDATA%\chaiNNer-C` as its root; the run-from-source UI (`npm start`), never shipped. It alone has VOSR's `VosrModel` type and the iterated input condition (no package patch carries them) |
+| `src/`, `tests/` | Upstream frontend at `d56e507f` with the package's two UI patches ported, CPython 3.14.8 as its integrated Python and `%APPDATA%\chaiNNer-C` as its root; the run-from-source UI (`npm start`), never shipped. It alone has VOSR's iterated input condition (no package patch carries them) |
 
 ## Prerequisites
 
