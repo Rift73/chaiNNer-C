@@ -19,7 +19,11 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   executor and item-window files 2331 passed, only the 4 known DDS failures; pyright 0 errors; lint, runtime type check
   and vitest (136 passed) clean. Final acceptance on the merged code: FP8 from the real host (3.45 GB in 62 s, build
   157 s, later runs neither download nor build), PyTorch Three Frames through Load Video 30/30 frames bit-identical,
-  BF16 build with the timing cache 166 → 91 s; full suite 111,591 passed, only the known failures.
+  BF16 build with the timing cache 166 → 91 s; full suite 111,591 passed, only the known failures. Grain pass
+  (2026-10-14, owner: B x1.4, grain follows the source): synthesized output-resolution grain replaces the enlarged
+  source grain (Castorice 2x: within 2 % of the approved sample's strength, neighbour correlation 0.36 instead of
+  0.72); TensorRT Three Frames, 30 frames: identical to before outside grain areas, a still background's grain
+  0.9997 correlated frame to frame, 1.42-1.43 s instead of 1.39 s per later frame.
 - Temporal Fix (2026-10-13): a PyTorch node running pifroggi/vs_temporalfix's AI model (Apache-2.0, weights fetched
   from the pinned upstream commit and checked by SHA-256) over a loop's 7-frame window; with look-ahead it equals a
   standalone reproduction of upstream's CUDA path bit for bit (30/30). After Upscale Image (VOSR) or PyTorch Upscale

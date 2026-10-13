@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from importlib.util import find_spec
 
 import numpy as np
@@ -25,7 +26,7 @@ from nodes.impl.pytorch.vosr2_fp8 import ensure_fp8_engine
 from nodes.impl.pytorch.vosr2_memory import vram_budget
 from nodes.impl.pytorch.vosr2_temporal import TemporalMode
 from nodes.impl.pytorch.vosr2_temporal_step import TemporalStep, frames_ahead
-from nodes.impl.pytorch.vosr2_texture import restore_with_texture
+from nodes.impl.pytorch.vosr2_texture import Grain, restore_with_texture
 from nodes.impl.pytorch.vosr2_trt_pipeline import (
     lease_full_session,
     release_full_session,
@@ -48,6 +49,15 @@ TEMPORAL_METHODS = {
     TemporalMode.THREE_FRAMES: "Three Frames",
     TemporalMode.PERSISTENT_DETAIL: "Persistent Detail",
 }
+
+
+@dataclass
+class _VideoState:
+    """The node's state in a Load Video loop run: the temporal step, and the last frame
+    (its index and input), with which the grain changes only where the picture does."""
+
+    step: TemporalStep | None = None
+    frame: tuple[int, np.ndarray] | None = None
 
 
 @processing_group.register(
@@ -155,23 +165,40 @@ def upscale_image_vosr_node(
                     "VOSR 2.0 requires a GPU with BF16 support. Turn on CPU mode in the PyTorch settings to run it on the CPU."
                 )
     model = ensure_model(context)
+    view = context.iteration
+    grain = Grain(seed.to_u32())
+    state = None
+    if view is not None and view.iterated_by(0) == LOAD_VIDEO:
+        state = view.state
+        if not isinstance(state, _VideoState):
+            state = _VideoState()
+            view.state = state
+        last = state.frame
+        if (
+            last is not None
+            and last[0] == view.index - 1
+            and last[1].shape == img.shape
+        ):
+            grain = Grain(seed.to_u32(), view.index, last[1])
+        state.frame = (view.index, img)
 
-    def upscale(image: np.ndarray, restore_context: NodeContext) -> np.ndarray:
+    def upscale(
+        image: np.ndarray, restore_context: NodeContext, grain: Grain | None = None
+    ) -> np.ndarray:
         return _upscale(
-            restore_context, image, model, scale, seed, color, memory, backend
+            restore_context, image, model, scale, seed, color, memory, backend, grain
         )
 
-    view = context.iteration
-    if strength == 0 or view is None or view.iterated_by(0) != LOAD_VIDEO:
-        return upscale(img, context)
+    if strength == 0 or view is None or state is None:
+        return upscale(img, context, grain)
     inputs = (model, scale, seed, color, memory, backend, method, strength)
-    step = view.state
-    if not isinstance(step, TemporalStep):
+    step = state.step
+    if step is None:
         lookahead = view.lookahead(0)
         step = TemporalStep(
             method, strength / 100, lookahead, backend != VosrBackend.PYTORCH, inputs
         )
-        view.state = step
+        state.step = step
         if not step.ahead:
             logger.info(
                 "VOSR temporal: %s needs %d frames ahead, the item window serves %d; using past frames only",
@@ -179,8 +206,22 @@ def upscale_image_vosr_node(
                 frames_ahead(method),
                 lookahead,
             )
-    return step.frame(
-        context, view.index, img, lambda offset: view.peek(0, offset), upscale, inputs
+    # The grain comes last: stabilization would blend each frame's grain with its
+    # neighbours'.
+    return restore_with_texture(
+        lambda: step.frame(
+            context,
+            view.index,
+            img,
+            lambda offset: view.peek(0, offset),
+            upscale,
+            inputs,
+        ),
+        img,
+        scale,
+        grain,
+        context.suspend,
+        device,
     )
 
 
@@ -193,8 +234,10 @@ def _upscale(
     color: VosrColorCorrection,
     memory: VosrMemoryMode,
     backend: VosrBackend,
+    grain: Grain | None,
 ) -> np.ndarray:
-    """One image's restoration, the device and backend already checked."""
+    """One image's restoration, the device and backend already checked; with `grain`,
+    also its grain."""
     settings = get_settings(context)
     device = settings.device
     # BF16 with FP32 VAE (and the engines' FP32 exceptions); the CPU uses FP32.
@@ -237,8 +280,8 @@ def _upscale(
                         session,
                     ),
                     img,
-                    reference,
                     scale,
+                    grain,
                     check,
                     device,
                 )
@@ -258,8 +301,8 @@ def _upscale(
                     optimized=device.type == "cuda",
                 ),
                 img,
-                reference,
                 scale,
+                grain,
                 check,
                 device,
             )

@@ -43,6 +43,7 @@ from nodes.impl.pytorch.vosr2_temporal_step import (
     TemporalStep,
     frames_ahead,
 )
+from nodes.impl.pytorch.vosr2_texture import Grain
 from nodes.properties.inputs import DirectoryInput, ImageInput
 from nodes.utils.seed import Seed
 from packages.chaiNNer_pytorch.pytorch.processing import upscale_image_vosr
@@ -658,9 +659,50 @@ def test_outside_a_load_video_loop_each_image_is_upscaled_alone(monkeypatch, tmp
         restorer,
         source="chainner:image:load_images",
     )
+    grains = []
+
+    def restore(context, image, *settings):
+        grains.append(settings[-1])
+        return restorer(image, context)
+
+    monkeypatch.setattr(upscale_image_vosr, "_upscale", restore)
     assert pipeline.run(workers=4) is None
     assert restorer.calls == list(range(5))
     assert_equal(saved, [Restorer(frames)(frame) for frame in frames])
+    # Each image gets the seed's grain alone.
+    assert grains == [Grain(Seed(0).to_u32())] * 5
+
+
+def test_each_video_frame_gets_its_grain_with_the_previous_input(monkeypatch, tmp_path):
+    # The grain goes on the stabilized output, with the previous frame's input, so that
+    # it changes only where the picture does.
+    frames = video(5)
+    calls = []
+
+    def record(output, source, scale, grain, check, device):
+        calls.append((source, grain))
+        return output()
+
+    monkeypatch.setattr(upscale_image_vosr, "restore_with_texture", record)
+    pipeline, saved = vosr_loop(
+        monkeypatch,
+        tmp_path,
+        frames,
+        "6",
+        TemporalMode.THREE_FRAMES,
+        Restorer(frames),
+        source="chainner:image:load_video",
+    )
+    assert pipeline.run(workers=4) is None
+    assert len(saved) == len(calls) == 5
+    for index, (source, grain) in enumerate(calls):
+        np.testing.assert_array_equal(source, frames[index])
+        assert grain.seed == Seed(0).to_u32()
+        if index == 0:
+            assert grain.previous is None
+        else:
+            assert grain.frame == index
+            np.testing.assert_array_equal(grain.previous, frames[index - 1])
 
 
 def test_a_failing_restoration_ends_the_loop_and_drops_the_step(monkeypatch, tmp_path):

@@ -14,7 +14,11 @@ with FP8). In `backend/src/nodes/impl/pytorch/`:
 - `vosr2.py`: bundle paths, pinned configuration (`read_configs`), weights, enums, `MemoryPlan`, input preparation,
   colour correction. `vosr2_cache.py`: weights kept between runs. `vosr2_memory.py`: `vram_budget`.
 - `vosr2_context.py` (PyTorch scene focus), `vosr2_scene.py` (input-only routing, both backends), `vosr2_streaming.py`
-  (Low's whole-image VAE in bounded bands), `vosr2_texture.py` (grain pass, both backends).
+  (Low's whole-image VAE in bounded bands), `vosr2_texture.py` (grain pass, both backends: synthesized grain hashed
+  from seed, frame and pixel position; `GRAIN_GAIN` 1.16 is the owner's choice of 2026-10-13, 1.4 times the bicubic
+  source grain on Castorice 2x; in a video the node keeps the last input, and areas whose fine texture changed get
+  that frame's grain while still areas keep the seed's, owner 2026-10-14; stateless, so a changed area returns to the
+  seed's grain one still frame later; temporal restorations get no grain, the stabilized output does).
 - `vosr2_trt_models.py` (the ten `STAGES`, profiles), `vosr2_trt_rewrite.py`, `vosr2_export.py`,
   `vosr2_trt_compile.py` (builder settings), `vosr2_trt_build.py`, `vosr2_fp8_build.py` (compile workers in an owned
   job, `vosr2_process.py`, 20-minute limit).

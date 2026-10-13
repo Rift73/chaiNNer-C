@@ -28,8 +28,10 @@ downloaded again.
 | Temporal Method, Strength | Three Frames, Persistent Detail; 0 to 100 %, default 65 | Only when Load Video feeds the image; 0 %: each frame alone |
 
 The model works in overlapping 512-pixel windows, each also predicted with a 64-pixel strip of its surroundings; the
-input's detail decides the mix, so blurred areas stay soft (scene focus). A final pass keeps flat-area grain consistent
-across windows. For alpha: Split Transparency, Resize (Lanczos) the alpha, Merge Transparency.
+input's detail decides the mix, so blurred areas stay soft (scene focus). A final pass gives flat grainy areas one fine
+grain across windows, as strong as the input's and in its colours. In a video, areas whose fine texture changed since
+the previous frame get new grain, and still areas keep one grain, so still backgrounds do not shimmer. For alpha: Split
+Transparency, Resize (Lanczos) the alpha, Merge Transparency.
 
 ## Video
 
@@ -80,7 +82,8 @@ that day, same graphs: 50 warm frames 1920×1080 → 3840×2160 in 122.6 s, Tens
 ## Limits
 
 - Generative: detail is invented, not recovered; text, faces and stair-stepped outlines can change. Scene focus can
-  take low-contrast detail for blur; the grain pass keeps photographic noise. CPU RAM grows with the output size.
+  take low-contrast detail for blur; the grain pass turns photographic noise into fine grain of the same strength. CPU
+  RAM grows with the output size.
 - Stabilization is post-processing, not a video model: it reduces flicker without removing it; fast motion,
   reflections, transparency and changing light defeat the optical flow.
 - TensorRT restores up to 3840 × 2176 pixels in one piece, larger outputs in tiles with their own scene context.
