@@ -497,8 +497,9 @@ class Reader:
 def test_inputs_the_window_does_not_compute_ahead_are_never_served(
     monkeypatch, tmp_path, through
 ):
-    # A node with no image/utility schema (not pure CPU), Into Directory (never run
-    # ahead), and a constant input: lookahead is 0 and every peek None.
+    # A node with side effects (not pure CPU either: a node without them runs ahead
+    # serially, test_runahead.py), Into Directory (never run ahead), and a constant
+    # input: lookahead is 0 and every peek None.
     looking = Looking(
         monkeypatch,
         tmp_path,
@@ -510,6 +511,10 @@ def test_inputs_the_window_does_not_compute_ahead_are_never_served(
     if through == "into-directory":
         set_schema(
             looking.chain.nodes[NodeId("map")], "chainner:utility:into_directory"
+        )
+    if through == "impure":
+        object.__setattr__(
+            looking.chain.nodes[NodeId("map")].data, "side_effects", True
         )
     input_id = 1 if through == "constant" else 0
     looking.inspect = lambda view: {

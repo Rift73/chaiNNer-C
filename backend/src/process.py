@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import functools
 import sys
 import time
@@ -49,6 +50,7 @@ from nodes.impl.execution_scheduler import (
     advance_iterator,
     owned_gather,
     pure_cpu_dependency,
+    pure_cpu_node,
 )
 from nodes.impl.item_window import (
     Candidate,
@@ -494,8 +496,12 @@ class _IterationView(IterationView):
         node: FunctionNode,
         sources: tuple[str | None, ...],
         lookahead: Callable[[int], typing.Coroutine[typing.Any, typing.Any, int]],
-        peek: Callable[[int, int], typing.Coroutine[typing.Any, typing.Any, object]],
+        peek: Callable[
+            [int, int, int], typing.Coroutine[typing.Any, typing.Any, object]
+        ],
         loop: asyncio.AbstractEventLoop,
+        base: _IterationView | None = None,
+        slot: int | None = None,
     ) -> None:
         self.__run = run
         self.__context = context
@@ -505,10 +511,28 @@ class _IterationView(IterationView):
         self.__peek = peek
         self.__loop = loop
         self.__state: object | None = None
+        self.__base = base  # the view whose state slot this one shares
+        self.__slot = slot  # the item the node is computed ahead at
+
+    def at(self, slot: int, context: _ExecutorNodeContext) -> _IterationView:
+        """
+        This view as the node computed ahead at a later item sees it: that item's index, this view's state slot, look-aheads from that item.
+        """
+        return _IterationView(
+            self.__run,
+            context,
+            self.__node,
+            self.__sources,
+            self.__lookahead,
+            self.__peek,
+            self.__loop,
+            self,
+            slot,
+        )
 
     @property
     def index(self) -> int:
-        return self.__run.slot
+        return self.__run.slot if self.__slot is None else self.__slot
 
     @property
     def source(self) -> str:
@@ -519,11 +543,16 @@ class _IterationView(IterationView):
 
     @property
     def state(self) -> object | None:
+        if self.__base is not None:
+            return self.__base.state
         return self.__state
 
     @state.setter
     def state(self, value: object | None) -> None:
-        self.__state = value
+        if self.__base is not None:
+            self.__base.state = value
+        else:
+            self.__state = value
 
     def lookahead(self, input_id: int) -> int:
         return self.__wait(self.__lookahead(self.__input_index(input_id)))
@@ -533,7 +562,7 @@ class _IterationView(IterationView):
             raise ValueError(f"A look-ahead offset must be at least 1, not {offset}.")
         index = self.__input_index(input_id)
         self.__context.check_aborted()
-        value = self.__wait(self.__peek(index, offset))
+        value = self.__wait(self.__peek(self.index, index, offset))
         self.__context.check_aborted()
         if value is None:
             return None
@@ -610,6 +639,8 @@ class _ItemPlanner:
         iterated: set[NodeId],
         sinks: list[Node],
         new_context: Callable[[Node], _ExecutorNodeContext],
+        ahead_context: Callable[[FunctionNode, int], _ExecutorNodeContext],
+        fail_fast: bool,
     ) -> None:
         self.__chain = chain
         self.__inputs = inputs
@@ -617,6 +648,9 @@ class _ItemPlanner:
         self.__generators = generators
         self.__iterated = iterated
         self.__new_context = new_context
+        self.__ahead_context = ahead_context
+        # Deferred errors drop an item at whatever node fails first, maybe before a serial node's turn, which a run ahead could not undo: serial nodes run ahead only when every error ends the loop.
+        self.__fail_fast = fail_fast
         ancestors: set[NodeId] = set()
         pending = [node.id for node in sinks]
         while pending:
@@ -634,8 +668,14 @@ class _ItemPlanner:
                 and (i.id not in generators)
             )
 
+        # A node that may not run beside others (a GPU or context node) is computed ahead only for a look-ahead, one item at a time in order (serial); never with a lazy input, which a look-ahead could reach before the node ran at the committing item.
         self.__candidates = [
-            Candidate(node_id, depends(inputs.get(node_id)))
+            Candidate(
+                node_id,
+                depends(inputs.get(node_id)),
+                serial=not pure_cpu_node(chain.nodes[node_id].data)
+                and (not any(i.lazy for i in chain.nodes[node_id].data.inputs)),
+            )
             for node_id in reversed(chain.topological_order())
             if node_id in ancestors
             and node_id in iterated
@@ -650,6 +690,7 @@ class _ItemPlanner:
             for node_id in reversed(chain.topological_order())
             if node_id in self.__prepared
         ]
+        self.__serial = {c.node_id for c in self.__candidates if c.serial}
         self.__ahead: dict[NodeId, bool] = {}
 
     @property
@@ -658,7 +699,7 @@ class _ItemPlanner:
 
     def ahead(self, node_id: NodeId) -> bool:
         """
-        Whether the window computes this node ahead in every later slot whose generators all yielded and whose candidates it depends on did not fail, so a look-ahead can wait for it: a candidate (not a prepare), eligible with only the generator values available, as is every candidate it depends on. Asked once the commit path ran the node, so its static inputs are cached.
+        Whether the window computes this node ahead in every later slot whose generators all yielded and whose candidates it depends on did not fail, so a look-ahead can wait for it: a candidate (not a prepare), pure CPU and not Into Directory, or serial when every error ends the loop, whose inputs are constants, generator outputs, cached static values or such nodes. Asked once the commit path ran the node, so its static inputs are cached.
         """
         if node_id not in self.__ahead:
             candidate = next(
@@ -669,12 +710,37 @@ class _ItemPlanner:
                 ),
                 None,
             )
+            data = self.__chain.nodes[node_id].data
             self.__ahead[node_id] = (
                 candidate is not None
-                and self.eligible(node_id, dict.fromkeys(self.__generators), {})
-                and all(self.ahead(node) for node in candidate.depends)
+                and (
+                    (candidate.serial and self.__fail_fast)
+                    or (data.schema_id not in _NOT_SPECULATED and pure_cpu_node(data))
+                )
+                and all(
+                    not isinstance(i, EdgeInput)
+                    or i.id in self.__generators
+                    or (i.id not in self.__iterated and self.__cache.has(i.id))
+                    or self.ahead(i.id)
+                    for i in self.__inputs.get(node_id)
+                )
             )
         return self.__ahead[node_id]
+
+    def threads(self, node_id: NodeId) -> int:
+        """
+        The pool threads a look-ahead on this node needs so it never starves: the waiting node's, one per serial candidate among the node and the iterated nodes it depends on (each may wait in its own look-ahead), and one that works.
+        """
+        seen: set[NodeId] = set()
+        pending = [node_id]
+        while pending:
+            current = pending.pop()
+            if current not in seen and current in self.__iterated:
+                seen.add(current)
+                pending.extend(
+                    i.id for i in self.__inputs.get(current) if isinstance(i, EdgeInput)
+                )
+        return 2 + len(seen & self.__serial)
 
     def __phase_sources(self, node_id: NodeId) -> list[Input]:
         sources = self.__inputs.get(node_id)
@@ -699,11 +765,14 @@ class _ItemPlanner:
         if self.__chain.nodes[node_id].data.schema_id in _NOT_SPECULATED:
             return False
         available = {*values, *(n for n, s in store.items() if s.error is None)}
-        view = _ItemView(
-            self.__chain,
-            self.__inputs,
-            _ItemCache(available, self.__iterated, self.__cache),
-        )
+        cache = _ItemCache(available, self.__iterated, self.__cache)
+        if node_id in self.__serial:
+            # Its inputs only: it runs alone, in order, as the loop runs it.
+            return all(
+                not isinstance(i, EdgeInput) or cache.has(i.id)
+                for i in self.__inputs.get(node_id)
+            )
+        view = _ItemView(self.__chain, self.__inputs, cache)
         return pure_cpu_dependency(view, node_id) and all(
             not isinstance(i, EdgeInput)
             or i.id in self.__iterated
@@ -716,6 +785,7 @@ class _ItemPlanner:
         node_id: NodeId,
         values: Mapping[NodeId, object],
         store: Mapping[NodeId, Stored],
+        slot: int,
     ) -> Callable[[], tuple[object, float]]:
         node = self.__chain.nodes[node_id]
         inputs: list[object] = []
@@ -745,10 +815,13 @@ class _ItemPlanner:
                 inputs.append(_output_value(cached, i.index))
         if node_id in self.__prepared:
             return timed_supplier(functools.partial(prepare_node, node.data, inputs))
+        context = (
+            self.__ahead_context(typing.cast(FunctionNode, node), slot)
+            if node_id in self.__serial
+            else self.__new_context(node)
+        )
         return timed_supplier(
-            functools.partial(
-                run_node, node.data, self.__new_context(node), inputs, node_id
-            )
+            functools.partial(run_node, node.data, context, inputs, node_id)
         )
 
     def nbytes(self, value: object) -> int:
@@ -1313,6 +1386,8 @@ class Executor:
             all_iterated_nodes,
             sinks,
             self.__new_node_context,
+            self.__ahead_context,
+            all(generator.fail_fast for generator in generators),
         )
         return ItemWindow(
             size=k,
@@ -1354,6 +1429,16 @@ class Executor:
             for view in run.views.values():
                 view.close()
             run.views.clear()
+
+    def __ahead_context(self, node: FunctionNode, slot: int) -> _ExecutorNodeContext:
+        """
+        The context of a serial node computed ahead at a later item: its own context (settings, cleanups) with its iteration view at that item, sharing its state slot.
+        """
+        context = self.__get_node_context(node)
+        view = context.iteration_view
+        ahead = copy.copy(context)
+        ahead.iteration_view = None if view is None else view.at(slot, ahead)
+        return ahead
 
     def __iteration_view(
         self, run: _LoopRun, node: FunctionNode, context: _ExecutorNodeContext
@@ -1434,7 +1519,7 @@ class Executor:
         self, run: _LoopRun, node_id: NodeId, index: int
     ) -> EdgeInput | None:
         """
-        The edge feeding this input when a look-ahead can be served: from an iterated output of one of the group's generators, or from a node the window computes ahead.
+        The edge feeding this input when a look-ahead can be served: from an iterated output of one of the group's generators, or from a node the window computes ahead when the pool has the threads its waits need.
         """
         i = self.inputs.get(node_id)[index]
         if not isinstance(i, EdgeInput):
@@ -1445,7 +1530,11 @@ class Executor:
             iterated = source.data.outputs[i.index].id in iterable_output.outputs
             return i if iterated and i.id in run.generators else None
         planner = self.__planner
-        return i if planner is not None and planner.ahead(i.id) else None
+        if planner is None or not planner.ahead(i.id):
+            return None
+        # A pool too small for the waits it may hold serves nothing (the node falls back).
+        assert self.__pool_size is not None
+        return i if self.__pool_size >= planner.threads(i.id) else None
 
     async def __lookahead(self, run: _LoopRun, node_id: NodeId, index: int) -> int:
         window = await self.__look_ahead_window(run)
@@ -1454,7 +1543,7 @@ class Executor:
         return window.size - 1
 
     async def __peek(
-        self, run: _LoopRun, node_id: NodeId, index: int, offset: int
+        self, run: _LoopRun, node_id: NodeId, origin: int, index: int, offset: int
     ) -> object | None:
         window = await self.__look_ahead_window(run)
         if window is None or offset >= window.size:
@@ -1462,7 +1551,10 @@ class Executor:
         source = self.__look_ahead_source(run, node_id, index)
         if source is None:
             return None
-        output = await window.peek(run.slot + offset, source.id)
+        # origin: the node's own item, a later one when it is computed ahead.
+        output = await window.peek(
+            origin + offset, source.id, None if origin == run.slot else origin
+        )
         if output is None:
             return None
         return _output_value(typing.cast(NodeOutput, output), source.index)

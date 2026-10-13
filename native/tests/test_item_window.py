@@ -1739,7 +1739,7 @@ class Planner:
     def eligible(self, _node_id, _values, _store):
         return self.jobs
 
-    def job(self, _node_id, values, _store):
+    def job(self, _node_id, values, _store, _slot):
         value = values[NodeId("g0")]
         return lambda: (self.work(value), 0.0)
 

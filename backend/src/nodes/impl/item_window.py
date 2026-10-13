@@ -92,11 +92,15 @@ class Candidate:
 
     prepare: the candidate is the node's prepare phase (SP3-P9), not the node itself;
     the commit path takes its result with take_prepared.
+    serial: the node runs ahead only for a look-ahead that waits for it, one slot at a
+    time in slot order (never while it runs or may still run in an earlier slot), so
+    it runs each item once, in the loop's order (a stateful producer, e.g. a GPU node).
     """
 
     node_id: NodeId
     depends: frozenset[NodeId]
     prepare: bool = False
+    serial: bool = False
 
 
 @dataclass(frozen=True)
@@ -156,8 +160,8 @@ class ItemPlanner(Protocol):
     phases of side-effect nodes (spec 4.7).
     eligible: whether a node may run ahead for the slot whose generator values and
     store these are.
-    job: the pool job computing that node (or its prepare) for that slot; it returns
-    the output and its time, as the commit path's pool job does.
+    job: the pool job computing that node (or its prepare) for that slot (the slot
+    given last); it returns the output and its time, as the commit path's pool job does.
     nbytes: the bytes a stored output, a prepared value or an advance value holds.
     """
 
@@ -176,6 +180,7 @@ class ItemPlanner(Protocol):
         node_id: NodeId,
         values: Mapping[NodeId, object],
         store: Mapping[NodeId, Stored],
+        slot: int,
     ) -> Callable[[], tuple[object, float]]: ...
 
     def nbytes(self, value: object) -> int: ...
@@ -434,24 +439,31 @@ class ItemWindow:
         self._next = slot + 1
         self._pump()
 
-    async def peek(self, slot: int, node_id: NodeId) -> object | None:
-        """A later slot's value for a node, for a look-ahead from the commit path: a
-        generator's advance value, as take_advance returns it, or the output of a node
-        computed ahead, as take_node returns it. Nothing is taken.
+    async def peek(
+        self, slot: int, node_id: NodeId, origin: int | None = None
+    ) -> object | None:
+        """A later slot's value for a node, for a look-ahead from the commit path (or,
+        with origin, from a serial candidate computed ahead in that slot): a generator's
+        advance value, as take_advance returns it, or the output of a node computed
+        ahead, as take_node returns it. Nothing is taken.
 
         The slot is produced, and the node and the candidates it depends on computed
         there, now if needed, as the slot the commit path waits for is produced: beyond
-        P, the memory budget and pause. Nothing starts beyond commit + K - 1, for a node
-        the planner does not find eligible, or once stopped or closing.
+        P, the memory budget and pause; a serial candidate first in every earlier slot
+        where it may run. Nothing starts beyond origin + K - 1 (origin: the committing
+        slot by default), for a node the planner does not find eligible, or once
+        stopped or closing.
 
         None: the slot is not after the committing one within the window; it is never
         produced (the producer ended before it); its outcome for a generator is an error
         or exhaustion, or it lacks one (abandoned, or an earlier zipped generator
         failed or ended); for a node, the slot's generators did not all yield, or the
         node is not a candidate, or it or a candidate it depends on failed or is not
-        eligible; or the run was stopped or closing began first.
+        eligible (a serial one: in that slot or in an earlier one where it runs on the
+        commit path); or the run was stopped or closing began first.
         """
-        if not self._commit < slot < self._commit + self._size:
+        start = self._commit if origin is None else origin
+        if not self._commit < slot < start + self._size:
             return None
         demand = (slot, node_id)
         self._demands.append(demand)
@@ -723,10 +735,13 @@ class ItemWindow:
         if item.token is not None:
             self._start_materialize(slot)
         elif item.values is not None:
-            ready: list[NodeId] = []
-            if self._needs(item, node_id, ready) is _PENDING:
-                for node in ready:
-                    self._start_job(slot, node)
+            ready: list[tuple[int, NodeId | None]] = []
+            if self._needs(slot, node_id, ready) is _PENDING:
+                for ready_slot, node in ready:
+                    if node is None:
+                        self._start_materialize(ready_slot)
+                    else:
+                        self._start_job(ready_slot, node)
 
     def _peeked(self, slot: int, node_id: NodeId) -> tuple[bool, object | None]:
         """(True, the look-ahead's value or None) once it is decided, else (False,
@@ -745,14 +760,19 @@ class ItemWindow:
         item = self._slots.get(slot)
         if item is None or item.values is None:
             return True, None
-        needed = self._needs(item, node_id, [])
+        needed = self._needs(slot, node_id, [])
         return needed is not _PENDING, None if needed is _MISSING else needed
 
-    def _needs(self, item: _Item, node_id: NodeId, ready: list[NodeId]) -> object:
+    def _needs(
+        self, slot: int, node_id: NodeId, ready: list[tuple[int, NodeId | None]]
+    ) -> object:
         """A look-ahead's node in a produced slot: its stored output; _PENDING while it
-        or a candidate it depends on runs or may start now (collected in ready, its
-        dependencies first); _MISSING if it will not be computed ahead: not a
-        candidate, failed, not eligible, or depending on such a node."""
+        or a candidate it depends on runs or may start now (collected in ready with
+        its slot, its dependencies first; a serial candidate's earlier slots first,
+        a materialize as None); _MISSING if it will not be computed ahead: not a
+        candidate, failed, not eligible, or depending on such a node; a serial
+        candidate also when it runs on the commit path in an earlier slot."""
+        item = self._slots[slot]
         stored = item.store.get(node_id)
         if stored is not None:
             return _MISSING if stored.error is not None else stored.output
@@ -763,18 +783,65 @@ class ItemWindow:
             return _MISSING
         pending = False
         for node in sorted(candidate.depends):
-            needed = self._needs(item, node, ready)
+            needed = self._needs(slot, node, ready)
             if needed is _MISSING:
                 return _MISSING
             pending = pending or needed is _PENDING
+        if candidate.serial:
+            earlier = self._earlier(slot, node_id, ready)
+            if earlier is _MISSING:
+                return _MISSING
+            pending = pending or earlier is _PENDING
         if pending:
             return _PENDING
         assert item.values is not None
         if not self._planner.eligible(node_id, item.values, item.store):
             return _MISSING
-        if node_id not in ready:
-            ready.append(node_id)
+        if (slot, node_id) not in ready:
+            ready.append((slot, node_id))
         return _PENDING
+
+    def _earlier(
+        self, slot: int, node_id: NodeId, ready: list[tuple[int, NodeId | None]]
+    ) -> object:
+        """A serial candidate in the slots between the committing one (where the
+        commit path already ran it: a look-ahead that waits for it comes from a node
+        its output feeds) and this one: None once it ran there (stored) or never runs
+        there (the slot's generators did not all yield, or a candidate it depends on
+        failed); else _PENDING while it runs there or may start there now (collected
+        in ready), or _MISSING when it runs there on the commit path only."""
+        for earlier in range(self._commit + 1, slot):
+            item = self._slots.get(earlier)
+            if item is None:
+                return _MISSING
+            if self._generators[-1].fail_fast and any(
+                stored.error is not None for stored in item.store.values()
+            ):
+                return _MISSING  # the run ends at that item
+            if node_id in item.store:
+                continue
+            if node_id in item.running:
+                return _PENDING
+            if item.values is None:
+                outcomes = self._outcomes.get(earlier)
+                if outcomes is not None and outcomes.done():
+                    continue  # the item fails or ends before any node runs
+                if item.token is not None:
+                    ready.append((earlier, None))
+                return _PENDING
+            if self._fails(item, node_id):
+                continue  # the item fails before the node runs
+            return self._needs(earlier, node_id, ready)
+        return None
+
+    def _fails(self, item: _Item, node_id: NodeId) -> bool:
+        """A candidate the node depends on failed in this slot, or depends on one."""
+        candidate = self._ahead.get(node_id)
+        return candidate is not None and any(
+            (node in item.store and item.store[node].error is not None)
+            or self._fails(item, node)
+            for node in candidate.depends
+        )
 
     def _wake(self) -> None:
         """Wake every waiting look-ahead, which then checks whether it is decided."""
@@ -811,7 +878,8 @@ class ItemWindow:
     def _oldest_ready_job(self) -> tuple[int, NodeId | None] | None:
         """The first job that may start, None while paused or stopped: slots after the
         committing one, ascending; a described slot's materialize first (node None);
-        then candidates in order; not stored (result or error) or running; every
+        then candidates in order, serial ones aside (only a look-ahead starts them);
+        not stored (result or error) or running; every
         input it depends on stored without error (a failed input's dependents are
         never computed, so the commit path meets the error where K = 1 does); and
         eligible."""
@@ -825,7 +893,7 @@ class ItemWindow:
                 continue
             for candidate in self._planner.candidates:
                 node_id = candidate.node_id
-                if node_id in item.store or node_id in item.running:
+                if candidate.serial or node_id in item.store or node_id in item.running:
                     continue
                 if all(
                     node in item.store and item.store[node].error is None
@@ -862,7 +930,7 @@ class ItemWindow:
     def _start_job(self, slot: int, node_id: NodeId) -> None:
         item = self._slots[slot]
         assert item.values is not None
-        call = _Call(self._planner.job(node_id, item.values, item.store))
+        call = _Call(self._planner.job(node_id, item.values, item.store, slot))
         flight = _Flight(self._loop.run_in_executor(self._pool, call), call)
         item.running[node_id] = flight
         self._running += 1
