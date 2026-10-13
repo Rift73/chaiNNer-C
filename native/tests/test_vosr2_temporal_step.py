@@ -557,6 +557,7 @@ def vosr_loop(monkeypatch, tmp_path, frames, window, method, restore, *, source)
         node, "_upscale", lambda context, image, *_settings: restore(image, context)
     )
     monkeypatch.setattr(node, "ensure_model", lambda _: BundlePaths(tmp_path))
+    monkeypatch.setattr(node, "ensure_face_model", lambda _: tmp_path / "faces.onnx")
     pipeline = Pipeline(
         monkeypatch,
         tmp_path,
@@ -659,25 +660,29 @@ def test_outside_a_load_video_loop_each_image_is_upscaled_alone(monkeypatch, tmp
         restorer,
         source="chainner:image:load_images",
     )
-    grains = []
+    grains, plans = [], []
 
     def restore(context, image, *settings):
-        grains.append(settings[-1])
+        grain, windows = settings[-2:]
+        plans.append(windows)
+        grains.append(grain)
         return restorer(image, context)
 
     monkeypatch.setattr(upscale_image_vosr, "_upscale", restore)
     assert pipeline.run(workers=4) is None
     assert restorer.calls == list(range(5))
     assert_equal(saved, [Restorer(frames)(frame) for frame in frames])
-    # Each image gets the seed's grain alone.
+    # Each image gets the seed's grain alone, and its own window plan (no shot layouts).
     assert grains == [Grain(Seed(0).to_u32())] * 5
+    assert len({id(plan) for plan in plans}) == 5
 
 
 def test_each_video_frame_gets_its_grain_with_the_previous_input(monkeypatch, tmp_path):
     # The grain goes on the stabilized output, with the previous frame's input, so that
-    # it changes only where the picture does.
+    # it changes only where the picture does. Every frame is restored with the video's
+    # one window plan, so that a shot keeps its layout.
     frames = video(5)
-    calls = []
+    calls, plans = [], []
 
     def record(output, source, scale, grain, check, device):
         calls.append((source, grain))
@@ -693,8 +698,16 @@ def test_each_video_frame_gets_its_grain_with_the_previous_input(monkeypatch, tm
         Restorer(frames),
         source="chainner:image:load_video",
     )
+    restorer = Restorer(frames)
+
+    def restore(context, image, *settings):
+        plans.append(settings[-1])
+        return restorer(image, context)
+
+    monkeypatch.setattr(upscale_image_vosr, "_upscale", restore)
     assert pipeline.run(workers=4) is None
-    assert len(saved) == len(calls) == 5
+    assert len(saved) == len(calls) == len(plans) == 5
+    assert len({id(plan) for plan in plans}) == 1
     for index, (source, grain) in enumerate(calls):
         np.testing.assert_array_equal(source, frames[index])
         assert grain.seed == Seed(0).to_u32()

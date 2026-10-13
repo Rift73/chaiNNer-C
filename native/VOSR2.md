@@ -13,7 +13,8 @@ Apache-2.0). The first upscale downloads its five files, about 7 GB (6.97 GB), i
 `vosr2-model/f24b3061b7f350b81e1907bdcfc27f71fb4ff3f3/` (`args.json`, `checkpoints/`, `Qwen-Image-vae-2d/`,
 `dinov2_vitl14_pretrain.pth`), with progress on the node. A stopped or broken download resumes on the next run; each
 file must match its pinned SHA-256 (a mismatch is deleted and reported). Files already there are hashed once and never
-downloaded again.
+downloaded again. The first upscale also downloads OpenCV's YuNet face detector (230 KB, MIT licence, `opencv_zoo` at
+`26cc381e`, `face_detection_yunet_2026may.onnx`) into `vosr2-faces/`, the same way.
 
 ## The nodes
 
@@ -28,7 +29,12 @@ downloaded again.
 | Temporal Method, Strength | Three Frames, Persistent Detail; 0 to 100 %, default 65 | Only when Load Video feeds the image; 0 %: each frame alone |
 
 The model works in overlapping 512-pixel windows, each also predicted with a 64-pixel strip of its surroundings; the
-input's detail decides the mix, so blurred areas stay soft (scene focus). A final pass gives flat grainy areas one fine
+input's detail decides the mix, so blurred areas stay soft (scene focus). Neighbouring windows invent different
+amounts of detail, so their seams can show: windows are placed so that the seams run through the least detailed parts
+of the picture (as many windows as a regular grid), and a face that a seam would still split gets a window of its own
+that alone gives the face's middle (up to 400 px across) and fades into its neighbours over 48 px (about 50 ms each
+at 4K output, at most a fifth of the windows). In a video the layout is planned at a shot's first
+frame and kept until a cut, so seams stay put. A final pass gives flat grainy areas one fine
 grain across windows, as strong as the input's and in its colours. In a video, areas whose fine texture changed since
 the previous frame get new grain, and still areas keep one grain, so still backgrounds do not shimmer. For alpha: Split
 Transparency, Resize (Lanczos) the alpha, Merge Transparency.

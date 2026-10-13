@@ -20,10 +20,11 @@ from nodes.impl.pytorch.vosr2 import (
 )
 from nodes.impl.pytorch.vosr2_cache import lease_bundle, release_bundle
 from nodes.impl.pytorch.vosr2_context import upscale_scene_focus
-from nodes.impl.pytorch.vosr2_download import ensure_model
+from nodes.impl.pytorch.vosr2_download import ensure_face_model, ensure_model
 from nodes.impl.pytorch.vosr2_engine_cache import ensure_full_engine
 from nodes.impl.pytorch.vosr2_fp8 import ensure_fp8_engine
 from nodes.impl.pytorch.vosr2_memory import vram_budget
+from nodes.impl.pytorch.vosr2_scene import WindowPlan
 from nodes.impl.pytorch.vosr2_temporal import TemporalMode
 from nodes.impl.pytorch.vosr2_temporal_step import TemporalStep, frames_ahead
 from nodes.impl.pytorch.vosr2_texture import Grain, restore_with_texture
@@ -53,9 +54,11 @@ TEMPORAL_METHODS = {
 
 @dataclass
 class _VideoState:
-    """The node's state in a Load Video loop run: the temporal step, and the last frame
-    (its index and input), with which the grain changes only where the picture does."""
+    """The node's state in a Load Video loop run: the temporal step, the last frame (its
+    index and input), with which the grain changes only where the picture does, and the
+    shot's window layout, so that seams stay put within a shot."""
 
+    windows: WindowPlan
     step: TemporalStep | None = None
     frame: tuple[int, np.ndarray] | None = None
 
@@ -66,7 +69,7 @@ class _VideoState:
     description=[
         "Upscales an RGB image using a VOSR 2.0 generative super-resolution model.",
         "The image is resized to the chosen scale and restored in overlapping windows that share scene context, so focus and fine texture stay consistent; the seed selects the generated detail.",
-        "The first use downloads the official VOSR 2.0 model (about 7 GB) from Hugging Face into the backend's storage folder; later runs reuse it. The TensorRT backends compile their engines on first use and reuse them afterwards.",
+        "The first use downloads the official VOSR 2.0 model (about 7 GB) from Hugging Face and OpenCV's YuNet face detector (230 KB, which gives a face split between windows a window of its own) from GitHub into the backend's storage folder; later runs reuse them. The TensorRT backends compile their engines on first use and reuse them afterwards.",
         "Inside a Load Video loop, each frame is also stabilized over time: the restorations of neighbouring frames are aligned with optical flow and combined only where they match reliably, and a detected cut starts afresh.",
         "When the frames ahead cannot be read early (for example, through a node between Load Video and this one that is not computed ahead), only the current and earlier frames are used: Three Frames combines the previous frame alone and Persistent Detail starts each scene from its first frame alone.",
     ],
@@ -165,13 +168,14 @@ def upscale_image_vosr_node(
                     "VOSR 2.0 requires a GPU with BF16 support. Turn on CPU mode in the PyTorch settings to run it on the CPU."
                 )
     model = ensure_model(context)
+    faces = ensure_face_model(context)
     view = context.iteration
     grain = Grain(seed.to_u32())
     state = None
     if view is not None and view.iterated_by(0) == LOAD_VIDEO:
         state = view.state
         if not isinstance(state, _VideoState):
-            state = _VideoState()
+            state = _VideoState(windows=WindowPlan(faces))
             view.state = state
         last = state.frame
         if (
@@ -182,11 +186,25 @@ def upscale_image_vosr_node(
             grain = Grain(seed.to_u32(), view.index, last[1])
         state.frame = (view.index, img)
 
+    # A video keeps one plan (one layout per shot); an image gets its own.
+    windows = WindowPlan(faces) if state is None else state.windows
+
     def upscale(
         image: np.ndarray, restore_context: NodeContext, grain: Grain | None = None
     ) -> np.ndarray:
+        # A video's restorations run one at a time, in frame order.
+        windows.begin_frame(image)
         return _upscale(
-            restore_context, image, model, scale, seed, color, memory, backend, grain
+            restore_context,
+            image,
+            model,
+            scale,
+            seed,
+            color,
+            memory,
+            backend,
+            grain,
+            windows,
         )
 
     if strength == 0 or view is None or state is None:
@@ -235,9 +253,10 @@ def _upscale(
     memory: VosrMemoryMode,
     backend: VosrBackend,
     grain: Grain | None,
+    windows: WindowPlan,
 ) -> np.ndarray:
     """One image's restoration, the device and backend already checked; with `grain`,
-    also its grain."""
+    also its grain. `windows` plans the window layout (a video's keeps each shot's)."""
     settings = get_settings(context)
     device = settings.device
     # BF16 with FP32 VAE (and the engines' FP32 exceptions); the CPU uses FP32.
@@ -278,6 +297,7 @@ def _upscale(
                         context,
                         check,
                         session,
+                        windows=windows,
                     ),
                     img,
                     scale,
@@ -299,6 +319,7 @@ def _upscale(
                     context,
                     check,
                     optimized=device.type == "cuda",
+                    windows=windows,
                 ),
                 img,
                 scale,

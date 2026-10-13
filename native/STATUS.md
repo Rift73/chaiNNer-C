@@ -23,7 +23,15 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   (2026-10-14, owner: B x1.4, grain follows the source): synthesized output-resolution grain replaces the enlarged
   source grain (Castorice 2x: within 2 % of the approved sample's strength, neighbour correlation 0.36 instead of
   0.72); TensorRT Three Frames, 30 frames: identical to before outside grain areas, a still background's grain
-  0.9997 correlated frame to frame, 1.42-1.43 s instead of 1.39 s per later frame.
+  0.9997 correlated frame to frame, 1.42-1.43 s instead of 1.39 s per later frame. Window layout (2026-10-14, owner:
+  placement + face windows): windows placed so seams run through low-detail areas, plus a window on each face a seam
+  splits (YuNet, downloaded once), centred on the face box, laid over the grid's blend: it alone gives the face's
+  middle (400 px) and fades out over 48 px (blend share step at most 0.26 a latent; grid hand-overs 0.51; the
+  reviewed first version's raised blend weight cut at 1.00); the issue-13 portrait 2x, TensorRT BF16: the front face's
+  right/left cheek detail gap 1.88 -> 1.08 (placement alone 1.56), 4 face windows, 2.92 -> 3.13 s; PyTorch gap 1.07;
+  Rin and the texture sample (no faces) within 6 % except Rin's blurred background 12 % softer; 30-frame video: one
+  layout for the shot, 1.44 s vs 1.49 s per frame, no extra flicker. Seam triggers from input detail, prediction
+  differences and detail amounts could not find the face (all parked).
 - Temporal Fix (2026-10-13): a PyTorch node running pifroggi/vs_temporalfix's AI model (Apache-2.0, weights fetched
   from the pinned upstream commit and checked by SHA-256) over a loop's 7-frame window; with look-ahead it equals a
   standalone reproduction of upstream's CUDA path bit for bit (30/30). After Upscale Image (VOSR) or PyTorch Upscale
@@ -188,7 +196,7 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | VOSR engine builds: about 3 minutes without progress, one stage at a time, no timing cache | Stage count in the log; small stages in parallel; a per-GPU timing cache |
 | VOSR FP8 and model downloads: one host each and no mirror | A mirror list beside the pins |
 | VOSR plugin release: nothing requires `vosr2_qkv.dll` in a release, and the package manifest does not record its TensorRT and CUDA versions | A release flag that requires it; versions in `native_toolchain` |
-| VOSR scene focus where a busy in-focus texture (thatch, foliage) holds the sharpest strip: in-focus faces count as partly defocused and lose 10-15 % detail (the issue-13 portrait, 2x). An edge-width reference (re-blur gradient ratio) fixed that frame but weakened Rin's defocused background at 4x. Separately, the half-soft face there is VOSR's own window seam (present with routing off). Owner 2026-10-14: keep today's reference and the 64 px window overlap (16 px measured: 8 % faster, 3x the seam step) | A focus measure tuned on more of the owner's frames |
+| VOSR scene focus where a busy in-focus texture (thatch, foliage) holds the sharpest strip: in-focus faces count as partly defocused and lose 10-15 % detail (the issue-13 portrait, 2x). An edge-width reference (re-blur gradient ratio) fixed that frame but weakened Rin's defocused background at 4x. Separately, the half-soft face there was VOSR's own window seam (present with routing off), now handled by window placement and face windows (State). Owner 2026-10-14: keep today's reference and the 64 px minimum window overlap (16 px measured: 8 % faster, 3x the seam step) | A focus measure tuned on more of the owner's frames; seam windows for non-face content (anime faces, hands) need a trigger that finds them; faces wider than 800 px keep the layout's seams; in an output under 512 px on one side, a mirrored copy of an edge face in the padding can take a face window (harmless, rare) |
 | VOSR plugin code: no sm_90/sm_100 SASS (compute_120 PTX cannot run there); no header dependency file for the nvcc step; a dead branch in `qkv.cu` and an `rsqrtf` worth a comment | SASS when those GPUs become targets; `-MD -MF` with `DEPFILE`; code cleanups need GPU revalidation |
 | Look-ahead executor: K is decided at item 0 once a node looks ahead (a later-computed writer folder then forces K = 1 for groups reading per-item files); jobs computed ahead get a fresh context each; `ItemWindow._wake` rechecks every waiter; forced jobs bypass P; the UI's lineage takes the first iterated edge, the backend the first iterated input | A schema-level "looks ahead" flag, a per-node context cache, a per-slot waiter map and a cap, when a measured need appears |
 | VOSR in the local portable package: the nightly UI's patches lack the iterated condition | A patch JSON once the nightly is restored (first row) |

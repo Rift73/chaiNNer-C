@@ -1,6 +1,6 @@
 """Preserve local structure while supplying input-derived scene context.
 
-Local predictions retain the original windows and DINO conditioning. A second
+Local predictions keep 512 px windows and their DINO conditioning. A second
 prediction appends context outside each window; its contribution decreases
 with local input detail. This remains an experimental sharpness heuristic,
 not a learned defocus classifier or exact whole-image DiT inference.
@@ -24,9 +24,8 @@ from .vosr2 import (
     color_correct,
     finite,
     gaussian_weights,
-    tile_grid,
 )
-from .vosr2_scene import context_position, context_strengths, pad_image
+from .vosr2_scene import WindowPlan, face_feather, pad_image, scene_routing
 from .vosr2_streaming import VaeStreamer
 
 
@@ -41,15 +40,14 @@ def context_denoise(
     progress: Progress,
     check: Callable[[], None],
     optimized: bool = False,
+    windows: WindowPlan | None = None,
 ) -> torch.Tensor:
     height, width = latent.shape[-2:]
-    # Preserve the original 512px local sampling, including its end positions.
+    # Full 512px windows, placed by content with at least the original 64px overlap.
     # Replacing 128px and stepping by 320px made fine lines depend on weak
     # window-edge predictions, even when the replacement strip was disabled.
-    grid = tile_grid(height, width, 64, 8)
-    anchor = context_position(image)
-    ay, ax = anchor
-    strengths = context_strengths(image, grid, anchor) if len(grid) > 1 else [0.0]
+    layout, (ay, ax), strengths = scene_routing(image, windows)
+    placed = layout.windows
     noise = torch.randn(
         latent.shape, generator=torch.Generator(device="cpu").manual_seed(seed)
     )
@@ -61,7 +59,7 @@ def context_denoise(
         bundle.dino.to(device)
         mean = torch.tensor([0.485, 0.456, 0.406], device=device)[None, :, None, None]
         std = torch.tensor([0.229, 0.224, 0.225], device=device)[None, :, None, None]
-        for index, (y, x) in enumerate(grid):
+        for index, (y, x) in enumerate(placed):
             check()
             crop = image[:, :, y * 8 : y * 8 + 512, x * 8 : x * 8 + 512]
             conditioning = (
@@ -79,7 +77,7 @@ def context_denoise(
             conditions.append(
                 finite(features.float().cpu(), "DINO conditioning").to(bundle.dtype)
             )
-            progress.set_progress(0.2 + 0.1 * (index + 1) / len(grid))
+            progress.set_progress(0.2 + 0.1 * (index + 1) / len(placed))
         del features, conditioning, crop, mean, std
     finally:
         if optimized:
@@ -92,6 +90,7 @@ def context_denoise(
     velocity = torch.zeros_like(latent)
     denominator = torch.zeros((1, 1, height, width), dtype=torch.float32)
     weights = gaussian_weights(64)
+    faces = []
     try:
         check()
         if plan.stream_blocks:
@@ -113,7 +112,7 @@ def context_denoise(
             )
             return finite(prediction.float().cpu(), "DiT prediction")[:, :, :, :64]
 
-        for index, (y, x) in enumerate(grid):
+        for index, (y, x) in enumerate(placed):
             check()
             crop = inputs[:, :, y : y + 64, x : x + 64]
             strength = strengths[index]
@@ -128,9 +127,12 @@ def context_denoise(
                 value = local.lerp(
                     predict(torch.cat((crop, extra), dim=3), condition), strength
                 )
-            velocity[:, :, y : y + 64, x : x + 64] += value * weights
-            denominator[:, :, y : y + 64, x : x + 64] += weights
-            progress.set_progress(0.3 + 0.45 * (index + 1) / len(grid))
+            if index < len(layout.grid):
+                velocity[:, :, y : y + 64, x : x + 64] += value * weights
+                denominator[:, :, y : y + 64, x : x + 64] += weights
+            else:
+                faces.append(value)
+            progress.set_progress(0.3 + 0.45 * (index + 1) / len(placed))
     finally:
         if optimized:
             bundle.offload_model(bundle.dit)
@@ -140,7 +142,12 @@ def context_denoise(
             torch.cuda.empty_cache()
     if not bool(torch.all(denominator > 0)):
         raise RuntimeError("VOSR scene windows did not cover the output.")
-    return noise - velocity / denominator
+    velocity /= denominator
+    feather = face_feather()
+    for (y, x), value in zip(layout.faces, faces, strict=True):
+        # Over the grid's blend, a face window takes the middle of its face.
+        velocity[:, :, y : y + 64, x : x + 64].lerp_(value, feather)
+    return noise - velocity
 
 
 @torch.inference_mode()
@@ -155,8 +162,10 @@ def upscale_scene_focus(
     progress: Progress,
     check: Callable[[], None],
     optimized: bool = False,
+    windows: WindowPlan | None = None,
 ) -> np.ndarray:
-    """Experimental scene preservation. Caller owns the scoped VRAM budget."""
+    """Experimental scene preservation. Caller owns the scoped VRAM budget. A video's
+    `windows` keep each shot's window layout."""
     plan = MemoryPlan.for_mode(memory)
     image = pad_image(image)
 
@@ -205,6 +214,7 @@ def upscale_scene_focus(
             progress,
             check,
             optimized,
+            windows,
         )
         check()
         denormalized = latent * bundle.std + bundle.mean

@@ -20,9 +20,8 @@ from .vosr2 import (
     color_correct,
     gaussian_weights,
     read_configs,
-    tile_grid,
 )
-from .vosr2_scene import pad_image, scene_routing
+from .vosr2_scene import WindowPlan, face_feather, pad_image, scene_routing
 from .vosr2_trt_execution import BoundedQueue
 from .vosr2_trt_models import profiles
 from .vosr2_trt_pipeline import FullSession
@@ -115,11 +114,13 @@ def restore(
     progress: Progress,
     check: Callable[[], None],
     session: FullSession,
+    windows: WindowPlan | None = None,
 ) -> np.ndarray:
+    """A video's `windows` keep each shot's window layout (outer tiles each their own)."""
     minimum, _, maximum = profiles("encoder_pre")["x"]
     if image.shape[-2] <= maximum[-2] and image.shape[-1] <= maximum[-1]:
         return _restore_tile(
-            statistics, image, reference, seed, color, progress, check, session
+            statistics, image, reference, seed, color, progress, check, session, windows
         )
 
     # Tile the already resized RGB reference: interpolation is still performed
@@ -157,6 +158,7 @@ def restore(
                 progress.sub_progress(self.done / count, 1 / count),
                 check,
                 session,
+                windows,
             )
             self.done += 1
             return result[:height, :width]
@@ -173,19 +175,20 @@ def _restore_tile(
     progress: Progress,
     check: Callable[[], None],
     session: FullSession,
+    windows: WindowPlan | None,
 ) -> np.ndarray:
     image = pad_image(image)
     session.begin_image(image.shape[-2], image.shape[-1], seed)
     device = session.device
-    grid = tile_grid(image.shape[-2] // 8, image.shape[-1] // 8, 64, 8)
     checks = FiniteChecks()
     with torch.cuda.stream(session.stream):
         check()
         session.activate(check)
         dino_image = image.to(device)
         latent = checks.add(session.vae("encoder", dino_image, check), "VAE encoding")
-        # CPU-only routing overlaps the already queued encoder work.
-        (ay, ax), strengths = scene_routing(image, grid)
+        # CPU-only window layout and routing overlap the already queued encoder work.
+        layout, (ay, ax), strengths = scene_routing(image, windows)
+        placed = layout.windows
         mean = session.constant("latent_mean", statistics.mean)
         std = session.constant("latent_std", statistics.std)
         latent = (latent - mean) / std
@@ -209,17 +212,18 @@ def _restore_tile(
         height, width = latent.shape[-2:]
         velocity = torch.zeros_like(latent)
         weights = session.constant("blend_weights", gaussian_weights(64))
-        denominator = session.constants.get("blend_denominator")
-        if denominator is None:
-            # Geometry-only data. Preserve the exact float32 accumulation order.
-            denominator = torch.zeros(
-                (1, 1, height, width), dtype=torch.float32, device=device
-            )
-            for y, x in grid:
-                denominator[:, :, y : y + 64, x : x + 64] += weights
-            if not bool(torch.all(denominator > 0)):
-                raise RuntimeError("VOSR window grid did not cover every output pixel.")
-            session.constants["blend_denominator"] = denominator
+        feather = session.constant("face_feather", face_feather())
+        # The grid's weight sum is built per image (the layout follows the content),
+        # coverage checked on the CPU (no device sync).
+        covered = np.zeros((height, width), dtype=bool)
+        denominator = torch.zeros(
+            (1, 1, height, width), dtype=torch.float32, device=device
+        )
+        for y, x in layout.grid:
+            covered[y : y + 64, x : x + 64] = True
+            denominator[:, :, y : y + 64, x : x + 64] += weights
+        if not covered.all():
+            raise RuntimeError("VOSR window grid did not cover every output pixel.")
 
         def predict(value: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
             return checks.add(
@@ -227,7 +231,8 @@ def _restore_tile(
             )[:, :, :, :64]
 
         queue = BoundedQueue()
-        for index, (y, x) in enumerate(grid):
+        faces = []
+        for index, (y, x) in enumerate(placed):
             check()
             session.begin_window()
             source = dino_image[:, :, y * 8 : y * 8 + 512, x * 8 : x * 8 + 512]
@@ -248,10 +253,18 @@ def _restore_tile(
                 value = local.lerp(
                     predict(torch.cat((crop, extra), dim=3), condition), strength
                 )
-            velocity[:, :, y : y + 64, x : x + 64] += value * weights
-            progress.set_progress(0.2 + 0.55 * (index + 1) / len(grid))
+            if index < len(layout.grid):
+                velocity[:, :, y : y + 64, x : x + 64] += value * weights
+            else:
+                # Stage outputs are borrowed until the stage runs again.
+                faces.append(value.clone())
+            progress.set_progress(0.2 + 0.55 * (index + 1) / len(placed))
             queue.advance(check)
-        latent = noise - velocity / denominator
+        velocity /= denominator
+        for (y, x), value in zip(layout.faces, faces, strict=True):
+            # Over the grid's blend, a face window takes the middle of its face.
+            velocity[:, :, y : y + 64, x : x + 64].lerp_(value, feather)
+        latent = noise - velocity
         check()
         decoded = checks.add(
             session.vae("decoder", latent * std + mean, check), "VAE decoding"

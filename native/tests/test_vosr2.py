@@ -22,7 +22,6 @@ from nodes.impl.pytorch.vosr2 import (
     load_weights,
     prepare_image,
     read_configs,
-    tile_grid,
     tile_positions,
 )
 from nodes.impl.pytorch.vosr2_context import upscale_scene_focus
@@ -70,7 +69,6 @@ def test_window_weights_are_positive_and_symmetric():
     assert weights.shape == (1, 1, 32, 32) and weights.min() > 0
     torch.testing.assert_close(weights, weights.flip(2, 3), rtol=0, atol=0)
     torch.testing.assert_close(weights, weights.transpose(2, 3), rtol=0, atol=0)
-    assert len(tile_grid(48, 80, 32, 16)) == 8
 
 
 @pytest.mark.parametrize("color", list(VosrColorCorrection))

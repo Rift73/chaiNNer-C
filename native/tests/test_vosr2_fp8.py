@@ -18,6 +18,7 @@ from nodes.impl.pytorch.vosr2 import (
     VosrMemoryMode,
     prepare_image,
 )
+from nodes.impl.pytorch.vosr2_scene import WindowPlan
 from nodes.impl.pytorch.vosr2_temporal import TemporalMode
 from nodes.impl.pytorch.vosr2_trt_pipeline import FullSession
 from nodes.utils.seed import Seed
@@ -65,6 +66,7 @@ def test_node_routes_backends_and_low_memory_always_uses_pytorch(
     monkeypatch.setattr(node, "ensure_full_engine", select("bf16"))
     monkeypatch.setattr(node, "release_full_session", select("pytorch"))
     monkeypatch.setattr(node, "ensure_model", lambda _: BundlePaths(tmp_path))
+    monkeypatch.setattr(node, "ensure_face_model", lambda _: tmp_path / "faces.onnx")
     with pytest.raises(SelectedEngine, match=expected):
         node.upscale_image_vosr_node(
             cast(NodeContext, SimpleNamespace(node_id="routing", iteration=None)),
@@ -90,6 +92,7 @@ def test_unusable_tensorrt_fails_clearly_before_any_work(
 
     for name in (
         "ensure_model",
+        "ensure_face_model",
         "prepare_image",
         "ensure_fp8_engine",
         "ensure_full_engine",
@@ -140,6 +143,7 @@ def test_full_trt_node_does_not_load_unused_pytorch_models(
     monkeypatch.setattr(node, "find_spec", lambda _: object())
     monkeypatch.setattr(node, "release_bundle", released.append)
     monkeypatch.setattr(node, "ensure_model", lambda _: BundlePaths(tmp_path))
+    monkeypatch.setattr(node, "ensure_face_model", lambda _: tmp_path / "faces.onnx")
     calls = []
 
     def engine(*args):
@@ -164,8 +168,9 @@ def test_full_trt_node_does_not_load_unused_pytorch_models(
     def unexpected(*args, **kwargs):
         pytest.fail("Full TensorRT attempted to load PyTorch model weights")
 
-    def restore(*args):
+    def restore(*args, windows):
         assert args[0] is statistics and args[-1] is session
+        assert isinstance(windows, WindowPlan)
         return expected
 
     monkeypatch.setattr(node, "lease_bundle", unexpected)

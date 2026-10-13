@@ -248,16 +248,6 @@ def tile_positions(length: int, tile: int, overlap: int) -> list[int]:
     return positions
 
 
-def tile_grid(
-    height: int, width: int, tile: int, overlap: int
-) -> list[tuple[int, int]]:
-    return [
-        (y, x)
-        for y in tile_positions(height, tile, overlap)
-        for x in tile_positions(width, tile, overlap)
-    ]
-
-
 def gaussian_weights(size: int) -> torch.Tensor:
     coordinate = (torch.arange(size, dtype=torch.float32) - (size - 1) / 2) / size
     weights = torch.exp(-coordinate.square() / 0.02)

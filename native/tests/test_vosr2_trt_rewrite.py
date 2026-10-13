@@ -11,9 +11,11 @@ import torch
 
 from nodes.impl.pytorch.vosr2 import VosrColorCorrection, color_correct
 from nodes.impl.pytorch.vosr2_scene import (
-    context_position,
-    context_strengths,
+    _context_position,
+    _context_strengths,
+    detail_energy,
     scene_routing,
+    scene_windows,
 )
 from nodes.impl.pytorch.vosr2_trt_execution import BoundedQueue, StageExecution
 from nodes.impl.pytorch.vosr2_trt_models import CachedDiT, DiTKv, StableDit
@@ -167,11 +169,13 @@ def test_resident_bindings_cannot_silently_read_a_previous_buffer(name, binding)
 
 def test_shared_scene_analysis_preserves_anchor_ties_and_strengths():
     for image in (torch.ones(1, 3, 512, 960), torch.randn(1, 3, 512, 960)):
-        grid = [(0, 0), (0, 56)]
-        anchor = context_position(image)
-        assert scene_routing(image, grid) == (
+        energy = detail_energy(image)
+        layout = scene_windows(energy, 64, 120)
+        anchor = _context_position(energy)
+        assert scene_routing(image) == (
+            layout,
             anchor,
-            context_strengths(image, grid, anchor),
+            _context_strengths(energy, layout.grid, anchor),
         )
 
 

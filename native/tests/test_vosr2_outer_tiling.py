@@ -57,7 +57,7 @@ def test_fitting_images_keep_exact_original_call_and_output(monkeypatch, shape):
     calls = []
 
     def single(*received):
-        assert all(a is b for a, b in zip(received, args, strict=True))
+        assert all(a is b for a, b in zip(received, (*args, None), strict=True))
         calls.append(True)
         return expected
 
@@ -84,8 +84,8 @@ def test_oversized_frames_cover_every_pixel_without_mutation(monkeypatch, shape)
     args = arguments(image, reference, progress)
     calls = []
 
-    def single(statistics, tensor, tile, seed, color, sub, check, session):
-        assert statistics is args[0] and session is args[-1]
+    def single(statistics, tensor, tile, seed, color, sub, check, session, windows):
+        assert statistics is args[0] and session is args[-1] and windows is None
         assert seed == 42 and color == args[4]
         h, w = tile.shape[:2]
         assert 256 <= h <= 512 and 256 <= w <= 768

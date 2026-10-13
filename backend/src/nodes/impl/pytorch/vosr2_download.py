@@ -1,4 +1,5 @@
-"""Pinned downloads: the official VOSR 2.0 model and the TensorRT FP8 graph set."""
+"""Pinned downloads: the official VOSR 2.0 model, the YuNet face detector and the
+TensorRT FP8 graph set."""
 
 from __future__ import annotations
 
@@ -144,7 +145,8 @@ def fetch_files(
             f"Downloading {label} needs {(total - done) / 1e9:.1f} GB more in "
             f"{folder}{engines}; {free / 1e9:.1f} GB are free."
         )
-    logger.info("Downloading %s once: %.2f GB into %s", label, total / 1e9, folder)
+    size = f"{total / 1e9:.2f} GB" if total >= 1e8 else f"{total / 1e6:.2f} MB"
+    logger.info("Downloading %s once: %s into %s", label, size, folder)
     progress = [done]
 
     def advance(count: int) -> None:
@@ -159,6 +161,32 @@ def fetch_files(
 
 def model_folder(storage_dir: Path) -> Path:
     return storage_dir / "vosr2-model" / REVISION
+
+
+# OpenCV Zoo's YuNet face detector (MIT licence), the export with a dynamic input size that
+# OpenCV 5 needs. Faces that a window seam would split get a window of their own.
+FACE_MODEL = "face_detection_yunet_2026may.onnx"
+FACE_FILE = {
+    "size": 229738,
+    "sha256": "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0",
+    "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/"
+    "26cc381e4d2594bb9f47a26eb8fd96c94a13660d/models/face_detection_yunet/"
+    + FACE_MODEL,
+}
+
+
+def ensure_face_model(context: NodeContext) -> Path:
+    """The YuNet face detector: downloaded on first use, then verified once."""
+    folder = context.storage_dir / "vosr2-faces"
+    folder.mkdir(parents=True, exist_ok=True)
+    fetch_files(
+        context,
+        folder,
+        {FACE_MODEL: FACE_FILE},
+        lambda path: stored_hash(path, folder),
+        "the YuNet face detector",
+    )
+    return folder / FACE_MODEL
 
 
 def ensure_model(context: NodeContext) -> BundlePaths:

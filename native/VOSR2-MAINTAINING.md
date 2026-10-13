@@ -13,7 +13,13 @@ with FP8). In `backend/src/nodes/impl/pytorch/`:
 
 - `vosr2.py`: bundle paths, pinned configuration (`read_configs`), weights, enums, `MemoryPlan`, input preparation,
   colour correction. `vosr2_cache.py`: weights kept between runs. `vosr2_memory.py`: `vram_budget`.
-- `vosr2_context.py` (PyTorch scene focus), `vosr2_scene.py` (input-only routing, both backends), `vosr2_streaming.py`
+- `vosr2_context.py` (PyTorch scene focus), `vosr2_scene.py` (input-only routing and window layout, both backends:
+  `window_positions` places each axis by dynamic programming, same count as the regular grid, steps 40-56 latents;
+  `face_windows` adds a window on each face (YuNet, `find_faces`) whose middle (central half of the box) the layout
+  splits, centred on the box, only where it can hold that middle alone; both backends lay it over the grid's
+  normalized blend with `face_feather` (1 out to 25 latents from its centre, a raised cosine to 0 by 31), so its edge
+  hands over more gently than two grid windows do; `WindowPlan` keeps a video's layout per shot,
+  re-planned at a cut; owner 2026-10-14, after detail-, difference- and amount-based seam triggers failed), `vosr2_streaming.py`
   (Low's whole-image VAE in bounded bands), `vosr2_texture.py` (grain pass, both backends: synthesized grain hashed
   from seed, frame and pixel position; `GRAIN_GAIN` 1.16 is the owner's choice of 2026-10-13, 1.4 times the bicubic
   source grain on Castorice 2x; in a video the node keeps the last input, and areas whose fine texture changed get
