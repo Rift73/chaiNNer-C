@@ -168,7 +168,13 @@ export const NodeExample = memo(({ selectedSchema }: NodeExampleProps) => {
         iteratedInputs,
         iteratedOutputs,
         type: typeInfo,
-        testCondition: testForInputConditionTypeInfo(inputData, selectedSchema, typeInfo),
+        // the example node is in no chain, so no sequence iterates it
+        testCondition: testForInputConditionTypeInfo(
+            inputData,
+            selectedSchema,
+            typeInfo,
+            () => undefined
+        ),
         nodeName: undefined,
         setNodeName: noop,
     };

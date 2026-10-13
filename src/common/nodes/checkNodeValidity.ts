@@ -29,6 +29,8 @@ export const checkNodeValidity = ({
     nodeId,
 }: CheckNodeValidityOptions): Validity => {
     const groupStacks = getGroupStacks(schema);
+    const getIteratingSchemaId = (inputId: InputId) =>
+        chainLineage?.getIteratingSchemaId({ nodeId, inputId });
     const isOptional = (input: Input): boolean => {
         // Check if input is inside a conditional group with a false condition
         const conditions = groupStacks.inputConditions.get(input.id) ?? [];
@@ -40,7 +42,8 @@ export const checkNodeValidity = ({
                     inputData,
                     schema,
                     (id) => functionInstance?.inputs.get(id),
-                    (id) => connectedInputs.has(id)
+                    (id) => connectedInputs.has(id),
+                    getIteratingSchemaId
                 )
             );
             if (!allConditionsTrue) return true;
@@ -62,7 +65,8 @@ export const checkNodeValidity = ({
             inputData,
             schema,
             (id) => functionInstance?.inputs.get(id),
-            (id) => connectedInputs.has(id)
+            (id) => connectedInputs.has(id),
+            getIteratingSchemaId
         );
     };
 

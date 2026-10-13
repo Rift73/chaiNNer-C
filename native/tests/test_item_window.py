@@ -160,9 +160,21 @@ def test_read_ahead_blocker_needs_declared_sources():
 
 def test_read_ahead_blocker_needs_resolved_directories(tmp_path):
     directories = [(NodeId("copy"), tmp_path), (NodeId("save"), None)]
+    sources = [(NodeId("g0"), ()), (NodeId("g1"), (tmp_path / "in" / "a.png",))]
     assert (
-        read_ahead_blocker([(NodeId("g0"), ())], directories)
-        == "output directory unresolved: save"
+        read_ahead_blocker(sources, directories) == "output directory unresolved: save"
+    )
+
+
+def test_read_ahead_blocker_ignores_unresolved_directories_without_per_item_files(
+    tmp_path,
+):
+    # Load Video (or Range, Split Spritesheet) reads no file per item, so no write can
+    # reach one, wherever an unresolved directory lies.
+    directories = [(NodeId("copy"), tmp_path), (NodeId("save"), None)]
+    assert (
+        read_ahead_blocker([(NodeId("g0"), ()), (NodeId("g1"), ())], directories)
+        is None
     )
 
 

@@ -214,6 +214,11 @@ class _Outcome:
     error: BaseException | None = None
 
 
+# What a look-ahead waits for in a produced slot, besides its stored output (_needs).
+_PENDING = object()  # running, or startable now
+_MISSING = object()  # never computed ahead in this slot
+
+
 T = TypeVar("T")
 
 
@@ -301,6 +306,11 @@ class ItemWindow:
 
     While the run is paused or stopped, nothing starts but the slot the commit path
     waits for; work in flight finishes (spec 4.5).
+
+    A node on the commit path may look ahead (peek): the window then produces a later
+    slot, and computes there the node feeding the look-ahead, as it produces the slot
+    the commit path waits for; nothing is taken, so the commit path later takes the
+    same object.
     """
 
     def __init__(
@@ -337,6 +347,11 @@ class ItemWindow:
         self._estimate = estimate  # E: bytes one item holds, raised by released slots
         self._planner = planner
         self._prepares = frozenset(c.node_id for c in planner.candidates if c.prepare)
+        self._generator_ids = frozenset(source.node_id for source in self._generators)
+        # The nodes a look-ahead may wait for in a later slot: candidates, no prepare.
+        self._ahead = {c.node_id: c for c in planner.candidates if not c.prepare}
+        self._demands: list[tuple[int, NodeId]] = []  # look-aheads in progress
+        self._waiters: list[asyncio.Future[None]] = []  # woken by every _pump
         self._progress = progress  # the run's pause and Stop
         self._slots: dict[int, _Item] = {}  # produced (or being produced), unreleased
         self._outcomes: dict[int, asyncio.Future[dict[NodeId, _Outcome]]] = {}
@@ -404,10 +419,53 @@ class ItemWindow:
     def begin(self, slot: int) -> None:
         """The commit path starts this slot."""
         if not self._items:
-            self._next = slot  # the producer continues the loop from here
+            # The producer continues the loop from here, or from where it got after a
+            # start().
+            self._next = max(self._next, slot)
         self._items += 1
         self._commit = slot
         self._pump()
+
+    def start(self, slot: int) -> None:
+        """Open the window during this slot, whose generator values the commit path
+        advanced itself: a look-ahead during the loop's first slot decided K there. The
+        producer continues from the next slot, which the commit path then begins."""
+        self._commit = slot
+        self._next = slot + 1
+        self._pump()
+
+    async def peek(self, slot: int, node_id: NodeId) -> object | None:
+        """A later slot's value for a node, for a look-ahead from the commit path: a
+        generator's advance value, as take_advance returns it, or the output of a node
+        computed ahead, as take_node returns it. Nothing is taken.
+
+        The slot is produced, and the node and the candidates it depends on computed
+        there, now if needed, as the slot the commit path waits for is produced: beyond
+        P, the memory budget and pause. Nothing starts beyond commit + K - 1, for a node
+        the planner does not find eligible, or once stopped or closing.
+
+        None: the slot is not after the committing one within the window; it is never
+        produced (the producer ended before it); its outcome for a generator is an error
+        or exhaustion, or it lacks one (abandoned, or an earlier zipped generator
+        failed or ended); for a node, the slot's generators did not all yield, or the
+        node is not a candidate, or it or a candidate it depends on failed or is not
+        eligible; or the run was stopped or closing began first.
+        """
+        if not self._commit < slot < self._commit + self._size:
+            return None
+        demand = (slot, node_id)
+        self._demands.append(demand)
+        try:
+            self._pump()  # starts what the look-ahead needs; completions pump again
+            while True:
+                decided, value = self._peeked(slot, node_id)
+                if decided:
+                    return value
+                waiter: asyncio.Future[None] = self._loop.create_future()
+                self._waiters.append(waiter)
+                await waiter
+        finally:
+            self._demands.remove(demand)
 
     async def take_advance(self, node_id: NodeId) -> object | None:
         """This generator's outcome in the committing slot, as the loop's advance.
@@ -574,6 +632,7 @@ class ItemWindow:
         before the run's cleanups. A cancelled caller still waits for all of them.
         """
         self._closing = True
+        self._wake()  # a look-ahead in progress gets None
         try:
             if self._tasks:
                 await await_owned_node(
@@ -620,6 +679,9 @@ class ItemWindow:
         work, on a thread reserved for it. Nothing starts once closing has begun.
         After a resume, admission continues at the loop's next begin, take_advance or
         release.
+
+        A look-ahead in progress (peek) gets the same liveness for what it waits for,
+        Stop aside; then every waiting look-ahead checks whether it is decided.
         """
         if not self._closing:
             if (
@@ -632,6 +694,9 @@ class ItemWindow:
                 wanted := self._slots.get(self._wanted)
             ) is not None and wanted.token is not None:
                 self._start_materialize(self._wanted)  # and then for its materialize
+            if not self._progress.aborted:
+                for slot, node_id in self._demands:
+                    self._serve(slot, node_id)
         while not self._closing and self._running < self._jobs:
             if (ready := self._oldest_ready_job()) is not None:
                 slot, node_id = ready
@@ -642,7 +707,83 @@ class ItemWindow:
             elif self._may_admit():
                 self._start_advance()
             else:
-                return
+                break
+        self._wake()
+
+    def _serve(self, slot: int, node_id: NodeId) -> None:
+        """Start the next work a look-ahead waits for: an advance (describe) towards
+        its slot, the slot's materialize, then the jobs it needs there (_needs)."""
+        if slot >= self._next:
+            if self._advancing is None and not self._ended:
+                self._start_advance()
+            return
+        item = self._slots.get(slot)
+        if item is None:
+            return
+        if item.token is not None:
+            self._start_materialize(slot)
+        elif item.values is not None:
+            ready: list[NodeId] = []
+            if self._needs(item, node_id, ready) is _PENDING:
+                for node in ready:
+                    self._start_job(slot, node)
+
+    def _peeked(self, slot: int, node_id: NodeId) -> tuple[bool, object | None]:
+        """(True, the look-ahead's value or None) once it is decided, else (False,
+        None)."""
+        if self._closing or self._progress.aborted:
+            return True, None
+        outcomes = self._outcomes.get(slot)
+        if outcomes is None or not outcomes.done():
+            # Ended: no describe (advance) starts any more; one in flight resolves.
+            return slot >= self._next and self._ended, None
+        if node_id in self._generator_ids:
+            outcome = outcomes.result().get(node_id)
+            if outcome is None or outcome.error is not None:
+                return True, None
+            return True, outcome.value
+        item = self._slots.get(slot)
+        if item is None or item.values is None:
+            return True, None
+        needed = self._needs(item, node_id, [])
+        return needed is not _PENDING, None if needed is _MISSING else needed
+
+    def _needs(self, item: _Item, node_id: NodeId, ready: list[NodeId]) -> object:
+        """A look-ahead's node in a produced slot: its stored output; _PENDING while it
+        or a candidate it depends on runs or may start now (collected in ready, its
+        dependencies first); _MISSING if it will not be computed ahead: not a
+        candidate, failed, not eligible, or depending on such a node."""
+        stored = item.store.get(node_id)
+        if stored is not None:
+            return _MISSING if stored.error is not None else stored.output
+        if node_id in item.running:
+            return _PENDING
+        candidate = self._ahead.get(node_id)
+        if candidate is None:
+            return _MISSING
+        pending = False
+        for node in sorted(candidate.depends):
+            needed = self._needs(item, node, ready)
+            if needed is _MISSING:
+                return _MISSING
+            pending = pending or needed is _PENDING
+        if pending:
+            return _PENDING
+        assert item.values is not None
+        if not self._planner.eligible(node_id, item.values, item.store):
+            return _MISSING
+        if node_id not in ready:
+            ready.append(node_id)
+        return _PENDING
+
+    def _wake(self) -> None:
+        """Wake every waiting look-ahead, which then checks whether it is decided."""
+        if not self._waiters:
+            return
+        waiters, self._waiters = self._waiters, []
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
 
     def _may_admit(self) -> bool:
         """A later slot may be produced: neither paused nor stopped, within the window
@@ -912,7 +1053,7 @@ def read_ahead_blocker(
 
     sources: each generator with the files it reads per item (None = unknown).
     directories: each file-writing node with its base directory (None = unresolved).
-    Each declared file's parent folder (once per unique folder; the files are never
+    With no file read per item, no directory can block. Each declared file's parent folder (once per unique folder; the files are never
     resolved, which opens them on Windows) and each base directory are compared after
     Path.resolve(); a source lies under a directory that is its folder or an ancestor.
     """
@@ -921,13 +1062,15 @@ def read_ahead_blocker(
         if paths is None:
             return f"sources unknown: {generator}"
         parents.update(Path(path).parent for path in paths)
+    if not parents:
+        # Nothing is read per item (Load Video's frames come from a pipe), so no write
+        # can reach a source, wherever an unresolved directory lies.
+        return None
     writers: list[tuple[NodeId, Path]] = []
     for writer, directory in directories:
         if directory is None:
             return f"output directory unresolved: {writer}"
         writers.append((writer, directory))
-    if not parents:
-        return None  # nothing is read per item, so no write can reach a source
     try:
         folders = {_normalized(parent.resolve()) for parent in parents}
         for writer, directory in writers:

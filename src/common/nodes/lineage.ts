@@ -1,5 +1,5 @@
 import { Edge, Node } from 'reactflow';
-import { EdgeData, InputId, NodeData, NodeSchema } from '../common-types';
+import { EdgeData, InputId, NodeData, NodeSchema, SchemaId } from '../common-types';
 import { SchemaMap } from '../SchemaMap';
 import {
     EMPTY_ARRAY,
@@ -26,7 +26,8 @@ export const isAutoIterable = (schema: NodeSchema): boolean => {
  * Note: this class only provides a minimal interface to enable future extensions.
  */
 export class Lineage {
-    private readonly sourceNode: string;
+    /** The ID of the generator node whose sequence this is. */
+    readonly sourceNode: string;
 
     private constructor(sourceNode: string) {
         this.sourceNode = sourceNode;
@@ -205,5 +206,15 @@ export class ChainLineage {
         const edge = this.getEdgeByTarget(target);
         if (!edge) return undefined;
         return this.getOutputLineage(parseSourceHandle(edge.sourceHandle!));
+    }
+
+    /**
+     * Returns the schema ID of the generator whose sequence iterates the given target handle
+     * (the source of its connected lineage), if any.
+     */
+    getIteratingSchemaId(target: ParsedTargetHandle): SchemaId | undefined {
+        const lineage = this.getConnectedOutputLineage(target);
+        if (!lineage) return undefined;
+        return this.nodeSchemata.get(lineage.sourceNode)?.schemaId;
     }
 }

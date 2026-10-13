@@ -22,6 +22,7 @@ from api import (
     ExecutionOptions,
     Generator,
     InputId,
+    IterationView,
     IteratorOutputInfo,
     IterOutputId,
     Lazy,
@@ -412,6 +413,12 @@ class _ExecutorNodeContext(NodeContext):
         self._node_id = node_id
         self.chain_cleanup_fns: set[Callable[[], None]] = set()
         self.node_cleanup_fns: set[Callable[[], None]] = set()
+        # Set while a generator loop runs this node on its commit path.
+        self.iteration_view: _IterationView | None = None
+
+    @property
+    def iteration(self) -> IterationView | None:
+        return self.iteration_view
 
     @property
     def aborted(self) -> bool:
@@ -449,6 +456,117 @@ class _ExecutorNodeContext(NodeContext):
             self.node_cleanup_fns.add(fn)
         else:
             raise ValueError(f"Unknown cleanup type: {after}")
+
+
+_T = typing.TypeVar("_T")
+
+
+class _LoopRun:
+    """
+    One run of a generator group's loop, as its nodes' iteration views see it: the slot the commit path runs, and the group's item window decision, made at slot 1 or by a look-ahead during slot 0.
+    """
+
+    def __init__(
+        self,
+        generators: set[NodeId],
+        iterated: set[NodeId],
+        open_window: Callable[[int], typing.Awaitable[ItemWindow | None]],
+    ) -> None:
+        self.slot = 0
+        self.generators = generators
+        self.iterated = iterated
+        self.open_window = open_window  # Executor.__open_window, given the stops
+        self.decided = False
+        self.deciding: asyncio.Task[None] | None = None
+        self.lineages: dict[NodeId, NodeId | None] = {}
+        self.views: dict[NodeId, _IterationView] = {}
+
+
+class _IterationView(IterationView):
+    """
+    A node's iteration view for one loop run: its index is the run's slot; a look-ahead runs on the event loop while the node's worker thread waits for it.
+    """
+
+    def __init__(
+        self,
+        run: _LoopRun,
+        context: _ExecutorNodeContext,
+        node: FunctionNode,
+        sources: tuple[str | None, ...],
+        lookahead: Callable[[int], typing.Coroutine[typing.Any, typing.Any, int]],
+        peek: Callable[[int, int], typing.Coroutine[typing.Any, typing.Any, object]],
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        self.__run = run
+        self.__context = context
+        self.__node = node
+        self.__sources = sources
+        self.__lookahead = lookahead
+        self.__peek = peek
+        self.__loop = loop
+        self.__state: object | None = None
+
+    @property
+    def index(self) -> int:
+        return self.__run.slot
+
+    @property
+    def source(self) -> str:
+        return next(source for source in self.__sources if source is not None)
+
+    def iterated_by(self, input_id: int) -> str | None:
+        return self.__sources[self.__input_index(input_id)]
+
+    @property
+    def state(self) -> object | None:
+        return self.__state
+
+    @state.setter
+    def state(self, value: object | None) -> None:
+        self.__state = value
+
+    def lookahead(self, input_id: int) -> int:
+        return self.__wait(self.__lookahead(self.__input_index(input_id)))
+
+    def peek(self, input_id: int, offset: int) -> object | None:
+        if offset < 1:
+            raise ValueError(f"A look-ahead offset must be at least 1, not {offset}.")
+        index = self.__input_index(input_id)
+        self.__context.check_aborted()
+        value = self.__wait(self.__peek(index, offset))
+        self.__context.check_aborted()
+        if value is None:
+            return None
+        try:
+            return self.__node.data.inputs[index].enforce_(value)
+        except Exception:
+            # The item fails at this input when it comes, with this error (run_node).
+            return None
+
+    def close(self) -> None:
+        """
+        The loop run ended: drop the state and detach the view from the node's context.
+        """
+        self.__state = None
+        self.__context.iteration_view = None
+
+    def __input_index(self, input_id: int) -> int:
+        for index, i in enumerate(self.__node.data.inputs):
+            if i.id == input_id:
+                return index
+        raise ValueError(f"{self.__node.data.name} has no input {input_id}.")
+
+    def __wait(self, coroutine: typing.Coroutine[typing.Any, typing.Any, _T]) -> _T:
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:  # a worker thread
+            running = None
+        if running is self.__loop:
+            coroutine.close()
+            raise RuntimeError(
+                "A look-ahead waits for the event loop: call it from the node's own call."
+            )
+        return asyncio.run_coroutine_threadsafe(coroutine, self.__loop).result()
 
 
 @dataclass(frozen=True)
@@ -532,10 +650,31 @@ class _ItemPlanner:
             for node_id in reversed(chain.topological_order())
             if node_id in self.__prepared
         ]
+        self.__ahead: dict[NodeId, bool] = {}
 
     @property
     def candidates(self) -> Sequence[Candidate]:
         return self.__candidates
+
+    def ahead(self, node_id: NodeId) -> bool:
+        """
+        Whether the window computes this node ahead in every later slot whose generators all yielded and whose candidates it depends on did not fail, so a look-ahead can wait for it: a candidate (not a prepare), eligible with only the generator values available, as is every candidate it depends on. Asked once the commit path ran the node, so its static inputs are cached.
+        """
+        if node_id not in self.__ahead:
+            candidate = next(
+                (
+                    c
+                    for c in self.__candidates
+                    if c.node_id == node_id and (not c.prepare)
+                ),
+                None,
+            )
+            self.__ahead[node_id] = (
+                candidate is not None
+                and self.eligible(node_id, dict.fromkeys(self.__generators), {})
+                and all(self.ahead(node) for node in candidate.depends)
+            )
+        return self.__ahead[node_id]
 
     def __phase_sources(self, node_id: NodeId) -> list[Input]:
         sources = self.__inputs.get(node_id)
@@ -663,6 +802,8 @@ class Executor:
         self.cache_strategy: dict[NodeId, CacheStrategy] = get_cache_strategies(chain)
         self._storage_dir = storage_dir
         self.__window: ItemWindow | None = None
+        self.__planner: _ItemPlanner | None = None  # the window's
+        self.__run: _LoopRun | None = None
         self.__collector_directories: dict[NodeId, dict[int, object]] = {}
         self.__item_bytes: dict[NodeId, int] | None = None
         self.__budget: int | None = None
@@ -827,6 +968,14 @@ class Executor:
         if context is None:
             context = self.__new_node_context(node)
             self.__context_cache[node.id] = context
+        run = self.__run
+        if (
+            run is not None
+            and isinstance(node, FunctionNode)
+            and node.id in run.iterated
+        ):
+            # The loop runs this node on its commit path.
+            context.iteration_view = self.__iteration_view(run, node, context)
         return context
 
     async def __process(
@@ -1156,7 +1305,7 @@ class Executor:
             *output_nodes,
             *(collector_node for _, _, collector_node in collectors),
         ]
-        planner = _ItemPlanner(
+        planner = self.__planner = _ItemPlanner(
             self.chain,
             self.inputs,
             self.node_cache,
@@ -1180,6 +1329,7 @@ class Executor:
 
     async def __close_window(self) -> None:
         self.__item_bytes = None
+        self.__planner = None
         window, self.__window = (self.__window, None)
         if window is not None:
             await window.close()
@@ -1194,6 +1344,128 @@ class Executor:
                 window.awaited,
                 window.discarded,
             )
+
+    def __end_loop(self) -> None:
+        """
+        The loop run ended, failed or was cancelled: its nodes' iteration views are detached and their states dropped. Idempotent.
+        """
+        run, self.__run = (self.__run, None)
+        if run is not None:
+            for view in run.views.values():
+                view.close()
+            run.views.clear()
+
+    def __iteration_view(
+        self, run: _LoopRun, node: FunctionNode, context: _ExecutorNodeContext
+    ) -> _IterationView:
+        """
+        The node's iteration view for this loop run, made when the loop first runs it.
+        """
+        view = run.views.get(node.id)
+        if view is None:
+            lineages = [self.__input_lineage(run, i) for i in self.inputs.get(node.id)]
+            assert any(lineage is not None for lineage in lineages), (
+                f"Iterated node {node.id} has no lineage"
+            )
+            view = run.views[node.id] = _IterationView(
+                run,
+                context,
+                node,
+                tuple(
+                    None
+                    if lineage is None
+                    else self.chain.nodes[lineage].data.schema_id
+                    for lineage in lineages
+                ),
+                functools.partial(self.__lookahead, run, node.id),
+                functools.partial(self.__peek, run, node.id),
+                self.loop,
+            )
+        return view
+
+    def __lineage(self, run: _LoopRun, node_id: NodeId) -> NodeId | None:
+        """
+        The generator whose sequence iterates this node of the loop, as the UI's lineage: that of its first iterated input, inputs in order.
+        """
+        if node_id not in run.lineages:
+            lineage = None
+            for i in self.inputs.get(node_id):
+                lineage = self.__input_lineage(run, i)
+                if lineage is not None:
+                    break
+            run.lineages[node_id] = lineage
+        return run.lineages[node_id]
+
+    def __input_lineage(self, run: _LoopRun, i: Input) -> NodeId | None:
+        """
+        The generator whose sequence iterates this input: the generator of an iterated output, or the lineage of an iterated node; None for an input that is not iterated.
+        """
+        if not isinstance(i, EdgeInput):
+            return None
+        source = self.chain.nodes[i.id]
+        if isinstance(source, GeneratorNode):
+            iterable_output = source.data.single_iterable_output
+            if source.data.outputs[i.index].id in iterable_output.outputs:
+                return i.id
+        elif isinstance(source, FunctionNode) and i.id in run.iterated:
+            return self.__lineage(run, i.id)
+        return None
+
+    async def __look_ahead_window(self, run: _LoopRun) -> ItemWindow | None:
+        """
+        The group's item window for a look-ahead. The first look-ahead during slot 0 decides it there, once, and the window starts at that slot; the producer then continues from slot 1. None, deciding nothing, with a pool of one thread: the waiting node holds it, and the decision's path check and the window's reads need another.
+        """
+        if self.__run is not run or self.__pool_size is None or self.__pool_size < 2:
+            return None
+        if not run.decided:
+            if run.deciding is None:
+                run.deciding = self.loop.create_task(self.__decide_early(run))
+            await await_owned_node(run.deciding)
+        return self.__window
+
+    async def __decide_early(self, run: _LoopRun) -> None:
+        window = await run.open_window(0)  # slot 0 runs: no generator stopped
+        run.decided = True
+        if window is not None:
+            window.start(run.slot)
+        self.__window = window
+
+    def __look_ahead_source(
+        self, run: _LoopRun, node_id: NodeId, index: int
+    ) -> EdgeInput | None:
+        """
+        The edge feeding this input when a look-ahead can be served: from an iterated output of one of the group's generators, or from a node the window computes ahead.
+        """
+        i = self.inputs.get(node_id)[index]
+        if not isinstance(i, EdgeInput):
+            return None
+        source = self.chain.nodes[i.id]
+        if isinstance(source, GeneratorNode):
+            iterable_output = source.data.single_iterable_output
+            iterated = source.data.outputs[i.index].id in iterable_output.outputs
+            return i if iterated and i.id in run.generators else None
+        planner = self.__planner
+        return i if planner is not None and planner.ahead(i.id) else None
+
+    async def __lookahead(self, run: _LoopRun, node_id: NodeId, index: int) -> int:
+        window = await self.__look_ahead_window(run)
+        if window is None or self.__look_ahead_source(run, node_id, index) is None:
+            return 0
+        return window.size - 1
+
+    async def __peek(
+        self, run: _LoopRun, node_id: NodeId, index: int, offset: int
+    ) -> object | None:
+        window = await self.__look_ahead_window(run)
+        if window is None or offset >= window.size:
+            return None
+        source = self.__look_ahead_source(run, node_id, index)
+        if source is None:
+            return None
+        output = await window.peek(run.slot + offset, source.id)
+        if output is None:
+            return None
+        return _output_value(typing.cast(NodeOutput, output), source.index)
 
     async def __iterate_generator_nodes(self, generator_nodes: list[GeneratorNode]):
         await self.progress.suspend()
@@ -1239,19 +1511,26 @@ class Executor:
         total_stopiters = 0
         deferred_errors: list[str] = []
         self.__item_bytes = {}
+        run = self.__run = _LoopRun(
+            {node.id for node in generator_nodes},
+            all_iterated_nodes,
+            functools.partial(
+                self.__open_window,
+                generator_nodes,
+                generator_outputs,
+                output_nodes,
+                collectors,
+                all_iterated_nodes,
+                generator_suppliers,
+            ),
+        )
         slot = -1
         while True:
             slot += 1
-            if slot == 1:
-                self.__window = await self.__open_window(
-                    generator_nodes,
-                    generator_outputs,
-                    output_nodes,
-                    collectors,
-                    all_iterated_nodes,
-                    generator_suppliers,
-                    total_stopiters,
-                )
+            run.slot = slot
+            if slot == 1 and (not run.decided):
+                run.decided = True
+                self.__window = await run.open_window(total_stopiters)
             window = self.__window
             if window is not None:
                 window.begin(slot)
@@ -1367,6 +1646,7 @@ class Executor:
                         window.release(slot)
                     await asyncio.sleep(0)
                     await self.progress.suspend()
+        self.__end_loop()
         await self.__close_window()
         await self.flush_broadcasts()
         self.node_cache.delete_many(all_iterated_nodes)
@@ -1433,6 +1713,7 @@ class Executor:
             try:
                 await self.__iterate_generator_nodes(nodes_to_run)
             finally:
+                self.__end_loop()
                 await self.__close_window()
         non_iterable_output_nodes = [
             node

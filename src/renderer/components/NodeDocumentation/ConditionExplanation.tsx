@@ -1,13 +1,16 @@
 import { evaluate } from '@chainner/navi';
 import { Code, ListItem, Text, UnorderedList } from '@chakra-ui/react';
 import { memo } from 'react';
+import { useContext } from 'use-context-selector';
 import { Condition, InputId, NodeSchema, OfKind } from '../../../common/common-types';
 import { simplifyCondition } from '../../../common/nodes/condition';
+import { SchemaMap } from '../../../common/SchemaMap';
 import { getChainnerScope } from '../../../common/types/chainner-scope';
 import { explain } from '../../../common/types/explain';
 import { fromJson } from '../../../common/types/json';
 import { prettyPrintType } from '../../../common/types/pretty';
 import { assertNever } from '../../../common/util';
+import { BackendContext } from '../../contexts/BackendContext';
 import { DropDownOptions } from './DropDownOptions';
 
 type PossiblePrimitive = OfKind<Condition, Exclude<Condition['kind'], 'and' | 'or'>>;
@@ -25,9 +28,10 @@ const getInputLabel = (schema: NodeSchema, inputId: InputId): string => {
 
 interface RenderOptions {
     readonly schema: NodeSchema;
+    readonly schemata: SchemaMap;
 }
 const renderPrimitive = (condition: PossiblePrimitive, options: RenderOptions): JSX.Element => {
-    const { schema } = options;
+    const { schema, schemata } = options;
 
     let negated = false;
     if (condition.kind === 'not') {
@@ -104,6 +108,28 @@ const renderPrimitive = (condition: PossiblePrimitive, options: RenderOptions): 
                 </>
             );
         }
+        case 'iterated': {
+            const { source } = condition;
+            return (
+                <>
+                    <Text
+                        as="span"
+                        fontWeight="600"
+                        userSelect="text"
+                    >
+                        {getInputLabel(schema, condition.input)}
+                    </Text>
+                    {negated ? ' is not' : ' is'} iterated by{' '}
+                    <Text
+                        as="span"
+                        fontWeight="600"
+                        userSelect="text"
+                    >
+                        {schemata.has(source) ? schemata.get(source).name : source}
+                    </Text>
+                </>
+            );
+        }
         default:
             return assertNever(condition);
     }
@@ -169,6 +195,7 @@ interface CEProps {
 }
 // eslint-disable-next-line react/prop-types
 export const ConditionExplanation = memo(({ condition, schema }: CEProps) => {
+    const { schemata } = useContext(BackendContext);
     return renderCondition(
         simplifyCondition(condition),
         <Text
@@ -177,6 +204,6 @@ export const ConditionExplanation = memo(({ condition, schema }: CEProps) => {
         >
             Condition:
         </Text>,
-        { schema }
+        { schema, schemata }
     );
 });

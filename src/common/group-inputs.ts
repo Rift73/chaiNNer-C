@@ -101,6 +101,15 @@ const checkCondition = (condition: Condition, schema: NodeSchema): string | unde
                 }
                 break;
             }
+            case 'iterated': {
+                const { input: inputId } = c;
+                const input = schema.inputs.find((i) => i.id === inputId);
+                if (input === undefined)
+                    return `Invalid input: There is no input with the id ${inputId}`;
+                if (!input.hasHandle)
+                    return `Invalid input: Input ${inputId} has no handle, so it is never iterated`;
+                break;
+            }
             default:
                 return assertNever(c);
         }

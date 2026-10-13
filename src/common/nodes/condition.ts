@@ -8,6 +8,7 @@ import {
     NodeSchema,
     OfKind,
     OrCondition,
+    SchemaId,
     TypeCondition,
 } from '../common-types';
 import { getChainnerScope } from '../types/chainner-scope';
@@ -52,11 +53,16 @@ const getTypeFromExpression = (expression: ExpressionJson): Type => {
     return cached;
 };
 
+/**
+ * @param getIteratingSchemaId The schema ID of the generator whose sequence iterates the given
+ * input (its lineage's source), if any.
+ */
 export const testForInputCondition = (
     inputData: InputData,
     schema: NodeSchema,
     getInputType: (inputId: InputId) => Type | undefined,
-    isConnected: (inputId: InputId) => boolean
+    isConnected: (inputId: InputId) => boolean,
+    getIteratingSchemaId: (inputId: InputId) => SchemaId | undefined
 ): TestFn => {
     const { inputConditions } = getGroupStacks(schema);
 
@@ -97,6 +103,7 @@ export const testForInputCondition = (
 
             return true;
         },
+        iterated: ({ input, source }) => getIteratingSchemaId(input) === source,
     });
 };
 
@@ -105,9 +112,16 @@ export const testInputCondition = (
     inputData: InputData,
     schema: NodeSchema,
     getInputType: (inputId: InputId) => Type | undefined,
-    isConnected: (inputId: InputId) => boolean
+    isConnected: (inputId: InputId) => boolean,
+    getIteratingSchemaId: (inputId: InputId) => SchemaId | undefined
 ): boolean => {
-    return testForInputCondition(inputData, schema, getInputType, isConnected)(condition);
+    return testForInputCondition(
+        inputData,
+        schema,
+        getInputType,
+        isConnected,
+        getIteratingSchemaId
+    )(condition);
 };
 
 export const isTautology = (condition: Condition): boolean => {
@@ -116,10 +130,12 @@ export const isTautology = (condition: Condition): boolean => {
         createTest({
             enum: () => false,
             type: () => false,
+            iterated: () => false,
         })(condition) &&
         createTest({
             enum: () => true,
             type: () => true,
+            iterated: () => true,
         })(condition)
     );
 };
