@@ -17,14 +17,21 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 # Git-ignored build outputs that ship inside backend/src. chainner_ext's tracked
-# __init__.py and __init__.pyi ship as git lists them.
+# __init__.py and __init__.pyi ship as git lists them. VOSR's TensorRT plugin is
+# an optional target of the native build (native/README.md, Build), so it ships
+# when it was built.
 NATIVE_BINARIES = frozenset(
     {
         "nodes/impl/chainner_native.dll",
         "nodes/impl/_chainner_graph.pyd",
         "chainner_ext/chainner_ext.pyd",
+        "nodes/impl/pytorch/vosr2_qkv.dll",
     }
 )
+OPTIONAL_NATIVE_BINARIES = frozenset({"nodes/impl/pytorch/vosr2_qkv.dll"})
+# A package without the plugin has no VOSR TensorRT backends, so packaging refuses it
+# unless this variable is exactly "1" (native/MAINTAINING.md, section 8).
+ALLOW_NO_VOSR_PLUGIN = "CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN"
 # A running backend maps or executes these, so they are written first.
 BINARY_SUFFIXES = (".dll", ".pyd", ".exe")
 REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: symlinks and junctions
@@ -323,14 +330,24 @@ def backend_inventory(root: Path, tracked: set[str]) -> dict[str, bytes]:
     """Read backend/src exactly as git tracks it, plus the native binaries.
 
     __pycache__ directories are excluded. Any other untracked file, or a
-    tracked file missing from disk, is refused so nothing stray is packaged.
+    tracked file or required native binary missing from disk, is refused so
+    nothing stray is packaged.
     """
     found = set(walk(root, cache_skip))
     expected = tracked | NATIVE_BINARIES
-    untracked, missing = sorted(found - expected), sorted(expected - found)
+    untracked = sorted(found - expected)
+    missing = sorted(expected - found - OPTIONAL_NATIVE_BINARIES)
     if untracked or missing:
         raise ValueError(
             "backend/src must equal git ls-files plus the native binaries; "
             f"untracked: {untracked[:10]}, missing: {missing[:10]}"
+        )
+    absent = sorted(OPTIONAL_NATIVE_BINARIES - found)
+    if absent and os.environ.get(ALLOW_NO_VOSR_PLUGIN) != "1":
+        raise ValueError(
+            f"backend/src lacks {absent}: VOSR's TensorRT plugin was not built, and "
+            "a package without it has no VOSR TensorRT backends. Build it "
+            "(native/README.md, Build), or set "
+            f"{ALLOW_NO_VOSR_PLUGIN}=1 to package without it."
         )
     return {relative: (root / relative).read_bytes() for relative in sorted(found)}

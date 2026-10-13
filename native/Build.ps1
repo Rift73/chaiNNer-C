@@ -10,7 +10,9 @@ The CMake build directory (default native\build).
 CMake cache entries, NAME=VALUE each: CHAINNER_C_PYTHON_ROOT=<runtime>, CHAINNER_C_OUTPUT_DIR=<dir>,
 CHAINNER_C_PDB=ON, CHAINNER_C_REGEX_ONLY=ON or, for local builds only, CHAINNER_C_MARCH=<cpu> (for example
 icelake-server; never for releases); on a directory's first configure, toolchain.cmake's roots
-chainner_c_llvm, chainner_c_vc_tools, chainner_c_sdk and chainner_c_sdk_version (defaults in that file).
+chainner_c_llvm, chainner_c_vc_tools, chainner_c_sdk and chainner_c_sdk_version (defaults in that file);
+CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK> with CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit> also builds VOSR's
+TensorRT plugin vosr2_qkv.dll (on any configure; without them it is skipped).
 
 .PARAMETER Ninja
 ninja.exe (default: the Visual Studio 2022 Build Tools' copy); it must exist.

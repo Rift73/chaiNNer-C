@@ -177,7 +177,22 @@ const config = {
         },
     ],
     hooks: {
-        prePackage: async () => {
+        prePackage: async (forgeConfig, platform) => {
+            // VOSR's TensorRT plugin is an optional target of the native build (Windows);
+            // a release without it has no VOSR TensorRT backends (MAINTAINING.md, section 8).
+            const vosrPlugin = path.join(__dirname, 'backend/src/nodes/impl/pytorch/vosr2_qkv.dll');
+            if (
+                platform === 'win32' &&
+                process.env.CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN !== '1' &&
+                !nodeFs.existsSync(vosrPlugin)
+            ) {
+                throw new Error(
+                    `${vosrPlugin} is missing: VOSR's TensorRT plugin was not built, and a ` +
+                        'package without it has no VOSR TensorRT backends. Build it ' +
+                        '(native/README.md, Build), or set ' +
+                        'CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1 to package without it.'
+                );
+            }
             // delete all .pyc files from backend folder, recursively
             const backendPath = path.join(__dirname, 'backend/src');
             await deletePycFiles(backendPath);

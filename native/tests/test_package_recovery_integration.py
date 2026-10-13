@@ -115,6 +115,7 @@ BACKEND_FILES = {
     DLL: b"native library fixture",
     "nodes/impl/_chainner_graph.pyd": b"graph extension fixture",
     "chainner_ext/chainner_ext.pyd": b"chainner_ext extension fixture",
+    "nodes/impl/pytorch/vosr2_qkv.dll": b"VOSR TensorRT plugin fixture",
     EXE: b"tracked executable fixture",
 }
 # This repository, whose native toolchain pins each fixture project copies.
@@ -689,6 +690,31 @@ def test_removed_backend_file_is_deleted(package_case):
     assert (result["result"], result["written_files"]) == ("refreshed", 1)
     assert not (case.destination / packaged(SECOND)).exists()
     assert packaged(SECOND) not in package_manifest.load(case.manifest)["backend"]
+    assert case.run()["result"] == "verified_no_op"
+
+
+def test_the_optional_vosr_plugin_ships_only_when_built(package_case, monkeypatch):
+    case = package_case
+    (plugin,) = package_files.OPTIONAL_NATIVE_BINARIES
+    assert plugin == "nodes/impl/pytorch/vosr2_qkv.dll"
+    case.run()
+    assert packaged(plugin) in package_manifest.load(case.manifest)["backend"]
+    (case.backend / plugin).unlink()
+    # Without the plugin, packaging refuses unless the variable allows it.
+    manifest = case.manifest.read_bytes()
+    for value in (None, "", "0", "yes"):
+        if value is None:
+            monkeypatch.delenv(package_files.ALLOW_NO_VOSR_PLUGIN, raising=False)
+        else:
+            monkeypatch.setenv(package_files.ALLOW_NO_VOSR_PLUGIN, value)
+        with pytest.raises(ValueError, match="CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN"):
+            case.run()
+        assert case.manifest.read_bytes() == manifest
+    monkeypatch.setenv(package_files.ALLOW_NO_VOSR_PLUGIN, "1")
+    result = case.run()
+    assert (result["result"], result["written_files"]) == ("refreshed", 1)
+    assert not (case.destination / packaged(plugin)).exists()
+    assert packaged(plugin) not in package_manifest.load(case.manifest)["backend"]
     assert case.run()["result"] == "verified_no_op"
 
 

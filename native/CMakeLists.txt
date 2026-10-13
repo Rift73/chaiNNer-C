@@ -232,3 +232,100 @@ foreach(target chainner_ext chainner_ext_c)
             "/MAP:$<TARGET_FILE_DIR:${target}>/${target}.map")
     endif()
 endforeach()
+
+# vosr2_qkv.dll: the VosrQkvPack TensorRT plugin of VOSR's TensorRT path (src/vosr2), beside its
+# loader in nodes/impl/pytorch. Optional: built when both roots below are given (Build.ps1 -Define,
+# on any configure), else skipped with one status line. qkv.cu alone is compiled by nvcc with the
+# pinned toolset's cl.exe as its host compiler (owner-approved exception, 2026-10-13); the plugin
+# interface and the link use clang-cl and lld-link with every option above. nvcc keeps exact device
+# math (no contraction, IEEE division and square root) and emits SASS for sm_80, sm_86, sm_89 and
+# sm_120 plus compute_120 PTX (BF16 needs sm_80 or newer). Configuration refuses any other TensorRT
+# or CUDA major than these two pins.
+set(chainner_c_tensorrt_major 11)
+set(chainner_c_cuda_major 13)
+set(CHAINNER_C_TENSORRT_ROOT "" CACHE PATH
+    "TensorRT ${chainner_c_tensorrt_major} SDK root (include, lib) for vosr2_qkv.dll; empty: not built")
+set(CHAINNER_C_CUDA_ROOT "" CACHE PATH
+    "CUDA ${chainner_c_cuda_major} toolkit root (bin/nvcc.exe, include, lib/x64) for vosr2_qkv.dll; empty: not built")
+if(NOT CHAINNER_C_TENSORRT_ROOT AND NOT CHAINNER_C_CUDA_ROOT)
+    message(STATUS "VOSR TensorRT plugin (vosr2_qkv.dll) skipped: set CHAINNER_C_TENSORRT_ROOT and "
+        "CHAINNER_C_CUDA_ROOT to build it")
+    return()
+endif()
+if(NOT CHAINNER_C_TENSORRT_ROOT OR NOT CHAINNER_C_CUDA_ROOT)
+    message(FATAL_ERROR "vosr2_qkv.dll needs both CHAINNER_C_TENSORRT_ROOT and CHAINNER_C_CUDA_ROOT "
+        "(CHAINNER_C_TENSORRT_ROOT=${CHAINNER_C_TENSORRT_ROOT}, CHAINNER_C_CUDA_ROOT=${CHAINNER_C_CUDA_ROOT})")
+endif()
+set(chainner_c_tensorrt_header "${CHAINNER_C_TENSORRT_ROOT}/include/NvInferVersion.h")
+set(chainner_c_nvcc "${CHAINNER_C_CUDA_ROOT}/bin/nvcc.exe")
+# The two version sources first, then the files that depend on the versions.
+foreach(chainner_c_file "${chainner_c_tensorrt_header}" "${chainner_c_nvcc}")
+    if(NOT EXISTS "${chainner_c_file}")
+        message(FATAL_ERROR "vosr2_qkv.dll: ${chainner_c_file} is missing")
+    endif()
+endforeach()
+file(READ "${chainner_c_tensorrt_header}" chainner_c_tensorrt_text)
+set(chainner_c_tensorrt_version "")
+foreach(chainner_c_part MAJOR MINOR PATCH BUILD)
+    string(REGEX MATCH "#define TRT_${chainner_c_part}_ENTERPRISE ([0-9]+)" chainner_c_match
+        "${chainner_c_tensorrt_text}")
+    list(APPEND chainner_c_tensorrt_version "${CMAKE_MATCH_1}")
+endforeach()
+list(JOIN chainner_c_tensorrt_version "." chainner_c_tensorrt_version)
+if(NOT chainner_c_tensorrt_version MATCHES "^${chainner_c_tensorrt_major}\\.[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "vosr2_qkv.dll builds with TensorRT ${chainner_c_tensorrt_major} only, not "
+        "'${chainner_c_tensorrt_version}' (${chainner_c_tensorrt_header})")
+endif()
+execute_process(COMMAND "${chainner_c_nvcc}" --version
+    RESULT_VARIABLE chainner_c_nvcc_result OUTPUT_VARIABLE chainner_c_nvcc_output ERROR_VARIABLE chainner_c_nvcc_output)
+string(REGEX MATCH "release [0-9]+\\.[0-9]+, V([0-9.]+)" chainner_c_match "${chainner_c_nvcc_output}")
+set(chainner_c_cuda_version "${CMAKE_MATCH_1}")
+if(NOT chainner_c_nvcc_result EQUAL 0 OR NOT chainner_c_cuda_version MATCHES "^${chainner_c_cuda_major}\\.")
+    message(FATAL_ERROR "vosr2_qkv.dll builds with CUDA ${chainner_c_cuda_major} only, not "
+        "'${chainner_c_cuda_version}' (${chainner_c_nvcc} --version, ${chainner_c_nvcc_result}): "
+        "${chainner_c_nvcc_output}")
+endif()
+set(chainner_c_nvinfer_library "${CHAINNER_C_TENSORRT_ROOT}/lib/nvinfer_${chainner_c_tensorrt_major}.lib")
+set(chainner_c_cudart_library "${CHAINNER_C_CUDA_ROOT}/lib/x64/cudart.lib")
+set(chainner_c_nvcc_host "${chainner_c_vc_tools}/bin/Hostx64/x64/cl.exe")
+foreach(chainner_c_file "${chainner_c_nvinfer_library}" "${chainner_c_cudart_library}" "${chainner_c_nvcc_host}")
+    if(NOT EXISTS "${chainner_c_file}")
+        message(FATAL_ERROR "vosr2_qkv.dll: ${chainner_c_file} is missing")
+    endif()
+endforeach()
+message(STATUS "VOSR TensorRT plugin (vosr2_qkv.dll): TensorRT ${chainner_c_tensorrt_version}, "
+    "CUDA ${chainner_c_cuda_version}")
+# cl.exe finds the toolset's and the SDK's headers through INCLUDE, as in a Developer prompt.
+set(chainner_c_nvcc_include "${chainner_c_vc_tools}/include"
+    "${chainner_c_sdk}/Include/${chainner_c_sdk_version}/ucrt"
+    "${chainner_c_sdk}/Include/${chainner_c_sdk_version}/shared"
+    "${chainner_c_sdk}/Include/${chainner_c_sdk_version}/um")
+list(JOIN chainner_c_nvcc_include "$<SEMICOLON>" chainner_c_nvcc_include)
+set(chainner_c_qkv_object "${CMAKE_CURRENT_BINARY_DIR}/vosr2_qkv_cuda.obj")
+add_custom_command(OUTPUT "${chainner_c_qkv_object}"
+    COMMAND "${CMAKE_COMMAND}" -E env "INCLUDE=${chainner_c_nvcc_include}"
+        "${chainner_c_nvcc}" -c "${CMAKE_CURRENT_SOURCE_DIR}/src/vosr2/qkv.cu" -o "${chainner_c_qkv_object}"
+        -ccbin "${chainner_c_nvcc_host}" -O3 -std=c++17
+        -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_86,code=sm_86
+        -gencode=arch=compute_89,code=sm_89 "-gencode=arch=compute_120,code=[sm_120,compute_120]"
+        --fmad=false --prec-div=true --prec-sqrt=true -Werror all-warnings
+        -Xcompiler "$<IF:$<CONFIG:Debug>,/MTd,/MT>,/W4,/WX,/fp:strict,/Brepro"
+    DEPENDS src/vosr2/qkv.cu
+    COMMENT "Compiling src/vosr2/qkv.cu with nvcc"
+    VERBATIM)
+set_source_files_properties("${chainner_c_qkv_object}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+add_library(vosr2_qkv MODULE src/vosr2/qkv_plugin.cpp "${chainner_c_qkv_object}")
+target_include_directories(vosr2_qkv SYSTEM PRIVATE
+    "${CHAINNER_C_TENSORRT_ROOT}/include" "${CHAINNER_C_CUDA_ROOT}/include")
+# CUDA 13's cudart.lib is the static runtime (it loads the driver itself): the DLL imports only
+# nvinfer_11.dll and KERNEL32.dll.
+target_link_libraries(vosr2_qkv PRIVATE "${chainner_c_nvinfer_library}" "${chainner_c_cudart_library}")
+set_target_properties(vosr2_qkv PROPERTIES PREFIX "" SUFFIX ".dll"
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO
+    LIBRARY_OUTPUT_DIRECTORY "${CHAINNER_C_OUTPUT_DIR}/pytorch")
+target_compile_options(vosr2_qkv PRIVATE /W4 /WX /EHsc)
+if(CHAINNER_C_PDB)
+    target_compile_options(vosr2_qkv PRIVATE /Zi)
+    target_link_options(vosr2_qkv PRIVATE /DEBUG /OPT:REF /OPT:ICF
+        "/MAP:${CHAINNER_C_OUTPUT_DIR}/pytorch/vosr2_qkv.map")
+endif()
