@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { getBackend } from '../../../src/common/Backend';
-import { CategoryId, NodeGroupId, NodeSchema, SchemaId } from '../../../src/common/common-types';
+import {
+    CategoryId,
+    InputId,
+    NodeGroupId,
+    NodeSchema,
+    SchemaId,
+} from '../../../src/common/common-types';
 import { delay } from '../../../src/common/util';
 import { RunArguments } from '../../../src/main/arguments';
 import { OwnedBackendProcess } from '../../../src/main/backend/process';
@@ -137,6 +143,60 @@ describe('runChainInCli', () => {
 
         expect(run).toHaveBeenCalledTimes(1);
         expect(backendProcess.tryKill).toHaveBeenCalledTimes(1);
+    });
+
+    test.each([
+        [{}, 4],
+        [{ 0: null }, 4],
+        [{ 0: 0 }, 0],
+        [{ 0: 7 }, 7],
+    ])('loads saved inputs %j with schema defaults', async (inputData, expected) => {
+        mockBackendProcess(createOwnedBackendProcess());
+        const updated: NodeSchema = {
+            ...schema,
+            inputs: [
+                {
+                    id: 0 as InputId,
+                    type: 'number',
+                    conversions: [],
+                    kind: 'number',
+                    label: 'New input',
+                    optional: false,
+                    hasHandle: false,
+                    hint: false,
+                    suggest: false,
+                    def: 4,
+                    precision: 0,
+                    controlsStep: 1,
+                    hideTrailingZeros: true,
+                    labelStyle: 'default',
+                },
+            ],
+            groupLayout: [0 as InputId],
+        };
+        readSaveFile.mockResolvedValue({
+            nodes: [
+                {
+                    id: 'node',
+                    type: 'regularNode',
+                    position: { x: 0, y: 0 },
+                    data: { id: 'node', schemaId: schema.schemaId, inputData },
+                },
+            ],
+            edges: [],
+            viewport: { x: 0, y: 0, zoom: 1 },
+            tamperedWith: false,
+        });
+        const run = vi.fn().mockResolvedValue({ type: 'success' });
+        mockBackend({ nodes: () => Promise.resolve({ nodes: [updated] }), run });
+
+        await runChainInCli(args);
+
+        expect(run).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: [expect.objectContaining({ inputs: [{ type: 'value', value: expected }] })],
+            })
+        );
     });
 
     test('stops the backend when the chain fails', async () => {
