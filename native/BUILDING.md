@@ -10,10 +10,12 @@ The developer reference that used to live in the root README. The full command r
   `chainner_ext.pyd`, a C replacement for upstream's Rust `chainner_ext`.
 - The Python backend (`backend/src`) is upstream's with the native paths wired in; nodes without one run upstream's
   Python unchanged. The GPU nodes keep their engines (PyTorch, ONNX Runtime, NCNN, TensorRT); the ONNX CPU session
-  adapter, the ONNX-to-NCNN converter, NCNN param handling and tiling control are native.
+  adapter, the ONNX-to-NCNN converter, NCNN param handling and tiling control are native. chaiNNer-C adds two PyTorch
+  nodes for VOSR 2.0 generative upscaling ([`VOSR2.md`](VOSR2.md)).
 - `src/` and `tests/` are upstream's frontend at `d56e507f` with chaiNNer-C's UI changes (no updates, `v0.3.3`, the
-  drop repairs, the TensorRT types and Clear item), its integrated Python moved to CPython 3.14.8 and its own
-  `%APPDATA%\chaiNNer-C`. The local portable package uses an installed upstream nightly's UI with reviewed patches.
+  drop repairs, the TensorRT types and Clear item, the VOSR model type and the iterated input condition), its
+  integrated Python moved to CPython 3.14.8 and its own `%APPDATA%\chaiNNer-C`. The local portable package uses an
+  installed upstream nightly's UI with reviewed patches, which do not include the VOSR changes.
 
 **Output contract.** The reference is upstream chaiNNer's own backend, run on the same Python stack with the same
 inputs, and chaiNNer-C's outputs must be bit-exact against it. The documented deviations and test tolerances are in
@@ -35,8 +37,10 @@ correct and only the speedup is lost.
 
 Prerequisites: LLVM 23.1.2 (`clang-cl`, `lld-link`, `llvm-lib`, `llvm-rc`); Visual Studio 2022 Build Tools with the
 MSVC toolset 14.44.35207 and the Windows SDK 10.0.26100.0 (no Developer environment needed); CMake 3.20 or newer on
-`PATH`; Ninja (by default the Build Tools' copy); Node.js with npm. Run every command from the repository root in
-PowerShell.
+`PATH`; Ninja (by default the Build Tools' copy); Node.js with npm. Optional: a TensorRT 11 SDK and a CUDA 13 toolkit,
+which build VOSR's TensorRT plugin `vosr2_qkv.dll` when step 3 adds
+`-Define CHAINNER_C_TENSORRT_ROOT=<SDK>,CHAINNER_C_CUDA_ROOT=<toolkit>` (README Build); without it VOSR runs on
+PyTorch only. Run every command from the repository root in PowerShell.
 
 1. Clone the `chaiNNer-C` branch.
 2. Provision the build's Python: `-BuildOnly` downloads the lock's CPython 3.14.8 into `native\runtime\cpython-3.14.8`,

@@ -1038,6 +1038,12 @@ def test_every_worker_executor_installs_the_handler():
     expected = ([["numpy_pool.install"]], "nodes.impl.numpy_pool")
     assert found == {
         "nodes/impl/ffmpeg.py": expected,
+        # The restoring worker and the CPU work's threads.
+        "nodes/impl/pytorch/vosr2_temporal_step.py": (
+            [["numpy_pool.install"], ["numpy_pool.install"]],
+            "nodes.impl.numpy_pool",
+        ),
+        "nodes/impl/pytorch/vosr2_texture.py": expected,
         "packages/chaiNNer_external/web_ui.py": expected,
         "server.py": expected,
     }

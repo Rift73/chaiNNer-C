@@ -5,20 +5,20 @@ installed nightly `0.25.1-nightly.2025-10-21` UI with pinned bundle patches, the
 native C17/C++20 layer. The UI shows v0.3.3 (header, About, startup log, system information with `app.upstream`), while
 `app.getVersion()` stays upstream's, so saved chains keep the upstream version stamp and upstream's migrations read
 them correctly. Design: `ARCHITECTURE.md`. State and
-decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. Run every command in PowerShell from
-`<repository root>`.
+decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md` (user guide) and
+`VOSR2-MAINTAINING.md`. Run every command in PowerShell from `<repository root>`.
 
 ## Layout
 
 | Path | Role |
 | --- | --- |
-| `backend/src/` | The only backend; ships byte for byte (stored verbatim as LF, upstream's line ending: `backend/src/** -text`); its `nodes/impl/chainner_native.dll` and `_chainner_graph.pyd` are git-ignored binaries written by the build |
+| `backend/src/` | The only backend; ships byte for byte (stored verbatim as LF, upstream's line ending: `backend/src/** -text`); its `nodes/impl/chainner_native.dll` and `_chainner_graph.pyd` (and `nodes/impl/pytorch/vosr2_qkv.dll` when built) are git-ignored binaries written by the build |
 | `native/src/`, `native/include/`, `native/third_party/` | C17 kernels, C++20 modules; vendored pybind11, fpng 1.0.6, ONNX Runtime C header |
 | `native/tests/` | pytest suites and frozen `reference_*` oracles (stored verbatim: `native/tests/reference_*/** -text`) |
-| `native/tools/` | Packager, UI patches, runtime verifiers, benchmark harness, code generators, `isa_check.py text` (compares two binaries' code sections), `golden_kernels.py` (golden manifests of the SP4 kernels; usage in each docstring) |
+| `native/tools/` | Packager, UI patches, runtime verifiers, benchmark harness, code generators, `isa_check.py text` (compares two binaries' code sections), `golden_kernels.py` (golden manifests of the SP4 kernels; usage in each docstring), `download_vosr2.py` (the VOSR 2.0 model folder) |
 | `native/reports/`, `out/chaiNNer-C/` | Ignored: local evidence (never needed to build or package), and the portable package |
 | `out/chaiNNer-C-py311/` | Ignored: the last CPython 3.11 package, kept read-only as the old-stack bench side and the undo; deleting it is owner-only |
-| `src/`, `tests/` | Upstream frontend at `d56e507f` with the package's two UI patches ported, CPython 3.14.8 as its integrated Python and `%APPDATA%\chaiNNer-C` as its root; the run-from-source UI (`npm start`), never shipped |
+| `src/`, `tests/` | Upstream frontend at `d56e507f` with the package's two UI patches ported, CPython 3.14.8 as its integrated Python and `%APPDATA%\chaiNNer-C` as its root; the run-from-source UI (`npm start`), never shipped. It alone has VOSR's `VosrModel` type and the iterated input condition (no package patch carries them) |
 
 ## Prerequisites
 
@@ -28,6 +28,9 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. Run every command in
   `C:\Executables\clang+llvm-23.1.2-x86_64-pc-windows-msvc\bin`; Visual Studio 2022 Build Tools at
   `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools` (MSVC 14.44.35207's headers and libraries,
   and its bundled Ninja), Windows SDK 10.0.26100.0, and CMake 3.20 or newer.
+- Optional, for VOSR's TensorRT plugin (Build): a TensorRT 11 SDK (the zip's `include` and `lib`, for example
+  `TensorRT-11.2.1.2`) and a CUDA 13 toolkit (`nvcc`, for example
+  `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3`).
 - CPython 3.14.8 at `native\runtime\cpython-3.14.8`, provisioned by `native\tools\provision_runtime.ps1`
   from the tracked lock `native\python-stack.lock.txt` (interpreter, build tag, archive SHA-256, pip's version
   and every pin, installed without dependency resolution); the run fails unless `pip check` is clean and the
@@ -88,6 +91,19 @@ unchanged since v0.3.1 and v0.3.2), for reference:
 | `chainner_native.dll` | `6da1217311bb59a67d1a7ad50e20007ef733b5dbce763ed6bfcf708271cfecf5` |
 | `_chainner_graph.pyd` | `5daa49f67be04b01e04aa3cd467c40aa513451b1560e8a8b866c8f207486fe23` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
+| `vosr2_qkv.dll` (TensorRT 11.2.1.2, CUDA 13.3.73) | `14dfaec0eeead27ea187ac51b3ba10b76796757af6d4d704d46f4399768196fc` |
+
+**VOSR's TensorRT plugin** `vosr2_qkv.dll` (`src/vosr2`, the VOSR TensorRT backends' Q/K/V packing) is an
+optional fourth target: `-Define CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>,CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit>`
+(on any configure; Prerequisites) builds it into `CHAINNER_C_OUTPUT_DIR\pytorch` (default
+`backend/src/nodes/impl/pytorch`). Without them configuration prints that it was skipped and the three binaries are
+unchanged; one root alone, or another TensorRT or CUDA major, fails configuration. `qkv.cu` alone is compiled by nvcc
+with the pinned toolset's `cl.exe` as its host compiler (the owner-approved exception to the one toolchain): exact
+device math (`--fmad=false --prec-div=true --prec-sqrt=true`), SASS for sm_80, sm_86, sm_89 and sm_120 plus
+compute_120 PTX, `/W4 /WX` on the host side and `-Werror all-warnings`. `qkv_plugin.cpp` and the link use clang-cl
+and lld-link with the flags above (TensorRT's and CUDA's headers as system headers). The DLL imports only
+`nvinfer_11.dll` (CUDA 13's `cudart.lib` is the static runtime) and is reproducible like the others. Its hash is part
+of the VOSR TensorRT engine caches' identity, so a new DLL rebuilds those engines once.
 
 `generate_onnx_converter.py`, `generate_pixel_art_tables.py` and `generate_tiling_cpp.py` in `native/tools` turn pinned
 sources into C++ and never run in the application, as `native/tests/reference_ncnn/generate_optimizer_cpp.py` does for
@@ -187,7 +203,9 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
 - A locked DLL/PYD (a running package) fails the run before any write and names the paths. Close
   that app yourself; never kill processes. A run interrupted mid-write recovers on the next run.
 - A file changed outside the tool, an untracked or missing file under `backend/src`, or an
-  unknown installed UI bundle fails the run. Investigate; never disable a guard.
+  unknown installed UI bundle fails the run. Investigate; never disable a guard. A package without `vosr2_qkv.dll`
+  (built only with the TensorRT and CUDA roots) is refused unless `CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1`
+  (`package_files.OPTIONAL_NATIVE_BINARIES`; MAINTAINING section 8).
 - After a refresh, run the runtime verifiers (owned backends and profiles, CPU-only, HTTP + SSE,
   oracle versus package, decoded-output equality; evidence to `native/reports/<kind>-<UTC>/`). The oracle is
   `make_oracle.py`'s tree with chaiNNer-C's `chainner_ext`, run on the provisioned runtime the package was copied from

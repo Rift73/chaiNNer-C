@@ -28,6 +28,7 @@ const colorList = () => {
         { type: resolveName('bool'), color: getComputedColor('--type-color-bool') },
         { type: resolveName('Color'), color: getComputedColor('--type-color-color') },
         { type: resolveName('PyTorchModel'), color: getComputedColor('--type-color-torch') },
+        { type: resolveName('VosrModel'), color: getComputedColor('--type-color-torch') },
         { type: resolveName('OnnxModel'), color: getComputedColor('--type-color-onnx') },
         { type: resolveName('NcnnNetwork'), color: getComputedColor('--type-color-ncnn') },
         { type: resolveName('TensorRTEngine'), color: getComputedColor('--type-color-tensorrt') },

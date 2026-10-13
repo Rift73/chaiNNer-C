@@ -1,0 +1,266 @@
+from __future__ import annotations
+
+from importlib.util import find_spec
+
+import numpy as np
+import torch
+from sanic.log import logger
+
+from api import NodeContext
+from nodes.groups import Condition, if_group
+from nodes.impl.pytorch.resource_cache import allow_model_reuse
+from nodes.impl.pytorch.utils import safe_cuda_cache_empty
+from nodes.impl.pytorch.vosr2 import (
+    BundlePaths,
+    VosrBackend,
+    VosrColorCorrection,
+    VosrMemoryMode,
+    prepare_image,
+)
+from nodes.impl.pytorch.vosr2_cache import lease_bundle, release_bundle
+from nodes.impl.pytorch.vosr2_context import upscale_scene_focus
+from nodes.impl.pytorch.vosr2_engine_cache import ensure_full_engine
+from nodes.impl.pytorch.vosr2_fp8 import ensure_fp8_engine
+from nodes.impl.pytorch.vosr2_memory import vram_budget
+from nodes.impl.pytorch.vosr2_temporal import TemporalMode
+from nodes.impl.pytorch.vosr2_temporal_step import TemporalStep, frames_ahead
+from nodes.impl.pytorch.vosr2_texture import restore_with_texture
+from nodes.impl.pytorch.vosr2_trt_pipeline import (
+    lease_full_session,
+    release_full_session,
+)
+from nodes.impl.pytorch.vosr2_trt_restore import LatentStatistics, restore
+from nodes.properties.inputs import (
+    EnumInput,
+    ImageInput,
+    NumberInput,
+    SeedInput,
+    VosrModelInput,
+)
+from nodes.properties.outputs import ImageOutput
+from nodes.utils.seed import Seed
+
+from ...settings import get_settings
+from .. import processing_group
+
+LOAD_VIDEO = "chainner:image:load_video"
+TEMPORAL_METHODS = {
+    TemporalMode.THREE_FRAMES: "Three Frames",
+    TemporalMode.PERSISTENT_DETAIL: "Persistent Detail",
+}
+
+
+@processing_group.register(
+    schema_id="chainner:pytorch:upscale_image_vosr",
+    name="Upscale Image (VOSR)",
+    description=[
+        "Upscales an RGB image using a VOSR 2.0 generative super-resolution model.",
+        "The image is resized to the chosen scale and restored in overlapping windows that share scene context, so focus and fine texture stay consistent; the seed selects the generated detail.",
+        "The TensorRT backends compile their engines on first use and reuse them afterwards.",
+        "Inside a Load Video loop, each frame is also stabilized over time: the restorations of neighbouring frames are aligned with optical flow and combined only where they match reliably, and a detected cut starts afresh.",
+        "When the frames ahead cannot be read early (for example, through a node between Load Video and this one that is not computed ahead), only the current and earlier frames are used: Three Frames combines the previous frame alone and Persistent Detail starts each scene from its first frame alone.",
+    ],
+    icon="PyTorch",
+    inputs=[
+        ImageInput(channels=3),
+        VosrModelInput(),
+        NumberInput("Scale", min=1, max=8, default=4, unit="x"),
+        SeedInput(),
+        EnumInput(
+            VosrColorCorrection,
+            "Color Correction",
+            default=VosrColorCorrection.WAVELET,
+            option_labels={VosrColorCorrection.ADAIN: "AdaIN"},
+        ),
+        EnumInput(
+            VosrMemoryMode,
+            "GPU Memory",
+            default=VosrMemoryMode.DEFAULT,
+            option_labels={VosrMemoryMode.LOW: "Low (under 7 GB)"},
+        ).with_docs(
+            "Low keeps total GPU memory use, including other programs, under 7 GB by streaming the model weights. It is slower and always uses PyTorch.",
+            hint=True,
+        ),
+        if_group(Condition.enum(5, VosrMemoryMode.DEFAULT))(
+            EnumInput(
+                VosrBackend,
+                "Backend",
+                default=VosrBackend.PYTORCH,
+                option_labels={
+                    VosrBackend.PYTORCH: "PyTorch",
+                    VosrBackend.TENSORRT: "TensorRT",
+                    VosrBackend.TENSORRT_FP8: "TensorRT FP8",
+                },
+            ).with_docs(
+                "TensorRT needs an NVIDIA GPU and the TensorRT package. TensorRT FP8 is faster and can slightly change fine detail; it needs an RTX 40 series or newer GPU and the official VOSR 2.0 weights, and downloads its calibrated graphs (about 3.5 GB) on first use.",
+                hint=True,
+            ),
+        ),
+        if_group(Condition.iterated(0, LOAD_VIDEO))(
+            EnumInput(
+                TemporalMode,
+                "Temporal Method",
+                default=TemporalMode.THREE_FRAMES,
+                option_labels=TEMPORAL_METHODS,
+            )
+            .with_id(7)
+            .with_docs(
+                "Three Frames combines each frame with the previous and the next one. Persistent Detail also carries stable fine texture from earlier frames and starts each scene from up to five frames, so the first output of a scene takes longer.",
+                hint=True,
+            ),
+            NumberInput("Temporal Strength", min=0, max=100, default=65, unit="%")
+            .with_id(8)
+            .with_docs(
+                "0 % upscales every frame on its own. Keep the same seed for a whole video.",
+                hint=True,
+            ),
+        ),
+    ],
+    outputs=[
+        ImageOutput(
+            image_type="Image { width: Input0.width * Input2, height: Input0.height * Input2 }",
+            channels=3,
+        )
+    ],
+    limited_to_8bpc=True,
+    node_context=True,
+)
+def upscale_image_vosr_node(
+    context: NodeContext,
+    img: np.ndarray,
+    model: BundlePaths,
+    scale: int,
+    seed: Seed,
+    color: VosrColorCorrection,
+    memory: VosrMemoryMode,
+    backend: VosrBackend,
+    method: TemporalMode,
+    strength: int,
+) -> np.ndarray:
+    device = get_settings(context).device
+    # Low hides the backend: it always streams the PyTorch model.
+    if memory == VosrMemoryMode.LOW:
+        backend = VosrBackend.PYTORCH
+    if backend != VosrBackend.PYTORCH:
+        if device.type != "cuda":
+            raise ValueError(
+                "VOSR TensorRT requires an NVIDIA GPU. Turn off CPU mode in the PyTorch settings or select the PyTorch backend."
+            )
+        if find_spec("tensorrt") is None:
+            raise ValueError(
+                "VOSR TensorRT requires the TensorRT package. Install TensorRT in the dependency manager or select the PyTorch backend."
+            )
+    if device.type == "cuda":
+        with torch.cuda.device(device):
+            if not torch.cuda.is_bf16_supported():
+                raise ValueError(
+                    "VOSR 2.0 requires a GPU with BF16 support. Turn on CPU mode in the PyTorch settings to run it on the CPU."
+                )
+
+    def upscale(image: np.ndarray, restore_context: NodeContext) -> np.ndarray:
+        return _upscale(
+            restore_context, image, model, scale, seed, color, memory, backend
+        )
+
+    view = context.iteration
+    if strength == 0 or view is None or view.iterated_by(0) != LOAD_VIDEO:
+        return upscale(img, context)
+    inputs = (model, scale, seed, color, memory, backend, method, strength)
+    step = view.state
+    if not isinstance(step, TemporalStep):
+        lookahead = view.lookahead(0)
+        step = TemporalStep(
+            method, strength / 100, lookahead, backend != VosrBackend.PYTORCH, inputs
+        )
+        view.state = step
+        if not step.ahead:
+            logger.info(
+                "VOSR temporal: %s needs %d frames ahead, the item window serves %d; using past frames only",
+                TEMPORAL_METHODS[method],
+                frames_ahead(method),
+                lookahead,
+            )
+    return step.frame(
+        context, view.index, img, lambda offset: view.peek(0, offset), upscale, inputs
+    )
+
+
+def _upscale(
+    context: NodeContext,
+    img: np.ndarray,
+    model: BundlePaths,
+    scale: int,
+    seed: Seed,
+    color: VosrColorCorrection,
+    memory: VosrMemoryMode,
+    backend: VosrBackend,
+) -> np.ndarray:
+    """One image's restoration, the device and backend already checked."""
+    settings = get_settings(context)
+    device = settings.device
+    # BF16 with FP32 VAE (and the engines' FP32 exceptions); the CPU uses FP32.
+    dtype = torch.float32 if device.type == "cpu" else torch.bfloat16
+    reuse = allow_model_reuse(
+        device.type, settings.budget_limit, settings.force_cache_wipe
+    )
+    engine = None
+    if backend == VosrBackend.TENSORRT_FP8:
+        engine = ensure_fp8_engine(context, model, device)
+    elif backend == VosrBackend.TENSORRT:
+        engine = ensure_full_engine(context, model, device)
+    else:
+        release_full_session(context.node_id)
+    # After a possible engine build (minutes): the resized image is not held meanwhile.
+    image, reference = prepare_image(img, scale)
+    context.add_cleanup(
+        safe_cuda_cache_empty, after="node" if settings.force_cache_wipe else "chain"
+    )
+    if engine is not None:
+        with lease_full_session(context, engine, device, reuse=reuse) as session:
+            release_bundle(context.node_id)
+            statistics = LatentStatistics.load(model)
+            with vram_budget(
+                device,
+                memory,
+                context,
+                settings.budget_limit,
+                prepare=session.prepare,
+            ) as check:
+                return restore_with_texture(
+                    lambda: restore(
+                        statistics,
+                        image,
+                        reference,
+                        seed.to_u32(),
+                        color,
+                        context,
+                        check,
+                        session,
+                    ),
+                    img,
+                    reference,
+                    scale,
+                    check,
+                    device,
+                )
+    with lease_bundle(context, model, dtype, reuse=reuse) as bundle:
+        with vram_budget(device, memory, context, settings.budget_limit) as check:
+            return restore_with_texture(
+                lambda: upscale_scene_focus(
+                    bundle,
+                    image,
+                    reference,
+                    device,
+                    seed.to_u32(),
+                    memory,
+                    color,
+                    context,
+                    check,
+                    optimized=device.type == "cuda",
+                ),
+                img,
+                reference,
+                scale,
+                check,
+                device,
+            )

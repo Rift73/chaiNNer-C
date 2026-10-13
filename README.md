@@ -20,6 +20,9 @@ chaiNNer-org. For chaiNNer itself, its documentation and its community, see the
 - **TensorRT upscaling.** New TensorRT nodes run your `.engine` files on NVIDIA GPUs. Large images are split into
   overlapping tiles automatically, with no visible seams, and engines stay loaded between runs (right-click the node
   and choose **Clear** to free the memory).
+- **VOSR 2.0 generative upscaling.** Two PyTorch nodes run [VOSR 2.0](https://github.com/cswry/VOSR), a one-step
+  generative super-resolution model, on PyTorch or TensorRT (BF16 or FP8), and stabilize video frames from Load Video
+  over time automatically. See the [VOSR guide](native/VOSR2.md).
 - **An up-to-date Python stack:** Python 3.14, NumPy 2, OpenCV 5, current PyTorch and ONNX Runtime.
 - **Lives next to chaiNNer.** chaiNNer-C keeps its settings and its Python in its own folder (the folder you
   unzip it to; `%APPDATA%\chaiNNer-C` when run from source), so an existing chaiNNer install is never touched.
@@ -47,7 +50,7 @@ Not supported: 32-bit Windows, ARM PCs (such as Snapdragon laptops), macOS and L
 
 **Do my chaiNNer chains work in chaiNNer-C?** Yes. The nodes are the same, so chains open and run as in chaiNNer, and
 chains saved in chaiNNer-C open in chaiNNer too, except chains using the TensorRT nodes, which need a chaiNNer version
-with TensorRT support.
+with TensorRT support, or the VOSR nodes, which only chaiNNer-C has.
 
 **Will it affect my existing chaiNNer?** No. chaiNNer-C uses its own folder for its settings and Python.
 
@@ -72,6 +75,7 @@ Details (development setup, tests, packaging, toolchain options) are in [`native
 
 ## Documentation
 
+- [`native/VOSR2.md`](native/VOSR2.md): the VOSR 2.0 nodes (model download, settings, video, speed).
 - [`native/BUILDING.md`](native/BUILDING.md): build, test and package.
 - [`native/README.md`](native/README.md): the full developer command reference (tests, verifiers, benchmarks).
 - [`native/ARCHITECTURE.md`](native/ARCHITECTURE.md): how it's built and the exactness rules.
@@ -88,4 +92,7 @@ chaiNNer is by chaiNNer-org and its contributors.
   [`chainner_native.LICENSE.txt`](backend/src/nodes/impl/chainner_native.LICENSE.txt) lists each one with its license.
 - Vendored and ported third-party code (fpng, pybind11, the ONNX Runtime C header and the sources ported into
   `chainner_ext`) keeps its license texts under [`native/third_party`](native/third_party).
+- VOSR 2.0 is by Rongyuan Wu, Lingchen Sun, Zhengqiang Zhang, Xiangtao Kong, Jixin Zhao, Shihao Wang and Lei Zhang
+  (Apache-2.0); its model code in `backend/src/vendor/vosr2` is adapted from ComfyUI-VOSR2 and VOSR and keeps their
+  notices (`NOTICE.md`). The weights are downloaded separately.
 - Python and each installed package keep their own licenses.

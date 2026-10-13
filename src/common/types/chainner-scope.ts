@@ -69,6 +69,9 @@ struct PyTorchModel {
 }
 enum ModelTiling { Supported, Discouraged, Internal }
 
+// a validated VOSR model folder; its weights load when it is first used
+struct VosrModel;
+
 struct NcnnNetwork {
     scale: int(1..),
     inputChannels: int(1..),

@@ -4,6 +4,20 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- VOSR 2.0 (2026-10-13; guide `VOSR2.md`, maintainer page `VOSR2-MAINTAINING.md`): two PyTorch nodes, Load VOSR
+  Model and Upscale Image (VOSR), on a fixed BF16/FP32 policy with GPU Memory Default or Low and the PyTorch, TensorRT
+  and TensorRT FP8 backends. In a Load Video loop the node stabilizes frames (Three Frames or Persistent Detail,
+  strength 65 %) with frames ahead from the item window's new look-ahead (`NodeContext.iteration`, the `iterated`
+  input condition; ARCHITECTURE section 4), else from past frames only. Gone: VOSR 2.0 Upscale, Temporal Sequence,
+  Precision, Original mode and tile inputs, FP16, High. The TensorRT plugin `vosr2_qkv.dll` is an optional native target
+  (`14dfaec0…`, four reproducible builds); the FP8 graphs are hosted (`vosr2-fp8-f9e142df5846`, 3.45 GB, SHA-256
+  pinned) and compiled on first use (191 s, compile 177 s). Verified on the RTX 5090: PyTorch images bit-identical to
+  the old node (256×256 and 640×360 → 2560×1440); a 30-frame Load Video chain bit-identical to the old Temporal Sequence
+  for both methods on PyTorch; TensorRT BF16 frames 51.1 dB minimum, 52.2 dB mean PSNR from the old ones (rebuilt
+  engines; one image alone 49.1 dB); FP8 from the hosted graphs 51.9 and 43.5 dB from the old FP8 outputs, which the
+  old plans reproduce bit for bit. 640×360 → 2560×1440 per frame: PyTorch 4.60 s, TensorRT 1.40 s. CPU: the VOSR,
+  executor and item-window files 2331 passed, only the 4 known DDS failures; pyright 0 errors; lint, runtime type check
+  and vitest (136 passed) clean.
 - Branch `chaiNNer-C` on upstream `d56e507f`. SP1 took `native/` from `codex/c-port` at `c081e940`; that branch is kept as-is, with the SP1 plan and its execution rulings on top.
 - One backend: `backend/src` = B0 (426 files) plus SP2's, SP3's, SP3b's, SP4a's, SP4b's and SP4c's edits (ARCHITECTURE section 2) and rebuilt binaries (git-ignored);
   the sources are tracked with their shipped bytes. Until SP1 the package was the installed backend plus 216 overlays applied through delegates, transplants and AST pins; that mechanism is retired (it and prior history: tag `chainner-c-checkpoint-20261001`, `fede43d8`).
@@ -152,6 +166,24 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | SP0 deferred follow-ups | `docs/superpowers/plans/2026-10-01-sp0-foundation.md`, "Deferred follow-ups" |
 | Upstream-parity items still listed (owner directive 4, 2026-10-04): the C1-class pins not yet checked against chaiNNer; lens power's input `maxss(+0, x)`, output-invisible and VERIFIED equal to chaiNNer's chain; compose's NaN selection, positions-level by rule (spec 4.4); suite-wide ±0-aware bitwise comparators (the suite's `assert_array_equal` treats ±0 as equal). Closed: the normalize/enforce clamp follows `np.clip` on the tested stack, −0 kept (ARCHITECTURE section 7, Consult 11 R-p) | SP5a, or the next task that touches them |
 | Upstream-bug follow-ups (2026-10-09): the bundled `chainner_pip` 23.2 downloads PEP 658 wheels twice (needs pip's pypa/pip#11847 fix in the bundled wheel); SCUNet ONNX export unblocking (needs a real-model test); the ONNX size probe cannot find multiples 12/24/48 and its lock serializes ONNX upscales during a probe; the host reads the worker's output as strict UTF-8 (`backslashreplace` on that Popen); the real first-start check needs a fixed, firewall-allowed folder | `native/reports/fable-decisions.md` (D1-D15) |
+| VOSR speed, PyTorch path: each window's DINO features go to the CPU and back, and every DiT prediction is synchronized and copied to the CPU (`vosr2_context.py`) | Keep them on the GPU when Default has room; paired A/B |
+| VOSR cold start: the 5.6 GB FP32 DiT checkpoint is converted to BF16 at every cold load (`vosr2.py`) | A cached BF16 copy; measure the cold start |
+| VOSR temporal on PyTorch: the next restoration does not overlap the CPU stabilization (about 1.1 s of 4.6 s per 2560×1440 frame); `stabilize` runs on one thread (1.0 s); the next `motion_pair` could run alongside | Paired A/B and a memory check for each |
+| VOSR temporal: each item settles its background restoration, so the GPU idles while downstream nodes (Save Video's encode) run | Owner decision: letting it cross the item boundary relaxes "no GPU work escapes an item" |
+| VOSR engine identities are broader than the engines: all of `vosr2.py` (a message edit rebuilds) and the whole plugin DLL (a metadata-only rebuild rebuilds) | Hash only engine-relevant code and the DLL's SASS/PTX |
+| VOSR BF16 identity reads the five bundle files (about 7 GB) once per process (`file_hash`) | Use `stored_hash`, as the FP8 path does |
+| VOSR engine sets of earlier identities (BF16, the prepared FP8 `f2d7a3da…`) are never removed: 1.7 to 3.5 GB each | A "remove unused VOSR caches" step |
+| VOSR engine builds: about 3 minutes without progress, one stage at a time, no timing cache | Stage count in the log; small stages in parallel; a per-GPU timing cache |
+| VOSR robustness: Load VOSR Model checks presence and configuration only (a truncated weight file fails at the first upscale); the node resizes the image before a minutes-long engine build | Size check against `download_vosr2.py`'s pins; resize after the engine is ready |
+| VOSR FP8: one host and no mirror; a DINOv2 safetensors conversion is refused by the bundle check | A mirror list beside the pin; record that conversion's SHA-256 |
+| VOSR plugin release: nothing requires `vosr2_qkv.dll` in a release, and the package manifest does not record its TensorRT and CUDA versions | A release flag that requires it; versions in `native_toolchain` |
+| VOSR plugin code: no sm_90/sm_100 SASS (compute_120 PTX cannot run there); no header dependency file for the nvcc step; a dead branch in `qkv.cu` and an `rsqrtf` worth a comment | SASS when those GPUs become targets; `-MD -MF` with `DEPFILE`; code cleanups need GPU revalidation |
+| Look-ahead executor: K is decided at item 0 once a node looks ahead (a later-computed writer folder then forces K = 1 for groups reading per-item files); jobs computed ahead get a fresh context each; `ItemWindow._wake` rechecks every waiter; forced jobs bypass P; the UI's lineage takes the first iterated edge, the backend the first iterated input | A schema-level "looks ahead" flag, a per-node context cache, a per-slot waiter map and a cap, when a measured need appears |
+| VOSR in the local portable package: the nightly UI's patches lack the `VosrModel` type and the iterated condition | A patch JSON once the nightly is restored (first row) |
+| VOSR temporal tests keep the removed generators verbatim as their oracle | Golden float32 outputs of a tiny clip |
+| Loop runs allocate about 60 MB more torch memory than one call (likely a cuBLAS workspace per pool thread) | Pin a GPU node's calls to one thread |
+| `tests/common/backend-nodes.test.ts` imports nodes with `error_on_failed_node=False`, so a node that fails to import disappears silently | Assert a few schema ids or import strictly |
+| `Build.ps1 -Configuration Debug` fails at `chainner_ext` (needs `python314_d.lib`, which the runtime lacks; pre-existing) | Skip `chainner_ext` in Debug or provide the debug library |
 
 ## Decision log
 
