@@ -604,6 +604,14 @@ export const GlobalProvider = memo(
                     nextChangeCount(nodeChangesRef.current),
                     nextChangeCount(edgeChangesRef.current),
                 ]);
+                // The outgoing chain's nodes free their backend resources (TensorRT and VOSR
+                // engines, sessions and models); nodes that keep their id keep theirs.
+                const kept = new Set(validNodes.map((n) => n.id));
+                getNodes().forEach((n) => {
+                    if (!kept.has(n.id)) {
+                        backend.clearNodeCacheIndividual(n.id).catch(log.error);
+                    }
+                });
                 changeNodes(validNodes);
                 changeEdges(validEdges);
                 if (loadPosition) {
@@ -614,9 +622,11 @@ export const GlobalProvider = memo(
             },
             [
                 addChainLoads,
+                backend,
                 changeEdges,
                 changeNodes,
                 edgeChangesRef,
+                getNodes,
                 saveUnsavedChanges,
                 nodeChangesRef,
                 outputDataActions,
@@ -635,14 +645,21 @@ export const GlobalProvider = memo(
                 return;
             }
 
+            // A new chain frees the old nodes' backend resources (TensorRT and VOSR engines,
+            // sessions and models).
+            getNodes().forEach((n) => {
+                backend.clearNodeCacheIndividual(n.id).catch(log.error);
+            });
             changeNodes([]);
             changeEdges([]);
             setSavePath(undefined);
             setViewport({ x: 0, y: 0, zoom: 1 });
             outputDataActions.clear();
         }, [
+            backend,
             changeEdges,
             changeNodes,
+            getNodes,
             saveUnsavedChanges,
             outputDataActions,
             setSavePath,

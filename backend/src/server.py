@@ -443,18 +443,33 @@ async def release_after_broadcasts(ctx: AppContext, executor: Executor) -> None:
         )
 
 
+def return_device_memory() -> None:
+    """Hand GPU memory that released node resources freed back to the driver.
+
+    PyTorch keeps freed blocks reserved for reuse, so the memory stays occupied in the OS
+    until emptied. Never imports torch: without a loaded, initialized CUDA there is
+    nothing to return.
+    """
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_initialized():
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
 @app.route("/clear-cache/individual", methods=["POST"])
 async def clear_cache_individual(request: Request):
     await nodes_available()
     ctx = AppContext.get(request.app)
     try:
         full_data = dict(request.json)  # type: ignore
-        # TensorRT engines and sessions outlive runs; a session in use is freed
-        # when its run returns it.
+        # TensorRT and VOSR engines, sessions and models outlive runs (every
+        # SharedCache); a session in use is freed when its run returns it.
         tensorrt_cache.release_node(full_data["id"])
+        # Not while a /run executes: it releases at its own end.
+        if ctx.executor is None:
+            return_device_memory()
         if ctx.cache.get(full_data["id"], None) is not None:
             del ctx.cache[full_data["id"]]
-            # Not while a /run executes: it releases at its own end.
             if ctx.executor is None:
                 numpy_pool.release()
         return json({"success": True, "data": None})

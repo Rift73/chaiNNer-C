@@ -25,10 +25,11 @@ import { NO_DISABLED, UseDisabled } from './useDisabled';
 import { NO_PASSTHROUGH, UsePassthrough } from './usePassthrough';
 import './useNodeMenu.scss';
 
-/** Nodes whose backend resources (TensorRT engines and sessions) outlive a run. */
+/** Nodes whose backend resources (TensorRT and VOSR engines, sessions and models) outlive a run. */
 const CLEARABLE_SCHEMAS: ReadonlySet<SchemaId> = new Set([
     'chainner:tensorrt:upscale_image' as SchemaId,
     'chainner:tensorrt:load_engine' as SchemaId,
+    'chainner:pytorch:upscale_image_vosr' as SchemaId,
 ]);
 
 export interface UseNodeMenuOptions {
