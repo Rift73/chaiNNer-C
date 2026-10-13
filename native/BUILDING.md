@@ -12,7 +12,7 @@ The developer reference that used to live in the root README. The full command r
   Python unchanged. The GPU nodes keep their engines (PyTorch, ONNX Runtime, NCNN, TensorRT); the ONNX CPU session
   adapter, the ONNX-to-NCNN converter, NCNN param handling and tiling control are native. chaiNNer-C adds two PyTorch
   nodes for VOSR 2.0 generative upscaling ([`VOSR2.md`](VOSR2.md)).
-- `src/` and `tests/` are upstream's frontend at `d56e507f` with chaiNNer-C's UI changes (no updates, `v0.3.3`, the
+- `src/` and `tests/` are upstream's frontend at `d56e507f` with chaiNNer-C's UI changes (no updates, `v0.3.4`, the
   drop repairs, the TensorRT types and Clear item, the VOSR model type and the iterated input condition), its
   integrated Python moved to CPython 3.14.8 and its own `%APPDATA%\chaiNNer-C`. The local portable package uses an
   installed upstream nightly's UI with reviewed patches, which do not include the VOSR changes.
@@ -109,7 +109,7 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
 - It copies the installed app's shell and the provisioned runtime, writes `backend/src` byte for byte, and records
   everything in a manifest, `chainner-c-package.json`.
 - It accepts only that nightly, whose UI bundles are pinned by SHA-256 and get reviewed patches (updates removed, the
-  `v0.3.3` label, CPython 3.14 accepted, drop repairs, the TensorRT types and Clear item).
+  `v0.3.4` label, CPython 3.14 accepted, drop repairs, the TensorRT types and Clear item).
   `node native\tools\verify_independent_ui.cjs --package <dir> --installed-app <dir>` checks them.
 - The runtime's `Lib` is precompiled with hash-based bytecode (`unchecked-hash`), so two builds are byte-identical.
 - A `portable` marker keeps the profile inside the package; run `chaiNNer.exe` from its folder.
