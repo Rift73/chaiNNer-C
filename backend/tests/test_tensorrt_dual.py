@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import importlib
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import onnx
+import onnx.external_data_helper
 import pytest
 import torch
-from onnx import TensorProto, helper
+from onnx import TensorProto, helper, numpy_helper
 from spandrel import ModelLoader
 from spandrel.architectures.DUAL.__arch import dual_arch
 from spandrel.architectures.DUAL.__arch.dual_arch import dual_xs
@@ -72,6 +75,56 @@ def test_only_the_rgb_readout_moves_ahead_of_its_pixel_shuffle():
         (256, 64, 3, 3),
         (12, 256, 3, 3),
     ]
+
+
+def test_the_exporters_write_onnxs_files_in_one_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # ONNX's own writer opens and closes weights.bin once per tensor, and real-time
+    # antivirus scanning rescans the growing file after each close: a DUAL Light export
+    # (335 tensors) took about 100 s with Windows Defender on, 0.1 s with it off.
+    monkeypatch.syspath_prepend(str(dual.VENDOR))
+    export = importlib.import_module("scripts.dual_tensorrt.export")
+    # 2048, 16, 1000 (external by ONNX's rule, which counts the bytes object's
+    # overhead), 4096 and 8 bytes.
+    shapes = [(16, 32), (4,), (250,), (32, 32), (2,)]
+    weights = [
+        numpy_helper.from_array(
+            np.arange(np.prod(shape), dtype=np.float32).reshape(shape), f"w{i}"
+        )
+        for i, shape in enumerate(shapes)
+    ]
+    value = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1])
+    graph = helper.make_graph(
+        [helper.make_node("Identity", ["input"], ["output"])],
+        "weights",
+        [value],
+        [helper.make_tensor_value_info("output", TensorProto.FLOAT, [1])],
+        initializer=weights,
+    )
+    model = helper.make_model(graph)
+    expected, written = tmp_path / "onnx", tmp_path / "one-pass"
+    expected.mkdir()
+    written.mkdir()
+    reference = onnx.ModelProto()
+    reference.CopyFrom(model)
+    onnx.save_model(
+        reference,
+        str(expected / "model.onnx"),
+        save_as_external_data=True,
+        all_tensors_to_one_file=True,
+        location="weights.bin",
+        size_threshold=1024,
+    )
+
+    def per_tensor(*_args: object):
+        raise AssertionError("weights.bin was written one tensor at a time")
+
+    monkeypatch.setattr(onnx.external_data_helper, "save_external_data", per_tensor)
+    export.save_onnx(model, written)
+    for name in ("model.onnx", "weights.bin"):
+        assert (written / name).read_bytes() == (expected / name).read_bytes()
+    assert (expected / "weights.bin").stat().st_size == 2048 + 1000 + 4096
 
 
 def _folded_xs(tmp_path: Path):

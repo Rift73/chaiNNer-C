@@ -96,6 +96,35 @@ def read_state(path, key):
     return state
 
 
+def save_onnx(model, output):
+    """output/model.onnx with its large initializers in output/weights.bin: the files of
+    onnx.save_model(save_as_external_data=True), but weights.bin is written in one pass.
+    ONNX opens and closes it once per tensor, and real-time antivirus scanning rescans
+    the growing file after each close (DUAL Light: 335 tensors, about 100 s with Windows
+    Defender on). A marked tensor this pass leaves holding data (a subgraph's) is still
+    written by onnx.save_model, one at a time."""
+    import onnx
+    from onnx.external_data_helper import (
+        convert_model_to_external_data,
+        set_external_data,
+        uses_external_data,
+    )
+
+    # External data avoids protobuf's 2GiB limit and keeps XL viable.
+    convert_model_to_external_data(
+        model, all_tensors_to_one_file=True, location="weights.bin", size_threshold=1024
+    )
+    external = [t for t in model.graph.initializer if uses_external_data(t)]
+    if external:
+        with open(output / "weights.bin", "wb") as weights:
+            for tensor in external:
+                offset = weights.tell()
+                weights.write(tensor.raw_data)
+                set_external_data(tensor, "weights.bin", offset, len(tensor.raw_data))
+                tensor.ClearField("raw_data")
+    onnx.save_model(model, str(output / "model.onnx"))
+
+
 def export_checkpoint(
     factory, scale, height, width, checkpoint, output, *, state_key=None, folded=False
 ):
@@ -124,15 +153,7 @@ def export_checkpoint(
         onnx_model = graph.build(model)
     onnx.checker.check_model(onnx_model)
     output.mkdir(parents=True, exist_ok=False)
-    # External data avoids protobuf's 2GiB limit and keeps XL viable.
-    onnx.save_model(
-        onnx_model,
-        str(output / "model.onnx"),
-        save_as_external_data=True,
-        all_tensors_to_one_file=True,
-        location="weights.bin",
-        size_threshold=1024,
-    )
+    save_onnx(onnx_model, output)
     onnx.checker.check_model(str(output / "model.onnx"))
     manifest = {
         "schema": SCHEMA,
