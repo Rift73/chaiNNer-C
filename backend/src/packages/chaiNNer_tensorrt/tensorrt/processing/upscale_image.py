@@ -12,6 +12,7 @@ from nodes.impl.upscale.convenient_upscale import convenient_upscale
 from nodes.properties.inputs import BoolInput, ImageInput, TensorRTEngineInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
+from util import held
 
 from ...settings import get_settings
 from .. import processing_group
@@ -67,10 +68,10 @@ if processing_group is not None:
         logger.debug("Upscaling a %dx%dx%d image with TensorRT", h, w, c)
 
         # The session outlives the run; clearing this node frees it. Its lock lets
-        # items computed ahead share it.
+        # items computed ahead share it; their wait for it is not their time.
         with use_tensorrt_session(
             engine, settings.gpu_index, context.node_id
-        ) as session, session.lock:
+        ) as session, held(session.lock):
             return convenient_upscale(
                 img,
                 engine.input_channels,

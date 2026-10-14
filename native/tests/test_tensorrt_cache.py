@@ -4,6 +4,7 @@ Fakes only: the cache never imports TensorRT, so no GPU is needed.
 """
 
 import os
+import time
 import weakref
 from threading import Event, Thread
 
@@ -18,6 +19,7 @@ from nodes.impl.tensorrt.model import (
     TensorRTEngine,
     TensorRTEngineInfo,
 )
+from util import timed_supplier
 
 A, B = NodeId("a"), NodeId("b")
 C, D = NodeId("c"), NodeId("d")
@@ -104,6 +106,33 @@ def test_freeing_an_entry_in_use_waits_for_its_run():
     leave.set()
     worker.join(10)
     assert r.closed == seen and len(r.cache) == 0
+
+
+def test_waiting_for_an_entry_in_use_is_not_the_waiting_nodes_time():
+    # The item window runs one node for several items at once; each waits its turn for
+    # the session, and only its own use of it is its time.
+    r = Recorder()
+    entered, leave = Event(), Event()
+    times = []
+
+    def holder():
+        with r.cache.use("engine", A, r.create("engine")):
+            entered.set()
+            assert leave.wait(10)
+
+    def waiter():
+        times.append(timed_supplier(lambda: r.use("engine", A))()[1])
+
+    first = Thread(target=holder)
+    first.start()
+    assert entered.wait(10)
+    second = Thread(target=waiter)
+    second.start()
+    time.sleep(0.4)  # the second item waits for the first
+    leave.set()
+    first.join(10)
+    second.join(10)
+    assert len(times) == 1 and times[0] < 0.2
 
 
 def test_a_node_that_references_the_entry_before_the_run_ends_keeps_it():

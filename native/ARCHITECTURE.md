@@ -172,6 +172,11 @@ and returns the object the input will receive, or None when the item does not ex
 nothing runs twice and no event moves. If a node looks ahead during item 0, K is decided there instead of at item 1.
 Elsewhere `iteration` is None. Its user is Upscale Image (VOSR).
 
+A node's reported time (`node-finish`) is its own work: `timed_supplier` leaves out what its call spends in
+`util.waiting`, as the executor leaves out lazy inputs' evaluation. The waits so marked are those for other work: a
+peek, a TensorRT session's lock (`util.held`; the window runs the node for several items, each waiting its turn) and
+VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queue, about K times its 1.5 s.
+
 ## 5. Invariants
 
 - Normalized float32 image semantics; BGR/BGRA channel order; grayscale flattening, dtype promotion, signed-zero and

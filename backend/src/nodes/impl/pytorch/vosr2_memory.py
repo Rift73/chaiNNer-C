@@ -10,6 +10,7 @@ import torch
 
 from api import Progress
 from gpu import nvidia
+from util import waiting
 
 from .vosr2 import MemoryPlan, VosrMemoryMode
 
@@ -35,8 +36,10 @@ def vram_budget(
     if device.type != "cuda":
         yield progress.suspend
         return
-    while not _BUDGET_LOCK.acquire(timeout=0.05):
-        progress.suspend()
+    # Another VOSR call's turn is not this node's time.
+    with waiting():
+        while not _BUDGET_LOCK.acquire(timeout=0.05):
+            progress.suspend()
     try:
         if prepare is not None:
             prepare()

@@ -69,7 +69,7 @@ from nodes.impl.item_window import (
     window_size,
 )
 from progress_controller import Aborted, ProgressController, ProgressToken
-from util import combine_sets, timed_supplier
+from util import combine_sets, timed_supplier, waiting
 
 Output = List[object]
 
@@ -595,7 +595,10 @@ class _IterationView(IterationView):
             raise RuntimeError(
                 "A look-ahead waits for the event loop: call it from the node's own call."
             )
-        return asyncio.run_coroutine_threadsafe(coroutine, self.__loop).result()
+        future = asyncio.run_coroutine_threadsafe(coroutine, self.__loop)
+        # Later items' values come from other work: not this node's time.
+        with waiting():
+            return future.result()
 
 
 @dataclass(frozen=True)

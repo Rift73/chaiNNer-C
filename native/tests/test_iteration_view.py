@@ -3,6 +3,7 @@
 
 import asyncio
 import threading
+import time
 import weakref
 
 import numpy as np
@@ -411,6 +412,33 @@ def test_stop_while_a_peek_waits_ends_it_with_aborted(monkeypatch, tmp_path):
     assert looking.run(workers=4) is not None
     assert raised == [1]
     assert looking.cleanup_states == [(0, 0, 0)]
+
+
+def test_a_peeks_wait_is_not_the_peeking_nodes_time(monkeypatch, tmp_path):
+    # Item 1 peeks item 3, whose read is held for 0.5 s after it began: look's time is
+    # its own work, not that wait.
+    reader = Gated(6, 3)
+    looking = Looking(monkeypatch, tmp_path, 6, window="3", reader=reader, depth=2)
+    standard = looking.inspect
+
+    def release():
+        assert reader.reached.wait(5)
+        time.sleep(0.5)
+        reader.release.set()
+
+    def inspect(view):
+        if view.index == 1:
+            threading.Thread(target=release, daemon=True).start()
+        return standard(view)
+
+    looking.inspect = inspect
+    assert looking.run(workers=4) is None
+    times = [
+        e["data"]["executionTime"]
+        for e in looking.events
+        if e["event"] == "node-finish" and e["data"]["nodeId"] == "look"
+    ]
+    assert len(times) == 6 and max(times) < 0.25
 
 
 def test_peek_is_served_beyond_the_budget_and_while_paused(monkeypatch, tmp_path):
