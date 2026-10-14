@@ -27,6 +27,7 @@ downloaded again. The first upscale also downloads OpenCV's YuNet face detector 
 | Color Correction | Wavelet (default), AdaIN, None | Wavelet: the input's coarse colours (Gaussian, sigma 5); AdaIN: channel mean and spread |
 | GPU Memory, Backend | Default, Low (under 7 GB); PyTorch, TensorRT, TensorRT FP8 | Backend hidden with Low |
 | Temporal Method, Strength | Three Frames, Persistent Detail; 0 to 100 %, default 65 | Only when Load Video feeds the image; 0 %: each frame alone |
+| Texture Fix | On (default), off | The final grain pass below; off keeps the model's own output in flat areas |
 
 The model works in overlapping 512-pixel windows, each also predicted with a 64-pixel strip of its surroundings; the
 input's detail decides the mix, so blurred areas stay soft (scene focus). Neighbouring windows invent different
@@ -34,7 +35,7 @@ amounts of detail, so their seams can show: windows are placed so that the seams
 of the picture (as many windows as a regular grid), and a face that a seam would still split gets a window of its own
 that alone gives the face's middle (up to 400 px across) and fades into its neighbours over 48 px (about 50 ms each
 at 4K output, at most a fifth of the windows). In a video the layout is planned at a shot's first
-frame and kept until a cut, so seams stay put. A final pass gives flat grainy areas one fine
+frame and kept until a cut, so seams stay put. A final pass (Texture Fix) gives flat grainy areas one fine
 grain across windows, as strong as the input's and in its colours. In a video, areas whose fine texture changed since
 the previous frame get new grain, and still areas keep one grain, so still backgrounds do not shimmer. For alpha: Split
 Transparency, Resize (Lanczos) the alpha, Merge Transparency.

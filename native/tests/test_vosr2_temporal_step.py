@@ -541,10 +541,13 @@ def test_a_background_failure_is_raised_by_the_item_that_needs_that_frame():
 # Upscale Image (VOSR) in a real executor loop, over the item window.
 
 
-def vosr_loop(monkeypatch, tmp_path, frames, window, method, restore, *, source):
+def vosr_loop(
+    monkeypatch, tmp_path, frames, window, method, restore, *, source, texture=True
+):
     """g0 (as `source`, reading no file per item, as Load Video) -> Upscale Image (VOSR)
     -> save, whose folder comes from a node that runs after VOSR. VOSR's restoration is
-    `restore` on the CPU. Returns the pipeline and the list save fills with the frames."""
+    `restore` on the CPU; `texture` is the node's Texture Fix. Returns the pipeline and
+    the list save fills with the frames."""
     node = upscale_image_vosr
     monkeypatch.setattr(
         node,
@@ -582,6 +585,7 @@ def vosr_loop(monkeypatch, tmp_path, frames, window, method, restore, *, source)
             VosrBackend.PYTORCH,
             method,
             65,
+            texture,
         )
 
     vosr = make_node("vosr", "regularNode", upscale, 1, 1)
@@ -675,6 +679,66 @@ def test_outside_a_load_video_loop_each_image_is_upscaled_alone(monkeypatch, tmp
     # Each image gets the seed's grain alone, and its own window plan (no shot layouts).
     assert grains == [Grain(Seed(0).to_u32())] * 5
     assert len({id(plan) for plan in plans}) == 5
+
+
+def test_without_texture_fix_an_image_gets_no_grain(monkeypatch, tmp_path):
+    # Texture Fix off: each image is the model's restoration alone.
+    frames = video(3)
+    restorer = Restorer(frames)
+    pipeline, saved = vosr_loop(
+        monkeypatch,
+        tmp_path,
+        frames,
+        "3",
+        TemporalMode.THREE_FRAMES,
+        restorer,
+        source="chainner:image:load_images",
+        texture=False,
+    )
+    grains = []
+
+    def restore(context, image, *settings):
+        grains.append(settings[-2])
+        return restorer(image, context)
+
+    monkeypatch.setattr(upscale_image_vosr, "_upscale", restore)
+    assert pipeline.run(workers=4) is None
+    assert_equal(saved, [Restorer(frames)(frame) for frame in frames])
+    assert grains == [None] * 3
+
+
+def test_without_texture_fix_a_video_frame_gets_no_grain(monkeypatch, tmp_path):
+    # Texture Fix off: the stabilized frames get no grain pass, and neither do their
+    # restorations.
+    frames = video(5)
+    calls, restored = [], []
+
+    def record(output, source, scale, grain, check, device):
+        calls.append(grain)
+        return output()
+
+    monkeypatch.setattr(upscale_image_vosr, "restore_with_texture", record)
+    pipeline, saved = vosr_loop(
+        monkeypatch,
+        tmp_path,
+        frames,
+        "6",
+        TemporalMode.THREE_FRAMES,
+        Restorer(frames),
+        source="chainner:image:load_video",
+        texture=False,
+    )
+    restorer = Restorer(frames)
+
+    def restore(context, image, *settings):
+        restored.append(settings[-2])
+        return restorer(image, context)
+
+    monkeypatch.setattr(upscale_image_vosr, "_upscale", restore)
+    assert pipeline.run(workers=4) is None
+    assert len(saved) == 5
+    assert calls == [None] * 5
+    assert restored and set(restored) == {None}
 
 
 def test_each_video_frame_gets_its_grain_with_the_previous_input(monkeypatch, tmp_path):

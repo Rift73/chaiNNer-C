@@ -34,6 +34,7 @@ from nodes.impl.pytorch.vosr2_trt_pipeline import (
 )
 from nodes.impl.pytorch.vosr2_trt_restore import LatentStatistics, restore
 from nodes.properties.inputs import (
+    BoolInput,
     EnumInput,
     ImageInput,
     NumberInput,
@@ -127,6 +128,12 @@ class _VideoState:
                 hint=True,
             ),
         ),
+        BoolInput("Texture Fix", default=True)
+        .with_id(8)
+        .with_docs(
+            "Gives flat grainy areas one fine grain across the restoration windows, as strong as the input's grain and in its colours; in a video, still areas keep one grain. Off keeps the model's own output there.",
+            hint=True,
+        ),
     ],
     outputs=[
         ImageOutput(
@@ -147,6 +154,7 @@ def upscale_image_vosr_node(
     backend: VosrBackend,
     method: TemporalMode,
     strength: int,
+    texture: bool,
 ) -> np.ndarray:
     device = get_settings(context).device
     # Low hides the backend: it always streams the PyTorch model.
@@ -170,7 +178,8 @@ def upscale_image_vosr_node(
     model = ensure_model(context)
     faces = ensure_face_model(context)
     view = context.iteration
-    grain = Grain(seed.to_u32())
+    # Without Texture Fix there is no grain pass.
+    grain = Grain(seed.to_u32()) if texture else None
     state = None
     if view is not None and view.iterated_by(0) == LOAD_VIDEO:
         state = view.state
@@ -179,7 +188,8 @@ def upscale_image_vosr_node(
             view.state = state
         last = state.frame
         if (
-            last is not None
+            grain is not None
+            and last is not None
             and last[0] == view.index - 1
             and last[1].shape == img.shape
         ):
