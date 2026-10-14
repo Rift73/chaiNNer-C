@@ -286,6 +286,23 @@ export const GlobalProvider = memo(
             }, 100);
             return () => clearTimeout(timerId);
         }, [nodeChanges, edgeChanges, getEdges, getNodes]);
+
+        // A node that leaves the chain frees its backend resources (TensorRT and VOSR engines,
+        // sessions and models), whatever removed it: Delete, cut, undo or redo, a new or opened
+        // chain. Nodes that keep their id keep theirs.
+        const chainNodeIdsRef = useRef<ReadonlySet<string>>(EMPTY_SET);
+        useEffect(() => {
+            const timerId = setTimeout(() => {
+                const ids = new Set(getNodes().map((n) => n.id));
+                for (const id of chainNodeIdsRef.current) {
+                    if (!ids.has(id)) {
+                        backend.clearNodeCacheIndividual(id).catch(log.error);
+                    }
+                }
+                chainNodeIdsRef.current = ids;
+            }, 100);
+            return () => clearTimeout(timerId);
+        }, [nodeChanges, getNodes, backend]);
         useEffect(() => {
             const timerId = setTimeout(() => {
                 sessionStorage.setItem('cachedViewport', JSON.stringify(getViewport()));
@@ -604,14 +621,6 @@ export const GlobalProvider = memo(
                     nextChangeCount(nodeChangesRef.current),
                     nextChangeCount(edgeChangesRef.current),
                 ]);
-                // The outgoing chain's nodes free their backend resources (TensorRT and VOSR
-                // engines, sessions and models); nodes that keep their id keep theirs.
-                const kept = new Set(validNodes.map((n) => n.id));
-                getNodes().forEach((n) => {
-                    if (!kept.has(n.id)) {
-                        backend.clearNodeCacheIndividual(n.id).catch(log.error);
-                    }
-                });
                 changeNodes(validNodes);
                 changeEdges(validEdges);
                 if (loadPosition) {
@@ -622,11 +631,9 @@ export const GlobalProvider = memo(
             },
             [
                 addChainLoads,
-                backend,
                 changeEdges,
                 changeNodes,
                 edgeChangesRef,
-                getNodes,
                 saveUnsavedChanges,
                 nodeChangesRef,
                 outputDataActions,
@@ -645,21 +652,14 @@ export const GlobalProvider = memo(
                 return;
             }
 
-            // A new chain frees the old nodes' backend resources (TensorRT and VOSR engines,
-            // sessions and models).
-            getNodes().forEach((n) => {
-                backend.clearNodeCacheIndividual(n.id).catch(log.error);
-            });
             changeNodes([]);
             changeEdges([]);
             setSavePath(undefined);
             setViewport({ x: 0, y: 0, zoom: 1 });
             outputDataActions.clear();
         }, [
-            backend,
             changeEdges,
             changeNodes,
-            getNodes,
             saveUnsavedChanges,
             outputDataActions,
             setSavePath,
@@ -740,13 +740,8 @@ export const GlobalProvider = memo(
                 changeEdges((edges) =>
                     edges.filter((e) => !toRemove.has(e.source) && !toRemove.has(e.target))
                 );
-                // The backend keeps some resources (TensorRT engines and sessions) until
-                // their node is cleared.
-                filteredIds.forEach((id) => {
-                    backend.clearNodeCacheIndividual(id).catch(log.error);
-                });
             },
-            [changeNodes, changeEdges, getNode, backend]
+            [changeNodes, changeEdges, getNode]
         );
 
         const removeEdgeById = useCallback(

@@ -112,7 +112,7 @@ export const ReactFlowBox = memo(({ wrapperRef, nodeTypes, edgeTypes }: ReactFlo
         exportViewportScreenshot,
         exportViewportScreenshotToClipboard,
     } = useContext(GlobalContext);
-    const { schemata, functionDefinitions, backend } = useContext(BackendContext);
+    const { schemata, functionDefinitions } = useContext(BackendContext);
 
     const { snapToGrid: isSnapToGrid, snapToGridAmount, animateChain, showMinimap } = useSettings();
 
@@ -388,13 +388,8 @@ export const ReactFlowBox = memo(({ wrapperRef, nodeTypes, edgeTypes }: ReactFlo
                 const ids = new Set(toDelete.map((n) => n.id));
                 return nodes.filter((n) => !ids.has(n.id));
             });
-            // Like the menu's Delete: the backend keeps some resources (TensorRT and VOSR
-            // engines, sessions and models) until their node is cleared.
-            toDelete.forEach((n) => {
-                backend.clearNodeCacheIndividual(n.id).catch(log.error);
-            });
         },
-        [changeNodes, backend]
+        [changeNodes]
     );
 
     const onEdgesDelete = useCallback(
