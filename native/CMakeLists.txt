@@ -116,7 +116,7 @@ add_library(chainner_native SHARED
     src/statistics_ops.c src/unsharp_complete_ops.c src/tensor_complete_ops.cpp
     src/canny_ops.cpp src/inpaint_ops.cpp src/pixel_art_ops.cpp
     src/bilateral_ops.c src/denoise_ops.cpp src/onnx_runtime.cpp src/framework_image_ops.cpp src/framework_shared_ops.cpp
-    src/clipboard_ops.c src/image_setup_ops.c src/scratch.c src/planar_ops.c
+    src/clipboard_ops.c src/image_setup_ops.c src/scratch.c src/planar_ops.c src/descale_ops.c
     # ISA units (SP4 spec 4.3): export-free, one file per kernel family and level, compiled
     # for that level only and reached through a C entry's ISA dispatch, which runs a unit
     # only when the CPU has its level (src/isa.c) or CHAINNER_C_ISA caps it lower.
@@ -134,6 +134,19 @@ set_source_files_properties(src/separable_avx2.c src/convolution_avx2.c src/conv
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
 set_source_files_properties(src/separable_avx512.c src/convolution_avx512.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options};/clang:-mavx512f;/clang:-mavx512dq;/clang:-mavx512cd;/clang:-mavx512bw;/clang:-mavx512vl")
+# Byte-for-byte vendor source of vapoursynth-descale Release 11 (MIT): its solver core and AVX2
+# unit, without the VapourSynth and AviSynth plugin layers. src/descale_ops.c picks the unit from
+# chaiNNer's ISA level (CHAINNER_C_ISA caps it), never through descale's own CPUID path.
+add_library(chainner_descale STATIC third_party/descale/src/descale.c
+    third_party/descale/src/x86/cpuinfo_x86.c third_party/descale/src/x86/descale_avx2.c)
+target_include_directories(chainner_descale SYSTEM PUBLIC third_party/descale/include)
+target_include_directories(chainner_descale PRIVATE third_party/descale/src)
+target_compile_definitions(chainner_descale PRIVATE DESCALE_X86)
+set_target_properties(chainner_descale PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED YES)
+target_compile_options(chainner_descale PRIVATE /W3)
+set_source_files_properties(third_party/descale/src/x86/descale_avx2.c
+    PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
+target_link_libraries(chainner_native PRIVATE chainner_descale)
 target_include_directories(chainner_native PRIVATE include)
 set_target_properties(chainner_native PROPERTIES
     C_STANDARD 17 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
