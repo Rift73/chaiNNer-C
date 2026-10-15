@@ -78,6 +78,7 @@ def test_node_routes_backends_and_low_memory_always_uses_pytorch(
             backend,
             TemporalMode.THREE_FRAMES,
             65,
+            texture=True,
         )
 
 
@@ -111,6 +112,7 @@ def test_unusable_tensorrt_fails_clearly_before_any_work(
             backend,
             TemporalMode.THREE_FRAMES,
             65,
+            texture=True,
         )
 
     monkeypatch.setattr(node, "find_spec", lambda _: object())
@@ -185,6 +187,7 @@ def test_full_trt_node_does_not_load_unused_pytorch_models(
         backend,
         TemporalMode.THREE_FRAMES,
         65,
+        texture=True,
     )
     assert result is expected and released == ["full-trt"]
     # The image is resized once the engine is ready, never during its build.
