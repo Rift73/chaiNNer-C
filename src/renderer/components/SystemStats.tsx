@@ -46,10 +46,17 @@ export const SystemStats = memo(() => {
                             py={1}
                         >
                             <Box key={usage.label}>
+                                {/* No 0.6 s ease on each update: it repaints at the display
+                                    rate, and every repainted frame interrupts GPU work. */}
                                 <CircularProgress
                                     capIsRound
                                     color={color}
                                     size="42px"
+                                    sx={{
+                                        '& .chakra-progress__indicator': {
+                                            transitionDuration: '0s',
+                                        },
+                                    }}
                                     trackColor="var(--bg-700)"
                                     value={usage.percent}
                                 >

@@ -6,8 +6,10 @@
     }
 }
 
+// 10 steps per second, not every display refresh: each repainted frame makes the OS
+// compositor interrupt GPU work (e.g. TensorRT) while the window is visible.
 :not(.no-chain-animation) .edge-chain.running {
-    animation: dashdraw-chain 0.5s linear infinite !important;
+    animation: dashdraw-chain 0.5s steps(5) infinite !important;
 }
 
 .no-chain-animation .react-flow__edge.running path {

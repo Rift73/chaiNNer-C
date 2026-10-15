@@ -86,10 +86,10 @@ const IteratorProcess = memo(({ nodeProgress, progressColor }: IteratorProcessPr
                 h={6}
                 w="full"
             >
+                {/* No transition: it would repaint at the display rate after every item. */}
                 <Box
                     bgColor={progressColor}
                     h={6}
-                    transition="all 0.15s ease-in-out"
                     w={`${progress * 100}%`}
                 />
             </Box>
