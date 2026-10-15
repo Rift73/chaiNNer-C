@@ -39,6 +39,11 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   producers, fail-fast loops, a pool with the threads its waits need); GPU check, Load Video -> VOSR -> a 3-ahead
   consumer, 30 frames: VOSR bit-identical to its references, served 3 ahead to the end. No device lock: GPU nodes may
   overlap as before. Elsewhere (side effects, deferred errors) it mirrors the past side.
+- Descale (2026-10-16): Image > Dimensions > Resize; vapoursynth-descale Release 12 (MIT, vendored unchanged in
+  `native/third_party/descale`) under `src/descale_ops.c`, which runs its row and column passes on the pool in a
+  workspace the bridge takes from NumPy. Bit-identical with the Release 12 VapourSynth plugin (12/12 cases, kernels,
+  shifts, fractional sizes, borders); 1080p -> 720p RGB 1.0-1.5 ms (first version 9.7-10.4 ms, fresh 52 MB per
+  call). A lane-for-lane AVX-512 port (bit-identical) gave no end-to-end gain (memory bound) and is not built.
 - Branch `chaiNNer-C` on upstream `d56e507f`. SP1 took `native/` from `codex/c-port` at `c081e940`; that branch is kept as-is, with the SP1 plan and its execution rulings on top.
 - One backend: `backend/src` = B0 (426 files) plus SP2's, SP3's, SP3b's, SP4a's, SP4b's and SP4c's edits (ARCHITECTURE section 2) and rebuilt binaries (git-ignored);
   the sources are tracked with their shipped bytes. Until SP1 the package was the installed backend plus 216 overlays applied through delegates, transplants and AST pins; that mechanism is retired (it and prior history: tag `chainner-c-checkpoint-20261001`, `fede43d8`).

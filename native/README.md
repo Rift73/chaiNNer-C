@@ -83,12 +83,12 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 `CHAINNER_C_EXT_OUTPUT_DIR`, default `backend/src/chainner_ext`), replacing the only known-good copies. Copy them to
 `native\build\held\` first and check `Get-FileHash` against those copies. The build is reproducible: the same sources
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
-map, `.gitattributes`). This source's binaries (the portable build of 2026-10-09; `chainner_native.dll` and `chainner_ext.pyd` are
-unchanged since v0.3.1 and v0.3.2), for reference:
+map, `.gitattributes`). This source's binaries (portable builds: `chainner_native.dll` of 2026-10-16, which adds
+Descale; `_chainner_graph.pyd` of 2026-10-09; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
-| `chainner_native.dll` | `6da1217311bb59a67d1a7ad50e20007ef733b5dbce763ed6bfcf708271cfecf5` |
+| `chainner_native.dll` | `9f5824dc8f1981c44d961d4b449ec9c51ffbdb55389f32cab2cf17c4276951f6` |
 | `_chainner_graph.pyd` | `5daa49f67be04b01e04aa3cd467c40aa513451b1560e8a8b866c8f207486fe23` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 | `vosr2_qkv.dll` (TensorRT 11.2.1.2, CUDA 13.3.73) | `14dfaec0eeead27ea187ac51b3ba10b76796757af6d4d704d46f4399768196fc` |
