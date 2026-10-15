@@ -314,8 +314,8 @@ def collect_failed_run(ctx: AppContext) -> None:
     arrays) live until a collection reaches the cycle's oldest generation. A stopped
     /run is collected too: its arrays were measured still held after the next /runs.
     run schedules this with call_soon, so it runs once the handler has returned and
-    dropped the exception. gc is imported for this path only: a successful run never
-    collects.
+    dropped the exception. A successful run never collects: gc's only other use is
+    return_device_memory, outside runs.
     """
     gc.collect()
     # Not while a /run executes: it releases at its own end.

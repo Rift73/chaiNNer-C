@@ -93,19 +93,23 @@ def test_a_failed_run_schedules_one_collection_after_its_error_event():
     assert [ast.unparse(n) for n in calls].count(SCHEDULE) == 1
 
 
-def test_gc_is_used_only_by_collect_failed_run():
-    # One full collection and nothing else: no threshold tuning, no gc.freeze, no
-    # generation-targeted collection, anywhere in server.py.
+def test_gc_is_used_only_by_collect_failed_run_and_return_device_memory():
+    # One full collection in each and nothing else: no threshold tuning, no gc.freeze,
+    # no generation-targeted collection, anywhere in server.py. return_device_memory
+    # runs only when a cleared node's GPU memory goes back outside a run, so a
+    # successful run still never collects.
     tree = ast.parse(source("server.py"))
-    inside = set(ast.walk(definition(tree, "collect_failed_run")))
     names = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "gc"]
-    assert len(names) == 1 and names[0] in inside
+    assert len(names) == 2
+    for function in ("collect_failed_run", "return_device_memory"):
+        inside = set(ast.walk(definition(tree, function)))
+        assert sum(n in inside for n in names) == 1, function
     uses = [
         ast.unparse(n)
         for n in ast.walk(tree)
         if isinstance(n, ast.Call) and ast.unparse(n.func).startswith("gc.")
     ]
-    assert uses == ["gc.collect()"]
+    assert uses == ["gc.collect()", "gc.collect()"]
     imports = [
         ast.unparse(n)
         for n in ast.walk(tree)
