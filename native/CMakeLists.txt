@@ -134,7 +134,7 @@ set_source_files_properties(src/separable_avx2.c src/convolution_avx2.c src/conv
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
 set_source_files_properties(src/separable_avx512.c src/convolution_avx512.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options};/clang:-mavx512f;/clang:-mavx512dq;/clang:-mavx512cd;/clang:-mavx512bw;/clang:-mavx512vl")
-# Byte-for-byte vendor source of vapoursynth-descale Release 11 (MIT): its solver core and AVX2
+# Byte-for-byte vendor source of vapoursynth-descale Release 12 (MIT): its solver core and AVX2
 # unit, without the VapourSynth and AviSynth plugin layers. src/descale_ops.c picks the unit from
 # chaiNNer's ISA level (CHAINNER_C_ISA caps it), never through descale's own CPUID path.
 add_library(chainner_descale STATIC third_party/descale/src/descale.c

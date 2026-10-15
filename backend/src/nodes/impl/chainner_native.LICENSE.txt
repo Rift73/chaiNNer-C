@@ -3352,7 +3352,7 @@ Richard Geldreich, Jr.
 
 =====================================================================
 
-native/src/descale_ops.c links vapoursynth-descale (Release 11), vendored unchanged in
+native/src/descale_ops.c links vapoursynth-descale (Release 12), vendored unchanged in
 native/third_party/descale (solver core and AVX2 unit):
 https://github.com/Jaded-Encoding-Thaumaturgy/vapoursynth-descale
 

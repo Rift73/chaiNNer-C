@@ -25,6 +25,14 @@ _lib.cn_descale_core_create.argtypes = [
 _lib.cn_descale_core_create.restype = ct.c_void_p
 _lib.cn_descale_core_free.argtypes = [ct.c_void_p]
 _lib.cn_descale_core_free.restype = None
+_lib.cn_descale_workspace.argtypes = [
+    ct.c_size_t,
+    ct.c_size_t,
+    ct.c_size_t,
+    ct.c_void_p,
+    ct.c_void_p,
+]
+_lib.cn_descale_workspace.restype = ct.c_size_t
 _lib.cn_descale.argtypes = [
     ct.POINTER(ct.c_float),
     ct.c_size_t,
@@ -33,6 +41,8 @@ _lib.cn_descale.argtypes = [
     ct.c_void_p,
     ct.c_void_p,
     ct.POINTER(ct.c_float),
+    ct.c_void_p,
+    ct.c_size_t,
 ]
 _lib.cn_descale.restype = ct.c_int
 
@@ -103,6 +113,12 @@ def descale(
         if height != h or shift[1] != 0 or active[1] != height
         else None
     )
+    handles = (core_h.handle if core_h else None, core_v.handle if core_v else None)
+    size = _lib.cn_descale_workspace(h, w, channels, *handles)
+    if not size:
+        raise ValueError("Invalid descale image or parameters")
+    # From NumPy, whose pool keeps it warm across a batch: fresh pages cost more than the solve.
+    workspace = np.empty(size, np.uint8)
     result = np.empty((height, width, channels), np.float32)
     check(
         _lib.cn_descale(
@@ -110,9 +126,10 @@ def descale(
             h,
             w,
             channels,
-            core_h.handle if core_h else None,
-            core_v.handle if core_v else None,
+            *handles,
             ptr(result),
+            workspace.ctypes.data,
+            size,
         )
     )
     return result if source.ndim == 3 else result[:, :, 0]
