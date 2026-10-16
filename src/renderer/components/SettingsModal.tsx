@@ -267,7 +267,6 @@ const PythonSettings = memo(() => {
 });
 
 const AdvancedSettings = memo(() => {
-    const [experimentalFeatures, setExperimentalFeatures] = useMutSetting('experimentalFeatures');
     const [hardwareAcceleration, setHardwareAcceleration] = useMutSetting('hardwareAcceleration');
     const [allowMultipleInstances, setAllowMultipleInstances] =
         useMutSetting('allowMultipleInstances');
@@ -277,15 +276,6 @@ const AdvancedSettings = memo(() => {
             divider={<StackDivider />}
             w="full"
         >
-            <ToggleSetting
-                setValue={setExperimentalFeatures}
-                setting={{
-                    label: 'Enable experimental features',
-                    description:
-                        'Enable experimental features to try them out before they are finished.',
-                }}
-                value={experimentalFeatures}
-            />
             <ToggleSetting
                 setValue={setHardwareAcceleration}
                 setting={{
