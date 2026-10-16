@@ -56,6 +56,9 @@ CASES = {
     "h264-420": (*_source("1280x720"), "-c:v", "libx264", "-pix_fmt", "yuv420p"),
     "ffv1-444-odd": (*_source("639x361"), "-c:v", "ffv1", "-pix_fmt", "yuv444p"),
     "mjpeg-full-range": (*_source("320x240"), "-c:v", "mjpeg", "-pix_fmt", "yuvj420p"),
+    # Matroska and WebM pass the timestamp check (B-frames store them out of order).
+    "mkv-h264-bframes": (*_source("320x240"), "-c:v", "libx264", "-bf", "3"),
+    "webm-vp9": (*_source("320x240"), "-c:v", "libvpx-vp9", "-deadline", "realtime"),
     "h264-bt601": (
         *_source("640x480"),
         "-c:v",
@@ -74,12 +77,12 @@ CASES = {
 
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_pyav_frames_equal_the_cli_reader(tmp_path, monkeypatch, case):
-    suffix = ".mkv" if case.startswith("ffv1") else ".mp4"
+    prefix = case.split("-")[0]
+    suffix = {"ffv1": ".mkv", "mkv": ".mkv", "webm": ".webm"}.get(prefix, ".mp4")
     path = _clip(tmp_path / f"clip-é{suffix}", *CASES[case])
     in_process, frames = _read(path, monkeypatch, cli=False)
     piped, expected = _read(path, monkeypatch, cli=True)
-    # Matroska goes to the CLI reader (its rates cannot show a variable frame rate).
-    assert in_process == (suffix != ".mkv") and not piped
+    assert in_process and not piped
     assert len(frames) == len(expected) == 30
     for frame, reference in zip(frames, expected, strict=True):
         assert frame.flags.c_contiguous and not frame.flags.writeable
@@ -117,7 +120,9 @@ def test_rotated_files_are_upright_in_both_readers(tmp_path, monkeypatch, case):
 def test_variable_rate_files_use_the_cli_reader(tmp_path, monkeypatch, suffix):
     # Matroska and WebM report the same average and guessed rate for a variable-rate
     # track, where PyAV yielded the 30 stored frames and the CLI 45.
-    codec = ("libvpx-vp9", "-deadline", "realtime") if suffix == ".webm" else ("libx264",)
+    codec = (
+        ("libvpx-vp9", "-deadline", "realtime") if suffix == ".webm" else ("libx264",)
+    )
     variable = _clip(
         tmp_path / f"variable{suffix}",
         *_source("640x360"),

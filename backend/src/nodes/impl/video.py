@@ -22,6 +22,8 @@ from .ffmpeg import FFMpegEnv
 from .native_graph import graph
 
 if TYPE_CHECKING:
+    from fractions import Fraction
+
     from av.video.stream import VideoStream
 
 
@@ -106,6 +108,20 @@ def _converter(
     return graph
 
 
+def _variable_timestamps(path: Path, rate: Fraction, av: ModuleType) -> bool:
+    """Whether the first video track's frames leave the grid of `rate` by half a frame
+    or more: its packets' timestamps, demuxed without decoding and sorted (B-frames
+    store them out of order)."""
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        stamps = sorted(p.pts for p in container.demux(stream) if p.pts is not None)
+        step = float(1 / (rate * stream.time_base))
+    return any(
+        abs(pts - stamps[0] - index * step) >= step / 2
+        for index, pts in enumerate(stamps)
+    )
+
+
 def _pyav_frames(
     path: Path, width: int, height: int, matrix: str | None, av: ModuleType
 ) -> Generator[np.ndarray, None, None]:
@@ -117,10 +133,15 @@ def _pyav_frames(
         # The CLI resamples a variable frame rate to a constant one (rawvideo output
         # has no timestamps), duplicating or dropping frames; PyAV yields them as stored.
         # Matroska and WebM report the track's default frame duration as both rates, so
-        # the rates cannot tell a variable rate there.
-        if "matroska" in container.format.name.split(","):
-            raise _UseCliReader("Matroska and WebM rates cannot show a variable frame rate")
-        if stream.average_rate is None or stream.average_rate != stream.guessed_rate:
+        # their timestamps decide there.
+        if (
+            stream.average_rate is None
+            or stream.average_rate != stream.guessed_rate
+            or (
+                "matroska" in container.format.name.split(",")
+                and _variable_timestamps(path, stream.average_rate, av)
+            )
+        ):
             raise _UseCliReader("its frame rate is variable")
         stream.thread_type = "AUTO"
         display = av.sidedata.sidedata.Type.DISPLAYMATRIX
