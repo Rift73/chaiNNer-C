@@ -307,7 +307,7 @@ def uninstall_dependencies_sync(
         raise ValueError("An error occurred while uninstalling dependencies.")
 
     for dep_info in dependencies:
-        installed_packages[dep_info.package_name] = dep_info.version
+        installed_packages.pop(dep_info.package_name, None)
 
 
 async def uninstall_dependencies(

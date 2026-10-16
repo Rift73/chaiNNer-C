@@ -278,3 +278,20 @@ def test_output_that_is_not_utf8_is_shown_escaped(
         "Microsoft (R) C/C++ caf\\xe9",
         NO_INDEX[-1],
     ]
+
+
+def test_an_uninstall_without_progress_forgets_the_packages(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The installed list must not keep reporting what was just removed.
+    commands: list[list[str]] = []
+
+    def check_call(command: list[str], **_kwargs: object) -> int:
+        commands.append(command)
+        return 0
+
+    monkeypatch.setattr(store, "installed_packages", {"ncnn": "1.0.20240410"})
+    monkeypatch.setattr(store.subprocess, "check_call", check_call)
+    asyncio.run(store.uninstall_dependencies([NCNN]))
+    assert [command[3:] for command in commands] == [["uninstall", "ncnn", "-y"]]
+    assert store.installed_packages == {}
