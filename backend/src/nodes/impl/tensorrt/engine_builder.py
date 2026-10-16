@@ -169,18 +169,24 @@ def build_engine_from_onnx(
         profile.set_shape(input_tensor.name, min_dims, opt_dims, max_dims)
         builder_config.add_optimization_profile(profile)
 
-    # Load timing cache if available
+    # Load the timing cache, or start one: TensorRT saves only a cache that was set
+    # (get_timing_cache is None otherwise), and refuses one from another GPU.
     if timing_cache_path:
         try:
             with open(timing_cache_path, "rb") as f:
                 cache_data = f.read()
-                timing_cache = builder_config.create_timing_cache(cache_data)
-                builder_config.set_timing_cache(timing_cache, ignore_mismatch=False)
+            timing_cache = builder_config.create_timing_cache(cache_data)
+            if builder_config.set_timing_cache(timing_cache, ignore_mismatch=False):
                 logger.info("Loaded timing cache from %s", timing_cache_path)
+            else:
+                logger.info("Replacing the timing cache of another GPU or version")
         except FileNotFoundError:
             logger.debug("No timing cache found at %s", timing_cache_path)
         except Exception as e:
             logger.warning("Failed to load timing cache: %s", e)
+        if builder_config.get_timing_cache() is None:
+            timing_cache = builder_config.create_timing_cache(b"")
+            builder_config.set_timing_cache(timing_cache, ignore_mismatch=False)
 
     # Build the engine
     logger.info("Building TensorRT engine (this may take a while)...")
