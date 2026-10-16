@@ -27,6 +27,11 @@ def test_exact_weights_and_fresh_final_model(amount, dtype, mutate, budget):
                 self.input_channels = 3
                 self.size_requirements = SimpleNamespace(minimum=3, multiple_of=1)
                 self.forward_calls = 0
+                self.requires_grad = True
+
+            def requires_grad_(self, requires_grad):
+                self.requires_grad = requires_grad
+                return self
 
             def state_dict(self):
                 return self.state
@@ -69,6 +74,10 @@ def test_exact_weights_and_fresh_final_model(amount, dtype, mutate, budget):
         a = Model({"w": torch.tensor([0.25, 0.75, 1.25], dtype=dtype)})
         b = Model({"w": torch.tensor([0.5, 1.0, 1.5], dtype=dtype)})
         result, x, y = module.interpolate_models_node(None, a, b, amount)
+        if root == SOURCE and amount not in (0, 100):
+            # A new model's weights must not require grad, as Load Model's do not:
+            # Convert To ONNX traces them as constants.
+            assert result.requires_grad is False
         outcomes.append((result.state["w"].clone(), x, y, result.forward_calls))
         counts.append((len(blends), len(models)))
         torch.testing.assert_close(
