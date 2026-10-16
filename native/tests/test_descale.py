@@ -58,8 +58,9 @@ def test_mirror_reaching_past_the_target_is_refused(width, mode, blur, left):
             image, width, 16, mode, 3, 0.0, 0.5, blur, (left, 0.0), (width, 16), 0
         )
     assert str(error.value) == (
-        "Descale: this Shift and Border=Mirror would read outside the kernel; "
-        "use the Extend or Zero border, or a smaller shift."
+        "Descale: with Border=Mirror the kernel reaches more than the target size "
+        "past an edge (a large Source Left/Top, or a kernel wider than the target); "
+        "use the Extend or Zero border, a smaller Source Left/Top, or a larger target."
     )
     # Extend clamps every tap, so the same parameters stay valid there.
     out = native_descale.descale(

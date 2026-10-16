@@ -89,8 +89,10 @@ def _core(
     if not handle:
         if mirror_outside.value:
             raise ValueError(
-                "Descale: this Shift and Border=Mirror would read outside the kernel;"
-                " use the Extend or Zero border, or a smaller shift."
+                "Descale: with Border=Mirror the kernel reaches more than the target"
+                " size past an edge (a large Source Left/Top, or a kernel wider than"
+                " the target); use the Extend or Zero border, a smaller Source"
+                " Left/Top, or a larger target."
             )
         raise ValueError("Invalid descale parameters")
     return _Core(handle)
