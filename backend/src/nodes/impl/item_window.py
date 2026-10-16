@@ -1113,6 +1113,14 @@ def _contains(directory: str, folder: str) -> bool:
     return folder == directory or folder.startswith(directory.rstrip("\\/") + os.sep)
 
 
+# read_ahead_blocker's reasons; it returns "<reason>: <node id>" (the error for
+# PATH_CHECK_FAILED), and the executor's look-ahead warning names them.
+SOURCES_UNKNOWN = "sources unknown"
+OUTPUT_UNRESOLVED = "output directory unresolved"
+SOURCE_UNDER_OUTPUT = "source under output directory"
+PATH_CHECK_FAILED = "path check failed"
+
+
 def read_ahead_blocker(
     sources: Sequence[tuple[NodeId, Sequence[Path] | None]],
     directories: Sequence[tuple[NodeId, Path | None]],
@@ -1128,7 +1136,7 @@ def read_ahead_blocker(
     parents: set[Path] = set()
     for generator, paths in sources:
         if paths is None:
-            return f"sources unknown: {generator}"
+            return f"{SOURCES_UNKNOWN}: {generator}"
         parents.update(Path(path).parent for path in paths)
     if not parents:
         # Nothing is read per item (Load Video's frames come from a pipe), so no write
@@ -1137,14 +1145,14 @@ def read_ahead_blocker(
     writers: list[tuple[NodeId, Path]] = []
     for writer, directory in directories:
         if directory is None:
-            return f"output directory unresolved: {writer}"
+            return f"{OUTPUT_UNRESOLVED}: {writer}"
         writers.append((writer, directory))
     try:
         folders = {_normalized(parent.resolve()) for parent in parents}
         for writer, directory in writers:
             base = _normalized(directory.resolve())
             if any(_contains(base, folder) for folder in folders):
-                return f"source under output directory: {writer}"
+                return f"{SOURCE_UNDER_OUTPUT}: {writer}"
     except (OSError, ValueError, RuntimeError) as error:
-        return f"path check failed: {error}"
+        return f"{PATH_CHECK_FAILED}: {error}"
     return None

@@ -260,6 +260,7 @@ const runChain = async (
             log.info(`Executed ${finishedFreeNodes.size}/${nodeIds.size} nodes`);
         }
     });
+    addEventListener(eventSource, 'execution-warning', ({ message }) => log.warn(message));
 
     const data = toBackendJson(nodes, edges, schemata);
     const response = await backend.run({

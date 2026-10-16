@@ -1,11 +1,12 @@
 """Run-ahead of a serial producer: a stateful node the window never speculates (a GPU or
 context node) is computed ahead for a look-ahead that waits for it, item by item in
-order, once per item, with its own iteration view (process.py, item_window.py)."""
+order, once per item, with its own iteration view (process.py, item_window.py). A
+look-ahead the read-ahead check switches off is a run warning."""
 
 import pytest
 from test_generator_lifecycle import make_node
 from test_item_window import set_schema
-from test_iteration_view import Looking, assert_served
+from test_iteration_view import Looking, assert_served, computed_folder
 
 from api import InputId, NodeId
 from chain.chain import Edge, EdgeSource, EdgeTarget
@@ -157,3 +158,68 @@ def test_deferred_errors_never_run_a_producer_ahead(monkeypatch, tmp_path):
     assert [index for index, _ in ran] == [0, 1, 2, 4, 5]
     assert looking.saved == base.saved
     assert all(record["lookahead"] == 0 for record in looking.looks)
+
+
+def saving_into(monkeypatch, tmp_path, folder, depth=3):
+    """Looking whose g0 reads a file per item from tmp_path / "in" (as Load Images) and
+    whose save writes into `folder`: "computed" by a node save's gather runs after look,
+    else the typed-in tmp_path / folder."""
+    looking = Looking(monkeypatch, tmp_path, 4, window="3", depth=depth)
+    computed_folder(looking, tmp_path, (tmp_path / "in" / "0.png",))
+    if folder != "computed":
+        looking.chain.remove_node(NodeId("folder"))
+        looking.chain.inputs.set(NodeId("save"), InputId(1), str(tmp_path / folder))
+    return looking
+
+
+def run_warnings(looking):
+    return [
+        e["data"]["message"]
+        for e in looking.events
+        if e["event"] == "execution-warning"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("folder", "decision", "reason"),
+    [
+        (
+            "computed",
+            "K=1 (output directory unresolved: save)",
+            "save's output folder is computed after look",
+        ),
+        (
+            "in",
+            "K=1 (source under output directory: save)",
+            "save's output folder may overlap the source folder",
+        ),
+        ("out", "K=3 (override)", None),
+    ],
+)
+def test_a_look_ahead_the_read_ahead_check_switches_off_is_a_run_warning(
+    monkeypatch, tmp_path, folder, decision, reason
+):
+    # look looks ahead at every item from item 0. When the read-ahead check sets K = 1
+    # (save's folder computed after look, or one that holds the source files), the run
+    # warns once that look runs without its look-ahead; with K = 3 it does not.
+    looking = saving_into(monkeypatch, tmp_path, folder)
+    assert looking.run(workers=4) is None
+    assert looking.decisions == [f"item window {decision}"]
+    assert looking.saved == [7.0, 17.0, 27.0, 37.0]
+    if reason is None:
+        assert_served(looking.looks, 2)
+        assert run_warnings(looking) == []
+    else:
+        assert_served(looking.looks, 0)
+        effect = "look runs without its look-ahead: it uses only the current and earlier frames"
+        assert run_warnings(looking) == [f"{reason}, so {effect}."]
+
+
+def test_a_loop_without_a_look_ahead_has_no_run_warning(monkeypatch, tmp_path):
+    # The read-ahead check sets K = 1, but no node looks ahead: nothing to warn of.
+    looking = saving_into(monkeypatch, tmp_path, "in", depth=0)
+    assert looking.run(workers=4) is None
+    assert looking.decisions == [
+        "item window K=1 (source under output directory: save)"
+    ]
+    assert run_warnings(looking) == []

@@ -53,6 +53,10 @@ from nodes.impl.execution_scheduler import (
     pure_cpu_node,
 )
 from nodes.impl.item_window import (
+    OUTPUT_UNRESOLVED,
+    PATH_CHECK_FAILED,
+    SOURCE_UNDER_OUTPUT,
+    SOURCES_UNKNOWN,
     Candidate,
     ItemWindow,
     Phases,
@@ -472,7 +476,9 @@ class _LoopRun:
         self,
         generators: set[NodeId],
         iterated: set[NodeId],
-        open_window: Callable[[int], typing.Awaitable[ItemWindow | None]],
+        open_window: Callable[
+            [int], typing.Awaitable[tuple[ItemWindow | None, str | None]]
+        ],
     ) -> None:
         self.slot = 0
         self.generators = generators
@@ -480,6 +486,9 @@ class _LoopRun:
         self.open_window = open_window  # Executor.__open_window, given the stops
         self.decided = False
         self.deciding: asyncio.Task[None] | None = None
+        # The read-ahead blocker that set K = 1, and the look-ahead nodes warned of it.
+        self.blocker: str | None = None
+        self.warned: set[NodeId] = set()
         self.lineages: dict[NodeId, NodeId | None] = {}
         self.views: dict[NodeId, _IterationView] = {}
 
@@ -1297,14 +1306,15 @@ class Executor:
         all_iterated_nodes: set[NodeId],
         generator_suppliers: dict[NodeId, typing.Iterator[Output | Exception]],
         stops: int,
-    ) -> ItemWindow | None:
+    ) -> tuple[ItemWindow | None, str | None]:
         """
         Decides the group's item window K at slot 1 and logs it (spec 4.2, SP3-P1).
 
-        K = 1 builds no window and resolves no path.
+        K = 1 builds no window and resolves no path. Returns the window and the read-ahead blocker that set K = 1, if one did.
         """
         measured, self.__item_bytes = (self.__item_bytes, None)
         k, reason = window_size(affinity_cpus())
+        blocker = None
         if k > 1 and self.__pool_size is None:
             k, reason = (1, "pool size unknown")
         if k > 1:
@@ -1329,7 +1339,7 @@ class Executor:
                 k, reason = (1, blocker)
         logger.info("item window K=%d (%s)", k, reason)
         if k == 1:
-            return None
+            return None, blocker
         assert self.__pool_size is not None and measured is not None
         estimate = sum(
             size for node_id, size in measured.items() if node_id in all_iterated_nodes
@@ -1392,7 +1402,7 @@ class Executor:
             self.__ahead_context,
             all(generator.fail_fast for generator in generators),
         )
-        return ItemWindow(
+        window = ItemWindow(
             size=k,
             generators=generators,
             stops=stops,
@@ -1404,6 +1414,7 @@ class Executor:
             planner=planner,
             progress=self.progress,
         )
+        return window, None
 
     async def __close_window(self) -> None:
         self.__item_bytes = None
@@ -1512,7 +1523,8 @@ class Executor:
         return self.__window
 
     async def __decide_early(self, run: _LoopRun) -> None:
-        window = await run.open_window(0)  # slot 0 runs: no generator stopped
+        # slot 0 runs: no generator stopped
+        window, run.blocker = await run.open_window(0)
         run.decided = True
         if window is not None:
             window.start(run.slot)
@@ -1541,9 +1553,33 @@ class Executor:
 
     async def __lookahead(self, run: _LoopRun, node_id: NodeId, index: int) -> int:
         window = await self.__look_ahead_window(run)
+        if window is None:
+            self.__warn_look_ahead_off(run, node_id)
         if window is None or self.__look_ahead_source(run, node_id, index) is None:
             return 0
         return window.size - 1
+
+    def __warn_look_ahead_off(self, run: _LoopRun, node_id: NodeId) -> None:
+        """
+        A node looks ahead in a loop whose read-ahead blocker set K = 1, so it runs without its look-ahead: a run warning tells the UI why, once per node and loop run.
+        """
+        if self.__run is not run or run.blocker is None or node_id in run.warned:
+            return
+        run.warned.add(node_id)
+        kind, _, subject = run.blocker.partition(": ")
+        name = self.chain.nodes[node_id].data.name
+        if kind == PATH_CHECK_FAILED:
+            reason = f"The output folder could not be checked ({subject})"
+        else:
+            other = self.chain.nodes[NodeId(subject)].data.name
+            reason = {
+                SOURCES_UNKNOWN: f"The files {other} reads are unknown",
+                OUTPUT_UNRESOLVED: f"{other}'s output folder is computed after {name}",
+                SOURCE_UNDER_OUTPUT: f"{other}'s output folder may overlap the source folder",
+            }[kind]
+        message = f"{reason}, so {name} runs without its look-ahead: it uses only the current and earlier frames."
+        logger.warning(message)
+        self.queue.put({"event": "execution-warning", "data": {"message": message}})
 
     async def __peek(
         self, run: _LoopRun, node_id: NodeId, origin: int, index: int, offset: int
@@ -1625,7 +1661,7 @@ class Executor:
             run.slot = slot
             if slot == 1 and (not run.decided):
                 run.decided = True
-                self.__window = await run.open_window(total_stopiters)
+                self.__window, run.blocker = await run.open_window(total_stopiters)
             window = self.__window
             if window is not None:
                 window.begin(slot)

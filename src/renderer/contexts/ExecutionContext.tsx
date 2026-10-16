@@ -358,6 +358,13 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         }
     });
 
+    useBackendEventSourceListener(eventSource, 'execution-warning', (data) => {
+        if (data) {
+            // The run goes on; the toast stays until it is closed.
+            sendToast({ status: 'warning', description: data.message, duration: null });
+        }
+    });
+
     useBackendEventSourceListener(eventSource, 'chain-start', (data) => {
         if (data) {
             clearNodeStatusMap();
