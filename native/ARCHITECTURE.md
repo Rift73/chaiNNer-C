@@ -191,7 +191,9 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
   a timer win, no throughput loss; separable: kept on the 8-CPU timer by controller ruling), which `CHAINNER_C_ISA=avx2`
   caps on parts that downclock. The multiply (`spectral_avx2.c`) and the normal output (`color_avx2.c`) share their
   per-element code with the baseline unit through `spectral_shared.h` and `color_shared.h` (static helpers); the
-  other SP4b Task 8 tail kernels are baseline row loops.
+  other SP4b Task 8 tail kernels are baseline row loops. Descale is exempt from cross-level identity (ruling
+  2026-10-16): the vendored vapoursynth-descale solver uses FMA on AVX2, so its output equals the VapourSynth
+  plugin's on the same CPU; `DESCALE_OPT_NONE` in `descale_api()` (`src/descale_ops.c`) would restore it.
 - Never mutate cached graph inputs; never turn a borrowed view writable. Bridges keep every owner
   alive through native calls and asynchronous writes. Keep no-op identities where required.
 - C ABI version and status checks stay; DLL/ABI failure is visible.
