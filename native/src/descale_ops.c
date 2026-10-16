@@ -10,6 +10,7 @@
  * NumPy, whose pool keeps it warm across a batch. Fresh pages cost more than the solve.
  */
 
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -34,13 +35,33 @@ static struct DescaleAPI descale_api(void) {
     return get_descale_api(cn_isa_current() >= CN_ISA_AVX2 ? DESCALE_OPT_AVX2 : DESCALE_OPT_NONE);
 }
 
+/* descale.c's round_halfup (from zimg). */
+static double round_halfup(double x) { return x < 0 ? floor(x + 0.5) : floor(x + 0.49999999999999994); }
+
+/* descale's mirror reflects a tap once, so a tap more than dst_dim beyond an edge (a kernel
+ * wider than the target, or a shift past an edge) would index outside its weights row and
+ * corrupt the heap. Replays scaling_weights' tap positions (descale.c) to refuse those. */
+static int mirror_fits(int src_dim, int dst_dim, int mode, int taps, double blur, double shift, double active_dim) {
+    static const int mode_taps[] = {0, 1, 2, 0, 2, 3, 4, 0};
+    int support = (int)ceil((mode == DESCALE_MODE_LANCZOS ? taps : mode_taps[mode]) * blur);
+    int filter_size = support > 0 ? 2 * support : 1;
+    double ratio = (double)src_dim / active_dim;
+    for (int i = 0; i < src_dim; ++i) {
+        double pos = (i + 0.5) / ratio + shift;
+        double first = round_halfup(pos - filter_size / 2.0) + 0.5, last = first + (filter_size - 1);
+        if (-first >= dst_dim || 2.0 * dst_dim - last < 0.0) return 0;
+    }
+    return 1;
+}
+
 /* One direction's solver for a src_dim -> dst_dim descale; NULL on invalid parameters.
  * mode is DescaleMode (1 bilinear .. 7 point), border DescaleBorder. */
 CN_EXPORT void *cn_descale_core_create(int src_dim, int dst_dim, int mode, int taps, double b, double c,
                                        double blur, double shift, double active_dim, int border) {
     if (src_dim < 1 || dst_dim < 1 || dst_dim > src_dim || mode < DESCALE_MODE_BILINEAR || mode > DESCALE_MODE_POINT ||
         !(blur > 0.0) || !(active_dim > 0.0) || border < DESCALE_BORDER_MIRROR || border > DESCALE_BORDER_REPEAT ||
-        (mode == DESCALE_MODE_LANCZOS && taps < 1))
+        (mode == DESCALE_MODE_LANCZOS && taps < 1) ||
+        (border == DESCALE_BORDER_MIRROR && !mirror_fits(src_dim, dst_dim, mode, taps, blur, shift, active_dim)))
         return NULL;
     struct DescaleParams params = {0};
     params.mode = (enum DescaleMode)mode;

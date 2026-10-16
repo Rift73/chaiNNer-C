@@ -25,21 +25,41 @@ def test_inverts_bilinear_upscale():
     assert np.abs(run(large, 67, 45) - small).max() < 1e-4
 
 
-@pytest.mark.parametrize("shape", [(5, 3, 1), (9, 17, 4), (130, 75, 3)])
-def test_channels_are_independent_planes(shape):
+# 3 -> 2 columns with Spline36 reaches past the mirror's range, so that shape extends.
+@pytest.mark.parametrize("shape, border", [((5, 3, 1), 2), ((9, 17, 4), 0), ((130, 75, 3), 0)])
+def test_channels_are_independent_planes(shape, border):
     rng = np.random.default_rng(4)
     image = rng.random(shape, dtype=np.float32)
     h, w = shape[:2]
-    out = run(image, max(1, w * 2 // 3), max(1, h * 2 // 3), mode=5, border=0)
+    out = run(image, max(1, w * 2 // 3), max(1, h * 2 // 3), mode=5, border=border)
     for k in range(shape[2]):
         plane = run(
             np.ascontiguousarray(image[:, :, k]),
             out.shape[1],
             out.shape[0],
             mode=5,
-            border=0,
+            border=border,
         )
         assert np.array_equal(out[:, :, k], plane)
+
+
+@pytest.mark.parametrize(
+    "width, mode, blur, left",
+    [(2, 3, 1.0, 0.0), (8, 1, 10.0, 0.0), (100, 1, 1.0, 1000.0), (100, 1, 1.0, -1000.0)],
+)
+def test_mirror_reaching_past_the_target_is_refused(width, mode, blur, left):
+    # descale's mirror reflects a tap once, so a kernel wider than the target or a
+    # shift past an edge indexed outside the weights: a crash at Source Left -1000.
+    image = np.random.default_rng(6).random((16, 400, 3), dtype=np.float32)
+    with pytest.raises(ValueError):
+        native_descale.descale(
+            image, width, 16, mode, 3, 0.0, 0.5, blur, (left, 0.0), (width, 16), 0
+        )
+    # Extend clamps every tap, so the same parameters stay valid there.
+    out = native_descale.descale(
+        image, width, 16, mode, 3, 0.0, 0.5, blur, (left, 0.0), (width, 16), 2
+    )
+    assert out.shape == (16, width, 3)
 
 
 def test_same_size_is_identity_and_bad_targets_fail():
