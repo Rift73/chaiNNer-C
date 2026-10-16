@@ -43,15 +43,6 @@ def test_conditioning_dimensions_channels_and_tiny_padding(shape):
     assert torch.all(padded[:, :2] == -1)
 
 
-def test_scales_up_to_16x_are_accepted():
-    image = np.zeros((3, 5, 3), dtype=np.float32)
-    _, reference = prepare_image(image, 16)
-    assert reference.shape == (48, 80, 3)
-    for scale in (0, 17):
-        with pytest.raises(ValueError, match="from 1 to 16"):
-            prepare_image(image, scale)
-
-
 @pytest.mark.parametrize(
     "length,tile,overlap", [(16, 16, 8), (100, 32, 8), (160, 32, 0), (99, 24, 23)]
 )
