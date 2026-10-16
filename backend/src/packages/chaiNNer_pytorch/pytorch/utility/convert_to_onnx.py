@@ -8,6 +8,8 @@ from spandrel import ImageModelDescriptor
 
 from api import NodeContext
 from nodes.groups import Condition, if_group
+from nodes.impl.image_utils import as_target_channels
+from nodes.impl.onnx.autocast import LowPrecision, autocast
 from nodes.impl.onnx.load import load_onnx_model
 from nodes.impl.onnx.model import MIXED, OnnxGeneric
 from nodes.impl.pytorch.convert_to_onnx_impl import (
@@ -18,14 +20,35 @@ from nodes.impl.tensorrt import dual
 from nodes.properties.inputs import (
     BoolInput,
     EnumInput,
+    ImageInput,
     NumberInput,
-    OnnxFpDropdown,
     SrModelInput,
 )
 from nodes.properties.outputs import OnnxModelOutput, TextOutput
 
 from ...settings import get_settings
 from .. import utility_group
+
+
+class OnnxDataType(Enum):
+    FP32 = 0
+    FP16 = 1
+    MIXED_FP16 = 2
+    MIXED_BF16 = 3
+
+
+DATA_TYPE_LABELS: dict[OnnxDataType, str] = {
+    OnnxDataType.FP32: "fp32",
+    OnnxDataType.FP16: "fp16",
+    OnnxDataType.MIXED_FP16: "Mixed FP16 (ModelOpt)",
+    OnnxDataType.MIXED_BF16: "Mixed BF16 (ModelOpt)",
+}
+LOW_PRECISION: dict[OnnxDataType, LowPrecision] = {
+    OnnxDataType.MIXED_FP16: "fp16",
+    OnnxDataType.MIXED_BF16: "bf16",
+}
+# AutoCast calibrates on at most this many pixels per side (a centre crop).
+CALIBRATION_SIZE = 256
 
 
 class Opset(Enum):
@@ -84,7 +107,20 @@ NOT_DUAL = Condition.type(
     inputs=[
         SrModelInput("PyTorch Model"),
         if_group(NOT_DUAL)(
-            OnnxFpDropdown(),
+            EnumInput(
+                OnnxDataType,
+                label="Data Type",
+                default=OnnxDataType.FP32,
+                option_labels=DATA_TYPE_LABELS,
+            ).with_docs(
+                "Mixed FP16 and Mixed BF16 export in FP32, then NVIDIA ModelOpt's AutoCast"
+                " converts each node to FP16 or BF16 unless its values on the calibration"
+                " image, or its weights, would overflow or lose too much there; those"
+                " nodes stay FP32, as do the input and output. TensorRT builds these"
+                " models in their own precision (Build Engine's Precision does not apply)."
+                " Needs the NVIDIA ModelOpt package.",
+                hint=True,
+            ),
             EnumInput(
                 Opset,
                 label="Opset",
@@ -99,7 +135,22 @@ NOT_DUAL = Condition.type(
             BoolInput("Verify", default=False).with_docs(
                 "Runs the ONNX and PyTorch models to verify that they produce the same output. It's recommended to keep this on to ensure the conversion is correct.",
                 "Verification requires ONNX to be installed.",
+                "A mixed-precision model is verified as its FP32 export, before AutoCast.",
                 hint=True,
+            ),
+            if_group(
+                Condition.enum(1, (OnnxDataType.MIXED_FP16, OnnxDataType.MIXED_BF16))
+            )(
+                ImageInput("Calibration Image")
+                .make_optional()
+                .with_id(7)
+                .with_docs(
+                    "An image like those the model will upscale, for AutoCast to measure"
+                    " each node's values on (a centre crop of at most"
+                    f" {CALIBRATION_SIZE}x{CALIBRATION_SIZE}). Without one, it uses"
+                    " random noise.",
+                    hint=True,
+                ),
             ),
         ),
         if_group(IS_DUAL)(
@@ -145,7 +196,12 @@ NOT_DUAL = Condition.type(
             """
                 match Input0.arch {
                     "DUAL" => "mixed",
-                    _ => FpMode::toString(Input1),
+                    _ => match Input1 {
+                        OnnxDataType::Fp32 => "fp32",
+                        OnnxDataType::Fp16 => "fp16",
+                        OnnxDataType::MixedFp16 => "mixed-fp16",
+                        OnnxDataType::MixedBf16 => "mixed-bf16",
+                    },
                 }
             """,
         ),
@@ -176,9 +232,10 @@ NOT_DUAL = Condition.type(
 def convert_to_onnx_node(
     context: NodeContext,
     model: ImageModelDescriptor,
-    is_fp16: int,
+    data_type: OnnxDataType,
     opset: Opset,
     verify: bool,
+    calibration_image: np.ndarray | None,
     dual_shape: DualShape,
     dual_height: int,
     dual_width: int,
@@ -202,7 +259,7 @@ def convert_to_onnx_node(
         f"{model.architecture} is not supported for ONNX conversion at this time."
     )
 
-    fp16 = bool(is_fp16)
+    fp16 = data_type == OnnxDataType.FP16
     exec_options = get_settings(context)
     device = exec_options.device
     if fp16:
@@ -229,9 +286,35 @@ def convert_to_onnx_node(
     if verify:
         verify_models(model, onnx_model_bytes, fp16)
 
-    fp_mode = "fp16" if fp16 else "fp32"
+    low = LOW_PRECISION.get(data_type)
+    if low is None:
+        return onnx_model, "fp16" if fp16 else "fp32", f"opset{opset.value}"
+    calibration = calibration_input(model, calibration_image)
+    onnx_model = load_onnx_model(autocast(onnx_model_bytes, low, calibration))
+    assert onnx_model.sub_type == "Generic"
+    return onnx_model, f"mixed-{low}", f"opset{opset.value}"
 
-    return onnx_model, fp_mode, f"opset{opset.value}"
+
+def calibration_input(
+    model: ImageModelDescriptor, image: np.ndarray | None
+) -> np.ndarray:
+    """AutoCast's calibration input (NCHW float32 RGB): a centre crop of `image`, or
+    seeded noise, padded to a size the model accepts."""
+    if image is None:
+        image = np.random.default_rng(0).random((64, 64, 3), dtype=np.float32)
+    height, width = image.shape[:2]
+    top = max(0, (height - CALIBRATION_SIZE) // 2)
+    left = max(0, (width - CALIBRATION_SIZE) // 2)
+    image = image[top : top + CALIBRATION_SIZE, left : left + CALIBRATION_SIZE]
+    image = as_target_channels(image, model.input_channels, narrowing=True)
+    if image.ndim == 3 and image.shape[2] >= 3:
+        # chaiNNer's images are BGR(A); the model takes RGB(A).
+        image = np.concatenate([image[:, :, 2::-1], image[:, :, 3:]], axis=2)
+    if image.ndim == 2:
+        image = image[:, :, None]
+    pad_w, pad_h = model.size_requirements.get_padding(image.shape[1], image.shape[0])
+    image = np.pad(image, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
+    return np.ascontiguousarray(image.transpose(2, 0, 1)[None], dtype=np.float32)
 
 
 def verify_models(pytorch_model: ImageModelDescriptor, onnx_model: bytes, fp16: bool):

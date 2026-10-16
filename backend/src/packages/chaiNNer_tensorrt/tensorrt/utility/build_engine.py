@@ -89,6 +89,7 @@ if utility_group is not None:
                     "FP16: lower precision but faster and uses less memory, especially on RTX GPUs. FP16 also does not work with certain models.",
                     "BF16: same exponent range as FP32 with reduced mantissa. Better numerical stability than FP16 while still being faster than FP32. Good for models that produce NaN/artifacts with FP16.",
                     "FP32: higher precision but slower. Use especially if FP16 fails.",
+                    "A mixed-precision ONNX (Convert To ONNX's Mixed FP16 or Mixed BF16) keeps its own precision, and this setting does not apply.",
                 ),
             ),
             EnumInput(
@@ -260,8 +261,10 @@ if utility_group is not None:
             )
             timing_cache_path = f"{settings.timing_cache_path}/{name}"
 
+        # A mixed-precision ONNX (ModelOpt AutoCast) keeps its own types.
+        mixed = onnx_model.info.dtype.startswith("mixed-")
         config = BuildConfig(
-            precision=precision.value,
+            precision="mixed" if mixed else precision.value,
             workspace_size_gb=workspace,
             min_shape=(min_height, min_width),
             opt_shape=(opt_height, opt_width),
@@ -275,7 +278,7 @@ if utility_group is not None:
         logger.info(
             "Building TensorRT engine: precision=%s, dynamic=%s, workspace=%gGiB,"
             " tf32=%s, sparse=%s, level=%d",
-            precision.value,
+            config.precision,
             use_dynamic,
             workspace,
             allow_tf32,

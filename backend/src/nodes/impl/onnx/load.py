@@ -6,6 +6,7 @@ from sanic.log import logger
 
 from ..native_graph import graph
 from ..tensorrt.dual import export_manifest
+from .autocast import mixed_precision
 from .model import MIXED, OnnxGeneric, OnnxInfo, OnnxModel, OnnxRemBg, SizeReq
 from .utils import (
     ModelShapeInference,
@@ -20,10 +21,11 @@ def _detect_size_req(infer: ModelShapeInference):
 
 def _fp_datatype(model: onnx.ModelProto) -> str:
     """A DUAL ONNX from Convert To ONNX keeps its own mixed precision (BF16 body, FP32
-    input and output); any other model has one."""
+    input and output), as does one Convert To ONNX made mixed with ModelOpt
+    ("mixed-fp16" or "mixed-bf16"); any other model has one."""
     if export_manifest(model) is not None:
         return MIXED
-    return get_tensor_fp_datatype(model)
+    return mixed_precision(model) or get_tensor_fp_datatype(model)
 
 
 def load_onnx_model(model_or_bytes: onnx.ModelProto | bytes) -> OnnxModel:

@@ -709,6 +709,7 @@ async def import_packages(
     importlib.import_module("packages.chaiNNer_ncnn")
     importlib.import_module("packages.chaiNNer_onnx")
     importlib.import_module("packages.chaiNNer_tensorrt")
+    importlib.import_module("packages.chaiNNer_modelopt")
     importlib.import_module("packages.chaiNNer_vapoursynth")
     importlib.import_module("packages.chaiNNer_external")
 

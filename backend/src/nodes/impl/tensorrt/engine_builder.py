@@ -20,7 +20,8 @@ from .model import TensorRTEngine, TensorRTEngineInfo
 class BuildConfig:
     """Configuration for TensorRT engine building."""
 
-    precision: Literal["fp32", "fp16", "bf16"]
+    # "mixed": the ONNX's own per-node types (Convert To ONNX's Mixed data types).
+    precision: Literal["fp32", "fp16", "bf16", "mixed"]
     workspace_size_gb: float
     min_shape: tuple[int, int]  # (height, width)
     opt_shape: tuple[int, int]  # (height, width)
@@ -56,6 +57,8 @@ def _create_network(builder: Any) -> Any:
 
 def _apply_precision(builder_config: Any, network: Any, precision: str) -> None:
     """Make the engine use `precision`, or fail with a clear reason."""
+    if precision == "mixed":
+        return
     if _uses_precision_flags():
         if precision == "fp16":
             builder_config.set_flag(trt.BuilderFlag.FP16)
