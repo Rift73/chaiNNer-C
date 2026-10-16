@@ -78,6 +78,9 @@ class TensorRTSession:
         check_cuda(cudart.cudaSetDevice(gpu_index))
         # The engine Load Engine deserialized, kept alive until `close`.
         self._loaded = engine.acquire(gpu_index, deserialize_engine)
+        context: Any = None
+        stream: Any = None
+        events: list[Any] = []
         try:
             cuda_engine = self._loaded.engine
             # Activation memory is sized for the actual tile shape, not the
@@ -108,10 +111,27 @@ class TensorRTSession:
             # A dynamic DUAL engine's input names the multiple its sizes must be.
             alignment = input_alignment(self.input_name) or TILE_ALIGNMENT
             self.bounds = ShapeBounds(mins[2], mins[3], maxs[2], maxs[3], alignment)
+
+            stream = check_cuda(cudart.cudaStreamCreate())
+            for _ in range(2):
+                events.append(
+                    check_cuda(
+                        cudart.cudaEventCreateWithFlags(cudart.cudaEventDisableTiming)
+                    )
+                )
         except BaseException:
+            # What was created goes, the context before the engine it came from;
+            # unchecked, so a teardown error cannot hide this one.
+            for event in events:
+                cudart.cudaEventDestroy(event)
+            if stream is not None:
+                cudart.cudaStreamDestroy(stream)
+            del context
             self._loaded.release()
             raise
         self.context = context
+        self._stream = stream
+        self._events = events
         # An input shape seen again is captured in a CUDA graph after that run and
         # replayed from then on: TensorRT's per-launch host work happens once (DUAL's AOT
         # plugins cost ~0.3 ms of it per launch, 5x the GPU time without a graph). A
@@ -124,11 +144,6 @@ class TensorRTSession:
         self._seen: OrderedDict[tuple[int, ...], None] = OrderedDict()
         self._graph_failed = False
 
-        self._stream = check_cuda(cudart.cudaStreamCreate())
-        self._events = [
-            check_cuda(cudart.cudaEventCreateWithFlags(cudart.cudaEventDisableTiming))
-            for _ in range(2)
-        ]
         self._d_in = 0
         self._d_in_nbytes = 0
         self._d_out = 0
