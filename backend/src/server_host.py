@@ -28,7 +28,7 @@ from dependencies.store import (
 from events import EventQueue
 from gpu import nvidia
 from nodes.impl.cors import add_cors
-from response import error_response, success_response
+from response import error_response, no_executor_response, success_response
 from server_config import LOG_CONFIG, ServerConfig
 from server_process_helper import WorkerServer
 
@@ -136,6 +136,12 @@ async def kill(request: Request):
     worker = await AppContext.get(request.app).get_worker()
     try:
         response = await worker.proxy_request(request, timeout=3)
+        # No run to kill (Stop just as a run ended) is not a reason to restart the
+        # worker, which would drop every loaded model.
+        if response.status == 400 and json_parse(response.body or b"null") == (
+            no_executor_response()
+        ):
+            return json(success_response(), status=200)
         if response.status > 200:
             if response.body is None:
                 raise Exception(
