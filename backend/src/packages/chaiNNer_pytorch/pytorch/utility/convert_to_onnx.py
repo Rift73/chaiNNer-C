@@ -33,6 +33,12 @@ class Opset(Enum):
     OPSET_15 = 15
     OPSET_16 = 16
     OPSET_17 = 17
+    OPSET_18 = 18
+    OPSET_19 = 19
+    OPSET_20 = 20
+    OPSET_21 = 21
+    OPSET_22 = 22
+    OPSET_23 = 23
 
 
 OPSET_LABELS: dict[Opset, str] = {
@@ -40,6 +46,12 @@ OPSET_LABELS: dict[Opset, str] = {
     Opset.OPSET_15: "15",
     Opset.OPSET_16: "16",
     Opset.OPSET_17: "17",
+    Opset.OPSET_18: "18",
+    Opset.OPSET_19: "19",
+    Opset.OPSET_20: "20",
+    Opset.OPSET_21: "21",
+    Opset.OPSET_22: "22",
+    Opset.OPSET_23: "23",
 }
 
 
@@ -76,8 +88,13 @@ NOT_DUAL = Condition.type(
             EnumInput(
                 Opset,
                 label="Opset",
-                default=Opset.OPSET_14,
+                default=Opset.OPSET_20,
                 option_labels=OPSET_LABELS,
+            ).with_docs(
+                "Opset 17 and newer export LayerNorm as one ONNX operator, and 20 and newer"
+                " GELU too, which TensorRT and ONNX Runtime run as single layers. Older"
+                " opsets suit older ONNX programs.",
+                hint=True,
             ),
             BoolInput("Verify", default=False).with_docs(
                 "Runs the ONNX and PyTorch models to verify that they produce the same output. It's recommended to keep this on to ensure the conversion is correct.",
@@ -143,6 +160,12 @@ NOT_DUAL = Condition.type(
                         Opset::Opset15 => "opset15",
                         Opset::Opset16 => "opset16",
                         Opset::Opset17 => "opset17",
+                        Opset::Opset18 => "opset18",
+                        Opset::Opset19 => "opset19",
+                        Opset::Opset20 => "opset20",
+                        Opset::Opset21 => "opset21",
+                        Opset::Opset22 => "opset22",
+                        Opset::Opset23 => "opset23",
                     },
                 }
             """,
