@@ -27,15 +27,15 @@ unzipped it; `%APPDATA%\chaiNNer-C` from source).
 | Clip Frames, Frames to Clip | Clip to images and back, for chaiNNer's image nodes | |
 | Split Planes | Splits a clip into Y, U, V (R, G, B for RGB) clips | |
 | Preview Clips, Save Script | Opens up to 16 clips in vsview; writes the chain as a `.vpy` file | |
-| Clip Properties, Convert Format | Colour info, aspect ratio, frame rate; format, bit depth, colour space | 9, 11 |
-| Resize, Cut and Splice, Planes | Scale with any kernel, descale, crop; trim, join, replace frames; join, merge planes | 33, 15, 16 |
-| Deinterlace | Field matching (VFM), decimation, NNEDI3 | 22 |
+| Clip Properties, Convert Format | Colour info, aspect ratio, frame rate, frame statistics; format, bit depth, colour space | 15, 12 |
+| Resize, Cut and Splice, Planes | Scale with any kernel, descale, crop, pad, turn; trim, join, replace and shift frames; split, join, merge planes | 39, 16, 21 |
+| Deinterlace | Field matching (VFM), decimation, NNEDI3, Bwdif, fields | 25 |
 | Denoise | BM3D, NL-Means, Motion-compensated degrain, DFTTest, prefilters | 29 |
 | Sharpen and Blur, Anti-alias, Dehalo | Sharpening and blurring; jagged edges; halos | 26, 21, 9 |
-| Deband and Grain, Masks, Colour, Expression | Banding and grain; masks; levels and colour matching; per-pixel formulas | 16, 71, 2, 14 |
+| Deband and Grain, Masks, Colour, Expression | Banding and grain; masks; levels, tone mapping, CLAHE; per-pixel formulas | 16, 71, 4, 14 |
 | AI Upscale | Runs an upscaling model on every frame (below) | |
 | User Functions | Your own functions (below); shown only when there are some | |
-| Any Function | Every other function, grouped by module | 240 |
+| Any Function | Every other function, grouped by module (vs-jetpack's internal helper classes left out) | 192 |
 
 ## One chain, one script
 
@@ -88,6 +88,8 @@ the Clip input goes away and the output becomes "Clip or filter". Example: Deint
 in. That is `vfm(postprocess=NNEDI3(...).deinterlace)`: two nodes, one wire. Denoise > Prefilter does the same for
 Motion-compensated degrain's Prefilter. **Any Function** has up to 12 rows `name = value` (a Python value: a number,
 'text', True, a list; never code) and two sockets for a clip or filter, each with the argument name it fills.
+
+A function that returns several clips (Shift Clip Multi, SplitPlanes) gives them as one output: wire it into a setting that takes several clips (Interleave, Splice, Stack, Expression's clips); a setting that takes one clip says so on its node.
 
 ## AI Upscale
 
