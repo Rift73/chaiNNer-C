@@ -27,6 +27,7 @@ import {
 import { IdSet } from '../../common/IdSet';
 import { log } from '../../common/log';
 import { getEffectivelyDisabledNodes } from '../../common/nodes/disabled';
+import { formatDroppedNodes, toEditorChain } from '../../common/nodes/editorChain';
 import { ChainLineage } from '../../common/nodes/lineage';
 import { TypeState } from '../../common/nodes/TypeState';
 
@@ -552,40 +553,22 @@ export const GlobalProvider = memo(
                     return;
                 }
 
-                const validNodes = savedData.nodes
-                    // remove nodes that are not supported
-                    .filter((node) => schemata.has(node.data.schemaId))
-                    .map((node) => {
-                        return {
-                            ...node,
-                            data: {
-                                ...node.data,
-                                inputData: {
-                                    ...schemata.getDefaultInput(node.data.schemaId),
-                                    ...Object.fromEntries(
-                                        Object.entries(node.data.inputData).filter(
-                                            ([, v]) => v != null
-                                        )
-                                    ),
-                                },
-                            },
-                        };
-                    });
-                const validNodeIds = new Set(validNodes.map((n) => n.id));
-                const validEdges = savedData.edges
-                    // Filter out any edges that do not have a source or target node associated with it
-                    .filter(
-                        (edge) => validNodeIds.has(edge.target) && validNodeIds.has(edge.source)
-                    )
-                    // Un-animate all edges, if was accidentally saved when animated
-                    .map((edge) => (edge.animated ? { ...edge, animated: false } : edge));
+                const {
+                    nodes: validNodes,
+                    edges: validEdges,
+                    droppedNodes,
+                    complete,
+                } = toEditorChain(schemata, savedData.nodes, savedData.edges);
 
-                if (savedData.nodes.length !== validNodes.length) {
+                if (!complete) {
                     sendAlert({
                         type: AlertType.WARN,
                         title: 'File contains invalid nodes',
-                        message:
-                            'The file you are trying to open contains nodes that are unavailable on your system. Check the dependency manager to see if you are missing any dependencies. The file will now be loaded without the incompatible nodes.',
+                        message: `The file you are trying to open contains ${
+                            droppedNodes.length
+                        } node(s) that are unavailable on your system:\n\n${formatDroppedNodes(
+                            droppedNodes
+                        )}\n\nCheck the dependency manager to see if you are missing any dependencies; nodes from another version of chaiNNer may not exist here. The file will now be loaded without these nodes and is marked as unsaved, so saving it removes them from the file.`,
                     });
                 }
                 if (savedData.tamperedWith) {
@@ -617,10 +600,17 @@ export const GlobalProvider = memo(
                 // React Flow reuses the nodes that keep their id, so they have to run again to
                 // get back the output data that was just cleared
                 addChainLoads();
-                setLastSavedChanges([
-                    nextChangeCount(nodeChangesRef.current),
-                    nextChangeCount(edgeChangesRef.current),
-                ]);
+                // The loaded chain matches its file only if no node was dropped. Otherwise the
+                // counts before the load are kept, which the changes below leave behind, so the
+                // chain is unsaved.
+                setLastSavedChanges(
+                    complete
+                        ? [
+                              nextChangeCount(nodeChangesRef.current),
+                              nextChangeCount(edgeChangesRef.current),
+                          ]
+                        : [nodeChangesRef.current, edgeChangesRef.current]
+                );
                 changeNodes(validNodes);
                 changeEdges(validEdges);
                 if (loadPosition) {
@@ -1215,9 +1205,29 @@ export const GlobalProvider = memo(
                 changeEdges,
                 createNode,
                 screenToFlowPosition,
-                reactFlowWrapper
+                reactFlowWrapper,
+                schemata,
+                (droppedNodes) => {
+                    sendAlert({
+                        type: AlertType.WARN,
+                        title: 'Clipboard contains invalid nodes',
+                        message: `The copied chain contains ${
+                            droppedNodes.length
+                        } node(s) that are unavailable on your system:\n\n${formatDroppedNodes(
+                            droppedNodes
+                        )}\n\nCheck the dependency manager to see if you are missing any dependencies; nodes from another version of chaiNNer may not exist here. The chain was pasted without these nodes.`,
+                    });
+                }
             ).catch(log.error);
-        }, [changeNodes, changeEdges, createNode, screenToFlowPosition, reactFlowWrapper]);
+        }, [
+            changeNodes,
+            changeEdges,
+            createNode,
+            screenToFlowPosition,
+            reactFlowWrapper,
+            schemata,
+            sendAlert,
+        ]);
         const selectAllFn = useCallback(() => {
             changeNodes((nodes) => nodes.map((n) => ({ ...n, selected: true })));
             changeEdges((edges) => edges.map((e) => ({ ...e, selected: true })));
