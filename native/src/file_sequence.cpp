@@ -85,6 +85,19 @@ class Walker {
         O full = absolute_ ? value : join(root_, value);
         return graphpy::truth(path_.attr("lexists")(full));
     }
+    // A directory's identity: its final path, with every link and junction resolved.
+    O identity(const O &value) {
+        O full = absolute_ ? value : join(root_, value);
+        return path_.attr("normcase")(path_.attr("realpath")(full));
+    }
+    // A deep walk enters each directory once: a junction or link back to a directory
+    // it already entered (a cycle, or a second way to the same folder) is not entered.
+    bool first_visit(const O &visited, const O &value) {
+        O key = identity(value);
+        if (graphpy::contains(visited, key)) return false;
+        if (PySet_Add(visited.ptr(), key.ptr()) < 0) throw py::error_already_set();
+        return true;
+    }
     bool excluded(O value, bool directory) {
         O patterns = config_.attr("npatterns");
         if (!graphpy::truth(patterns)) return false;
@@ -137,8 +150,9 @@ class Walker {
         }
         return result;
     }
-    void directory(const O &current, const O &target,
-                   bool directory_only, bool deep, const Sink &sink) {
+    // visited: the identities a deep walk entered (a set); None when not deep.
+    void directory(const O &current, const O &target, bool directory_only,
+                   bool deep, const Sink &sink, const O &visited) {
         RecursiveCall recursion;
         auto files = entries(current, directory_only);
         for (const auto &entry : files) {
@@ -150,12 +164,12 @@ class Walker {
             O full = join(current, entry.name);
             // 11.0.1's _glob_dir yields an unfollowed link too; it only skips
             // descending into it (globstar_follow needs GLOBSTARLONG, which Load
-            // Images' flags never set).
+            // Images' flags never set). A junction is not a link to it.
             bool selected = target.is_none() ? !entry.hidden : match(target, entry.name);
             if (selected) sink({full, entry.directory});
             bool follow = !entry.link || follow_;
-            if (deep && !entry.hidden && entry.directory && follow) {
-                directory(full, target, directory_only, deep, sink);
+            if (deep && !entry.hidden && entry.directory && follow && first_visit(visited, full)) {
+                directory(full, target, directory_only, deep, sink, visited);
             }
         }
     }
@@ -175,19 +189,21 @@ class Walker {
             } else target = py::none();
             if (globstar_end && graphpy::truth(current))
                 sink({join(current, empty_), true});
+            O visited = checked(PySet_New(nullptr));
+            first_visit(visited, current);
             directory(current, target, directory_only, true, [&](const Match &candidate) {
                 if (next < parts.size()) {
                     glob(candidate.path, parts, next, sink);
                 } else sink(candidate);
-            });
+            }, visited);
         } else if (!directory_only) {
-            directory(current, target, false, false, sink);
+            directory(current, target, false, false, sink, py::none());
         } else {
             directory(current, target, true, false, [&](const Match &candidate) {
                 if (at + 1 < parts.size()) {
                     glob(candidate.path, parts, at + 1, sink);
                 } else sink(candidate);
-            });
+            }, py::none());
         }
     }
     void emit(py::list &result, O value, bool directory, bool directory_only) {
