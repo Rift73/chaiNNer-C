@@ -55,17 +55,23 @@ static int mirror_fits(int src_dim, int dst_dim, int mode, int taps, double blur
     return 1;
 }
 
-/* One direction's solver for a src_dim -> dst_dim descale; NULL on invalid parameters.
+/* One direction's solver for a src_dim -> dst_dim descale; NULL on invalid parameters, and
+ * then *mirror_outside is 1 when the mirror's reach (mirror_fits) was the reason, else 0.
  * mode is DescaleMode (1 bilinear .. 7 point), border DescaleBorder. */
 CN_EXPORT void *cn_descale_core_create(int src_dim, int dst_dim, int mode, int taps, double b, double c,
-                                       double blur, double shift, double active_dim, int border) {
+                                       double blur, double shift, double active_dim, int border,
+                                       int *mirror_outside) {
+    if (mirror_outside) *mirror_outside = 0;
     /* descale indexes its src_dim x dst_dim matrices with int products. */
     if (src_dim < 1 || dst_dim < 1 || dst_dim > src_dim || (int64_t)src_dim * dst_dim > INT_MAX ||
         mode < DESCALE_MODE_BILINEAR || mode > DESCALE_MODE_POINT ||
         !(blur > 0.0) || !(active_dim > 0.0) || border < DESCALE_BORDER_MIRROR || border > DESCALE_BORDER_REPEAT ||
-        (mode == DESCALE_MODE_LANCZOS && taps < 1) ||
-        (border == DESCALE_BORDER_MIRROR && !mirror_fits(src_dim, dst_dim, mode, taps, blur, shift, active_dim)))
+        (mode == DESCALE_MODE_LANCZOS && taps < 1))
         return NULL;
+    if (border == DESCALE_BORDER_MIRROR && !mirror_fits(src_dim, dst_dim, mode, taps, blur, shift, active_dim)) {
+        if (mirror_outside) *mirror_outside = 1;
+        return NULL;
+    }
     struct DescaleParams params = {0};
     params.mode = (enum DescaleMode)mode;
     params.taps = taps;

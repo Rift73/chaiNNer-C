@@ -51,10 +51,14 @@ def test_mirror_reaching_past_the_target_is_refused(width, mode, blur, left):
     # descale's mirror reflects a tap once, so a kernel wider than the target or a
     # shift past an edge indexed outside the weights: a crash at Source Left -1000.
     image = np.random.default_rng(6).random((16, 400, 3), dtype=np.float32)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as error:
         native_descale.descale(
             image, width, 16, mode, 3, 0.0, 0.5, blur, (left, 0.0), (width, 16), 0
         )
+    assert str(error.value) == (
+        "Descale: this Shift and Border=Mirror would read outside the kernel; "
+        "use the Extend or Zero border, or a smaller shift."
+    )
     # Extend clamps every tap, so the same parameters stay valid there.
     out = native_descale.descale(
         image, width, 16, mode, 3, 0.0, 0.5, blur, (left, 0.0), (width, 16), 2
@@ -66,7 +70,7 @@ def test_system_beyond_int_indices_is_refused():
     # descale sizes its src_dim x dst_dim matrices with int products: 65536 x 32768
     # overflowed into an access violation inside the core build.
     strip = np.zeros((16, 65536), np.float32)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="^Invalid descale parameters$"):
         run(strip, 32768, 16)
 
 

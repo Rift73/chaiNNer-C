@@ -21,6 +21,7 @@ _lib.cn_descale_core_create.argtypes = [
     ct.c_double,
     ct.c_double,
     ct.c_int,
+    ct.POINTER(ct.c_int),
 ]
 _lib.cn_descale_core_create.restype = ct.c_void_p
 _lib.cn_descale_core_free.argtypes = [ct.c_void_p]
@@ -71,10 +72,26 @@ def _core(
     border: int,
 ) -> _Core:
     # Building the system costs O(dim^2) (tens of ms for 4K), so a batch reuses it.
+    mirror_outside = ct.c_int(0)
     handle = _lib.cn_descale_core_create(
-        src_dim, dst_dim, mode, taps, b, c, blur, shift, active_dim, border
+        src_dim,
+        dst_dim,
+        mode,
+        taps,
+        b,
+        c,
+        blur,
+        shift,
+        active_dim,
+        border,
+        ct.byref(mirror_outside),
     )
     if not handle:
+        if mirror_outside.value:
+            raise ValueError(
+                "Descale: this Shift and Border=Mirror would read outside the kernel;"
+                " use the Extend or Zero border, or a smaller shift."
+            )
         raise ValueError("Invalid descale parameters")
     return _Core(handle)
 
