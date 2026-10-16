@@ -1600,9 +1600,9 @@ def test_dependents_of_a_stored_error_meet_it_at_the_nesting_point(
     assert stripped(runs["3"].events) == stripped(runs["1"].events)
 
 
-# The 114 schema ids admitted by pure_cpu_dependency's per-node conditions, each
+# The 115 schema ids admitted by pure_cpu_dependency's per-node conditions, each
 # audited in native/reports/sp3/thread-safety-audit.md (SP3 Task 4; the locked device
-# node, 2026-10-08).
+# node, 2026-10-08; Descale, 2026-10-16).
 AUDITED_SPECULATION_IDS: frozenset[str] = frozenset(
     [
         f"chainner:image:{name}"
@@ -1611,7 +1611,7 @@ AUDITED_SPECULATION_IDS: frozenset[str] = frozenset(
         bilateral_blur blend blur brightness_and_contrast canny_edge_detection caption
         change_colorspace chroma_key clamp color_levels color_transfer combine_rgba
         convert_normal_map create_checkerboard create_color create_colorwheel
-        create_gradient create_noise crop crop_content dilate distance_transform dither
+        create_gradient create_noise crop crop_content descale dilate distance_transform dither
         divide edge_detection erode fast_nlmeans fill_alpha flip gamma gaussian_blur
         generate_hash generate_threshold get_bbox get_dims high_pass hue_and_saturation
         image_convolve image_metrics image_statistics inpaint invert lens_blur log2lin
