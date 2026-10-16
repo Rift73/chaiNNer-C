@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Iterable
+from typing import Any, Coroutine, Iterable
 
 import aiohttp
 from sanic import HTTPResponse, Request
@@ -153,6 +153,16 @@ class _WorkerProcess:
         logger.info(f"Stopped reading worker stderr due to {cause}")
 
 
+def _log_pip_outcome(job: asyncio.Task[object]) -> None:
+    """Reports how a pip run ended after the request that started it closed."""
+    if job.cancelled():
+        logger.error("Dependency change was cancelled after its request closed")
+    elif (error := job.exception()) is not None:
+        logger.error(f"Dependency change failed after its request closed: {error}")
+    else:
+        logger.info("Dependency change finished after its request closed")
+
+
 class WorkerServer:
     def __init__(self, flags: Iterable[str] = []):
         self._process = None
@@ -164,8 +174,28 @@ class WorkerServer:
         self._is_ready = False
         self._is_checking_ready = False
         self._manually_close: set[aiohttp.ClientResponse] = set()
+        # The pip runs that change the worker's packages (run_pip_job).
+        self._pip_jobs: set[asyncio.Task[object]] = set()
+
+    async def run_pip_job(self, job: Coroutine[Any, Any, object]) -> None:
+        """Runs a pip install or uninstall as a task of its own. A cancelled caller
+        (the app's request, closed by a reload) neither stops pip mid-install nor
+        lets the worker start under it: start() waits for the job, and the job's
+        outcome is logged once it ends."""
+        task = asyncio.ensure_future(job)
+        self._pip_jobs.add(task)
+        task.add_done_callback(self._pip_jobs.discard)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.add_done_callback(_log_pip_outcome)
+            raise
 
     async def start(self, extra_flags: Iterable[str] = []):
+        # Never while pip changes the packages: the worker would import them half
+        # installed.
+        while self._pip_jobs:
+            await asyncio.wait(set(self._pip_jobs))
         # Overlapping restarts (a second /kill while the first restarts) each start a
         # worker: one started meanwhile is stopped, not left running owned by nothing.
         # No await between this check and the assignments below.
