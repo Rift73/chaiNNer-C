@@ -193,7 +193,11 @@ def build_engine_from_onnx(
     if scale is None:
         # A dynamic ONNX model's scale needs TensorRT's shape inference, as Load
         # Engine does; Upscale Image cannot run an engine without it.
-        scale = read_engine_info(deserialize_engine(engine_bytes, gpu_index)).scale
+        loaded = deserialize_engine(engine_bytes, gpu_index)
+        try:
+            scale = read_engine_info(loaded).scale
+        finally:
+            loaded.release()
 
     # Save timing cache
     if timing_cache_path:
