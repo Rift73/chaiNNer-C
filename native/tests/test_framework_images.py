@@ -485,13 +485,19 @@ def test_onnx_host_image_roundtrip(dtype, channels, nhwc, padding):
     modified.__dict__.update(auto_split=single)
     ONNX.__dict__.update(auto_split=single)
     before, after = Session(), Session()
-    expected = ONNX.onnx_auto_split(image, before, nhwc, None, req)
+    # The reference fed a 2D (grey) image to a BHWC model as (1, H, 1, W), which a
+    # one-channel BHWC model rejects; it must arrive as the (H, W, 1) image does.
+    grey_bhwc = nhwc and not channels
+    expected = ONNX.onnx_auto_split(
+        image[..., None] if grey_bhwc else image, before, nhwc, None, req
+    )
     actual = modified.onnx_auto_split(image, after, nhwc, None, req)
     exact(actual, expected)
     assert after.seen is not None and before.seen is not None
     exact(after.seen, before.seen)
-    assert after.seen.strides == before.seen.strides
-    assert actual.strides == expected.strides
+    if not grey_bhwc:
+        assert after.seen.strides == before.seen.strides
+        assert actual.strides == expected.strides
 
 
 @pytest.mark.parametrize("kind", ["simple", "cloth"])

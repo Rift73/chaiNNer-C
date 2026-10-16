@@ -26,7 +26,7 @@ def _into_batched_form(img: np.ndarray, change_shape: bool) -> np.ndarray:
             return img.transpose((2, 0, 1))[np.newaxis, :]
     elif shape_size == 2:
         if change_shape:
-            return img[np.newaxis, :, np.newaxis]
+            return img[np.newaxis, :, :, np.newaxis]
         else:
             return img[np.newaxis, np.newaxis, :]
     else:
