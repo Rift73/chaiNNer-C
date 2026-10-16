@@ -169,7 +169,7 @@ def convert_to_onnx_node(
                 )
             size = (dual_height, dual_width)
         onnx_bytes = dual.export_onnx(
-            model.model.state_dict(), model.tags, model.scale, size
+            model.model.state_dict(), model.tags, model.scale, size, context=context
         )
         onnx_model = load_onnx_model(onnx_bytes)
         assert onnx_model.sub_type == "Generic"

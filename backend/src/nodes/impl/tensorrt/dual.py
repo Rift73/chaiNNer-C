@@ -11,11 +11,18 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import psutil
+
+from ..pytorch.vosr2_process import OwnedJob
+
 if TYPE_CHECKING:
     import onnx
+
+    from api import NodeContext
 
 # backend/src, and backend/src/vendor/dual_tensorrt (its own layout, so the guide's
 # commands run as is)
@@ -63,29 +70,68 @@ def factory_of(tags: list[str]) -> str:
     return FACTORIES[preset]
 
 
-def _child(
-    arguments: list[str], label: str, cwd: Path, *, cpu_only: bool = False
+def run_child(
+    arguments: list[str],
+    label: str,
+    cwd: Path,
+    context: NodeContext | None = None,
+    *,
+    cpu_only: bool = False,
 ) -> str:
     """Run this Python in a child process; its output, or an error with the output's
-    end."""
+    end.
+
+    The child ends with the call on any exit: Stop (context.check_aborted(), polled
+    while it runs) or an error kills it, and on Windows it runs in a kill-on-close job,
+    so a worker that dies takes it along (the host's /kill restarts a worker that does
+    not stop within 3 s, and an engine build kept the GPU until it finished)."""
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     if cpu_only:
         env["CUDA_VISIBLE_DEVICES"] = ""
-    result = subprocess.run(
-        [sys.executable, *arguments],
-        cwd=cwd,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    output = result.stdout + result.stderr
-    if result.returncode != 0:
+    executable = sys.executable
+    creationflags = 0
+    job = None
+    if os.name == "nt":
+        # As vosr2_engine_cache.compile_worker: own the interpreter, not the venv
+        # redirector, and join the job before it can start anything.
+        executable = getattr(sys, "_base_executable", sys.executable)
+        if executable != sys.executable:
+            env["__PYVENV_LAUNCHER__"] = sys.executable
+        creationflags = subprocess.CREATE_NO_WINDOW | 0x00000004  # CREATE_SUSPENDED
+        job = OwnedJob()
+    process = None
+    try:
+        with tempfile.TemporaryFile() as log:
+            # A file, not pipes: no output volume can block the child.
+            process = subprocess.Popen(
+                [executable, *arguments],
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                creationflags=creationflags,
+            )
+            if job is not None:
+                job.assign(process)
+                psutil.Process(process.pid).resume()
+            while process.poll() is None:
+                if context is not None:
+                    context.check_aborted()
+                time.sleep(0.05)
+            returncode = process.returncode
+            log.seek(0)
+            output = log.read().decode("utf-8", errors="replace")
+    finally:
+        if job is not None:
+            job.close()
+        elif process is not None and process.poll() is None:
+            process.kill()
+        if process is not None:
+            process.wait(timeout=20)
+    if returncode != 0:
         raise RuntimeError(
-            f"DUAL {label} failed (exit {result.returncode}):\n{output[-3000:]}"
+            f"DUAL {label} failed (exit {returncode}):\n{output[-3000:]}"
         )
     return output
 
@@ -95,6 +141,8 @@ def export_onnx(
     tags: list[str],
     scale: int,
     size: tuple[int, int] | None,
+    *,
+    context: NodeContext | None = None,
 ) -> bytes:
     """The TensorRT-specific ONNX of a folded DUAL model (spandrel folds on load), with
     its weights embedded and the exporter's manifest in its metadata: for one input
@@ -117,7 +165,7 @@ def export_onnx(
                 f"--height={height}",
                 f"--width={width}",
             ]
-        _child(
+        run_child(
             [
                 "-m",
                 *exporter,
@@ -129,6 +177,7 @@ def export_onnx(
             ],
             "export",
             VENDOR,
+            context,
             cpu_only=True,
         )
         manifest = json.loads((export / "export.json").read_text(encoding="utf-8"))
@@ -177,6 +226,8 @@ def build_engine(
     manifest: dict[str, Any],
     gpu_index: int,
     profile: tuple[Size, Size, Size] | None = None,
+    *,
+    context: NodeContext | None = None,
 ) -> bytes:
     """A TensorRT engine of a DUAL ONNX with its plugins (AOT Python plugins, Triton
     kernels compiled for this GPU) embedded, built by chaiNNer-C's TensorRT, the version
@@ -194,7 +245,7 @@ def build_engine(
         model = Path(temporary) / "model.onnx"
         model.write_bytes(onnx_bytes)
         engine = Path(temporary) / "model.engine"
-        _child(
+        run_child(
             [
                 "-m",
                 "nodes.impl.tensorrt.dual_engine_worker",
@@ -206,6 +257,7 @@ def build_engine(
             ],
             "engine build",
             SOURCE,
+            context,
         )
         return engine.read_bytes()
 

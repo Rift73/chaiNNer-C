@@ -207,7 +207,7 @@ if utility_group is not None:
                 (opt_height, opt_width),
                 (max_height, max_width),
             )
-            return build_dual_engine(onnx_model, manifest, settings, profile)
+            return build_dual_engine(context, onnx_model, manifest, settings, profile)
 
         # Determine timing cache path
         timing_cache_path = None
@@ -249,6 +249,7 @@ if utility_group is not None:
 
 
 def build_dual_engine(
+    context: NodeContext,
     onnx_model: OnnxModel,
     manifest: dict,
     settings: TensorRTSettings,
@@ -283,6 +284,7 @@ def build_dual_engine(
         manifest,
         settings.gpu_index,
         profile if spec.get("dynamic", False) else None,
+        context=context,
     )
     min_shape, opt_shape, max_shape = ((1, 3, h, w) for h, w in profile)
     info = TensorRTEngineInfo(
