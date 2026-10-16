@@ -161,8 +161,12 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   EXIF orientation; straight-alpha and grey+alpha TIFFs; TIFF ExtraSamples; lossless WebP `exact`; GIF palette per
   frame; CPU-only NCNN tiles by available RAM; a vitest runs the app's schema check over the real node list; CLI ends its
   backend; system-Python option removed; Python download honours the proxy; pip's errors reach the UI; Spandrel
-  `0.4.2+c2` (fork release `v0.4.2-c2`, SHA-256 `e030832f…`: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
-  padding per input for 12). Deviations: ARCHITECTURE section 7.
+  `0.4.2+c3` (fork release `v0.4.2-c3`, SHA-256 `72b7bedb…`; c2: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
+  padding per input for 12; c3, 2026-10-16: DUAL runs in fp16, its last group's dynamic conv in fp32, 1x Light 512²
+  343 → 199 ms, 2x 87 → 52 ms vs fp32+TF32). PyTorch tries cuDNN attention first (owner, 2026-10-16: every model in
+  fp16, not DUAL only; DUAL fp16 197.5 → 182.0 ms 1x, 52.0 → 47.0 ms 2x; Windows PyTorch has no Flash Attention).
+  With the fp16 setting on, DUAL TensorRT exports start from fp16-rounded weights (68.5–88.6 dB vs exact, below the
+  engine's bf16 noise; owner accepted). Deviations: ARCHITECTURE section 7.
 
 ## Last CPU comparison
 
