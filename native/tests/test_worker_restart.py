@@ -18,13 +18,13 @@ import pytest
 import server_process_helper
 from server_process_helper import WorkerServer
 
+STARTED: list[FakeProcess] = []
+
 
 class FakeProcess:
-    started: list[FakeProcess] = []
-
     def __init__(self, flags: list[str]):
         self.closed = False
-        FakeProcess.started.append(self)
+        STARTED.append(self)
 
     def close(self):
         self.closed = True
@@ -32,7 +32,7 @@ class FakeProcess:
 
 @pytest.fixture
 def worker(monkeypatch: pytest.MonkeyPatch) -> WorkerServer:
-    FakeProcess.started = []
+    STARTED.clear()
     monkeypatch.setattr(server_process_helper, "_WorkerProcess", FakeProcess)
 
     async def ready(self: WorkerServer, timeout: float = 300):
@@ -46,7 +46,7 @@ def test_overlapping_restarts_leave_one_live_worker(worker: WorkerServer):
     async def scenario():
         await worker.start()
         await asyncio.gather(worker.restart(), worker.restart())
-        live = [p for p in FakeProcess.started if not p.closed]
+        live = [p for p in STARTED if not p.closed]
         owned = worker._process
         await worker.stop()
         return live, owned
@@ -65,5 +65,5 @@ def test_stop_then_start_closes_once(worker: WorkerServer):
         await worker.stop()
 
     asyncio.run(scenario())
-    assert len(FakeProcess.started) == 2
-    assert all(p.closed for p in FakeProcess.started)
+    assert len(STARTED) == 2
+    assert all(p.closed for p in STARTED)
