@@ -90,6 +90,10 @@ def test_run_proxies_without_recycling_the_worker():
     upstream[upstream.index("from server_config import ServerConfig")] = (
         "from server_config import LOG_CONFIG, ServerConfig"
     )
+    # /kill leaves the worker running when it had no run to kill (see below).
+    upstream[
+        upstream.index("from response import error_response, success_response")
+    ] = "from response import error_response, no_executor_response, success_response"
     assert imports[0] == upstream
     # No stop/start-around-run path: the host defines upstream's functions only.
     functions = [
@@ -107,16 +111,27 @@ def test_kill_and_status_proxy_to_the_worker():
     # Review focus 2: Stop ends the run through the worker; /status asks the worker.
     for handler in ("kill", "status"):
         here, upstream = here_and_upstream("server_host.py", handler)
+        if handler == "kill":
+            # chaiNNer-C: the worker's "no-executor" answer (Stop just as a run ended)
+            # no longer restarts the worker (test_host_kill.py).
+            failed = "\n        if response.status > 200:"
+            assert upstream.count(failed) == 1
+            upstream = upstream.replace(
+                failed,
+                "\n        if response.status == 400 and json_parse(response.body or"
+                " b'null') == no_executor_response():"
+                "\n            return json(success_response(), status=200)" + failed,
+            )
         assert here == upstream
 
 
 def test_host_and_worker_close_as_upstream():
     # Review focus 4: shutdown awaits no lease cleanup; the worker closes as upstream.
+    # WorkerServer.stop is chaiNNer-C's own since overlapping restarts left a worker
+    # running (test_worker_restart.py); it awaits nothing of the lease either.
     for relative, path in [
         ("server_host.py", ("close_server",)),
         ("server_process_helper.py", ("_WorkerProcess", "close")),
-        # WorkerServer.stop serializes overlapping restarts now (a25b8091), so it no
-        # longer equals upstream's; test_worker_restart.py pins its behaviour.
         ("server_process_helper.py", ("WorkerServer", "get_sse")),
     ]:
         here, upstream = here_and_upstream(relative, *path)
