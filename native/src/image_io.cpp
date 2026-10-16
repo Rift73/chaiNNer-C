@@ -311,6 +311,8 @@ O read_pil(py::dict g,O path) {
     if(!contains(name(g,"get_pil_formats")(),name(g,"get_ext")(path)))return py::none();
     O im=name(g,"Image").attr("open")(path);
     if(equal(im.attr("mode"),py::str("P")))im=im.attr("convert")(im.attr("palette").attr("mode"));
+    // Four CMYK samples are not RGBA: K would become the alpha. Pillow's RGB of them.
+    else if(equal(im.attr("mode"),py::str("CMYK")))im=im.attr("convert")("RGB");
     O image=name(g,"np").attr("array")(im);
     // Read after the decode, which also collects a PNG's eXIf after IDAT. Pillow keeps
     // a TIFF's tags elsewhere, so TIFFs stay as decoded.
