@@ -45,6 +45,22 @@ ABSENT = [
     "tensorrt",
     "cuda",
     "triton",
+    "vapoursynth",
+    "vsaa",
+    "vsdeband",
+    "vsdehalo",
+    "vsdeinterlace",
+    "vsdenoise",
+    "vsexprtools",
+    "vsjetpack",
+    "vskernels",
+    "vsmasktools",
+    "vsrgtools",
+    "vsscale",
+    "vssource",
+    "vstools",
+    "dfttest2",
+    "vsview",
 ]
 
 # argv: the absent modules as JSON, then the modules whose import raises OSError.
@@ -110,6 +126,7 @@ PACKAGES = [
     "chaiNNer_pytorch",
     "chaiNNer_standard",
     "chaiNNer_tensorrt",
+    "chaiNNer_vapoursynth",
 ]
 
 

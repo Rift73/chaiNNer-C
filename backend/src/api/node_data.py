@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Generic, Mapping, Protocol, TypeVar
 
@@ -194,6 +194,10 @@ class NodeData:
     features: list[FeatureId]
 
     run: RunFn
+
+    # More words node search finds the node by. Last, with a default, so that a node
+    # made without any (most nodes) needs none.
+    keywords: list[str] = field(default_factory=list)
 
     @property
     def single_iterable_input(self) -> IteratorInputInfo:

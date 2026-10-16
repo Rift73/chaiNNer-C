@@ -33,6 +33,7 @@ const createSearchIndex = (schemata: readonly NodeSchema[], categories: Category
         'name',
         'inputs',
         'outputs',
+        'keywords',
     ];
 
     const index = new MiniSearch<NodeSchema>({
@@ -52,6 +53,9 @@ const createSearchIndex = (schemata: readonly NodeSchema[], categories: Category
             if (fieldName === 'nodeGroup') {
                 const nodeGroupId = document[fieldName];
                 return categories.getGroup(nodeGroupId)?.name ?? nodeGroupId;
+            }
+            if (fieldName === 'keywords') {
+                return document.keywords?.join('\n') ?? '';
             }
             return String((document as unknown as Record<string, unknown>)[fieldName]);
         },

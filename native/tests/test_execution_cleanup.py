@@ -65,6 +65,9 @@ def test_executor_drains_each_context_once_on_every_exit(error, monkeypatch):
     monkeypatch.setattr(
         executor, "node_cache", SimpleNamespace(clear=lambda: None), raising=False
     )
+    # A failing run looks the node an attributed error names up among the chain's nodes;
+    # these errors name none, so they leave as raised.
+    monkeypatch.setattr(executor, "chain", SimpleNamespace(nodes={}), raising=False)
 
     async def body():
         events.append("body")

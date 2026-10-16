@@ -13,6 +13,16 @@ class Aborted(Exception):
     pass
 
 
+class NodeAttributedError(Exception):
+    """An error that the run reports on the node `node_id` of the chain rather than on
+    the node that raised it, e.g. the node whose part of a script failed in a child
+    process. With no node_id, or one that is not in the chain, it is reported as usual."""
+
+    def __init__(self, message: str, node_id: str | None = None) -> None:
+        super().__init__(message)
+        self.node_id = node_id
+
+
 class Progress(ABC):
     @property
     @abstractmethod

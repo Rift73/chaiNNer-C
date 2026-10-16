@@ -6,7 +6,8 @@ native C17/C++20 layer. The UI shows v0.3.4 (header, About, startup log, system 
 `app.getVersion()` stays upstream's, so saved chains keep the upstream version stamp and upstream's migrations read
 them correctly. Design: `ARCHITECTURE.md`. State and
 decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md` (user guide) and
-`VOSR2-MAINTAINING.md`. Run every command in PowerShell from `<repository root>`.
+`VOSR2-MAINTAINING.md`. VapourSynth nodes: `VAPOURSYNTH.md` (user guide). Run every command in PowerShell from
+`<repository root>`.
 
 ## Layout
 

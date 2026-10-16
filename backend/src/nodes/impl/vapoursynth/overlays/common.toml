@@ -1,0 +1,208 @@
+# Overlays of the VapourSynth family nodes: plain names, families and Simple inputs of
+# the common functions (those of a typical restoration script). Each table is
+# [method."<method id>"] with any of:
+#   label = "Plain name"          family = "Denoise"         help = "What it does."
+#   simple = ["param", ...]       labels = { param = "Plain name" }
+#   hidden = ["param", ...]       (left out of the node, keeping its default)
+#   annotations = { param = "<annotation>" }  (the input's type; a name the function
+#     does not have becomes one more of its keyword arguments)
+#   defaults = { param = value }  (the value the input starts with, which the node
+#     writes: a number, a text as typed, or a dropdown choice's Python source such as
+#     "6" or "vs.RGBS"; one the input cannot take is logged and left out)
+#   class_default = "Name"        (a group's preselected class or member; the group's
+#     dropdown is "class" in simple and labels)
+# Your own overlays go in <storage>\vapoursynth\overlays\*.toml and win over these.
+
+# Load Clip
+
+[method."bs.VideoSource"]
+label = "BestSource"
+help = "Opens a video with BestSource: exact frames when seeking; it indexes the file the first time."
+simple = ["source"]
+labels = { source = "Video file" }
+
+[method."vssource.*.source"]
+label = "Source (vs-jetpack indexers)"
+class_default = "BestSource"
+simple = ["class", "file", "bits"]
+labels = { class = "Indexer", file = "Video file", bits = "Bit depth" }
+
+# Clip Properties
+
+[method."std.SetFrameProps"]
+label = "Colour info and aspect"
+help = "Sets what the frames say about their colours and their sample aspect ratio (SAR); the picture is not changed."
+annotations = { _Matrix = "vstools.enums.color.MatrixLike", _Transfer = "vstools.enums.color.TransferLike", _Primaries = "vstools.enums.color.PrimariesLike", _SARNum = "int | None", _SARDen = "int | None" }
+simple = ["_Matrix", "_Transfer", "_Primaries", "_SARNum", "_SARDen"]
+defaults = { _Matrix = "6", _Transfer = "6", _Primaries = "6" }
+labels = { _Matrix = "Matrix", _Transfer = "Transfer", _Primaries = "Primaries", _SARNum = "Aspect ratio (SAR) width", _SARDen = "Aspect ratio (SAR) height", kwargs = "Other properties" }
+
+[method."std.AssumeFPS"]
+label = "Assume frame rate"
+help = "Sets the frame rate without adding or dropping frames (the clip plays faster or slower)."
+simple = ["fpsnum", "fpsden", "src"]
+defaults = { fpsnum = 25, fpsden = 1 }
+labels = { fpsnum = "Frame rate numerator", fpsden = "Frame rate denominator", src = "Frame rate of clip" }
+
+[method."vstools.change_fps"]
+label = "Change frame rate"
+help = "Converts to another frame rate by dropping or repeating frames."
+defaults = { fps = "24000/1001" }
+labels = { fps = "Frame rate" }
+
+# Convert Format
+
+[method."resize.Point"]
+label = "Convert (Point)"
+simple = ["format", "matrix", "transfer", "primaries", "range"]
+defaults = { format = "vs.RGBS" }
+
+[method."resize.Bicubic"]
+label = "Convert (Bicubic)"
+simple = ["format", "matrix", "transfer", "primaries", "range"]
+
+[method."resize.Bilinear"]
+label = "Convert (Bilinear)"
+simple = ["format", "matrix", "transfer", "primaries", "range"]
+
+[method."resize.Lanczos"]
+label = "Convert (Lanczos)"
+simple = ["format", "matrix", "transfer", "primaries", "range"]
+
+[method."resize.Spline36"]
+label = "Convert (Spline36)"
+simple = ["format", "matrix", "transfer", "primaries", "range"]
+
+[method."vstools.depth"]
+label = "Bit depth"
+help = "Converts to another bit depth (8, 16, 32 for float...), dithering when it lowers it."
+annotations = { bitdepth = "int" }
+simple = ["bitdepth", "dither_type"]
+defaults = { bitdepth = 16 }
+labels = { bitdepth = "Bits" }
+
+# Resize
+
+[method."vskernels.*.scale"]
+label = "Scale"
+help = "Scales the clip with the chosen kernel."
+class_default = "Catrom"
+simple = ["class", "width", "height", "linear"]
+defaults = { width = 1280, height = 960 }
+labels = { class = "Kernel", linear = "Linear light" }
+
+[method."std.Crop"]
+label = "Crop"
+simple = ["left", "right", "top", "bottom"]
+defaults = { top = 20, bottom = 20 }
+
+# Cut and Splice
+
+[method."std.Trim"]
+label = "Trim"
+help = "Keeps the frames from First to Last (both included), or Length frames from First."
+simple = ["first", "last", "length"]
+defaults = { first = 30 }
+labels = { first = "First frame", last = "Last frame" }
+
+[method."vstools.replace_ranges"]
+label = "Replace frames"
+help = "Replaces the listed frames (682-687, 713-717, 721: ranges include both ends) with those of the replacement clip."
+simple = ["clip_b", "ranges"]
+labels = { clip_b = "Replacement clip", ranges = "Frames", prop_src = "Properties from" }
+
+[method."std.DeleteFrames"]
+label = "Delete frames"
+defaults = { frames = "0" }
+labels = { frames = "Frames" }
+
+[method."std.BlankClip"]
+label = "Blank clip"
+help = "A clip of one colour, like the input clip (or of the size, format and length set here)."
+simple = ["length", "color"]
+defaults = { length = 1 }
+
+[method."std.Splice"]
+label = "Splice"
+help = "Plays the clips one after another."
+labels = { mismatch = "Allow different formats" }
+
+# Planes
+
+[method."vstools.join"]
+label = "Join planes"
+help = "Makes one clip of planes: Y, U and V clips, or a luma clip and a clip to take the chroma from."
+simple = ["plane1_or_family", "plane2"]
+labels = { clips = "Y (luma)", plane1_or_family = "U, or the chroma source", plane2 = "V", prop_src = "Properties from" }
+
+[method."std.Merge"]
+label = "Merge"
+help = "Mixes two clips; the weight is the share of the second clip, one per plane (0.35, 0)."
+labels = { clipb = "Second clip", weight = "Weight per plane" }
+
+# Deinterlace
+
+[method."vsdeinterlace.vfm"]
+label = "Field match (VFM)"
+simple = ["tff", "mode", "postprocess"]
+labels = { tff = "Field order", postprocess = "Post-process", clip2 = "Match from clip" }
+
+[method."vsdeinterlace.vdecimate"]
+label = "Decimate (VDecimate)"
+simple = ["cycle"]
+
+[method."vsaa.NNEDI3.deinterlace"]
+family = "Deinterlace"
+label = "NNEDI3 deinterlace"
+simple = ["pscrn", "tff", "double_rate"]
+annotations = { pscrn = "Literal[0, 1, 2, 3, 4]" }
+labels = { pscrn = "Prescreener", tff = "Top field first", double_rate = "Double rate" }
+
+# Denoise
+
+[method."vsdenoise.bm3d"]
+label = "BM3D"
+simple = ["sigma", "tr", "profile", "ref", "planes", "backend"]
+labels = { sigma = "Strength (sigma)", tr = "Temporal radius", ref = "Reference clip" }
+
+[method."vsdenoise.nl_means"]
+label = "NL-Means"
+simple = ["h", "tr", "ref", "planes", "backend"]
+labels = { h = "Strength", tr = "Temporal radius", ref = "Reference clip" }
+
+[method."vsdenoise.mc_degrain"]
+label = "Motion-compensated degrain"
+annotations = { preset = "vsdenoise.mvtools.presets.MVToolsPreset" }
+simple = ["prefilter", "preset", "tr", "thsad", "planes"]
+labels = { prefilter = "Prefilter", tr = "Temporal radius", thsad = "SAD threshold" }
+
+[method."vsdenoise.DFTTest.denoise"]
+label = "DFTTest"
+help = "Frequency-domain denoising. Strength (sloc) is a number, or frequency: sigma pairs like {0.0: 4, 0.2: 9, 1.0: 15}."
+annotations = { sloc = "Any" }
+simple = ["backend", "sloc", "tr", "planes"]
+labels = { sloc = "Strength (sloc)", tr = "Temporal radius" }
+
+[method."vsdenoise.Prefilter"]
+label = "Prefilter"
+help = "vs-jetpack's prefilters (as used by Motion-compensated degrain); with Use as filter on, wire it into a prefilter input."
+class_default = "DFTTEST"
+simple = ["class", "planes"]
+labels = { class = "Prefilter" }
+
+# Sharpen and Blur
+
+[method."cas.CAS"]
+label = "CAS"
+help = "Contrast adaptive sharpening."
+simple = ["sharpness", "planes"]
+
+# Colour (vs_colorfix: add "vs_colorfix" to user_modules.toml)
+
+[method."vs_colorfix.average"]
+family = "Colour"
+label = "Colour match (average)"
+help = "Matches the colours of the clip to those of the reference clip, averaged over a radius."
+annotations = { planes = "Planes" }
+simple = ["ref", "radius", "planes", "fast"]
+labels = { ref = "Reference clip" }

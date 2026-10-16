@@ -173,6 +173,7 @@ async def nodes(_request: Request):
             "iteratorOutputs": [x.to_dict() for x in node.iterable_outputs],
             "keyInfo": node.key_info.to_dict() if node.key_info else None,
             "suggestions": [x.to_dict() for x in node.suggestions],
+            "keywords": node.keywords,
             "description": node.description,
             "seeAlso": node.see_also,
             "icon": node.icon,
@@ -708,6 +709,7 @@ async def import_packages(
     importlib.import_module("packages.chaiNNer_ncnn")
     importlib.import_module("packages.chaiNNer_onnx")
     importlib.import_module("packages.chaiNNer_tensorrt")
+    importlib.import_module("packages.chaiNNer_vapoursynth")
     importlib.import_module("packages.chaiNNer_external")
 
     logger.info("Loading Nodes...")
@@ -821,6 +823,9 @@ def main():
     # runtime's site-packages. numba reads the variable when it is first imported, and
     # the node modules that import it load in setup, after this.
     os.environ["NUMBA_CACHE_DIR"] = str(ctx.storage_dir / "numba-cache")
+    # The VapourSynth package keeps its function catalog, user functions and overlays
+    # there; it reads the variable when its node modules load, in setup.
+    os.environ["CHAINNER_VS_DIR"] = str(ctx.storage_dir / "vapoursynth")
     # Before the event loop exists: its tasks copy this thread's context.
     numpy_pool.install()
     app.run(port=config.port, single_process=True)

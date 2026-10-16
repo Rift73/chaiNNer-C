@@ -20,6 +20,7 @@ import api
 from custom_types import UpdateProgressFn
 from dependencies.store import (
     DependencyInfo,
+    distribution_name,
     filter_necessary_to_install,
     install_dependencies,
     installed_packages,
@@ -206,7 +207,9 @@ async def get_installed_dependencies(request: Request):
     packages = await worker.get_packages()
     for package in packages:
         for pkg_dep in package.dependencies:
-            installed_version = installed_packages.get(pkg_dep.pypi_name, None)
+            installed_version = installed_packages.get(
+                distribution_name(pkg_dep.pypi_name), None
+            )
             if installed_version is not None:
                 installed_deps[pkg_dep.pypi_name] = installed_version
 

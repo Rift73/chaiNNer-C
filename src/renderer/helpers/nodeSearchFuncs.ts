@@ -1,7 +1,7 @@
 import { CategoryMap } from '../../common/CategoryMap';
 import { NodeSchema } from '../../common/common-types';
 import { RRegex } from '../../common/rust-regex';
-import { lazy } from '../../common/util';
+import { EMPTY_ARRAY, lazy } from '../../common/util';
 
 const isLetter = lazy(() => new RRegex('(?is)^[a-z]$'));
 const createSearchPredicate = (query: string): ((name: string) => boolean) => {
@@ -32,7 +32,8 @@ export const getMatchingNodes = (
               const nodeGroup = categories.getGroup(n.nodeGroup)?.name ?? n.nodeGroup;
               return (
                   matchesSearchQuery(`${category} ${n.name}`) ||
-                  matchesSearchQuery(`${nodeGroup} ${n.name}`)
+                  matchesSearchQuery(`${nodeGroup} ${n.name}`) ||
+                  (n.keywords?.some((keyword) => matchesSearchQuery(keyword)) ?? false)
               );
           });
 
@@ -102,14 +103,24 @@ export const getBestMatch = (
         return matches.matches * basePoints + matches.boundaryMatches * basePoints * 3;
     };
 
-    return getMax(matchingSchemata, (schema) => {
-        const name = schema.name.toLowerCase();
-
+    const scoreText = (text: string): number => {
+        if (text.length === 0) return 0;
         const points =
-            scoreMatches(countNGramMatches(name, 2), g2Points) +
-            scoreMatches(countNGramMatches(name, 3), g3Points) +
-            scoreMatches(countNGramMatches(name, 4), g4Points);
+            scoreMatches(countNGramMatches(text, 2), g2Points) +
+            scoreMatches(countNGramMatches(text, 3), g3Points) +
+            scoreMatches(countNGramMatches(text, 4), g4Points);
+        return points / text.length;
+    };
 
-        return (points / name.length) * scoreMultiplier(schema);
+    // a keyword match counts a little less than an equally good name match
+    const keywordWeight = 0.9;
+
+    return getMax(matchingSchemata, (schema) => {
+        let score = scoreText(schema.name.toLowerCase());
+        for (const keyword of schema.keywords ?? EMPTY_ARRAY) {
+            score = Math.max(score, scoreText(keyword.toLowerCase()) * keywordWeight);
+        }
+
+        return score * scoreMultiplier(schema);
     });
 };

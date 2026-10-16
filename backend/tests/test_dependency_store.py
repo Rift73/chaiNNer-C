@@ -55,6 +55,29 @@ def test_a_plain_version_is_a_floor(
     assert (filter_necessary_to_install([dependency]) == [dependency]) is needed
 
 
+def test_a_package_with_extras_is_listed_by_its_name(monkeypatch: pytest.MonkeyPatch):
+    # pip installs "vsjetpack[deinterlace]" but lists (and uninstalls) "vsjetpack".
+    jetpack = DependencyInfo("vsjetpack[deinterlace]", "2.2.6")
+    assert pin(jetpack) == "vsjetpack[deinterlace]==2.2.6"
+    monkeypatch.setattr(store, "installed_packages", {"vsjetpack": "2.2.6"})
+    assert filter_necessary_to_install([jetpack]) == []
+
+    commands: list[list[str]] = []
+
+    def check_call(command: list[str], **_kwargs: object) -> int:
+        commands.append(command)
+        return 0
+
+    monkeypatch.setattr(store, "installed_packages", {})
+    monkeypatch.setattr(store.subprocess, "check_call", check_call)
+    store.install_dependencies_sync([jetpack])
+    assert "vsjetpack[deinterlace]==2.2.6" in commands[-1]
+    assert store.installed_packages == {"vsjetpack": "2.2.6"}
+
+    store.uninstall_dependencies_sync([jetpack])
+    assert commands[-1][-2:] == ["vsjetpack", "-y"]
+
+
 def test_each_extra_index_url_gets_its_own_flag(monkeypatch: pytest.MonkeyPatch):
     # pip reads a comma-joined list as one URL, so a batch of packages from two
     # indexes (Install All) would find neither's wheels.

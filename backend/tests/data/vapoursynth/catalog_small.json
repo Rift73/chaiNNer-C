@@ -1,0 +1,248 @@
+{
+  "schema": 1,
+  "key": {
+    "vapoursynth": "81",
+    "vsjetpack": "2.2.6"
+  },
+  "functions": [
+    {
+      "id": "vsdenoise.bm3d",
+      "source": "jetpack",
+      "module": "vsdenoise",
+      "import": "from vsdenoise import bm3d",
+      "call": "bm3d",
+      "kind": "function",
+      "params": [
+        {
+          "name": "clip",
+          "annotation": "VideoNode",
+          "default": null,
+          "kind": "keyword"
+        },
+        {
+          "name": "sigma",
+          "annotation": "float | Sequence[float]",
+          "default": "0.5",
+          "kind": "keyword"
+        },
+        {
+          "name": "tr",
+          "annotation": "int | Sequence[int | None] | None",
+          "default": "None",
+          "kind": "keyword"
+        },
+        {
+          "name": "refine",
+          "annotation": "int",
+          "default": "1",
+          "kind": "keyword"
+        },
+        {
+          "name": "profile",
+          "annotation": "vsdenoise.blockmatch.BM3D.Profile",
+          "default": "bm3d.Profile.FAST",
+          "kind": "keyword"
+        },
+        {
+          "name": "ref",
+          "annotation": "VideoNode | None",
+          "default": "None",
+          "kind": "keyword"
+        },
+        {
+          "name": "planes",
+          "annotation": "Planes",
+          "default": "None",
+          "kind": "keyword"
+        },
+        {
+          "name": "kwargs",
+          "annotation": "Any",
+          "default": null,
+          "kind": "var_keyword"
+        }
+      ],
+      "returns": "VideoNode",
+      "doc": "Block-Matching and 3D filtering (BM3D) is a state-of-the-art algorithm for image denoising.",
+      "arg_docs": {
+        "sigma": "Strength of denoising.",
+        "ref": "A clip to be used as the basic estimate."
+      }
+    },
+    {
+      "id": "vsaa.NNEDI3.deinterlace",
+      "source": "jetpack",
+      "module": "vsaa",
+      "import": "from vsaa import NNEDI3",
+      "call": "NNEDI3(...).deinterlace",
+      "kind": "bound",
+      "init_params": [
+        {
+          "name": "pscrn",
+          "annotation": "int",
+          "default": "4",
+          "kind": "keyword"
+        },
+        {
+          "name": "tff",
+          "annotation": "bool | None",
+          "default": "None",
+          "kind": "keyword"
+        },
+        {
+          "name": "double_rate",
+          "annotation": "bool",
+          "default": "True",
+          "kind": "keyword"
+        }
+      ],
+      "params": [
+        {
+          "name": "clip",
+          "annotation": "VideoNode",
+          "default": null,
+          "kind": "keyword"
+        },
+        {
+          "name": "tff",
+          "annotation": "vstools.enums.generic.FieldBasedLike | bool | None",
+          "default": "None",
+          "kind": "keyword"
+        },
+        {
+          "name": "kwargs",
+          "annotation": "Any",
+          "default": null,
+          "kind": "var_keyword"
+        }
+      ],
+      "returns": "VideoNode",
+      "doc": "Apply deinterlacing to the given clip.",
+      "arg_docs": {
+        "clip": "The source clip."
+      }
+    },
+    {
+      "id": "std.Merge",
+      "source": "plugin",
+      "module": "std",
+      "import": "",
+      "call": "core.std.Merge",
+      "kind": "plugin",
+      "params": [
+        {
+          "name": "clipa",
+          "annotation": "VideoNode",
+          "default": null,
+          "kind": "keyword"
+        },
+        {
+          "name": "clipb",
+          "annotation": "VideoNode",
+          "default": null,
+          "kind": "keyword"
+        },
+        {
+          "name": "weight",
+          "annotation": "float | Sequence[float] | None",
+          "default": "None",
+          "kind": "keyword"
+        }
+      ],
+      "returns": "VideoNode",
+      "doc": "VapourSynth Core Functions",
+      "arg_docs": {}
+    },
+    {
+      "id": "vstools.depth",
+      "source": "jetpack",
+      "module": "vstools",
+      "import": "from vstools import depth",
+      "call": "depth",
+      "kind": "function",
+      "params": [
+        {
+          "name": "clip",
+          "annotation": "VideoNode",
+          "default": null,
+          "kind": "positional"
+        },
+        {
+          "name": "bitdepth",
+          "annotation": "VideoFormatLike | HoldsVideoFormat | int",
+          "default": null,
+          "kind": "positional"
+        }
+      ],
+      "returns": "VideoNode",
+      "doc": "A convenience bitdepth conversion function.",
+      "arg_docs": {}
+    },
+    {
+      "id": "vstools.padder",
+      "source": "jetpack",
+      "module": "vstools",
+      "import": "from vstools import padder",
+      "call": "padder",
+      "kind": "function",
+      "params": [
+        {
+          "name": "clip",
+          "annotation": "VideoNode",
+          "default": null,
+          "kind": "keyword"
+        },
+        {
+          "name": "left",
+          "annotation": "int",
+          "default": "0",
+          "kind": "keyword"
+        }
+      ],
+      "returns": "VideoNode",
+      "doc": "",
+      "arg_docs": {}
+    },
+    {
+      "id": "good.brighten",
+      "source": "user",
+      "module": "good",
+      "import": "from good import brighten",
+      "call": "brighten",
+      "kind": "function",
+      "params": [
+        {
+          "name": "clip",
+          "annotation": "VideoNode",
+          "default": null,
+          "kind": "keyword"
+        },
+        {
+          "name": "amount",
+          "annotation": "float",
+          "default": "1.0",
+          "kind": "keyword"
+        }
+      ],
+      "returns": "VideoNode",
+      "doc": "Brightens a clip.",
+      "arg_docs": {}
+    }
+  ],
+  "enums": {
+    "vsdenoise.blockmatch.BM3D.Profile": {
+      "import": "from vsdenoise import bm3d",
+      "members": [
+        {
+          "name": "FAST",
+          "expr": "bm3d.Profile.FAST"
+        },
+        {
+          "name": "HIGH",
+          "expr": "bm3d.Profile.HIGH"
+        }
+      ]
+    }
+  },
+  "errors": []
+}

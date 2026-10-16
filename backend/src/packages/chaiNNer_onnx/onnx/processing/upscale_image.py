@@ -68,6 +68,42 @@ def upscale(
     )
 
 
+def upscale_with_session(
+    img: np.ndarray,
+    model: OnnxGeneric,
+    session: OnnxSession,
+    tile_size: TileSize,
+    separate_alpha: bool,
+) -> np.ndarray:
+    """The node's upscale of one image with the model's session (also used by
+    VapourSynth's AI Upscale, which has no node context)."""
+    input_shape, in_nc, req_width, req_height = get_input_shape(session)
+    _, out_nc, _, _ = get_output_shape(session)
+    change_shape = input_shape == "BHWC"
+    exact_size = None
+    if req_width is not None:
+        exact_size = (req_width, req_height or req_width)
+    elif req_height is not None:
+        exact_size = (req_width or req_height, req_height)
+    h, w, c = get_h_w_c(img)
+    logger.debug(f"Image is {h}x{w}x{c}")
+    return convenient_upscale(
+        img,
+        in_nc,
+        out_nc,
+        lambda i: upscale(
+            i,
+            session,
+            tile_size,
+            change_shape,
+            exact_size,
+            model,
+            collect_after=False,
+        ),
+        separate_alpha,
+    )
+
+
 @processing_group.register(
     schema_id="chainner:onnx:upscale_image",
     description="Upscales an image using an ONNX Super-Resolution model. ONNX does not support automatic out-of-memory handling via automatic tiling.  Therefore, you must set a Smart Tiling Mode manually. If you get an out-of-memory error, try picking a setting further down the list.",
@@ -116,29 +152,11 @@ def upscale_image_node(
         settings.tensorrt_fp16_mode,
         settings.tensorrt_cache_path,
     )
-    input_shape, in_nc, req_width, req_height = get_input_shape(session)
-    _, out_nc, _, _ = get_output_shape(session)
-    change_shape = input_shape == "BHWC"
-    exact_size = None
-    if req_width is not None:
-        exact_size = (req_width, req_height or req_width)
-    elif req_height is not None:
-        exact_size = (req_width or req_height, req_height)
-    h, w, c = get_h_w_c(img)
-    logger.debug(f"Image is {h}x{w}x{c}")
-    return convenient_upscale(
+    return upscale_with_session(
         img,
-        in_nc,
-        out_nc,
-        lambda i: upscale(
-            i,
-            session,
-            TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
-            change_shape,
-            exact_size,
-            model,
-            collect_after=False,
-        ),
+        model,
+        session,
+        TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
         separate_alpha,
     )
 

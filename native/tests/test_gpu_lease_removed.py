@@ -98,6 +98,18 @@ def test_run_proxies_without_recycling_the_worker():
     upstream[upstream.index("from typing import Final")] = (
         "from typing import Any, Coroutine, Final"
     )
+    # VapourSynth: a dependency installed with [extras] (vsjetpack[deinterlace]) is
+    # looked up by the name pip lists it under.
+    upstream[
+        upstream.index(
+            "from dependencies.store import DependencyInfo, filter_necessary_to_install, "
+            "install_dependencies, installed_packages, uninstall_dependencies"
+        )
+    ] = (
+        "from dependencies.store import DependencyInfo, distribution_name, "
+        "filter_necessary_to_install, install_dependencies, installed_packages, "
+        "uninstall_dependencies"
+    )
     assert imports[0] == upstream
     # No stop/start-around-run path: the host defines upstream's functions only.
     functions = [

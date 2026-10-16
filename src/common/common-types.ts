@@ -347,6 +347,11 @@ export interface NodeSchema {
     readonly hasSideEffects: boolean;
     readonly deprecated: boolean;
     readonly features: readonly FeatureId[];
+    /**
+     * Extra search terms (e.g. the method names of a node with a method dropdown).
+     * Older backends don't send this field.
+     */
+    readonly keywords?: readonly string[];
 }
 
 export interface DefaultNode {

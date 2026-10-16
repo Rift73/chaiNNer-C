@@ -29,6 +29,7 @@ from api import (
     IteratorOutputInfo,
     IterOutputId,
     Lazy,
+    NodeAttributedError,
     NodeContext,
     NodeData,
     NodeId,
@@ -378,6 +379,22 @@ class NodeExecutionError(Exception):
         self.node_id: NodeId = node_id
         self.node_data: NodeData = node_data
         self.inputs: InputsDict = inputs
+
+
+def on_failing_node(error: Exception, nodes: Mapping[NodeId, Node]) -> Exception:
+    """The error as the run reports it: a NodeAttributedError goes to the node it names
+    (e.g. the node whose statement failed in a script that another node ran). It may
+    arrive wrapped by the node that raised it, or unwrapped from a generator's iteration."""
+    wrapped = isinstance(error, NodeExecutionError)
+    cause = error.__cause__ if wrapped else error
+    if not isinstance(cause, NodeAttributedError) or cause.node_id is None:
+        return error
+    node = nodes.get(NodeId(cause.node_id))
+    if node is None or (wrapped and node.id == error.node_id):
+        return error
+    moved = NodeExecutionError(node.id, node.data, str(cause), {})
+    moved.__cause__ = cause
+    return moved
 
 
 @dataclass(frozen=True)
@@ -1997,6 +2014,11 @@ class Executor:
         logger.debug("Running executor %s", self.id)
         try:
             await self.__process_nodes()
+        except Exception as error:
+            moved = on_failing_node(error, self.chain.nodes)
+            if moved is error:
+                raise
+            raise moved from moved.__cause__
         finally:
             preserve_error = sys.exc_info()[0] is not None
             try:
