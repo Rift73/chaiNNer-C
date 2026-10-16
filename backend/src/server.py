@@ -459,6 +459,36 @@ def return_device_memory(collect: bool = True) -> None:
         torch.cuda.empty_cache()
 
 
+# Seconds after the last /clear-cache/individual of a burst before the one return.
+DEVICE_MEMORY_RETURN_DELAY = 0.05
+# The pending return of a burst, None when none is pending.
+device_memory_return: asyncio.TimerHandle | None = None
+
+
+def return_device_memory_after_burst(ctx: AppContext) -> None:
+    """Runs return_device_memory once, DEVICE_MEMORY_RETURN_DELAY seconds after the
+    last of a burst of node clears.
+
+    Deleting N nodes sends N /clear-cache/individual requests, and each return is a
+    full collection (tens of ms with a loaded chain) on this loop; a new request
+    replaces the pending return, so the burst ends with one.
+    """
+    global device_memory_return
+    if device_memory_return is not None:
+        device_memory_return.cancel()
+
+    def run() -> None:
+        global device_memory_return
+        device_memory_return = None
+        # Not while a /run executes: it releases at its own end.
+        if ctx.executor is None:
+            return_device_memory()
+
+    device_memory_return = asyncio.get_running_loop().call_later(
+        DEVICE_MEMORY_RETURN_DELAY, run
+    )
+
+
 @app.route("/clear-cache/individual", methods=["POST"])
 async def clear_cache_individual(request: Request):
     await nodes_available()
@@ -468,9 +498,7 @@ async def clear_cache_individual(request: Request):
         # TensorRT and VOSR engines, sessions and models outlive runs (every
         # SharedCache); a session in use is freed when its run returns it.
         tensorrt_cache.release_node(full_data["id"])
-        # Not while a /run executes: it releases at its own end.
-        if ctx.executor is None:
-            return_device_memory()
+        return_device_memory_after_burst(ctx)
         if ctx.cache.get(full_data["id"], None) is not None:
             del ctx.cache[full_data["id"]]
             if ctx.executor is None:
