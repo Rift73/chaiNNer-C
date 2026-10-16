@@ -115,7 +115,8 @@ def test_host_and_worker_close_as_upstream():
     for relative, path in [
         ("server_host.py", ("close_server",)),
         ("server_process_helper.py", ("_WorkerProcess", "close")),
-        ("server_process_helper.py", ("WorkerServer", "stop")),
+        # WorkerServer.stop serializes overlapping restarts now (a25b8091), so it no
+        # longer equals upstream's; test_worker_restart.py pins its behaviour.
         ("server_process_helper.py", ("WorkerServer", "get_sse")),
     ]:
         here, upstream = here_and_upstream(relative, *path)
