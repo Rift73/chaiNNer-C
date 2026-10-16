@@ -77,7 +77,12 @@ def tile_starts(length: int, tile: int, overlap: int = TILE_OVERLAP) -> list[int
         return [0]
     step = tile - 3 * overlap
     if step <= 0:
-        raise ValueError(f"Tile size {tile} is too small for an overlap of {overlap}.")
+        raise ValueError(
+            f"This image ({length} px) is larger than the TensorRT engine's input"
+            f" ({tile} px), and tiling it needs an engine input over"
+            f" {3 * overlap} px. The engine still upscales images up to {tile} px;"
+            f" for larger ones, build it with a size over {3 * overlap} px."
+        )
     starts = [0]
     while starts[-1] + tile < length:
         starts.append(min(starts[-1] + step, length - tile))

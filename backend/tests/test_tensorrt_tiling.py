@@ -134,6 +134,23 @@ def test_an_engines_alignment_sets_the_padding_and_tile_size():
     assert set(engine.shapes) == {(1084, 1916)}
 
 
+def test_an_engine_too_small_to_tile_still_serves_images_up_to_its_size():
+    # Build Engine allows a 32 px fixed engine; tiles need over 3 * 16 px.
+    bounds = ShapeBounds(32, 32, 32, 32)
+    engine = FakeEngine(bounds)
+
+    out = tiled_upscale(_image()[:20, :32], SCALE, bounds, engine)
+
+    assert out.shape == (80, 128, 3)
+    with pytest.raises(ValueError) as error:
+        tiled_upscale(_image()[:20, :40], SCALE, bounds, FakeEngine(bounds))
+    assert str(error.value) == (
+        "This image (40 px) is larger than the TensorRT engine's input (32 px), and"
+        " tiling it needs an engine input over 48 px. The engine still upscales"
+        " images up to 32 px; for larger ones, build it with a size over 48 px."
+    )
+
+
 def test_axis_weights_partition_of_unity():
     for length in (513, 1000, 1024, 1500, 2049):
         starts = tile_starts(length, 512)
