@@ -660,6 +660,7 @@ def _method(fn: Mapping[str, Any], overlay: Mapping[str, Any] | None) -> Method:
         common=overlay is not None,
         defaults=dict(table.get("defaults", {})),
         many=returns_many(fn["returns"]),
+        user=fn["source"] == "user",
     )
 
 

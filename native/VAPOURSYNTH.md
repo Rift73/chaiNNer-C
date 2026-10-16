@@ -110,7 +110,8 @@ one, else the CPU.
 Put a `.py` file in `<storage>\vapoursynth\user` (create the folder). Each public function in it (no leading
 underscore) that returns a clip, or has no return annotation, appears in **User Functions** as "Name (file)"; for
 example `def brighten(clip: vs.VideoNode, gain: float = 1.1) -> vs.VideoNode` in `mine.py`. Settings are typed from the
-annotations; one that cannot be typed is a text box taking a Python value. Or list pip packages in
+annotations; one that cannot be typed is a text box taking a Python value. Without annotations, the first parameter
+without a default is the clip: annotate a function whose first parameter is not a clip. Or list pip packages in
 `<storage>\vapoursynth\user_modules.toml`, as `modules = ["vs-colorfix"]`: missing ones are installed when chaiNNer-C
 starts (this one brings about 300 MB of plugins; an install that fails or takes over 15 minutes is skipped) and their
 functions appear the same way; its colour match lands under Colour. pip installs a listed module's own dependencies into

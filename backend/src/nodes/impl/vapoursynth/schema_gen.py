@@ -21,7 +21,7 @@ import ast
 import functools
 import keyword
 import operator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Iterable, Mapping, Sequence, TypeVar, cast
 
 from sanic.log import logger
@@ -266,9 +266,27 @@ def _member_params(
             ),
             None,
         )
+    taken = main[0] if main is not None else None
+    if has_main and main is None and member.user:
+        # A user function's first parameter with no annotation and no default is its
+        # clip: def sharpen(clip, amount=1.0).
+        taken = next(
+            (
+                param
+                for init, param, _ in params
+                if not init
+                and param.kind in ("positional", "keyword")
+                and not param.annotation.strip()
+                and param.default is None
+            ),
+            None,
+        )
+        if taken is not None:
+            clip = replace(taken, annotation="VideoNode")
+            main = (taken, adapter_for(clip, enums, plugin))
     if main is None:
         return None, None, params
-    return main[0], main[1], [p for p in params if p[1] is not main[0]]
+    return main[0], main[1], [p for p in params if p[1] is not taken]
 
 
 def _start_value(member: Method, param: Param, adapter: Adapter) -> object:

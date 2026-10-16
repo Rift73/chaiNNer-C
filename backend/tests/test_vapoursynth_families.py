@@ -730,6 +730,30 @@ INTERLEAVE = {
 HELPER = {**REVERSE, "id": "vstools.FunctionUtil.return_clip"}
 
 
+BARE_USER = {
+    "id": "mine.sharpen",
+    "source": "user",
+    "module": "mine",
+    "import": "from mine import sharpen",
+    "call": "sharpen",
+    "kind": "function",
+    "params": [_param("clip", "", None), _param("amount", "", "1.0")],
+    "returns": "",
+    "doc": "",
+    "arg_docs": {},
+}
+
+
+def test_an_unannotated_user_function_takes_the_clip(tmp_path: Path) -> None:
+    # def sharpen(clip, amount=1.0): its first parameter without a default is the clip.
+    nodes = nodes_of(load_catalog(small_catalog(tmp_path, extra=[BARE_USER]), SHIPPED))
+    node = nodes["User Functions"]
+    assert any(i.id == MAIN_ID for i in node.inputs)
+    out = run(node, "n_u", "mine.sharpen", clip=SRC)
+    assert isinstance(out, VideoClip)
+    assert out.stmt.endswith("mine.sharpen(n_src_0)")
+
+
 def test_internal_helpers_are_in_no_node(tmp_path: Path) -> None:
     cat = load_catalog(small_catalog(tmp_path, extra=[HELPER]), SHIPPED)
     assert "vstools.FunctionUtil.return_clip" not in {m.id for m in cat.methods}

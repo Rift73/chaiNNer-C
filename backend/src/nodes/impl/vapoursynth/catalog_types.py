@@ -61,6 +61,8 @@ class Method:
     defaults: Mapping[str, object] = field(default_factory=dict, hash=False)
     # It returns a list of clips (shift_clip_multi), not one clip.
     many: bool = False
+    # A function of the user's files or listed modules.
+    user: bool = False
 
 
 def qualified(import_line: str, expr: str) -> tuple[str, str]:
