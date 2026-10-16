@@ -2048,15 +2048,10 @@ const splitLoadImagePairs: ModernMigration = (data) => {
                         edge.source = nodeBId;
                         edge.sourceHandle = `${nodeBId}-${(parsed.outputId - 1) / 2}`;
                     } else if (parsed.outputId === 8) {
+                        // A and B iterate in lockstep, so their indexes are equal. An input takes
+                        // one edge, so only A's index replaces the old one.
                         edge.source = nodeAId;
                         edge.sourceHandle = `${nodeAId}-${4}`;
-                        const newEdge = {
-                            ...edge,
-                            id: deriveUniqueId(edge.id),
-                            source: nodeBId,
-                            sourceHandle: `${nodeBId}-${4}`,
-                        };
-                        newEdges.push(newEdge);
                     }
                 }
             }
