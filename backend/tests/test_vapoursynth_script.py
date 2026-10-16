@@ -230,3 +230,14 @@ def test_search_paths_come_before_imports():
     )
     lines = compile_script([(record, "A")], cache_mb=64).splitlines()
     assert lines.index(r"sys.path.append('C:\user')") < lines.index("import good")
+
+
+def test_a_crash_without_a_message_names_the_exit_code(tmp_path: Path) -> None:
+    # vsrgtools' median_blur crashes vspipe on small chroma planes, with no stderr.
+    script = tmp_path / "chain.vpy"
+    script.write_text("import vapoursynth as vs\n", encoding="utf-8")
+    assert "0xC0000005" in str(script_error(script, "", 3221225477))
+    assert str(script_error(script, "", 1)) == (
+        "vspipe ended with code 1 and no message (a plugin crashed)."
+    )
+    assert str(script_error(script, "", 0)) == "vspipe failed without a message."

@@ -109,9 +109,12 @@ def vs_env() -> dict[str, str]:
     return env
 
 
-def script_error(script: Path, stderr: str) -> VSScriptError:
+def script_error(
+    script: Path, stderr: str, returncode: int | None = None
+) -> VSScriptError:
     """The error of a failed run of `script`: the tail of vspipe's stderr, on the node
-    of the traceback's last line in the script that is a node's statement."""
+    of the traceback's last line in the script that is a node's statement; without
+    stderr, vspipe's exit code (a plugin that crashes it leaves no message)."""
     lines = [line for line in stderr.splitlines() if not _API3_NOTICE.match(line)]
     target = os.path.normcase(os.path.abspath(script))
     try:
@@ -126,6 +129,14 @@ def script_error(script: Path, stderr: str) -> VSScriptError:
             if node_id is not None:
                 break
     message = "\n".join(lines[-STDERR_TAIL_LINES:]).strip()
+    if not message and returncode:
+        # Windows' crash codes read as hex: 0xC0000005 is an access violation.
+        code = (
+            f"0x{returncode & 0xFFFFFFFF:08X}"
+            if not 0 < returncode < 256
+            else returncode
+        )
+        message = f"vspipe ended with code {code} and no message (a plugin crashed)."
     return VSScriptError(message or "vspipe failed without a message.", node_id)
 
 
@@ -155,7 +166,8 @@ def _run_vspipe(script: Path, args: list[str], context: NodeContext | None) -> s
                     process.kill()
         if returncode != 0:
             stderr.seek(0)
-            raise script_error(script, stderr.read().decode("utf-8", "replace"))
+            text = stderr.read().decode("utf-8", "replace")
+            raise script_error(script, text, returncode)
         stdout.seek(0)
         return stdout.read().decode("utf-8", "replace")
 
@@ -299,7 +311,8 @@ def _vspipe_frames(
             context.check_aborted()
         if returncode != 0 or count < end - start:
             stderr.seek(0)
-            raise script_error(script, stderr.read().decode("utf-8", "replace"))
+            text = stderr.read().decode("utf-8", "replace")
+            raise script_error(script, text, returncode)
 
 
 def _info_fields(info: ClipInfo) -> dict[str, str]:
