@@ -2,14 +2,15 @@
 the guide's ONNX with its plugin nodes replaced by AOT Python plugins (dual_aot.py),
 compiled by Triton for this GPU and embedded in the engine. The builder policy is the
 guide's trtexec command (vendor/dual_tensorrt/scripts/dual_tensorrt/build.py, engine()):
-strongly typed, TF32 off, optimization level 3, no auxiliary streams, an 8 GiB
-workspace, detailed profiling verbosity and a fresh timing cache. A width-only key
-(c<C>) is a dynamic-shape ONNX: its engine gets one optimization profile, minimum,
-optimum and maximum input sizes given as HxW, and its input is named for the ONNX's
-input alignment (dual.aligned_input_name), which Upscale Image's tiler reads.
+strongly typed, no auxiliary streams, detailed profiling verbosity and a fresh timing
+cache, with Build Engine's workspace (GiB), optimization level, TF32 (1/0) and sparse
+weights (1/0); the guide's are 8, 3, 0 and 0. A width-only key (c<C>) is a
+dynamic-shape ONNX: its engine gets one optimization profile, minimum, optimum and
+maximum input sizes given as HxW, and its input is named for the ONNX's input
+alignment (dual.aligned_input_name), which Upscale Image's tiler reads.
 
     python -m nodes.impl.tensorrt.dual_engine_worker ONNX ENGINE GPU_INDEX PLUGIN_KEY
-        [MIN OPT MAX ALIGNMENT]
+        WORKSPACE_GIB LEVEL TF32 SPARSE [MIN OPT MAX ALIGNMENT]
 """
 
 from __future__ import annotations
@@ -18,7 +19,15 @@ import sys
 
 
 def main(
-    onnx_path: str, engine_path: str, gpu_index: str, key: str, *profile: str
+    onnx_path: str,
+    engine_path: str,
+    gpu_index: str,
+    key: str,
+    workspace_gib: str,
+    level: str,
+    tf32: str,
+    sparse: str,
+    *profile: str,
 ) -> None:
     import onnx
     import tensorrt as trt
@@ -50,10 +59,15 @@ def main(
         raise RuntimeError("ONNX parse failed:\n" + "\n".join(errors))
     dual_aot.attach(network, lowered)
     config = builder.create_builder_config()
-    config.clear_flag(trt.BuilderFlag.TF32)
-    config.builder_optimization_level = 3
+    if tf32 != "1":
+        config.clear_flag(trt.BuilderFlag.TF32)
+    if sparse == "1":
+        config.set_flag(trt.BuilderFlag.SPARSE_WEIGHTS)
+    config.builder_optimization_level = int(level)
     config.max_aux_streams = 0
-    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 8 << 30)
+    config.set_memory_pool_limit(
+        trt.MemoryPoolType.WORKSPACE, int(float(workspace_gib) * (1 << 30))
+    )
     config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
     config.set_timing_cache(config.create_timing_cache(b""), ignore_mismatch=False)
     image = network.get_input(0)

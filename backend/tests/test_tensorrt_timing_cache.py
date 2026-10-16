@@ -27,15 +27,18 @@ class _TimingCache:
 class _Config:
     def __init__(self) -> None:
         self.cache: _TimingCache | None = None
+        self.flags = {"tf32"}  # TensorRT's default
+        self.workspace = 0
+        self.builder_optimization_level = 3
 
-    def set_memory_pool_limit(self, *_: object) -> None:
-        pass
+    def set_memory_pool_limit(self, _pool: object, size: int) -> None:
+        self.workspace = size
 
-    def set_flag(self, _: object) -> None:
-        pass
+    def set_flag(self, flag: str) -> None:
+        self.flags.add(flag)
 
-    def clear_flag(self, _: object) -> None:
-        pass
+    def clear_flag(self, flag: str) -> None:
+        self.flags.discard(flag)
 
     def add_optimization_profile(self, _: object) -> None:
         pass
@@ -67,17 +70,21 @@ class _Builder:
 
     def build_serialized_network(self, _network: object, config: _Config) -> bytes:
         _BUILDS.append(config.cache)
+        _CONFIGS.append(config)
         return b"engine"
 
 
 _BUILDS: list[_TimingCache | None] = []
+_CONFIGS: list[_Config] = []
 
 
 def _fake_tensorrt() -> ModuleType:
     trt = ModuleType("tensorrt")
     trt.__version__ = "10.15.1"
     trt.DataType = SimpleNamespace(FLOAT="float", HALF="half", BF16="bf16")
-    trt.BuilderFlag = SimpleNamespace(FP16="fp16", BF16="bf16", TF32="tf32")
+    trt.BuilderFlag = SimpleNamespace(
+        FP16="fp16", BF16="bf16", TF32="tf32", SPARSE_WEIGHTS="sparse"
+    )
     trt.NetworkDefinitionCreationFlag = SimpleNamespace(EXPLICIT_BATCH=0)
     trt.MemoryPoolType = SimpleNamespace(WORKSPACE="workspace")
     trt.Logger = type("Logger", (), {"WARNING": 2, "__init__": lambda self, _: None})
@@ -112,6 +119,7 @@ def engine_builder(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     monkeypatch.setattr(module, "get_cuda_compute_capability", lambda _: (12, 0))
     monkeypatch.setattr(module, "get_cuda_device_name", lambda _: "Test GPU")
     _BUILDS.clear()
+    _CONFIGS.clear()
     return module
 
 
@@ -129,6 +137,35 @@ def _build(engine_builder: ModuleType, cache: Path) -> None:
         b"onnx", config, timing_cache_path=str(cache)
     )
     assert engine.scale == 2
+
+
+@pytest.mark.parametrize(
+    ("tf32", "sparse", "level", "flags"),
+    [(False, False, 3, set()), (True, True, 5, {"tf32", "sparse"})],
+)
+def test_the_build_settings_reach_tensorrt(
+    engine_builder: ModuleType,
+    tf32: bool,
+    sparse: bool,
+    level: int,
+    flags: set[str],
+):
+    config = engine_builder.BuildConfig(
+        precision="fp32",
+        workspace_size_gb=12.5,
+        min_shape=(64, 64),
+        opt_shape=(64, 64),
+        max_shape=(64, 64),
+        use_dynamic_shapes=False,
+        allow_tf32=tf32,
+        optimization_level=level,
+        sparse_weights=sparse,
+    )
+    engine_builder.build_engine_from_onnx(b"onnx", config)
+    (built,) = _CONFIGS
+    assert built.flags == flags
+    assert built.builder_optimization_level == level
+    assert built.workspace == int(12.5 * 1024**3)
 
 
 def test_first_build_creates_the_cache(engine_builder: ModuleType, tmp_path: Path):

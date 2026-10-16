@@ -221,3 +221,35 @@ def test_a_dynamic_engines_profile_keeps_to_the_onnxs_alignment(
     else:
         with pytest.raises(ValueError, match=message):
             dual.check_profile(manifest, low, opt, high)
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_the_build_settings_reach_the_engine_worker(
+    monkeypatch: pytest.MonkeyPatch, dynamic: bool
+):
+    calls: list[list[str]] = []
+
+    def child(args: list[str], *_: object) -> str:
+        calls.append(args)
+        Path(args[3]).write_bytes(b"engine")
+        return ""
+
+    monkeypatch.setattr(dual, "run_child", child)
+    key = "c128" if dynamic else "c128_h256_w256"
+    spec = {"dynamic": dynamic, "plugin_key": key, "alignment": 4}
+    profile = ((64, 64), (256, 256), (512, 512)) if dynamic else None
+    engine = dual.build_engine(
+        b"onnx",
+        {"specialization": spec},
+        0,
+        profile,
+        workspace_gib=12.5,
+        optimization_level=5,
+        tf32=True,
+        sparse_weights=True,
+    )
+    assert engine == b"engine"
+    ((_, _, _, _, gpu, plugin, *rest),) = calls
+    assert (gpu, plugin) == ("0", key)
+    sizes = ["64x64", "256x256", "512x512", "4"] if dynamic else []
+    assert rest == ["12.5", "5", "1", "1", *sizes]

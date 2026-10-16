@@ -233,15 +233,26 @@ def build_engine(
     gpu_index: int,
     profile: tuple[Size, Size, Size] | None = None,
     *,
+    workspace_gib: float = 8.0,
+    optimization_level: int = 3,
+    tf32: bool = False,
+    sparse_weights: bool = False,
     context: NodeContext | None = None,
 ) -> bytes:
     """A TensorRT engine of a DUAL ONNX with its plugins (AOT Python plugins, Triton
     kernels compiled for this GPU) embedded, built by chaiNNer-C's TensorRT, the version
     that loads it, in dual_engine_worker.py. A dynamic ONNX takes its engine's
-    (minimum, optimal, maximum) (height, width) profile (see check_profile)."""
+    (minimum, optimal, maximum) (height, width) profile (see check_profile). The
+    defaults are the guide's build policy (8 GiB, level 3, TF32 off, dense)."""
     spec = manifest["specialization"]
     if spec.get("dynamic", False) != (profile is not None):
         raise ValueError("Only a dynamic DUAL ONNX takes a size profile.")
+    settings = [
+        str(workspace_gib),
+        str(optimization_level),
+        "1" if tf32 else "0",
+        "1" if sparse_weights else "0",
+    ]
     sizes = (
         []
         if profile is None
@@ -259,6 +270,7 @@ def build_engine(
                 str(engine),
                 str(gpu_index),
                 manifest["specialization"]["plugin_key"],
+                *settings,
                 *sizes,
             ],
             "engine build",

@@ -27,6 +27,10 @@ class BuildConfig:
     max_shape: tuple[int, int]  # (height, width)
     use_dynamic_shapes: bool
     allow_tf32: bool
+    # TensorRT's builder optimization level: 0 (fastest build) to 5 (most kernels tried).
+    optimization_level: int = 3
+    # 2:4 structured-sparse kernels for weights that are already 2:4 sparse.
+    sparse_weights: bool = False
 
 
 _PRECISION_DTYPES = {
@@ -166,6 +170,9 @@ def build_engine_from_onnx(
         # on by default, it runs float32 convolutions and matrix products with
         # 10-bit mantissa inputs (about FP16's precision).
         builder_config.clear_flag(trt.BuilderFlag.TF32)
+    if config.sparse_weights:
+        builder_config.set_flag(trt.BuilderFlag.SPARSE_WEIGHTS)
+    builder_config.builder_optimization_level = config.optimization_level
 
     # Configure dynamic shapes if needed
     has_dynamic = any(d == -1 for d in input_shape)

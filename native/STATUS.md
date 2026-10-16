@@ -147,7 +147,9 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   equal at 1088x1920. Session captures a shape's CUDA graph on its second run. One unexplained dynamic build
   failure in five attempts (no log kept); rebuilding worked.
   Settings that do not apply to DUAL are hidden (owner, 2026-10-09): Convert To ONNX's Data Type, Opset and
-  Verify, Build Engine's Precision, Workspace and Allow TF32. A DUAL ONNX loads as precision "mixed" (arch DUAL in
+  Verify, Build Engine's Precision. Since 2026-10-16 (owner) Build Engine's Workspace (GiB, any amount; 0 =
+  automatic: 4, or 8 for DUAL), Allow TF32, Sparse Weights and Optimization Level (0-5, default 3) apply to every
+  ONNX, DUAL's worker included (its defaults stay the guide's: 8 GiB, TF32 off, dense, level 3). A DUAL ONNX loads as precision "mixed" (arch DUAL in
   its type); every DUAL engine, fixed ones too, names its input `input_aligned_4`, which Load Engine reads as
   "mixed". Fixed engines built before this still read as FP32. The fork's backend-tests check failed since the
   dynamic push (the ONNX-load assertion needs the native build, which GitHub does not make); it now skips there.

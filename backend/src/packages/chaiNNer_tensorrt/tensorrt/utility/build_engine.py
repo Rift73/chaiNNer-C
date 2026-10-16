@@ -54,8 +54,11 @@ SHAPE_MODE_LABELS = {
     ShapeMode.DYNAMIC: "Dynamic (Variable Sizes)",
 }
 
-# Shown until the ONNX is known to be DUAL's, which keeps its own precision and build
-# settings
+# A Workspace of 0 means these (the node's former default, and the DUAL guide's).
+AUTO_WORKSPACE_GIB = 4.0
+DUAL_WORKSPACE_GIB = 8.0
+
+# Shown until the ONNX is known to be DUAL's, which keeps its own precision
 NOT_DUAL = Condition.type(
     0, 'OnnxModel { arch: invStrSet("DUAL") }', if_not_connected=True
 )
@@ -71,7 +74,7 @@ if utility_group is not None:
             "Building an engine can take several minutes depending on the model size and optimization settings.",
             "The built engine is optimized specifically for your GPU and TensorRT version.",
             "It is recommended to save the built engine for reuse, as building is slow.",
-            "A DUAL ONNX from Convert To ONNX builds in its own mixed precision (BF16 body, FP32 input and output) with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Precision, Workspace and Allow TF32 do not apply and are hidden. Upscale Image replays DUAL engines from a CUDA graph per input size.",
+            "A DUAL ONNX from Convert To ONNX builds in its own mixed precision (BF16 body, FP32 input and output) with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Precision does not apply and is hidden; Workspace, Allow TF32, Sparse Weights and Optimization Level do. Upscale Image replays DUAL engines from a CUDA graph per input size.",
         ],
         icon="BsNvidia",
         inputs=[
@@ -157,25 +160,41 @@ if utility_group is not None:
                     unit="px",
                 ).with_docs("Fixed input width."),
             ),
-            if_group(NOT_DUAL)(
-                NumberInput(
-                    "Workspace (GB)",
-                    default=4.0,
-                    min=1.0,
-                    max=32.0,
-                    precision=1,
-                    step=0.5,
-                ).with_docs(
-                    "Maximum GPU memory for building. Larger values may allow better optimizations.",
-                    hint=True,
-                ),
-                BoolInput("Allow TF32", default=False).with_docs(
-                    "Lets TensorRT run the convolutions and matrix products of FP32 layers in TF32 on"
-                    " tensor cores: FP32's range, but inputs rounded to a 10-bit mantissa, about FP16's"
-                    " precision. Faster on RTX 30-series and newer GPUs.",
-                    "Off keeps FP32 layers fully FP32. It applies to every FP32 layer, including those"
-                    " of mixed-precision models.",
-                ),
+            NumberInput(
+                "Workspace (GiB)",
+                default=0,
+                min=0,
+                max=None,
+                precision=2,
+                step=1,
+            ).with_docs(
+                "Maximum GPU memory TensorRT may use while building. Larger values may allow"
+                " better optimizations; any amount can be typed.",
+                f"0 is automatic: {AUTO_WORKSPACE_GIB:g} GiB, or {DUAL_WORKSPACE_GIB:g} GiB"
+                " for a DUAL ONNX.",
+                hint=True,
+            ),
+            BoolInput("Allow TF32", default=False).with_docs(
+                "Lets TensorRT run the convolutions and matrix products of FP32 layers in TF32 on"
+                " tensor cores: FP32's range, but inputs rounded to a 10-bit mantissa, about FP16's"
+                " precision. Faster on RTX 30-series and newer GPUs.",
+                "Off keeps FP32 layers fully FP32. It applies to every FP32 layer, including those"
+                " of mixed-precision models such as DUAL's.",
+            ),
+            BoolInput("Sparse Weights", default=False).with_docs(
+                "Lets TensorRT use 2:4 structured-sparse kernels (RTX 30-series and newer) for"
+                " layers whose weights are already 2:4 sparse, as in models trained or pruned for"
+                " it. A dense model gains nothing and builds slower.",
+            ),
+            NumberInput(
+                "Optimization Level",
+                default=3,
+                min=0,
+                max=5,
+            ).with_docs(
+                "TensorRT's builder optimization level. Higher levels try more kernels: the build"
+                " takes longer and the engine may run faster. 3 is TensorRT's default; 5 can take"
+                " much longer.",
             ),
         ],
         outputs=[
@@ -198,6 +217,8 @@ if utility_group is not None:
         static_width: int,
         workspace: float,
         allow_tf32: bool,
+        sparse_weights: bool,
+        optimization_level: int,
     ) -> TensorRTEngine:
         settings = get_settings(context)
         gpu_index = settings.gpu_index
@@ -214,7 +235,19 @@ if utility_group is not None:
                 (opt_height, opt_width),
                 (max_height, max_width),
             )
-            return build_dual_engine(context, onnx_model, manifest, settings, profile)
+            return build_dual_engine(
+                context,
+                onnx_model,
+                manifest,
+                settings,
+                profile,
+                workspace_gib=workspace if workspace > 0 else DUAL_WORKSPACE_GIB,
+                optimization_level=optimization_level,
+                tf32=allow_tf32,
+                sparse_weights=sparse_weights,
+            )
+        if workspace <= 0:
+            workspace = AUTO_WORKSPACE_GIB
 
         # One timing cache per model, GPU and TensorRT version
         timing_cache_path = None
@@ -235,14 +268,19 @@ if utility_group is not None:
             max_shape=(max_height, max_width),
             use_dynamic_shapes=use_dynamic,
             allow_tf32=allow_tf32,
+            optimization_level=optimization_level,
+            sparse_weights=sparse_weights,
         )
 
         logger.info(
-            "Building TensorRT engine: precision=%s, dynamic=%s, workspace=%.1fGB, tf32=%s",
+            "Building TensorRT engine: precision=%s, dynamic=%s, workspace=%gGiB,"
+            " tf32=%s, sparse=%s, level=%d",
             precision.value,
             use_dynamic,
             workspace,
             allow_tf32,
+            sparse_weights,
+            optimization_level,
         )
 
         engine = build_engine_from_onnx(
@@ -261,10 +299,16 @@ def build_dual_engine(
     manifest: dict,
     settings: TensorRTSettings,
     profile: tuple[tuple[int, int], tuple[int, int], tuple[int, int]],
+    *,
+    workspace_gib: float,
+    optimization_level: int,
+    tf32: bool,
+    sparse_weights: bool,
 ) -> TensorRTEngine:
     """DUAL's specialized engine, in the ONNX's mixed precision. A dynamic DUAL ONNX
     takes the node's shape inputs as its (height, width) profile; a fixed one has its
-    own size. The node's precision, workspace and TF32 inputs do not apply (hidden)."""
+    own size. The node's precision input does not apply (hidden); its workspace, TF32,
+    sparsity and optimization level do."""
     major, minor = get_cuda_compute_capability(settings.gpu_index)
     spec = manifest["specialization"]
     if spec.get("dynamic", False):
@@ -274,8 +318,8 @@ def build_dual_engine(
         profile = (size, size, size)
     low, high = profile[0], profile[2]
     logger.info(
-        "Building a DUAL engine (%s x%d, %dx%d to %dx%d, plugins %s, SM %d%d); the"
-        " node's precision, workspace and TF32 inputs do not apply",
+        "Building a DUAL engine (%s x%d, %dx%d to %dx%d, plugins %s, SM %d%d):"
+        " workspace=%gGiB, tf32=%s, sparse=%s, level=%d",
         spec["factory"],
         spec["scale"],
         low[1],
@@ -285,12 +329,20 @@ def build_dual_engine(
         spec["plugin_key"],
         major,
         minor,
+        workspace_gib,
+        tf32,
+        sparse_weights,
+        optimization_level,
     )
     engine_bytes = dual.build_engine(
         onnx_model.bytes,
         manifest,
         settings.gpu_index,
         profile if spec.get("dynamic", False) else None,
+        workspace_gib=workspace_gib,
+        optimization_level=optimization_level,
+        tf32=tf32,
+        sparse_weights=sparse_weights,
         context=context,
     )
     min_shape, opt_shape, max_shape = ((1, 3, h, w) for h, w in profile)
