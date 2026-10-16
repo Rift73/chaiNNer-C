@@ -9,6 +9,7 @@ import tensorrt as trt
 from cuda.bindings import runtime as cudart
 from sanic.log import logger
 
+from .engine_info import deserialize_engine, read_engine_info
 from .memory import check_cuda, get_cuda_compute_capability, get_cuda_device_name
 from .model import TensorRTEngine, TensorRTEngineInfo
 
@@ -187,6 +188,12 @@ def build_engine_from_onnx(
 
     if serialized_engine is None:
         raise RuntimeError("Failed to build TensorRT engine")
+    engine_bytes = bytes(serialized_engine)
+
+    if scale is None:
+        # A dynamic ONNX model's scale needs TensorRT's shape inference, as Load
+        # Engine does; Upscale Image cannot run an engine without it.
+        scale = read_engine_info(deserialize_engine(engine_bytes, gpu_index)).scale
 
     # Save timing cache
     if timing_cache_path:
@@ -231,4 +238,4 @@ def build_engine_from_onnx(
         max_shape=max_shape,
     )
 
-    return TensorRTEngine(bytes(serialized_engine), info)
+    return TensorRTEngine(engine_bytes, info)
