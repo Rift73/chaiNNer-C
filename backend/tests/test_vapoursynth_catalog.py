@@ -7,6 +7,7 @@ import ast
 import functools
 import importlib
 import importlib.metadata
+import importlib.util
 import json
 import logging
 import os
@@ -96,6 +97,10 @@ def scanned(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     """One real scan: vs-jetpack, the plugins, a user folder with a good, a broken and
     a raising file, and user_modules.toml listing vs_colorfix (installed in the venv)."""
     pytest.importorskip("vapoursynth")
+    # The scan pip-installs a listed module that is missing, into the Python running
+    # the tests: only the test venv, which has vs_colorfix, may run it.
+    if importlib.util.find_spec("vs_colorfix") is None:
+        pytest.skip("vs_colorfix is not installed; the scan would install it here")
     storage = tmp_path_factory.mktemp("vapoursynth")
     user = storage / "user"
     user.mkdir()
