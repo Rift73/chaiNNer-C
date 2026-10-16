@@ -19,7 +19,7 @@ from typing import Literal
 
 import numpy as np
 
-from api import NodeContext, NodeId
+from api import Aborted, NodeContext, NodeId
 from api.settings import SettingsParser
 from nodes.impl import numpy_pool
 
@@ -220,10 +220,14 @@ class TemporalStep:
             cpu.shutdown(wait=True, cancel_futures=True)
             if pool is not None:
                 pool.shutdown(wait=True, cancel_futures=True)
-            # A pair that never started (the item failed) is computed again if needed.
-            for k, pair in list(self.sequence.pairs.items()):
-                if isinstance(pair, Future) and pair.cancelled():
-                    del self.sequence.pairs[k]
+            # A restoration or pair that never started or that the item's stop ended (the
+            # item failed) is made again if needed: its Aborted is not a later item's.
+            for jobs in (self.sequence.frames, self.sequence.pairs):
+                for k, job in list(jobs.items()):
+                    if isinstance(job, Future) and (
+                        job.cancelled() or isinstance(job.exception(), Aborted)
+                    ):
+                        del jobs[k]
 
     def _persistent(self, item: _Item) -> np.ndarray:
         observation = self._observation(item, item.index)

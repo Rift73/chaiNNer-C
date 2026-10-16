@@ -517,6 +517,44 @@ def test_a_failing_item_stops_and_joins_its_background_restoration():
     assert stopped == [False] and restoring_threads() == []
 
 
+def test_the_item_after_a_failed_item_restores_what_the_stop_ended():
+    # Item 0 fails while frame 2 is restored in the background; the loop defers the error
+    # and goes on. The restoration the item's stop ended is no error of item 1 (an
+    # Aborted there would end the run as a Stop): item 1 restores frame 2 again and
+    # outputs what it outputs after a successful item 0.
+    method = TemporalMode.THREE_FRAMES
+    frames = video(5)
+    restorer = Restorer(frames)
+    context = Context()
+    failing = [True]
+
+    def restore(image, worker_context):
+        if restorer.index(image) == 2 and failing[0]:
+            context.fail.set()
+            while True:
+                worker_context.suspend()
+                time.sleep(0.005)
+        return restorer(image, worker_context)
+
+    expected, _ = drive(frames, method, Restorer(frames), lookahead=7)
+    step = TemporalStep(method, STRENGTH, 7, True, INPUTS)
+    with pytest.raises(InterruptedError):
+        step.frame(
+            context, 0, frames[0], lambda offset: frames[offset], restore, INPUTS
+        )
+    failing[0] = False
+    context.fail.clear()
+    output = step.frame(
+        context,
+        1,
+        frames[1],
+        lambda offset: frames[1 + offset] if 1 + offset < len(frames) else None,
+        restore,
+        INPUTS,
+    )
+    np.testing.assert_array_equal(output, expected[1])
+
+
 def test_a_background_failure_is_raised_by_the_item_that_needs_that_frame():
     frames = video(5)
     restorer = Restorer(frames)
