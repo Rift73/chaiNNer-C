@@ -6,11 +6,13 @@ from __future__ import annotations
 import ast
 import functools
 import importlib
+import importlib.metadata
 import json
 import logging
 import os
 import random
 import re
+import subprocess
 import sys
 import time
 import zlib
@@ -302,6 +304,41 @@ def test_scan_skips_broken_user_file(scanned: dict[str, Any]) -> None:
     )
 
 
+def test_scan_skips_user_file_named_like_a_chainner_module(tmp_path: Path) -> None:
+    """The scripts put chaiNNer's backend/src on sys.path before the user folder, so
+    `import util` of a user's util.py would import chaiNNer's util. The scan runs as in
+    chaiNNer: isolated, without backend/src on its sys.path."""
+    from nodes.impl.vapoursynth import scan
+
+    user = tmp_path / "user"
+    user.mkdir()
+    for name in ("util", "system", "mine"):
+        (user / f"{name}.py").write_text(
+            "def brighten(clip):\n    return clip\n", encoding="utf-8"
+        )
+    code = (
+        "import importlib.util, json, pathlib\n"
+        f"spec = importlib.util.spec_from_file_location('scan', {scan.__file__!r})\n"
+        "scan = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(scan)\n"
+        "errors = []\n"
+        f"modules = scan._import_user_files(pathlib.Path({str(user)!r}), errors)\n"
+        "print(json.dumps([sorted(modules), errors]))\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", code],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=60,
+        check=True,
+    )
+    modules, errors = json.loads(done.stdout)
+    assert modules == ["mine"]
+    assert any("util.py" in error and "rename the file" in error for error in errors)
+    assert any("system.py" in error for error in errors)
+
+
 def test_scan_user_module_vs_colorfix(scanned: dict[str, Any]) -> None:
     average = by_id(scanned)["vs_colorfix.average"]
     assert (average["source"], average["import"], average["call"], average["kind"]) == (
@@ -377,6 +414,10 @@ def test_family_rules() -> None:
     assert (
         catalog.family_of(functions["good.brighten"], {"family": "Colour"}) == "Colour"
     )
+    # Also a user file named like a plugin namespace (resize.py, bs.py).
+    for module in ("resize", "bs", "cas"):
+        mine = {**functions["good.brighten"], "id": f"{module}.f", "module": module}
+        assert catalog.family_of(mine, None) == "User Functions"
     other_plugin = {**functions["std.Merge"], "id": "foo.Bar", "module": "foo"}
     assert catalog.family_of(other_plugin, None) == "Any Function"
     tables = {**catalog.FUNCTION_FAMILIES, **catalog.MODULE_FAMILIES}
@@ -482,6 +523,58 @@ def test_ensure_catalog_rescans_on_key_change(
     assert catalog.ensure_catalog(storage) == path
     path.unlink()
     assert catalog.ensure_catalog(storage) is None
+
+
+def test_ensure_catalog_retries_a_missing_user_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A listed module whose install failed is installed again at the next start, and
+    the catalog is rescanned once that install worked."""
+    storage = tmp_path / "vapoursynth"
+    storage.mkdir()
+    (storage / "user_modules.toml").write_text(
+        'modules = ["chainner-test-module"]\n', encoding="utf-8"
+    )
+    plugins = tmp_path / "site" / "vapoursynth" / "plugins"
+    plugins.mkdir(parents=True)
+    monkeypatch.setattr(catalog, "vspipe", lambda: plugins.parent / "vspipe.exe")
+    scans: list[Path] = []
+
+    def fake_scan(out: Path, user_dir: Path, modules_file: Path) -> None:
+        scans.append(out)
+        out.write_text(SMALL.read_text(encoding="utf-8"), encoding="utf-8")
+
+    monkeypatch.setattr(catalog, "run_scan", fake_scan)
+    installs: list[list[str]] = []
+    installed: set[str] = set()
+    online = False
+
+    def fake_install(names: list[str]) -> None:
+        installs.append(list(names))
+        if online:
+            installed.update(names)
+
+    real_version = importlib.metadata.version
+    monkeypatch.setattr(catalog, "install_user_modules", fake_install)
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda name: "1.0" if name in installed else real_version(name),
+    )
+    path = storage / "catalog.json"
+    # Offline: the install fails at each start; nothing changed, so no rescan.
+    assert catalog.ensure_catalog(storage) == path
+    assert catalog.ensure_catalog(storage) == path
+    assert (len(installs), len(scans)) == (2, 1)
+    # Online: the install works and the catalog lists the module.
+    online = True
+    assert catalog.ensure_catalog(storage) == path
+    assert (len(installs), len(scans)) == (3, 2)
+    key = json.loads(path.read_text(encoding="utf-8"))["key"]
+    assert key["user_modules"] == {"chainner-test-module": "1.0"}
+    # Installed: no pip run and no scan.
+    assert catalog.ensure_catalog(storage) == path
+    assert (len(installs), len(scans)) == (3, 2)
 
 
 def methods_of(path: Path, overlays: list[Path]) -> dict[str, Method]:
@@ -612,6 +705,66 @@ def test_overlay_annotations_and_labels(tmp_path: Path) -> None:
     assert bm3d.labels == {"sigma": "Strength"}
     # std.Merge takes no **kwargs: a name it does not have is left out.
     assert [p.name for p in methods["std.Merge"].params] == ["clipa", "clipb", "weight"]
+
+
+def test_overlay_keys_of_the_wrong_type_are_left_out(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A key of the wrong type, or a family that is no node, is logged and left out
+    (an earlier overlay's value or the default stays); everything else loads."""
+    first = tmp_path / "a.toml"
+    first.write_text('[method."vsdenoise.bm3d"]\nlabel = "BM3D"\n', encoding="utf-8")
+    second = tmp_path / "b.toml"
+    second.write_text(
+        '[method."vsdenoise.bm3d"]\n'
+        "label = 5\n"
+        'annotations = "int"\n'
+        'simple = "sigma"\n'
+        'labels = { sigma = "Strength", tr = 3 }\n'
+        'family = "Denoiser"\n'
+        'help = "Denoises."\n'
+        '[method."std.Merge"]\n'
+        "annotations = { weight = 5 }\n"
+        'hidden = "weight"\n'
+        "defaults = 1\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING):
+        methods = methods_of(SMALL, [first, second])
+    plain = methods_of(SMALL, [])
+    bm3d = methods["vsdenoise.bm3d"]
+    assert (bm3d.label, bm3d.family, bm3d.doc) == ("BM3D", "Denoise", "Denoises.")
+    assert (bm3d.params, bm3d.simple) == (
+        plain["vsdenoise.bm3d"].params,
+        plain["vsdenoise.bm3d"].simple,
+    )
+    assert bm3d.labels == {}
+    merge = methods["std.Merge"]
+    assert (merge.params, merge.defaults) == (plain["std.Merge"].params, {})
+    assert methods.keys() == plain.keys()
+    messages = "\n".join(r.getMessage() for r in caplog.records)
+    for key in ("label", "annotations", "simple", "labels", "family"):
+        assert f"Skipping {key} of vsdenoise.bm3d in the VapourSynth overlay" in (
+            messages
+        )
+    for key in ("annotations", "hidden", "defaults"):
+        assert f"Skipping {key} of std.Merge" in messages
+    assert "b.toml" in messages
+
+
+def test_toml_files_with_a_byte_order_mark(tmp_path: Path) -> None:
+    """Notepad's "UTF-8 with BOM" and Windows PowerShell's Set-Content -Encoding UTF8
+    start a file with a byte order mark, which tomllib refuses."""
+    from nodes.impl.vapoursynth import scan
+
+    overlay = tmp_path / "o.toml"
+    overlay.write_text(
+        '[method."vsdenoise.bm3d"]\nlabel = "BM3D"\n', encoding="utf-8-sig"
+    )
+    assert methods_of(SMALL, [overlay])["vsdenoise.bm3d"].label == "BM3D"
+    modules = tmp_path / "user_modules.toml"
+    modules.write_text('modules = ["vs-colorfix"]\n', encoding="utf-8-sig")
+    assert scan.user_module_names(modules) == ["vs-colorfix"]
 
 
 def test_overlay_defaults(tmp_path: Path) -> None:

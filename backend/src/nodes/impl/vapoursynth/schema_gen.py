@@ -40,29 +40,10 @@ from ...properties.inputs import (
 )
 from ...properties.outputs import VideoClipOutput
 from .adapters import Adapter, Enums, adapter_for
-from .catalog import CLASS, input_ids
+from .catalog import CLASS, FAMILIES, input_ids
 from .catalog_types import Method, Param
 from .script import VideoClip, VSFilter, clip_var
 
-FAMILIES: tuple[str, ...] = (
-    "Load Clip",
-    "Clip Properties",
-    "Convert Format",
-    "Resize",
-    "Cut and Splice",
-    "Planes",
-    "Deinterlace",
-    "Denoise",
-    "Sharpen and Blur",
-    "Anti-alias",
-    "Dehalo",
-    "Deband and Grain",
-    "Masks",
-    "Colour",
-    "Expression",
-    "User Functions",
-    "Any Function",
-)
 LOAD_CLIP = "Load Clip"
 ANY_FUNCTION = "Any Function"
 # Families without the Use as filter switch.

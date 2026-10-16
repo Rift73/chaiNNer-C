@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import enum
 import importlib
+import importlib.machinery
 import importlib.metadata
 import importlib.util
 import inspect
@@ -92,6 +93,9 @@ _BULLET = ("-", "*", "•")
 # and the clips n_<node>_<output>): a user file must not take them.
 SCRIPT_NAMES = frozenset({"sys", "vs", "core", "set_output"})
 _NODE_VAR = re.compile(r"n_\w+_\d+")
+# chaiNNer's backend/src (script.py's BACKEND_SRC), which the scripts put on sys.path
+# before the user folder: a user file must not be named like one of its modules.
+_BACKEND_SRC = Path(__file__).resolve().parents[3]
 # Most wrappers unwrapped to reach a class's method (inject_self(inject_kwargs_params)).
 _WRAPPER_DEPTH = 4
 # annotationlib's names for the resolved parts of a partly resolved annotation.
@@ -223,7 +227,8 @@ def user_module_names(modules_file: Path) -> list[str]:
     if not modules_file.is_file():
         return []
     try:
-        data = tomllib.loads(modules_file.read_text(encoding="utf-8"))
+        # utf-8-sig: Notepad and Windows PowerShell may start it with a BOM.
+        data = tomllib.loads(modules_file.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ValueError(f"{modules_file.name} cannot be read: {error}") from error
     names = data.get("modules", [])
@@ -910,13 +915,19 @@ def _import_user_files(
             )
             continue
         try:
-            taken = path.stem in sys.modules or importlib.util.find_spec(path.stem)
+            taken = (
+                path.stem in sys.modules
+                or importlib.util.find_spec(path.stem)
+                or importlib.machinery.PathFinder.find_spec(
+                    path.stem, [str(_BACKEND_SRC)]
+                )
+            )
         except (ImportError, ValueError):
             taken = True
         if taken:
             errors.append(
-                f"user file {path.name}: an installed module has the name"
-                f" {path.stem}; rename the file"
+                f"user file {path.name}: an installed module or one of chaiNNer's has"
+                f" the name {path.stem}; rename the file"
             )
             continue
         files.append(path)

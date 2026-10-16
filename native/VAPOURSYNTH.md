@@ -129,7 +129,8 @@ defaults = { gain = 1.2 }          # what the input starts at, and what the node
 
 Other keys: `help`, `simple` (the settings in Simple), `hidden`, `annotations`, `class_default`. A function with an
 overlay is listed under "Common". A file may not be named `sys`, `vs`, `core` or `set_output` (names chaiNNer's scripts
-use), like a clip variable (`n_<word>_<number>`) or like an installed module; it is skipped with a line in the log. The
+use), like a clip variable (`n_<word>_<number>`), like an installed module or like one of chaiNNer's own (`util`,
+`system`, `api`...); it is skipped with a line in the log. The
 function list is read when chaiNNer-C starts (Settings > Restart chaiNNer) and after a dependency install: it scans
 again (a few seconds) if your files, `user_modules.toml`, the plugins or the VapourSynth or vs-jetpack versions changed,
 and re-reads the overlays.

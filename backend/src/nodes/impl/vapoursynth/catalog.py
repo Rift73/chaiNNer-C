@@ -76,6 +76,27 @@ _MEMBER_KEYS = ("hidden", "annotations", "labels", "defaults")
 _ID_MASK = 0x7FFFFFFF
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+# The family nodes, in menu order.
+FAMILIES: tuple[str, ...] = (
+    "Load Clip",
+    "Clip Properties",
+    "Convert Format",
+    "Resize",
+    "Cut and Splice",
+    "Planes",
+    "Deinterlace",
+    "Denoise",
+    "Sharpen and Blur",
+    "Anti-alias",
+    "Dehalo",
+    "Deband and Grain",
+    "Masks",
+    "Colour",
+    "Expression",
+    "User Functions",
+    "Any Function",
+)
+
 # The family of a function of a module that spans many families (vstools, std, ...);
 # the ones not listed go to Any Function. A leftover moves here only when its family
 # node has no friendlier form of it (the plugins vs-jetpack wraps stay in Any Function).
@@ -396,7 +417,8 @@ def run_scan(out: Path, user_dir: Path, modules_file: Path) -> None:
 def ensure_catalog(storage: Path) -> Path | None:
     """`<storage>\\catalog.json`, rescanned first when its key changed (VapourSynth or
     vs-jetpack versions, the plugin folder, the user files, user_modules.toml and the
-    listed modules' versions); missing user modules are installed before the scan.
+    listed modules' versions); missing user modules are installed first, at each
+    start while one is missing.
     None when VapourSynth is not installed, or when the scan failed and there is no
     earlier catalog (a failed scan keeps the earlier one)."""
     try:
@@ -412,11 +434,16 @@ def ensure_catalog(storage: Path) -> Path | None:
         logger.warning("VapourSynth user modules: %s", error)
         modules = []
     key = catalog_key(storage, modules)
-    if _stored_key(catalog) == key:
+    stored = _stored_key(catalog)
+    # A listed module that is not installed (its install failed) is tried again at
+    # each start; the catalog is rescanned when that changed the key.
+    if stored == key and None not in key["user_modules"].values():
         return catalog
 
     install_user_modules(modules)
     key = catalog_key(storage, modules)
+    if stored == key:
+        return catalog
     storage.mkdir(parents=True, exist_ok=True)
     scanned = catalog.with_name(CATALOG + ".scan")
     written = catalog.with_name(CATALOG + ".tmp")
@@ -454,13 +481,34 @@ def overlay_paths(storage: Path) -> list[Path]:
     ]
 
 
+def _overlay_problem(key: str, value: object) -> str | None:
+    """Why an overlay key's value cannot be used, or None."""
+    if key in ("label", "help", "class_default"):
+        return None if isinstance(value, str) else "not a text"
+    if key == "family":
+        return None if value in FAMILIES else "not one of the node names"
+    if key in ("simple", "hidden"):
+        names = isinstance(value, list) and all(isinstance(v, str) for v in value)
+        return None if names else "not a list of parameter names"
+    if key in ("labels", "annotations"):
+        texts = isinstance(value, dict) and all(
+            isinstance(v, str) for v in value.values()
+        )
+        return None if texts else "not a table of texts"
+    if key == "defaults":
+        return None if isinstance(value, dict) else "not a table"
+    return "not an overlay key"
+
+
 def read_overlays(overlays: Sequence[Path]) -> dict[str, dict[str, Any]]:
     """Each method id's overlay table, merged in order: a later file's keys win. A file
-    that cannot be read is logged and skipped."""
+    that cannot be read is logged and skipped, and so is a key that cannot be used (an
+    earlier file's value of it stays)."""
     merged: dict[str, dict[str, Any]] = {}
     for path in overlays:
         try:
-            data = tomllib.loads(path.read_text(encoding="utf-8"))
+            # utf-8-sig: Notepad and Windows PowerShell may start it with a BOM.
+            data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
             logger.warning("Skipping the VapourSynth overlay %s: %s", path, error)
             continue
@@ -471,21 +519,36 @@ def read_overlays(overlays: Sequence[Path]) -> dict[str, dict[str, Any]]:
             )
             continue
         for method_id, table in tables.items():
-            if isinstance(table, dict):
-                merged.setdefault(method_id, {}).update(table)
+            if not isinstance(table, dict):
+                continue
+            entry = merged.setdefault(method_id, {})
+            for key, value in table.items():
+                problem = _overlay_problem(key, value)
+                if problem is None:
+                    entry[key] = value
+                else:
+                    logger.warning(
+                        "Skipping %s of %s in the VapourSynth overlay %s: %r is %s.",
+                        key,
+                        method_id,
+                        path,
+                        value,
+                        problem,
+                    )
     return merged
 
 
 def family_of(fn: Mapping[str, Any], overlay: Mapping[str, Any] | None) -> str:
-    """The family node of a catalog function: the overlay's family, else the
-    FUNCTION_FAMILIES entry (vstools, std), else the MODULE_FAMILIES entry, else
-    User Functions for a user function, else Any Function."""
+    """The family node of a catalog function: the overlay's family, else User
+    Functions for a user function (whose file may be named like a plugin namespace,
+    resize.py), else the FUNCTION_FAMILIES entry (vstools, std), else the
+    MODULE_FAMILIES entry, else Any Function."""
     if overlay and overlay.get("family"):
         return str(overlay["family"])
+    if fn["source"] == "user":
+        return "User Functions"
     family = FUNCTION_FAMILIES.get(fn["id"]) or MODULE_FAMILIES.get(fn["module"])
-    if family:
-        return family
-    return "User Functions" if fn["source"] == "user" else "Any Function"
+    return family or "Any Function"
 
 
 def _words(name: str) -> str:
