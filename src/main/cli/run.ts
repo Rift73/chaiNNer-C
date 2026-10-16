@@ -200,6 +200,22 @@ const runChain = async (
         );
     }
 
+    // Match the editor's saved-chain loading before applying explicit CLI overrides.
+    // Older chains do not contain inputs added in newer node versions.
+    for (const node of saveFile.nodes) {
+        if (schemata.has(node.data.schemaId)) {
+            node.data = {
+                ...node.data,
+                inputData: {
+                    ...schemata.getDefaultInput(node.data.schemaId),
+                    ...Object.fromEntries(
+                        Object.entries(node.data.inputData).filter(([, value]) => value != null)
+                    ),
+                },
+            };
+        }
+    }
+
     if (args.overrideFile) {
         log.info(`Read override file ${args.overrideFile}`);
         const overrideFile = await readOverrideFile(args.overrideFile);
@@ -244,6 +260,7 @@ const runChain = async (
             log.info(`Executed ${finishedFreeNodes.size}/${nodeIds.size} nodes`);
         }
     });
+    addEventListener(eventSource, 'execution-warning', ({ message }) => log.warn(message));
 
     const data = toBackendJson(nodes, edges, schemata);
     const response = await backend.run({

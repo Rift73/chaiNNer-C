@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import gc
+import math
 import threading
 
 import numpy as np
 from ncnn import ncnn
 from sanic.log import logger
 
-from ...utils.utils import get_h_w_c
+from ...utils.utils import Size, get_h_w_c
 from ..image_utils import to_uint8
 from ..native_framework_images import ncnn_input
 from ..native_tensors import cast_numpy
@@ -21,6 +22,45 @@ use_gpu = ncnn.get_gpu_count() > 0
 _net_opt_lock = threading.Lock()
 
 
+class _MultipleTiler(Tiler):
+    """Keeps every tile's size and position a multiple of `multiple`.
+
+    The tiler cuts an axis of `length` pixels into ceil(length / max) tiles of
+    ceil(length / count) pixels each, padded by the overlap. For an image whose size
+    is a multiple, and an even overlap, tiles stay a multiple when that tile size
+    is one, so this returns the largest such tile size within the wrapped tiler's.
+    """
+
+    def __init__(self, tiler: Tiler, multiple: int) -> None:
+        self.tiler = tiler
+        self.multiple = multiple
+        self.size: Size = (multiple, multiple)
+
+    def allow_smaller_tile_size(self) -> bool:
+        return self.tiler.allow_smaller_tile_size()
+
+    def starting_tile_size(self, width: int, height: int, channels: int) -> Size:
+        self.size = (width, height)
+        return self._fit(self.tiler.starting_tile_size(width, height, channels))
+
+    def split(self, tile_size: Size) -> Size:
+        return self._fit(self.tiler.split(tile_size))
+
+    def _fit(self, tile_size: Size) -> Size:
+        return (
+            self._fit_axis(self.size[0], tile_size[0]),
+            self._fit_axis(self.size[1], tile_size[1]),
+        )
+
+    def _fit_axis(self, length: int, max_size: int) -> int:
+        if max_size >= length:
+            return max_size
+        count = math.ceil(length / max(max_size, self.multiple))
+        while math.ceil(length / count) % self.multiple:
+            count += 1
+        return math.ceil(length / count)
+
+
 def ncnn_auto_split(
     img: np.ndarray,
     net: ncnn.Net,
@@ -30,7 +70,25 @@ def ncnn_auto_split(
     staging_vkallocator: ncnn.VkStagingAllocator | None,
     tiler: Tiler,
     collect_after: bool = True,
+    size_multiple: int = 1,
 ) -> np.ndarray:
+    # A model that starts with a Reorg needs a height and width that are a multiple
+    # of its stride (NcnnModelWrapper.size_multiple), so the image is padded with
+    # its edge pixels, every tile is kept a multiple, and the result is cropped
+    # back. Other models are tiled as before.
+    h, w = img.shape[:2]
+    pad_h, pad_w = -h % size_multiple, -w % size_multiple
+    if pad_h or pad_w:
+        logger.debug(
+            f"Padding the {w}x{h} image to a multiple of {size_multiple} for NCNN."
+        )
+        img = np.pad(
+            img,
+            ((0, pad_h), (0, pad_w)) + ((0, 0),) * (img.ndim - 2),
+            mode="edge",
+        )
+    if size_multiple > 1 and tiler.allow_smaller_tile_size():
+        tiler = _MultipleTiler(tiler, size_multiple)
 
     def clear_vkallocators() -> None:
         if blob_vkallocator is not None:
@@ -126,7 +184,11 @@ def ncnn_auto_split(
         return result
 
     try:
-        return auto_split(img, upscale, tiler)
+        result = auto_split(img, upscale, tiler)
+        if pad_h or pad_w:
+            scale = result.shape[0] // img.shape[0]
+            result = result[: h * scale, : w * scale]
+        return result
     finally:
         if collect_after:
             gc.collect()

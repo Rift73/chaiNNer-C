@@ -271,6 +271,11 @@ O orient(py::dict g,O image,int orientation) {
     if(orientation>=5)view=view.attr("swapaxes")(0,1);
     return name(g,"np").attr("ascontiguousarray")(view);
 }
+// orient() for an Orientation tag value read elsewhere: out of range is 1, as in
+// exif_orientation.
+O orient_tag(py::dict g,O image,long long orientation) {
+    return orient(g,image,orientation>=2&&orientation<=8?int(orientation):1);
+}
 O read_cv(py::dict g,O path) {
     O ext=name(g,"get_ext")(path);
     if(!contains(name(g,"get_opencv_formats")(),ext))return py::none();
@@ -311,6 +316,8 @@ O read_pil(py::dict g,O path) {
     if(!contains(name(g,"get_pil_formats")(),name(g,"get_ext")(path)))return py::none();
     O im=name(g,"Image").attr("open")(path);
     if(equal(im.attr("mode"),py::str("P")))im=im.attr("convert")(im.attr("palette").attr("mode"));
+    // Four CMYK samples are not RGBA: K would become the alpha. Pillow's RGB of them.
+    else if(equal(im.attr("mode"),py::str("CMYK")))im=im.attr("convert")("RGB");
     O image=name(g,"np").attr("array")(im);
     // Read after the decode, which also collects a PNG's eXIf after IDAT. Pillow keeps
     // a TIFF's tags elsewhere, so TIFFs stay as decoded.
@@ -523,11 +530,13 @@ void save_image(py::dict g,py::tuple args,O prepared) {
 }
 // Save Image's prepare phase (SP3-P9): the bytes save_image writes for these
 // inputs (input 0 the image itself) to a path with the format's own extension,
-// encoded in memory; None for DDS, which texconv writes itself.
+// encoded in memory; None for DDS, which texconv writes itself, and for a file
+// the commit skips as existing, which it never encodes.
 O save_prepare(py::dict g,py::tuple args) {
     if(args.size()!=20)throw py::type_error("Image save expects 20 input values");
     O format_type=args[4];
     if(option(g,format_type,"ImageFormat","DDS"))return py::none();
+    if(truth(args[19]) && truth(name(g,"get_full_path")(args[1],args[2],args[3],format_type).attr("exists")()))return py::none();
     O extension=add(py::str("."),format_type.attr("extension"));
     Encoding encoded=encoding(g,args[0],args);
     if(encoded.pillow) {
@@ -623,7 +632,7 @@ void cn_bind_image_io(py::module_& module) {
     module.def("image_io_read_cv",&read_cv);module.def("image_io_read_pil",&read_pil);module.def("image_io_read_dds",&read_dds);
     module.def("image_io_for_ext",&for_ext);module.def("image_io_load",&load_image);
     module.def("image_io_full_path",&full_path);module.def("image_io_save",&save_image);module.def("image_io_view",&view_image);
-    module.def("image_io_save_prepare",&save_prepare);
+    module.def("image_io_save_prepare",&save_prepare);module.def("image_io_orient",&orient_tag);
     module.def("image_io_cv_save",&cv_save);
     module.def("image_io_decode_bytes",&decode_bytes);module.def("image_io_run_texconv",&run_texconv);
     module.def("image_io_dds_png",&dds_png);module.def("image_io_save_dds",&save_dds);

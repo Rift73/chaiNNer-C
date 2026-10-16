@@ -208,6 +208,9 @@ async def install_dependencies(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         encoding="utf-8",
+        # A byte that is not UTF-8 (a build tool's message in the console's code
+        # page) is shown escaped instead of ending the read while pip still runs.
+        errors="backslashreplace",
         env=ENV,
     )
     assert process.stdout is not None
@@ -304,7 +307,7 @@ def uninstall_dependencies_sync(
         raise ValueError("An error occurred while uninstalling dependencies.")
 
     for dep_info in dependencies:
-        installed_packages[dep_info.package_name] = dep_info.version
+        installed_packages.pop(dep_info.package_name, None)
 
 
 async def uninstall_dependencies(
@@ -348,6 +351,9 @@ async def uninstall_dependencies(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         encoding="utf-8",
+        # A byte that is not UTF-8 (a build tool's message in the console's code
+        # page) is shown escaped instead of ending the read while pip still runs.
+        errors="backslashreplace",
         env=ENV,
     )
     assert process.stdout is not None

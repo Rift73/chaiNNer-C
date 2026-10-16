@@ -34,6 +34,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 | UI patches | `native/tools/independent_ui.py`, `native/tools/input-drop.json`, `native/tools/tensorrt-types.json`, `native/tools/tensorrt-clear.json`, `verify_*.cjs` |
 | Benchmark and profile | `native/tools/bench*.py`, `native/tools/bench-data/`; native-call timer `backend/src/nodes/impl/native_profile.py` (`CHAINNER_C_PROFILE`, README Bench) |
 | Runtime verification | `native/tools/verify_*runtime.py`, `verify_resize_pipeline.py`, `clipboard_isolation.py` |
+| VOSR 2.0 (two PyTorch nodes, optional TensorRT plugin; [`VOSR2-MAINTAINING.md`](VOSR2-MAINTAINING.md)) | `backend/src/nodes/impl/pytorch/vosr2*.py`, `backend/src/vendor/vosr2/`, `native/src/vosr2/` |
 
 ## 2. Shipped baseline and frontend
 
@@ -144,7 +145,8 @@ size − 2 engine jobs plus the advance the loop waits for, oldest item first; s
 in-flight bytes plus the per-item estimate fit 25% of available memory, and the item the loop waits for is always
 produced. Read-ahead needs every generator to declare its per-item files (`Generator.source_paths`) and every writer's
 base directory to resolve, with none of those files' parent folders under one; an unresolved directory blocks it like a
-source under one: K = 1, today's path. Not detected: an iterated subdirectory or name containing `..`, a declared file
+source under one: K = 1, today's path. A group that reads no file per item (Load Video, Split Spritesheet, Range) reads
+ahead whatever the directories. Not detected: an iterated subdirectory or name containing `..`, a declared file
 that is a symlink into an output directory, the loopback admin-share alias of a path, a hardlink, or a case-only
 spelling difference on a case-insensitive volume outside Windows (macOS by default, FAT or exFAT). The developer-only
 `CHAINNER_C_ITEM_WINDOW` forces K; the decision is logged once per group as `item window K=<k> (<reason>)`, and a
@@ -158,6 +160,22 @@ single generator's normalize leaves the producer (video included); zipped groups
 are unchanged (Pillow stays the JPEG decoder; its plugin registry is warmed once at Load Image's import); OpenCV's
 temp-file decoders (`.hdr .pic .sr .ras .exr`, or their content signatures) take one lock.
 `CHAINNER_C_SERIAL_PRODUCER=1` forces the serial producer (developer setting; any other value is ignored).
+
+Look-ahead (`api/node_context.py`). While a generator's loop runs a node on the commit path, `NodeContext.iteration` is
+an `IterationView`: the item index, the iterating generator (`source`, and `iterated_by(input)` per input, the lineage
+the UI's `iterated` input condition tests), one state slot that lives for the loop run (dropped at its end, failure,
+Stop or cancellation) and `lookahead(input)` / `peek(input, offset)`. `lookahead` is K − 1 when the group reads ahead,
+the pool has at least 2 threads and the input comes from a generator's iterated output or from nodes the window
+computes ahead (pure CPU or audited locked-device nodes, recursively); otherwise 0. `peek` blocks the node's thread until
+the window has produced that item's value (beyond the memory budget, P and pause, never past K − 1 or while stopping)
+and returns the object the input will receive, or None when the item does not exist or fails before reaching the input;
+nothing runs twice and no event moves. If a node looks ahead during item 0, K is decided there instead of at item 1.
+Elsewhere `iteration` is None. Its user is Upscale Image (VOSR).
+
+A node's reported time (`node-finish`) is its own work: `timed_supplier` leaves out what its call spends in
+`util.waiting`, as the executor leaves out lazy inputs' evaluation. The waits so marked are those for other work: a
+peek, a TensorRT session's lock (`util.held`; the window runs the node for several items, each waiting its turn) and
+VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queue, about K times its 1.5 s.
 
 ## 5. Invariants
 
@@ -173,7 +191,9 @@ temp-file decoders (`.hdr .pic .sr .ras .exr`, or their content signatures) take
   a timer win, no throughput loss; separable: kept on the 8-CPU timer by controller ruling), which `CHAINNER_C_ISA=avx2`
   caps on parts that downclock. The multiply (`spectral_avx2.c`) and the normal output (`color_avx2.c`) share their
   per-element code with the baseline unit through `spectral_shared.h` and `color_shared.h` (static helpers); the
-  other SP4b Task 8 tail kernels are baseline row loops.
+  other SP4b Task 8 tail kernels are baseline row loops. Descale is exempt from cross-level identity (ruling
+  2026-10-16): the vendored vapoursynth-descale solver uses FMA on AVX2, so its output equals the VapourSynth
+  plugin's on the same CPU; `DESCALE_OPT_NONE` in `descale_api()` (`src/descale_ops.c`) would restore it.
 - Never mutate cached graph inputs; never turn a borrowed view writable. Bridges keep every owner
   alive through native calls and asynchronous writes. Keep no-op identities where required.
 - C ABI version and status checks stay; DLL/ABI failure is visible.
@@ -215,7 +235,7 @@ temp-file decoders (`.hdr .pic .sr .ras .exr`, or their content signatures) take
 | Generators, collectors | Blocking reads, writes and finalization run in owned workers; cheap Range/Accumulate paths stay inline |
 | Video transport | No redundant contiguous-frame copies; an owning read-only view is held until complete and short writes finish |
 | NCNN/ONNX | Repeated successful GC deferred to chain cleanup; direct-call, error and OOM cleanup and allocator handling preserved |
-| Model helpers | Align Image to Reference and Upscale Face take chain-scoped exclusive leases (`backend/src/nodes/impl/pytorch/resource_cache.py`); incomplete checkpoints are not cached; explicit memory budgets disable retention. Checked only with mocks and CPU contract tests (`GPU-DEFERRED.md` item 5) |
+| Model helpers | Align Image to Reference and Upscale Face take chain-scoped exclusive leases (`backend/src/nodes/impl/pytorch/resource_cache.py`); incomplete checkpoints are not cached; explicit memory budgets disable retention. Checked only with mocks and CPU contract tests (`GPU-DEFERRED.md` item 5). VOSR's weights and TensorRT sessions stay in `SharedCache`s (`nodes/impl/tensorrt/cache.py`) until `/clear-cache/individual` for their node |
 | Preparation caches | Bounded parameter data only, never image sequences: font faces (`font_cache.py`, at most 16 idle faces, 8 MiB, 512 px), regex and replacement parsers (`text_cache.py`), lens/spectral/Gaussian/normal/palette preparation |
 
 ## 7. Retained engines and exactness exceptions
@@ -281,6 +301,13 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   silently wrong models change; `1=1` and an omitted `1=` stay global. The differential tests' oracle reads the
   frozen `param_schema.json` with this default corrected (`SCHEMA_CORRECTIONS` in `native/tests/test_ncnn_graph.py`;
   `backend/tests/test_ncnn_reduction.py` compares a converted model with ONNX Runtime).
+- NCNN models that start with a Reorg (space-to-depth; all 2x MangaJaNai models): the broadcast data divides the
+  input channels by stride² and the scale by the stride when a Reorg comes before the first convolution, so these
+  models report 2x and 3 channels where upstream reports 4x and 12 and the Upscale Image node refused them (upstream
+  chaiNNer's open PR #3327 and issue #1697). `NcnnModelWrapper.size_multiple` (the Reorg strides) makes NCNN's auto split pad
+  an image to that multiple with edge pixels, crop the result back, and keep every tile a multiple; models without a
+  Reorg keep upstream's tiles exactly (upstream's PR rounds every model's tiles to even). Tests:
+  `test_model_broadcast_reorg_*` in `native/tests/test_ncnn_graph.py` and `native/tests/test_ncnn_reorg.py`.
 - Load Image and Load Images decode 8-bit RGBA TIFFs with unassociated alpha (ExtraSamples 2, orientation 1-4) with
   Pillow, keeping straight colour, where upstream's OpenCV path premultiplies it and loses the colour under alpha 0
   (upstream chaiNNer #409; owner-approved 2026-10-09). 8-bit grey+alpha TIFFs under the same conditions load as BGRA
@@ -451,10 +478,10 @@ verified copy, lock probe, atomic replace) and `package_manifest.py` (schema, id
    download table) becomes `gR.gte(s.version,"3.14.0")`, so a shipped CPython 3.14.x is kept. A missing runtime, or
    one below 3.14, no longer takes upstream's branch that deletes it and downloads 3.11.5: it throws "chaiNNer-C's
    integrated Python is missing or older than 3.14; reinstall chaiNNer-C", which upstream's setup catch logs and
-   offers Retry, system Python or exit (Consult 2 Q6). Main shows chaiNNer-C's version (About `chaiNNer v0.3.3`, the
-   startup log `chaiNNer-C 0.3.3 (upstream 0.25.1-nightly.2025-10-21)`, system information `app.version` 0.3.3 plus
+   offers Retry, system Python or exit (Consult 2 Q6). Main shows chaiNNer-C's version (About `chaiNNer v0.3.4`, the
+   startup log `chaiNNer-C 0.3.4 (upstream 0.25.1-nightly.2025-10-21)`, system information `app.version` 0.3.4 plus
    `app.upstream`), drops the Release Notes item and leaves `app.getVersion()` upstream's, since it stamps saved chains
-   (Consult 2 Q5). The renderer replaces the update header with the logo, the title and a `v0.3.3` tag (no Alpha
+   (Consult 2 Q5). The renderer replaces the update header with the logo, the title and a `v0.3.4` tag (no Alpha
    badge; the manifest's `app_version` stays the upstream baseline), removes the update toggle and rejects
    release-API strings. The renderer then applies the 11 drop edits in `input-drop.json`
    (own baseline pin): directory drops with toasts, locked/connected guards for file and node drops, directory
@@ -466,7 +493,7 @@ verified copy, lock probe, atomic replace) and `package_manifest.py` (schema, id
    nodes and a `/clear-cache/individual` per removed node to `removeNodesById`, since TensorRT engines and sessions
    outlive chain runs (`nodes/impl/tensorrt/cache.py`).
 3. Snapshot `backend/src`: every file except `__pycache__`, which must equal `git ls-files backend/src` plus the two
-   binaries; provenance = git HEAD, branch, `backend_dirty`.
+   binaries (and `vosr2_qkv.dll` when it was built); provenance = git HEAD, branch, `backend_dirty`.
    The runtime is the provisioned `native/runtime/cpython-3.14.8`, which must be what `native/python-stack.lock.txt`
    describes (CPython 3.14+ with its `python3XX.dll`, the lock's interpreter, every pin, pip) and hold `chainner-pip`.
    Its copy leaves out `package_files.EXCLUDED` (eight dev-only distributions, and the oracle-only `google-re2`,
@@ -506,6 +533,9 @@ another project generated.
   `native/third_party/pybind11`, `native/third_party/onnxruntime` (C API header, `LICENSE`).
 - Ported into `chainner_ext.pyd`: `native/third_party/chainner_ext`, `regex` and `regex-syntax` (MIT OR Apache-2.0) and
   `unicode` (the Unicode 15.0.0 tables' licence), each with its licence texts and `PROVENANCE.md`.
+- Vendored model code: `backend/src/vendor/vosr2` (VOSR 2.0's DiT, DINOv2 and Qwen-Image VAE definitions from
+  ComfyUI-VOSR2 and VOSR, Apache-2.0; `pos_embed.py` from EVA-02, MIT), with both licence texts and `NOTICE.md`. The
+  hosted FP8 graphs carry their own `LICENSE` and `NOTICE`.
 - Test references: `native/tests/reference_pixel_art/LICENSE-MIT`, `native/reference-sources-tensors/PyTorch-LICENSE`.
   The matting tests compare with the live PyMatting and keep no copy of its source.
 - The repository is GPLv3 (root `LICENSE`); the bundled app and runtime keep their own notices.

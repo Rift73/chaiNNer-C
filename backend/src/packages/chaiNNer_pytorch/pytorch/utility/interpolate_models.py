@@ -114,6 +114,9 @@ def interpolate_models_node(
     if state_dict is None:
         state_dict = perform_interp(state_a, state_b, amount)
     model = ModelLoader(pytorch_device).load_from_state_dict(state_dict)
+    # As Load Model does: Convert To ONNX traces the weights as constants, which
+    # must not require grad.
+    model.model.requires_grad_(False)
     return (model, 100 - amount, amount)
 
 

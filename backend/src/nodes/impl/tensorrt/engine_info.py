@@ -89,7 +89,7 @@ def read_engine_info(loaded: DeserializedEngine) -> TensorRTEngineInfo:
         scale=out_h // in_h,
         gpu_architecture=f"sm_{major}{minor}",
         tensorrt_version=trt.__version__,
-        has_dynamic_shapes=any(d == -1 for d in input_shape),
+        has_dynamic_shapes=min_shape != max_shape,
         min_shape=min_shape,
         opt_shape=opt_shape,
         max_shape=max_shape,

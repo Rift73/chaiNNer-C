@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -9,6 +11,7 @@ import tensorrt as trt
 from cuda.bindings import runtime as cudart
 from sanic.log import logger
 
+from .engine_info import deserialize_engine, read_engine_info
 from .memory import check_cuda, get_cuda_compute_capability, get_cuda_device_name
 from .model import TensorRTEngine, TensorRTEngineInfo
 
@@ -65,6 +68,20 @@ def _apply_precision(builder_config: Any, network: Any, precision: str) -> None:
             " with the FP16 option of PyTorch's Convert To ONNX node), or pick the"
             " model's own precision."
         )
+
+
+def timing_cache_name(
+    onnx_bytes: bytes,
+    gpu_name: str,
+    compute_capability: tuple[int, int],
+    tensorrt_version: str,
+) -> str:
+    """The timing cache file of a model on a GPU. TensorRT refuses a cache from
+    another GPU or TensorRT version, so each gets its own file."""
+    model = hashlib.md5(onnx_bytes[:1024]).hexdigest()[:8]
+    gpu = re.sub(r"[^A-Za-z0-9.]+", "-", gpu_name).strip("-")
+    major, minor = compute_capability
+    return f"timing_{model}_{gpu}_sm{major}{minor}_trt{tensorrt_version}.cache"
 
 
 def parse_onnx_model(
@@ -168,18 +185,24 @@ def build_engine_from_onnx(
         profile.set_shape(input_tensor.name, min_dims, opt_dims, max_dims)
         builder_config.add_optimization_profile(profile)
 
-    # Load timing cache if available
+    # Load the timing cache, or start one: TensorRT saves only a cache that was set
+    # (get_timing_cache is None otherwise), and refuses one from another GPU.
     if timing_cache_path:
         try:
             with open(timing_cache_path, "rb") as f:
                 cache_data = f.read()
-                timing_cache = builder_config.create_timing_cache(cache_data)
-                builder_config.set_timing_cache(timing_cache, ignore_mismatch=False)
+            timing_cache = builder_config.create_timing_cache(cache_data)
+            if builder_config.set_timing_cache(timing_cache, ignore_mismatch=False):
                 logger.info("Loaded timing cache from %s", timing_cache_path)
+            else:
+                logger.info("Replacing the timing cache of another GPU or version")
         except FileNotFoundError:
             logger.debug("No timing cache found at %s", timing_cache_path)
         except Exception as e:
             logger.warning("Failed to load timing cache: %s", e)
+        if builder_config.get_timing_cache() is None:
+            timing_cache = builder_config.create_timing_cache(b"")
+            builder_config.set_timing_cache(timing_cache, ignore_mismatch=False)
 
     # Build the engine
     logger.info("Building TensorRT engine (this may take a while)...")
@@ -187,6 +210,16 @@ def build_engine_from_onnx(
 
     if serialized_engine is None:
         raise RuntimeError("Failed to build TensorRT engine")
+    engine_bytes = bytes(serialized_engine)
+
+    if scale is None:
+        # A dynamic ONNX model's scale needs TensorRT's shape inference, as Load
+        # Engine does; Upscale Image cannot run an engine without it.
+        loaded = deserialize_engine(engine_bytes, gpu_index)
+        try:
+            scale = read_engine_info(loaded).scale
+        finally:
+            loaded.release()
 
     # Save timing cache
     if timing_cache_path:
@@ -206,6 +239,17 @@ def build_engine_from_onnx(
     gpu_name = get_cuda_device_name(gpu_index)
     logger.info("Built engine for %s (%s)", gpu_name, gpu_arch)
 
+    # Record the accepted input shapes. A fixed engine accepts exactly one shape:
+    # the profile shape for a dynamic ONNX model, or the model's own static shape.
+    min_shape = (1, input_channels, config.min_shape[0], config.min_shape[1])
+    opt_shape = (1, input_channels, config.opt_shape[0], config.opt_shape[1])
+    max_shape = (1, input_channels, config.max_shape[0], config.max_shape[1])
+    if not config.use_dynamic_shapes:
+        if not has_dynamic and len(input_shape) >= 4:
+            opt_shape = (1, input_channels, input_shape[2], input_shape[3])
+        min_shape = opt_shape
+        max_shape = opt_shape
+
     # Create engine info
     info = TensorRTEngineInfo(
         precision=config.precision,
@@ -214,16 +258,10 @@ def build_engine_from_onnx(
         scale=scale,
         gpu_architecture=gpu_arch,
         tensorrt_version=trt.__version__,
-        has_dynamic_shapes=has_dynamic or config.use_dynamic_shapes,
-        min_shape=(1, input_channels, config.min_shape[0], config.min_shape[1])
-        if config.use_dynamic_shapes
-        else None,
-        opt_shape=(1, input_channels, config.opt_shape[0], config.opt_shape[1])
-        if config.use_dynamic_shapes
-        else None,
-        max_shape=(1, input_channels, config.max_shape[0], config.max_shape[1])
-        if config.use_dynamic_shapes
-        else None,
+        has_dynamic_shapes=min_shape != max_shape,
+        min_shape=min_shape,
+        opt_shape=opt_shape,
+        max_shape=max_shape,
     )
 
-    return TensorRTEngine(bytes(serialized_engine), info)
+    return TensorRTEngine(engine_bytes, info)

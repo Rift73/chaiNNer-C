@@ -72,6 +72,11 @@ Checklists for the changes that touch the exactness contract, the build or the p
 4. Keep `/fp:strict`, dynamic denormals, `/Brepro` and the prefix map; `CHAINNER_C_MARCH` never in a release.
 5. Check reproducibility (two checkouts give the same hashes), then update the `native/README.md` hash table and the
    prerequisites in both READMEs.
+6. VOSR's TensorRT plugin `vosr2_qkv.dll` is the one exception: nvcc compiles `src/vosr2/qkv.cu` with the pinned
+   toolset's `cl.exe` as its host (owner-approved); the TensorRT (11) and CUDA (13) majors are pinned in
+   `CMakeLists.txt`. After a change there (an SDK bump, a GPU architecture, an nvcc flag), build it twice from clean
+   directories (same hash), load it (`import tensorrt`, then `ctypes.CDLL`), record its hash and SDK versions in the
+   README table and run `native/tests/test_vosr2_trt_rewrite.py`. A new DLL rebuilds the VOSR TensorRT engines once.
 
 ## 5. Any UI change
 
@@ -102,25 +107,34 @@ Checklists for the changes that touch the exactness contract, the build or the p
 
 ## 7. TensorRT and cuda-python
 
+VOSR's TensorRT backends need `vosr2_qkv.dll`: build the native layer with the TensorRT and CUDA roots before
+packaging (section 4, item 6; README Build). VOSR's modules, engine caches, hosted FP8 set and tests:
+[`VOSR2-MAINTAINING.md`](VOSR2-MAINTAINING.md).
+
 1. Pins live in `backend/src/packages/chaiNNer_tensorrt/__init__.py` (`tensorrt` 11.2.1.2 with `auto_update=False`,
    `cuda-python` 13.4.1); they are GPU-only and not in the lock.
 2. A serialized engine loads only on the TensorRT version and GPU architecture that built it
    (`nodes/impl/tensorrt/engine_info.py`). `auto_update=False` keeps a pin bump from replacing an installed TensorRT
-   at startup; after a bump, users rebuild engines with Build Engine.
+   at startup; after a bump, users rebuild engines with Build Engine (VOSR's engines rebuild themselves once).
 3. API changes: update the stubs `stubs/tensorrt/__init__.pyi` and `stubs/cuda/bindings/runtime.pyi` (pyright).
 4. CPU tests: `backend/tests/test_tensorrt_tiling.py` (tiling and seams), `native/tests/test_tensorrt_cache.py`
    (sharing and release). GPU runs are manual.
 
 ## 8. Package and release
 
-1. Build the native layer; package: `package_port.py --validate-only`, then build or `--refresh`, then a repeat run
-   that must report `verified_no_op` (README Package).
+1. Build the native layer, with the TensorRT and CUDA roots so that `vosr2_qkv.dll` ships (nothing checks it);
+   package: `package_port.py --validate-only`, then build or `--refresh`, then a repeat run that must report
+   `verified_no_op` (README Package).
 2. Bundle checks (section 5, step 3), `make_oracle.py`, the gates of section 10.
 3. Release zip from source: `npm ci`, the native build (Forge copies `backend/src` with the binaries), then
    `npm run make`; `forge.config.js` adds the `portable` marker to the zip and deletes `.pyc` files first. Its top
    maps cross-zip's `fs.rmdir(..., { recursive })`, which Node 25 removed, to `fs.rm`: keep it while maker-zip uses
    cross-zip.
 4. The `native/README.md` hash table must match the shipped binaries.
+5. VOSR's TensorRT plugin `backend/src/nodes/impl/pytorch/vosr2_qkv.dll` must be built (README Build): without it
+   `package_port.py` (all runs, `--validate-only` too) and `npm run make` on Windows (Forge's `prePackage`) refuse to
+   package, since such a package has no VOSR TensorRT backends. Only for a package meant to lack them, set
+   `CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1` (exactly `1`) for that run.
 
 ## 9. Publish
 

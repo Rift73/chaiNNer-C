@@ -38,7 +38,16 @@ export const ValidityIndicator = memo(({ validity, animated }: ValidityIndicator
             );
         } else {
             text = 'This node is currently running...';
-            icon = <Spinner size="xs" />;
+            // 10 steps per second instead of every display refresh: each repainted frame
+            // makes the OS compositor interrupt GPU work, which slowed TensorRT by ~10%
+            // while the window was visible.
+            icon = (
+                <Spinner
+                    size="xs"
+                    speed="1.2s"
+                    style={{ animationTimingFunction: 'steps(12)' }}
+                />
+            );
         }
     } else {
         text = validity.isValid ? 'Node valid' : validity.reason;

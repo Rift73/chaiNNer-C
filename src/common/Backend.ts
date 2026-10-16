@@ -342,6 +342,9 @@ export interface BackendEventMap {
         exception: string;
         exceptionTrace: string;
     };
+    'execution-warning': {
+        message: string;
+    };
     'chain-start': {
         nodes: string[];
     };

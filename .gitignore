@@ -107,6 +107,7 @@ __pycache__/
 # C extensions
 *.so
 backend/src/nodes/impl/chainner_native.dll
+backend/src/nodes/impl/pytorch/vosr2_qkv.dll
 backend/src/nodes/impl/chainner_native.dylib
 
 # Distribution / packaging

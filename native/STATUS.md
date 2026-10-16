@@ -4,6 +4,46 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- VOSR 2.0 (2026-10-13; guide `VOSR2.md`, maintainer page `VOSR2-MAINTAINING.md`): one PyTorch node, Upscale
+  Image (VOSR), which downloads the official model (about 7 GB) on first use (Load VOSR Model removed), on a fixed BF16/FP32 policy with GPU Memory Default or Low and the PyTorch, TensorRT
+  and TensorRT FP8 backends. In a Load Video loop the node stabilizes frames (Three Frames or Persistent Detail,
+  strength 65 %) with frames ahead from the item window's new look-ahead (`NodeContext.iteration`, the `iterated`
+  input condition; ARCHITECTURE section 4), else from past frames only. Gone: VOSR 2.0 Upscale, Temporal Sequence,
+  Precision, Original mode and tile inputs, FP16, High. The TensorRT plugin `vosr2_qkv.dll` is an optional native target
+  (`14dfaec0…`, four reproducible builds); the FP8 graphs are hosted (`vosr2-fp8-f9e142df5846`, 3.45 GB, SHA-256
+  pinned) and compiled on first use (191 s, compile 177 s). Verified on the RTX 5090: PyTorch images bit-identical to
+  the old node (256×256 and 640×360 → 2560×1440); a 30-frame Load Video chain bit-identical to the old Temporal Sequence
+  for both methods on PyTorch; TensorRT BF16 frames 51.1 dB minimum, 52.2 dB mean PSNR from the old ones (rebuilt
+  engines; one image alone 49.1 dB); FP8 from the hosted graphs 51.9 and 43.5 dB from the old FP8 outputs, which the
+  old plans reproduce bit for bit. 640×360 → 2560×1440 per frame: PyTorch 4.60 s, TensorRT 1.40 s. CPU: the VOSR,
+  executor and item-window files 2331 passed, only the 4 known DDS failures; pyright 0 errors; lint, runtime type check
+  and vitest (136 passed) clean. Final acceptance on the merged code: FP8 from the real host (3.45 GB in 62 s, build
+  157 s, later runs neither download nor build), PyTorch Three Frames through Load Video 30/30 frames bit-identical,
+  BF16 build with the timing cache 166 → 91 s; full suite 111,591 passed, only the known failures. Grain pass
+  (2026-10-14, owner: B x1.4, grain follows the source): synthesized output-resolution grain replaces the enlarged
+  source grain (Castorice 2x: within 2 % of the approved sample's strength, neighbour correlation 0.36 instead of
+  0.72); TensorRT Three Frames, 30 frames: identical to before outside grain areas, a still background's grain
+  0.9997 correlated frame to frame, 1.42-1.43 s instead of 1.39 s per later frame. Window layout (2026-10-14, owner:
+  placement + face windows): windows placed so seams run through low-detail areas, plus a window on each face a seam
+  splits (YuNet, downloaded once), centred on the face box, laid over the grid's blend: it alone gives the face's
+  middle (400 px) and fades out over 48 px (blend share step at most 0.26 a latent; grid hand-overs 0.51; the
+  reviewed first version's raised blend weight cut at 1.00); the issue-13 portrait 2x, TensorRT BF16: the front face's
+  right/left cheek detail gap 1.88 -> 1.08 (placement alone 1.56), 4 face windows, 2.92 -> 3.13 s; PyTorch gap 1.07;
+  Rin and the texture sample (no faces) within 6 % except Rin's blurred background 12 % softer; 30-frame video: one
+  layout for the shot, 1.44 s vs 1.49 s per frame, no extra flicker. Seam triggers from input detail, prediction
+  differences and detail amounts could not find the face (all parked).
+- Temporal Fix (2026-10-13): a PyTorch node running pifroggi/vs_temporalfix's AI model (Apache-2.0, weights fetched
+  from the pinned upstream commit and checked by SHA-256) over a loop's 7-frame window; with look-ahead it equals a
+  standalone reproduction of upstream's CUDA path bit for bit (30/30). After Upscale Image (VOSR) or PyTorch Upscale
+  Image the executor computes that producer up to 3 items ahead, in order and once per item (side-effect-free
+  producers, fail-fast loops, a pool with the threads its waits need); GPU check, Load Video -> VOSR -> a 3-ahead
+  consumer, 30 frames: VOSR bit-identical to its references, served 3 ahead to the end. No device lock: GPU nodes may
+  overlap as before. Elsewhere (side effects, deferred errors) it mirrors the past side.
+- Descale (2026-10-16): Image > Dimensions > Resize; vapoursynth-descale Release 12 (MIT, vendored unchanged in
+  `native/third_party/descale`) under `src/descale_ops.c`, which runs its row and column passes on the pool in a
+  workspace the bridge takes from NumPy. Bit-identical with the Release 12 VapourSynth plugin (12/12 cases, kernels,
+  shifts, fractional sizes, borders); 1080p -> 720p RGB 1.0-1.5 ms (first version 9.7-10.4 ms, fresh 52 MB per
+  call). A lane-for-lane AVX-512 port (bit-identical) gave no end-to-end gain (memory bound) and is not built.
 - Branch `chaiNNer-C` on upstream `d56e507f`. SP1 took `native/` from `codex/c-port` at `c081e940`; that branch is kept as-is, with the SP1 plan and its execution rulings on top.
 - One backend: `backend/src` = B0 (426 files) plus SP2's, SP3's, SP3b's, SP4a's, SP4b's and SP4c's edits (ARCHITECTURE section 2) and rebuilt binaries (git-ignored);
   the sources are tracked with their shipped bytes. Until SP1 the package was the installed backend plus 216 overlays applied through delegates, transplants and AST pins; that mechanism is retired (it and prior history: tag `chainner-c-checkpoint-20261001`, `fede43d8`).
@@ -121,8 +161,12 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   EXIF orientation; straight-alpha and grey+alpha TIFFs; TIFF ExtraSamples; lossless WebP `exact`; GIF palette per
   frame; CPU-only NCNN tiles by available RAM; a vitest runs the app's schema check over the real node list; CLI ends its
   backend; system-Python option removed; Python download honours the proxy; pip's errors reach the UI; Spandrel
-  `0.4.2+c2` (fork release `v0.4.2-c2`, SHA-256 `e030832f…`: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
-  padding per input for 12). Deviations: ARCHITECTURE section 7.
+  `0.4.2+c3` (fork release `v0.4.2-c3`, SHA-256 `72b7bedb…`; c2: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
+  padding per input for 12; c3, 2026-10-16: DUAL runs in fp16, its last group's dynamic conv in fp32, 1x Light 512²
+  343 → 199 ms, 2x 87 → 52 ms vs fp32+TF32). PyTorch tries cuDNN attention first (owner, 2026-10-16: every model in
+  fp16, not DUAL only; DUAL fp16 197.5 → 182.0 ms 1x, 52.0 → 47.0 ms 2x; Windows PyTorch has no Flash Attention).
+  With the fp16 setting on, DUAL TensorRT exports start from fp16-rounded weights (68.5–88.6 dB vs exact, below the
+  engine's bf16 noise; owner accepted). Deviations: ARCHITECTURE section 7.
 
 ## Last CPU comparison
 
@@ -152,6 +196,26 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | SP0 deferred follow-ups | `docs/superpowers/plans/2026-10-01-sp0-foundation.md`, "Deferred follow-ups" |
 | Upstream-parity items still listed (owner directive 4, 2026-10-04): the C1-class pins not yet checked against chaiNNer; lens power's input `maxss(+0, x)`, output-invisible and VERIFIED equal to chaiNNer's chain; compose's NaN selection, positions-level by rule (spec 4.4); suite-wide ±0-aware bitwise comparators (the suite's `assert_array_equal` treats ±0 as equal). Closed: the normalize/enforce clamp follows `np.clip` on the tested stack, −0 kept (ARCHITECTURE section 7, Consult 11 R-p) | SP5a, or the next task that touches them |
 | Upstream-bug follow-ups (2026-10-09): the bundled `chainner_pip` 23.2 downloads PEP 658 wheels twice (needs pip's pypa/pip#11847 fix in the bundled wheel); SCUNet ONNX export unblocking (needs a real-model test); the ONNX size probe cannot find multiples 12/24/48 and its lock serializes ONNX upscales during a probe; the host reads the worker's output as strict UTF-8 (`backslashreplace` on that Popen); the real first-start check needs a fixed, firewall-allowed folder | `native/reports/fable-decisions.md` (D1-D15) |
+| VOSR speed, PyTorch path: each window's DINO features go to the CPU and back, and every DiT prediction is synchronized and copied to the CPU (`vosr2_context.py`) | Keep them on the GPU when Default has room; paired A/B |
+| VOSR cold start: the 5.6 GB FP32 DiT checkpoint is converted to BF16 at every cold load (`vosr2.py`) | A cached BF16 copy; measure the cold start |
+| VOSR temporal on PyTorch: the next restoration does not overlap the CPU stabilization (about 1.1 s of 4.6 s per 2560×1440 frame); `stabilize` runs on one thread (1.0 s); the next `motion_pair` could run alongside | Paired A/B and a memory check for each |
+| VOSR temporal: each item settles its background restoration, so the GPU idles while downstream nodes (Save Video's encode) run | Owner decision: letting it cross the item boundary relaxes "no GPU work escapes an item" |
+| VOSR engine identities are broader than the engines: all of `vosr2.py` (a message edit rebuilds) and the whole plugin DLL (a metadata-only rebuild rebuilds) | Hash only engine-relevant code and the DLL's SASS/PTX |
+| VOSR engine sets of earlier identities (BF16, the prepared FP8 `f2d7a3da…`) are never removed: 1.7 to 3.5 GB each | A "remove unused VOSR caches" step |
+| VOSR engine builds: about 3 minutes without progress, one stage at a time, no timing cache | Stage count in the log; small stages in parallel; a per-GPU timing cache |
+| VOSR FP8 and model downloads: one host each and no mirror | A mirror list beside the pins |
+| VOSR plugin release: nothing requires `vosr2_qkv.dll` in a release, and the package manifest does not record its TensorRT and CUDA versions | A release flag that requires it; versions in `native_toolchain` |
+| VOSR scene focus where a busy in-focus texture (thatch, foliage) holds the sharpest strip: in-focus faces count as partly defocused and lose 10-15 % detail (the issue-13 portrait, 2x). An edge-width reference (re-blur gradient ratio) fixed that frame but weakened Rin's defocused background at 4x. Separately, the half-soft face there was VOSR's own window seam (present with routing off), now handled by window placement and face windows (State). Owner 2026-10-14: keep today's reference and the 64 px minimum window overlap (16 px measured: 8 % faster, 3x the seam step) | A focus measure tuned on more of the owner's frames; seam windows for non-face content (anime faces, hands) need a trigger that finds them; faces wider than 800 px keep the layout's seams; in an output under 512 px on one side, a mirrored copy of an edge face in the padding can take a face window (harmless, rare) |
+| VOSR plugin code: no sm_90/sm_100 SASS (compute_120 PTX cannot run there); no header dependency file for the nvcc step; a dead branch in `qkv.cu` and an `rsqrtf` worth a comment | SASS when those GPUs become targets; `-MD -MF` with `DEPFILE`; code cleanups need GPU revalidation |
+| Look-ahead executor: K is decided at item 0 once a node looks ahead (a later-computed writer folder then forces K = 1 for groups reading per-item files); jobs computed ahead get a fresh context each; `ItemWindow._wake` rechecks every waiter; forced jobs bypass P; the UI's lineage takes the first iterated edge, the backend the first iterated input | A schema-level "looks ahead" flag, a per-node context cache, a per-slot waiter map and a cap, when a measured need appears |
+| VOSR in the local portable package: the nightly UI's patches lack the iterated condition | A patch JSON once the nightly is restored (first row) |
+| VOSR temporal tests keep the removed generators verbatim as their oracle | Golden float32 outputs of a tiny clip |
+| Loop runs allocate about 60 MB more torch memory than one call (likely a cuBLAS workspace per pool thread) | Pin a GPU node's calls to one thread |
+| `tests/common/backend-nodes.test.ts` imports nodes with `error_on_failed_node=False`, so a node that fails to import disappears silently | Assert a few schema ids or import strictly |
+| `Build.ps1 -Configuration Debug` fails at `chainner_ext` (needs `python314_d.lib`, which the runtime lacks; pre-existing) | Skip `chainner_ext` in Debug or provide the debug library |
+| Upstream check and bug hunt (2026-10-16), queued items, each ruled by the Fable stand-in (`native/reports/fable-decisions.md`, "2026-10-16 · Upstream check and bug hunt"): `independent_ui.py` patches for 17d9331c (uninstall a disabled package) and 3f671309 (hidden experimental toggle), with the nightly-restore item (first row); Electron logs backend stdout per chunk, so bare prints are missing from `main.log` (a line-based reader keeping every level); the read-ahead predicate refinement for look-ahead nodes (compute Save Image's folder nodes before the item-0 decision, compare the full output folder; Save Image's skipped-file CPU work also runs ahead); look-ahead jobs share the node's cleanup set (latent); Descale: a multi-reflect Mirror instead of the refusal, and a schema-range sweep for degenerate Blur/Taps (Blur 0.01 Bilinear gives black); PyAV CFR resampling for variable-rate MKV/WebM (today they use the CLI reader); VOSR engine-cache self-heal (move a corrupt cache aside, rebuild); pip resolves on every backend start (a lock-vs-installed check); lazy inputs: evaluate the producer inline on the waiting thread; untaken-branch outputs cached until run end; malformed `/run` error wording; Save Image: reject `..` (owner-visible), RGBA to JPEG flatten vs drop (owner choice), AVIF 4:0:0 label, `nul` message; Riemersma History Length above about 487 M; ONNX int64-input message; Build Engine minimum 48 px; a newer-chaiNNer chain notice | Next sessions, in the order of the decisions file |
+| Owner queue (2026-10-16): Electron 25 -> 43 (about 40 advisories; must land with upstream #3343/#3344), vitest 1 -> 4 (with ip-address 9 -> 10 and adm-zip 0.5 -> 0.6), upstream #3318 (OOM recovery and tile-size display, a feature), re-release v0.3.4 with today's Descale Mirror out-of-bounds fix (v0.3.4 ships the bug), and the upstream features #3140/#3191/#3187/#3222 stay out | The owner's yes or no |
+| GPU checks deferred on 2026-10-16 (a model was training; light checks only): Build Engine Fixed 64x64 -> Get Engine Info -> Upscale on 200x150 under chaiNNer-C's TensorRT 11.2; a fixed-size ONNX engine keeps its size under 11.2; the timing cache file after the first build and "Loaded" on the second; Stop and worker kill during a real DUAL build (no child left, VRAM back); the TensorRT session-leak paths (need a CUDA fault); the VOSR CUDA checks listed in the area-7 hunt report | The owner's next GPU session |
 
 ## Decision log
 

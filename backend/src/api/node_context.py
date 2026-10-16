@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -54,7 +56,7 @@ class Progress(ABC):
         Raises an `Aborted` exception if the current operation was aborted.
         """
 
-    def sub_progress(self, offset: float, length: float) -> "Progress":
+    def sub_progress(self, offset: float, length: float) -> Progress:
         """
         Returns a new `NodeProgress` object that represents a sub-progress of the current operation.
 
@@ -67,7 +69,7 @@ class Progress(ABC):
         return _SubProgress(self, offset, length)
 
     @staticmethod
-    def noop_progress() -> "Progress":
+    def noop_progress() -> Progress:
         """
         Returns a `Progress` object that does nothing. It is never paused or aborted and does not report any progress.
         """
@@ -92,7 +94,7 @@ class _NoopProgress(Progress):
     def set_progress(self, progress: float) -> None:
         pass
 
-    def sub_progress(self, offset: float, length: float) -> "Progress":
+    def sub_progress(self, offset: float, length: float) -> Progress:
         return _NoopProgress()
 
 
@@ -119,7 +121,7 @@ class _SubProgress(Progress):
     def set_progress(self, progress: float) -> None:
         self._parent.set_progress(self._offset + progress * self._length)
 
-    def sub_progress(self, offset: float, length: float) -> "_SubProgress":
+    def sub_progress(self, offset: float, length: float) -> _SubProgress:
         return _SubProgress(
             self._parent,
             offset=self._offset + offset * self._length,
@@ -127,10 +129,111 @@ class _SubProgress(Progress):
         )
 
 
+class IterationView(ABC):
+    """
+    What a node sees of the generator loop that runs it once per item (its context's
+    `iteration`). Items reach the node one at a time, in order.
+    """
+
+    @property
+    @abstractmethod
+    def index(self) -> int:
+        """
+        The index of the item the node runs for: 0 for the loop's first item, then one more
+        per item, an item that failed (a generator that defers errors) included.
+        """
+
+    @property
+    @abstractmethod
+    def source(self) -> str:
+        """
+        The schema id of the generator whose sequence iterates the node: the lineage of its
+        first iterated input (inputs in order), as the "iterated" condition sees an input's.
+        """
+
+    @abstractmethod
+    def iterated_by(self, input_id: int) -> str | None:
+        """
+        The schema id of the generator whose sequence iterates this input, as the "iterated"
+        condition sees it, or None when the input is not iterated (a constant, or a value
+        from outside the loop). Raises ValueError for an unknown input.
+        """
+
+    @property
+    @abstractmethod
+    def state(self) -> object | None:
+        """
+        The node's state slot for this loop run: None at the loop's start, kept from one
+        item to the next, and dropped (back to None, the view detached) when the loop ends,
+        fails or is cancelled. Never shared between loop runs or nodes.
+        """
+
+    @state.setter
+    @abstractmethod
+    def state(self, value: object | None) -> None: ...
+
+    @abstractmethod
+    def lookahead(self, input_id: int) -> int:
+        """
+        The largest offset `peek` serves for this input in this loop run, or 0 when it serves
+        none; the same at every item of the run.
+
+        It is K - 1, K being the item window of the loop's generator group, when the group
+        reads ahead (K > 1: CHAINNER_C_ITEM_WINDOW is not 1, and when a generator reads
+        files per item, no writer's output directory is unresolved or holds one of them;
+        Load Video reads none), the executor's pool has two threads or more (the server's
+        has 8), and the input is connected to one of these:
+        - an iterated output of one of the group's generators;
+        - a node the window computes ahead: a pure CPU node (an image or utility node without
+          side effects, context or lazy input) or an audited locked-device node, not Into
+          Directory, whose own iterated inputs are generator outputs or such nodes.
+
+        Otherwise 0: no window (K = 1), an unconnected input, an input fed by a node outside
+        the loop or by a generator's non-iterated output, or by a node the window never
+        computes ahead (a GPU node, a node with side effects or a context, ...).
+
+        The window's K is decided once per loop run: at item 1, or when a node of the group
+        first looks ahead (lookahead or peek) during item 0. A writer whose output directory
+        comes from a node that has not run yet by then counts as unresolved, so K is 1 when a
+        generator of the group reads files per item.
+
+        Like `peek`, call it from the node's own call, never from the event loop's thread.
+        """
+
+    @abstractmethod
+    def peek(self, input_id: int, offset: int) -> object | None:
+        """
+        The value this input receives at item `index + offset` (offset >= 1), enforced as the
+        node receives it: the very object (or the same view of it) the node gets when that
+        item comes. It blocks until the value is there: the window produces that item and
+        computes the nodes that feed the input now if it has not yet, beyond its memory budget
+        and while paused, as for the item the loop waits for, never more than K - 1 items
+        ahead. Nothing else changes: no event, side effect or extra node run.
+
+        None when `offset > lookahead(input_id)`, when the item does not exist (the sequence
+        ends before it), or when it fails before reaching this input: a generator raised for
+        it or, failing fast, for an earlier item; zipped generators did not all yield; a node
+        that feeds the input failed for it; or the input's own check rejects the value. The
+        error itself is raised at its item, as without the look-ahead.
+
+        Raises Aborted once the run was stopped, ValueError for an offset below 1 or an
+        unknown input, and RuntimeError on the event loop's thread.
+        """
+
+
 class NodeContext(Progress, ABC):
     """
     The execution context of the current node.
     """
+
+    @property
+    def iteration(self) -> IterationView | None:
+        """
+        The generator loop that runs the node once per item, while it runs an item on the
+        loop's commit path; None outside a generator loop, for generators and collectors,
+        and for a node the item window computes ahead of the loop.
+        """
+        return None
 
     @property
     @abstractmethod

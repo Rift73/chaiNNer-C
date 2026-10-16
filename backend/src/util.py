@@ -1,17 +1,55 @@
 from __future__ import annotations
 
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Callable, TypeVar
 
 T = TypeVar("T")
 
 
+class _Waited(threading.local):
+    """The seconds this thread's calls spent in `waiting`."""
+
+    seconds = 0.0
+
+
+_waited = _Waited()
+
+
+@contextmanager
+def waiting() -> Iterator[None]:
+    """A wait for other work, such as another item's turn with a shared session or a
+    look-ahead at a later item: `timed_supplier` leaves it out of the node's time, as
+    the executor leaves out its lazy inputs' evaluation."""
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        _waited.seconds += time.perf_counter() - start
+
+
+@contextmanager
+def held(lock: threading.Lock) -> Iterator[None]:
+    """Hold `lock`; the wait for it is `waiting`."""
+    with waiting():
+        lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def timed_supplier(supplier: Callable[[], T]) -> Callable[[], tuple[T, float]]:
+    """The supplier's result and its time, less the time it spent `waiting`."""
+
     def wrapper():
-        start = time.time()
+        waited = _waited.seconds
+        start = time.perf_counter()
         result = supplier()
-        duration = time.time() - start
-        return result, duration
+        duration = time.perf_counter() - start
+        return result, duration - (_waited.seconds - waited)
 
     return wrapper
 

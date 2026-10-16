@@ -230,7 +230,12 @@ export const LargeImageOutput = memo(
                                     />
                                 </Center>
                             ) : animated ? (
-                                <Spinner />
+                                // 10 steps per second, as the node's running spinner: each
+                                // repainted frame makes the OS compositor interrupt GPU work.
+                                <Spinner
+                                    speed="1.2s"
+                                    style={{ animationTimingFunction: 'steps(12)' }}
+                                />
                             ) : (
                                 <HStack>
                                     <ViewOffIcon />

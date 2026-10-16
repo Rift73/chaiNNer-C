@@ -49,13 +49,15 @@ const useTypeInfo = (id: string): TypeInfo => {
 export const testForInputConditionTypeInfo = (
     inputData: InputData,
     schema: NodeSchema,
-    typeInfo: TypeInfo
+    typeInfo: TypeInfo,
+    getIteratingSchemaId: (inputId: InputId) => SchemaId | undefined
 ): TestFn => {
     return testForInputCondition(
         inputData,
         schema,
         (id) => typeInfo.instance?.inputs.get(id),
-        (id) => typeInfo.connectedInputs.has(id)
+        (id) => typeInfo.connectedInputs.has(id),
+        getIteratingSchemaId
     );
 };
 
@@ -165,8 +167,11 @@ export const useNodeStateFromData = (data: NodeData): NodeState => {
     const type = useTypeInfo(id);
 
     const testCondition = useMemo(
-        () => testForInputConditionTypeInfo(inputData, schema, type),
-        [inputData, schema, type]
+        () =>
+            testForInputConditionTypeInfo(inputData, schema, type, (inputId) =>
+                chainLineage.getIteratingSchemaId({ nodeId: id, inputId })
+            ),
+        [inputData, schema, type, chainLineage, id]
     );
 
     return useMemoObject<NodeState>({

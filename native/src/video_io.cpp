@@ -390,10 +390,11 @@ std::shared_ptr<WriterResource> resource(const O&self) {
     auto owned=std::make_shared<WriterResource>();
     self.attr("_native_video_resource")=py::cast(owned); return owned;
 }
-// The user's -vf (or -filter:v) runs first, then this chain.
+// The user's -vf (or -filter:v, or -filter) runs first, then this chain: FFmpeg keeps only
+// the last of several, so a -filter left beside it would be dropped.
 void append_filter(py::dict&params,const std::string&filter) {
     py::list filters;
-    for(const char*key: {"vf","filter:v"})if(params.contains(key))filters.append(params.attr("pop")(key));
+    for(const char*key: {"vf","filter:v","filter"})if(params.contains(key))filters.append(params.attr("pop")(key));
     filters.append(py::str(filter));
     params["vf"]=py::str(",").attr("join")(filters);
 }
@@ -405,9 +406,10 @@ void append_filter(py::dict&params,const std::string&filter) {
 // GIF (owner-approved 2026-10-09) gets a palette made for each frame, where FFmpeg
 // replaces the node's yuv420p with the fixed 3-3-2 palette of bgr8 (grey 128 is 43 levels
 // off, gradients more). Frames reach FFmpeg one at a time, so the per-frame palette needs no
-// buffering. A user -vf runs first; a user pixel format keeps FFmpeg's conversion.
+// buffering. A user -vf runs first; a user pixel format keeps FFmpeg's conversion, and so
+// does a user -filter_complex (or -lavfi), which FFmpeg refuses beside a -vf.
 void colour_options(const py::dict&g,const O&self,py::dict&params,const O&width,const O&height) {
-    if(!params.contains("pix_fmt"))return;
+    if(!params.contains("pix_fmt") || params.contains("filter_complex") || params.contains("lavfi"))return;
     if(eq(self.attr("container"),member(g,"VideoFormat","GIF"))) {
         if(!eq(builtin("str")(params["pix_fmt"]),py::str("yuv420p")))return;
         params["pix_fmt"]="pal8";

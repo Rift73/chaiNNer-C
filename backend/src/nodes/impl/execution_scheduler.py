@@ -7,7 +7,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterator
 from typing import Literal, Protocol, TypeVar, cast
 
-from api import NodeId
+from api import NodeData, NodeId
 from chain.chain import Chain
 from chain.input import EdgeInput, InputMap
 
@@ -80,16 +80,11 @@ async def owned_gather(coroutines: list[Awaitable[T]]) -> list[T]:
 LOCKED_DEVICE_NODES: frozenset[str] = frozenset({"chainner:tensorrt:upscale_image"})
 
 
-def pure_cpu_dependency(
-    executor: DependencyExecutor, node_id: NodeId, visiting: set[NodeId] | None = None
-) -> bool:
-    """Parallelize only eager, side-effect-free CPU subgraphs with ready roots."""
-    if executor.node_cache.has(node_id):
-        return True
-    node = executor.chain.nodes[node_id]
-    data = node.data
+def pure_cpu_node(data: NodeData) -> bool:
+    """An eager, side-effect-free CPU node (image or utility, without a context), or an
+    audited locked-device node: one that may run beside others and ahead of earlier items."""
     locked_device = data.schema_id in LOCKED_DEVICE_NODES
-    if (
+    return not (
         data.kind != "regularNode"
         or data.side_effects
         or (data.node_context and not locked_device)
@@ -98,7 +93,16 @@ def pure_cpu_dependency(
             or data.schema_id.startswith(("chainner:image:", "chainner:utility:"))
         )
         or any(item.lazy for item in data.inputs)
-    ):
+    )
+
+
+def pure_cpu_dependency(
+    executor: DependencyExecutor, node_id: NodeId, visiting: set[NodeId] | None = None
+) -> bool:
+    """Parallelize only eager, side-effect-free CPU subgraphs with ready roots."""
+    if executor.node_cache.has(node_id):
+        return True
+    if not pure_cpu_node(executor.chain.nodes[node_id].data):
         return False
     visiting = set() if visiting is None else visiting
     if node_id in visiting:

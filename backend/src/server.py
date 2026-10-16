@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import tempfile
+import threading
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,7 @@ from json import dumps as stringify
 from pathlib import Path
 from typing import Final, TypedDict
 
+import psutil
 from sanic import Sanic
 from sanic.log import access_logger, logger
 from sanic.request import Request
@@ -53,6 +55,11 @@ class AppContext:
     def __init__(self):
         self.config: Final[ServerConfig] = ServerConfig.parse_argv()
         self.executor: Executor | None = None
+        # A /run is in its handler: set before its first await (it waits for previews
+        # before its executor exists), so a second /run is refused meanwhile.
+        self.run_starting = False
+        # Stop arrived while that /run waited for previews: it ends without running.
+        self.run_stopped_early = False
         self.individual_executors: dict[ExecutionId, Executor] = {}
         self.cache: dict[NodeId, NodeOutput] = {}
         # Increased from 4 to 8 workers for better parallelism in batch processing
@@ -197,10 +204,14 @@ async def run(request: Request):
     await nodes_available()
     ctx = AppContext.get(request.app)
 
-    if ctx.executor:
+    if ctx.executor or ctx.run_starting:
         message = "Cannot run another executor while the first one is still running."
         logger.warning(message)
         return json(already_running_response(message), status=500)
+    # No await between the check and this: both /runs could otherwise pass it while
+    # the first waits for previews.
+    ctx.run_starting = True
+    ctx.run_stopped_early = False
 
     executor_id = ExecutionId("main-executor " + uuid.uuid4().hex)
 
@@ -216,6 +227,9 @@ async def run(request: Request):
 
         # wait until all previews are done
         await run_individual_counter.wait_zero()
+        if ctx.run_stopped_early:
+            logger.info("The run was stopped before it started.")
+            return json(success_response(), status=200)
 
         full_data: RunRequest = dict(request.json)  # type: ignore
         logger.debug(full_data)
@@ -299,6 +313,7 @@ async def run(request: Request):
         app.loop.call_soon(collect_failed_run, ctx)
         return json(error_response("Error running nodes!", exception), status=500)
     finally:
+        ctx.run_starting = False
         if ctx.config.trace and tracer is not None:
             logger.info("Stopping VizTracer...")
             tracer.stop()
@@ -314,13 +329,15 @@ def collect_failed_run(ctx: AppContext) -> None:
     arrays) live until a collection reaches the cycle's oldest generation. A stopped
     /run is collected too: its arrays were measured still held after the next /runs.
     run schedules this with call_soon, so it runs once the handler has returned and
-    dropped the exception. gc is imported for this path only: a successful run never
-    collects.
+    dropped the exception. A successful run never collects: gc's only other use is
+    return_device_memory, outside runs. The tensors the collection frees stay
+    reserved by PyTorch, so they go back to the driver too.
     """
     gc.collect()
     # Not while a /run executes: it releases at its own end.
     if ctx.executor is None:
         numpy_pool.release()
+        return_device_memory(collect=False)
 
 
 class RunIndividualRequest(TypedDict):
@@ -443,18 +460,62 @@ async def release_after_broadcasts(ctx: AppContext, executor: Executor) -> None:
         )
 
 
+def return_device_memory(collect: bool = True) -> None:
+    """Hand GPU memory that released node resources freed back to the driver.
+
+    PyTorch keeps freed blocks reserved for reuse, so the memory stays occupied in the OS
+    until emptied. Never imports torch: without a loaded, initialized CUDA there is
+    nothing to return. collect=False for a caller that has just collected.
+    """
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_initialized():
+        if collect:
+            gc.collect()
+        torch.cuda.empty_cache()
+
+
+# Seconds after the last /clear-cache/individual of a burst before the one return.
+DEVICE_MEMORY_RETURN_DELAY = 0.05
+# The pending return of a burst, None when none is pending.
+device_memory_return: asyncio.TimerHandle | None = None
+
+
+def return_device_memory_after_burst(ctx: AppContext) -> None:
+    """Runs return_device_memory once, DEVICE_MEMORY_RETURN_DELAY seconds after the
+    last of a burst of node clears.
+
+    Deleting N nodes sends N /clear-cache/individual requests, and each return is a
+    full collection (tens of ms with a loaded chain) on this loop; a new request
+    replaces the pending return, so the burst ends with one.
+    """
+    global device_memory_return
+    if device_memory_return is not None:
+        device_memory_return.cancel()
+
+    def run() -> None:
+        global device_memory_return
+        device_memory_return = None
+        # Not while a /run executes: it releases at its own end.
+        if ctx.executor is None:
+            return_device_memory()
+
+    device_memory_return = asyncio.get_running_loop().call_later(
+        DEVICE_MEMORY_RETURN_DELAY, run
+    )
+
+
 @app.route("/clear-cache/individual", methods=["POST"])
 async def clear_cache_individual(request: Request):
     await nodes_available()
     ctx = AppContext.get(request.app)
     try:
         full_data = dict(request.json)  # type: ignore
-        # TensorRT engines and sessions outlive runs; a session in use is freed
-        # when its run returns it.
+        # TensorRT and VOSR engines, sessions and models outlive runs (every
+        # SharedCache); a session in use is freed when its run returns it.
         tensorrt_cache.release_node(full_data["id"])
+        return_device_memory_after_burst(ctx)
         if ctx.cache.get(full_data["id"], None) is not None:
             del ctx.cache[full_data["id"]]
-            # Not while a /run executes: it releases at its own end.
             if ctx.executor is None:
                 numpy_pool.release()
         return json({"success": True, "data": None})
@@ -514,6 +575,11 @@ async def kill(request: Request):
     logger.info("Attempting to kill executor...")
 
     if not ctx.executor:
+        if ctx.run_starting:
+            # A /run waiting for previews: it ends there instead of starting.
+            ctx.run_stopped_early = True
+            logger.info("Stopped a run that waited for previews.")
+            return json(success_response(), status=200)
         logger.warning("No executor to kill.")
         return json(no_executor_response(), status=400)
 
@@ -726,9 +792,31 @@ async def after_server_start(sanic_app: Sanic):
         close_task = loop.create_task(close_server(sanic_app))
 
 
+def exit_with_host(pid: int) -> None:
+    """Ends this worker once its host process has ended.
+
+    A host that is killed or crashes stops nothing (the app kills the host when its
+    /shutdown takes over 10 s), so the worker kept running with its GPU memory, DLLs
+    and port.
+    """
+    try:
+        psutil.Process(pid).wait()
+    except psutil.NoSuchProcess:
+        pass
+    logger.warning(f"The host process {pid} ended; the worker exits.")
+    os._exit(1)
+
+
 def main():
     ctx = AppContext.get(app)
     config = ctx.config
+    if config.host_pid is not None:
+        threading.Thread(
+            target=exit_with_host,
+            args=(config.host_pid,),
+            daemon=True,
+            name="host watch",
+        ).start()
     # numba (PyMatting's cache=True kernels) otherwise writes its cache beside the
     # runtime's site-packages. numba reads the variable when it is first imported, and
     # the node modules that import it load in setup, after this.

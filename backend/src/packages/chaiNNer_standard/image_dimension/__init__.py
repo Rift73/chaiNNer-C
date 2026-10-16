@@ -8,4 +8,5 @@ utility_group = image_dimensions_category.add_node_group("Utility")
 resize_group.order = [
     "chainner:image:resize",
     "chainner:image:resize_to_side",
+    "chainner:image:descale",
 ]

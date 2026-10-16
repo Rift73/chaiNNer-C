@@ -28,7 +28,7 @@ import numpy as np
 import torch
 from onnx import TensorProto as T
 
-from .export import make_model, read_state
+from .export import make_model, read_state, save_onnx
 from .graph import Graph
 from .spec import FACTORIES, SCHEMA, SOURCE_SHA256, sha256
 
@@ -422,14 +422,7 @@ def export_dynamic(
         onnx_model = graph.build(model)
     onnx.checker.check_model(onnx_model)
     output.mkdir(parents=True, exist_ok=False)
-    onnx.save_model(
-        onnx_model,
-        str(output / "model.onnx"),
-        save_as_external_data=True,
-        all_tensors_to_one_file=True,
-        location="weights.bin",
-        size_threshold=1024,
-    )
+    save_onnx(onnx_model, output)
     key = f"c{model.embed_dim}"
     manifest = {
         "schema": SCHEMA,

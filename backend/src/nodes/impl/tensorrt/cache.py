@@ -5,7 +5,8 @@ node id. A node holds at most one entry per cache: using another key releases
 its previous one. `release_node` (the `/clear-cache/individual` hook) drops a
 node's references; an entry left without any is closed at once when idle, else
 when its last user returns. One lock guards the tables; an entry's own lock
-makes its use exclusive, since a session owns one stream and one context.
+makes its use exclusive, since a session owns one stream and one context. The
+wait for that lock is not the waiting node's time (`util.held`).
 
 This module must not import TensorRT: the server calls `release_node` whether
 or not the TensorRT package is installed.
@@ -20,6 +21,7 @@ from typing import Any, Generic, TypeVar
 from weakref import WeakSet
 
 from api import NodeId
+from util import held
 
 from .model import TensorRTEngine
 
@@ -97,7 +99,7 @@ class SharedCache(Generic[T]):
             entry.users += 1
         try:
             self._close_value(doomed)
-            with entry.lock:
+            with held(entry.lock):
                 if entry.value is None:
                     entry.value = create()
                 try:

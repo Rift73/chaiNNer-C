@@ -48,6 +48,15 @@ class ExecutionErrorEvent(TypedDict):
     data: ExecutionErrorData
 
 
+class ExecutionWarningData(TypedDict):
+    message: str
+
+
+class ExecutionWarningEvent(TypedDict):
+    event: Literal["execution-warning"]
+    data: ExecutionWarningData
+
+
 class ChainStartData(TypedDict):
     nodes: list[str]
 
@@ -104,6 +113,7 @@ class NodeFinishEvent(TypedDict):
 
 ExecutionEvent = Union[
     ExecutionErrorEvent,
+    ExecutionWarningEvent,
     ChainStartEvent,
     NodeStartEvent,
     NodeProgressUpdateEvent,

@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from functools import cached_property
 from json import dumps as stringify
 from json import loads as json_parse
-from typing import Final
+from typing import Any, Coroutine, Final
 
 import psutil
 from sanic import Sanic
@@ -28,7 +28,7 @@ from dependencies.store import (
 from events import EventQueue
 from gpu import nvidia
 from nodes.impl.cors import add_cors
-from response import error_response, success_response
+from response import error_response, no_executor_response, success_response
 from server_config import LOG_CONFIG, ServerConfig
 from server_process_helper import WorkerServer
 
@@ -136,6 +136,12 @@ async def kill(request: Request):
     worker = await AppContext.get(request.app).get_worker()
     try:
         response = await worker.proxy_request(request, timeout=3)
+        # No run to kill (Stop just as a run ended) is not a reason to restart the
+        # worker, which would drop every loaded model.
+        if response.status == 400 and json_parse(response.body or b"null") == (
+            no_executor_response()
+        ):
+            return json(success_response(), status=200)
         if response.status > 200:
             if response.body is None:
                 raise Exception(
@@ -248,6 +254,19 @@ def create_update_progress(ctx: AppContext) -> UpdateProgressFn:
     return update_progress
 
 
+async def change_dependencies(
+    worker: WorkerServer, job: Coroutine[Any, Any, object]
+) -> None:
+    """Runs a pip install or uninstall with the worker stopped, and starts the worker
+    again also after a failed run. pip runs to its end even if the request closes
+    (the app reloads), and the worker starts only after it."""
+    await worker.stop()
+    try:
+        await worker.run_pip_job(job)
+    finally:
+        await worker.start()
+
+
 @app.route("/packages/uninstall", methods=["POST"])
 async def uninstall_dependencies_request(request: Request):
     package_ids_to_install: list[str] = request.json["packages"]
@@ -277,11 +296,9 @@ async def uninstall_dependencies_request(request: Request):
             deps.extend(deps_to_dep_info(p.dependencies))
 
         if len(deps) > 0:
-            await worker.stop()
-            try:
-                await uninstall_dependencies(deps, progress, logger)
-            finally:
-                await worker.start()
+            await change_dependencies(
+                worker, uninstall_dependencies(deps, progress, logger)
+            )
 
         return json({"status": "ok"})
     except Exception as ex:
@@ -318,11 +335,9 @@ async def install_dependencies_request(request: Request):
             deps.extend(deps_to_dep_info(p.dependencies))
 
         if len(deps) > 0:
-            await worker.stop()
-            try:
-                await install_dependencies(deps, progress, logger)
-            finally:
-                await worker.start()
+            await change_dependencies(
+                worker, install_dependencies(deps, progress, logger)
+            )
         return json({"status": "ok"})
     except Exception as ex:
         logger.error(f"Error installing dependencies: {ex}", exc_info=True)

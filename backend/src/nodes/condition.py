@@ -21,6 +21,7 @@ ConditionJson = Union[
     "_NotConditionJson",
     "_EnumConditionJson",
     "_TypeConditionJson",
+    "_IteratedConditionJson",
 ]
 
 
@@ -50,6 +51,12 @@ class _TypeConditionJson(TypedDict):
     input: InputId
     condition: navi.ExpressionJson
     ifNotConnected: bool
+
+
+class _IteratedConditionJson(TypedDict):
+    kind: Literal["iterated"]
+    input: InputId
+    source: str
 
 
 class Condition:
@@ -127,6 +134,21 @@ class Condition:
                 "input": InputId(input_id),
                 "condition": condition,
                 "ifNotConnected": if_not_connected,
+            }
+        )
+
+    @staticmethod
+    def iterated(input_id: int, source: str) -> Condition:
+        """
+        A condition to check whether a certain input is iterated by a generator of the given
+        schema id: the sequence of its lineage begins at such a node, e.g.
+        "chainner:image:load_video".
+        """
+        return Condition(
+            {
+                "kind": "iterated",
+                "input": InputId(input_id),
+                "source": source,
             }
         )
 

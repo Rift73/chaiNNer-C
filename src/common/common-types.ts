@@ -177,7 +177,13 @@ export interface Output {
     readonly suggest: boolean;
 }
 
-export type Condition = AndCondition | OrCondition | NotCondition | EnumCondition | TypeCondition;
+export type Condition =
+    | AndCondition
+    | OrCondition
+    | NotCondition
+    | EnumCondition
+    | TypeCondition
+    | IteratedCondition;
 export interface AndCondition {
     readonly kind: 'and';
     readonly items: readonly Condition[];
@@ -200,6 +206,15 @@ export interface TypeCondition {
     readonly input: InputId;
     readonly condition: ExpressionJson;
     readonly ifNotConnected: boolean;
+}
+/**
+ * The input is iterated by a generator of the given schema: its lineage's sequence begins at
+ * such a node.
+ */
+export interface IteratedCondition {
+    readonly kind: 'iterated';
+    readonly input: InputId;
+    readonly source: SchemaId;
 }
 
 interface GroupBase {

@@ -10,10 +10,12 @@ The developer reference that used to live in the root README. The full command r
   `chainner_ext.pyd`, a C replacement for upstream's Rust `chainner_ext`.
 - The Python backend (`backend/src`) is upstream's with the native paths wired in; nodes without one run upstream's
   Python unchanged. The GPU nodes keep their engines (PyTorch, ONNX Runtime, NCNN, TensorRT); the ONNX CPU session
-  adapter, the ONNX-to-NCNN converter, NCNN param handling and tiling control are native.
-- `src/` and `tests/` are upstream's frontend at `d56e507f` with chaiNNer-C's UI changes (no updates, `v0.3.3`, the
-  drop repairs, the TensorRT types and Clear item), its integrated Python moved to CPython 3.14.8 and its own
-  `%APPDATA%\chaiNNer-C`. The local portable package uses an installed upstream nightly's UI with reviewed patches.
+  adapter, the ONNX-to-NCNN converter, NCNN param handling and tiling control are native. chaiNNer-C adds two PyTorch
+  nodes for VOSR 2.0 generative upscaling ([`VOSR2.md`](VOSR2.md)).
+- `src/` and `tests/` are upstream's frontend at `d56e507f` with chaiNNer-C's UI changes (no updates, `v0.3.4`, the
+  drop repairs, the TensorRT types and Clear item, the VOSR model type and the iterated input condition), its
+  integrated Python moved to CPython 3.14.8 and its own `%APPDATA%\chaiNNer-C`. The local portable package uses an
+  installed upstream nightly's UI with reviewed patches, which do not include the VOSR changes.
 
 **Output contract.** The reference is upstream chaiNNer's own backend, run on the same Python stack with the same
 inputs, and chaiNNer-C's outputs must be bit-exact against it. The documented deviations and test tolerances are in
@@ -35,8 +37,10 @@ correct and only the speedup is lost.
 
 Prerequisites: LLVM 23.1.2 (`clang-cl`, `lld-link`, `llvm-lib`, `llvm-rc`); Visual Studio 2022 Build Tools with the
 MSVC toolset 14.44.35207 and the Windows SDK 10.0.26100.0 (no Developer environment needed); CMake 3.20 or newer on
-`PATH`; Ninja (by default the Build Tools' copy); Node.js with npm. Run every command from the repository root in
-PowerShell.
+`PATH`; Ninja (by default the Build Tools' copy); Node.js with npm. Optional: a TensorRT 11 SDK and a CUDA 13 toolkit,
+which build VOSR's TensorRT plugin `vosr2_qkv.dll` when step 3 adds
+`-Define CHAINNER_C_TENSORRT_ROOT=<SDK>,CHAINNER_C_CUDA_ROOT=<toolkit>` (README Build); without it VOSR runs on
+PyTorch only. Run every command from the repository root in PowerShell.
 
 1. Clone the `chaiNNer-C` branch.
 2. Provision the build's Python: `-BuildOnly` downloads the lock's CPython 3.14.8 into `native\runtime\cpython-3.14.8`,
@@ -54,7 +58,8 @@ A release zip is built with `npm run make` after step 3 (see [`MAINTAINING.md`](
 ## Develop and test
 
 1. Provision the whole tested stack from the lock (torch and torchvision from the PyTorch CUDA 13.2 index,
-   `chainner-pip` from the backend's bundled wheel, the rest from PyPI); it fails unless `pip check` is clean and
+   `chainner-pip` from the backend's bundled wheel, spandrel and `onnxruntime-gpu` from their forks' release wheels,
+   the rest from PyPI); it fails unless `pip check` is clean and
    `pip freeze` equals the lock, and never writes the lock (`-Relock` is the deliberate upgrade step):
    `powershell -NoProfile -File native\tools\provision_runtime.ps1`
 2. Create the test and tool environment (`requirements.txt` adds the lint and type-check tools):
@@ -104,7 +109,7 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
 - It copies the installed app's shell and the provisioned runtime, writes `backend/src` byte for byte, and records
   everything in a manifest, `chainner-c-package.json`.
 - It accepts only that nightly, whose UI bundles are pinned by SHA-256 and get reviewed patches (updates removed, the
-  `v0.3.3` label, CPython 3.14 accepted, drop repairs, the TensorRT types and Clear item).
+  `v0.3.4` label, CPython 3.14 accepted, drop repairs, the TensorRT types and Clear item).
   `node native\tools\verify_independent_ui.cjs --package <dir> --installed-app <dir>` checks them.
 - The runtime's `Lib` is precompiled with hash-based bytecode (`unchecked-hash`), so two builds are byte-identical.
 - A `portable` marker keeps the profile inside the package; run `chaiNNer.exe` from its folder.

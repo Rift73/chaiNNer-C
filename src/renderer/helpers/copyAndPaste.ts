@@ -1,6 +1,8 @@
 import { Edge, Node, Project } from 'reactflow';
 import { EdgeData, InputId, NodeData, SchemaId } from '../../common/common-types';
 import { log } from '../../common/log';
+import { toEditorChain } from '../../common/nodes/editorChain';
+import { SchemaMap } from '../../common/SchemaMap';
 import { createUniqueId, deriveUniqueId } from '../../common/util';
 import { ipcRenderer } from '../safeIpc';
 import { NodeProto, copyEdges, copyNodes, setSelected } from './reactFlowUtil';
@@ -59,7 +61,9 @@ export const pasteFromClipboard = async (
     setEdges: SetState<Edge<EdgeData>[]>,
     createNode: (proto: NodeProto, parentId?: string) => void,
     screenToFlowPosition: Project,
-    reactFlowWrapper: React.RefObject<Element>
+    reactFlowWrapper: React.RefObject<Element>,
+    schemata: SchemaMap,
+    onDroppedNodes: (droppedNodes: readonly SchemaId[]) => void
 ) => {
     const availableFormats = await ipcRenderer.invoke('clipboard-availableFormats');
     if (availableFormats.length === 0) {
@@ -68,7 +72,13 @@ export const pasteFromClipboard = async (
                 'clipboard-readBuffer-toString',
                 'application/chainner.chain'
             );
-            const chain = JSON.parse(clipboardData) as ClipboardChain;
+            const clipboardChain = JSON.parse(clipboardData) as ClipboardChain;
+            // as when a chain is opened: e.g. a chain copied from another chaiNNer may hold nodes
+            // this one does not have, or lack inputs that its nodes have here
+            const chain = toEditorChain(schemata, clipboardChain.nodes, clipboardChain.edges);
+            if (!chain.complete) {
+                onDroppedNodes(chain.droppedNodes);
+            }
 
             const duplicationId = createUniqueId();
             const deriveId = (oldId: string) => deriveUniqueId(duplicationId + oldId);
