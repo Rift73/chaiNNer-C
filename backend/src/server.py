@@ -55,6 +55,11 @@ class AppContext:
     def __init__(self):
         self.config: Final[ServerConfig] = ServerConfig.parse_argv()
         self.executor: Executor | None = None
+        # A /run is in its handler: set before its first await (it waits for previews
+        # before its executor exists), so a second /run is refused meanwhile.
+        self.run_starting = False
+        # Stop arrived while that /run waited for previews: it ends without running.
+        self.run_stopped_early = False
         self.individual_executors: dict[ExecutionId, Executor] = {}
         self.cache: dict[NodeId, NodeOutput] = {}
         # Increased from 4 to 8 workers for better parallelism in batch processing
@@ -199,10 +204,14 @@ async def run(request: Request):
     await nodes_available()
     ctx = AppContext.get(request.app)
 
-    if ctx.executor:
+    if ctx.executor or ctx.run_starting:
         message = "Cannot run another executor while the first one is still running."
         logger.warning(message)
         return json(already_running_response(message), status=500)
+    # No await between the check and this: both /runs could otherwise pass it while
+    # the first waits for previews.
+    ctx.run_starting = True
+    ctx.run_stopped_early = False
 
     executor_id = ExecutionId("main-executor " + uuid.uuid4().hex)
 
@@ -218,6 +227,9 @@ async def run(request: Request):
 
         # wait until all previews are done
         await run_individual_counter.wait_zero()
+        if ctx.run_stopped_early:
+            logger.info("The run was stopped before it started.")
+            return json(success_response(), status=200)
 
         full_data: RunRequest = dict(request.json)  # type: ignore
         logger.debug(full_data)
@@ -301,6 +313,7 @@ async def run(request: Request):
         app.loop.call_soon(collect_failed_run, ctx)
         return json(error_response("Error running nodes!", exception), status=500)
     finally:
+        ctx.run_starting = False
         if ctx.config.trace and tracer is not None:
             logger.info("Stopping VizTracer...")
             tracer.stop()
@@ -562,6 +575,11 @@ async def kill(request: Request):
     logger.info("Attempting to kill executor...")
 
     if not ctx.executor:
+        if ctx.run_starting:
+            # A /run waiting for previews: it ends there instead of starting.
+            ctx.run_stopped_early = True
+            logger.info("Stopped a run that waited for previews.")
+            return json(success_response(), status=200)
         logger.warning("No executor to kill.")
         return json(no_executor_response(), status=400)
 
