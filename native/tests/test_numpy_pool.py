@@ -521,6 +521,111 @@ def test_threads_never_share_a_block(pool, profile):
         assert (result["threads"], result["hits"], result["evictions"]) == (0, 0, 0)
 
 
+@pytest.mark.parametrize(
+    ("pool", "profile"),
+    [("8", True), (None, False)],
+    ids=["cap8-profile", "default-plain"],
+)
+def test_contents_survive_reallocs_cross_thread_frees_and_concurrent_releases(
+    pool, profile
+):
+    # Six threads allocate (malloc and calloc), resize in place and across both
+    # sides of the threshold, concatenate, and hand arrays to a seventh thread that
+    # frees them; an eighth releases every idle block in a loop meanwhile. Every byte
+    # an array holds is checked before it is freed or moved.
+    result = child(
+        """
+        import queue
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        g.numpy_pool_install()
+        g.numpy_pool_reset()
+        cap = g.numpy_pool_stats()["cap_bytes"]
+        handoff = queue.Queue()
+        working = threading.Event()
+        working.set()
+        peak = 0
+
+        def worker(seed):
+            rng = np.random.default_rng(seed)
+            live = []
+            for step in range(1500):
+                value = (seed * 31 + step) % 251
+                op = rng.random()
+                if live and (len(live) > 6 or op < 0.3):
+                    array, expected = live.pop(int(rng.integers(len(live))))
+                    assert (array == expected).all(), (seed, step)
+                    if rng.random() < 0.4:
+                        handoff.put((array, expected))
+                elif op < 0.5:
+                    size = int(rng.integers(256 * 1024, 4 * MIB))
+                    array = np.zeros(size, np.uint8) if rng.random() < 0.5 else np.empty(size, np.uint8)
+                    array.fill(value)
+                    live.append((array, value))
+                elif op < 0.75 and live:
+                    index = int(rng.integers(len(live)))
+                    array, expected = live[index]
+                    kept = array.size
+                    array.resize(int(rng.integers(1, 5 * MIB)), refcheck=False)
+                    assert (array[:kept] == expected).all(), (seed, step)
+                    array[kept:] = expected
+                elif live:
+                    array, expected = live[int(rng.integers(len(live)))]
+                    joined = np.concatenate([array, np.full(int(rng.integers(1, 2 * MIB)), value, np.uint8)])
+                    assert (joined[: array.size] == expected).all(), (seed, step)
+                    assert (joined[array.size :] == value).all(), (seed, step)
+            for array, expected in live:
+                assert (array == expected).all(), seed
+            return True
+
+        def drain():
+            freed = 0
+            while working.is_set() or not handoff.empty():
+                try:
+                    array, expected = handoff.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                assert (array == expected).all()
+                del array
+                freed += 1
+            return freed
+
+        def releaser():
+            global peak
+            releases = 0
+            while working.is_set():
+                g.numpy_pool_release()
+                peak = max(peak, g.numpy_pool_stats()["held_bytes"])
+                releases += 1
+            return releases
+
+        with ThreadPoolExecutor(8, initializer=g.numpy_pool_install) as executor:
+            workers = [executor.submit(worker, seed) for seed in range(6)]
+            freed = executor.submit(drain)
+            releases = executor.submit(releaser)
+            try:
+                assert all(future.result() for future in workers)
+            finally:
+                # A failed worker must not leave the drain and the releaser looping.
+                working.clear()
+            freed, releases = freed.result(), releases.result()
+        s = g.numpy_pool_stats()
+        assert s["release_failures"] == 0 and s["held_bytes"] <= cap and peak <= cap, (s, peak)
+        assert s["held_bytes"] == sum(capacity for _, capacity in g.numpy_pool_idle_blocks())
+        if PROFILE:
+            assert s["live_bytes"] == 0 and s["held_peak"] <= cap, s
+        result = {"freed": freed, "releases": releases, "hits": s["hits"], "inplace": s["realloc_inplace"]}
+        """,
+        pool=pool,
+        profile=profile,
+    )
+    assert result["freed"] > 0 and result["releases"] > 0
+    if profile:
+        assert result["hits"] > 0 and result["inplace"] > 0
+    else:
+        assert (result["hits"], result["inplace"]) == (0, 0)
+
+
 def test_off_means_not_installed():
     # Profiling on too: "0" is not "installed and counting".
     result = child(
