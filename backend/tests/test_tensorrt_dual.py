@@ -203,8 +203,10 @@ def test_a_dual_engines_input_name_carries_its_alignment():
     ("low", "opt", "high", "message"),
     [
         ((64, 64), (512, 512), (1088, 1920), None),
-        ((64, 64), (512, 500), (1088, 1920), "multiple of 64"),
+        ((64, 64), (512, 500), (1088, 1920), "dynamic DUAL engine's optimal size must"),
         ((64, 64), (2048, 512), (1088, 1920), "minimum <= optimal <= maximum"),
+        # Shape Mode Fixed on a dynamic ONNX: one size, a fixed engine
+        ((256, 250), (256, 250), (256, 250), r"^A fixed DUAL engine's size must be"),
     ],
 )
 def test_a_dynamic_engines_profile_keeps_to_the_onnxs_alignment(

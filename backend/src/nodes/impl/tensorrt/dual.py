@@ -207,13 +207,19 @@ Size = tuple[int, int]
 
 def check_profile(manifest: dict[str, Any], low: Size, opt: Size, high: Size) -> None:
     """Refuse a dynamic DUAL engine's (height, width) profile that the ONNX is not
-    exact for, or that is not ordered."""
+    exact for, or that is not ordered. One size three times is a fixed engine (Shape
+    Mode Fixed), and the message says so."""
     alignment = manifest["specialization"]["alignment"]
+    fixed = low == opt == high
     for name, (h, w) in (("minimum", low), ("optimal", opt), ("maximum", high)):
         if h % alignment or w % alignment:
+            what = (
+                "A fixed DUAL engine's size"
+                if fixed
+                else f"A dynamic DUAL engine's {name} size"
+            )
             raise ValueError(
-                f"A dynamic DUAL engine's {name} size must be a multiple of"
-                f" {alignment} px (got {h}x{w})."
+                f"{what} must be a multiple of {alignment} px (got {h}x{w})."
             )
     if not (low[0] <= opt[0] <= high[0] and low[1] <= opt[1] <= high[1]):
         raise ValueError(
