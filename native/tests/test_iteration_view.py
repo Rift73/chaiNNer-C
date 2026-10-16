@@ -215,6 +215,31 @@ def test_a_look_ahead_at_item_0_sees_a_directory_computed_later_as_unresolved(
     assert looking.saved == [7.0, 17.0, 27.0, 37.0]
 
 
+def test_a_failed_early_decision_is_made_again_at_item_1(monkeypatch, tmp_path):
+    # The look-ahead at item 0 decides K early and that decision raises (the path
+    # check): look fails at item 0, a deferred error, and the loop decides K again at
+    # item 1 from the measurement it kept, instead of failing on a bare assertion.
+    calls = []
+    blocker = process.read_ahead_blocker
+
+    def failing(sources, directories):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("resolve failed")
+        return blocker(sources, directories)
+
+    monkeypatch.setattr(process, "read_ahead_blocker", failing)
+    looking = Looking(monkeypatch, tmp_path, 4, window="3", fail_fast=False)
+    error = looking.run(workers=4)
+    assert str(error).startswith("Errors occurred during iteration:"), error
+    assert "resolve failed" in str(error)
+    assert len(calls) == 2
+    assert looking.decisions == ["item window K=3 (override)"]
+    assert [record["index"] for record in looking.looks] == [1, 2, 3]
+    assert_served(looking.looks, 2, count=4)
+    assert looking.saved == [17.0, 27.0, 37.0]
+
+
 @pytest.mark.parametrize("producer", ["phased", "serial"])
 def test_a_directory_computed_later_never_blocks_a_group_reading_no_file_per_item(
     monkeypatch, tmp_path, producer

@@ -1312,7 +1312,9 @@ class Executor:
 
         K = 1 builds no window and resolves no path. Returns the window and the read-ahead blocker that set K = 1, if one did.
         """
-        measured, self.__item_bytes = (self.__item_bytes, None)
+        # The measurement is kept until the decision is made: a decision that raises (a
+        # look-ahead during slot 0 decides early) is made again at slot 1.
+        measured = self.__item_bytes
         k, reason = window_size(affinity_cpus())
         blocker = None
         if k > 1 and self.__pool_size is None:
@@ -1338,6 +1340,7 @@ class Executor:
             if blocker is not None:
                 k, reason = (1, blocker)
         logger.info("item window K=%d (%s)", k, reason)
+        self.__item_bytes = None
         if k == 1:
             return None, blocker
         assert self.__pool_size is not None and measured is not None
