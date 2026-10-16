@@ -664,8 +664,12 @@ def _method(fn: Mapping[str, Any], overlay: Mapping[str, Any] | None) -> Method:
 
 
 def returns_many(returns: str) -> bool:
-    """A list of clips ("list[VideoNode]", "Sequence[vs.VideoNode]"), not one clip."""
+    """A list of clips ("list[VideoNode]", "Sequence[vs.VideoNode]"), not one clip. A
+    function that returns one clip or a list (adg_mask's "VideoNode | list[VideoNode]",
+    a list only for some arguments) returns one clip."""
     text = returns.replace("vs.", "").replace(" ", "")
+    if "VideoNode" in text.split("|"):
+        return False
     return any(f"{s}[VideoNode]" in text for s in ("list", "Sequence", "tuple"))
 
 

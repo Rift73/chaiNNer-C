@@ -271,6 +271,17 @@ def test_clip() -> None:
     assert adapt("Sequence[vs.VideoNode]").to_source(CLIP) == "[n_a_0]"
     with pytest.raises(ValueError):
         a.to_source(FILTER)
+    # vstools' VideoNodeIterable (a clip, or clips in lists): norm_expr's and
+    # stack_clips' clips, which also take a list of clips (shift_clip_multi's).
+    many = VideoClip("n_m_0", "n_m_0 = f(n_a_0)", (CLIP,), frozenset(), "m", True)
+    for annotation, one in (
+        ("VideoNodeIterable", "n_a_0"),
+        ("Iterable[VideoNodeIterable]", "[n_a_0]"),
+    ):
+        clips = adapt(annotation, name="clips")
+        assert clips.kind == "clip"
+        assert clips.to_source(CLIP) == one
+        assert clips.to_source(many) == "n_m_0"
 
 
 def test_optional_clip() -> None:

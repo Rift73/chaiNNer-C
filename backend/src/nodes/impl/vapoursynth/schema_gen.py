@@ -228,8 +228,10 @@ _Params = list[tuple[bool, Param, Adapter]]
 def _member_params(
     member: Method, enums: Enums, has_main: bool
 ) -> tuple[Param | None, Adapter | None, _Params]:
-    """The main parameter (the method's first clip parameter) with its adapter, and the
-    others: (constructor argument, parameter, adapter)."""
+    """The main parameter (the method's first clip parameter; the constructor's clip
+    when the method needs none: MVTools(clip).degrain(super=None); else a clip or
+    function: limiter(clip_or_func)) with its adapter, and the others: (constructor
+    argument, parameter, adapter)."""
     plugin = member.kind == "plugin"
     params = [
         (init, param, adapter_for(param, enums, plugin))
@@ -244,6 +246,26 @@ def _member_params(
         ),
         None,
     )
+    if has_main and (main is None or main[1].kind != "clip"):
+        main = next(
+            (
+                (param, adapter)
+                for init, param, adapter in params
+                if init and adapter.kind == "clip"
+            ),
+            main,
+        )
+    if has_main and main is None:
+        main = next(
+            (
+                (param, adapter)
+                for init, param, adapter in params
+                if not init
+                and adapter.kind == "clip_or_filter"
+                and "VideoNode" in param.annotation
+            ),
+            None,
+        )
     if main is None:
         return None, None, params
     return main[0], main[1], [p for p in params if p[1] is not main[0]]
@@ -266,11 +288,11 @@ def _start_value(member: Method, param: Param, adapter: Adapter) -> object:
         return None
 
 
-def _takes_clip_list(main: Param, others: _Params) -> bool:
+def _takes_clip_list(main: Adapter, others: _Params) -> bool:
     """The main parameter takes a list of clips and no other parameter is a clip:
-    std.Splice(clips), std.StackHorizontal(clips); not vstools.join, which has a
-    parameter per plane."""
-    return "Sequence[VideoNode]" in main.annotation.replace("vs.", "") and not any(
+    std.Splice(clips), std.StackHorizontal(clips), vstools.stack_clips(clips); not
+    vstools.join, which has a parameter per plane."""
+    return main.clip_list and not any(
         adapter.kind in (*_CLIP_KINDS, "clip_or_filter") for _, _, adapter in others
     )
 
@@ -335,12 +357,12 @@ class _Family:
             for init, param, _ in params:
                 by_param = variants.setdefault((init, param.name), {})
                 by_param.setdefault(param, set()).add(member.choice)
-        _, main, _, params = members[0]
+        _, _, main_adapter, params = members[0]
         more = (
             MORE_CLIPS
             if not method.members
-            and main is not None
-            and _takes_clip_list(main, params)
+            and main_adapter is not None
+            and _takes_clip_list(main_adapter, params)
             else 0
         )
         keys = _variant_keys(variants, bool(method.members))
@@ -678,21 +700,27 @@ def _args(
 
 
 def _main_source(
-    plan: _Plan, member: _Member, values: Mapping[int, object]
+    plan: _Plan, member: _Member, values: Mapping[int, object], as_filter: bool
 ) -> tuple[str | None, list[VideoClip]]:
-    """The main clip's source (with the clips of "Clip 2"... in a list) and clips."""
+    """The main clip's source (with the clips of "Clip 2"... in a list) and clips; a
+    filter's own clip is the first in that list."""
     clip = values.get(MAIN_ID)
-    if member.main_adapter is None or not isinstance(clip, VideoClip):
-        return None, []
-    clips = [clip]
-    clips.extend(
+    more = [
         c for c in (values.get(i) for i in plan.more_clips) if isinstance(c, VideoClip)
-    )
-    if len(clips) > 1:
-        # A list of clips (Shift Clip Multi's) adds all of its clips.
-        listed = (f"*{c.var}" if c.many else c.var for c in clips)
-        return f"[{', '.join(listed)}]", clips
-    return member.main_adapter.to_source(clip), clips
+    ]
+    if as_filter:
+        listed, clips = [_FILTER_CLIP], more
+    elif member.main_adapter is None or not isinstance(clip, VideoClip):
+        return None, []
+    elif not more:
+        return member.main_adapter.to_source(clip), [clip]
+    else:
+        listed, clips = [], [clip, *more]
+    if not more:
+        return _FILTER_CLIP, clips
+    # A list of clips (Shift Clip Multi's) adds all of its clips.
+    listed.extend(f"*{c.var}" if c.many else c.var for c in clips)
+    return f"[{', '.join(listed)}]", clips
 
 
 def _statement(
@@ -708,16 +736,18 @@ def _statement(
         )
     member = plan.members[choice]
     method = member.method
-    init = _Call()
-    _args(run, member, True, init, None)
-    call = _Call()
     if as_filter:
         if member.main is None:
             raise ValueError(f"{method.label} takes no clip, so it is no filter.")
-        main, clips = _FILTER_CLIP, []
-    else:
-        main, clips = _main_source(plan, member, run.values)
-    _args(run, member, False, call, main)
+        if method.many:
+            raise ValueError(f"{method.label} gives several clips, so it is no filter.")
+    main, clips = _main_source(plan, member, run.values, as_filter)
+    # The main clip goes to the constructor of a class made from it.
+    in_init = any(param is member.main for param in method.init_params)
+    init = _Call()
+    _args(run, member, True, init, main if in_init else None)
+    call = _Call()
+    _args(run, member, False, call, None if in_init else main)
     run.warn()
 
     imports = {*init.imports, *call.imports, *_imports(method)}

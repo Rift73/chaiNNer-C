@@ -723,6 +723,115 @@ def test_a_list_of_clips_feeds_an_input_that_takes_several(tmp_path: Path) -> No
         run(cut, "n_r", "std.Reverse", clip=shifted)
     with pytest.raises(ValueError, match="gives several"):
         compile_script([(shifted, "out")], cache_mb=64)
+    # A filter gives one clip.
+    with pytest.raises(ValueError, match="several clips, so it is no filter"):
+        run(cut, "n_f", "vstools.shift_clip_multi", as_filter=True)
+
+
+# A class made from the clip: MVTools(clip).degrain(super=None).
+DEGRAIN = {
+    "id": "vsdenoise.MVTools.degrain",
+    "source": "jetpack",
+    "module": "vsdenoise",
+    "import": "from vsdenoise import MVTools",
+    "call": "MVTools(...).degrain",
+    "kind": "bound",
+    "init_params": [
+        _param("clip", "VideoNode", None),
+        _param("pel", "int | None", "None"),
+    ],
+    "params": [
+        _param("super", "VideoNode | None", "None"),
+        _param("tr", "int | None", "None"),
+    ],
+    "returns": "VideoNode",
+    "doc": "Motion-compensated degrain.",
+    "arg_docs": {},
+}
+
+
+def test_the_clip_of_a_class_made_from_it_is_the_main_clip(tmp_path: Path) -> None:
+    nodes = nodes_of(load_catalog(small_catalog(tmp_path, extra=[DEGRAIN]), SHIPPED))
+    denoise = nodes["Denoise"]
+    out = run(denoise, "mv", "vsdenoise.MVTools.degrain", clip=SRC)
+    assert isinstance(out, VideoClip)
+    assert out.stmt == "n_mv_0 = vsdenoise.MVTools(n_src_0).degrain()"
+    assert out.deps == (SRC,)
+    out = run(denoise, "mv", "vsdenoise.MVTools.degrain", as_filter=True)
+    assert isinstance(out, VSFilter)
+    assert out.expr == "lambda clip: vsdenoise.MVTools(clip).degrain()"
+    with pytest.raises(ValueError, match="Connect a clip"):
+        run(denoise, "mv", "vsdenoise.MVTools.degrain")
+
+
+STACK_CLIPS = {
+    "id": "vstools.stack_clips",
+    "source": "jetpack",
+    "module": "vstools",
+    "import": "from vstools import stack_clips",
+    "call": "stack_clips",
+    "kind": "function",
+    "params": [_param("clips", "Iterable[VideoNodeIterable]", None)],
+    "returns": "VideoNode",
+    "doc": "Stacks clips.",
+    "arg_docs": {},
+}
+
+
+def test_clips_of_vstools_iterable_take_the_clip_inputs(tmp_path: Path) -> None:
+    nodes = nodes_of(
+        load_catalog(small_catalog(tmp_path, extra=[STACK_CLIPS]), SHIPPED)
+    )
+    (node,) = [n for n in nodes.values() if "vstools.stack_clips" in n.keywords]
+    out = run(node, "st", "vstools.stack_clips", clip=SRC)
+    assert isinstance(out, VideoClip)
+    assert out.stmt == "n_st_0 = vstools.stack_clips([n_src_0])"
+    second = input_ids(node.name, [("vstools.stack_clips", "clips#2")])
+    raw: dict[int, object] = {int(i.id): default_of(i) for i in node.inputs}
+    raw.update({MAIN_ID: SRC, METHOD_ID: "vstools.stack_clips", MODE_ID: "simple"})
+    raw[second["vstools.stack_clips", "clips#2"]] = REF
+    out = run(node, "st", "vstools.stack_clips", raw=raw)
+    assert isinstance(out, VideoClip)
+    assert out.stmt == "n_st_0 = vstools.stack_clips([n_src_0, n_ref_0])"
+    # As a filter, the clip it is given comes first.
+    raw[FILTER_ID] = 1
+    out = run(node, "st", "vstools.stack_clips", raw=raw)
+    assert isinstance(out, VSFilter)
+    assert out.expr == "lambda clip: vstools.stack_clips([clip, n_ref_0])"
+    assert out.deps == (REF,)
+
+
+# vstools.limiter takes a clip, or a function it decorates.
+LIMITER = {
+    "id": "vstools.limiter",
+    "source": "jetpack",
+    "module": "vstools",
+    "import": "from vstools import limiter",
+    "call": "limiter",
+    "kind": "function",
+    "params": [
+        _param(
+            "clip_or_func",
+            "vs.VideoNode | Callable[P, vs.VideoNode] | None",
+            "None",
+            "positional",
+        ),
+        _param("tv_range", "bool", "False"),
+    ],
+    "returns": "VideoNode",
+    "doc": "Limits the pixel values.",
+    "arg_docs": {},
+}
+
+
+def test_a_clip_or_function_parameter_is_the_main_clip(tmp_path: Path) -> None:
+    nodes = nodes_of(load_catalog(small_catalog(tmp_path, extra=[LIMITER]), SHIPPED))
+    (node,) = [n for n in nodes.values() if "vstools.limiter" in n.keywords]
+    out = run(node, "li", "vstools.limiter", {"tv_range": True}, clip=SRC)
+    assert isinstance(out, VideoClip)
+    assert out.stmt == "n_li_0 = vstools.limiter(n_src_0, tv_range=True)"
+    out = run(node, "li", "vstools.limiter", as_filter=True)
+    assert isinstance(out, VSFilter) and out.expr == "vstools.limiter"
 
 
 def test_a_method_without_inputs_adds_no_empty_group(tmp_path: Path) -> None:

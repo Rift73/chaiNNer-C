@@ -167,7 +167,14 @@ _PLACEHOLDERS = {
 }
 
 # The last part of annotation names, by what they mean.
-_CLIPS = {"VideoNode", "ConstantFormatVideoNode", "VariableFormatVideoNode"}
+# vstools' VideoNodeIterable is a clip or (nested) iterables of clips.
+_CLIP_LISTS = {"VideoNodeIterable"}
+_CLIPS = {
+    "VideoNode",
+    "ConstantFormatVideoNode",
+    "VariableFormatVideoNode",
+    *_CLIP_LISTS,
+}
 _CALLABLES = ("VSFunction", "Callable", "GenericVSFunction")
 _RANGES = {
     "FrameRange",
@@ -528,7 +535,8 @@ def _python_adapter(param: Param, members: list[ast.expr], enums: Enums) -> Adap
             name=name,
             optional=optional,
             container="" if lasts & _CLIPS else "list",
-            clip_list=any(e and e <= _CLIPS for _, e in sequences),
+            clip_list=bool(lasts & _CLIP_LISTS)
+            or any(e and e <= _CLIPS for _, e in sequences),
         )
     if lasts & _RANGES:
         return Adapter("ranges", name=name, optional=optional)

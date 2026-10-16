@@ -282,6 +282,21 @@ def test_plugin_signature_parser() -> None:
     assert scan.plugin_returns("") == "None"
 
 
+@pytest.mark.parametrize(
+    ("returns", "many"),
+    [
+        ("VideoNode", False),
+        ("list[VideoNode]", True),
+        ("Sequence[vs.VideoNode]", True),
+        # adg_mask: one clip, or a list when it gets several luma scalings.
+        ("VideoNode | list[VideoNode]", False),
+        ("vs.VideoNode | list[vs.VideoNode]", False),
+    ],
+)
+def test_returns_many(returns: str, many: bool) -> None:
+    assert catalog.returns_many(returns) is many
+
+
 def test_scan_skips_broken_user_file(scanned: dict[str, Any]) -> None:
     functions = by_id(scanned)
     brighten = functions["good.brighten"]
