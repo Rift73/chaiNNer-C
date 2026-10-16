@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -66,6 +68,20 @@ def _apply_precision(builder_config: Any, network: Any, precision: str) -> None:
             " with the FP16 option of PyTorch's Convert To ONNX node), or pick the"
             " model's own precision."
         )
+
+
+def timing_cache_name(
+    onnx_bytes: bytes,
+    gpu_name: str,
+    compute_capability: tuple[int, int],
+    tensorrt_version: str,
+) -> str:
+    """The timing cache file of a model on a GPU. TensorRT refuses a cache from
+    another GPU or TensorRT version, so each gets its own file."""
+    model = hashlib.md5(onnx_bytes[:1024]).hexdigest()[:8]
+    gpu = re.sub(r"[^A-Za-z0-9.]+", "-", gpu_name).strip("-")
+    major, minor = compute_capability
+    return f"timing_{model}_{gpu}_sm{major}{minor}_trt{tensorrt_version}.cache"
 
 
 def parse_onnx_model(

@@ -9,8 +9,15 @@ from api import NodeContext
 from nodes.groups import Condition, if_enum_group, if_group
 from nodes.impl.onnx.model import OnnxModel
 from nodes.impl.tensorrt import dual
-from nodes.impl.tensorrt.engine_builder import BuildConfig, build_engine_from_onnx
-from nodes.impl.tensorrt.memory import get_cuda_compute_capability
+from nodes.impl.tensorrt.engine_builder import (
+    BuildConfig,
+    build_engine_from_onnx,
+    timing_cache_name,
+)
+from nodes.impl.tensorrt.memory import (
+    get_cuda_compute_capability,
+    get_cuda_device_name,
+)
 from nodes.impl.tensorrt.model import TensorRTEngine, TensorRTEngineInfo
 from nodes.properties.inputs import (
     BoolInput,
@@ -209,16 +216,16 @@ if utility_group is not None:
             )
             return build_dual_engine(context, onnx_model, manifest, settings, profile)
 
-        # Determine timing cache path
+        # One timing cache per model, GPU and TensorRT version
         timing_cache_path = None
         if settings.timing_cache_path:
-            import hashlib
-
-            # Create a cache key based on the model
-            model_hash = hashlib.md5(onnx_model.bytes[:1024]).hexdigest()[:8]
-            timing_cache_path = (
-                f"{settings.timing_cache_path}/timing_{model_hash}.cache"
+            name = timing_cache_name(
+                onnx_model.bytes,
+                get_cuda_device_name(gpu_index),
+                get_cuda_compute_capability(gpu_index),
+                trt.__version__,
             )
+            timing_cache_path = f"{settings.timing_cache_path}/{name}"
 
         config = BuildConfig(
             precision=precision.value,

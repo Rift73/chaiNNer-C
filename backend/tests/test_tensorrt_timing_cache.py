@@ -5,6 +5,7 @@ behaviour: `get_timing_cache` returns None unless a cache was set, and
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import sys
 from pathlib import Path
@@ -159,3 +160,29 @@ def test_a_cache_from_another_gpu_is_replaced(
 
     assert _BUILDS[0] is not None and _BUILDS[0].data == b""
     assert cache.read_bytes() == b"+timings"
+
+
+def test_the_cache_file_is_named_by_model_gpu_and_tensorrt_version(
+    engine_builder: ModuleType,
+):
+    name = engine_builder.timing_cache_name
+    onnx = b"onnx" * 300
+    model = hashlib.md5(onnx[:1024]).hexdigest()[:8]
+
+    assert (
+        name(onnx, "NVIDIA GeForce RTX 5090", (12, 0), "11.2.1.2")
+        == f"timing_{model}_NVIDIA-GeForce-RTX-5090_sm120_trt11.2.1.2.cache"
+    )
+    names = {
+        name(onnx, "NVIDIA GeForce RTX 5090", (12, 0), "11.2.1.2"),
+        name(onnx, "NVIDIA GeForce RTX 4090", (8, 9), "11.2.1.2"),
+        name(onnx, "NVIDIA GeForce RTX 5090", (12, 0), "10.15.1.29"),
+        name(
+            onnx[:1000] + b"other model", "NVIDIA GeForce RTX 5090", (12, 0), "11.2.1.2"
+        ),
+    }
+    assert len(names) == 4
+    # Characters a file name cannot hold become dashes.
+    assert name(onnx, 'Quadro "A/B": 6000', (8, 6), "11.2.1.2").endswith(
+        "_Quadro-A-B-6000_sm86_trt11.2.1.2.cache"
+    )
