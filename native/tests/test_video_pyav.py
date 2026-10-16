@@ -78,7 +78,8 @@ def test_pyav_frames_equal_the_cli_reader(tmp_path, monkeypatch, case):
     path = _clip(tmp_path / f"clip-é{suffix}", *CASES[case])
     in_process, frames = _read(path, monkeypatch, cli=False)
     piped, expected = _read(path, monkeypatch, cli=True)
-    assert in_process and not piped
+    # Matroska goes to the CLI reader (its rates cannot show a variable frame rate).
+    assert in_process == (suffix != ".mkv") and not piped
     assert len(frames) == len(expected) == 30
     for frame, reference in zip(frames, expected, strict=True):
         assert frame.flags.c_contiguous and not frame.flags.writeable
@@ -112,19 +113,25 @@ def test_rotated_files_are_upright_in_both_readers(tmp_path, monkeypatch, case):
             np.testing.assert_array_equal(frame, upright(original))
 
 
-def test_variable_rate_files_use_the_cli_reader(tmp_path, monkeypatch):
+@pytest.mark.parametrize("suffix", [".mp4", ".mkv", ".webm"])
+def test_variable_rate_files_use_the_cli_reader(tmp_path, monkeypatch, suffix):
+    # Matroska and WebM report the same average and guessed rate for a variable-rate
+    # track, where PyAV yielded the 30 stored frames and the CLI 45.
+    codec = ("libvpx-vp9", "-deadline", "realtime") if suffix == ".webm" else ("libx264",)
     variable = _clip(
-        tmp_path / "variable.mp4",
+        tmp_path / f"variable{suffix}",
         *_source("640x360"),
         "-vf",
         "setpts='if(lt(N,10),N,N+15)/(30*TB)'",
         "-fps_mode",
         "vfr",
         "-c:v",
-        "libx264",
+        *codec,
     )
-    in_process, _ = _read(variable, monkeypatch, cli=False)
+    in_process, frames = _read(variable, monkeypatch, cli=False)
+    _, expected = _read(variable, monkeypatch, cli=True)
     assert not in_process
+    assert len(frames) == len(expected) > 30
 
 
 def test_without_pyav_the_cli_reader_is_used(tmp_path, monkeypatch):

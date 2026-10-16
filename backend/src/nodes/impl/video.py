@@ -116,6 +116,10 @@ def _pyav_frames(
         stream = container.streams.video[0]
         # The CLI resamples a variable frame rate to a constant one (rawvideo output
         # has no timestamps), duplicating or dropping frames; PyAV yields them as stored.
+        # Matroska and WebM report the track's default frame duration as both rates, so
+        # the rates cannot tell a variable rate there.
+        if "matroska" in container.format.name.split(","):
+            raise _UseCliReader("Matroska and WebM rates cannot show a variable frame rate")
         if stream.average_rate is None or stream.average_rate != stream.guessed_rate:
             raise _UseCliReader("its frame rate is variable")
         stream.thread_type = "AUTO"
