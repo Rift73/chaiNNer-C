@@ -59,6 +59,13 @@ class ServerConfig:
     Usage: `--trace`
     """
 
+    host_pid: int | None
+    """
+    The worker's host process; the worker exits when it ends. The host passes it.
+
+    Usage: `--host-pid 1234`
+    """
+
     @staticmethod
     def parse_argv() -> ServerConfig:
         parser = argparse.ArgumentParser(description="ChaiNNer's server.")
@@ -94,6 +101,11 @@ class ServerConfig:
             action="store_true",
             help="Enable tracing using VizTracer.",
         )
+        parser.add_argument(
+            "--host-pid",
+            type=int,
+            help="The worker's host process; the worker exits when it ends.",
+        )
 
         parsed = parser.parse_args()
 
@@ -104,4 +116,5 @@ class ServerConfig:
             error_on_failed_node=parsed.error_on_failed_node,
             storage_dir=parsed.storage_dir or None,
             trace=parsed.trace,
+            host_pid=parsed.host_pid,
         )

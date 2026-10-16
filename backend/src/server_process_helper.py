@@ -42,7 +42,8 @@ class _WorkerProcess:
         python_location = sys.executable
 
         self._process = subprocess.Popen(
-            [python_location, server_file, *flags],
+            # A host that is killed or crashes stops nothing: the worker watches it.
+            [python_location, server_file, *flags, "--host-pid", str(os.getpid())],
             shell=False,
             stdin=None,
             stdout=subprocess.PIPE,

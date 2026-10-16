@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import tempfile
+import threading
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,7 @@ from json import dumps as stringify
 from pathlib import Path
 from typing import Final, TypedDict
 
+import psutil
 from sanic import Sanic
 from sanic.log import access_logger, logger
 from sanic.request import Request
@@ -772,9 +774,31 @@ async def after_server_start(sanic_app: Sanic):
         close_task = loop.create_task(close_server(sanic_app))
 
 
+def exit_with_host(pid: int) -> None:
+    """Ends this worker once its host process has ended.
+
+    A host that is killed or crashes stops nothing (the app kills the host when its
+    /shutdown takes over 10 s), so the worker kept running with its GPU memory, DLLs
+    and port.
+    """
+    try:
+        psutil.Process(pid).wait()
+    except psutil.NoSuchProcess:
+        pass
+    logger.warning(f"The host process {pid} ended; the worker exits.")
+    os._exit(1)
+
+
 def main():
     ctx = AppContext.get(app)
     config = ctx.config
+    if config.host_pid is not None:
+        threading.Thread(
+            target=exit_with_host,
+            args=(config.host_pid,),
+            daemon=True,
+            name="host watch",
+        ).start()
     # numba (PyMatting's cache=True kernels) otherwise writes its cache beside the
     # runtime's site-packages. numba reads the variable when it is first imported, and
     # the node modules that import it load in setup, after this.
