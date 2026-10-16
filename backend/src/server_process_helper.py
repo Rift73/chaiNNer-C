@@ -165,6 +165,11 @@ class WorkerServer:
         self._manually_close: set[aiohttp.ClientResponse] = set()
 
     async def start(self, extra_flags: Iterable[str] = []):
+        # Overlapping restarts (a second /kill while the first restarts) each start a
+        # worker: one started meanwhile is stopped, not left running owned by nothing.
+        # No await between this check and the assignments below.
+        while self._process is not None or self._session is not None:
+            await self.stop()
         logger.info(f"Starting worker process on port {self._port}...")
         self._process = _WorkerProcess([str(self._port), *self._flags, *extra_flags])
         self._session = aiohttp.ClientSession(base_url=self._base_url)
@@ -174,13 +179,15 @@ class WorkerServer:
         logger.info("Worker process started")
 
     async def stop(self):
-        if self._process:
-            self._process.close()
-        if self._session:
+        process, self._process = self._process, None
+        if process:
+            process.close()
+        session, self._session = self._session, None
+        if session:
             for resp in self._manually_close:
                 resp.close()
             self._manually_close.clear()
-            await self._session.close()
+            await session.close()
         logger.info("Worker process stopped")
 
     async def restart(self, extra_flags: Iterable[str] = []):
