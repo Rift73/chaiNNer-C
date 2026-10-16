@@ -4,10 +4,12 @@ import asyncio
 import copy
 import functools
 import sys
+import threading
 import time
 import typing
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+import weakref
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable, List, Literal, Mapping, NewType, Sequence, Union
@@ -466,6 +468,53 @@ class _ExecutorNodeContext(NodeContext):
 
 _T = typing.TypeVar("_T")
 
+LAZY_POLL_SECONDS = 0.05
+"""How often a thread waiting on a lazy input checks for Stop and pool starvation."""
+LAZY_STARVED_SECONDS = 1.0
+"""How long every pool thread may wait on a lazy input before the wait fails."""
+
+
+class _LazyWaits:
+    """
+    The threads of one executor pool that wait on a lazy input, for every executor
+    sharing it (a /run and its previews). A node reading a lazy input holds its pool
+    thread until the input's nodes ran, on other pool threads; once every thread waits,
+    nothing runs them.
+    """
+
+    def __init__(self, threads: int) -> None:
+        self.threads = threads
+        self.__lock = threading.Lock()
+        self.__waiting = 0
+        self.__full_since: float | None = None
+
+    @contextmanager
+    def waiting(self):
+        with self.__lock:
+            self.__waiting += 1
+            if self.__waiting >= self.threads and self.__full_since is None:
+                self.__full_since = time.monotonic()
+        try:
+            yield
+        finally:
+            with self.__lock:
+                self.__waiting -= 1
+                if self.__waiting < self.threads:
+                    self.__full_since = None
+
+    def starved(self) -> bool:
+        """Whether every pool thread has waited on a lazy input for LAZY_STARVED_SECONDS."""
+        with self.__lock:
+            return (
+                self.__full_since is not None
+                and time.monotonic() - self.__full_since >= LAZY_STARVED_SECONDS
+            )
+
+
+_lazy_waits: weakref.WeakKeyDictionary[ThreadPoolExecutor, _LazyWaits] = (
+    weakref.WeakKeyDictionary()
+)
+
 
 class _LoopRun:
     """
@@ -884,6 +933,12 @@ class Executor:
         self.queue: EventConsumer = queue
         self.pool: ThreadPoolExecutor = pool
         self.__pool_size = pool_size
+        # Shared by every executor on the pool; made on the loop thread, as executors are.
+        self.__lazy_waits: _LazyWaits | None = (
+            None
+            if pool_size is None
+            else _lazy_waits.setdefault(pool, _LazyWaits(pool_size))
+        )
         self.cache_strategy: dict[NodeId, CacheStrategy] = get_cache_strategies(chain)
         self._storage_dir = storage_dir
         self.__window: ItemWindow | None = None
@@ -967,6 +1022,28 @@ class Executor:
         assert isinstance(output, RegularOutput)
         return _output_value(output, output_index)
 
+    def __wait_lazy(self, completion: Future[_T]) -> _T:
+        """
+        Waits on a lazy input's value, on the pool thread of the node reading it. Stop ends
+        the wait (Aborted), and so does a pool whose every thread waits on a lazy input
+        (an error): nothing would run the nodes the inputs need.
+        """
+        waits = self.__lazy_waits
+        with nullcontext() if waits is None else waits.waiting():
+            while True:
+                try:
+                    return completion.result(timeout=LAZY_POLL_SECONDS)
+                except TimeoutError:
+                    if self.progress.aborted:
+                        raise Aborted() from None
+                    if waits is not None and waits.starved():
+                        raise RuntimeError(
+                            "This chain's lazy inputs need more worker threads than"
+                            f" the pool has: all {waits.threads} wait on a lazy input"
+                            " (a Conditional, Logic Operation or Save Image input fed"
+                            " through a long series of such nodes)."
+                        ) from None
+
     async def __resolve_node_input(self, node_input: Input) -> object:
         if isinstance(node_input, EdgeInput):
             return await self.__get_node_output(node_input.id, node_input.index)
@@ -995,7 +1072,9 @@ class Executor:
                 return None
             if input_index in lazy:
                 return Lazy.from_coroutine(
-                    self.__resolve_node_input(assigned_inputs[input_index]), self.loop
+                    self.__resolve_node_input(assigned_inputs[input_index]),
+                    self.loop,
+                    self.__wait_lazy,
                 )
             return await self.__resolve_node_input(node_input)
 

@@ -4,6 +4,7 @@ import time
 from asyncio import AbstractEventLoop, Task, get_running_loop
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future
+from functools import partial
 from threading import Condition, get_ident
 from typing import Any, Generic, TypeVar
 from weakref import finalize
@@ -70,8 +71,16 @@ class Lazy(Generic[T]):
 
     @staticmethod
     def from_coroutine(
-        coroutine: Coroutine[Any, Any, T], loop: AbstractEventLoop
+        coroutine: Coroutine[Any, Any, T],
+        loop: AbstractEventLoop,
+        wait: Callable[[Future[_Result[T]]], _Result[T]] | None = None,
     ) -> Lazy[T]:
+        """
+        A Lazy whose value is the coroutine's result, run on the loop when read. `wait`
+        blocks the reading thread until the result is there (by default without limit);
+        an error it raises is the read's.
+        """
+
         def supplier() -> T:
             if not loop.is_running():
                 cleanup.detach()
@@ -115,15 +124,16 @@ class Lazy(Generic[T]):
             # particular, an interrupted synchronous reader must not close a
             # coroutine that is still owned by the event loop.
             cleanup.detach()
+            waiter = completion.result if wait is None else partial(wait, completion)
             try:
                 if native_profile.enabled():
                     # From this blocking wait, nested in its reader's timed call;
                     # the submission above is outside it, so it is a lower bound
                     # of the hop and what the coroutine awaits (near zero if the
                     # loop finished the coroutine before the wait began).
-                    outcome = native_profile.measure("lazy.resolve", completion.result)
+                    outcome = native_profile.measure("lazy.resolve", waiter)
                     return outcome.result()
-                return completion.result().result()
+                return waiter().result()
             finally:
                 submitted.clear()
 
