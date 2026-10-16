@@ -284,6 +284,23 @@ def test_clip() -> None:
         assert clips.to_source(many) == "n_m_0"
 
 
+def test_video_node_iterable_is_a_clip() -> None:
+    """vstools' VideoNodeIterable, a clip or (nested) lists of clips: the clips of
+    vsexprtools.norm_expr and combine, and inside vstools.stack_clips' Iterable."""
+    many = VideoClip("n_m_0", "n_m_0 = x", (), frozenset(), "m", many=True)
+    a = adapt("VideoNodeIterable", None, "clips")
+    assert a.kind == "clip"
+    assert isinstance(widget("VideoNodeIterable", None, "clips"), VideoClipInput)
+    assert a.to_source(CLIP) == "n_a_0"
+    # It takes the list of a node that gives several clips as it is.
+    assert a.to_source(many) == "n_m_0"
+    a = adapt("Iterable[VideoNodeIterable]", None, "clips")
+    assert a.kind == "clip"
+    assert a.to_source(CLIP) == "[n_a_0]"
+    assert a.to_source(many) == "n_m_0"
+    assert adapt("VideoNodeIterable | None", "None", "ref").kind == "optional_clip"
+
+
 def test_optional_clip() -> None:
     a = adapt("vs.VideoNode | None", "None", "ref")
     inp = widget("vs.VideoNode | None", "None", "ref")
@@ -546,6 +563,14 @@ def test_planes() -> None:
     # Plugins: an int array named planes.
     a = adapt("int | Sequence[int] | None", "None", "planes", plugin=True)
     assert a.to_source("[1, 2]") == "[1, 2]"
+    # A required one lists a source plane per output plane (std.ShufflePlanes): any
+    # order and repeats, typed; a value saved from the old dropdown still runs.
+    a = adapt("int | Sequence[int]", None, "planes", plugin=True)
+    assert a.kind == "sequence"
+    assert a.to_source("2, 1, 0") == "[2, 1, 0]"
+    assert a.to_source("0, 0, 0") == "[0, 0, 0]"
+    assert a.to_source("0") == "0"
+    assert a.to_source("[0, 1, 2]") == "[0, 1, 2]"
 
 
 def test_ranges_text() -> None:
@@ -611,6 +636,17 @@ def test_format() -> None:
     default = "<PresetVideoFormat.RGBS: 555745280>"
     assert widget("VideoFormatLike", default, "format").default == "vs.RGBS"
     assert adapt("VideoFormatLike", default, "format").to_source("vs.RGBS") is None
+
+
+def test_colour_family() -> None:
+    # std.ShufflePlanes' colorfamily: VapourSynth's names, not a number to know.
+    a = adapt("int", None, "colorfamily", plugin=True)
+    inp = widget("int", None, "colorfamily", plugin=True)
+    assert isinstance(inp, DropDownInput)
+    assert options(inp) == {"Gray": "vs.GRAY", "RGB": "vs.RGB", "YUV": "vs.YUV"}
+    assert a.to_source("vs.RGB") == "vs.RGB"
+    # A Python function's colorfamily follows its annotation.
+    assert adapt("int", None, "colorfamily").kind == "int"
 
 
 def test_colour_properties() -> None:

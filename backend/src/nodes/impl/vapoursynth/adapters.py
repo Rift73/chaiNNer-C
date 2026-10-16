@@ -102,6 +102,8 @@ FORMATS = (
 ).split()
 _FORMAT_CHOICES = tuple((f, f"vs.{f}") for f in FORMATS)
 _FORMAT_GROUPS = (("Gray", "vs.GRAY8"), ("YUV", "vs.YUV410P8"), ("RGB", "vs.RGB24"))
+# VapourSynth's colour families (std.ShufflePlanes' colorfamily).
+_FAMILY_CHOICES = (("Gray", "vs.GRAY"), ("RGB", "vs.RGB"), ("YUV", "vs.YUV"))
 
 # vskernels kernels; kernel and scaler parameters take the class name as a string.
 KERNELS = (
@@ -167,14 +169,9 @@ _PLACEHOLDERS = {
 }
 
 # The last part of annotation names, by what they mean.
-# vstools' VideoNodeIterable is a clip or (nested) iterables of clips.
-_CLIP_LISTS = {"VideoNodeIterable"}
-_CLIPS = {
-    "VideoNode",
-    "ConstantFormatVideoNode",
-    "VariableFormatVideoNode",
-    *_CLIP_LISTS,
-}
+_CLIPS = {"VideoNode", "ConstantFormatVideoNode", "VariableFormatVideoNode"}
+# A clip or (nested) lists of clips (vstools'), so it also takes a list of clips.
+_CLIP_ITERABLES = {"VideoNodeIterable"}
 _CALLABLES = ("VSFunction", "Callable", "GenericVSFunction")
 _RANGES = {
     "FrameRange",
@@ -243,6 +240,7 @@ _PLUGIN_TYPES = {
 }
 # Plugin ints whose name says what they hold.
 _PLUGIN_INTS = {
+    "colorfamily": "colorfamily",
     "format": "format",
     "matrix": "matrix",
     "matrix_in": "matrix",
@@ -455,6 +453,10 @@ class Adapter:
         return self._extra(text)
 
     def _sequence(self, text: str) -> str:
+        # Brackets around the values are allowed: "[0, 1, 2]" (a planes dropdown's
+        # saved value, or typed) is "0, 1, 2".
+        if text[:1] + text[-1:] in ("[]", "()"):
+            text = text[1:-1]
         items: list[str] = []
         for item in text.split(","):
             token = item.strip()
@@ -527,16 +529,17 @@ def _python_adapter(param: Param, members: list[ast.expr], enums: Enums) -> Adap
     callable_ = any(last.startswith(_CALLABLES) for last in lasts)
     sequences = [(m, _elements(m)) for m in members if _last(m) in _SEQUENCES]
 
-    if lasts & _CLIPS or any(e and e <= _CLIPS for _, e in sequences):
+    clips = _CLIPS | _CLIP_ITERABLES
+    clip_sequence = any(e and e <= clips for _, e in sequences)
+    if lasts & clips or clip_sequence:
         if callable_:
             return Adapter("clip_or_filter", name=name, optional=optional)
         return Adapter(
             "optional_clip" if optional else "clip",
             name=name,
             optional=optional,
-            container="" if lasts & _CLIPS else "list",
-            clip_list=bool(lasts & _CLIP_LISTS)
-            or any(e and e <= _CLIPS for _, e in sequences),
+            container="" if lasts & clips else "list",
+            clip_list=clip_sequence or bool(lasts & _CLIP_ITERABLES),
         )
     if lasts & _RANGES:
         return Adapter("ranges", name=name, optional=optional)
@@ -621,12 +624,19 @@ def _plugin_adapter(param: Param, base: str, array: bool) -> Adapter:
     if base == "func":
         return Adapter("clip_or_filter", name=name, optional=optional)
     if base == "int" and array:
-        if name == "planes":
+        # A required planes array lists a source plane per output plane
+        # (std.ShufflePlanes' [2, 1, 0]), not the planes to process.
+        if name == "planes" and optional:
             return _planes(param, optional)
         return _sequence(param, optional, "list", scalar=True, integers=True)
     if base == "int" and name in _PLUGIN_INTS:
         kind = _PLUGIN_INTS[name]
-        choices = _FORMAT_CHOICES if kind == "format" else _colour_choices(kind)
+        if kind == "format":
+            choices = _FORMAT_CHOICES
+        elif kind == "colorfamily":
+            choices = _FAMILY_CHOICES
+        else:
+            choices = _colour_choices(kind)
         return _choice(param, kind, choices, optional)
     if base in ("int", "float"):
         if array:

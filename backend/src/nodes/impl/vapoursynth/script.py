@@ -99,6 +99,13 @@ def compile_script(outputs: Sequence[tuple[VideoClip, str]], *, cache_mb: int) -
             code = record.stmt if isinstance(record, VideoClip) else record.expr
             if (record.node_id, code) in seen:
                 continue
+            # The id ends its statement's line, in the tag's comment: a line break
+            # (from a crafted chain file) would put code after it.
+            if not record.node_id.isprintable():
+                raise ValueError(
+                    f"The chain has a node whose node id {record.node_id!r} cannot be"
+                    " written in a script."
+                )
             seen.add((record.node_id, code))
             imports.update(record.imports)
             stack.append((record, True))

@@ -510,6 +510,39 @@ def test_missing_required_value_names_the_input(small: dict[str, NodeData]) -> N
         run(planes, "m", "std.Merge", {"clipb": REF, "weight": "a, b"}, clip=SRC)
 
 
+def test_missing_file_says_why(tmp_path: Path) -> None:
+    """A required file input whose file is gone (a saved chain's video was moved)
+    says so, not that it has no value."""
+    video_source = {
+        "id": "bs.VideoSource",
+        "source": "plugin",
+        "module": "bs",
+        "import": "",
+        "call": "core.bs.VideoSource",
+        "kind": "plugin",
+        "params": [
+            _param("source", "str | bytes", None),
+            _param("track", "int | None", "None"),
+        ],
+        "returns": "VideoNode",
+        "doc": "BestSource.",
+        "arg_docs": {},
+    }
+    cat = load_catalog(small_catalog(tmp_path, extra=[video_source]), SHIPPED)
+    load = nodes_of(cat)["Load Clip"]
+    video = tmp_path / "clip.mkv"
+    video.write_bytes(b"")
+    out = run(load, "l", "bs.VideoSource", {"source": str(video)})
+    assert isinstance(out, VideoClip)
+    assert out.stmt == f"n_l_0 = core.bs.VideoSource(source={str(video)!r})"
+    moved = tmp_path / "moved.mkv"
+    with pytest.raises(ValueError, match=r"does not exist") as error:
+        run(load, "l", "bs.VideoSource", {"source": str(moved)})
+    assert "needs a value" not in str(error.value)
+    with pytest.raises(ValueError, match="needs a value"):
+        run(load, "l", "bs.VideoSource")
+
+
 def test_unknown_input_values_are_dropped_with_warning(
     small: dict[str, NodeData], caplog: pytest.LogCaptureFixture
 ) -> None:

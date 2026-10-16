@@ -646,11 +646,16 @@ class _Run:
         self.label = label
         self.values = values
         self.defaulted: list[str] = []
+        # Why an input (by id) could not take its value ("File ... does not exist"),
+        # for a parameter that has no default to take instead.
+        self.reasons: dict[int, str] = {}
 
     def value(self, input_id: int, label: str, optional: bool) -> object:
         value = self.values.get(input_id)
         if isinstance(value, Dropped):
             self.defaulted.append(label)
+            if value.reason:
+                self.reasons[input_id] = value.reason
             return None
         if value is None and not optional:
             self.defaulted.append(label)
@@ -690,6 +695,9 @@ def _args(
             raise ValueError(f"{slot.label}: {error}") from error
         if source is None:
             if param.default is None and param.kind != "var_keyword":
+                reason = run.reasons.get(slot.input_id)
+                if reason:
+                    raise ValueError(f"{slot.label}: {reason}")
                 raise ValueError(f"{slot.label} needs a value.")
             call.skip(param)
             continue

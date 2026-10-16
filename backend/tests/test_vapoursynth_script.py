@@ -195,6 +195,29 @@ def test_prologue_puts_backend_on_the_path():
     assert [Path(p) for p in appended] == [backend_src]
 
 
+@pytest.mark.parametrize(
+    "node_id",
+    [
+        "a\nimport os",
+        "a\rimport os",
+        "a\r\nimport os",
+        "a\u2028import os",
+        "a\x00",
+        "a\ud800",
+    ],
+)
+def test_node_id_cannot_end_its_tag(node_id: str):
+    """A chain file's node id goes into the comment that tags its statement: one that
+    could end that line (and put code after it) is refused, not written."""
+    a = clip(node_id, "core.std.BlankClip()")
+    with pytest.raises(ValueError, match="node id"):
+        compile_script([(a, "A")], cache_mb=64)
+    # A dependency's id is checked as well.
+    b = clip("b", f"core.std.Invert({a.var})", a)
+    with pytest.raises(ValueError, match="node id"):
+        compile_script([(b, "B")], cache_mb=64)
+
+
 def test_search_paths_come_before_imports():
     """A record may need a folder on sys.path (the user's function files): that line
     comes before every import, whatever its sort order."""
