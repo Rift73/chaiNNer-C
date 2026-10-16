@@ -109,6 +109,8 @@ def _fake_tensorrt() -> ModuleType:
     trt.nptype = lambda _dtype: np.float32
     trt.ExecutionContextAllocationStrategy = SimpleNamespace(USER_MANAGED=1)
     trt.TensorIOMode = SimpleNamespace(INPUT="INPUT", OUTPUT="OUTPUT")
+    severity = SimpleNamespace(INTERNAL_ERROR=0, ERROR=1, WARNING=2, INFO=3, VERBOSE=4)
+    trt.ILogger = type("ILogger", (), {"Severity": severity})
     return trt
 
 
@@ -132,7 +134,7 @@ def inference(monkeypatch: pytest.MonkeyPatch, cudart: _Cudart) -> ModuleType:
         monkeypatch.setitem(sys.modules, name, module)
     # Import against the stand-ins; undoing the patches drops these imports again.
     package = importlib.import_module("nodes.impl.tensorrt")
-    for name in ("inference", "engine_info", "memory"):
+    for name in ("inference", "engine_info", "memory", "trt_logger"):
         monkeypatch.setitem(sys.modules, f"{package.__name__}.{name}", None)
         del sys.modules[f"{package.__name__}.{name}"]
         monkeypatch.setattr(package, name, None, raising=False)

@@ -14,6 +14,7 @@ from sanic.log import logger
 from .engine_info import deserialize_engine, read_engine_info
 from .memory import check_cuda, get_cuda_compute_capability, get_cuda_device_name
 from .model import TensorRTEngine, TensorRTEngineInfo
+from .trt_logger import TRT_LOGGER
 
 
 @dataclass
@@ -22,6 +23,7 @@ class BuildConfig:
 
     # "mixed": the ONNX's own per-node types (Convert To ONNX's Mixed data types).
     precision: Literal["fp32", "fp16", "bf16", "mixed"]
+    # 0: TensorRT's default, as much as the GPU's total memory.
     workspace_size_gb: float
     min_shape: tuple[int, int]  # (height, width)
     opt_shape: tuple[int, int]  # (height, width)
@@ -32,6 +34,35 @@ class BuildConfig:
     optimization_level: int = 3
     # 2:4 structured-sparse kernels for weights that are already 2:4 sparse.
     sparse_weights: bool = False
+
+
+# TensorRT skipping a tactic for want of memory (a warning), and the bytes it asked for.
+_MEMORY_REQUEST = re.compile(r"insufficient memory on requested size of (\d+)")
+
+
+def _build_failure(messages: list[tuple[int, str]], config: BuildConfig) -> str:
+    """Why a build failed, from the TensorRT messages logged during it."""
+    message = "Failed to build TensorRT engine."
+    warning = int(trt.ILogger.Severity.WARNING)
+    errors = [text for level, text in messages if level < warning]
+    if errors:
+        message += " TensorRT: " + " ".join(errors[-3:])
+    skipped = [int(n) for _, text in messages for n in _MEMORY_REQUEST.findall(text)]
+    if skipped:
+        needed = f"{max(skipped) / 1024**3:.2f} GiB"
+        if config.workspace_size_gb > 0:
+            message += (
+                f"\nSome layers needed {needed} of scratch memory, more than the"
+                f" Workspace (GiB) of {config.workspace_size_gb:g}: raise it, set it to 0"
+                " (TensorRT's default, up to all of the GPU's memory), or lower the"
+                " maximum size."
+            )
+        else:
+            message += (
+                f"\nSome layers needed {needed} of scratch memory, more than the GPU had"
+                " free: close other programs using it or lower the maximum size."
+            )
+    return message
 
 
 _PRECISION_DTYPES = {
@@ -128,12 +159,10 @@ def build_engine_from_onnx(
     # Set the CUDA device
     check_cuda(cudart.cudaSetDevice(gpu_index))
 
-    trt_logger = trt.Logger(trt.Logger.WARNING)
-
     # Create builder and network
-    builder = trt.Builder(trt_logger)
+    builder = trt.Builder(TRT_LOGGER)
     network = _create_network(builder)
-    parser = trt.OnnxParser(network, trt_logger)
+    parser = trt.OnnxParser(network, TRT_LOGGER)
 
     # Parse ONNX model
     logger.info("Parsing ONNX model...")
@@ -164,8 +193,11 @@ def build_engine_from_onnx(
 
     # Configure builder
     builder_config = builder.create_builder_config()
-    workspace_bytes = int(config.workspace_size_gb * (1024**3))
-    builder_config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_bytes)
+    if config.workspace_size_gb > 0:
+        workspace_bytes = int(config.workspace_size_gb * (1024**3))
+        builder_config.set_memory_pool_limit(
+            trt.MemoryPoolType.WORKSPACE, workspace_bytes
+        )
 
     _apply_precision(builder_config, network, config.precision)
     if not config.allow_tf32:
@@ -216,10 +248,11 @@ def build_engine_from_onnx(
 
     # Build the engine
     logger.info("Building TensorRT engine (this may take a while)...")
-    serialized_engine = builder.build_serialized_network(network, builder_config)
+    with TRT_LOGGER.capture() as messages:
+        serialized_engine = builder.build_serialized_network(network, builder_config)
 
     if serialized_engine is None:
-        raise RuntimeError("Failed to build TensorRT engine")
+        raise RuntimeError(_build_failure(messages, config))
     engine_bytes = bytes(serialized_engine)
 
     if scale is None:

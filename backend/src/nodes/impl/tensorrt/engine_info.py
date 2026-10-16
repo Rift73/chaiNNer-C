@@ -11,6 +11,7 @@ from sanic.log import logger
 from .dual import input_alignment
 from .memory import check_cuda, get_cuda_compute_capability
 from .model import DeserializedEngine, TensorRTEngineInfo
+from .trt_logger import TRT_LOGGER
 
 
 def _dims(shape: trt.Dims) -> tuple[int, int, int, int]:
@@ -21,9 +22,8 @@ def _dims(shape: trt.Dims) -> tuple[int, int, int, int]:
 def deserialize_engine(engine_bytes: bytes, gpu_index: int) -> DeserializedEngine:
     """Deserialize an engine on a GPU, kept together with its runtime."""
     check_cuda(cudart.cudaSetDevice(gpu_index))
-    trt_logger = trt.Logger(trt.Logger.WARNING)
-    trt.init_libnvinfer_plugins(trt_logger, "")
-    runtime = trt.Runtime(trt_logger)
+    trt.init_libnvinfer_plugins(TRT_LOGGER, "")
+    runtime = trt.Runtime(TRT_LOGGER)
     engine = runtime.deserialize_cuda_engine(engine_bytes)
     if engine is None:
         raise RuntimeError(

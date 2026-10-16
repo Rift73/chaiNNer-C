@@ -10,6 +10,7 @@ import importlib
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -28,7 +29,7 @@ class _Config:
     def __init__(self) -> None:
         self.cache: _TimingCache | None = None
         self.flags = {"tf32"}  # TensorRT's default
-        self.workspace = 0
+        self.workspace: int | None = None  # TensorRT's default: the GPU's memory
         self.builder_optimization_level = 3
 
     def set_memory_pool_limit(self, _pool: object, size: int) -> None:
@@ -57,7 +58,8 @@ class _Config:
 
 
 class _Builder:
-    def __init__(self, _logger: object) -> None:
+    def __init__(self, logger: Any) -> None:
+        self.logger = logger
         self.used: list[_TimingCache | None] = []
 
     def create_network(self, _flags: int) -> object:
@@ -68,14 +70,22 @@ class _Builder:
     def create_builder_config(self) -> _Config:
         return _Config()
 
-    def build_serialized_network(self, _network: object, config: _Config) -> bytes:
+    def build_serialized_network(
+        self, _network: object, config: _Config
+    ) -> bytes | None:
         _BUILDS.append(config.cache)
         _CONFIGS.append(config)
+        if _FAILURE:
+            for severity, message in _FAILURE:
+                self.logger.log(severity, message)
+            return None
         return b"engine"
 
 
 _BUILDS: list[_TimingCache | None] = []
 _CONFIGS: list[_Config] = []
+# (severity, message) pairs a failing build logs, as TensorRT does
+_FAILURE: list[tuple[int, str]] = []
 
 
 def _fake_tensorrt() -> ModuleType:
@@ -88,6 +98,8 @@ def _fake_tensorrt() -> ModuleType:
     trt.NetworkDefinitionCreationFlag = SimpleNamespace(EXPLICIT_BATCH=0)
     trt.MemoryPoolType = SimpleNamespace(WORKSPACE="workspace")
     trt.Logger = type("Logger", (), {"WARNING": 2, "__init__": lambda self, _: None})
+    severity = SimpleNamespace(INTERNAL_ERROR=0, ERROR=1, WARNING=2, INFO=3, VERBOSE=4)
+    trt.ILogger = type("ILogger", (), {"Severity": severity})
     trt.Builder = _Builder
     trt.OnnxParser = lambda _network, _logger: SimpleNamespace(parse=lambda _: True)
     return trt
@@ -110,7 +122,7 @@ def engine_builder(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
         monkeypatch.setitem(sys.modules, name, module)
     # Import against the stand-ins; undoing the patches drops these imports again.
     package = importlib.import_module("nodes.impl.tensorrt")
-    for name in ("engine_builder", "engine_info", "memory"):
+    for name in ("engine_builder", "engine_info", "memory", "trt_logger"):
         monkeypatch.setitem(sys.modules, f"{package.__name__}.{name}", None)
         del sys.modules[f"{package.__name__}.{name}"]
         monkeypatch.setattr(package, name, None, raising=False)
@@ -120,6 +132,7 @@ def engine_builder(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     monkeypatch.setattr(module, "get_cuda_device_name", lambda _: "Test GPU")
     _BUILDS.clear()
     _CONFIGS.clear()
+    _FAILURE.clear()
     return module
 
 
@@ -166,6 +179,58 @@ def test_the_build_settings_reach_tensorrt(
     assert built.flags == flags
     assert built.builder_optimization_level == level
     assert built.workspace == int(12.5 * 1024**3)
+
+
+def test_an_automatic_workspace_keeps_tensorrts_default(engine_builder: ModuleType):
+    config = engine_builder.BuildConfig(
+        precision="fp32",
+        workspace_size_gb=0,
+        min_shape=(64, 64),
+        opt_shape=(64, 64),
+        max_shape=(64, 64),
+        use_dynamic_shapes=False,
+        allow_tf32=False,
+    )
+    engine_builder.build_engine_from_onnx(b"onnx", config)
+    (built,) = _CONFIGS
+    assert built.workspace is None
+
+
+def test_a_failed_build_says_why(engine_builder: ModuleType):
+    # TensorRT 11.2's messages for an FDAT model at 2048x2048 with a 4 GiB workspace
+    _FAILURE.extend(
+        [
+            (
+                2,
+                (
+                    "UNSUPPORTED_STATE: Skipping tactic 0 due to insufficient memory on"
+                    " requested size of 4302958702 detected for tactic 0x0000000000000000."
+                ),
+            ),
+            (
+                1,
+                (
+                    "IBuilder::buildSerializedNetwork: Error Code 10: Internal Error (Could"
+                    " not find any implementation for node {ForeignNode[input...output]}.)"
+                ),
+            ),
+        ]
+    )
+    config = engine_builder.BuildConfig(
+        precision="fp32",
+        workspace_size_gb=4.0,
+        min_shape=(64, 64),
+        opt_shape=(64, 64),
+        max_shape=(64, 64),
+        use_dynamic_shapes=False,
+        allow_tf32=False,
+    )
+    with pytest.raises(RuntimeError) as failure:
+        engine_builder.build_engine_from_onnx(b"onnx", config)
+    message = str(failure.value)
+    assert "Could not find any implementation" in message
+    assert "4.01 GiB" in message
+    assert "Workspace (GiB) of 4" in message
 
 
 def test_first_build_creates_the_cache(engine_builder: ModuleType, tmp_path: Path):

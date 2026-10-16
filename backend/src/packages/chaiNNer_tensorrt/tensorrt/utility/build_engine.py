@@ -54,8 +54,8 @@ SHAPE_MODE_LABELS = {
     ShapeMode.DYNAMIC: "Dynamic (Variable Sizes)",
 }
 
-# A Workspace of 0 means these (the node's former default, and the DUAL guide's).
-AUTO_WORKSPACE_GIB = 4.0
+# A Workspace of 0 is TensorRT's default (as much as the GPU's memory), or for a DUAL
+# ONNX its guide's.
 DUAL_WORKSPACE_GIB = 8.0
 
 # Shown until the ONNX is known to be DUAL's, which keeps its own precision
@@ -171,8 +171,8 @@ if utility_group is not None:
             ).with_docs(
                 "Maximum GPU memory TensorRT may use while building. Larger values may allow"
                 " better optimizations; any amount can be typed.",
-                f"0 is automatic: {AUTO_WORKSPACE_GIB:g} GiB, or {DUAL_WORKSPACE_GIB:g} GiB"
-                " for a DUAL ONNX.",
+                "0 is automatic: TensorRT's default, up to all of the GPU's memory, or"
+                f" {DUAL_WORKSPACE_GIB:g} GiB for a DUAL ONNX.",
                 hint=True,
             ),
             BoolInput("Allow TF32", default=False).with_docs(
@@ -247,9 +247,6 @@ if utility_group is not None:
                 tf32=allow_tf32,
                 sparse_weights=sparse_weights,
             )
-        if workspace <= 0:
-            workspace = AUTO_WORKSPACE_GIB
-
         # One timing cache per model, GPU and TensorRT version
         timing_cache_path = None
         if settings.timing_cache_path:
@@ -276,11 +273,11 @@ if utility_group is not None:
         )
 
         logger.info(
-            "Building TensorRT engine: precision=%s, dynamic=%s, workspace=%gGiB,"
+            "Building TensorRT engine: precision=%s, dynamic=%s, workspace=%s,"
             " tf32=%s, sparse=%s, level=%d",
             config.precision,
             use_dynamic,
-            workspace,
+            f"{workspace:g}GiB" if workspace > 0 else "automatic",
             allow_tf32,
             sparse_weights,
             optimization_level,

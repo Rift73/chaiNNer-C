@@ -26,13 +26,14 @@ class FullSession:
     """Resident model stages; live scratch follows actual input dimensions."""
 
     def __init__(self, directory: Path, device: torch.device):
-        import tensorrt as trt
+        from nodes.impl.tensorrt.trt_logger import TRT_LOGGER
 
         load_plugin()
         with torch.cuda.device(device):
             self.device = torch.device("cuda", torch.cuda.current_device())
             self.stream = torch.cuda.Stream(device=self.device)
-        self.logger = trt.Logger(trt.Logger.WARNING)
+        # The worker's one TensorRT logger (trt_logger.py).
+        self.logger = TRT_LOGGER
         self.stages: dict[str, Stage] = {}
         self.ropes: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         self.budget = 0

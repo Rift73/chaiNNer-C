@@ -148,7 +148,8 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   failure in five attempts (no log kept); rebuilding worked.
   Settings that do not apply to DUAL are hidden (owner, 2026-10-09): Convert To ONNX's Data Type, Opset and
   Verify, Build Engine's Precision. Since 2026-10-16 (owner) Build Engine's Workspace (GiB, any amount; 0 =
-  automatic: 4, or 8 for DUAL), Allow TF32, Sparse Weights and Optimization Level (0-5, default 3) apply to every
+  automatic: TensorRT's default, up to the GPU's memory, since 2026-10-17 when 4 GiB failed an FDAT 2048x2048
+  build by 8 MB; 8 for DUAL), Allow TF32, Sparse Weights and Optimization Level (0-5, default 3) apply to every
   ONNX, DUAL's worker included (its defaults stay the guide's: 8 GiB, TF32 off, dense, level 3). Save Engine's
   Compress (owner, 2026-10-16; default on) writes LZMA and appends "_compressed" to the name; Load Engine and
   VapourSynth's AI Upscale decompress by the xz header (`engine_file.py`). Measured on the owner's 1x DUAL Light
