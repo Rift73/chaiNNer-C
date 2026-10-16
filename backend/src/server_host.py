@@ -433,7 +433,10 @@ async def import_packages(
 
         # check auto updates
         for dep in package.dependencies:
-            is_installed = installed_packages.get(dep.pypi_name, None) is not None
+            is_installed = (
+                installed_packages.get(distribution_name(dep.pypi_name), None)
+                is not None
+            )
             if dep.auto_update and is_installed:
                 to_install.append(dep)
 
