@@ -70,8 +70,26 @@ def _read_tiff_straight_alpha(path: Path) -> np.ndarray | None:
     grey+alpha TIFFs, so Pillow decodes 8-bit RGBA and LA TIFFs that declare it. LA
     loads as BGRA with the grey in B, G and R, as OpenCV loads a grey+alpha PNG. Both
     apply the Orientation tag, but Pillow 12.3 does not transpose orientations 5-8;
-    those and every other TIFF stay with OpenCV.
+    those and every other TIFF stay with OpenCV. Pillow cannot open 16-bit grey+alpha,
+    which OpenCV loads as 8-bit grey: a warning says so.
     """
+    with open(path, "rb") as file:
+        header = file.read(8)
+        if header[2:3] == b"\x2b":  # BigTIFF, as Pillow reads its header
+            header += file.read(8)
+        tags = TiffImagePlugin.ImageFileDirectory_v2(header)
+        file.seek(tags.next)
+        tags.load(file)
+    if (
+        tags.get(277) == 2  # SamplesPerPixel
+        and set(tags.get(258, ())) == {16}
+        and tags.get(338) in ((1,), (2,))  # alpha, associated or not
+    ):
+        logger.warning(
+            "16-bit grey+alpha TIFF: alpha dropped and depth reduced to 8 bit;"
+            f" save it as RGBA or PNG: {path}"
+        )
+        return None
     # The plugin class reads only the header; Image.open's size check would also warn
     # on large TIFFs that this decoder leaves to OpenCV.
     im = TiffImagePlugin.TiffImageFile(path)

@@ -20,6 +20,7 @@ pytest.importorskip("nodes.impl._chainner_graph")
 from packages.chaiNNer_standard.image.batch_processing.load_images import (
     load_images_node,
 )
+from packages.chaiNNer_standard.image.io import load_image
 from packages.chaiNNer_standard.image.io.load_image import _read_cv, load_image_node
 
 RNG = np.random.default_rng(409)
@@ -169,6 +170,25 @@ def test_16_bit_straight_alpha_tiff_was_already_exact(tmp_path: Path):
     path = tmp_path / "straight16.tif"
     write_tiff(path, RGBA16, (2,))
     assert_identical(load_image_node(path)[0], np.ascontiguousarray(bgra(RGBA16)))
+
+
+@pytest.mark.parametrize("extra", [(1,), (2,)])
+def test_16_bit_grey_alpha_tiff_warns_of_the_loss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: tuple[int, ...]
+):
+    path = tmp_path / "grey-alpha16.tif"
+    write_tiff(path, np.ascontiguousarray(RGBA16[:, :, [0, 3]]), extra)
+    warnings: list[str] = []
+    monkeypatch.setattr(load_image.logger, "warning", warnings.append)
+    loaded = load_image_node(path)[0]
+    assert warnings == [
+        "16-bit grey+alpha TIFF: alpha dropped and depth reduced to 8 bit;"
+        f" save it as RGBA or PNG: {path}"
+    ]
+    # Still OpenCV's decode, no raise.
+    expected = _read_cv(path)
+    assert expected is not None
+    assert_identical(loaded, expected)
 
 
 UNCHANGED = {
