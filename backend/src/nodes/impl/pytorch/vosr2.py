@@ -259,8 +259,8 @@ def prepare_image(image: np.ndarray, scale: int) -> tuple[torch.Tensor, np.ndarr
         raise ValueError("VOSR 2.0 requires a non-empty RGB image.")
     if not np.isfinite(image).all():
         raise ValueError("VOSR 2.0 input contains non-finite values.")
-    if scale not in range(1, 9):
-        raise ValueError("VOSR 2.0 scale must be an integer from 1 to 8.")
+    if scale not in range(1, 17):
+        raise ValueError("VOSR 2.0 scale must be an integer from 1 to 16.")
     height, width = image.shape[:2]
     # chaiNNer is BGR; match the official CLI's PIL RGB bicubic 8-bit conditioning.
     rgb = np.rint(np.clip(image[:, :, ::-1], 0, 1) * 255).astype(np.uint8)

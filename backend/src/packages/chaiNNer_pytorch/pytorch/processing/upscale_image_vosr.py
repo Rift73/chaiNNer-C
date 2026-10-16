@@ -77,7 +77,7 @@ class _VideoState:
     icon="PyTorch",
     inputs=[
         ImageInput(channels=3),
-        NumberInput("Scale", min=1, max=8, default=4, unit="x"),
+        NumberInput("Scale", min=1, max=16, default=4, unit="x"),
         SeedInput(),
         EnumInput(
             VosrColorCorrection,

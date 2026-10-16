@@ -22,7 +22,7 @@ downloaded again. The first upscale also downloads OpenCV's YuNet face detector 
 
 | Input | Values | Effect |
 | --- | --- | --- |
-| Scale | 1 to 8, default 4 | Exact output size (the input is enlarged with 8-bit bicubic first) |
+| Scale | 1 to 16, default 4 | Exact output size (the input is enlarged with 8-bit bicubic first) |
 | Seed | | Chooses the generated detail; same seed, settings, backend: same output |
 | Color Correction | Wavelet (default), AdaIN, None | Wavelet: the input's coarse colours (Gaussian, sigma 5); AdaIN: channel mean and spread |
 | GPU Memory, Backend | Default, Low (under 7 GB); PyTorch, TensorRT, TensorRT FP8 | Backend hidden with Low |
