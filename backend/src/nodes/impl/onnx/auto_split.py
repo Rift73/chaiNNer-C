@@ -72,7 +72,16 @@ def _pad(
         return i[: new_h - new_pad_h, : new_w - new_pad_w]
 
     if pad_w or pad_h:
-        img = reflect_pad(img, pad_w, pad_h)
+        # As spandrel pads a PyTorch model's input: reflection reaches at most
+        # size - 1, and the rest replicates the edge.
+        reflect_w, reflect_h = min(pad_w, w - 1), min(pad_h, h - 1)
+        if reflect_w or reflect_h:
+            img = reflect_pad(img, reflect_w, reflect_h)
+        if reflect_w < pad_w or reflect_h < pad_h:
+            paddings = [(0, pad_h - reflect_h), (0, pad_w - reflect_w)]
+            if img.ndim == 3:
+                paddings.append((0, 0))
+            img = np.pad(img, paddings, "edge")
         return (img, remove_padding)
     else:
         return (img, lambda i: i)

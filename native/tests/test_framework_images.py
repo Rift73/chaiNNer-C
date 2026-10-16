@@ -456,7 +456,9 @@ def test_onnx_host_image_roundtrip(dtype, channels, nhwc, padding):
         swap_red_blue=native.swap_red_blue,
         cast_numpy=cast_numpy,
     )
-    shape = (3, 5, channels) if channels else (3, 5)
+    # Pads within reflection's reach (size - 1), where the reference's padding is ours;
+    # test_onnx_padding_beyond_reflection covers longer ones.
+    shape = (5, 6, channels) if channels else (5, 6)
     image = np.random.default_rng(335).random(shape, dtype=np.float32)
     req = SizeReq(minimum=7, multiple_of=4) if padding else SizeReq()
 
@@ -498,6 +500,35 @@ def test_onnx_host_image_roundtrip(dtype, channels, nhwc, padding):
     if not grey_bhwc:
         assert after.seen.strides == before.seen.strides
         assert actual.strides == expected.strides
+
+
+@pytest.mark.parametrize("channels", [0, 1, 3, 4])
+@pytest.mark.parametrize("shape", [(1, 1), (3, 5), (9, 5), (16, 2)])
+def test_onnx_padding_beyond_reflection(channels, shape):
+    # Below a model's minimum, ONNX Upscale Image pads as spandrel pads a PyTorch model:
+    # reflection reaches at most size - 1, and the rest replicates the edge.
+    modified = load(
+        ROOT / "backend/src/nodes/impl/onnx/auto_split.py",
+        SizeReq=SizeReq,
+        reflect_pad=native.reflect_pad,
+        swap_red_blue=native.swap_red_blue,
+        cast_numpy=cast_numpy,
+    )
+    h, w = shape
+    image = np.random.default_rng(336).random(
+        (h, w, channels) if channels else (h, w), dtype=np.float32
+    )
+    req = SizeReq(minimum=16)
+    pad_w, pad_h = req.get_padding(w, h)
+    reflect_w, reflect_h = min(pad_w, w - 1), min(pad_h, h - 1)
+    extra = [(0, 0)] if channels else []
+    expected = np.pad(image, [(0, reflect_h), (0, reflect_w), *extra], "reflect")
+    expected = np.pad(
+        expected, [(0, pad_h - reflect_h), (0, pad_w - reflect_w), *extra], "edge"
+    )
+    padded, remove_padding = modified._pad(image, req)
+    exact(padded, expected)
+    exact(remove_padding(padded), image)
 
 
 @pytest.mark.parametrize("kind", ["simple", "cloth"])
