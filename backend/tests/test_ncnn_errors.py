@@ -217,7 +217,9 @@ def upscale_with(
     monkeypatch.setattr(upscale_image, "get_ncnn_net", lambda model, settings: net)
     model = cast(
         NcnnModelWrapper,
-        SimpleNamespace(scale=scale, model=SimpleNamespace(bin_length=bin_length)),
+        SimpleNamespace(
+            scale=scale, size_multiple=1, model=SimpleNamespace(bin_length=bin_length)
+        ),
     )
     return upscale_image.upscale_impl(settings, image, model, "data", "out", tile_size)
 
