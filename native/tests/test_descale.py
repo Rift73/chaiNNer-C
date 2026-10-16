@@ -2,11 +2,12 @@
 and layouts, chunking and the solver cache do not change results. Bit-identity with the
 VapourSynth plugin (Release 12) was checked at integration: 12 of 12 cases, at the running
 ISA level only (the AVX2 unit uses FMA, exempt from cross-level identity, ARCHITECTURE
-section 5); no test here compares levels."""
+section 5); across levels the outputs agree within a tolerance."""
 
 import cv2
 import numpy as np
 import pytest
+from test_isa_dispatch import isa_get, isa_set
 
 from nodes.impl import native_descale
 
@@ -87,6 +88,25 @@ def test_column_pass_beyond_int_indices_is_refused():
     workspace = native_descale._lib.cn_descale_workspace
     assert workspace(1 << 20, 2032, 1, None, core_v.handle) > 0
     assert workspace(1 << 20, 2049, 1, None, core_v.handle) == 0
+
+
+@pytest.mark.parametrize("mode, b, c", [(1, 0.0, 0.5), (2, 1 / 3, 1 / 3), (3, 0.0, 0.5)])
+def test_levels_agree_within_the_fma_exemption(mode, b, c):
+    # The AVX2 unit uses FMA (exempt from cross-level identity, ARCHITECTURE section 5):
+    # its 1080p -> 720p output differs from the scalar unit's by up to ~8e-7.
+    image = np.random.default_rng(8).random((1080, 1920, 3), dtype=np.float32)
+    effective, _, maximum = isa_get()
+    outputs = {}
+    try:
+        for level in range(maximum + 1):
+            assert isa_set(level) == level
+            outputs[level] = native_descale.descale(
+                image, 1280, 720, mode, 3, b, c, 1.0, (0.0, 0.0), (1280, 720), 0
+            )
+    finally:
+        assert isa_set(effective) == effective
+    for level in range(1, maximum + 1):
+        assert np.abs(outputs[level] - outputs[0]).max() <= 2e-6, level
 
 
 def test_same_size_is_identity_and_bad_targets_fail():
