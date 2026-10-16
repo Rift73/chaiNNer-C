@@ -315,12 +315,14 @@ def collect_failed_run(ctx: AppContext) -> None:
     /run is collected too: its arrays were measured still held after the next /runs.
     run schedules this with call_soon, so it runs once the handler has returned and
     dropped the exception. A successful run never collects: gc's only other use is
-    return_device_memory, outside runs.
+    return_device_memory, outside runs. The tensors the collection frees stay
+    reserved by PyTorch, so they go back to the driver too.
     """
     gc.collect()
     # Not while a /run executes: it releases at its own end.
     if ctx.executor is None:
         numpy_pool.release()
+        return_device_memory(collect=False)
 
 
 class RunIndividualRequest(TypedDict):
@@ -443,16 +445,17 @@ async def release_after_broadcasts(ctx: AppContext, executor: Executor) -> None:
         )
 
 
-def return_device_memory() -> None:
+def return_device_memory(collect: bool = True) -> None:
     """Hand GPU memory that released node resources freed back to the driver.
 
     PyTorch keeps freed blocks reserved for reuse, so the memory stays occupied in the OS
     until emptied. Never imports torch: without a loaded, initialized CUDA there is
-    nothing to return.
+    nothing to return. collect=False for a caller that has just collected.
     """
     torch = sys.modules.get("torch")
     if torch is not None and torch.cuda.is_initialized():
-        gc.collect()
+        if collect:
+            gc.collect()
         torch.cuda.empty_cache()
 
 

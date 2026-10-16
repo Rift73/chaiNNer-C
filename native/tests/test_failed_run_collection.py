@@ -51,6 +51,7 @@ def test_collect_failed_run_frees_cyclic_garbage_then_releases_when_idle():
             "collect_failed_run",
             gc=gc,
             numpy_pool=SimpleNamespace(release=lambda: released.append(alive())),
+            return_device_memory=lambda collect=True: None,
         )
         collect(SimpleNamespace(executor=None))
         assert alive() is None
@@ -72,6 +73,21 @@ def test_collect_failed_run_never_releases_while_a_run_executes():
     )
     collect(SimpleNamespace(executor=object()))
     assert events == ["collect"]
+
+
+def test_collect_failed_run_returns_device_memory_when_idle():
+    # The collection frees the failed run's tensors into PyTorch's cache, which keeps
+    # them reserved (measured: a failed 128 px ESRGAN run held 130 MiB until a node was
+    # deleted). They go back to the driver after the collection, without a second one.
+    events = []
+    collect = compiled(
+        "collect_failed_run",
+        gc=SimpleNamespace(collect=lambda: events.append("collect")),
+        numpy_pool=SimpleNamespace(release=lambda: events.append("release")),
+        return_device_memory=lambda collect=True: events.append(("return", collect)),
+    )
+    collect(SimpleNamespace(executor=None))
+    assert events == ["collect", "release", ("return", False)]
 
 
 def test_a_failed_run_schedules_one_collection_after_its_error_event():
