@@ -70,6 +70,24 @@ def test_convert_to_onnx_matches_pytorch(arch: str, sizes: list[tuple[int, int]]
         )
 
 
+def test_convert_model_with_trainable_weights():
+    # PyTorch's Interpolate Models node returns a freshly loaded model, whose weights
+    # still require grad (Load Model turns that off).
+    torch.manual_seed(0)
+    model = ModelLoader().load_from_state_dict(ARCHS["Compact"]().state_dict())
+    assert isinstance(model, ImageModelDescriptor)
+    assert any(p.requires_grad for p in model.model.parameters())
+    session = ort.InferenceSession(
+        convert_to_onnx_impl(model, torch.device("cpu")),
+        providers=["CPUExecutionProvider"],
+    )
+    (image,) = images([(37, 51)])
+    (actual,) = session.run(None, {"input": image[None]})
+    np.testing.assert_allclose(
+        np.asarray(actual)[0], torch_output(model, image), rtol=0, atol=1e-5
+    )
+
+
 # MixDehazeNet's graph pads with shape operations, which NCNN does not support.
 @pytest.mark.parametrize("arch", ["Compact", "ESRGAN"])
 def test_convert_to_ncnn_matches_pytorch(arch: str, tmp_path: Path):

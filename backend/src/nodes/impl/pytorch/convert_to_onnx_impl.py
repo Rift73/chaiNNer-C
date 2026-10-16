@@ -39,6 +39,11 @@ def convert_to_onnx_impl(
         model.float()
         dummy_input = dummy_input.float()
 
+    # The trace stores the weights as constants (FakeModel below holds the descriptor,
+    # not the module), and a constant must not require grad. Load Model turns grad
+    # off; Interpolate Models returns a freshly loaded model with grad still on.
+    model.model.requires_grad_(False)
+
     m = model.model
 
     if isinstance(model, ImageModelDescriptor):
