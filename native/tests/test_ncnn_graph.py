@@ -873,3 +873,57 @@ def test_model_broadcast_metadata_order_and_errors(stride, factor, before):
     ra = outcome(lambda: reference.NcnnModelWrapper.get_broadcast_data(a))
     rb = outcome(lambda: port.NcnnModelWrapper.get_broadcast_data(b))
     assert ra == rb
+
+
+def reorg_model_specification(reorg_first: bool):
+    # 2x MangaJaNai's layout (upstream #3327): Reorg 2 folds 3 channels into 12 at
+    # half the size, a 1x1 convolution makes 48, PixelShuffle 4 unfolds them into 3
+    # channels at 4x the half size, so the model is 3 -> 3 channels at 2x.
+    reorg = spec("Reorg", "reorg", ("input",), ("r",), {0: 2})
+    convolution = spec(
+        "Convolution",
+        "conv",
+        ("r",) if reorg_first else ("input",),
+        ("c",),
+        {0: 48, 1: 1, 6: 48 * 12},
+        weights(np.float32, shape=(48, 12, 1, 1)),
+    )
+    if not reorg_first:
+        reorg = spec("Reorg", "reorg", ("c",), ("r",), {0: 2})
+        return [
+            convolution,
+            reorg,
+            spec("PixelShuffle", "ps", ("r",), ("output",), {0: 4}),
+        ]
+    return [reorg, convolution, spec("PixelShuffle", "ps", ("c",), ("output",), {0: 4})]
+
+
+def test_model_broadcast_reorg_first_is_2x_rgb():
+    specification = reorg_model_specification(reorg_first=True)
+    wrapper = port.NcnnModelWrapper(build(port, specification))
+    assert port.NcnnModelWrapper.get_broadcast_data(wrapper.model) == (
+        2,
+        3,
+        3,
+        48,
+        "fp32",
+    )
+    assert (wrapper.scale, wrapper.in_nc, wrapper.size_multiple) == (2, 3, 2)
+    # The frozen source has no Reorg branch: 4x with 12 input channels, which the
+    # Upscale Image node rejected as "3 channel to 12 channel".
+    assert reference.NcnnModelWrapper.get_broadcast_data(
+        build(reference, specification)
+    ) == (4, 12, 3, 48, "fp32")
+
+
+def test_model_broadcast_reorg_after_the_first_convolution_is_unchanged():
+    specification = reorg_model_specification(reorg_first=False)
+    wrapper = port.NcnnModelWrapper(build(port, specification))
+    assert outcome(
+        lambda: port.NcnnModelWrapper.get_broadcast_data(wrapper.model)
+    ) == outcome(
+        lambda: reference.NcnnModelWrapper.get_broadcast_data(
+            build(reference, specification)
+        )
+    )
+    assert wrapper.size_multiple == 1

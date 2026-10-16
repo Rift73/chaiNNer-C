@@ -842,10 +842,15 @@ O get_nf(const O &layer) {
     return make_tuple({nf,binary(binary(binary(count,nf,Op::floordiv),kw,Op::floordiv),kh,Op::floordiv)});
 }
 O broadcast_data(const O &model,const O &types) {
-    O scale=py::float_(1.0),inputs=py::int_(0),outputs=py::int_(0),nf=py::int_(0),fp=py::str("fp32"),shuffle=py::int_(1),current=py::none();
+    O scale=py::float_(1.0),inputs=py::int_(0),outputs=py::int_(0),nf=py::int_(0),fp=py::str("fp32"),shuffle=py::int_(1),reorg=py::int_(1),current=py::none();
     bool found=false;py::ssize_t i=0;O layers=model.attr("layers");
     for(py::handle h:layers){O layer=py::reinterpret_borrow<O>(h),op=layer.attr("op_type");
-        if(compare(op,py::str("Interp"),Py_EQ)){
+        // A Reorg (space-to-depth) before the first convolution folds stride x stride pixels into the channels:
+        // 2x models built on it (2x MangaJaNai) would read as stride^2 times the input channels and stride times
+        // the scale (upstream #3327).
+        if(!found&&compare(op,py::str("Reorg"),Py_EQ)){O stride=checked(builtin("int"),param_value(layer,0));
+            if(compare(stride,py::int_(1),Py_GT))reorg=binary(reorg,stride,Op::mul);
+        }else if(compare(op,py::str("Interp"),Py_EQ)){
             try{O next=item(layers,py::int_(i+1));
                 if(!compare(next.attr("op_type"),py::str("BinaryOp"),Py_EQ)&&!compare(param_value(next,0),py::int_(0),Py_EQ))scale=binary(scale,checked(builtin("float"),param_value(layer,1)),Op::mul);
             }catch(py::error_already_set &error){if(!error.matches(PyExc_IndexError))throw;scale=binary(scale,checked(builtin("float"),param_value(layer,1)),Op::mul);}
@@ -863,6 +868,10 @@ O broadcast_data(const O &model,const O &types) {
     }
     require(!current.is_none(),py::str("Cannot broadcast; model has no Convolution layers"));
     outputs=binary(checked(builtin("int"),param_value(current,0)),binary(shuffle,py::int_(2),Op::pow),Op::floordiv);
+    O folded=binary(reorg,py::int_(2),Op::pow);
+    if(compare(reorg,py::int_(1),Py_GT)&&compare(binary(inputs,folded,Op::mod),py::int_(0),Py_EQ)){
+        inputs=binary(inputs,folded,Op::floordiv);scale=binary(scale,reorg,Op::div);
+    }
     require(compare(scale,py::int_(1),Py_GE),py::str("Models with scale less than 1x not supported"));
     require(compare(binary(scale,py::int_(1),Op::mod),py::int_(0),Py_EQ),py::str("Model not supported, scale {} is not an integer").attr("format")(scale));
     return make_tuple({builtin("int")(scale),inputs,outputs,nf,fp});

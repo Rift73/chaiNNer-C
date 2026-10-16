@@ -25,6 +25,7 @@ from nodes.impl import native_framework_images as native
 from nodes.impl.image_utils import to_uint8
 from nodes.impl.native_tensors import cast_numpy
 from nodes.impl.onnx.model import SizeReq
+from nodes.impl.upscale.tiler import Tiler
 from nodes.utils.utils import get_h_w_c
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -663,6 +664,7 @@ def test_tiny_real_cpu_ncnn_roundtrip(channels, kind):
         auto_split=single,
         ncnn_input=native.ncnn_input,
         cast_numpy=cast_numpy,
+        Tiler=Tiler,
     )
     baseline.__dict__.update(use_gpu=False)
     modified.__dict__.update(use_gpu=False)

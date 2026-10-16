@@ -330,10 +330,33 @@ class NcnnModelWrapper:
         self.in_nc: int = in_nc
         self.out_nc: int = out_nc
         self.fp: str = fp
+        self.size_multiple: int = NcnnModelWrapper.get_size_multiple(model)
 
     @staticmethod
     def get_broadcast_data(model: NcnnModel) -> tuple[int, int, int, int, str]:
         return native_ncnn_graph.broadcast_data(model)
+
+    @staticmethod
+    def get_size_multiple(model: NcnnModel) -> int:
+        """The multiple the input's height and width must be.
+
+        A Reorg (space-to-depth) before the first convolution, as in the 2x
+        MangaJaNai models, drops the last row or column of an image whose size is
+        not a multiple of its stride.
+        """
+        multiple = 1
+        for layer in model.layers:
+            if layer.op_type in (
+                "Convolution",
+                "Convolution1D",
+                "ConvolutionDepthWise",
+                "Deconvolution",
+                "DeconvolutionDepthWise",
+            ):
+                break
+            if layer.op_type == "Reorg":
+                multiple *= max(1, int(layer.params[0].value))
+        return multiple
 
     @staticmethod
     def get_nf_and_in_nc(layer: NcnnLayer) -> tuple[int, int]:

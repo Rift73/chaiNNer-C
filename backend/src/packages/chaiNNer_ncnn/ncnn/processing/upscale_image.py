@@ -128,6 +128,7 @@ def upscale_impl(
                     staging_vkallocator=staging_vkallocator,
                     tiler=parse_tile_size_input(tile_size, estimate),
                     collect_after=collect_after,
+                    size_multiple=model.size_multiple,
                 )
         else:
             result = ncnn_auto_split(
@@ -139,6 +140,7 @@ def upscale_impl(
                 staging_vkallocator=None,
                 tiler=parse_tile_size_input(tile_size, estimate),
                 collect_after=collect_after,
+                size_multiple=model.size_multiple,
             )
     except (RuntimeError, ValueError):
         raise

@@ -301,6 +301,13 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   silently wrong models change; `1=1` and an omitted `1=` stay global. The differential tests' oracle reads the
   frozen `param_schema.json` with this default corrected (`SCHEMA_CORRECTIONS` in `native/tests/test_ncnn_graph.py`;
   `backend/tests/test_ncnn_reduction.py` compares a converted model with ONNX Runtime).
+- NCNN models that start with a Reorg (space-to-depth; all 2x MangaJaNai models): the broadcast data divides the
+  input channels by stride² and the scale by the stride when a Reorg comes before the first convolution, so these
+  models report 2x and 3 channels where upstream reports 4x and 12 and the Upscale Image node refused them (upstream
+  chaiNNer's open PR #3327 and issue #1697). `NcnnModelWrapper.size_multiple` (the Reorg strides) makes NCNN's auto split pad
+  an image to that multiple with edge pixels, crop the result back, and keep every tile a multiple; models without a
+  Reorg keep upstream's tiles exactly (upstream's PR rounds every model's tiles to even). Tests:
+  `test_model_broadcast_reorg_*` in `native/tests/test_ncnn_graph.py` and `native/tests/test_ncnn_reorg.py`.
 - Load Image and Load Images decode 8-bit RGBA TIFFs with unassociated alpha (ExtraSamples 2, orientation 1-4) with
   Pillow, keeping straight colour, where upstream's OpenCV path premultiplies it and loses the colour under alpha 0
   (upstream chaiNNer #409; owner-approved 2026-10-09). 8-bit grey+alpha TIFFs under the same conditions load as BGRA
