@@ -59,7 +59,7 @@ class ServerConfig:
     Usage: `--trace`
     """
 
-    host_pid: int | None
+    host_pid: int | None = None
     """
     The worker's host process; the worker exits when it ends. The host passes it.
 
