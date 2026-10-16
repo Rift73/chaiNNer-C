@@ -71,6 +71,22 @@ def test_tiled_1024_on_512_engine_equals_single_pass(bounds: ShapeBounds):
         assert border.min() >= 0.1 - 1e-5
 
 
+def test_fixed_engine_of_unaligned_size_gets_only_its_own_shape():
+    # A fixed engine accepts one shape (upstream #3347), here not a multiple of 64.
+    bounds = ShapeBounds(250, 200, 250, 200)
+    for size in ((600, 500), (100, 90)):
+        img = _image()[: size[0], : size[1]]
+        engine = FakeEngine(bounds)
+
+        out = tiled_upscale(img, SCALE, bounds, engine)
+
+        assert out.shape == (size[0] * SCALE, size[1] * SCALE, 3)
+        assert all(shape == (250, 200) for shape in engine.shapes)
+        if size == (600, 500):
+            assert len(engine.shapes) > 1
+            np.testing.assert_allclose(out, fake_model(img), rtol=0, atol=1e-5)
+
+
 def test_without_overlap_the_seam_test_fails():
     img = _image()
     out = tiled_upscale(img, SCALE, STATIC_512, FakeEngine(STATIC_512), overlap=0)

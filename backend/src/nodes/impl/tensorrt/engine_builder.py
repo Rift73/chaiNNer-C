@@ -206,6 +206,17 @@ def build_engine_from_onnx(
     gpu_name = get_cuda_device_name(gpu_index)
     logger.info("Built engine for %s (%s)", gpu_name, gpu_arch)
 
+    # Record the accepted input shapes. A fixed engine accepts exactly one shape:
+    # the profile shape for a dynamic ONNX model, or the model's own static shape.
+    min_shape = (1, input_channels, config.min_shape[0], config.min_shape[1])
+    opt_shape = (1, input_channels, config.opt_shape[0], config.opt_shape[1])
+    max_shape = (1, input_channels, config.max_shape[0], config.max_shape[1])
+    if not config.use_dynamic_shapes:
+        if not has_dynamic and len(input_shape) >= 4:
+            opt_shape = (1, input_channels, input_shape[2], input_shape[3])
+        min_shape = opt_shape
+        max_shape = opt_shape
+
     # Create engine info
     info = TensorRTEngineInfo(
         precision=config.precision,
@@ -214,16 +225,10 @@ def build_engine_from_onnx(
         scale=scale,
         gpu_architecture=gpu_arch,
         tensorrt_version=trt.__version__,
-        has_dynamic_shapes=has_dynamic or config.use_dynamic_shapes,
-        min_shape=(1, input_channels, config.min_shape[0], config.min_shape[1])
-        if config.use_dynamic_shapes
-        else None,
-        opt_shape=(1, input_channels, config.opt_shape[0], config.opt_shape[1])
-        if config.use_dynamic_shapes
-        else None,
-        max_shape=(1, input_channels, config.max_shape[0], config.max_shape[1])
-        if config.use_dynamic_shapes
-        else None,
+        has_dynamic_shapes=min_shape != max_shape,
+        min_shape=min_shape,
+        opt_shape=opt_shape,
+        max_shape=max_shape,
     )
 
     return TensorRTEngine(bytes(serialized_engine), info)
