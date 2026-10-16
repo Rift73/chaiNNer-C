@@ -4,7 +4,6 @@ TensorRT FP8 graph set."""
 from __future__ import annotations
 
 import errno
-import hashlib
 import os
 import shutil
 from collections.abc import Callable
@@ -16,7 +15,7 @@ from sanic.log import logger
 from api import NodeContext
 
 from .vosr2 import BundlePaths
-from .vosr2_engine_cache import stored_hash
+from .vosr2_engine_cache import file_lock, stored_hash
 from .vosr2_official import FILES, REVISION
 
 MODEL_HOST = "https://huggingface.co/CSWRY/VOSR/resolve/"
@@ -39,8 +38,10 @@ def download(
     target: Path,
     entry: dict,
     advance: Callable[[int], None],
+    file_digest: Callable[[Path], str],
 ) -> None:
-    """Resume a partial file when the server honours ranges; verify, then publish."""
+    """Resume a partial file when the server honours ranges; publish, then verify the
+    published file on disk. The caller holds the folder's download lock."""
     url = entry["url"]
     part = target.with_name(target.name + ".part")
     size = entry["size"]
@@ -48,12 +49,6 @@ def download(
     if offset > size:
         part.unlink()
         offset = 0
-    digest = hashlib.sha256()
-    if offset:
-        with part.open("rb") as existing:
-            while chunk := existing.read(CHUNK):
-                context.suspend()
-                digest.update(chunk)
     try:
         if offset < size:
             headers = {"Range": f"bytes={offset}-"} if offset else None
@@ -73,12 +68,10 @@ def download(
                     # The server ignored the range: start this file again.
                     advance(-offset)
                     offset = 0
-                    digest = hashlib.sha256()
                 with part.open("ab" if offset else "wb") as output:
                     for chunk in response.iter_content(CHUNK):
                         context.suspend()
                         output.write(chunk)
-                        digest.update(chunk)
                         offset += len(chunk)
                         if offset > size:
                             break
@@ -97,13 +90,18 @@ def download(
             f"The download of {target.name} stopped at {offset:,} of {size:,} bytes. "
             "Run again to resume it."
         )
-    if offset > size or digest.hexdigest() != entry["sha256"]:
+    mismatch = RuntimeError(
+        f"The downloaded {target.name} does not match its SHA-256, so it was "
+        "deleted. Run again to download it again."
+    )
+    if offset > size:
         part.unlink()
-        raise RuntimeError(
-            f"The downloaded {target.name} does not match its SHA-256, so it was "
-            "deleted. Run again to download it again."
-        )
+        raise mismatch
     os.replace(part, target)
+    # The bytes on disk are what later runs load, not the bytes received.
+    if file_digest(target) != entry["sha256"]:
+        target.unlink()
+        raise mismatch
 
 
 def fetch_files(
@@ -114,49 +112,59 @@ def fetch_files(
     label: str,
     reserve: int = 0,
 ) -> None:
-    """Download each missing or mismatched file of files ({name: size, sha256, url})."""
-    pending: dict[str, dict] = {}
-    for name, entry in files.items():
-        target = folder / name
-        if target.is_file():
-            if (
-                target.stat().st_size == entry["size"]
-                and file_digest(target) == entry["sha256"]
-            ):
-                continue
-            target.unlink()
-        pending[name] = entry
-    if not pending:
-        return
-    total = sum(entry["size"] for entry in pending.values())
-    done = sum(
-        min(part.stat().st_size, entry["size"])
-        for name, entry in pending.items()
-        if (part := folder / f"{name}.part").is_file()
-    )
-    free = shutil.disk_usage(folder).free
-    if free < total - done + reserve:
-        engines = (
-            f", plus about {reserve / 1e9:.0f} GB for the compiled engines"
-            if reserve
-            else ""
-        )
-        raise RuntimeError(
-            f"Downloading {label} needs {(total - done) / 1e9:.1f} GB more in "
-            f"{folder}{engines}; {free / 1e9:.1f} GB are free."
-        )
-    size = f"{total / 1e9:.2f} GB" if total >= 1e8 else f"{total / 1e6:.2f} MB"
-    logger.info("Downloading %s once: %s into %s", label, size, folder)
-    progress = [done]
+    """Download each missing or mismatched file of files ({name: size, sha256, url}).
 
-    def advance(count: int) -> None:
-        progress[0] += count
-        context.set_progress(progress[0] / total)
+    One process at a time: another chaiNNer process (a second window, a CLI run) that
+    shares the storage folder waits for the folder's lock, then finds the published
+    files; two never write one partial file together."""
+    folder.mkdir(parents=True, exist_ok=True)
+    with file_lock(
+        folder / "download.lock",
+        context,
+        f"another chaiNNer process to download {label}",
+    ):
+        pending: dict[str, dict] = {}
+        for name, entry in files.items():
+            target = folder / name
+            if target.is_file():
+                if (
+                    target.stat().st_size == entry["size"]
+                    and file_digest(target) == entry["sha256"]
+                ):
+                    continue
+                target.unlink()
+            pending[name] = entry
+        if not pending:
+            return
+        total = sum(entry["size"] for entry in pending.values())
+        done = sum(
+            min(part.stat().st_size, entry["size"])
+            for name, entry in pending.items()
+            if (part := folder / f"{name}.part").is_file()
+        )
+        free = shutil.disk_usage(folder).free
+        if free < total - done + reserve:
+            engines = (
+                f", plus about {reserve / 1e9:.0f} GB for the compiled engines"
+                if reserve
+                else ""
+            )
+            raise RuntimeError(
+                f"Downloading {label} needs {(total - done) / 1e9:.1f} GB more in "
+                f"{folder}{engines}; {free / 1e9:.1f} GB are free."
+            )
+        size = f"{total / 1e9:.2f} GB" if total >= 1e8 else f"{total / 1e6:.2f} MB"
+        logger.info("Downloading %s once: %s into %s", label, size, folder)
+        progress = [done]
 
-    for name, entry in pending.items():
-        target = folder / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        download(context, target, entry, advance)
+        def advance(count: int) -> None:
+            progress[0] += count
+            context.set_progress(progress[0] / total)
+
+        for name, entry in pending.items():
+            target = folder / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            download(context, target, entry, advance, file_digest)
 
 
 def model_folder(storage_dir: Path) -> Path:

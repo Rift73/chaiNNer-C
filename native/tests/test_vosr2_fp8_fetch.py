@@ -240,7 +240,8 @@ def test_a_manifest_with_another_hash_is_refused(host, monkeypatch, tmp_path):
 
 def test_cancel_keeps_the_partial_file_for_the_next_run(host, tmp_path):
     with pytest.raises(Aborted):
-        fetch(tmp_path, context_for(tmp_path, [], abort_after=5))
+        # The first check is the download lock's; the sixth falls in the middle of a file.
+        fetch(tmp_path, context_for(tmp_path, [], abort_after=6))
     folder = tmp_path / "storage" / "graphs"
     assert 0 < (folder / "dit_kv.onnx.data.part").stat().st_size
     assert not (folder / "dit_kv.onnx.data").exists()
@@ -428,6 +429,55 @@ def test_a_model_file_that_does_not_match_its_pin_is_deleted(model_host, tmp_pat
     assert not list(folder.glob("dinov2_vitl14_pretrain.pth*"))
     model_host.corrupt.clear()
     assert_model(vosr2_download.ensure_model(context_for(tmp_path, [])), tmp_path)
+
+
+def test_two_processes_download_the_model_once(model_host, tmp_path):
+    # Two backends share the storage folder (two windows, or the app and a CLI run).
+    # The second waits for the first's download, then finds the published files; the two
+    # never write one partial file together, which published a mix of both streams.
+    folder = tmp_path / "storage" / "vosr2-model" / vosr2_download.REVISION
+    paused, finished = threading.Event(), threading.Event()
+    errors: list[BaseException] = []
+
+    def suspend() -> None:
+        if not paused.is_set() and list(folder.rglob("*.part")):
+            paused.set()
+            finished.wait(timeout=1)  # the second's turn, if it could take one
+
+    first = cast(
+        NodeContext,
+        SimpleNamespace(
+            storage_dir=tmp_path / "storage",
+            node_id="fp8",
+            suspend=suspend,
+            check_aborted=lambda: None,
+            set_progress=lambda _: None,
+        ),
+    )
+
+    def run(context: NodeContext, wait: threading.Event | None) -> None:
+        try:
+            if wait is not None:
+                wait.wait(timeout=10)
+            assert_model(vosr2_download.ensure_model(context), tmp_path)
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            if wait is not None:
+                finished.set()
+
+    threads = [
+        threading.Thread(target=run, args=(first, None)),
+        threading.Thread(target=run, args=(context_for(tmp_path, []), paused)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert paused.is_set() and errors == []
+    assert_model(vosr2_download.ensure_model(context_for(tmp_path, [])), tmp_path)
+    names = [name for name, _ in model_host.log]
+    assert sorted(names) == sorted(set(names))  # each file requested once
 
 
 def test_present_model_files_are_hashed_once_and_never_downloaded(

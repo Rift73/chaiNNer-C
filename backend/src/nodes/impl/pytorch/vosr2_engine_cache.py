@@ -61,12 +61,30 @@ def write_json(path: Path, value: object) -> None:
         temporary.unlink(missing_ok=True)
 
 
-@contextmanager
-def cache_lock(path: Path, context: NodeContext) -> Iterator[None]:
-    if os.name != "nt":
-        raise RuntimeError("VOSR TensorRT compilation currently requires Windows.")
+if sys.platform == "win32":
     import msvcrt
 
+    def _try_lock(descriptor: int) -> None:
+        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+
+    def _unlock(descriptor: int) -> None:
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl
+
+    def _try_lock(descriptor: int) -> None:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(descriptor: int) -> None:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
+@contextmanager
+def file_lock(path: Path, context: NodeContext, waiting_for: str) -> Iterator[None]:
+    """Hold path's lock: other processes, and other threads of this one, wait for it.
+    The operating system releases it when its holder dies, so a file left behind by a
+    killed process is never held."""
     with path.open("a+b") as lock:
         if lock.tell() == 0:
             lock.write(b"0")
@@ -76,21 +94,27 @@ def cache_lock(path: Path, context: NodeContext) -> Iterator[None]:
             context.suspend()
             lock.seek(0)
             try:
-                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                _try_lock(lock.fileno())
                 break
             except OSError as error:
                 if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
                     raise
                 if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        "Timed out waiting for the VOSR compiler cache lock."
-                    ) from error
+                    raise TimeoutError(f"Timed out waiting for {waiting_for}.") from error
                 time.sleep(0.05)
         try:
             yield
         finally:
             lock.seek(0)
-            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            _unlock(lock.fileno())
+
+
+@contextmanager
+def cache_lock(path: Path, context: NodeContext) -> Iterator[None]:
+    if os.name != "nt":
+        raise RuntimeError("VOSR TensorRT compilation currently requires Windows.")
+    with file_lock(path, context, "the VOSR compiler cache lock"):
+        yield
 
 
 def stored_hash(path: Path, root: Path) -> str:
