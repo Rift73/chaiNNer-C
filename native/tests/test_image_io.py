@@ -1181,6 +1181,27 @@ def test_prepared_save_commit_order(tmp_path, skip):
     assert target.read_bytes() == (b"existing" if skip else b"prepared")
 
 
+@pytest.mark.parametrize("fmt", ["PNG", "AVIF"])
+def test_prepared_save_encodes_nothing_for_a_skipped_file(tmp_path, fmt):
+    # Skip existing files: the commit skips a file that exists, so the prepare encodes
+    # nothing for it (None runs the node whole, which skips it); a missing file, or an
+    # existing one without the option, is still prepared.
+    target = tmp_path / f"image.{fmt.lower()}"
+    target.write_bytes(b"existing")
+    for skip in (False, True):
+        inputs = save_arguments(
+            NEW.save, image(3), tmp_path, fmt=fmt, skip_existing_files=skip
+        )
+        prepared = NEW.save.prepare_save_image(list(inputs.values()))
+        assert (prepared is None) == skip
+    target.unlink()
+    inputs = save_arguments(
+        NEW.save, image(3), tmp_path, fmt=fmt, skip_existing_files=True
+    )
+    assert type(NEW.save.prepare_save_image(list(inputs.values()))) is bytes
+    assert list(tmp_path.iterdir()) == []
+
+
 class FailingWrite:
     """A file whose first write stores 4 bytes, then fails as a full disk does."""
 

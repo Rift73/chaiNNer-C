@@ -525,11 +525,13 @@ void save_image(py::dict g,py::tuple args,O prepared) {
 }
 // Save Image's prepare phase (SP3-P9): the bytes save_image writes for these
 // inputs (input 0 the image itself) to a path with the format's own extension,
-// encoded in memory; None for DDS, which texconv writes itself.
+// encoded in memory; None for DDS, which texconv writes itself, and for a file
+// the commit skips as existing, which it never encodes.
 O save_prepare(py::dict g,py::tuple args) {
     if(args.size()!=20)throw py::type_error("Image save expects 20 input values");
     O format_type=args[4];
     if(option(g,format_type,"ImageFormat","DDS"))return py::none();
+    if(truth(args[19]) && truth(name(g,"get_full_path")(args[1],args[2],args[3],format_type).attr("exists")()))return py::none();
     O extension=add(py::str("."),format_type.attr("extension"));
     Encoding encoded=encoding(g,args[0],args);
     if(encoded.pillow) {

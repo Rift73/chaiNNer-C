@@ -2875,11 +2875,12 @@ def test_prepared_save_skips_without_pulling_its_input(monkeypatch, tmp_path):
         assert written(directory) == {f"item-{i}.png": b"existing" for i in range(5)}
         runs[window] = pipeline
     one, three = runs["1"], runs["3"]
-    prepared = [value for _, value, _ in three.commits if value is not None]
-    assert prepared and not any(value.used for value in prepared)  # all discarded
-    assert not any(lazy.has_value for _, _, lazy in three.commits)  # never read
-    # each item's op ran ahead and was never taken, as its prepared value
-    assert three.summary["discarded"] >= 2 * len(prepared)
+    # every later item's prepare ran ahead and, its file existing, encoded nothing:
+    # each save ran whole and skipped, as at K = 1
+    assert three.prepares and not three.commits
+    assert sorted(three.wholes) == sorted(one.wholes)
+    # each item's op ran ahead and was never taken, as its empty prepare
+    assert three.summary["discarded"] >= 2 * len(three.prepares)
     assert not any(e["data"].get("nodeId") == "op" for e in three.events)
     assert stripped(three.events) == stripped(one.events)
 
