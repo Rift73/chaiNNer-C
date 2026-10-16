@@ -133,15 +133,20 @@ def fail_like_pip(
     silence: float = 0,
 ) -> None:
     """Replaces store's pip process with one that prints `output` and exits 1,
-    silent for `silence` seconds after the first line."""
+    silent for `silence` seconds after the first line. A surrogate escape in
+    `output` is printed as that raw byte."""
     output_file = tmp_path / "pip_output.txt"
-    output_file.write_text("".join(f"{line}\n" for line in output), encoding="utf-8")
+    output_file.write_text(
+        "".join(f"{line}\n" for line in output),
+        encoding="utf-8",
+        errors="surrogateescape",
+    )
     fake_pip = (
         "import sys, time;"
-        " lines = open(sys.argv[1], encoding='utf-8').readlines();"
-        " sys.stdout.write(lines[0]); sys.stdout.flush();"
+        " lines = open(sys.argv[1], 'rb').readlines();"
+        " sys.stdout.buffer.write(lines[0]); sys.stdout.buffer.flush();"
         " time.sleep(float(sys.argv[2]));"
-        " sys.stdout.write(''.join(lines[1:])); sys.exit(1)"
+        " sys.stdout.buffer.write(b''.join(lines[1:])); sys.exit(1)"
     )
     popen = subprocess.Popen
 
@@ -244,4 +249,32 @@ def test_a_full_disk_says_so(
             " Please free up disk space and try again."
         ),
         output[-1],
+    ]
+
+
+@pytest.mark.parametrize("action", ["installing", "uninstalling"])
+def test_output_that_is_not_utf8_is_shown_escaped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, action: str
+):
+    # A line in the console's code page (a build tool's message) must neither end
+    # the read with a UnicodeDecodeError while pip still runs nor hide pip's reason.
+    output = [
+        "Collecting ncnn==1.0.20240410",
+        NO_INDEX[-2],
+        "Microsoft (R) C/C++ caf\udce9",
+        NO_INDEX[-1],
+    ]
+    fail_like_pip(monkeypatch, tmp_path, output)
+    run = (
+        store.install_dependencies
+        if action == "installing"
+        else store.uninstall_dependencies
+    )
+    with pytest.raises(ValueError) as error:
+        asyncio.run(run([NCNN], ignore_progress))
+    assert str(error.value).splitlines() == [
+        f"An error occurred while {action} dependencies.",
+        NO_INDEX[-2],
+        "Microsoft (R) C/C++ caf\\xe9",
+        NO_INDEX[-1],
     ]
