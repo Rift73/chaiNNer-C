@@ -94,6 +94,10 @@ def test_run_proxies_without_recycling_the_worker():
     upstream[
         upstream.index("from response import error_response, success_response")
     ] = "from response import error_response, no_executor_response, success_response"
+    # Dependency changes run as a task of their own (WorkerServer.run_pip_job).
+    upstream[upstream.index("from typing import Final")] = (
+        "from typing import Any, Coroutine, Final"
+    )
     assert imports[0] == upstream
     # No stop/start-around-run path: the host defines upstream's functions only.
     functions = [
