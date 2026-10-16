@@ -36,5 +36,5 @@ def preview_clips_node(context: NodeContext, *clips: VideoClip | str | None) -> 
     )
     # vspipe evaluates the whole script: a failing statement raises its node's error
     # here, in chaiNNer, instead of only inside vsview.
-    clip_info(script, 0)
+    clip_info(script, 0, context)
     launch_preview(script, context.node_id)

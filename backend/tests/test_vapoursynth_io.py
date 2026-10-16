@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
-from api import MB, NodeAttributedError, NodeContext, SettingsParser
+from api import MB, Aborted, NodeAttributedError, NodeContext, SettingsParser
 from nodes.impl.vapoursynth import runner
 from nodes.impl.vapoursynth.runner import VSScriptError, clip_info, read_frames
 from nodes.impl.vapoursynth.script import VideoClip, clip_var, compile_script
@@ -35,6 +36,11 @@ class Context:
         self.node_id = node_id
         self.settings = SettingsParser({"cache_mb": 256})
         self.cleanups: list[Callable[[], None]] = []
+        self.aborted = False
+
+    def check_aborted(self):
+        if self.aborted:
+            raise Aborted
 
     def add_cleanup(self, fn: Callable[[], None], after: str = "chain"):
         self.cleanups.append(fn)
@@ -161,6 +167,77 @@ def test_old_frames_videos_are_deleted_at_load(
     # Outside the server, or before any chain ran: nothing to do, and no error.
     remove_old_videos(None)
     remove_old_videos(tmp_path / "missing")
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "matrix"),
+    [
+        (720, 480, 6),
+        (720, 576, 6),
+        (1024, 576, 6),
+        # HD by Load Video's rule (width >= 1280 or height > 576): scope crops of 720p
+        # and 1080p, and tall clips.
+        (1280, 536, 1),
+        (1920, 544, 1),
+        (1280, 720, 1),
+        (720, 1280, 1),
+    ],
+)
+def test_untagged_yuv_frames_use_load_videos_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    width: int,
+    height: int,
+    matrix: int,
+):
+    # The script vspipe would render: the chain's, with the conversion to RGBS.
+    rendered: list[str] = []
+
+    def vspipe_frames(script: Path, *_: object):
+        rendered.append(script.read_text(encoding="utf-8"))
+        yield from ()
+
+    monkeypatch.setattr(runner, "_vspipe_frames", vspipe_frames)
+    script = tmp_path / "frames.vpy"
+    script.write_text("# the chain\n", encoding="utf-8")
+    info = runner.ClipInfo(width, height, 2, 24, 1, "YUV420P8")
+    assert list(read_frames(script, 0, 0, 2, info=info)) == []
+    assert len(rendered) == 1
+    assert f"format=vapoursynth.RGBS, matrix_in={matrix})" in rendered[0]
+
+
+@pytest.mark.parametrize("run", ["evaluation", "frame"])
+def test_stop_ends_vspipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run: str):
+    # A vspipe that does not end: an evaluation that indexes a long video or a hung
+    # plugin, a frame that an AI model renders for minutes.
+    started: list[subprocess.Popen[bytes]] = []
+    popen = subprocess.Popen
+
+    def hanging(command: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        sleep = [sys.executable, "-c", "import time; time.sleep(60)"]
+        started.append(popen(sleep, **kwargs))
+        return started[-1]
+
+    monkeypatch.setattr(runner, "vspipe", lambda: Path("vspipe"))
+    monkeypatch.setattr(runner, "vs_env", lambda: dict(os.environ))
+    monkeypatch.setattr(subprocess, "Popen", hanging)
+    script = tmp_path / "chain.vpy"
+    script.write_text("# the chain\n", encoding="utf-8")
+    ctx = Context(tmp_path, "frames")
+    ctx.aborted = True
+
+    begin = time.monotonic()
+    with pytest.raises(Aborted):
+        if run == "evaluation":
+            clip_info(script, 0, cast(NodeContext, ctx))
+        else:
+            info = runner.ClipInfo(8, 6, 2, 24, 1, "RGBS")
+            list(
+                read_frames(script, 0, 0, 2, info=info, context=cast(NodeContext, ctx))
+            )
+    assert time.monotonic() - begin < 10
+    assert len(started) == 1
+    assert started[0].poll() is not None
 
 
 def test_executor_reports_an_attributed_error_on_its_node():
@@ -304,14 +381,14 @@ def test_clip_frames_count_and_values(
 
     # Every vspipe --info process (an evaluation of the script before the frames' run).
     info_runs: list[list[str]] = []
-    run = subprocess.run
+    popen = subprocess.Popen
 
     def counting(command: list[str], **kwargs: Any) -> Any:
         if "--info" in command:
             info_runs.append(command)
-        return run(command, **kwargs)
+        return popen(command, **kwargs)
 
-    monkeypatch.setattr(subprocess, "run", counting)
+    monkeypatch.setattr(subprocess, "Popen", counting)
 
     # Five 8x6 frames; frame i is RGB (10i, 20i, 30i) at 25 fps.
     frames = clip(

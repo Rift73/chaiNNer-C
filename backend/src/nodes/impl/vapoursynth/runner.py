@@ -19,12 +19,14 @@ from typing import Generator, Iterator
 
 import numpy as np
 
-from api import NodeAttributedError
+from api import NodeAttributedError, NodeContext
 
 from .script import node_for_line
 
 # How many of vspipe's last stderr lines an error message keeps.
 STDERR_TAIL_LINES = 20
+# How often a wait for vspipe checks for Stop.
+STOP_POLL_SECONDS = 0.05
 
 # R81 says on every run that it refuses API 3 plugins, and vs-jetpack's extras install
 # one (bm3dcpu): the line says nothing about the script.
@@ -127,24 +129,43 @@ def script_error(script: Path, stderr: str) -> VSScriptError:
     return VSScriptError(message or "vspipe failed without a message.", node_id)
 
 
-def _run_vspipe(script: Path, args: list[str]) -> str:
-    done = subprocess.run(
-        [str(vspipe()), *args],
-        env=vs_env(),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        check=False,
-        creationflags=_NO_WINDOW,
-    )
-    if done.returncode != 0:
-        raise script_error(script, done.stderr.decode("utf-8", "replace"))
-    return done.stdout.decode("utf-8", "replace")
+def _run_vspipe(script: Path, args: list[str], context: NodeContext | None) -> str:
+    # Files, not pipes: no output volume can block vspipe while Stop is polled (an
+    # evaluation can index a long video for minutes; the host restarts a worker that
+    # does not stop within seconds).
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        with subprocess.Popen(
+            [str(vspipe()), *args],
+            env=vs_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            creationflags=_NO_WINDOW,
+        ) as process:
+            try:
+                while True:
+                    try:
+                        returncode = process.wait(timeout=STOP_POLL_SECONDS)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if context is not None:
+                            context.check_aborted()
+            finally:
+                if process.poll() is None:
+                    process.kill()
+        if returncode != 0:
+            stderr.seek(0)
+            raise script_error(script, stderr.read().decode("utf-8", "replace"))
+        stdout.seek(0)
+        return stdout.read().decode("utf-8", "replace")
 
 
-def _video_output(script: Path, output: int) -> tuple[ClipInfo, dict[str, str]]:
+def _video_output(
+    script: Path, output: int, context: NodeContext | None
+) -> tuple[ClipInfo, dict[str, str]]:
     """The clip info of an output and all of vspipe's fields for it."""
     # --info evaluates the script and lists every output, whatever --outputindex says.
-    text = _run_vspipe(script, ["--info", str(script), "-"])
+    text = _run_vspipe(script, ["--info", str(script), "-"], context)
     for block in text.replace("\r\n", "\n").split("\n\n"):
         fields = dict(
             line.split(": ", 1) for line in block.splitlines() if ": " in line
@@ -166,9 +187,12 @@ def _video_output(script: Path, output: int) -> tuple[ClipInfo, dict[str, str]]:
     raise VSScriptError(f"The script has no output {output}.")
 
 
-def clip_info(script: Path, output: int) -> ClipInfo:
-    """Size, length, frame rate and format of a script's output, from `vspipe --info`."""
-    return _video_output(script.resolve(), output)[0]
+def clip_info(
+    script: Path, output: int, context: NodeContext | None = None
+) -> ClipInfo:
+    """Size, length, frame rate and format of a script's output, from `vspipe --info`;
+    Stop of the run of `context` ends vspipe."""
+    return _video_output(script.resolve(), output, context)[0]
 
 
 def _float_output(info: ClipInfo, fields: dict[str, str], output: int) -> str | None:
@@ -180,8 +204,10 @@ def _float_output(info: ClipInfo, fields: dict[str, str], output: int) -> str | 
     elif family == "RGB":
         to = "format=vapoursynth.RGBS"
     else:
-        # The _Matrix frame property, when set, beats matrix_in.
-        matrix = 1 if info.height > 576 else 6  # BT.709, else SMPTE 170M
+        # The _Matrix frame property, when set, beats matrix_in. Else Load Video's
+        # guess for untagged video: BT.709 for HD (width >= 1280 or height > 576),
+        # else SMPTE 170M.
+        matrix = 1 if info.width >= 1280 or info.height > 576 else 6
         to = f"format=vapoursynth.RGBS, matrix_in={matrix}"
     float32 = fields["Sample Type"] == "Float" and fields["Bits"] == "32"
     if float32 and family != "YUV":
@@ -206,8 +232,24 @@ def _read_into(stream: io.BufferedReader, buffer: memoryview) -> bool:
     return True
 
 
+def _kill_on_stop(
+    process: subprocess.Popen[bytes], context: NodeContext, done: threading.Event
+) -> None:
+    # A read waits until vspipe has rendered the frame, which can take long (an AI
+    # model in the script): Stop ends vspipe instead of waiting for it.
+    while not done.wait(STOP_POLL_SECONDS):
+        if context.aborted:
+            process.kill()
+            return
+
+
 def _vspipe_frames(
-    script: Path, output: int, start: int, end: int, shape: tuple[int, int, int]
+    script: Path,
+    output: int,
+    start: int,
+    end: int,
+    shape: tuple[int, int, int],
+    context: NodeContext | None,
 ) -> Iterator[np.ndarray]:
     channels, height, width = shape
     command = [str(vspipe()), "-o", str(output), "-s", str(start), "-e", str(end - 1)]
@@ -224,6 +266,14 @@ def _vspipe_frames(
         ) as process:
             stdout = process.stdout
             assert isinstance(stdout, io.BufferedReader)
+            done = threading.Event()
+            if context is not None:
+                threading.Thread(
+                    target=_kill_on_stop,
+                    args=(process, context, done),
+                    name="vspipe stop",
+                    daemon=True,
+                ).start()
             try:
                 while count < end - start:
                     # Gray frames are views of their own buffer (no copy); RGB frames
@@ -241,9 +291,12 @@ def _vspipe_frames(
                 stdout.read()
                 returncode = process.wait()
             finally:
+                done.set()
                 # The consumer stopped early, or reading failed.
                 if process.poll() is None:
                     process.kill()
+        if context is not None:
+            context.check_aborted()
         if returncode != 0 or count < end - start:
             stderr.seek(0)
             raise script_error(script, stderr.read().decode("utf-8", "replace"))
@@ -266,15 +319,22 @@ def _info_fields(info: ClipInfo) -> dict[str, str]:
 
 
 def read_frames(
-    script: Path, output: int, start: int, end: int, *, info: ClipInfo | None = None
+    script: Path,
+    output: int,
+    start: int,
+    end: int,
+    *,
+    info: ClipInfo | None = None,
+    context: NodeContext | None = None,
 ) -> Generator[np.ndarray]:
     """Frames start..end-1 of a script's output, rendered by vspipe, as float32 HWC BGR
     arrays (HxWx1 for gray clips). Other formats are converted in the child: YUV with
-    the _Matrix frame property, else BT.709 above 576 lines, else SMPTE 170M. `info`,
-    the output's clip_info from this same script, saves an evaluation of the script."""
+    the _Matrix frame property, else BT.709 for HD sizes, else SMPTE 170M. `info`,
+    the output's clip_info from this same script, saves an evaluation of the script.
+    Stop of the run of `context` ends vspipe, also in the middle of a frame."""
     script = script.resolve()
     if info is None:
-        info, fields = _video_output(script, output)
+        info, fields = _video_output(script, output, context)
     else:
         fields = _info_fields(info)
     if not 0 <= start <= end <= info.num_frames:
@@ -292,7 +352,7 @@ def read_frames(
     shape = (1 if fields["Color Family"] == "Gray" else 3, info.height, info.width)
     lines = _float_output(info, fields, output)
     if lines is None:
-        yield from _vspipe_frames(script, output, start, end, shape)
+        yield from _vspipe_frames(script, output, start, end, shape, context)
         return
     # A copy next to the script, so that the script finds what it finds there.
     handle, name = tempfile.mkstemp(
@@ -302,7 +362,7 @@ def read_frames(
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as file:
             file.write(script.read_text(encoding="utf-8") + lines)
-        yield from _vspipe_frames(converted, output, start, end, shape)
+        yield from _vspipe_frames(converted, output, start, end, shape, context)
     finally:
         converted.unlink(missing_ok=True)
 

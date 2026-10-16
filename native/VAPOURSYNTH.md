@@ -68,7 +68,7 @@ one (so does a restart of chaiNNer-C). vsview keeps its settings in `%LOCALAPPDA
 ## Clip Frames and Frames to Clip
 
 **Clip Frames** (a loop, like Load Video) outputs Frame, Index and FPS (0 if the rate varies). Gray clips give gray
-images; any other clip becomes RGB (YUV by its matrix, else by its height; add Convert Format before it to choose).
+images; any other clip becomes RGB (YUV by its matrix, else by its size as Load Video; add Convert Format before it to choose).
 Every frame needs one size and format. **Frames to Clip** ends a loop of 3-channel images, with an FPS, and saves them
 as a lossless FFV1 video that BestSource reads as a clip. It is 8-bit RGB: chaiNNer's float frames are rounded to 8
 bits, and the next run replaces the file.

@@ -37,8 +37,9 @@ def get_item_types(info: ClipInfo):
         "Iterates over all frames of a clip as images, rendered by vspipe.",
         (
             "Gray clips give gray images; every other clip is converted to RGB (YUV with"
-            " the clip's matrix, else BT.709 above 576 lines and BT.601 up to 576). Add a"
-            " Convert Format node before this one to choose the conversion yourself."
+            " the clip's matrix, else as Load Video reads untagged video: BT.709 at"
+            " least 1280 pixels wide or above 576 lines, else BT.601). Add a Convert"
+            " Format node before this one to choose the conversion yourself."
         ),
     ],
     icon="MdVideoCameraBack",
@@ -64,11 +65,11 @@ def clip_frames_node(
     context: NodeContext, clip: VideoClip
 ) -> tuple[Generator[tuple[np.ndarray, int]], float]:
     script = write_script(context, [(clip, "Clip")], chain_dir(context) / "frames.vpy")
-    info = clip_info(script, 0)
+    info = clip_info(script, 0, context)
 
     def frames() -> Iterator[tuple[np.ndarray, int]]:
         # The info above: vspipe evaluates the script once more, for the frames.
-        reader = read_frames(script, 0, 0, info.num_frames, info=info)
+        reader = read_frames(script, 0, 0, info.num_frames, info=info, context=context)
         # Stops vspipe when the run ends before the last frame.
         context.add_cleanup(reader.close)
         try:
