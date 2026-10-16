@@ -108,6 +108,9 @@ def test_run_proxies_without_recycling_the_worker():
         ]
         for t in trees
     ]
+    # change_dependencies only runs pip as a task of its own (d6aa1a8e); it neither
+    # stops nor starts the worker around a run.
+    functions[0].remove("change_dependencies")
     assert functions[0] == functions[1]
 
 
