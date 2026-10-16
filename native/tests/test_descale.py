@@ -72,6 +72,9 @@ def test_system_beyond_int_indices_is_refused():
     strip = np.zeros((16, 65536), np.float32)
     with pytest.raises(ValueError, match="^Invalid descale parameters$"):
         run(strip, 32768, 16)
+    # The float weights take ceil(dst / 8) * 8 rows of up to src columns.
+    with pytest.raises(ValueError, match="^Invalid descale parameters$"):
+        native_descale._core(300_000_000, 1, 1, 3, 0.0, 0.5, 1.0, 0.0, 1.0, 2)
 
 
 def test_column_pass_beyond_int_indices_is_refused():

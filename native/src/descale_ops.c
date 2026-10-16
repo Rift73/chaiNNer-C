@@ -62,8 +62,9 @@ CN_EXPORT void *cn_descale_core_create(int src_dim, int dst_dim, int mode, int t
                                        double blur, double shift, double active_dim, int border,
                                        int *mirror_outside) {
     if (mirror_outside) *mirror_outside = 0;
-    /* descale indexes its src_dim x dst_dim matrices with int products. */
-    if (src_dim < 1 || dst_dim < 1 || dst_dim > src_dim || (int64_t)src_dim * dst_dim > INT_MAX ||
+    /* descale indexes its src_dim x dst_dim matrices with int products; the float weights
+     * take ceil_n(dst_dim, 8) rows of up to src_dim columns. */
+    if (src_dim < 1 || dst_dim < 1 || dst_dim > src_dim || ((int64_t)dst_dim + 7) * src_dim > INT_MAX ||
         mode < DESCALE_MODE_BILINEAR || mode > DESCALE_MODE_POINT ||
         !(blur > 0.0) || !(active_dim > 0.0) || border < DESCALE_BORDER_MIRROR || border > DESCALE_BORDER_REPEAT ||
         (mode == DESCALE_MODE_LANCZOS && taps < 1))
