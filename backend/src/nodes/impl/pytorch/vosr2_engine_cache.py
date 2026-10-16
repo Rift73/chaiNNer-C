@@ -180,7 +180,11 @@ def compile_worker(
     that hold the folder's lock read or write."""
     with torch.cuda.device(device):
         index = torch.cuda.current_device()
-    gpu = next(gpu for gpu in nvidia.devices if gpu.index == index)
+    gpu = next((gpu for gpu in nvidia.devices if gpu.index == index), None)
+    if gpu is None:
+        raise RuntimeError(
+            "VOSR TensorRT compilation requires working NVIDIA memory monitoring."
+        )
     usage = gpu.get_current_vram_usage()
     limit = usage.total
     # Compilation creates a second CUDA context and temporarily resident weights.

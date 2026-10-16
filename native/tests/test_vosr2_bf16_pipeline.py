@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import inspect
 import json
@@ -227,6 +228,20 @@ def test_build_stages_are_logged_and_reported_as_the_worker_prints_them(capsys, 
         assert vosr2_engine_cache.report_stages(context, unread + tail) == b""
     assert progress == [0, 1 / 3, 2 / 3]
     assert "VOSR TensorRT build: stage 3 of 3, Compiling BF16 stage 3" in caplog.text
+
+
+def test_a_build_without_nvidia_memory_monitoring_says_so(monkeypatch, tmp_path):
+    # NVML lists no device for the CUDA index (NVML failed to start): the build refuses
+    # with the message vram_budget gives, not a bare StopIteration, whose empty text
+    # would be the node's whole error.
+    monkeypatch.setattr(torch.cuda, "device", lambda _: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(vosr2_engine_cache, "nvidia", SimpleNamespace(devices=[]))
+    context = cast(NodeContext, SimpleNamespace())
+    with pytest.raises(RuntimeError, match="NVIDIA memory monitoring"):
+        vosr2_engine_cache.compile_worker(
+            context, "unused.py", tmp_path, tmp_path, torch.device("cuda:0")
+        )
 
 
 def test_bf16_identity_uses_the_pins_not_the_model_folder(monkeypatch, tmp_path):
