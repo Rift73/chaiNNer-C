@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from types import SimpleNamespace
 from typing import cast
 
@@ -91,7 +92,11 @@ def test_migration_rejects_corrupt_plan_without_publishing(tmp_path):
     (source / "dino.plan").write_bytes(b"corrupt")
     identity = stage_identity(old)
     destination = tmp_path / key(identity)
-    with pytest.raises(RuntimeError, match="corrupt VOSR dino"):
+    folder = re.escape(str(source))
+    with pytest.raises(
+        RuntimeError,
+        match=rf"VOSR dino engine in {folder} is corrupt\. Delete {folder} and run again",
+    ):
         migrate_stage_cache(
             cast(NodeContext, SimpleNamespace(suspend=lambda: None)),
             tmp_path,
@@ -127,10 +132,11 @@ def test_migration_rejects_ambiguous_compatible_recipes(tmp_path):
     manifest["engines"]["dino"] = "another-engine"
     (other / "manifest.json").write_text(json.dumps(manifest))
     identity = stage_identity(old)
-    with pytest.raises(RuntimeError, match="Ambiguous compatible"):
+    with pytest.raises(RuntimeError, match="Delete one of them and run again") as error:
         migrate_stage_cache(
             cast(NodeContext, SimpleNamespace(suspend=lambda: None)),
             tmp_path,
             tmp_path / key(identity),
             identity,
         )
+    assert str(source) in str(error.value) and str(other) in str(error.value)

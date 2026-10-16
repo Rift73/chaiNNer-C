@@ -69,7 +69,9 @@ def migrate_stage_cache(
             continue
         if candidates and candidates[0][1]["engines"] != engines:
             raise RuntimeError(
-                "Ambiguous compatible VOSR caches contain different engine plans."
+                "Two cached VOSR engine sets fit this version but hold different "
+                f"plans: {candidates[0][0].parent} and {path.parent}. Delete one of "
+                "them and run again."
             )
         candidates.append((path, manifest))
     if not candidates:
@@ -80,7 +82,10 @@ def migrate_stage_cache(
         context.suspend()
         source = path.parent / f"{name}.plan"
         if not source.is_file() or _digest(source) != engines[name]:
-            raise RuntimeError(f"Cannot migrate corrupt VOSR {name} engine: {source}")
+            raise RuntimeError(
+                f"The cached VOSR {name} engine in {path.parent} is corrupt. "
+                f"Delete {path.parent} and run again."
+            )
     with tempfile.TemporaryDirectory(prefix="migrating-", dir=root) as work:
         staged = Path(work) / "cache"
         staged.mkdir()
