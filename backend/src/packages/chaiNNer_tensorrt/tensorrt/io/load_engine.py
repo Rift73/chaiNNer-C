@@ -8,6 +8,7 @@ from sanic.log import logger
 from api import NodeContext
 from nodes.impl.pytorch.resource_cache import file_identity
 from nodes.impl.tensorrt.cache import engines
+from nodes.impl.tensorrt.engine_file import read_engine_file
 from nodes.impl.tensorrt.engine_info import deserialize_engine, read_engine_info
 from nodes.impl.tensorrt.model import TensorRTEngine
 from nodes.properties.inputs import TensorRTFileInput
@@ -27,7 +28,7 @@ if io_group is not None:
         schema_id="chainner:tensorrt:load_engine",
         name="Load Engine",
         description=(
-            "Load a TensorRT engine file (.engine, .trt, .plan). "
+            "Load a TensorRT engine file (.engine, .trt, .plan), compressed by Save Engine or not. "
             "TensorRT engines are built for a specific GPU architecture and may not work "
             "on different GPUs. The node will warn you if there's a potential compatibility issue."
         ),
@@ -52,8 +53,7 @@ if io_group is not None:
 
         def load() -> TensorRTEngine:
             logger.debug("Reading TensorRT engine from path: %s", path)
-            with open(path, "rb") as f:
-                engine_bytes = f.read()
+            engine_bytes = read_engine_file(path)
             loaded = deserialize_engine(engine_bytes, gpu_index)
             try:
                 return TensorRTEngine(engine_bytes, read_engine_info(loaded), loaded)
