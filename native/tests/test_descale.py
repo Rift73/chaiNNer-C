@@ -62,6 +62,14 @@ def test_mirror_reaching_past_the_target_is_refused(width, mode, blur, left):
     assert out.shape == (16, width, 3)
 
 
+def test_system_beyond_int_indices_is_refused():
+    # descale sizes its src_dim x dst_dim matrices with int products: 65536 x 32768
+    # overflowed into an access violation inside the core build.
+    strip = np.zeros((16, 65536), np.float32)
+    with pytest.raises(ValueError):
+        run(strip, 32768, 16)
+
+
 def test_same_size_is_identity_and_bad_targets_fail():
     image = np.random.default_rng(5).random((20, 30, 3), dtype=np.float32)
     assert np.array_equal(run(image, 30, 20), image)

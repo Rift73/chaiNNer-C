@@ -10,6 +10,7 @@
  * NumPy, whose pool keeps it warm across a batch. Fresh pages cost more than the solve.
  */
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
@@ -58,7 +59,9 @@ static int mirror_fits(int src_dim, int dst_dim, int mode, int taps, double blur
  * mode is DescaleMode (1 bilinear .. 7 point), border DescaleBorder. */
 CN_EXPORT void *cn_descale_core_create(int src_dim, int dst_dim, int mode, int taps, double b, double c,
                                        double blur, double shift, double active_dim, int border) {
-    if (src_dim < 1 || dst_dim < 1 || dst_dim > src_dim || mode < DESCALE_MODE_BILINEAR || mode > DESCALE_MODE_POINT ||
+    /* descale indexes its src_dim x dst_dim matrices with int products. */
+    if (src_dim < 1 || dst_dim < 1 || dst_dim > src_dim || (int64_t)src_dim * dst_dim > INT_MAX ||
+        mode < DESCALE_MODE_BILINEAR || mode > DESCALE_MODE_POINT ||
         !(blur > 0.0) || !(active_dim > 0.0) || border < DESCALE_BORDER_MIRROR || border > DESCALE_BORDER_REPEAT ||
         (mode == DESCALE_MODE_LANCZOS && taps < 1) ||
         (border == DESCALE_BORDER_MIRROR && !mirror_fits(src_dim, dst_dim, mode, taps, blur, shift, active_dim)))
