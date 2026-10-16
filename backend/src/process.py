@@ -67,6 +67,7 @@ from nodes.impl.item_window import (
     Stored,
     affinity_cpus,
     engine_jobs,
+    escaping_targets,
     memory_budget,
     node_phases,
     output_nbytes,
@@ -404,6 +405,14 @@ def _output_value(output: NodeOutput, index: int) -> object:
     if isinstance(output, GeneratorOutput):
         return output.partial_output[index]
     return output.output[index]
+
+
+def _relative_path_input(i: object) -> bool:
+    """
+    Whether the input is a RelativePathInput (a writer's subdirectory or file name). Read from sys.modules: importing the inputs package loads torch, and with its module not loaded no such input exists.
+    """
+    module = sys.modules.get("nodes.properties.inputs.file_inputs")
+    return module is not None and isinstance(i, module.RelativePathInput)
 
 
 class _ExecutorNodeContext(NodeContext):
@@ -1158,7 +1167,7 @@ class Executor:
             self.__collector_directories[node.id] = {
                 index: inputs[index]
                 for index, i in enumerate(node.data.inputs)
-                if i.kind == "directory"
+                if i.kind == "directory" or _relative_path_input(i)
             }
         context = self.__get_node_context(node)
 
@@ -1331,18 +1340,22 @@ class Executor:
         writers: list[Node],
         generator_outputs: dict[NodeId, GeneratorOutput],
         all_iterated_nodes: set[NodeId],
-    ) -> list[tuple[NodeId, Path | None]]:
+    ) -> tuple[list[tuple[NodeId, Path | None]], list[tuple[NodeId, Path, Path]]]:
         """
-        Returns the base directory of every directory input of the given writers (SP3-P4).
+        Returns the base directory of every directory input of the given writers (SP3-P4), each followed by the folder its file goes to when the relative path inputs after it (subdirectory, file name) are known: the directory joined with them, `..` included, the file name's own folder last. A known part is a constant (an unset one adds nothing) or a resolved value; the join stops at the first unknown part. Also returns (writer, directory, target folder) for each such folder.
 
-        Nothing is computed: an input fed by an iterated output or node, a value missing
-        from the cache, or a value that is not a path is unresolved (None).
+        The blocker checks the directory and the target folder alike, so a target outside the directory can only set K = 1 in more cases. Nothing is computed: an input fed by an iterated output or node, a value missing from the cache, or a value that is not a path is unresolved (None).
         """
         directories: list[tuple[NodeId, Path | None]] = []
+        targets: list[tuple[NodeId, Path, Path]] = []
         for node in sorted(writers, key=lambda n: n.id):
             assigned_inputs = self.inputs.get(node.id)
+            base: Path | None = None
+            parts: list[str] = []
+            complete = False  # every relative path input after the directory is known
             for index, i in enumerate(node.data.inputs):
-                if i.kind != "directory":
+                relative = _relative_path_input(i)
+                if i.kind != "directory" and not relative:
                     continue
                 node_input = assigned_inputs[index]
                 if not isinstance(node_input, EdgeInput):
@@ -1371,10 +1384,38 @@ class Executor:
                         if cached is None
                         else _output_value(cached, node_input.index)
                     )
-                directories.append(
-                    (node.id, Path(value) if isinstance(value, (str, Path)) else None)
-                )
-        return directories
+                if not relative:
+                    self.__add_target(
+                        node.id, base, parts, complete, directories, targets
+                    )
+                    base = Path(value) if isinstance(value, (str, Path)) else None
+                    directories.append((node.id, base))
+                    parts, complete = [], True
+                elif complete and isinstance(value, str):
+                    parts.append(value)
+                elif not (value is None and not isinstance(node_input, EdgeInput)):
+                    complete = False  # unknown: the join stops before it
+            self.__add_target(node.id, base, parts, complete, directories, targets)
+        return directories, targets
+
+    @staticmethod
+    def __add_target(
+        writer: NodeId,
+        base: Path | None,
+        parts: list[str],
+        complete: bool,
+        directories: list[tuple[NodeId, Path | None]],
+        targets: list[tuple[NodeId, Path, Path]],
+    ) -> None:
+        """
+        Adds the target folder of a directory input and the known relative path inputs after it (see __writer_directories): the file name's folder when all are known, else the folder of the known ones.
+        """
+        if base is None or not parts:
+            return
+        joined = base.joinpath(*parts)
+        folder = joined.parent if complete else joined
+        directories.append((writer, folder))
+        targets.append((writer, base, folder))
 
     async def __open_window(
         self,
@@ -1407,7 +1448,7 @@ class Executor:
                 (node.id, generator_outputs[node.id].generator.source_paths)
                 for node in generator_nodes
             ]
-            directories = self.__writer_directories(
+            directories, targets = self.__writer_directories(
                 writers, generator_outputs, all_iterated_nodes
             )
             blocker = await await_owned_node(
@@ -1418,6 +1459,18 @@ class Executor:
             )
             if blocker is not None:
                 k, reason = (1, blocker)
+            escaping = await await_owned_node(
+                self.loop.run_in_executor(
+                    self.pool, functools.partial(escaping_targets, targets)
+                )
+            )
+            for writer, folder in escaping:
+                name = self.chain.nodes[writer].data.name
+                message = f"{name} writes to {folder}, outside its chosen folder."
+                logger.warning(message)
+                self.queue.put(
+                    {"event": "execution-warning", "data": {"message": message}}
+                )
         logger.info("item window K=%d (%s)", k, reason)
         self.__item_bytes = None
         if k == 1:

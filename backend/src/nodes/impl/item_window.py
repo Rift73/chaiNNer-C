@@ -1156,3 +1156,20 @@ def read_ahead_blocker(
     except (OSError, ValueError, RuntimeError) as error:
         return f"{PATH_CHECK_FAILED}: {error}"
     return None
+
+
+def escaping_targets(
+    targets: Sequence[tuple[NodeId, Path, Path]],
+) -> list[tuple[NodeId, Path]]:
+    """The writers whose target folder, resolved (`..` included), lies outside their
+    chosen directory: (writer, resolved target folder). A path that cannot be resolved
+    is left to read_ahead_blocker."""
+    escaping: list[tuple[NodeId, Path]] = []
+    for writer, directory, folder in targets:
+        try:
+            resolved = folder.resolve()
+            if not _contains(_normalized(directory.resolve()), _normalized(resolved)):
+                escaping.append((writer, resolved))
+        except (OSError, ValueError, RuntimeError):
+            continue
+    return escaping

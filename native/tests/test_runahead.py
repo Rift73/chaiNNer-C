@@ -10,6 +10,7 @@ from test_iteration_view import Looking, assert_served, computed_folder
 
 from api import InputId, NodeId
 from chain.chain import Edge, EdgeSource, EdgeTarget
+from nodes.properties.inputs import RelativePathInput
 
 
 def producing(monkeypatch, tmp_path, count, *, depth, fail=(), **options):
@@ -213,6 +214,40 @@ def test_a_look_ahead_the_read_ahead_check_switches_off_is_a_run_warning(
         assert_served(looking.looks, 0)
         effect = "look runs without its look-ahead: it uses only the current and earlier frames"
         assert run_warnings(looking) == [f"{reason}, so {effect}."]
+
+
+@pytest.mark.parametrize(
+    ("folder", "subdirectory", "name", "decision", "escapes"),
+    [
+        ("out", "../in", "x", "K=1 (source under output directory: save)", True),
+        ("out", None, "../in/x", "K=1 (source under output directory: save)", True),
+        ("out", "sub", "x", "K=3 (override)", False),
+        ("", "out", "x", "K=1 (source under output directory: save)", False),
+    ],
+)
+def test_the_read_ahead_check_resolves_the_full_output_path(
+    monkeypatch, tmp_path, folder, subdirectory, name, decision, escapes
+):
+    # save's subdirectory and file name join its folder, `..` included: a path back
+    # into the source folder sets K = 1 and warns that save writes outside its folder.
+    # The folder itself is still checked, so a deeper target never lifts a K = 1.
+    looking = saving_into(monkeypatch, tmp_path, folder, depth=0)
+    save = looking.chain.nodes[NodeId("save")]
+    subdirectory_input = RelativePathInput("Subdirectory").make_optional().with_id(2)
+    name_input = RelativePathInput("Name").with_id(3)
+    object.__setattr__(
+        save.data, "inputs", [*save.data.inputs, subdirectory_input, name_input]
+    )
+    object.__setattr__(save.data, "run", lambda value, *_paths: looking.deliver(value))
+    looking.chain.inputs.set(NodeId("save"), InputId(2), subdirectory)
+    looking.chain.inputs.set(NodeId("save"), InputId(3), name)
+    assert looking.run(workers=4) is None
+    assert looking.decisions == [f"item window {decision}"]
+    assert looking.saved == [7.0, 17.0, 27.0, 37.0]
+    target = (tmp_path / "in").resolve()
+    assert run_warnings(looking) == (
+        [f"save writes to {target}, outside its chosen folder."] if escapes else []
+    )
 
 
 def test_a_loop_without_a_look_ahead_has_no_run_warning(monkeypatch, tmp_path):
