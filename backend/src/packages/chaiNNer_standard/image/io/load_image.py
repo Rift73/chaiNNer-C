@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 # `x as x` imports: the native mirror reads these names in native/src/image_io.cpp
+import io
 import os as os
 import platform as platform
+import struct
 from pathlib import Path
 from typing import Callable, Iterable, Union
 
@@ -68,10 +70,10 @@ def _read_tiff_straight_alpha(path: Path) -> np.ndarray | None:
     OpenCV reads 8-bit TIFFs through libtiff's RGBA interface, which premultiplies
     unassociated (straight) alpha (upstream chaiNNer #409), and drops the alpha of
     grey+alpha TIFFs, so Pillow decodes 8-bit RGBA and LA TIFFs that declare it. LA
-    loads as BGRA with the grey in B, G and R, as OpenCV loads a grey+alpha PNG. Both
-    apply the Orientation tag, but Pillow 12.3 does not transpose orientations 5-8;
-    those and every other TIFF stay with OpenCV. Pillow cannot open 16-bit grey+alpha,
-    which OpenCV loads as 8-bit grey: a warning says so.
+    loads as BGRA with the grey in B, G and R, as OpenCV loads a grey+alpha PNG. The
+    stored pixels are turned once, by the shared orient(), as the Orientation tag says;
+    every other TIFF stays with OpenCV. Pillow cannot open 16-bit grey+alpha, which
+    OpenCV loads as 8-bit grey: a warning says so.
     """
     with open(path, "rb") as file:
         header = file.read(8)
@@ -92,18 +94,35 @@ def _read_tiff_straight_alpha(path: Path) -> np.ndarray | None:
         return None
     # The plugin class reads only the header; Image.open's size check would also warn
     # on large TIFFs that this decoder leaves to OpenCV.
-    im = TiffImagePlugin.TiffImageFile(path)
-    with im:
-        tags = im.tag_v2
+    with TiffImagePlugin.TiffImageFile(path) as im:
         if (
             im.mode not in ("RGBA", "LA")
             or set(tags.get(258, ())) != {8}  # BitsPerSample
             or tags.get(338) != (2,)  # ExtraSamples: unassociated alpha
-            or tags.get(274, 1) > 4  # Orientation
         ):
             return None
+    orientation = tags.get(274, 1)
+    source: Path | io.BytesIO = path
+    if orientation != 1:
+        # Pillow turns a TIFF itself, but decodes an uncompressed one with Orientation
+        # 5-8 at the turned size (12.3). Decode a copy whose tag says 1 instead.
+        data = bytearray(Path(path).read_bytes())
+        endian = "<" if tags.prefix == b"II" else ">"
+        count, value_at, size = ("Q", 12, 20) if header[2:3] == b"\x2b" else ("H", 8, 12)
+        first = tags.offset + struct.calcsize(count)
+        entries = struct.unpack_from(endian + count, data, tags.offset)[0]
+        for entry in range(first, first + size * entries, size):
+            tag, kind = struct.unpack_from(endian + "HH", data, entry)
+            if tag == 274:
+                value = endian + ("H" if kind == 3 else "I")
+                struct.pack_into(value, data, entry + value_at, 1)
+        source = io.BytesIO(data)
+    with TiffImagePlugin.TiffImageFile(source) as im:
         rgba = im.convert("RGBA") if im.mode == "LA" else im
-        return cv2.cvtColor(np.array(rgba), cv2.COLOR_RGBA2BGRA)
+        pixels = cv2.cvtColor(np.array(rgba), cv2.COLOR_RGBA2BGRA)
+    if not isinstance(orientation, int):
+        orientation = 1  # a malformed tag, as Pillow ignores it
+    return graph().image_io_orient(globals(), pixels, orientation)
 
 
 def _for_ext(ext: str | Iterable[str], decoder: _Decoder) -> _Decoder:

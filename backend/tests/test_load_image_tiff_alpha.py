@@ -12,7 +12,7 @@ from typing import Callable
 import cv2
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageOps, TiffImagePlugin
 
 # The node's modules load the native backend, which GitHub's checks do not build.
 pytest.importorskip("nodes.impl._chainner_graph")
@@ -89,6 +89,20 @@ def assert_identical(actual: np.ndarray, expected: np.ndarray) -> None:
     assert actual.tobytes() == expected.tobytes()
 
 
+def turned(image: np.ndarray, orientation: int) -> np.ndarray:
+    """The stored pixels as ImageOps.exif_transpose turns them."""
+    return {
+        1: image,
+        2: image[:, ::-1],
+        3: image[::-1, ::-1],
+        4: image[::-1],
+        5: image.swapaxes(0, 1),
+        6: np.rot90(image, -1),
+        7: np.rot90(image, 2).swapaxes(0, 1),
+        8: np.rot90(image, 1),
+    }[orientation]
+
+
 # name: (extension, writer, the straight RGBA it loads as)
 STRAIGHT = {
     **{
@@ -100,14 +114,14 @@ STRAIGHT = {
         for compression in (None, "tiff_lzw", "tiff_adobe_deflate", "packbits")
         for ext in (".tif", ".tiff")
     },
-    # Mirrored or turned as the Orientation tag says, as OpenCV does too.
+    # Mirrored or turned as the Orientation tag says, as ImageOps.exif_transpose does.
     **{
         f"orientation-{o}": (
             ".tif",
             lambda p, o=o: write_tiff(p, RGBA8, (2,), o),
-            turned,
+            turned(RGBA8, o),
         )
-        for o, turned in ((2, RGBA8[:, ::-1]), (3, RGBA8[::-1, ::-1]), (4, RGBA8[::-1]))
+        for o in range(2, 9)
     },
 }
 
@@ -142,13 +156,12 @@ GREY_ALPHA = {
         for ext in (".tif", ".tiff")
     },
     **{
-        f"orientation-{o}": (".tif", lambda p, o=o: write_tiff(p, LA8, (2,), o), turned)
-        for o, turned in (
-            (1, LA8),
-            (2, LA8[:, ::-1]),
-            (3, LA8[::-1, ::-1]),
-            (4, LA8[::-1]),
+        f"orientation-{o}": (
+            ".tif",
+            lambda p, o=o: write_tiff(p, LA8, (2,), o),
+            turned(LA8, o),
         )
+        for o in range(1, 9)
     },
 }
 
@@ -164,6 +177,23 @@ def test_grey_alpha_tiff_loads_as_a_grey_alpha_png_does(tmp_path: Path, name: st
     bgra_png = load_image_node(png)[0]
     assert_identical(bgra_png, np.ascontiguousarray(np.dstack([grey] * 3 + [alpha])))
     assert_identical(load_image_node(path)[0], bgra_png)
+
+
+@pytest.mark.parametrize("mode", ["RGBA", "LA"])
+@pytest.mark.parametrize("orientation", range(2, 9))
+def test_compressed_straight_alpha_tiff_turns_as_pillow_does(
+    tmp_path: Path, mode: str, orientation: int
+):
+    # Pillow's own turn is right for compressed files (not for uncompressed RGBA 5-8,
+    # which the cases above check against the turned pixels instead).
+    path = tmp_path / "turned.tif"
+    tags = TiffImagePlugin.ImageFileDirectory_v2()
+    tags[274], tags[338] = orientation, (2,)
+    samples = RGBA8 if mode == "RGBA" else LA8
+    Image.fromarray(samples, mode).save(path, compression="tiff_lzw", tiffinfo=tags)
+    with Image.open(path) as im:
+        expected = np.array(ImageOps.exif_transpose(im.convert("RGBA")))
+    assert_identical(load_image_node(path)[0], np.ascontiguousarray(bgra(expected)))
 
 
 def test_16_bit_straight_alpha_tiff_was_already_exact(tmp_path: Path):
@@ -197,22 +227,16 @@ UNCHANGED = {
     "rgba8-associated.tif": lambda p: write_tiff(p, RGBA8, (1,)),
     "rgba8-unspecified.tif": lambda p: write_tiff(p, RGBA8, (0,)),
     "rgba8-no-extrasamples.tif": encode(".tif", RGBA8),
-    # Pillow 12.3 does not transpose orientations 5-8; they stay with OpenCV.
+    # OpenCV turns RGB TIFFs itself.
     **{
-        f"rgba8-straight-orientation-{o}.tif": lambda p, o=o: write_tiff(
-            p, RGBA8, (2,), o
-        )
+        f"rgb8-orientation-{o}.tif": lambda p, o=o: Image.fromarray(
+            RGBA8[:, :, :3]
+        ).save(p, tiffinfo={274: o})
         for o in (5, 6, 7, 8)
     },
     "grey8.tif": encode(".tif", RGBA8[:, :, 0]),
     "grey-alpha8-associated.tif": lambda p: write_tiff(p, LA8, (1,)),
     "grey-alpha8-unspecified.tif": lambda p: write_tiff(p, LA8, (0,)),
-    **{
-        f"grey-alpha8-straight-orientation-{o}.tif": lambda p, o=o: write_tiff(
-            p, LA8, (2,), o
-        )
-        for o in (5, 6, 7, 8)
-    },
     "grey-alpha8.png": pillow(LA8),
     "rgb16.tif": encode(".tif", RGBA16[:, :, :3]),
     "rgba16-opencv.tif": encode(".tif", RGBA16),
