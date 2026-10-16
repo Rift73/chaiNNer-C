@@ -468,9 +468,10 @@ INTENDED_MUX = (
 # upstream chaiNNer #3053; ARCHITECTURE section 7): (i) YUV output other than GIF gets
 # all four colour tags, BT.601 for SD and BT.709 for HD (width >= 1280 or height >
 # 576), the user's tags winning, and a scale filter converting to the final matrix and
-# range after the user's -vf; (k) GIF with the node's yuv420p (which FFmpeg replaces with
-# the fixed bgr8 palette) is written as pal8 with a palette made for each frame, after
-# the user's -vf; a user pixel format keeps FFmpeg's conversion.
+# range after the user's -vf (-filter:v, -filter); (k) GIF with the node's yuv420p (which
+# FFmpeg replaces with the fixed bgr8 palette) is written as pal8 with a palette made for
+# each frame, after the user's -vf; a user pixel format, or a user -filter_complex (-lavfi),
+# which FFmpeg refuses beside a -vf, keeps FFmpeg's conversion.
 INTENDED_COLOURS = [
     (
         """@dataclass
@@ -479,13 +480,13 @@ class Writer:
         """def colour_options(container, params, width, height):  # (i), (k)
     if not isinstance(params, dict):
         return params  # The caller's ** raises its own TypeError.
-    if "pix_fmt" not in params:
+    if "pix_fmt" not in params or {"filter_complex", "lavfi"} & params.keys():
         return params
     if container == VideoFormat.GIF:
         if str(params["pix_fmt"]) != "yuv420p":
             return params
         params["pix_fmt"] = "pal8"
-        filters = [params.pop(key) for key in ("vf", "filter:v") if key in params]
+        filters = [params.pop(key) for key in ("vf", "filter:v", "filter") if key in params]
         palette = "split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1"
         params["vf"] = ",".join([*filters, palette])
         return params
@@ -524,7 +525,7 @@ class Writer:
         "bt2020_cl": "bt2020",
     }
     matrix, colour_range = str(params.get("colorspace", "")), str(params["color_range"])
-    filters = [params.pop(key) for key in ("vf", "filter:v") if key in params]
+    filters = [params.pop(key) for key in ("vf", "filter:v", "filter") if key in params]
     scale = "scale="
     if matrix in matrices:
         scale += f"out_color_matrix={matrices[matrix]}:"
@@ -1392,6 +1393,9 @@ def test_node_parameters_all_container_encoder_pairs(tmp_path, container, encode
         "-vf hflip",
         "-colorspace bt709",
         "-color_range pc -filter:v vflip",
+        "-filter hflip",
+        "-filter_complex hflip",
+        "-lavfi hflip",
         "-colorspace rgb",
         "-colorspace bt2020nc",
         "-color_primaries bt2020",
@@ -1426,12 +1430,19 @@ def test_colour_options_follow_size_and_user_tags(
         results.append((output, env.events.copy()))
     assert results[0] == results[1]
     output = results[1][0]
+    assert "filter" not in output and "filter:v" not in output
+    if additional in ("-filter_complex hflip", "-lavfi hflip"):
+        # FFmpeg refuses a -vf beside a complex filtergraph: its own conversion stays.
+        assert "vf" not in output and "color_primaries" not in output
+        assert output["pix_fmt"] == "yuv420p"
+        return
     if container == "GIF" and additional != "-pix_fmt bgr0":
         assert "color_trc" not in output
         assert output["pix_fmt"] == "pal8"
         user_filter = {
             "-vf hflip": "hflip,",
             "-color_range pc -filter:v vflip": "vflip,",
+            "-filter hflip": "hflip,",
         }
         assert output["vf"] == user_filter.get(str(additional), "") + (
             "split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1"
@@ -1673,6 +1684,40 @@ def test_real_encoder_that_exits_early_is_named_with_its_message(tmp_path):
         assert isinstance(raised.value.__cause__, OSError)
     finally:
         w._native_video_resource.abort()
+
+
+@pytest.mark.skipif(not FFMPEG or not FFPROBE, reason="CPU FFmpeg/ffprobe unavailable")
+@pytest.mark.parametrize("container", ["MKV", "GIF"])
+@pytest.mark.parametrize("key", ["filter", "filter_complex", "lavfi"])
+def test_real_user_filter_options_reach_ffmpeg(tmp_path, container, key):
+    # A user -filter beside the colour -vf was dropped (FFmpeg keeps the last), and a
+    # user -filter_complex/-lavfi beside it made FFmpeg exit; both work as in upstream.
+    assert FFPROBE is not None
+    g = real_module("native", "save_video")
+    w = writer(g, container=container, encoder="H264" if container == "MKV" else None)
+    w.ffmpeg_env = types.SimpleNamespace(ffmpeg=FFMPEG)
+    w.save_path = str(tmp_path / ("user." + container.lower()))
+    w.output_params = {
+        "filename": w.save_path,
+        "vcodec": "libx264" if container == "MKV" else "gif",
+        "pix_fmt": "yuv420p",
+        key: "scale=32:16",
+    }
+    try:
+        for _ in range(4):
+            w.write_frame(np.full((64, 64, 3), 0.5, np.float32))
+        w.close()
+    finally:
+        w._native_video_resource.abort()
+    size = subprocess.run(
+        [FFPROBE, "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0"]
+        + [w.save_path],
+        capture_output=True,
+        check=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
+    assert size.stdout.strip() == "32,16"
 
 
 @pytest.mark.parametrize("exists", [False, True])
