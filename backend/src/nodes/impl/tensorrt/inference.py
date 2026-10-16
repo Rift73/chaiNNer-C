@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 import threading
 from collections import OrderedDict, deque
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import Any
 
@@ -312,22 +313,35 @@ class TensorRTSession:
         return planar_to_interleaved(chw, reverse=bgr)
 
     def close(self) -> None:
-        check_cuda(cudart.cudaStreamSynchronize(self._stream))
+        """Free the session. After a CUDA error any step may raise: every step still
+        runs, the context goes before its memory and the engine reference last, and
+        the first error is raised at the end."""
+        errors: list[Exception] = []
+
+        def attempt(step: Callable[[], object]) -> None:
+            try:
+                step()
+            except Exception as e:
+                errors.append(e)
+
+        attempt(lambda: check_cuda(cudart.cudaStreamSynchronize(self._stream)))
         self._queue.clear()
-        self._drop_graphs()
+        attempt(self._drop_graphs)
         for buf in (*self._h_in, *self._h_out):
-            buf.free()
+            attempt(buf.free)
         del self.context
         for ptr in (self._d_in, self._d_out, self._d_act):
             if ptr:
-                check_cuda(cudart.cudaFree(ptr))
+                attempt(lambda ptr=ptr: check_cuda(cudart.cudaFree(ptr)))
         self._d_in = self._d_out = self._d_act = 0
         self._d_in_nbytes = self._d_out_nbytes = self._d_act_nbytes = 0
         for event in self._events:
-            check_cuda(cudart.cudaEventDestroy(event))
+            attempt(lambda event=event: check_cuda(cudart.cudaEventDestroy(event)))
         self._events = []
-        check_cuda(cudart.cudaStreamDestroy(self._stream))
+        attempt(lambda: check_cuda(cudart.cudaStreamDestroy(self._stream)))
         self._loaded.release()  # the engine after its context
+        if errors:
+            raise errors[0]
 
 
 _sessions: SharedCache[TensorRTSession] = SharedCache(TensorRTSession.close)

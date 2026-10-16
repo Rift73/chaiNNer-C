@@ -1,5 +1,6 @@
-"""A TensorRT session gives its engine reference back when its setup fails. TensorRT
-and cuda-python are stand-ins: no GPU is used."""
+"""A TensorRT session gives its engine reference back when its setup fails, and its
+close frees everything after a CUDA error. TensorRT and cuda-python are stand-ins: no
+GPU is used."""
 
 from __future__ import annotations
 
@@ -169,5 +170,31 @@ def test_a_failed_setup_gives_the_engine_back(
 
     assert cudart.destroyed() == destroyed
     engine.close()  # Load Engine's own reference: the last one
+    assert loaded.engine is None
+    assert loaded.contexts_gone_first is True
+
+
+def test_close_after_a_cuda_error_still_frees_everything(
+    inference: ModuleType, cudart: _Cudart
+):
+    engine, loaded = _engine()
+    session = inference.TensorRTSession(engine, 0)
+    # a sticky error: every later call fails too
+    cudart.fail = {
+        "cudaStreamSynchronize": 0,
+        "cudaEventDestroy": 0,
+        "cudaStreamDestroy": 0,
+    }
+
+    with pytest.raises(RuntimeError, match="cudaErrorIllegalAddress"):
+        session.close()
+
+    assert cudart.destroyed() == ["event0", "event1", "stream0"]
+    # the first error is the one raised: its name was read right after the sync
+    first = next(
+        i for i, (name, _) in enumerate(cudart.calls) if name == "cudaGetErrorName"
+    )
+    assert cudart.calls[first - 1][0] == "cudaStreamSynchronize"
+    engine.close()
     assert loaded.engine is None
     assert loaded.contexts_gone_first is True
