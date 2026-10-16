@@ -74,6 +74,15 @@ def test_system_beyond_int_indices_is_refused():
         run(strip, 32768, 16)
 
 
+def test_column_pass_beyond_int_indices_is_refused():
+    # descale's column pass indexes the middle plane (h rows of a 16-float-aligned stride)
+    # with int products; 2^20 rows of 2049 columns would overflow them.
+    core_v = native_descale._core(1 << 20, 1, 1, 3, 0.0, 0.5, 1.0, 0.0, 1.0, 2)
+    workspace = native_descale._lib.cn_descale_workspace
+    assert workspace(1 << 20, 2032, 1, None, core_v.handle) > 0
+    assert workspace(1 << 20, 2049, 1, None, core_v.handle) == 0
+
+
 def test_same_size_is_identity_and_bad_targets_fail():
     image = np.random.default_rng(5).random((20, 30, 3), dtype=np.float32)
     assert np.array_equal(run(image, 30, 20), image)

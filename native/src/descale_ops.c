@@ -230,7 +230,9 @@ static size_t layout(descale_job *job, size_t h, size_t w, size_t c, struct Desc
 
 static int valid(size_t h, size_t w, size_t c, struct DescaleCore *core_h, struct DescaleCore *core_v) {
     return h && w && c && h <= (size_t)1 << 24 && w <= (size_t)1 << 24 && c <= 64 &&
-           (!core_h || (size_t)core_h->src_dim == w) && (!core_v || (size_t)core_v->src_dim == h);
+           (!core_h || (size_t)core_h->src_dim == w) && (!core_v || (size_t)core_v->src_dim == h) &&
+           /* descale's column pass indexes the h-row middle plane with int products. */
+           (!core_v || h * round_up(core_h ? (size_t)core_h->dst_dim : w, 16) <= INT_MAX);
 }
 
 /* Workspace bytes cn_descale needs for these arguments; 0 if they are invalid. */
