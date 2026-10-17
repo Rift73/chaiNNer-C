@@ -151,9 +151,11 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   automatic: TensorRT's default, up to the GPU's memory, since 2026-10-17 when 4 GiB failed an FDAT 2048x2048
   build by 8 MB; 8 for DUAL), Allow TF32, Sparse Weights and Optimization Level (0-5, default 3) apply to every
   ONNX, DUAL's worker included (its defaults stay the guide's: 8 GiB, TF32 off, dense, level 3). Save Engine's
-  Compress (owner, 2026-10-16; default on) writes LZMA and appends "_compressed" to the name; Load Engine and
-  VapourSynth's AI Upscale decompress by the xz header (`engine_file.py`). Measured on the owner's 1x DUAL Light
-  engine: 47.5 MB -> 11.7 MB, +0.44 s per load, 6.6 s per save; zstd was 13.2-13.6 MB at 35-60 ms. A DUAL ONNX loads as precision "mixed" (arch DUAL in
+  Compress (owner, 2026-10-16; default on) writes LZMA, or Zstandard level 19 (Compression, owner 2026-10-17),
+  and appends "_compressed" to the name; Load Engine and VapourSynth's AI Upscale decompress by the xz or zstd
+  header (`engine_file.py`). Measured on the owner's 1x DUAL Light engine: 47.5 MB -> 11.7 MB, +0.44 s per
+  load, 6.6 s per save; zstd 13.2-13.6 MB at 35-60 ms. VOSR's FP8 ONNX weights (2026-10-17, 128 MB samples)
+  compress to 71-83 % with LZMA, 78-87 % with zstd 19. A DUAL ONNX loads as precision "mixed" (arch DUAL in
   its type); every DUAL engine, fixed ones too, names its input `input_aligned_4`, which Load Engine reads as
   "mixed". Fixed engines built before this still read as FP32. The fork's backend-tests check failed since the
   dynamic push (the ONNX-load assertion needs the native build, which GitHub does not make); it now skips there.
