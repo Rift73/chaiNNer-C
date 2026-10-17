@@ -5,6 +5,11 @@ from typing import Literal, TypedDict
 from events import ExecutionErrorSource
 from process import NodeExecutionError
 
+# A worker's /run or /kill response has this header when the GPU's CUDA context
+# is broken (a sticky error): nothing in it can be freed or run again, so the
+# host restarts the worker (server.cuda_context_broken).
+RESTART_WORKER_HEADER = "X-chaiNNer-Restart-Worker"
+
 
 class SuccessResponse(TypedDict):
     type: Literal["success"]
