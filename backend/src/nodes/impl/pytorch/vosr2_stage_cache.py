@@ -10,6 +10,7 @@ from pathlib import Path
 
 from api import NodeContext
 
+from .vosr2_plan_file import stored
 from .vosr2_trt_models import STAGES
 
 # Bump when stage inputs/outputs or preprocessing semantics change.
@@ -80,7 +81,7 @@ def migrate_stage_cache(
     engines = manifest["engines"]
     for name in STAGES:
         context.suspend()
-        source = path.parent / f"{name}.plan"
+        source = stored(path.parent, manifest, name)
         if not source.is_file() or _digest(source) != engines[name]:
             raise RuntimeError(
                 f"The cached VOSR {name} engine in {path.parent} is corrupt. "
@@ -90,7 +91,7 @@ def migrate_stage_cache(
         staged = Path(work) / "cache"
         staged.mkdir()
         for name in STAGES:
-            source = path.parent / f"{name}.plan"
+            source = stored(path.parent, manifest, name)
             target = staged / source.name
             os.link(source, target)
             if _digest(target) != engines[name]:

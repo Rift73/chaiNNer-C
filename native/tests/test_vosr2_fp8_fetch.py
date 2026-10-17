@@ -352,7 +352,9 @@ def test_engines_are_built_once_and_keyed_by_what_determines_them(
     legacy.mkdir(parents=True)
     (legacy / "dit_cached.onnx.data").write_bytes(b"old")
     path = vosr2_fp8.ensure_fp8_engine(context, bundle, device)
-    assert {p.stem for p in path.glob("*.plan")} == set(STAGES)
+    assert {p.name for p in path.glob("*.plan*")} == {
+        f"{name}.plan.zst" for name in STAGES
+    }
     assert builds == ["vosr2_fp8_build.py"]
     assert [p.name for p in graph_sets.iterdir()] == [stored.name]
     requests = len(host.log)

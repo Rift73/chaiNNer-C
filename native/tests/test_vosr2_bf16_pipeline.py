@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 import sys
+from compression import zstd
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -16,10 +17,15 @@ import pytest
 import torch
 
 from api import NodeContext
-from nodes.impl.pytorch import vosr2_engine_cache, vosr2_trt_pipeline
+from nodes.impl.pytorch import (
+    vosr2_engine_cache,
+    vosr2_plan_file,
+    vosr2_trt_pipeline,
+)
 from nodes.impl.pytorch.vosr2 import BundlePaths, VosrBundle, load_weights
 from nodes.impl.pytorch.vosr2_export import rotary_tables
 from nodes.impl.pytorch.vosr2_official import FILES
+from nodes.impl.pytorch.vosr2_plan_file import compressed, open_plan
 from nodes.impl.pytorch.vosr2_trt_compile import (
     report_stage,
     store_timing_cache,
@@ -148,12 +154,17 @@ def test_partial_bf16_set_is_never_published_and_corruption_rebuilds(
     assert not list(tmp_path.rglob("manifest.json"))
     assert not list(tmp_path.rglob("building-*"))
     path = vosr2_engine_cache.ensure_full_engine(*args)
-    assert {p.stem for p in path.glob("*.plan")} == set(STAGES)
+    # Published compressed; the build's plain plans are not kept.
+    assert {p.name for p in path.glob("*.plan*")} == {
+        compressed(path, name).name for name in STAGES
+    }
     assert vosr2_engine_cache.ensure_full_engine(*args) == path
     assert len(attempts) == 2
-    (path / "decoder_post.plan").write_bytes(b"corrupt")
+    compressed(path, "decoder_post").write_bytes(b"corrupt")
     assert vosr2_engine_cache.ensure_full_engine(*args) == path
-    assert (path / "decoder_post.plan").read_bytes() == b"decoder_post"
+    assert zstd.decompress(compressed(path, "decoder_post").read_bytes()) == (
+        b"decoder_post"
+    )
     assert len(attempts) == 3
     assert len(list(path.parent.glob("quarantine-*"))) == 1
     (path / "manifest.json").write_text("[]")
@@ -242,6 +253,64 @@ def test_a_build_without_nvidia_memory_monitoring_says_so(monkeypatch, tmp_path)
         vosr2_engine_cache.compile_worker(
             context, "unused.py", tmp_path, tmp_path, torch.device("cuda:0")
         )
+
+
+def test_a_set_cached_plain_is_compressed_in_place_without_a_rebuild(
+    monkeypatch, tmp_path
+):
+    # Sets cached before 2026-10-17 hold plain plans; their manifests hash those.
+    context = cast(
+        NodeContext,
+        SimpleNamespace(storage_dir=tmp_path, node_id="plain", suspend=lambda: None),
+    )
+    root = tmp_path / "cache"
+    identity = {"test": True}
+    destination = root / vosr2_engine_cache.identity_key(identity)
+    destination.mkdir(parents=True)
+    plans = {name: name.encode() * 1000 for name in STAGES}
+    for name, data in plans.items():
+        (destination / f"{name}.plan").write_bytes(data)
+    plain = {name: hashlib.sha256(data).hexdigest() for name, data in plans.items()}
+    (destination / "manifest.json").write_text(
+        json.dumps({"identity": identity, "engines": plain})
+    )
+
+    def rebuild(_directory: Path) -> None:
+        raise AssertionError("a valid plain set was rebuilt")
+
+    path = vosr2_engine_cache.ensure_engine_set(
+        context, root, identity, "BF16", rebuild
+    )
+    assert path == destination
+    assert not list(path.glob("*.plan"))
+    manifest = json.loads((path / "manifest.json").read_text())
+    assert manifest["compression"] == "zstd" and manifest["plans"] == plain
+    for name, data in plans.items():
+        with open_plan(compressed(path, name)) as reader:
+            assert reader.read() == data
+    # Now valid as a compressed set: used as it is.
+    assert (
+        vosr2_engine_cache.ensure_engine_set(context, root, identity, "BF16", rebuild)
+        == path
+    )
+
+
+def test_a_compressed_plan_reads_as_tensorrt_reads_it(tmp_path):
+    # TensorRT 11.2's reads of a plan: in order, seeking only to where it is or ahead.
+    data = bytes(range(256)) * 4096
+    source = tmp_path / "attention.plan"
+    source.write_bytes(data)
+    target = compressed(tmp_path, "attention")
+    vosr2_plan_file.compress(source, target)
+    assert target.stat().st_size < len(data) // 10
+    with open_plan(target) as reader:
+        reader.seek(0)
+        assert reader.read(32) == data[:32]
+        assert reader.read(48) == data[32:80]
+        reader.seek(80)
+        assert reader.read(1000) == data[80:1080]
+        reader.seek(1084)
+        assert reader.read() == data[1084:]
 
 
 def test_bf16_identity_uses_the_pins_not_the_model_folder(monkeypatch, tmp_path):

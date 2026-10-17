@@ -15,6 +15,7 @@ from gpu import nvidia
 from nodes.impl.tensorrt.cache import SharedCache
 
 from .vosr2_export import rotary_tables
+from .vosr2_plan_file import compressed
 from .vosr2_trt_execution import BoundedQueue, Stage, StageExecution
 from .vosr2_trt_models import STAGES
 from .vosr2_trt_plugin import load_plugin
@@ -45,7 +46,7 @@ class FullSession:
             with torch.cuda.device(self.device):
                 for name in STAGES:
                     self.stages[name] = Stage(
-                        directory / f"{name}.plan", self.logger, self.device
+                        compressed(directory, name), self.logger, self.device
                     )
         except BaseException:
             self.close()
@@ -215,9 +216,9 @@ def lease_full_session(
     key = (
         tuple(
             (
-                str(directory / f"{name}.plan"),
-                (directory / f"{name}.plan").stat().st_size,
-                (directory / f"{name}.plan").stat().st_mtime_ns,
+                str(compressed(directory, name)),
+                compressed(directory, name).stat().st_size,
+                compressed(directory, name).stat().st_mtime_ns,
             )
             for name in STAGES
         ),

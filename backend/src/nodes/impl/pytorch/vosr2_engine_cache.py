@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from importlib import metadata
 from pathlib import Path
@@ -26,6 +26,7 @@ from gpu import nvidia
 from .resource_cache import file_identity
 from .vosr2 import BundlePaths, VosrBundle, load_weights, read_configs
 from .vosr2_official import FILES
+from .vosr2_plan_file import compress, compressed, stored
 from .vosr2_process import OwnedJob
 from .vosr2_trt_compile import STAGE_LINE
 from .vosr2_trt_plugin import plugin_path
@@ -100,7 +101,9 @@ def file_lock(path: Path, context: NodeContext, waiting_for: str) -> Iterator[No
                 if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
                     raise
                 if time.monotonic() >= deadline:
-                    raise TimeoutError(f"Timed out waiting for {waiting_for}.") from error
+                    raise TimeoutError(
+                        f"Timed out waiting for {waiting_for}."
+                    ) from error
                 time.sleep(0.05)
         try:
             yield
@@ -302,13 +305,16 @@ def ensure_engine_set(
                 and isinstance(manifest.get("engines"), dict)
                 and set(manifest["engines"]) == set(STAGES)
                 and all(
-                    manifest["engines"][name] == file_hash(destination / f"{name}.plan")
+                    manifest["engines"][name]
+                    == file_hash(stored(destination, manifest, name))
                     for name in STAGES
                 )
             )
         except (FileNotFoundError, json.JSONDecodeError):
             valid = False
         if valid:
+            if manifest.get("compression") != "zstd":
+                compress_set(destination, manifest, STAGES)
             return destination
         quarantine = root / f"quarantine-{key}-{time.time_ns()}"
         destination.rename(quarantine)
@@ -332,15 +338,48 @@ def ensure_engine_set(
                 for name in STAGES
             ):
                 raise RuntimeError(f"VOSR {label} stages changed after validation.")
+            engines = {}
             for name in STAGES:
-                target = destination / f"{name}.plan"
-                os.replace(directory / f"{name}.plan", target)
-                _HASHES[file_identity(target)] = validation["engines"][name]
-            write_json(manifest_path, {"identity": identity, **validation})
+                target = compressed(destination, name)
+                compress(directory / f"{name}.plan", target)
+                engines[name] = file_hash(target)
+            write_json(
+                manifest_path,
+                {
+                    "identity": identity,
+                    **validation,
+                    "engines": engines,
+                    "plans": validation["engines"],
+                    "compression": "zstd",
+                },
+            )
         finally:
             if (directory / "build.log").exists():
                 os.replace(directory / "build.log", destination / "build.log")
     return destination
+
+
+def compress_set(destination: Path, manifest: dict, stages: Sequence[str]) -> None:
+    """Compress a verified set of plain plans in place. Its manifest switches only once
+    every plan is compressed, and the plain plans go after it, so an interrupted
+    conversion leaves the plain set valid."""
+    logger.info("Compressing the cached VOSR engines in %s", destination)
+    engines = {}
+    for name in stages:
+        target = compressed(destination, name)
+        compress(destination / f"{name}.plan", target)
+        engines[name] = file_hash(target)
+    write_json(
+        destination / "manifest.json",
+        {
+            **manifest,
+            "engines": engines,
+            "plans": manifest["engines"],
+            "compression": "zstd",
+        },
+    )
+    for name in stages:
+        (destination / f"{name}.plan").unlink()
 
 
 def ensure_full_engine(

@@ -14,7 +14,9 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   pinned) and compiled on first use (191 s, compile 177 s). Since 2026-10-17 (owner) the set is hosted and kept
   Zstandard-compressed (`vosr2-fp8-3ebb2423591d`, format 2, 2.68 GB; each file's `zstd` entry) and unpacked only
   for a build (10 s, deleted afterwards); engines stay keyed by the graphs' own pin (`GRAPHS_SHA256`), and other
-  graph sets are deleted. The owner uploads `out\vosr2-fp8-3ebb2423591d` to Feral before this ships. Verified on the RTX 5090: PyTorch images bit-identical to
+  graph sets are deleted. The owner uploads `out\vosr2-fp8-3ebb2423591d` to Feral before this ships. The cached
+  BF16 and FP8 engine sets keep Zstandard level 3 plans too (`vosr2_plan_file.py`; 74-82 %, about 5 GB -> 3.8 GB;
+  streamed into TensorRT at about 1 GB/s); a set cached plain is compressed in place on its next use. Verified on the RTX 5090: PyTorch images bit-identical to
   the old node (256×256 and 640×360 → 2560×1440); a 30-frame Load Video chain bit-identical to the old Temporal Sequence
   for both methods on PyTorch; TensorRT BF16 frames 51.1 dB minimum, 52.2 dB mean PSNR from the old ones (rebuilt
   engines; one image alone 49.1 dB); FP8 from the hosted graphs 51.9 and 43.5 dB from the old FP8 outputs, which the
