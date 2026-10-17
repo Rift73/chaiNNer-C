@@ -1,14 +1,17 @@
 """VOSR fetches its pinned files once, resumably: the official model and the TensorRT FP8
-graph set, which it then compiles once."""
+graph set, which it then compiles once. The graph set is stored compressed (zstd) and
+unpacked only for a build."""
 
 from __future__ import annotations
 
 import errno
 import hashlib
 import json
+import random
 import socket
 import threading
 from collections.abc import Iterator
+from compression import zstd
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +32,8 @@ CHUNK = 1024
 @dataclass
 class Host:
     files: dict[str, bytes]
+    # The graph set's files unpacked, as a build reads them.
+    plain: dict[str, bytes] = field(default_factory=dict)
     ranges: bool = True
     drop_after: dict[str, int] = field(default_factory=dict)
     corrupt: set[str] = field(default_factory=set)
@@ -96,18 +101,35 @@ def make_bundle(root: Path) -> Bundle:
     return Bundle(paths, hashes)
 
 
-def make_set(bundle: Bundle) -> tuple[bytes, dict[str, bytes]]:
+def make_set(bundle: Bundle) -> tuple[bytes, dict[str, bytes], dict[str, bytes]]:
+    """The manifest, the files as hosted (graphs and data as .zst), and as unpacked."""
     files = {"LICENSE": b"Apache License", "NOTICE": b"VOSR authors"}
     stages = {}
     for index, name in enumerate(STAGES):
         files[f"{name}.onnx"] = f"graph {name}".encode()
         stages[name] = {"precision": "test", "graph": f"{name}.onnx"}
         if index < 3:
-            # Several chunks, so cancellation and resumption happen mid-file.
-            files[f"{name}.onnx.data"] = bytes(range(256)) * (16 + index)
+            # Incompressible and several chunks long, also compressed, so cancellation
+            # and resumption happen mid-file.
+            files[f"{name}.onnx.data"] = random.Random(index).randbytes(
+                4096 + 256 * index
+            )
             stages[name]["data"] = f"{name}.onnx.data"
+    hosted = {}
+    entries = {}
+    for name, data in files.items():
+        entries[name] = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        if name.endswith((".onnx", ".onnx.data")):
+            packed = zstd.compress(data)
+            entries[name]["zstd"] = {
+                "size": len(packed),
+                "sha256": hashlib.sha256(packed).hexdigest(),
+            }
+            hosted[f"{name}.zst"] = packed
+        else:
+            hosted[name] = data
     manifest = {
-        "format": 1,
+        "format": 2,
         "tensorrt_major": 11,
         "plugins": [{"name": "VosrQkvPack", "version": "1", "namespace": ""}],
         "source": {
@@ -116,22 +138,19 @@ def make_set(bundle: Bundle) -> tuple[bytes, dict[str, bytes]]:
             "files": bundle.hashes,
         },
         "stages": stages,
-        "files": {
-            name: {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-            for name, data in files.items()
-        },
+        "files": entries,
     }
-    return json.dumps(manifest, indent=2).encode(), files
+    return json.dumps(manifest, indent=2).encode(), hosted, files
 
 
 @pytest.fixture
 def host(monkeypatch, tmp_path) -> Iterator[Host]:
-    manifest, files = make_set(make_bundle(tmp_path / "bundle"))
+    manifest, files, plain = make_set(make_bundle(tmp_path / "bundle"))
     digest = hashlib.sha256(manifest).hexdigest()
     monkeypatch.setattr(vosr2_fp8, "MANIFEST_SHA256", digest)
     monkeypatch.setattr(vosr2_download, "CHUNK", CHUNK)
     folder = vosr2_fp8.folder_name()
-    state = Host({f"{folder}/{name}": data for name, data in files.items()})
+    state = Host({f"{folder}/{name}": data for name, data in files.items()}, plain)
     state.files[f"{folder}/manifest.json"] = manifest
     server = Server(state)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -201,29 +220,29 @@ def test_a_broken_download_resumes_or_restarts_by_server_support(
     host, tmp_path, ranges
 ):
     host.ranges = ranges
-    host.drop_after["dit_cached.onnx.data"] = 2500
+    host.drop_after["dit_cached.onnx.data.zst"] = 2500
     with pytest.raises(RuntimeError, match="Check the internet connection"):
         fetch(tmp_path, context_for(tmp_path, []))
     folder = tmp_path / "storage" / "graphs"
-    assert (folder / "dit_kv.onnx.data").is_file()
-    partial = (folder / "dit_cached.onnx.data.part").stat().st_size
+    assert (folder / "dit_kv.onnx.data.zst").is_file()
+    partial = (folder / "dit_cached.onnx.data.zst.part").stat().st_size
     assert 0 < partial <= 2500
     progress: list[float] = []
     fetch(tmp_path, context_for(tmp_path, progress))
     assert_complete(folder, host)
-    assert ("dit_cached.onnx.data", f"bytes={partial}-") in host.log
+    assert ("dit_cached.onnx.data.zst", f"bytes={partial}-") in host.log
     assert progress[-1] == pytest.approx(1.0)
 
 
 def test_a_hash_mismatch_is_deleted_and_reported(host, tmp_path):
-    host.corrupt.add("dino.onnx.data")
+    host.corrupt.add("dino.onnx.data.zst")
     with pytest.raises(
-        RuntimeError, match=r"dino\.onnx\.data does not match its SHA-256"
+        RuntimeError, match=r"dino\.onnx\.data\.zst does not match its SHA-256"
     ):
         fetch(tmp_path, context_for(tmp_path, []))
     folder = tmp_path / "storage" / "graphs"
-    assert not (folder / "dino.onnx.data").exists()
-    assert not (folder / "dino.onnx.data.part").exists()
+    assert not (folder / "dino.onnx.data.zst").exists()
+    assert not (folder / "dino.onnx.data.zst.part").exists()
     host.corrupt.clear()
     fetch(tmp_path, context_for(tmp_path, []))
     assert_complete(folder, host)
@@ -243,11 +262,11 @@ def test_cancel_keeps_the_partial_file_for_the_next_run(host, tmp_path):
         # The first check is the download lock's; the sixth falls in the middle of a file.
         fetch(tmp_path, context_for(tmp_path, [], abort_after=6))
     folder = tmp_path / "storage" / "graphs"
-    assert 0 < (folder / "dit_kv.onnx.data.part").stat().st_size
-    assert not (folder / "dit_kv.onnx.data").exists()
+    assert 0 < (folder / "dit_kv.onnx.data.zst.part").stat().st_size
+    assert not (folder / "dit_kv.onnx.data.zst").exists()
     fetch(tmp_path, context_for(tmp_path, []))
     assert_complete(folder, host)
-    assert any(name == "dit_kv.onnx.data" and span for name, span in host.log)
+    assert any(name == "dit_kv.onnx.data.zst" and span for name, span in host.log)
 
 
 def test_offline_fails_clearly(monkeypatch, tmp_path):
@@ -299,7 +318,15 @@ def test_engines_are_built_once_and_keyed_by_what_determines_them(
 
     def compile_worker(context, worker, graphs, directory, device):
         builds.append(worker)
-        assert_complete(graphs, host)
+        # The build reads the graphs unpacked, beside the compressed set it keeps.
+        unpacked = {path.name: path.read_bytes() for path in graphs.iterdir()}
+        assert unpacked == {
+            name: data
+            for name, data in host.plain.items()
+            if name.endswith((".onnx", ".onnx.data"))
+        }
+        assert graphs.parent == stored.parent
+        assert_complete(stored, host)
         engines = {}
         for name in STAGES:
             (directory / f"{name}.plan").write_bytes(name.encode())
@@ -318,9 +345,16 @@ def test_engines_are_built_once_and_keyed_by_what_determines_them(
         ),
     )
     device = torch.device("cuda:0")
+    graph_sets = tmp_path / "storage" / "vosr2-fp8-graphs"
+    stored = graph_sets / vosr2_fp8.folder_name()
+    # An earlier version's set, kept unpacked: unused from now on.
+    legacy = graph_sets / "vosr2-fp8-f9e142df5846"
+    legacy.mkdir(parents=True)
+    (legacy / "dit_cached.onnx.data").write_bytes(b"old")
     path = vosr2_fp8.ensure_fp8_engine(context, bundle, device)
     assert {p.stem for p in path.glob("*.plan")} == set(STAGES)
     assert builds == ["vosr2_fp8_build.py"]
+    assert [p.name for p in graph_sets.iterdir()] == [stored.name]
     requests = len(host.log)
     assert vosr2_fp8.ensure_fp8_engine(context, bundle, device) == path
     assert len(builds) == 1 and len(host.log) == requests
@@ -331,6 +365,23 @@ def test_engines_are_built_once_and_keyed_by_what_determines_them(
     with pytest.raises(ValueError, match="FP8 support"):
         vosr2_fp8.ensure_fp8_engine(context, bundle, device)
     assert len(builds) == 2
+
+
+def test_engines_stay_keyed_by_the_graphs_not_their_compressed_manifest():
+    # Format 2 compresses the format 1 graphs byte for byte: built engines stay valid.
+    assert vosr2_fp8.GRAPHS_SHA256.startswith("f9e142df5846")
+    assert vosr2_fp8.MANIFEST_SHA256 != vosr2_fp8.GRAPHS_SHA256
+
+
+def test_a_corrupt_unpacked_graph_is_refused_and_leaves_nothing(host, tmp_path):
+    folder = fetch(tmp_path, context_for(tmp_path, []))
+    manifest = vosr2_fp8.fetch_manifest(folder)
+    entry = manifest["files"]["dino.onnx.data"]
+    entry["sha256"] = "0" * 64
+    with pytest.raises(RuntimeError, match=r"dino\.onnx\.data does not match"):
+        with vosr2_fp8.unpacked(context_for(tmp_path, []), folder, manifest):
+            pass
+    assert not folder.with_name(f"{folder.name}-unpacked").exists()
 
 
 def test_runtime_check_names_the_tensorrt_major_and_the_plugin(monkeypatch):

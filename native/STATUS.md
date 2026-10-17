@@ -11,7 +11,10 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   input condition; ARCHITECTURE section 4), else from past frames only. Gone: VOSR 2.0 Upscale, Temporal Sequence,
   Precision, Original mode and tile inputs, FP16, High. The TensorRT plugin `vosr2_qkv.dll` is an optional native target
   (`14dfaec0…`, four reproducible builds); the FP8 graphs are hosted (`vosr2-fp8-f9e142df5846`, 3.45 GB, SHA-256
-  pinned) and compiled on first use (191 s, compile 177 s). Verified on the RTX 5090: PyTorch images bit-identical to
+  pinned) and compiled on first use (191 s, compile 177 s). Since 2026-10-17 (owner) the set is hosted and kept
+  Zstandard-compressed (`vosr2-fp8-3ebb2423591d`, format 2, 2.68 GB; each file's `zstd` entry) and unpacked only
+  for a build (10 s, deleted afterwards); engines stay keyed by the graphs' own pin (`GRAPHS_SHA256`), and other
+  graph sets are deleted. The owner uploads `out\vosr2-fp8-3ebb2423591d` to Feral before this ships. Verified on the RTX 5090: PyTorch images bit-identical to
   the old node (256×256 and 640×360 → 2560×1440); a 30-frame Load Video chain bit-identical to the old Temporal Sequence
   for both methods on PyTorch; TensorRT BF16 frames 51.1 dB minimum, 52.2 dB mean PSNR from the old ones (rebuilt
   engines; one image alone 49.1 dB); FP8 from the hosted graphs 51.9 and 43.5 dB from the old FP8 outputs, which the
