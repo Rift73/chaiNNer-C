@@ -6,9 +6,9 @@ from pathlib import Path
 from sanic.log import logger
 
 from api import NodeContext
+from nodes.impl.compressed_file import read_file
 from nodes.impl.pytorch.resource_cache import file_identity
 from nodes.impl.tensorrt.cache import engines
-from nodes.impl.tensorrt.engine_file import read_engine_file
 from nodes.impl.tensorrt.engine_info import deserialize_engine, read_engine_info
 from nodes.impl.tensorrt.model import TensorRTEngine
 from nodes.properties.inputs import TensorRTFileInput
@@ -53,7 +53,7 @@ if io_group is not None:
 
         def load() -> TensorRTEngine:
             logger.debug("Reading TensorRT engine from path: %s", path)
-            engine_bytes = read_engine_file(path)
+            engine_bytes = read_file(path)
             loaded = deserialize_engine(engine_bytes, gpu_index)
             try:
                 return TensorRTEngine(engine_bytes, read_engine_info(loaded), loaded)

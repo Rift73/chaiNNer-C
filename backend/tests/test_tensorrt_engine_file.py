@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from nodes.impl.tensorrt.engine_file import (
+from nodes.impl.compressed_file import (
     XZ_HEADER,
     ZSTD_HEADER,
-    EngineCompression,
-    read_engine_file,
+    Compression,
+    read_file,
 )
 from nodes.impl.tensorrt.model import TensorRTEngine, TensorRTEngineInfo
 
@@ -33,8 +33,8 @@ INFO = TensorRTEngineInfo(
     opt_shape=None,
     max_shape=None,
 )
-SaveEngine = Callable[[TensorRTEngine, Path, str, bool, EngineCompression], None]
-HEADERS = {EngineCompression.LZMA: XZ_HEADER, EngineCompression.ZSTD: ZSTD_HEADER}
+SaveEngine = Callable[[TensorRTEngine, Path, str, bool, Compression], None]
+HEADERS = {Compression.LZMA: XZ_HEADER, Compression.ZSTD: ZSTD_HEADER}
 
 
 @pytest.fixture
@@ -49,9 +49,9 @@ def saved(directory: Path) -> list[str]:
     return sorted(p.name for p in directory.iterdir())
 
 
-@pytest.mark.parametrize("compression", list(EngineCompression))
+@pytest.mark.parametrize("compression", list(Compression))
 def test_a_compressed_engine_reads_back_to_the_same_bytes(
-    tmp_path: Path, save_engine_node: SaveEngine, compression: EngineCompression
+    tmp_path: Path, save_engine_node: SaveEngine, compression: Compression
 ):
     engine = TensorRTEngine(ENGINE, INFO)
     save_engine_node(engine, tmp_path, "model", True, compression)
@@ -60,7 +60,7 @@ def test_a_compressed_engine_reads_back_to_the_same_bytes(
     data = (tmp_path / "model_compressed.engine").read_bytes()
     assert data.startswith(HEADERS[compression])
     assert len(data) < len(ENGINE) // 4
-    assert read_engine_file(tmp_path / "model_compressed.engine") == ENGINE
+    assert read_file(tmp_path / "model_compressed.engine") == ENGINE
 
     # A compressed engine saved again keeps one suffix.
     save_engine_node(engine, tmp_path, "model_compressed", True, compression)
@@ -71,8 +71,8 @@ def test_an_uncompressed_engine_is_written_and_read_as_is(
     tmp_path: Path, save_engine_node: SaveEngine
 ):
     engine = TensorRTEngine(ENGINE, INFO)
-    save_engine_node(engine, tmp_path, "model", False, EngineCompression.ZSTD)
+    save_engine_node(engine, tmp_path, "model", False, Compression.ZSTD)
 
     assert saved(tmp_path) == ["model.engine"]
     assert (tmp_path / "model.engine").read_bytes() == ENGINE
-    assert read_engine_file(tmp_path / "model.engine") == ENGINE
+    assert read_file(tmp_path / "model.engine") == ENGINE

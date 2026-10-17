@@ -5,10 +5,11 @@ from pathlib import Path
 from sanic.log import logger
 
 from nodes.groups import Condition, if_group
-from nodes.impl.tensorrt.engine_file import (
-    COMPRESSED_SUFFIX,
-    EngineCompression,
-    write_engine_file,
+from nodes.impl.compressed_file import (
+    COMPRESSION_LABELS,
+    Compression,
+    compressed_name,
+    write_file,
 )
 from nodes.impl.tensorrt.model import TensorRTEngine
 from nodes.properties.inputs import (
@@ -20,11 +21,6 @@ from nodes.properties.inputs import (
 )
 
 from .. import io_group
-
-COMPRESSION_LABELS = {
-    EngineCompression.LZMA: "LZMA (smallest)",
-    EngineCompression.ZSTD: "Zstandard (fastest to load)",
-}
 
 if io_group is not None:
 
@@ -48,9 +44,9 @@ if io_group is not None:
             ),
             if_group(Condition.bool(3, True))(
                 EnumInput(
-                    EngineCompression,
+                    Compression,
                     label="Compression",
-                    default=EngineCompression.LZMA,
+                    default=Compression.LZMA,
                     option_labels=COMPRESSION_LABELS,
                 )
                 .with_id(4)
@@ -71,13 +67,12 @@ if io_group is not None:
         directory: Path,
         engine_name: str,
         compress: bool,
-        compression: EngineCompression,
+        compression: Compression,
     ) -> None:
-        if compress and not engine_name.endswith(COMPRESSED_SUFFIX):
-            engine_name += COMPRESSED_SUFFIX
-        full_path = (directory / f"{engine_name}.engine").resolve()
+        name = compressed_name(engine_name, compress)
+        full_path = (directory / f"{name}.engine").resolve()
         logger.debug("Writing TensorRT engine to path: %s", full_path)
         full_path.parent.mkdir(parents=True, exist_ok=True)
-        write_engine_file(
+        write_file(
             full_path, engine.bytes, compression=compression if compress else None
         )

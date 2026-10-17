@@ -164,7 +164,7 @@ def _tensorrt(path: str) -> Upscaler:
             " to run on the CPU."
         )
 
-    from nodes.impl.tensorrt.engine_file import read_engine_file
+    from nodes.impl.compressed_file import read_file
     from nodes.impl.tensorrt.engine_info import deserialize_engine, read_engine_info
     from nodes.impl.tensorrt.inference import TensorRTSession
     from nodes.impl.tensorrt.model import TensorRTEngine
@@ -172,7 +172,7 @@ def _tensorrt(path: str) -> Upscaler:
     from nodes.impl.upscale.convenient_upscale import convenient_upscale
 
     # As Load Engine and TensorRT's Upscale Image node do.
-    engine_bytes = read_engine_file(path)
+    engine_bytes = read_file(path)
     deserialized = deserialize_engine(engine_bytes, GPU_INDEX)
     try:
         engine = TensorRTEngine(
