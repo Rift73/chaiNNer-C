@@ -55,6 +55,10 @@ struct Color { channels: int(1..) }
 
 struct Video;
 
+// VapourSynth: a clip, and a filter (a function waiting for its clip)
+struct VideoClip;
+struct VSFilter;
+
 // models
 
 struct PyTorchScript;

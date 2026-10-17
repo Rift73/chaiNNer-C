@@ -41,6 +41,7 @@ from nodes.impl.tensorrt import cache as tensorrt_cache
 from process import ExecutionId, Executor, NodeExecutionError, NodeOutput
 from progress_controller import Aborted
 from response import (
+    RESTART_WORKER_HEADER,
     already_running_response,
     error_response,
     no_executor_response,
@@ -173,6 +174,7 @@ async def nodes(_request: Request):
             "iteratorOutputs": [x.to_dict() for x in node.iterable_outputs],
             "keyInfo": node.key_info.to_dict() if node.key_info else None,
             "suggestions": [x.to_dict() for x in node.suggestions],
+            "keywords": node.keywords,
             "description": node.description,
             "seeAlso": node.see_also,
             "icon": node.icon,
@@ -266,7 +268,12 @@ async def run(request: Request):
             ctx.executor = executor
             await executor.run()
         except Aborted:
-            app.loop.call_soon(collect_failed_run, ctx)
+            asyncio.get_running_loop().call_soon(collect_failed_run, ctx)
+        except asyncio.CancelledError:
+            # The app's Stop drops its /run request before /kill, so a stopped run
+            # usually ends here, cancelled, not with Aborted.
+            asyncio.get_running_loop().call_soon(collect_failed_run, ctx)
+            raise
         finally:
             ctx.executor = None
             # No gc.collect() here: a successful run never collects; collect_failed_run
@@ -310,8 +317,12 @@ async def run(request: Request):
 
         ctx.queue.put({"event": "execution-error", "data": error})
         # After this handler returns, so the error is unreferenced by then.
-        app.loop.call_soon(collect_failed_run, ctx)
-        return json(error_response("Error running nodes!", exception), status=500)
+        asyncio.get_running_loop().call_soon(collect_failed_run, ctx)
+        return json(
+            error_response("Error running nodes!", exception),
+            status=500,
+            headers=restart_headers(),
+        )
     finally:
         ctx.run_starting = False
         if ctx.config.trace and tracer is not None:
@@ -337,7 +348,36 @@ def collect_failed_run(ctx: AppContext) -> None:
     # Not while a /run executes: it releases at its own end.
     if ctx.executor is None:
         numpy_pool.release()
-        return_device_memory(collect=False)
+        try:
+            return_device_memory(collect=False)
+        except Exception as error:
+            # A broken CUDA context; the host restarts the worker (restart_headers).
+            logger.error("Could not return the GPU's memory: %s", error)
+
+
+def cuda_context_broken() -> bool:
+    """Whether a GPU's CUDA context in this process has a sticky error (an illegal
+    access, or an out-of-memory error inside a kernel). Every later CUDA call fails in
+    it, freeing memory included, so its memory stays taken until the process ends."""
+    torch = sys.modules.get("torch")
+    if torch is None or not torch.cuda.is_initialized():
+        return False
+    for device in range(torch.cuda.device_count()):
+        # Only devices this process used: synchronizing another would create a context.
+        if torch.cuda.memory_reserved(device) == 0:
+            continue
+        try:
+            torch.cuda.synchronize(device)
+        except Exception as error:
+            logger.error("The CUDA context of GPU %d is broken: %s", device, error)
+            return True
+    return False
+
+
+def restart_headers() -> dict[str, str]:
+    """The headers that ask the host to restart this worker when its CUDA context is
+    broken; none otherwise."""
+    return {RESTART_WORKER_HEADER: "1"} if cuda_context_broken() else {}
 
 
 class RunIndividualRequest(TypedDict):
@@ -588,7 +628,7 @@ async def kill(request: Request):
         while ctx.executor:
             await asyncio.sleep(0.0001)
         logger.info("Killed executor.")
-        return json(success_response(), status=200)
+        return json(success_response(), status=200, headers=restart_headers())
     except Exception as exception:
         logger.log(2, exception, exc_info=True)
         return json(error_response("Error killing execution!", exception), status=500)
@@ -708,6 +748,8 @@ async def import_packages(
     importlib.import_module("packages.chaiNNer_ncnn")
     importlib.import_module("packages.chaiNNer_onnx")
     importlib.import_module("packages.chaiNNer_tensorrt")
+    importlib.import_module("packages.chaiNNer_modelopt")
+    importlib.import_module("packages.chaiNNer_vapoursynth")
     importlib.import_module("packages.chaiNNer_external")
 
     logger.info("Loading Nodes...")
@@ -821,6 +863,9 @@ def main():
     # runtime's site-packages. numba reads the variable when it is first imported, and
     # the node modules that import it load in setup, after this.
     os.environ["NUMBA_CACHE_DIR"] = str(ctx.storage_dir / "numba-cache")
+    # The VapourSynth package keeps its function catalog, user functions and overlays
+    # there; it reads the variable when its node modules load, in setup.
+    os.environ["CHAINNER_VS_DIR"] = str(ctx.storage_dir / "vapoursynth")
     # Before the event loop exists: its tasks copy this thread's context.
     numpy_pool.install()
     app.run(port=config.port, single_process=True)

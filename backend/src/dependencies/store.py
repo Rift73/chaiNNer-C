@@ -47,6 +47,18 @@ class DependencyInfo:
     extra_index_url: str | None = None
     url: str | None = None
 
+    @property
+    def distribution(self) -> str:
+        return distribution_name(self.package_name)
+
+
+def distribution_name(package_name: str) -> str:
+    """The name pip lists (and uninstalls) a package by: without the [extras] it was
+    installed with, as in "vsjetpack[deinterlace]", and normalized as pip compares
+    names (PEP 503), since pip lists a package by the spelling in its own metadata:
+    "onnx_graphsurgeon" for onnx-graphsurgeon."""
+    return re.sub(r"[-_.]+", "-", package_name.split("[", 1)[0]).lower()
+
 
 def pin(dependency: DependencyInfo) -> str:
     package_name = dependency.package_name
@@ -82,7 +94,7 @@ def filter_necessary_to_install(dependencies: Iterable[DependencyInfo]):
     """
     dependencies_to_install: list[DependencyInfo] = []
     for dependency in dependencies:
-        version = installed_packages.get(dependency.package_name, None)
+        version = installed_packages.get(dependency.distribution, None)
         if version:
             installed_version = coerce_semver(version)
             dep_version = coerce_semver(dependency.version)
@@ -157,7 +169,7 @@ def install_dependencies_sync(
         raise ValueError("An error occurred while installing dependencies.")
 
     for dep_info in dependencies_to_install:
-        installed_packages[dep_info.package_name] = dep_info.version
+        installed_packages[dep_info.distribution] = dep_info.version
 
     return len(dependencies_to_install)
 
@@ -176,7 +188,7 @@ async def install_dependencies(
         return 0
 
     dependency_name_map = {
-        dep_info.package_name: dep_info.display_name or dep_info.package_name
+        dep_info.distribution: dep_info.display_name or dep_info.package_name
         for dep_info in dependencies_to_install
     }
     deps_count = len(dependencies_to_install)
@@ -234,7 +246,9 @@ async def install_dependencies(
             match = COLLECTING_REGEX.search(line)
             if match:
                 package_name = match.group(1)
-                installing_name = dependency_name_map.get(package_name, None)
+                installing_name = dependency_name_map.get(
+                    distribution_name(package_name), None
+                )
                 if installing_name is None:
                     installing_name = package_name
                     transitive_deps_counter += 1
@@ -281,7 +295,7 @@ async def install_dependencies(
     await update_progress_cb("Finished installing dependencies...", 1, None)
 
     for dep_info in dependencies_to_install:
-        installed_packages[dep_info.package_name] = dep_info.version
+        installed_packages[dep_info.distribution] = dep_info.version
 
     return len(dependencies_to_install)
 
@@ -298,7 +312,7 @@ def uninstall_dependencies_sync(
             "-m",
             "pip",
             "uninstall",
-            *[d.package_name for d in dependencies],
+            *[d.distribution for d in dependencies],
             "-y",
         ],
         env=ENV,
@@ -307,7 +321,7 @@ def uninstall_dependencies_sync(
         raise ValueError("An error occurred while uninstalling dependencies.")
 
     for dep_info in dependencies:
-        installed_packages.pop(dep_info.package_name, None)
+        installed_packages.pop(dep_info.distribution, None)
 
 
 async def uninstall_dependencies(
@@ -323,7 +337,7 @@ async def uninstall_dependencies(
         return
 
     dependency_name_map = {
-        dep_info.package_name: dep_info.display_name or dep_info.package_name
+        dep_info.distribution: dep_info.display_name or dep_info.package_name
         for dep_info in dependencies
     }
     deps_count = len(dependencies)
@@ -345,7 +359,7 @@ async def uninstall_dependencies(
             # TODO: Change this back to "pip" once pip updates with my changes
             "chainner_pip",
             "uninstall",
-            *[d.package_name for d in dependencies],
+            *[d.distribution for d in dependencies],
             "-y",
         ],
         stdout=subprocess.PIPE,
@@ -377,7 +391,9 @@ async def uninstall_dependencies(
             match = UNINSTALLING_REGEX.search(line)
             if match:
                 package_name = match.group(1)
-                uninstalling_name = dependency_name_map.get(package_name, None)
+                uninstalling_name = dependency_name_map.get(
+                    distribution_name(package_name), None
+                )
                 if uninstalling_name is None:
                     uninstalling_name = package_name
                     transitive_deps_counter += 1
@@ -403,7 +419,7 @@ async def uninstall_dependencies(
     await update_progress_cb("Finished uninstalling dependencies...", 1, None)
 
     for dep_info in dependencies:
-        del installed_packages[dep_info.package_name]
+        del installed_packages[dep_info.distribution]
 
 
 __all__ = [

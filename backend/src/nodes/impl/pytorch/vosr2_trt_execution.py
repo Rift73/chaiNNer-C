@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     import tensorrt as trt
 
 
+from .vosr2_plan_file import open_plan
 from .vosr2_trt_models import profiles
 
 
@@ -20,9 +21,9 @@ class Stage:
     def __init__(self, path: Path, logger: trt.ILogger, device: torch.device):
         import tensorrt as trt
 
-        self.name = path.stem
+        self.name = path.name.split(".", 1)[0]
         self.runtime: trt.Runtime | None = trt.Runtime(logger)
-        with path.open("rb") as source:
+        with open_plan(path) as source:
 
             class Reader(trt.IStreamReaderV2):
                 def __init__(self):

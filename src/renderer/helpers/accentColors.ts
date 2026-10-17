@@ -31,6 +31,7 @@ const colorList = () => {
         { type: resolveName('OnnxModel'), color: getComputedColor('--type-color-onnx') },
         { type: resolveName('NcnnNetwork'), color: getComputedColor('--type-color-ncnn') },
         { type: resolveName('TensorRTEngine'), color: getComputedColor('--type-color-tensorrt') },
+        { type: resolveName('VideoClip'), color: getComputedColor('--type-color-videoclip') },
     ];
 };
 // eslint-disable-next-line @typescript-eslint/no-unused-vars

@@ -14,12 +14,13 @@ import psutil
 from sanic import Sanic
 from sanic.log import access_logger, logger
 from sanic.request import Request
-from sanic.response import json
+from sanic.response import HTTPResponse, json
 
 import api
 from custom_types import UpdateProgressFn
 from dependencies.store import (
     DependencyInfo,
+    distribution_name,
     filter_necessary_to_install,
     install_dependencies,
     installed_packages,
@@ -28,7 +29,12 @@ from dependencies.store import (
 from events import EventQueue
 from gpu import nvidia
 from nodes.impl.cors import add_cors
-from response import error_response, no_executor_response, success_response
+from response import (
+    RESTART_WORKER_HEADER,
+    error_response,
+    no_executor_response,
+    success_response,
+)
 from server_config import LOG_CONFIG, ServerConfig
 from server_process_helper import WorkerServer
 
@@ -104,7 +110,20 @@ async def nodes(request: Request):
 @app.route("/run", methods=["POST"])
 async def run(request: Request):
     worker = await AppContext.get(request.app).get_worker()
-    return await worker.proxy_request(request, timeout=None)
+    response = await worker.proxy_request(request, timeout=None)
+    await restart_if_broken(worker, response)
+    return response
+
+
+async def restart_if_broken(worker: WorkerServer, response: HTTPResponse) -> None:
+    """Restart the worker when its response says its CUDA context is broken: only a
+    new process gets the GPU's memory back and can run on the GPU again."""
+    if response.headers.get(RESTART_WORKER_HEADER):
+        logger.warning(
+            "The worker's CUDA context is broken (a sticky CUDA error); restarting it"
+            " to free the GPU's memory."
+        )
+        await worker.restart()
 
 
 @app.route("/run/individual", methods=["POST"])
@@ -134,6 +153,7 @@ async def resume(request: Request):
 @app.route("/kill", methods=["POST"])
 async def kill(request: Request):
     worker = await AppContext.get(request.app).get_worker()
+    killed: HTTPResponse | None = None
     try:
         response = await worker.proxy_request(request, timeout=3)
         # No run to kill (Stop just as a run ended) is not a reason to restart the
@@ -148,6 +168,7 @@ async def kill(request: Request):
                     "Unknown error occurred while attempting to stop execution."
                 )
             raise Exception(response.body.decode())
+        killed = response
     except Exception:
         try:
             logger.debug(
@@ -158,6 +179,8 @@ async def kill(request: Request):
             return json(
                 error_response("Error killing execution!", exception), status=500
             )
+    if killed is not None:
+        await restart_if_broken(worker, killed)
     return json(success_response(), status=200)
 
 
@@ -206,7 +229,9 @@ async def get_installed_dependencies(request: Request):
     packages = await worker.get_packages()
     for package in packages:
         for pkg_dep in package.dependencies:
-            installed_version = installed_packages.get(pkg_dep.pypi_name, None)
+            installed_version = installed_packages.get(
+                distribution_name(pkg_dep.pypi_name), None
+            )
             if installed_version is not None:
                 installed_deps[pkg_dep.pypi_name] = installed_version
 
@@ -430,7 +455,10 @@ async def import_packages(
 
         # check auto updates
         for dep in package.dependencies:
-            is_installed = installed_packages.get(dep.pypi_name, None) is not None
+            is_installed = (
+                installed_packages.get(distribution_name(dep.pypi_name), None)
+                is not None
+            )
             if dep.auto_update and is_installed:
                 to_install.append(dep)
 

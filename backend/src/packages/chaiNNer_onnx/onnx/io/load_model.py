@@ -6,6 +6,7 @@ from pathlib import Path
 import onnx
 from sanic.log import logger
 
+from nodes.impl.compressed_file import decompressed
 from nodes.impl.onnx.load import load_onnx_model
 from nodes.impl.onnx.model import OnnxModel
 from nodes.properties.inputs import OnnxFileInput
@@ -19,9 +20,9 @@ from .. import io_group
     schema_id="chainner:onnx:load_model",
     name="Load Model",
     description=(
-        "Load ONNX model file (.onnx). Theoretically supports any ONNX Super-Resolution"
-        " model that doesn't expect non-standard preprocessing. Also supports RemBG"
-        " background removal models."
+        "Load ONNX model file (.onnx), compressed by Save Model or not. Theoretically"
+        " supports any ONNX Super-Resolution model that doesn't expect non-standard"
+        " preprocessing. Also supports RemBG background removal models."
     ),
     icon="ONNX",
     inputs=[OnnxFileInput(primary_input=True)],
@@ -41,7 +42,10 @@ def load_model_node(path: Path) -> tuple[OnnxModel, Path, str]:
     assert os.path.isfile(path), f"Path {path} is not a file"
 
     logger.debug(f"Reading onnx model from path: {path}")
-    model = onnx.load_model(str(path))
+    # A plain model may keep its weights in files beside it, which load_model reads; a
+    # compressed one (Save Model's Compress) is one whole model.
+    data = decompressed(path)
+    model = onnx.load_model(str(path)) if data is None else onnx.load_from_string(data)
 
     dirname, basename, _ = split_file_path(path)
     return load_onnx_model(model), dirname, basename

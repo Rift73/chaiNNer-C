@@ -15,6 +15,7 @@ from gpu import nvidia
 from nodes.impl.tensorrt.cache import SharedCache
 
 from .vosr2_export import rotary_tables
+from .vosr2_plan_file import compressed
 from .vosr2_trt_execution import BoundedQueue, Stage, StageExecution
 from .vosr2_trt_models import STAGES
 from .vosr2_trt_plugin import load_plugin
@@ -26,13 +27,14 @@ class FullSession:
     """Resident model stages; live scratch follows actual input dimensions."""
 
     def __init__(self, directory: Path, device: torch.device):
-        import tensorrt as trt
+        from nodes.impl.tensorrt.trt_logger import TRT_LOGGER
 
         load_plugin()
         with torch.cuda.device(device):
             self.device = torch.device("cuda", torch.cuda.current_device())
             self.stream = torch.cuda.Stream(device=self.device)
-        self.logger = trt.Logger(trt.Logger.WARNING)
+        # The worker's one TensorRT logger (trt_logger.py).
+        self.logger = TRT_LOGGER
         self.stages: dict[str, Stage] = {}
         self.ropes: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         self.budget = 0
@@ -44,7 +46,7 @@ class FullSession:
             with torch.cuda.device(self.device):
                 for name in STAGES:
                     self.stages[name] = Stage(
-                        directory / f"{name}.plan", self.logger, self.device
+                        compressed(directory, name), self.logger, self.device
                     )
         except BaseException:
             self.close()
@@ -214,9 +216,9 @@ def lease_full_session(
     key = (
         tuple(
             (
-                str(directory / f"{name}.plan"),
-                (directory / f"{name}.plan").stat().st_size,
-                (directory / f"{name}.plan").stat().st_mtime_ns,
+                str(compressed(directory, name)),
+                compressed(directory, name).stat().st_size,
+                compressed(directory, name).stat().st_mtime_ns,
             )
             for name in STAGES
         ),

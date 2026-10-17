@@ -76,6 +76,7 @@ Details (development setup, tests, packaging, toolchain options) are in [`native
 ## Documentation
 
 - [`native/VOSR2.md`](native/VOSR2.md): the VOSR 2.0 node (model download, settings, video, speed).
+- [`native/VAPOURSYNTH.md`](native/VAPOURSYNTH.md): the VapourSynth nodes (install, preview in vsview, family nodes, AI Upscale, your own functions).
 - [`native/BUILDING.md`](native/BUILDING.md): build, test and package.
 - [`native/README.md`](native/README.md): the full developer command reference (tests, verifiers, benchmarks).
 - [`native/ARCHITECTURE.md`](native/ARCHITECTURE.md): how it's built and the exactness rules.

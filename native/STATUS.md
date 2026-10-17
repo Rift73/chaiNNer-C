@@ -11,7 +11,12 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   input condition; ARCHITECTURE section 4), else from past frames only. Gone: VOSR 2.0 Upscale, Temporal Sequence,
   Precision, Original mode and tile inputs, FP16, High. The TensorRT plugin `vosr2_qkv.dll` is an optional native target
   (`14dfaec0…`, four reproducible builds); the FP8 graphs are hosted (`vosr2-fp8-f9e142df5846`, 3.45 GB, SHA-256
-  pinned) and compiled on first use (191 s, compile 177 s). Verified on the RTX 5090: PyTorch images bit-identical to
+  pinned) and compiled on first use (191 s, compile 177 s). Since 2026-10-17 (owner) the set is hosted and kept
+  Zstandard-compressed (`vosr2-fp8-3ebb2423591d`, format 2, 2.68 GB; each file's `zstd` entry) and unpacked only
+  for a build (10 s, deleted afterwards); engines stay keyed by the graphs' own pin (`GRAPHS_SHA256`), and other
+  graph sets are deleted. The owner uploads `out\vosr2-fp8-3ebb2423591d` to Feral before this ships. The cached
+  BF16 and FP8 engine sets keep Zstandard level 3 plans too (`vosr2_plan_file.py`; 74-82 %, about 5 GB -> 3.8 GB;
+  streamed into TensorRT at about 1 GB/s); a set cached plain is compressed in place on its next use. Verified on the RTX 5090: PyTorch images bit-identical to
   the old node (256×256 and 640×360 → 2560×1440); a 30-frame Load Video chain bit-identical to the old Temporal Sequence
   for both methods on PyTorch; TensorRT BF16 frames 51.1 dB minimum, 52.2 dB mean PSNR from the old ones (rebuilt
   engines; one image alone 49.1 dB); FP8 from the hosted graphs 51.9 and 43.5 dB from the old FP8 outputs, which the
@@ -147,7 +152,17 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   equal at 1088x1920. Session captures a shape's CUDA graph on its second run. One unexplained dynamic build
   failure in five attempts (no log kept); rebuilding worked.
   Settings that do not apply to DUAL are hidden (owner, 2026-10-09): Convert To ONNX's Data Type, Opset and
-  Verify, Build Engine's Precision, Workspace and Allow TF32. A DUAL ONNX loads as precision "mixed" (arch DUAL in
+  Verify, Build Engine's Precision. Since 2026-10-16 (owner) Build Engine's Workspace (GiB, any amount; 0 =
+  automatic: TensorRT's default, up to the GPU's memory, since 2026-10-17 when 4 GiB failed an FDAT 2048x2048
+  build by 8 MB; 8 for DUAL), Allow TF32, Sparse Weights and Optimization Level (0-5, default 3) apply to every
+  ONNX, DUAL's worker included (its defaults stay the guide's: 8 GiB, TF32 off, dense, level 3). Save Engine's
+  Compress (owner, 2026-10-16; default on) writes LZMA, or Zstandard level 19 (Compression, owner 2026-10-17),
+  and appends "_compressed" to the name; Load Engine and VapourSynth's AI Upscale decompress by the xz or zstd
+  header (`nodes/impl/compressed_file.py`). Measured on the owner's 1x DUAL Light engine: 47.5 MB -> 11.7 MB,
+  +0.44 s per load, 6.6 s per save; zstd 13.2-13.6 MB at 35-60 ms. VOSR's FP8 ONNX weights (2026-10-17, 128 MB
+  samples) compress to 71-83 % with LZMA, 78-87 % with zstd 19. ONNX Save Model has the same Compress and
+  Compression (owner 2026-10-17; default on, LZMA); Load Model (and Load Models, AI Upscale) reads both forms.
+  Eight large ONNX upscalers became 38-89 % of their size (HAT-L 47 %). A DUAL ONNX loads as precision "mixed" (arch DUAL in
   its type); every DUAL engine, fixed ones too, names its input `input_aligned_4`, which Load Engine reads as
   "mixed". Fixed engines built before this still read as FP32. The fork's backend-tests check failed since the
   dynamic push (the ONNX-load assertion needs the native build, which GitHub does not make); it now skips there.
@@ -215,6 +230,7 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | `Build.ps1 -Configuration Debug` fails at `chainner_ext` (needs `python314_d.lib`, which the runtime lacks; pre-existing) | Skip `chainner_ext` in Debug or provide the debug library |
 | Upstream check and bug hunt (2026-10-16), queued items, each ruled by the Fable stand-in (`native/reports/fable-decisions.md`, "2026-10-16 · Upstream check and bug hunt"): `independent_ui.py` patches for 17d9331c (uninstall a disabled package) and 3f671309 (hidden experimental toggle), with the nightly-restore item (first row); Electron logs backend stdout per chunk, so bare prints are missing from `main.log` (a line-based reader keeping every level); the read-ahead predicate refinement for look-ahead nodes (compute Save Image's folder nodes before the item-0 decision, compare the full output folder; Save Image's skipped-file CPU work also runs ahead); look-ahead jobs share the node's cleanup set (latent); Descale: a multi-reflect Mirror instead of the refusal, and a schema-range sweep for degenerate Blur/Taps (Blur 0.01 Bilinear gives black); PyAV CFR resampling for variable-rate MKV/WebM (today they use the CLI reader); VOSR engine-cache self-heal (move a corrupt cache aside, rebuild); pip resolves on every backend start (a lock-vs-installed check); lazy inputs: evaluate the producer inline on the waiting thread; untaken-branch outputs cached until run end; malformed `/run` error wording; Save Image: reject `..` (owner-visible), RGBA to JPEG flatten vs drop (owner choice), AVIF 4:0:0 label, `nul` message; Riemersma History Length above about 487 M; ONNX int64-input message; Build Engine minimum 48 px; a newer-chaiNNer chain notice | Next sessions, in the order of the decisions file |
 | Owner queue (2026-10-16): Electron 25 -> 43 (about 40 advisories; must land with upstream #3343/#3344), vitest 1 -> 4 (with ip-address 9 -> 10 and adm-zip 0.5 -> 0.6), upstream #3318 (OOM recovery and tile-size display, a feature), re-release v0.3.4 with today's Descale Mirror out-of-bounds fix (v0.3.4 ships the bug), and the upstream features #3140/#3191/#3187/#3222 stay out | The owner's yes or no |
+| VapourSynth hunt follow-ups (2026-10-16; the v0.3.5 re-release has the 21 hunt fixes plus 3; rulings by the Fable stand-in in `native/reports/fable-decisions.md`): startup install of user modules outside the node import (the host waits 300 s for nodes, an install may take 900 s); vspipe in a job object so it ends with the worker (move `OwnedJob` to `nodes/impl/owned_job.py`, soft `assign`, vsview excluded); hide the ~36 base classes that always fail in Class dropdowns (scan hide list, vs-jetpack-version tagged) with MVTools methods needing analyze(), no-clip/tuple returns and object-only methods; `*args` clips; wrapped signatures (DFTTest.extract_freq, Morpho.black/white_hat); version pins in user_modules.toml; name a hanging user file in the scan timeout; uninstall removes transitive deps no other package needs (keep numpy, scipy and chaiNNer-C's own); uninstall KeyError; AI Upscale SAR with non-uniform ONNX scale; Preview Clips checks a temp copy before rewriting an open vsview's script; silent vsview start failure and per-worker viewers; `range` ints by sibling params; union inputs; FilePathType paths; per-plane expression lists; "*" file drag-and-drop (frontend). | Reports in the session scratchpad `vshunt\a1..a5-report.md`, rulings in `vshunt\fable-rulings.md` |
 | GPU checks deferred on 2026-10-16 (a model was training; light checks only): Build Engine Fixed 64x64 -> Get Engine Info -> Upscale on 200x150 under chaiNNer-C's TensorRT 11.2; a fixed-size ONNX engine keeps its size under 11.2; the timing cache file after the first build and "Loaded" on the second; Stop and worker kill during a real DUAL build (no child left, VRAM back); the TensorRT session-leak paths (need a CUDA fault); the VOSR CUDA checks listed in the area-7 hunt report | The owner's next GPU session |
 
 ## Decision log

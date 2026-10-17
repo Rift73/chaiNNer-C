@@ -2,11 +2,9 @@
  * A value-type representation of a set of numeric ids. The main purpose of this type is to
  * provide a representation of sets that can be memoized by React.
  *
- * This type makes the following assumptions about ids:
- * 1. They are non-negative integers.
- * 2. They are reasonably small integers. They should ideally be below 128 and must be below 65536.
- *
- * {@link IdSet.Builder} makes the same assumptions.
+ * Ids must be integers in the range 0 to 2^31-1 (0x7FFFFFFF). Each id is stored as a fixed pair of
+ * UTF-16 code units (high 16 bits, then low 16 bits), and the pairs are sorted and deduplicated,
+ * so equal sets always give equal strings.
  */
 export type IdSet<T extends number> = string & { __inputIdSet: never; __type: T };
 
@@ -14,18 +12,28 @@ export type IdSet<T extends number> = string & { __inputIdSet: never; __type: T 
 export namespace IdSet {
     export const empty: IdSet<never> = '' as IdSet<never>;
 
+    const isValidId = (id: number): boolean => Number.isInteger(id) && id >= 0 && id <= 0x7fffffff;
+
+    const encode = (id: number): string =>
+        String.fromCharCode(Math.floor(id / 0x10000), id % 0x10000);
+
     export const isEmpty = <T extends number>(idSet: IdSet<T>): boolean => {
         return idSet.length === 0;
     };
 
     export const has = <T extends number>(idSet: IdSet<T>, id: T): boolean => {
-        const char = String.fromCharCode(id);
-        return idSet.includes(char);
+        if (!isValidId(id)) return false;
+        const pair = encode(id);
+        // only pairs that start at an even index are ids; others straddle two ids
+        for (let i = idSet.indexOf(pair); i !== -1; i = idSet.indexOf(pair, i + 1)) {
+            if (i % 2 === 0) return true;
+        }
+        return false;
     };
     export const toSet = <T extends number>(idSet: IdSet<T>): Set<T> => {
         const set = new Set<T>();
-        for (let i = 0; i < idSet.length; i += 1) {
-            set.add(idSet.charCodeAt(i) as T);
+        for (let i = 0; i < idSet.length; i += 2) {
+            set.add((idSet.charCodeAt(i) * 0x10000 + idSet.charCodeAt(i + 1)) as T);
         }
         return set;
     };
@@ -34,11 +42,11 @@ export namespace IdSet {
         let s = '';
         let last = -1;
         for (const id of sorted) {
-            if (id < 0 || id > 65535 || !Number.isInteger(id)) throw new Error(`Invalid id: ${id}`);
+            if (!isValidId(id)) throw new Error(`Invalid id: ${id}`);
 
             if (id !== last) {
                 last = id;
-                s += String.fromCharCode(id);
+                s += encode(id);
             }
         }
         return s as IdSet<T>;

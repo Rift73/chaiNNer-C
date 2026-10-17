@@ -12,10 +12,12 @@ from nodes.properties.inputs import PthFileInput
 from nodes.properties.outputs import DirectoryOutput, FileNameOutput, ModelOutput
 from nodes.utils.utils import split_file_path
 
-from ...settings import get_settings
+from ...settings import PyTorchSettings, get_settings
 from .. import io_group
 
-MAIN_REGISTRY.add(*EXTRA_REGISTRY)
+# Without duplicates in the worker. vsview's Reload Script imports this module again
+# for a script's AI Upscale, while spandrel keeps the architectures added before.
+MAIN_REGISTRY.add(*EXTRA_REGISTRY, ignore_duplicates=True)
 
 
 def parse_ckpt_state_dict(checkpoint: dict):
@@ -28,6 +30,33 @@ def parse_ckpt_state_dict(checkpoint: dict):
             key = i.replace("module.", "")
             state_dict[key] = j
     return state_dict
+
+
+def load_model(path: Path, exec_options: PyTorchSettings) -> ModelDescriptor:
+    """A model file on the settings' device and precision, ready for inference (also
+    used by VapourSynth's AI Upscale, which has no node context)."""
+    pytorch_device = exec_options.device
+
+    try:
+        logger.debug(f"Reading state dict from path: {path}")
+
+        model_descriptor = ModelLoader(pytorch_device).load_from_file(path)
+
+        for _, v in model_descriptor.model.named_parameters():
+            v.requires_grad = False
+        model_descriptor.model.eval()
+        model_descriptor = model_descriptor.to(pytorch_device)
+        should_use_fp16 = exec_options.use_fp16 and model_descriptor.supports_half
+        if should_use_fp16:
+            model_descriptor.model.half()
+        else:
+            model_descriptor.model.float()
+    except Exception as e:
+        raise ValueError(
+            f"Model {os.path.basename(path)} is unsupported by chaiNNer. Please try"
+            " another."
+        ) from e
+    return model_descriptor
 
 
 @io_group.register(
@@ -71,28 +100,7 @@ def load_model_node(
 
     assert os.path.isfile(path), f"Path {path} is not a file"
 
-    exec_options = get_settings(context)
-    pytorch_device = exec_options.device
-
-    try:
-        logger.debug(f"Reading state dict from path: {path}")
-
-        model_descriptor = ModelLoader(pytorch_device).load_from_file(path)
-
-        for _, v in model_descriptor.model.named_parameters():
-            v.requires_grad = False
-        model_descriptor.model.eval()
-        model_descriptor = model_descriptor.to(pytorch_device)
-        should_use_fp16 = exec_options.use_fp16 and model_descriptor.supports_half
-        if should_use_fp16:
-            model_descriptor.model.half()
-        else:
-            model_descriptor.model.float()
-    except Exception as e:
-        raise ValueError(
-            f"Model {os.path.basename(path)} is unsupported by chaiNNer. Please try"
-            " another."
-        ) from e
+    model_descriptor = load_model(path, get_settings(context))
 
     dirname, basename, _ = split_file_path(path)
     return model_descriptor, dirname, basename

@@ -115,7 +115,13 @@ class NodeGroup:
         node_context: bool = False,
         key_info: KeyInfo | None = None,
         suggestions: list[SpecialSuggestion] | None = None,
+        keywords: list[str] | None = None,
+        generated: bool = False,
     ):
+        """Registers a node. `keywords` are more words node search finds it by (a
+        generated node's method names). `generated`: the node is made at run time,
+        several per file, so the naming check (one node per file named after it) does
+        not apply."""
         if not isinstance(description, str):
             description = "\n\n".join(description)
 
@@ -185,6 +191,7 @@ class NodeGroup:
                 iterable_outputs=iterator_outputs,
                 key_info=key_info,
                 suggestions=suggestions or [],
+                keywords=keywords or [],
                 side_effects=side_effects,
                 deprecated=deprecated,
                 node_context=node_context,
@@ -196,10 +203,11 @@ class NodeGroup:
                 TYPE_CHECK_LEVEL,
                 lambda _: check_schema_types(original_fn, node),
             )
-            run_check(
-                NAME_CHECK_LEVEL,
-                lambda fix: check_naming_conventions(original_fn, name, fix),
-            )
+            if not generated:
+                run_check(
+                    NAME_CHECK_LEVEL,
+                    lambda fix: check_naming_conventions(original_fn, name, fix),
+                )
 
             self.add_node(node)
             return wrapped_func

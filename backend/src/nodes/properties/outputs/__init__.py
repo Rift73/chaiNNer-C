@@ -18,3 +18,7 @@ try:
     from .tensorrt_outputs import *
 except Exception:
     pass
+try:
+    from .vapoursynth_outputs import *
+except Exception:
+    pass
