@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import json
 import subprocess
 import sys
 import time
@@ -76,6 +78,31 @@ def test_a_package_with_extras_is_listed_by_its_name(monkeypatch: pytest.MonkeyP
 
     store.uninstall_dependencies_sync([jetpack])
     assert commands[-1][-2:] == ["vsjetpack", "-y"]
+
+
+def test_startup_finds_a_package_pip_lists_under_another_spelling(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # pip lists a package by the name in its own metadata: onnx-graphsurgeon's is
+    # "onnx_graphsurgeon", and ModelOpt's package showed it missing after every
+    # restart.
+    listed = [
+        {"name": "onnx_graphsurgeon", "version": "0.6.1"},
+        {"name": "Pillow", "version": "12.0.0"},
+    ]
+    monkeypatch.setattr(store, "installed_packages", {})
+    monkeypatch.setattr(
+        subprocess, "check_output", lambda *_args, **_kwargs: json.dumps(listed)
+    )
+    monkeypatch.setattr(subprocess, "check_call", lambda *_args, **_kwargs: 0)
+    monkeypatch.delitem(sys.modules, "dependencies.install_server_deps", raising=False)
+    importlib.import_module("dependencies.install_server_deps")
+
+    surgeon = DependencyInfo("onnx-graphsurgeon", "0.6.1")
+    pillow = DependencyInfo("pillow", "12.0.0")
+    assert filter_necessary_to_install([surgeon, pillow]) == []
+    store.uninstall_dependencies_sync([surgeon])
+    assert surgeon.distribution not in store.installed_packages
 
 
 def test_each_extra_index_url_gets_its_own_flag(monkeypatch: pytest.MonkeyPatch):

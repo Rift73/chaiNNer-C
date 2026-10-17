@@ -54,8 +54,10 @@ class DependencyInfo:
 
 def distribution_name(package_name: str) -> str:
     """The name pip lists (and uninstalls) a package by: without the [extras] it was
-    installed with, as in "vsjetpack[deinterlace]"."""
-    return package_name.split("[", 1)[0]
+    installed with, as in "vsjetpack[deinterlace]", and normalized as pip compares
+    names (PEP 503), since pip lists a package by the spelling in its own metadata:
+    "onnx_graphsurgeon" for onnx-graphsurgeon."""
+    return re.sub(r"[-_.]+", "-", package_name.split("[", 1)[0]).lower()
 
 
 def pin(dependency: DependencyInfo) -> str:
@@ -244,7 +246,9 @@ async def install_dependencies(
             match = COLLECTING_REGEX.search(line)
             if match:
                 package_name = match.group(1)
-                installing_name = dependency_name_map.get(package_name, None)
+                installing_name = dependency_name_map.get(
+                    distribution_name(package_name), None
+                )
                 if installing_name is None:
                     installing_name = package_name
                     transitive_deps_counter += 1
@@ -387,7 +391,9 @@ async def uninstall_dependencies(
             match = UNINSTALLING_REGEX.search(line)
             if match:
                 package_name = match.group(1)
-                uninstalling_name = dependency_name_map.get(package_name, None)
+                uninstalling_name = dependency_name_map.get(
+                    distribution_name(package_name), None
+                )
                 if uninstalling_name is None:
                     uninstalling_name = package_name
                     transitive_deps_counter += 1

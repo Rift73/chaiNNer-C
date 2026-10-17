@@ -6,6 +6,7 @@ from json import loads as json_parse
 from .store import (
     ENV,
     DependencyInfo,
+    distribution_name,
     install_dependencies_sync,
     installed_packages,
     python_path,
@@ -26,7 +27,7 @@ try:
         env=ENV,
     )
     for p in json_parse(pip_list):
-        installed_packages[p["name"]] = p["version"]
+        installed_packages[distribution_name(p["name"])] = p["version"]
 except Exception as e:
     print(f"Failed to get installed packages: {e}")
 
