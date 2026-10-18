@@ -31,7 +31,7 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
   and its bundled Ninja), Windows SDK 10.0.26100.0, and CMake 3.20 or newer.
 - Optional, for VOSR's TensorRT plugin (Build): a TensorRT 11 SDK (the zip's `include` and `lib`, for example
   `TensorRT-11.4.0.106`) and a CUDA 13 toolkit (`nvcc`, for example
-  `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3`).
+  `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4`).
 - CPython 3.14.8 at `native\runtime\cpython-3.14.8`, provisioned by `native\tools\provision_runtime.ps1`
   from the tracked lock `native\python-stack.lock.txt` (interpreter, build tag, archive SHA-256, pip's version
   and every pin, installed without dependency resolution); the run fails unless `pip check` is clean and the
@@ -103,15 +103,17 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 `CHAINNER_C_EXT_OUTPUT_DIR`, default `backend/src/chainner_ext`), replacing the only known-good copies. Copy them to
 `native\build\held\` first and check `Get-FileHash` against those copies. The build is reproducible: the same sources
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
-map, `.gitattributes`). This source's binaries (portable builds: `chainner_native.dll` and
-`_chainner_graph.pyd` of 2026-10-16, after the upstream check and bug hunt; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
+map, `.gitattributes`). This source's binaries (portable builds of 2026-10-18, after the YUV planes, DDS and
+TensorRT runner work, with TensorRT 11.4.0.106 and CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
-| `chainner_native.dll` | `1f6c12a173f8a284aa3bfe900031597b58748a6625f2a2b3506230c1cc12c278` |
-| `_chainner_graph.pyd` | `4af8fc5901529dea858b17e585417a741099f8715a839a09013b63b3de9eaa40` |
+| `chainner_native.dll` | `cf438e3c3dbae42aacfee4bbc0198b7795255487b9e189ae5dcb9ab73b02bba7` |
+| `_chainner_graph.pyd` | `5b1297c1b5df57a73d02baa909f19fa4d2029f2642f21eb87fb0051e411fb322` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
-| `vosr2_qkv.dll` (TensorRT 11.2.1.2, CUDA 13.3.73) | `14dfaec0eeead27ea187ac51b3ba10b76796757af6d4d704d46f4399768196fc` |
+| `vosr2_qkv.dll` | `5b5cde9c2c037f0ed3d48ce0fe59b3ff01432c610edc358fdb7b0155e5b93497` |
+| `_chainner_trt.pyd` | `7d0f774c3426fb2900f05493ef5650f90aa66a997bb000d12c9c71f3cb05d947` |
+| `chainner_trt_vs.dll` | `f7d12717a7cbd02a09ea34728de92a1421ff0902acb73705107b095741b09a9c` |
 
 **VOSR's TensorRT plugin** `vosr2_qkv.dll` (`src/vosr2`, the VOSR TensorRT backends' Q/K/V packing) is an
 optional fourth target: `-Define CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>,CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit>`
@@ -124,6 +126,14 @@ compute_120 PTX, `/W4 /WX` on the host side and `-Werror all-warnings`. `qkv_plu
 and lld-link with the flags above (TensorRT's and CUDA's headers as system headers). The DLL imports only
 `nvinfer_11.dll` (CUDA 13's `cudart.lib` is the static runtime) and is reproducible like the others. Its hash is part
 of the VOSR TensorRT engine caches' identity, so a new DLL rebuilds those engines once.
+
+**The TensorRT runner** (`trt_runner`, the C++ engine runner) builds from the same two roots: `_chainner_trt.pyd`
+(the Python module) and, when `CHAINNER_C_VAPOURSYNTH_INCLUDE` names the directory of VapourSynth's `VapourSynth4.h`,
+`chainner_trt_vs.dll` (the VapourSynth plugin), both into `CHAINNER_C_OUTPUT_DIR\tensorrt`. `kernels.cu` is compiled
+by nvcc as `qkv.cu` is; without the include, configuration prints that the plugin was skipped. AI Upscale's TensorRT
+backend uses the runner by default and Upscale Image (TensorRT) only with `CHAINNER_C_TRT_RUNNER=1`;
+`CHAINNER_C_TRT_RUNNER=0` keeps the Python bridge everywhere, and a build without the runner falls back to the bridge
+with one log line.
 
 `generate_onnx_converter.py`, `generate_pixel_art_tables.py` and `generate_tiling_cpp.py` in `native/tools` turn pinned
 sources into C++ and never run in the application, as `native/tests/reference_ncnn/generate_optimizer_cpp.py` does for
