@@ -30,7 +30,6 @@ package = add_package(
             pypi_name="tensorrt",
             version="11.4.0.106",
             size_estimate=int(1.2 * GB),
-            auto_update=False,
         ),
         Dependency(
             display_name="CUDA Python",
