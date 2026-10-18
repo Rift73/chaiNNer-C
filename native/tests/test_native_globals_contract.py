@@ -40,8 +40,9 @@ CONTRACT = {
     "nodes.impl.dds.texconv": (
         IMAGE_IO,
         (
-            "Path SRGB_FORMATS __TEXCONV_EXE __decode __run_texconv cv_save_image"
-            " logger mkdtemp os platform shutil split_file_path subprocess uuid"
+            "DXGI_CODES Path SRGB_FORMATS __TEXCONV_EXE __decode __run_texconv logger"
+            " mkdtemp normalize np os platform shutil split_file_path subprocess"
+            " to_uint16 to_uint8"
         ),
         False,
     ),
@@ -99,8 +100,8 @@ CONTRACT = {
     "packages.chaiNNer_standard.image.io.load_image": (
         IMAGE_IO,
         (
-            "Image Path _decoders _read_cv cv2 dds_to_png_texconv get_ext get_h_w_c"
-            " get_opencv_formats get_pil_formats logger np os platform"
+            "Image Path _decoders cv2 get_ext get_h_w_c get_opencv_formats"
+            " get_pil_formats logger np platform read_dds_texconv"
             " remove_unnecessary_alpha split_file_path"
         ),
         False,
@@ -112,6 +113,11 @@ CONTRACT = {
             " PngColorDepth TiffColorDepth cv2 cv_save_image get_full_path get_h_w_c"
             " logger save_as_dds to_dxgi to_uint16 to_uint8"
         ),
+        False,
+    ),
+    "packages.chaiNNer_standard.image.batch_processing.save_dds_texture": (
+        IMAGE_IO,
+        "BC7Compression DDSErrorMetric LEGACY_TO_DXGI PREFER_DX9 save_as_dds to_dxgi",
         False,
     ),
     "packages.chaiNNer_standard.image.io.view_image_external": (

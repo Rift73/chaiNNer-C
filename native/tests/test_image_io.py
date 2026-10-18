@@ -20,11 +20,12 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
+from inspect import signature
 from pathlib import Path
 from tempfile import mkdtemp
 from threading import Barrier, Lock
 from types import ModuleType, SimpleNamespace
-from typing import Any, Literal, Union
+from typing import Any, Literal, NamedTuple, Union
 
 import cv2
 import numpy as np
@@ -83,6 +84,7 @@ def modules(current):
         "Image": Image,
         "TiffImagePlugin": TiffImagePlugin,
         "Enum": Enum,
+        "NamedTuple": NamedTuple,
         "Path": Path,
         "Callable": Callable,
         "Iterable": Iterable,
@@ -106,13 +108,17 @@ def modules(current):
     env.update({k: v for k, v in vars(dds_format).items() if not k.startswith("__")})
     env.update({k: v for k, v in vars(image_formats).items() if k.startswith("get_")})
     util = image_utils if current else OLD_UTILS
-    env.update(to_uint8=util.to_uint8, to_uint16=util.to_uint16)
+    env.update(
+        to_uint8=util.to_uint8, to_uint16=util.to_uint16, normalize=util.normalize
+    )
     env["cv_save_image"] = (
         native_image_io.cv_save_image if current else OLD_UTILS.cv_save_image
     )
     root = ROOT / "backend/src" if current else REF / "installed"
     dds = extract(root / "nodes/impl/dds/texconv.py", env)
-    env.update(dds_to_png_texconv=dds.dds_to_png_texconv, save_as_dds=dds.save_as_dds)
+    # The reader texconv's PNG fed is now one of an uncompressed DDS.
+    reader = "read_dds_texconv" if current else "dds_to_png_texconv"
+    env.update({reader: getattr(dds, reader), "save_as_dds": dds.save_as_dds})
     loader = extract(root / NODE_DIR / "load_image.py", env)
     saver = extract(root / NODE_DIR / "save_image.py", env)
     viewer = extract(root / NODE_DIR / "view_image_external.py", env)
@@ -181,15 +187,26 @@ def save_arguments(module, lazy, directory, *, fmt="PNG", filename="image", **op
         "dds_dithering": False,
         "dds_mipmap_levels": 1,
         "dds_separate_alpha": False,
-        "avif_chroma_subsampling": module.AvifSubsampling.FACTOR_420,
-        "skip_existing_files": False,
     }
+    if hasattr(module, "DDSColourConversion"):  # the DDS inputs this port added
+        values.update(
+            dds_mip_levels=0,
+            dds_mip_filter=module.DDSMipFilter.DEFAULT,
+            dds_colour_conversion=module.DDSColourConversion.KEEP,
+            dds_premultiply_alpha=False,
+            dds_gpu=True,
+        )
+    values.update(
+        avif_chroma_subsampling=module.AvifSubsampling.FACTOR_420,
+        skip_existing_files=False,
+    )
     for key, value in options.items():
         if isinstance(value, tuple):
             values[key] = getattr(getattr(module, value[0]), value[1])
         else:
             values[key] = value
-    return values
+    # In the node's input order, which the prepare phase's list follows.
+    return {key: values[key] for key in signature(module.save_image_node).parameters}
 
 
 def image(channels=3, dtype: DTypeLike = np.float32):
@@ -465,18 +482,39 @@ def test_viewer_decisions_are_mocked(tmp_path, system, saved):
     assert run(False) == run(True)
 
 
+def raw_dds_pixels(path):
+    """The DX10 format, alpha mode and pixel bytes of an uncompressed one-image DDS."""
+    data = Path(path).read_bytes()
+    assert data[:4] == b"DDS " and data[84:88] == b"DX10"
+    dxgi, dimension, misc, array, alpha_mode = struct.unpack_from("<5I", data, 128)
+    assert (dimension, misc, array) == (3, 0, 1)
+    return dxgi, alpha_mode, data[148:]
+
+
 @pytest.mark.parametrize("bits", range(64))
 def test_dds_options_and_cleanup_mocked(tmp_path, bits):
+    # texconv's arguments are as before but for the intermediate's name; the PNG's
+    # pixels are now an R8G8B8A8_UNORM DDS's, in RGBA order.
     def run(current):
         module = modules(current).dds
         events = []
-        module.mkdtemp = lambda **kwargs: str(tmp_path / "scratch")
+        scratch = tmp_path / str(current)
+        scratch.mkdir()
+        module.mkdtemp = lambda **kwargs: str(scratch)
         module.cv_save_image = lambda *args: events.append(
-            ("png", str(args[0]), args[1].tobytes(), args[2])
+            ("pixels", args[1][..., [2, 1, 0, 3]].tobytes())
         )
-        module.__dict__["__run_texconv"] = lambda *args: events.append(("run", *args))
+
+        def texconv(args, error):
+            if current:
+                dxgi, alpha_mode, pixels = raw_dds_pixels(args[-1])
+                assert (dxgi, alpha_mode) == (28, 0)  # R8G8B8A8_UNORM, alpha unknown
+                events.append(("pixels", pixels))
+            events.append(("run", [*args[:-1], Path(args[-1]).stem], error))
+
+        module.__dict__["__run_texconv"] = texconv
         module.shutil = SimpleNamespace(
-            rmtree=lambda path: events.append(("cleanup", path))
+            rmtree=lambda path: events.append(("cleanup", Path(path).parent))
         )
         module.save_as_dds(
             tmp_path / "name.dds",
@@ -511,11 +549,13 @@ def test_texconv_error_and_decoding(tmp_path, code):
 @pytest.mark.parametrize("compression", ["BEST_SPEED", "DEFAULT", "BEST_QUALITY"])
 @pytest.mark.parametrize("uniform", [False, True])
 def test_save_dds_all_exposed_format_options(tmp_path, dds_name, compression, uniform):
+    # The DDS writer quantizes for its target's depth now (8-bit targets as before),
+    # so Save Image passes the image itself.
     def run(current):
         module = modules(current).save
         calls = []
         module.save_as_dds = lambda path, value, fmt, **kwargs: calls.append(
-            (path, value.dtype.str, value.tobytes(), fmt, kwargs)
+            (path, OLD_UTILS.to_uint8(value, normalized=True).tobytes(), fmt, kwargs)
         )
         args = save_arguments(
             module,
@@ -532,7 +572,17 @@ def test_save_dds_all_exposed_format_options(tmp_path, dds_name, compression, un
         module.save_image_node(**args)
         return calls
 
-    assert run(False) == run(True)
+    old, new = run(False), run(True)
+    added = ("colour_conversion", "premultiply_alpha", "gpu", "mip_filter", "kind")
+    for call in new:  # the new options at their defaults
+        assert [call[3].pop(name) for name in added] == [
+            "keep",
+            False,
+            True,
+            "default",
+            "array",
+        ]
+    assert old == new
 
 
 @pytest.mark.parametrize(
@@ -575,6 +625,7 @@ def test_real_dds_cpu_codec(tmp_path, fmt):
 
 @pytest.mark.parametrize("failure", ["encode", "run", "cleanup"])
 def test_dds_finally_failure_priority(tmp_path, failure):
+    # "encode" fails as the intermediate's path is made, before either writer encodes.
     def run(current):
         module = modules(current).dds
         events = []
@@ -584,6 +635,7 @@ def test_dds_finally_failure_priority(tmp_path, failure):
             events.append("encode")
             if failure == "encode":
                 raise LookupError("encode failed")
+            return os.path.join(*args)
 
         def execute(*args):
             events.append("run")
@@ -594,7 +646,8 @@ def test_dds_finally_failure_priority(tmp_path, failure):
             if failure == "cleanup":
                 raise OSError("cleanup failed")
 
-        module.cv_save_image = encode
+        module.os = SimpleNamespace(path=SimpleNamespace(join=encode))
+        module.cv_save_image = lambda *args: None
         module.__dict__["__run_texconv"] = execute
         module.shutil = SimpleNamespace(rmtree=cleanup)
         try:
@@ -821,6 +874,47 @@ def test_full_path_and_repeat_skip(tmp_path, relative):
         assert args["lazy_image"].calls == 0
 
 
+# Save Image's DDS inputs this port added (full DDS support), by input id and
+# parameter; every other input stays as upstream's.
+ADDED_SAVE_INPUTS = {
+    19: "dds_colour_conversion",
+    20: "dds_premultiply_alpha",
+    21: "dds_gpu",
+    22: "dds_mip_levels",
+    23: "dds_mip_filter",
+}
+
+
+class StripAddedInputs(ast.NodeTransformer):
+    """Removes the added inputs (`....with_id(n)...` calls) from a node's decorator,
+    and a group left empty by that."""
+
+    @staticmethod
+    def input_id(expr):
+        while isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute):
+            if expr.func.attr == "with_id" and isinstance(expr.args[0], ast.Constant):
+                return expr.args[0].value
+            expr = expr.func.value
+        return None
+
+    def visit_Call(self, node):
+        self.generic_visit(node)
+        node.args = [
+            a
+            for a in node.args
+            if self.input_id(a) not in ADDED_SAVE_INPUTS
+            and not (
+                isinstance(a, ast.Call) and isinstance(a.func, ast.Call) and not a.args
+            )
+        ]
+        return node
+
+    def visit_List(self, node):
+        self.generic_visit(node)
+        node.elts = [e for e in node.elts if self.input_id(e) not in ADDED_SAVE_INPUTS]
+        return node
+
+
 def test_frozen_hashes_and_metadata():
     manifest = json.loads((REF / "manifest.json").read_text())
     for entry in manifest["files"]:
@@ -830,21 +924,43 @@ def test_frozen_hashes_and_metadata():
             ).hexdigest()
             == entry["sha256"]
         )
-    for name in ["load_image", "save_image", "view_image_external"]:
 
-        def metadata(path):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            node = next(
-                n
-                for n in tree.body
-                if isinstance(n, ast.FunctionDef) and n.name.endswith("_node")
-            )
-            node.body = [ast.Pass()]
-            return ast.dump(node)
-
-        assert metadata(ROOT / "backend/src" / NODE_DIR / f"{name}.py") == metadata(
-            REF / "source" / NODE_DIR / f"{name}.py"
+    def metadata(path, strip_added):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        node = next(
+            n
+            for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name.endswith("_node")
         )
+        node.body = [ast.Pass()]
+        if strip_added:
+            # This port's DDS group is if_enum_group(4, ImageFormat.DDS)(*dds_inputs()),
+            # shared with Save DDS Texture: compare the inputs of dds_inputs' list.
+            for call in ast.walk(node):
+                if (
+                    isinstance(call, ast.Call)
+                    and call.args
+                    and isinstance(call.args[0], ast.Starred)
+                ):
+                    factory = next(
+                        n
+                        for n in tree.body
+                        if isinstance(n, ast.FunctionDef) and n.name == "dds_inputs"
+                    )
+                    returned = factory.body[-1]
+                    assert isinstance(returned, ast.Return)
+                    assert isinstance(returned.value, ast.List)
+                    call.args = returned.value.elts
+            node = StripAddedInputs().visit(node)
+            added = set(ADDED_SAVE_INPUTS.values())
+            node.args.args = [a for a in node.args.args if a.arg not in added]
+        return ast.dump(node)
+
+    for name in ["load_image", "save_image", "view_image_external"]:
+        strip = name == "save_image"
+        assert metadata(
+            ROOT / "backend/src" / NODE_DIR / f"{name}.py", strip
+        ) == metadata(REF / "source" / NODE_DIR / f"{name}.py", strip)
 
 
 def test_concurrent_cpu_save_load(tmp_path):

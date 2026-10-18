@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, Union, cast
+from typing import Literal, Union, cast, get_args
 
 DxgiFormat = Literal[
     "UNKNOWN",
@@ -124,6 +124,7 @@ DxgiFormat = Literal[
     "V408",
     "SAMPLER_FEEDBACK_MIN_MIP_OPAQUE,",
     "SAMPLER_FEEDBACK_MIP_REGION_USED_OPAQUE,",
+    "A4B4G4R4_UNORM",
     "FORCE_UINT",
 ]
 """
@@ -132,13 +133,30 @@ Modern DX10+ formats.
 https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format
 """
 
+DXGI_CODES: dict[DxgiFormat, int] = {
+    **dict(
+        zip(
+            get_args(DxgiFormat)[: get_args(DxgiFormat).index("B4G4R4A4_UNORM") + 1],
+            range(256),
+        )
+    ),
+    "A4B4G4R4_UNORM": 191,
+}
+"""
+Each format's DXGI_FORMAT value: DxgiFormat lists UNKNOWN to B4G4R4A4_UNORM (115) in
+value order.
+"""
+
 LegacyFormat = Literal[
     "DXT1",
     "DXT3",
     "DXT5",
+    "ATI1",
+    "ATI2",
 ]
 """
-Legacy DX9 formats. Those are the FourCC of those formats.
+Legacy DX9 formats. Those are the FourCC of those formats (DXT3 and DXT5 with
+premultiplied alpha are DXT2 and DXT4).
 """
 
 DDSFormat = Union[DxgiFormat, LegacyFormat]
@@ -147,6 +165,8 @@ LEGACY_TO_DXGI: dict[LegacyFormat, DxgiFormat] = {
     "DXT1": "BC1_UNORM",
     "DXT3": "BC2_UNORM",
     "DXT5": "BC3_UNORM",
+    "ATI1": "BC4_UNORM",
+    "ATI2": "BC5_UNORM",
 }
 
 SRGB_FORMATS: set[DxgiFormat] = {
@@ -199,12 +219,18 @@ WITH_ALPHA: set[DDSFormat] = {
     "BC7_UNORM_SRGB",
     "AYUV",
     "B4G4R4A4_UNORM",
+    "A4B4G4R4_UNORM",
     # legacy
     "DXT1",
     "DXT3",
     "DXT5",
 }
 
+BC6H_FORMATS: set[DxgiFormat] = {
+    "BC6H_TYPELESS",
+    "BC6H_UF16",
+    "BC6H_SF16",
+}
 BC7_FORMATS: set[DxgiFormat] = {
     "BC7_TYPELESS",
     "BC7_UNORM",

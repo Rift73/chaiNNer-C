@@ -68,6 +68,10 @@ EXCLUDED = {
     "its frames are to_uint8's result, written as C-order bytes "
     "(video_io.cpp frame_payload: a memoryview only of a C-contiguous frame, else "
     "tobytes)",
+    "chainner:image:save_dds_texture": "its DDS format dropdown reaches BC6H and BC7, "
+    "which texconv encodes on the GPU by default (GPU Compression); test_dds.py runs "
+    "it with -nogpu; its images reach texconv as an uncompressed DDS read through "
+    "their strides (image_io.cpp raw_dds), whatever their layout",
 }
 # Non-image inputs by label; "@save" is the run's own output directory.
 OVERRIDES: dict[str, dict[str, object]] = {

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 # `x as x` imports: the native mirror reads these names in native/src/image_io.cpp
 import io
-import os as os
 import platform as platform
 import struct
 from pathlib import Path
@@ -14,7 +13,7 @@ import pillow_avif  # type: ignore # noqa: F401
 from PIL import Image, TiffImagePlugin
 from sanic.log import logger as logger
 
-from nodes.impl.dds.texconv import dds_to_png_texconv as dds_to_png_texconv
+from nodes.impl.dds.texconv import read_dds_texconv as read_dds_texconv
 from nodes.impl.image_formats import get_available_image_formats
 from nodes.impl.image_formats import get_opencv_formats as get_opencv_formats
 from nodes.impl.image_formats import get_pil_formats as get_pil_formats
@@ -108,7 +107,9 @@ def _read_tiff_straight_alpha(path: Path) -> np.ndarray | None:
         # 5-8 at the turned size (12.3). Decode a copy whose tag says 1 instead.
         data = bytearray(Path(path).read_bytes())
         endian = "<" if tags.prefix == b"II" else ">"
-        count, value_at, size = ("Q", 12, 20) if header[2:3] == b"\x2b" else ("H", 8, 12)
+        count, value_at, size = (
+            ("Q", 12, 20) if header[2:3] == b"\x2b" else ("H", 8, 12)
+        )
         first = tags.offset + struct.calcsize(count)
         entries = struct.unpack_from(endian + count, data, tags.offset)[0]
         for entry in range(first, first + size * entries, size):

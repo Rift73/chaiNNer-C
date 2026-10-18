@@ -7,6 +7,7 @@
 #include "fpng.h"
 #include <pybind11/numpy.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <cstdint>
 #include <functional>
@@ -331,9 +332,7 @@ O read_pil(py::dict g,O path) {
 O read_dds(py::dict g,O path) {
     if(!equal(name(g,"get_ext")(path),py::str(".dds")))return py::none();
     if(!equal(name(g,"platform").attr("system")(),py::str("Windows")))return py::none();
-    O png=name(g,"dds_to_png_texconv")(path),image;
-    finally_do([&] {image=name(g,"_read_cv")(png);if(!image.is_none())image=name(g,"remove_unnecessary_alpha")(image);},[&]{name(g,"os").attr("remove")(png);});
-    return image;
+    return name(g,"remove_unnecessary_alpha")(name(g,"read_dds_texconv")(path));
 }
 O decode_ext(O extensions,O decoder,O extension_fn,O path) {
     return contains(extensions,extension_fn(path)) ? decoder(path) : O(py::none());
@@ -376,6 +375,9 @@ O full_path(O base,O relative,O filename,O format_type) {
 // RGB(A) order and their save options; OpenCV formats get their parameters and
 // the precision conversion.
 struct Encoding {O image; bool pillow=false; py::dict options; py::list params;};
+// Save Image's inputs in order: 0-11 as upstream's, 12-22 the DDS inputs (save_dds_inputs),
+// then AVIF's chroma subsampling and skip existing files.
+constexpr size_t save_inputs=25,avif_subsampling=23,skip_existing=24;
 bool pillow_format(const py::dict& g,const O& format_type) {
     return option(g,format_type,"ImageFormat","GIF")||option(g,format_type,"ImageFormat","TGA")||option(g,format_type,"ImageFormat","AVIF");
 }
@@ -388,7 +390,7 @@ Encoding encoding(py::dict g,O image,py::tuple args) {
         equal(index(name(g,"get_h_w_c")(image),2),py::int_(4));
     if(pillow_format(g,format_type) || exact_webp) {
         image=name(g,"to_uint8")(image,py::arg("normalized")=true);
-        if(option(g,format_type,"ImageFormat","AVIF")){result.options["quality"]=args[7];result.options["subsampling"]=O(args[18]).attr("value");}
+        if(option(g,format_type,"ImageFormat","AVIF")){result.options["quality"]=args[7];result.options["subsampling"]=O(args[avif_subsampling]).attr("value");}
         if(exact_webp){result.options["lossless"]=py::bool_(true);result.options["exact"]=py::bool_(true);}
         O channels=index(name(g,"get_h_w_c")(image),2);
         if(equal(channels,py::int_(3)))image=swap_channels(g,image,"COLOR_BGR2RGB");
@@ -490,12 +492,32 @@ void write_like_pillow(O path,O data) {
     }
     file.attr("close")();
 }
+// The DDS inputs of Save Image and Save DDS Texture, in order: format, BC7 compression,
+// error metric, dithering, Generate Mip Maps, mip levels, mip filter, separate alpha,
+// colour conversion, premultiplied alpha, GPU compression; as save_as_dds's options.
+// Legacy and PREFER_DX9 formats take a DX9 header, but a DX9 header records
+// premultiplied alpha only as DXT2 and DXT4 (other formats take DX10's alpha mode then)
+// and has no arrays.
+void save_dds_inputs(py::dict g,O path,O image,O kind,O dds) {
+    O format=dds[py::int_(0)];
+    const bool array=equal(kind,py::str("array"))&&PyList_Check(image.ptr())&&py::len(image)>1;
+    const bool dx9=!array&&(contains(name(g,"LEGACY_TO_DXGI"),format)||(contains(name(g,"PREFER_DX9"),format)&&!truth(dds[py::int_(9)])));
+    name(g,"save_as_dds")(path,image,name(g,"to_dxgi")(format),
+        // Generate Mip Maps: 0 (yes) takes the level count (0: the full chain), 1 (no) one level.
+        py::arg("mipmap_levels")=equal(dds[py::int_(4)],py::int_(1))?O(py::int_(1)):O(dds[py::int_(5)]),py::arg("dithering")=dds[py::int_(3)],
+        py::arg("uniform_weighting")=option(g,dds[py::int_(2)],"DDSErrorMetric","UNIFORM"),
+        py::arg("minimal_compression")=option(g,dds[py::int_(1)],"BC7Compression","BEST_SPEED"),
+        py::arg("maximum_compression")=option(g,dds[py::int_(1)],"BC7Compression","BEST_QUALITY"),
+        py::arg("dx9")=dx9,py::arg("separate_alpha")=dds[py::int_(7)],
+        py::arg("colour_conversion")=O(dds[py::int_(8)]).attr("value"),py::arg("premultiply_alpha")=dds[py::int_(9)],
+        py::arg("gpu")=dds[py::int_(10)],py::arg("mip_filter")=O(dds[py::int_(6)]).attr("value"),py::arg("kind")=kind);
+}
 void save_image(py::dict g,py::tuple args,O prepared) {
-    if(args.size()!=20)throw py::type_error("Image save expects 20 input values");
+    if(args.size()!=save_inputs)raise(PyExc_TypeError,format("Image save expects {} input values",save_inputs));
     O lazy=args[0],base=args[1],relative=args[2],filename=args[3],format_type=args[4];
     O path=name(g,"get_full_path")(base,relative,filename,format_type);
     if(truth(path.attr("exists")())) {
-        if(truth(args[19])) {name(g,"logger").attr("debug")(format("Skipping existing file: {}",path));return;}
+        if(truth(args[skip_existing])) {name(g,"logger").attr("debug")(format("Skipping existing file: {}",path));return;}
     } else path.attr("parent").attr("mkdir")(py::arg("parents")=true,py::arg("exist_ok")=true);
     name(g,"logger").attr("debug")(format("Writing image to path: {}",path));
     O image=lazy.attr("value");
@@ -511,14 +533,7 @@ void save_image(py::dict g,py::tuple args,O prepared) {
         return;
     }
     if(option(g,format_type,"ImageFormat","DDS")) {
-        image=name(g,"to_uint8")(image,py::arg("normalized")=true);
-        O dds=args[12]; bool legacy=contains(name(g,"LEGACY_TO_DXGI"),dds)||contains(name(g,"PREFER_DX9"),dds);
-        name(g,"save_as_dds")(path,image,name(g,"to_dxgi")(dds),
-            py::arg("mipmap_levels")=args[16],py::arg("dithering")=args[15],
-            py::arg("uniform_weighting")=option(g,args[14],"DDSErrorMetric","UNIFORM"),
-            py::arg("minimal_compression")=option(g,args[13],"BC7Compression","BEST_SPEED"),
-            py::arg("maximum_compression")=option(g,args[13],"BC7Compression","BEST_QUALITY"),
-            py::arg("dx9")=legacy,py::arg("separate_alpha")=args[17]);
+        save_dds_inputs(g,path,image,py::str("array"),args[py::slice(12,23,1)]);
         return;
     }
     Encoding encoded=encoding(g,image,args);
@@ -533,10 +548,10 @@ void save_image(py::dict g,py::tuple args,O prepared) {
 // encoded in memory; None for DDS, which texconv writes itself, and for a file
 // the commit skips as existing, which it never encodes.
 O save_prepare(py::dict g,py::tuple args) {
-    if(args.size()!=20)throw py::type_error("Image save expects 20 input values");
+    if(args.size()!=save_inputs)raise(PyExc_TypeError,format("Image save expects {} input values",save_inputs));
     O format_type=args[4];
     if(option(g,format_type,"ImageFormat","DDS"))return py::none();
-    if(truth(args[19]) && truth(name(g,"get_full_path")(args[1],args[2],args[3],format_type).attr("exists")()))return py::none();
+    if(truth(args[skip_existing]) && truth(name(g,"get_full_path")(args[1],args[2],args[3],format_type).attr("exists")()))return py::none();
     O extension=add(py::str("."),format_type.attr("extension"));
     Encoding encoded=encoding(g,args[0],args);
     if(encoded.pillow) {
@@ -600,30 +615,313 @@ void run_texconv(py::dict g,O args,O error_message) {
         raise(PyExc_ValueError,format("{}: Code {}: {}",error_message,result.attr("returncode"),output));
     }
 }
-O dds_png(py::dict g,O path) {
-    O prefix=name(g,"uuid").attr("uuid4")().attr("hex");
-    O basename=index(name(g,"split_file_path")(path),1);
+// DDS files (Microsoft's DDS_HEADER, DDS_PIXELFORMAT and DDS_HEADER_DXT10). texconv
+// does every format conversion; chaiNNer writes and reads only uncompressed
+// intermediates: R8G8B8A8_UNORM for formats of at most 8 bits per channel,
+// R16G16B16A16_UNORM for 16-bit UNORM ones, R32G32B32A32_FLOAT for every other.
+uint32_t le32(const uint8_t* p) {return uint32_t(p[0])|uint32_t(p[1])<<8|uint32_t(p[2])<<16|uint32_t(p[3])<<24;}
+constexpr uint32_t fourcc(const char (&c)[5]) {return uint32_t(uint8_t(c[0]))|uint32_t(uint8_t(c[1]))<<8|uint32_t(uint8_t(c[2]))<<16|uint32_t(uint8_t(c[3]))<<24;}
+enum class DdsDepth {unorm8,unorm16,float32};
+DdsDepth dds_depth(uint32_t format) {
+    switch(format) {
+    case 11: case 35: case 56: return DdsDepth::unorm16; // R16G16B16A16, R16G16, R16 UNORM
+    // 0: a legacy format DXGI lacks (R8G8B8, A4L4, palettized, ...), all of 8 bits or less.
+    case 0: case 27: case 28: case 29: case 31: case 48: case 49: case 51: case 60: case 61: case 63: case 65:
+    case 68: case 69: case 85: case 86: case 87: case 88: case 90: case 91: case 92: case 93: case 97: case 98:
+    case 99: case 100: case 103: case 106: case 107: case 110: case 111: case 112: case 113: case 114: case 115:
+    case 191: return DdsDepth::unorm8;
+    default: return format>=70&&format<=84?DdsDepth::unorm8:DdsDepth::float32; // BC1-BC5
+    }
+}
+// A legacy pixel format's DXGI value as DirectXTex maps it, 0 when DXGI has none.
+uint32_t legacy_format(uint32_t flags,uint32_t code,uint32_t bits,const uint32_t (&m)[4]) {
+    const auto is=[&](uint32_t r,uint32_t g,uint32_t b,uint32_t a){return m[0]==r&&m[1]==g&&m[2]==b&&m[3]==a;};
+    if(flags&0x4) { // DDPF_FOURCC, a D3DFORMAT number or four characters
+        static const std::pair<uint32_t,uint32_t> codes[]={{36,11},{110,13},{111,54},{112,34},{113,10},{114,41},
+            {115,16},{116,2},{fourcc("DXT1"),71},{fourcc("DXT2"),74},{fourcc("DXT3"),74},{fourcc("DXT4"),77},
+            {fourcc("DXT5"),77},{fourcc("ATI1"),80},{fourcc("BC4U"),80},{fourcc("BC4S"),81},{fourcc("ATI2"),83},
+            {fourcc("BC5U"),83},{fourcc("BC5S"),84},{fourcc("RGBG"),68},{fourcc("GRGB"),69},{fourcc("YUY2"),107}};
+        for(const auto& [key,format]:codes)if(key==code)return format;
+    } else if(flags&0x40) { // DDPF_RGB
+        if(bits==32) {
+            if(is(0xff,0xff00,0xff0000,0xff000000)||is(0xff,0xff00,0xff0000,0))return 28;
+            if(is(0xff0000,0xff00,0xff,0xff000000))return 87;
+            if(is(0xff0000,0xff00,0xff,0))return 88;
+            if(is(0x3ff,0xffc00,0x3ff00000,0xc0000000)||is(0x3ff00000,0xffc00,0x3ff,0xc0000000))return 24;
+            if(is(0xffff,0xffff0000,0,0))return 35;
+            if(is(0xffffffff,0,0,0))return 41;
+        } else if(bits==16) {
+            if(is(0x7c00,0x3e0,0x1f,0x8000)||is(0x7c00,0x3e0,0x1f,0))return 86;
+            if(is(0xf800,0x7e0,0x1f,0))return 85;
+            if(is(0xf00,0xf0,0xf,0xf000)||is(0xf00,0xf0,0xf,0))return 115;
+        }
+    } else if(flags&0x20000) { // DDPF_LUMINANCE
+        if(bits==8&&is(0xff,0,0,0))return 61;
+        if(bits==16&&is(0xffff,0,0,0))return 56;
+        if(bits==16&&is(0xff,0,0,0xff00))return 49;
+    } else if(flags&0x80000) { // DDPF_BUMPDUDV
+        if(bits==16&&is(0xff,0xff00,0,0))return 51;
+        if(bits==32&&is(0xff,0xff00,0xff0000,0xff000000))return 31;
+        if(bits==32&&is(0xffff,0xffff0000,0,0))return 37;
+    } else if((flags&0x2)&&bits==8)return 65; // DDPF_ALPHA
+    return 0;
+}
+struct DdsHeader {
+    uint32_t format=0,width=0,height=0,depth=1,mips=1,array=1;
+    bool cubemap=false,volume=false;
+    std::string fourcc; // a legacy header's four characters, empty otherwise
+    size_t data=0;      // offset of the first image
+    uint32_t images() const {return cubemap?array*6:array;} // a cubemap's faces each count
+};
+DdsHeader parse_dds(const O& file) {
+    const auto* p=reinterpret_cast<const uint8_t*>(PyBytes_AS_STRING(file.ptr()));
+    const size_t n=static_cast<size_t>(PyBytes_GET_SIZE(file.ptr()));
+    if(n<128||std::memcmp(p,"DDS ",4)!=0||le32(p+4)!=124||le32(p+76)!=32)raise(PyExc_ValueError,py::str("Not a DDS file"));
+    DdsHeader h;
+    h.height=le32(p+12);h.width=le32(p+16);h.data=128;
+    if(le32(p+8)&0x20000)h.mips=std::max(1u,le32(p+28)); // DDSD_MIPMAPCOUNT
+    const uint32_t flags=le32(p+80),code=le32(p+84);
+    h.volume=(le32(p+112)&0x200000)!=0; // DDSCAPS2_VOLUME
+    h.cubemap=(le32(p+112)&0x200)!=0;   // DDSCAPS2_CUBEMAP (texconv refuses partial ones)
+    if((flags&0x4)&&code==fourcc("DX10")) {
+        if(n<148)raise(PyExc_ValueError,py::str("Truncated DDS header"));
+        h.format=le32(p+128);h.array=le32(p+140);h.data=148;
+        h.volume=le32(p+132)==4;          // D3D10_RESOURCE_DIMENSION_TEXTURE3D
+        h.cubemap=(le32(p+136)&0x4)!=0;   // D3D11_RESOURCE_MISC_TEXTURECUBE
+    } else {
+        h.format=legacy_format(flags,code,le32(p+88),{le32(p+92),le32(p+96),le32(p+100),le32(p+104)});
+        if(flags&0x4)h.fourcc.assign(reinterpret_cast<const char*>(p+84),4);
+    }
+    if(h.volume)h.depth=std::max(1u,le32(p+24));
+    if(!h.width||!h.height||!h.array)raise(PyExc_ValueError,py::str("Invalid DDS dimensions"));
+    return h;
+}
+// A mip level's width, height or depth.
+uint32_t level(uint32_t size,uint32_t mip) {return std::max(1u,mip<32?size>>mip:0u);}
+// One image of an uncompressed intermediate (image `item`, mip level `mip`, depth
+// slice `slice`, laid out as DirectXTex writes them: an array's images each with
+// their mips, a volume's mips each with their slices) as BGRA: uint8, or float32 for
+// R16G16B16A16_UNORM and R16_UNORM (n / 65535, as Load Image's output normalizes
+// uint16; R16 grey, alpha 1) and R32G32B32A32_FLOAT.
+O dds_pixels(const O& file,const DdsHeader& h,uint32_t item,uint32_t mip,uint32_t slice) {
+    const size_t element=h.format==28?1:h.format==11||h.format==56?2:h.format==2?4:0;
+    if(!element)raise(PyExc_ValueError,format("Unexpected DDS intermediate format {}",h.format));
+    const size_t samples=h.format==56?1:4,n=static_cast<size_t>(PyBytes_GET_SIZE(file.ptr()));
+    if(item>=h.images()||mip>=h.mips||slice>=level(h.depth,mip))raise(PyExc_ValueError,py::str("DDS intermediate lacks the image"));
+    if(uint64_t(h.width)*h.height>n||h.depth>n)raise(PyExc_ValueError,py::str("Truncated DDS image"));
+    const auto bytes=[&](uint32_t m){return uint64_t(level(h.width,m))*level(h.height,m)*level(h.depth,m)*samples*element;};
+    uint64_t offset=h.data,chain=0;
+    for(uint32_t m=0;m<h.mips;++m){chain+=bytes(m);if(m<mip)offset+=bytes(m);}
+    const uint64_t width=level(h.width,mip),height=level(h.height,mip),pixels=width*height;
+    offset+=item*chain+uint64_t(slice)*pixels*samples*element;
+    if(offset+pixels*samples*element>n)raise(PyExc_ValueError,py::str("Truncated DDS image"));
+    const auto* data=reinterpret_cast<const uint8_t*>(PyBytes_AS_STRING(file.ptr()))+offset;
+    py::array image(py::dtype(py::str(element==1?"uint8":"float32")),{py::ssize_t(height),py::ssize_t(width),py::ssize_t(4)});
+    auto* out=static_cast<uint8_t*>(image.mutable_data());
+    {
+        py::gil_scoped_release release;
+        for(uint64_t i=0;i<pixels;++i) for(size_t c=0;c<4;++c) {
+            const uint8_t* sample=data+(i*samples+(samples==1?0:c<3?2-c:3))*element;
+            if(element==2) {
+                const float value=samples==1&&c==3?1.0f:float(uint32_t(sample[0])|uint32_t(sample[1])<<8)/65535.0f;
+                std::memcpy(out,&value,4);out+=4;
+            } else {std::memcpy(out,sample,element);out+=element;}
+        }
+    }
+    return image;
+}
+// A single-channel DXGI format (R32, R16, R8, A8 and BC4 variants).
+bool single_channel(uint32_t format) {
+    return (format>=41&&format<=43)||(format>=54&&format<=59&&format!=55)||(format>=61&&format<=65)||format==80||format==81;
+}
+// An uncompressed DDS (DX10 header) of grey, BGR or BGRA uint8, uint16 or float32
+// arrays of one size and type: of `kind` "array" (each image an element; one image is
+// a plain 2D texture), "cubemap" (6 faces per cube: +X, -X, +Y, -Y, +Z, -Z) or
+// "volume" (each image a depth slice). Grey is one channel (R8, R16, R32_FLOAT) when
+// `one_channel` and every image is grey, else RGB: texconv converts RGB to one channel
+// by luminance and one channel to RGBA at 16 bits through a path that is off by a step
+// at times, so grey is RGB only for targets of several channels, and R8 at 8 bits, as
+// WIC loaded a grey PNG. Without alpha the alpha is opaque, and so is the alpha mode:
+// texconv keeps a known mode when compressed alpha decodes below opaque, as it did for
+// a PNG without alpha.
+O raw_dds(const std::vector<py::array>& images,const std::string& kind,bool one_channel) {
+    const bool cubemap=kind=="cubemap",volume=kind=="volume";
+    if(!cubemap&&!volume&&kind!="array")raise(PyExc_ValueError,format("Unknown DDS texture kind {!r}",kind));
+    if(images.empty()||(cubemap&&images.size()%6))raise(PyExc_ValueError,py::str(cubemap?"A cubemap needs 6 faces per cube":"A DDS texture needs an image"));
+    const py::array& first=images[0];
+    if(first.ndim()!=2&&first.ndim()!=3)throw py::value_error("Expected an image array");
+    const py::ssize_t height=first.shape(0),width=first.shape(1);
+    const char type=first.dtype().kind();
+    const size_t element=static_cast<size_t>(first.itemsize());
+    if(!((type=='u'&&(element==1||element==2))||(type=='f'&&element==4)))throw py::value_error("Expected a uint8, uint16 or float32 image");
+    bool grey=one_channel,alpha=false;
+    for(const py::array& a:images) {
+        const py::ssize_t channels=a.ndim()==2?1:a.ndim()==3?a.shape(2):0;
+        if(channels!=1&&channels!=3&&channels!=4)raise(PyExc_ValueError,format("Saving DDS is only supported for grayscale, RGB, and RGBA images, not {} channels.",channels));
+        if(a.shape(0)!=height||a.shape(1)!=width||a.dtype().kind()!=type||static_cast<size_t>(a.itemsize())!=element)
+            raise(PyExc_ValueError,py::str("The images of a DDS texture must have one size"));
+        grey=grey&&channels==1;alpha=alpha||channels==4;
+    }
+    const size_t count=images.size(),pixel=(grey?1:4)*element,plane=size_t(height)*size_t(width)*pixel;
+    O result=own(PyBytes_FromStringAndSize(nullptr,static_cast<Py_ssize_t>(148+count*plane)));
+    auto* out=reinterpret_cast<uint8_t*>(PyBytes_AS_STRING(result.ptr()));
+    std::memset(out,0,148);
+    const auto put=[&](size_t at,uint32_t value){for(int i=0;i<4;++i)out[at+i]=uint8_t(value>>(8*i));};
+    std::memcpy(out,"DDS ",4);
+    // CAPS|HEIGHT|WIDTH|PITCH|PIXELFORMAT|MIPMAPCOUNT, and DEPTH for a volume
+    put(4,124);put(8,0x2100F|(volume?0x800000:0));put(12,uint32_t(height));put(16,uint32_t(width));
+    put(20,uint32_t(size_t(width)*pixel));put(24,volume?uint32_t(count):1);put(28,1);
+    put(76,32);put(80,0x4);put(84,fourcc("DX10"));
+    put(108,0x1000|(cubemap||volume?0x8:0)); // DDSCAPS_TEXTURE, COMPLEX
+    put(112,cubemap?0xFE00:volume?0x200000:0); // DDSCAPS2_CUBEMAP and its 6 faces, DDSCAPS2_VOLUME
+    put(128,element==1?(grey?61:28):element==2?(grey?56:11):(grey?41:2));
+    put(132,volume?4:3);put(136,cubemap?0x4:0); // TEXTURE3D or TEXTURE2D, TEXTURECUBE
+    put(140,volume?1:uint32_t(cubemap?count/6:count));
+    if(!alpha)put(144,3); // DDS_ALPHA_MODE_OPAQUE, as WIC reports a PNG without alpha
+    for(size_t i=0;i<count;++i) {
+        const py::array& a=images[i];
+        const py::ssize_t channels=a.ndim()==2?1:a.shape(2);
+        const char* data=static_cast<const char*>(a.data());
+        const py::ssize_t row_stride=a.strides(0),pixel_stride=a.strides(1),channel_stride=a.ndim()==3?a.strides(2):0;
+        py::gil_scoped_release release;
+        static constexpr uint8_t one8=0xff,one16[2]={0xff,0xff},one32[4]={0,0,0x80,0x3f};
+        const uint8_t* one=element==1?&one8:element==2?one16:one32;
+        uint8_t* at=out+148+i*plane;
+        for(py::ssize_t y=0;y<height;++y) for(py::ssize_t x=0;x<width;++x) {
+            const char* source=data+y*row_stride+x*pixel_stride;
+            if(grey){std::memcpy(at,source,element);at+=element;continue;}
+            for(py::ssize_t c=0;c<4;++c) {
+                if(c==3&&channels!=4)std::memcpy(at,one,element);
+                else std::memcpy(at,source+(channels==1?0:c<3?2-c:3)*channel_stride,element);
+                at+=element;
+            }
+        }
+    }
+    return result;
+}
+O read_bytes(O path) {
+    O data;
+    with_object(graphpy::builtin("open")(path,"rb"),[&](O file){data=file.attr("read")();});
+    return data;
+}
+// The intermediate a source format is read through. R16_UNORM stays itself: texconv's
+// R16 -> R16G16B16A16 conversion is off by a step at times.
+const char* intermediate_name(uint32_t source) {
+    if(source==56)return "R16_UNORM";
+    const DdsDepth depth=dds_depth(source);
+    return depth==DdsDepth::unorm8?"R8G8B8A8_UNORM":depth==DdsDepth::unorm16?"R16G16B16A16_UNORM":"R32G32B32A32_FLOAT";
+}
+// texconv converts the file to the intermediate of its format's depth, the top mip
+// only or (`every_level`) every mip; values keep their encoding (an sRGB format's with
+// -srgb, in and out alike), premultiplied alpha becomes straight (for sRGB in linear
+// light, as texconv premultiplies an sRGB format). `use` reads the converted file.
+void dds_convert(py::dict g,O path,const DdsHeader& source,bool every_level,const std::function<void(const O&,const DdsHeader&)>& use) {
     O temporary=name(g,"mkdtemp")(py::arg("prefix")="chaiNNer-");
-    py::list args;for(const char* v:{"-f","rgba","-srgb","-ft","png","-px"})args.append(v);
-    args.append(prefix);args.append("-o");args.append(temporary);args.append(py::str(path));
-    name(g,"__run_texconv")(args,"Unable to convert DDS");
-    return path_join(name(g,"Path")(temporary),add(prefix,basename)).attr("with_suffix")(".png");
+    finally_do([&] {
+        // -m 1 keeps the top level only; the file's own count keeps every level (a
+        // smaller count would have texconv generate the levels anew).
+        py::list args;for(const char* v:{"-ft","dds","-f",intermediate_name(source.format),"-dx10","-m"})args.append(v);
+        args.append(py::str(std::to_string(every_level?source.mips:1)));
+        for(const uint32_t srgb:{29u,72u,75u,78u,91u,93u,99u})if(source.format==srgb)args.append("-srgb");
+        args.append("-alpha");args.append("-o");
+        args.append(temporary);args.append(py::str(path));
+        name(g,"__run_texconv")(args,"Unable to convert DDS");
+        // texconv names its output after the input's stem, dots and all.
+        O output=path_join(name(g,"Path")(temporary),format("{}.dds",index(name(g,"split_file_path")(path),1)));
+        O file=read_bytes(output);
+        use(file,parse_dds(file));
+    },[&]{name(g,"shutil").attr("rmtree")(temporary);});
+}
+void check_mip(const DdsHeader& source,uint32_t mip) {
+    if(mip>=source.mips)raise(PyExc_ValueError,format("Mip level {} does not exist: the file has {}",mip,source.mips));
+}
+O dds_read(py::dict g,O path,uint32_t mip,uint32_t layer,uint32_t slice) {
+    const DdsHeader source=parse_dds(read_bytes(path));
+    check_mip(source,mip);
+    if(layer>=source.images())raise(PyExc_ValueError,format("Layer {} does not exist: the file has {}{}",layer,source.images(),source.cubemap?" (cubemap faces)":""));
+    if(slice>=level(source.depth,mip))raise(PyExc_ValueError,format("Slice {} does not exist: mip level {} has {}",slice,mip,level(source.depth,mip)));
+    O image;
+    dds_convert(g,path,source,mip!=0,[&](const O& file,const DdsHeader& h){image=dds_pixels(file,h,layer,mip,slice);});
+    return image;
+}
+// Every image of a mip level: each layer (cubemap faces) or, for a volume, each slice.
+py::list dds_read_all(py::dict g,O path,uint32_t mip) {
+    const DdsHeader source=parse_dds(read_bytes(path));
+    check_mip(source,mip);
+    py::list images;
+    dds_convert(g,path,source,mip!=0,[&](const O& file,const DdsHeader& h) {
+        const uint32_t count=source.volume?level(source.depth,mip):source.images();
+        for(uint32_t i=0;i<count;++i)images.append(dds_pixels(file,h,source.volume?0:i,mip,source.volume?i:0));
+    });
+    return images;
+}
+// A DDS file's header: its DXGI format value (0 for a legacy format DXGI lacks), the
+// legacy FourCC (empty for DX10 and masks), size, depth, mip levels, array size
+// (cubemaps: cubes) and whether it is a cubemap.
+py::tuple dds_info(O path) {
+    const DdsHeader h=parse_dds(read_bytes(path));
+    return py::make_tuple(h.format,h.fourcc,h.width,h.height,h.depth,h.mips,h.array,h.cubemap);
+}
+// IEC 61966-2-1's sRGB curve, either way, on B, G and R (or grey) of a C-contiguous
+// float32 image in place; odd below zero, so negative values mirror positive ones.
+void srgb_curve(py::array image,bool to_linear) {
+    const py::ssize_t channels=image.ndim()==2?1:image.shape(2),colour=channels==4?3:channels;
+    const py::ssize_t pixels=image.shape(0)*image.shape(1);
+    float* data=static_cast<float*>(image.mutable_data());
+    py::gil_scoped_release release;
+    for(py::ssize_t i=0;i<pixels;++i) for(py::ssize_t c=0;c<colour;++c) {
+        float& value=data[i*channels+c];
+        const double a=std::fabs(double(value));
+        const double curve=to_linear?(a<=0.04045?a/12.92:std::pow((a+0.055)/1.055,2.4)):(a<=0.0031308?a*12.92:1.055*std::pow(a,1/2.4)-0.055);
+        value=float(std::copysign(curve,double(value)));
+    }
+}
+// The image as the intermediate of the target format's depth: uint8 and uint16 by
+// to_uint8/to_uint16 (8-bit targets keep the PNG intermediate's quantization), float32
+// otherwise, unclipped. A colour conversion runs before, on a float32 copy.
+O dds_intermediate(py::dict g,O image,uint32_t target,const O& conversion) {
+    O np=name(g,"np");
+    const bool keep=equal(conversion,py::str("keep"));
+    if(!keep||dds_depth(target)==DdsDepth::float32) {
+        const bool floating=equal(np.attr("dtype")(image.attr("dtype")).attr("kind"),py::str("f"));
+        image=keep?(floating?np.attr("asarray")(image,np.attr("float32")):name(g,"normalize")(image)):
+            np.attr("array")(floating?image:name(g,"normalize")(image),py::arg("dtype")=np.attr("float32"),py::arg("order")="C");
+        if(!keep) {
+            if(!equal(conversion,py::str("srgb_to_linear"))&&!equal(conversion,py::str("linear_to_srgb")))raise(PyExc_ValueError,format("Unknown colour conversion {!r}",conversion));
+            srgb_curve(py::reinterpret_borrow<py::array>(image),equal(conversion,py::str("srgb_to_linear")));
+        }
+    }
+    switch(dds_depth(target)) {
+    case DdsDepth::unorm8: return name(g,"to_uint8")(image,py::arg("normalized")=true);
+    case DdsDepth::unorm16: return name(g,"to_uint16")(image,py::arg("normalized")=true);
+    default: return image;
+    }
 }
 void save_dds(py::dict g,py::tuple values) {
-    if(values.size()!=10)throw py::type_error("DDS save expects10 input values");
+    if(values.size()!=15)throw py::type_error("DDS save expects 15 input values");
     O path=values[0],image=values[1],format_type=values[2];
     O parts=name(g,"split_file_path")(path),directory=index(parts,0),filename=index(parts,1);
     if(!equal(index(parts,2),py::str(".dds")))raise(PyExc_AssertionError,py::str("The file to save must end with '.dds'"));
+    const uint32_t target=py::int_(name(g,"DXGI_CODES")[format_type]).cast<uint32_t>();
+    std::vector<py::array> pixels;
+    for(py::handle item:PyList_Check(image.ptr())?py::reinterpret_borrow<py::list>(image):py::list(py::make_tuple(image)))
+        pixels.push_back(py::array::ensure(dds_intermediate(g,py::reinterpret_borrow<O>(item),target,values[10])));
     O temporary=name(g,"mkdtemp")(py::arg("prefix")="chaiNNer-");
     finally_do([&] {
-        O png=name(g,"os").attr("path").attr("join")(temporary,format("{}.png",filename));
-        name(g,"cv_save_image")(png,image,py::list());
+        O raw=name(g,"os").attr("path").attr("join")(temporary,format("{}.dds",filename));
+        O data=raw_dds(pixels,py::str(values[14]).cast<std::string>(),dds_depth(target)==DdsDepth::unorm8||single_channel(target));
+        with_object(graphpy::builtin("open")(raw,"wb"),[&](O file){file.attr("write")(data);});
         py::list args;args.append("-y");args.append("-f");args.append(format_type);args.append(truth(values[8])?"-dx9":"-dx10");args.append("-m");args.append(py::str(values[3]));args.append("-o");args.append(py::str(directory));
+        // "default" leaves texconv its own choice (Fant; for sRGB, filters of its own).
+        if(!equal(values[13],py::str("default"))){args.append("-if");args.append(values[13]);}
         std::string bc;for(const auto& pair:{std::pair<size_t,char>{4,'u'},{5,'d'},{6,'q'},{7,'x'}})if(truth(values[pair.first]))bc+=pair.second;
         if(!bc.empty()){args.append("-bc");args.append("-"+bc);}
         if(contains(name(g,"SRGB_FORMATS"),format_type))args.append("-srgbi");
         if(truth(values[9]))args.append("-sepalpha");
-        args.append(png);name(g,"__run_texconv")(args,"Unable to write DDS");
+        // Under a DX9 header texconv writes premultiplied BC2 and BC3 as DXT2 and DXT4.
+        if(truth(values[11]))args.append("-pmalpha");
+        if(!truth(values[12]))args.append("-nogpu");
+        args.append(raw);name(g,"__run_texconv")(args,"Unable to write DDS");
     },[&]{name(g,"shutil").attr("rmtree")(temporary);});
 }
 } // namespace
@@ -635,5 +933,6 @@ void cn_bind_image_io(py::module_& module) {
     module.def("image_io_save_prepare",&save_prepare);module.def("image_io_orient",&orient_tag);
     module.def("image_io_cv_save",&cv_save);
     module.def("image_io_decode_bytes",&decode_bytes);module.def("image_io_run_texconv",&run_texconv);
-    module.def("image_io_dds_png",&dds_png);module.def("image_io_save_dds",&save_dds);
+    module.def("image_io_dds_read",&dds_read);module.def("image_io_save_dds",&save_dds);module.def("image_io_dds_info",&dds_info);
+    module.def("image_io_dds_read_all",&dds_read_all);module.def("image_io_save_dds_inputs",&save_dds_inputs);
 }
