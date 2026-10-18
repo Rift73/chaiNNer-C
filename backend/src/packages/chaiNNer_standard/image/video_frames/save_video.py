@@ -28,6 +28,7 @@ from nodes.impl.colour_info import (
     option_value,
     pixel_layout,
     subsampling_from_sizes,
+    swscale_matrix,
 )
 from nodes.impl.ffmpeg import FFMpegEnv
 from nodes.impl.image_utils import to_uint8, to_uint16
@@ -80,15 +81,21 @@ class VideoEncoder(Enum):
         return graph().video_encoder_formats(globals(), self)
 
     @property
-    def pixel_formats(self) -> tuple[str, ...]:
-        """The YUV and RGB pixel formats the encoder takes in chaiNNer's FFmpeg 5.1.2
-        (ffmpeg -h encoder=...), of those Save Video writes."""
-        depths = {
-            VideoEncoder.H264: ("", "10le"),
-            VideoEncoder.H265: ("", "10le", "12le"),
-            VideoEncoder.VP9: ("", "10le", "12le"),
-            VideoEncoder.FFV1: ("", "9le", "10le", "12le", "14le", "16le"),
+    def bit_depths(self) -> tuple[int, ...]:
+        """The bit depths the encoder takes in chaiNNer's FFmpeg 5.1.2 (ffmpeg -h
+        encoder=...), of those Save Video writes, in increasing order."""
+        return {
+            VideoEncoder.H264: (8, 10),
+            VideoEncoder.H265: (8, 10, 12),
+            VideoEncoder.VP9: (8, 10, 12),
+            VideoEncoder.FFV1: (8, 9, 10, 12, 14, 16),
         }[self]
+
+    @property
+    def pixel_formats(self) -> tuple[str, ...]:
+        """The YUV and RGB pixel formats the encoder takes in chaiNNer's FFmpeg 5.1.2,
+        of those Save Video writes."""
+        depths = ["" if depth == 8 else f"{depth}le" for depth in self.bit_depths]
         layouts = ("420", "422", "444")
         formats = [f"yuv{layout}p{depth}" for layout in layouts for depth in depths]
         if self is not VideoEncoder.H264:
@@ -286,15 +293,20 @@ class Writer:
         return luma
 
     def _bit_depth(self) -> int:
-        """Bit Depth, or for Auto the Colour Info's (8 without it), at most the encoder's
-        auto_depth."""
+        """Bit Depth, or for Auto the Colour Info's (8 without it) rounded up to one the
+        encoder takes (else its deepest), at most the encoder's auto_depth."""
         settings = self.settings
         if settings is not None and settings.bit_depth is not BitDepth.AUTO:
             return int(settings.bit_depth.value)
         if settings is None or settings.colour is None:
             return 8
         depth = max(8, settings.colour.bit_depth)
-        cap = None if self.encoder is None else self.encoder.auto_depth
+        encoder = self.encoder
+        if encoder is None:
+            return depth
+        depths = encoder.bit_depths
+        depth = next((d for d in depths if d >= depth), depths[-1])
+        cap = encoder.auto_depth
         return depth if cap is None else min(depth, cap)
 
     @property
@@ -345,9 +357,9 @@ class Writer:
 
     def _sited(self, u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """U and V moved by the chroma siting correction: resized planes keep the source's
-        chroma positions only where its siting is centred, so left- or top-sited chroma
-        is resampled (Spline36) to where the saved siting places it. Auto corrects when
-        the Colour Info says the source was left- or top-left-sited and the chroma grew."""
+        chroma positions only where its siting is centred, so chroma sited elsewhere is
+        resampled (Spline36) to where the saved siting places it. Auto corrects when the
+        Colour Info says the source was not centre-sited and the chroma grew."""
         settings, coding = self.settings, self.coding
         assert settings is not None and coding is not None
         source = settings.colour
@@ -365,7 +377,7 @@ class Writer:
             source.chroma_size,
         )
         if settings.siting is SitingCorrection.AUTO and not (
-            source.chroma_location in (ChromaLocation.LEFT, ChromaLocation.TOP_LEFT)
+            source.chroma_location is not ChromaLocation.CENTER
             and (width > source_width or height > source_height)
         ):
             return u, v
@@ -509,26 +521,15 @@ class Writer:
         """The scale filter to the final tags: scale's names for the matrices FFmpeg can
         tag (another tag converts as FFmpeg's default), the range and the chroma
         positions."""
-        matrices = {
-            "bt709": "bt709",
-            "smpte170m": "smpte170m",
-            "bt470bg": "bt470",
-            "fcc": "fcc",
-            "smpte240m": "smpte240m",
-            "bt2020nc": "bt2020",
-            "bt2020_ncl": "bt2020",
-            "bt2020c": "bt2020",
-            "bt2020_cl": "bt2020",
-        }
         matrix, colour_range = (
-            str(params.get("colorspace", "")),
+            swscale_matrix(str(params.get("colorspace", ""))),
             str(params["color_range"]),
         )
         location = str(params.get("chroma_sample_location", ""))
         positions = {loc.value: pos for loc, pos in SWSCALE_CHROMA_POSITION.items()}
         scale = "scale="
-        if matrix in matrices:
-            scale += f"out_color_matrix={matrices[matrix]}:"
+        if matrix is not None:
+            scale += f"out_color_matrix={matrix}:"
         if colour_range in ("tv", "mpeg", "pc", "jpeg"):
             scale += f"out_range={colour_range}:"
         if location in positions:
@@ -753,9 +754,10 @@ class VideoCollector(Collector[tuple[np.ndarray | None, ...], None]):
         )
         .with_id(29)
         .with_docs(
-            "Auto writes the Colour Info's bit depth, at most 8 bits for H.264 and 10 for"
-            " H.265 and VP9 (what players commonly decode), and 8 bits without Colour"
-            " Info. 16-bit needs FFV1."
+            "Auto writes the Colour Info's bit depth, rounded up to one the encoder"
+            " writes (FFV1: 8, 9, 10, 12, 14 or 16 bits), at most 8 bits for H.264 and 10"
+            " for H.265 and VP9 (what players commonly decode), and 8 bits without"
+            " Colour Info. 16-bit needs FFV1."
         ),
         if_enum_group(19, VideoInputMode.PLANES)(
             EnumInput(
@@ -768,7 +770,7 @@ class VideoCollector(Collector[tuple[np.ndarray | None, ...], None]):
                 "Planes resized on their own (an upscale) keep the source's chroma"
                 " positions only for centre-sited chroma. Auto moves U and V to where"
                 " the saved chroma siting places them when the Colour Info says the"
-                " source was left- or top-left-sited and the chroma grew; On always"
+                " source's chroma was not centre-sited and the chroma grew; On always"
                 " realigns by the Colour Info's plane sizes, Off never."
             ),
         ),
@@ -837,21 +839,26 @@ def save_video_node(
     )
 
 
-def prepare_video_frame(inputs: list[np.ndarray | None]) -> np.ndarray | None:
-    """The frame Save Video would pipe for this iteration in RGB mode (SP3-P9); without
-    an image (Planes mode), None: the node runs whole."""
-    image = inputs[0]
-    return None if image is None else rgb_payload(image)
+def prepare_video_frame(
+    collector: VideoCollector, inputs: list[np.ndarray | None]
+) -> np.ndarray | None:
+    """The frame Save Video would pipe for this iteration in RGB mode (SP3-P9), in its
+    writer's pipe format (fixed by the container and parameters in RGB mode); in Planes
+    mode, or without an image, None: the node runs whole."""
+    writer = collector.writer
+    settings = writer.settings
+    if inputs[0] is None or (
+        settings is not None and settings.mode is VideoInputMode.PLANES
+    ):
+        return None
+    return writer.payload(tuple(inputs))
 
 
 def commit_video_frame(
     collector: VideoCollector, inputs: list[np.ndarray | None], prepared: Prepared
 ) -> None:
-    """Save Video's iteration with its prepared frame as the pipe payload, when the
-    frame is piped as gbrp16le RGB."""
-    writer = collector.writer
-    gbrp16 = writer.coding is None and writer.pipe_format == "gbrp16le"
-    writer.write_frame(tuple(inputs), prepared if gbrp16 else None)
+    """Save Video's iteration with its prepared frame as the pipe payload."""
+    collector.writer.write_frame(tuple(inputs), prepared)
 
 
 register_phases("chainner:image:save_video", prepare_video_frame, commit_video_frame)

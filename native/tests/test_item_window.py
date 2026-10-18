@@ -2969,25 +2969,30 @@ def test_unprepared_save_runs_whole(monkeypatch, tmp_path, case):
 
 @pytest.mark.usefixtures("phases_registry")
 def test_prepared_collector_commits_in_order(monkeypatch, tmp_path):
-    # A collector's prepare receives its iterated inputs as on_iterate would; its
-    # commit consumes the prepared values in item order.
+    # A collector's prepare receives its collector and its iterated inputs as
+    # on_iterate would; its commit consumes the prepared values in item order.
     commits, runs = [], {}
+    prepared_by, committed_by = set(), set()
+
+    def prepare(collector, inputs):
+        prepared_by.add(id(collector))
+        return inputs[0].copy()
 
     def commit(collector, _inputs, prepared):
+        committed_by.add(id(collector))
         commits.append(prepared)
         collector.on_iterate(prepared.result())
 
     for window in ("1", "3"):
         pipeline = Pipeline(monkeypatch, tmp_path, 6, window=window, collector=True)
         set_schema(pipeline.chain.nodes[NodeId("collect")], "test:item-window:collect")
-        register_phases(
-            "test:item-window:collect", lambda inputs: inputs[0].copy(), commit
-        )
+        register_phases("test:item-window:collect", prepare, commit)
         pipeline.on_save = pipeline.settle
         assert pipeline.run() is None
         runs[window] = pipeline
     assert runs["3"].saved == runs["1"].saved == [7.0, 17.0, 27.0, 37.0, 47.0, 57.0]
     assert commits and all(prepared.used for prepared in commits)
+    assert prepared_by and prepared_by == committed_by  # K = 3's one collector
     assert stripped(runs["3"].events) == stripped(runs["1"].events)
 
 

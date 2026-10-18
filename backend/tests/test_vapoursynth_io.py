@@ -30,9 +30,11 @@ from nodes.impl.colour_info import (
     Transfer,
     VideoMode,
     code_to_float,
+    detect_colour_info,
 )
 from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
 from nodes.impl.vapoursynth import runner
+from nodes.impl.vapoursynth.colour_props import colour_stream
 from nodes.impl.vapoursynth.runner import VSScriptError, clip_info, read_frames
 from nodes.impl.vapoursynth.script import VideoClip, clip_var, compile_script
 from packages.chaiNNer_vapoursynth.vapoursynth.preview_clips import (
@@ -885,6 +887,22 @@ def test_clip_frames_item_types_follow_the_mode():
             size = image if output in (0, 3) else {"width": 32, "height": 24}
             expected = navi.Image(**size, channels=channels)
             assert types[cast(Any, output)] == expected
+
+
+def test_clip_frames_item_types_of_a_variable_size_clip():
+    import navi
+    from packages.chaiNNer_vapoursynth.vapoursynth.clip_frames import (
+        FramesInfo,
+        get_item_types,
+    )
+
+    # vspipe reports a variable size as 0x0: every plane's size is then unknown.
+    clip_record = runner.ClipInfo(0, 0, 5, 24, 1, "YUV420P10")
+    colour, _ = detect_colour_info(colour_stream({}, "yuv420p10le", 0, 0))
+    types = get_item_types(FramesInfo(clip_record, VideoMode.PLANES, colour))
+    assert set(types) == {3, 4, 5}
+    for output in (3, 4, 5):
+        assert types[cast(Any, output)] == navi.Image(channels=1)
 
 
 def frames_items(

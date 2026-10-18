@@ -124,7 +124,7 @@ def plane_output(label: str, output_id: int) -> ImageOutput:
             " they are stored, each at its own size (4:2:0 1080p: Y 1920x1080, U and V"
             " 960x540) and at the video's full bit depth: Y is 0 at black and 1 at white,"
             " U and V are 0.5 where neutral, and values outside 0-1 are kept. Both gives"
-            " both. An RGB-coded video has no planes."
+            " both. An RGB-coded video has no planes, and gray video no U and V."
         ),
         if_enum_group(3, (VideoMode.RGB, VideoMode.BOTH))(
             EnumInput(
@@ -140,7 +140,8 @@ def plane_output(label: str, output_id: int) -> ImageOutput:
             .with_docs(
                 "Float converts the video's own bit depth to RGB in floating point, with"
                 " the colour values below and the chroma siting. 8-bit converts as Load"
-                " Video did before this option (8-bit RGB, chroma assumed centred)."
+                " Video did before this option (8-bit RGB, chroma assumed centred), with"
+                " a Matrix or Range chosen below; Chroma Siting does not apply to it."
             ),
         ),
         *colour_override_inputs(5),

@@ -170,6 +170,28 @@ SWSCALE_CHROMA_POSITION = {
     ChromaLocation.BOTTOM: (128, 256),
 }
 
+# The scale filter's in_color_matrix and out_color_matrix names by FFmpeg's matrix names
+# (ffprobe's, and -colorspace's aliases); libswscale converts no other matrix, and it
+# converts BT.2020 constant luminance with the non-constant coefficients.
+_SWSCALE_MATRICES = {
+    "bt709": "bt709",
+    "bt470bg": "bt470",
+    "smpte170m": "smpte170m",
+    "fcc": "fcc",
+    "smpte240m": "smpte240m",
+    "bt2020nc": "bt2020",
+    "bt2020_ncl": "bt2020",
+    "bt2020c": "bt2020",
+    "bt2020_cl": "bt2020",
+}
+
+
+def swscale_matrix(name: str) -> str | None:
+    """The scale filter's name for the matrix FFmpeg calls `name`, or None for a matrix
+    libswscale does not convert."""
+    return _SWSCALE_MATRICES.get(name)
+
+
 _OPTION_VALUES: dict[Enum, str] = {
     Matrix.RGB: "rgb",
     Transfer.BT470M: "gamma22",

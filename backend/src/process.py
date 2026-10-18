@@ -239,16 +239,21 @@ def phase_inputs(node: NodeData) -> list[int]:
     return list(range(len(node.inputs)))
 
 
-def prepare_node(node: NodeData, inputs: list[object]) -> object | None:
+def prepare_node(
+    node: NodeData, inputs: list[object], collector: Collector | None = None
+) -> object | None:
     """
-    A side-effect node's prepare phase (SP3-P9): its inputs enforced as the node would receive them, a lazy input as the value it produces.
+    A side-effect node's prepare phase (SP3-P9): its inputs enforced as the node would receive them, a lazy input as the value it produces; a collector's prepare also receives its collector.
     """
-    return registered_phases(node).prepare(
-        [
-            node.inputs[index].enforce_(value)
-            for index, value in zip(phase_inputs(node), inputs)
-        ]
-    )
+    enforced = [
+        node.inputs[index].enforce_(value)
+        for index, value in zip(phase_inputs(node), inputs)
+    ]
+    prepare = registered_phases(node).prepare
+    if node.kind == "collector":
+        assert collector is not None, f"{node.schema_id}'s prepare has no collector"
+        return prepare(collector, enforced)
+    return prepare(enforced)
 
 
 def run_collector_iterate(
@@ -725,6 +730,7 @@ class _ItemPlanner:
         generators: set[NodeId],
         iterated: set[NodeId],
         sinks: list[Node],
+        collectors: Mapping[NodeId, Collector],
         new_context: Callable[[Node], _ExecutorNodeContext],
         ahead_context: Callable[[FunctionNode, int], _ExecutorNodeContext],
         fail_fast: bool,
@@ -734,6 +740,8 @@ class _ItemPlanner:
         self.__cache = node_cache
         self.__generators = generators
         self.__iterated = iterated
+        # The collector sinks' collectors, which their prepares receive.
+        self.__collectors = collectors
         self.__new_context = new_context
         self.__ahead_context = ahead_context
         # Deferred errors drop an item at whatever node fails first, maybe before a serial node's turn, which a run ahead could not undo: serial nodes run ahead only when every error ends the loop.
@@ -901,7 +909,11 @@ class _ItemPlanner:
                 )
                 inputs.append(_output_value(cached, i.index))
         if node_id in self.__prepared:
-            return timed_supplier(functools.partial(prepare_node, node.data, inputs))
+            return timed_supplier(
+                functools.partial(
+                    prepare_node, node.data, inputs, self.__collectors.get(node_id)
+                )
+            )
         context = (
             self.__ahead_context(typing.cast(FunctionNode, node), slot)
             if node_id in self.__serial
@@ -1550,6 +1562,7 @@ class Executor:
             {node.id for node in generator_nodes},
             all_iterated_nodes,
             sinks,
+            {node.id: collector for collector, _, node in collectors},
             self.__new_node_context,
             self.__ahead_context,
             all(generator.fail_fast for generator in generators),

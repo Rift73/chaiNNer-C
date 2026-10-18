@@ -19,6 +19,7 @@ from nodes.impl.colour_info import (
     code_to_float,
     float_to_code,
     subsampling_from_sizes,
+    swscale_matrix,
 )
 
 
@@ -49,6 +50,24 @@ def test_black_white_and_neutral_chroma():
     assert float_to_code(
         np.array([-1.0, 2.0], np.float32), 8, False, False
     ).tolist() == [0, 255]
+
+
+def test_swscale_matrix_names():
+    # The scale filter's names under ffprobe's names and -colorspace's aliases;
+    # libswscale converts BT.2020 constant luminance as non-constant.
+    assert {m: swscale_matrix(m.value) for m in Matrix if m is not Matrix.AUTO} == {
+        Matrix.BT709: "bt709",
+        Matrix.BT470BG: "bt470",
+        Matrix.SMPTE170M: "smpte170m",
+        Matrix.BT2020_NCL: "bt2020",
+        Matrix.BT2020_CL: "bt2020",
+        Matrix.SMPTE240M: "smpte240m",
+        Matrix.FCC: "fcc",
+        Matrix.YCGCO: None,
+        Matrix.ICTCP: None,
+        Matrix.RGB: None,
+    }
+    assert swscale_matrix("bt2020_ncl") == swscale_matrix("bt2020_cl") == "bt2020"
 
 
 def test_subsampling_from_plane_sizes():

@@ -678,7 +678,7 @@ COLOUR_NAMES = (
     "MATRIX_LABELS SWSCALE_CHROMA_POSITION VIDEO_MODE_LABELS ChromaLocation ColourInfo"
     " Matrix PixelLayout Primaries Range Transfer VideoMode code_to_float"
     " detect_colour_info float_to_code high_definition option_value pixel_layout"
-    " subsampling_from_sizes"
+    " subsampling_from_sizes swscale_matrix"
 ).split()
 
 
@@ -2794,9 +2794,20 @@ def test_prepared_frames_write_todays_payload():
     assert results[0] == results[1]
 
 
-def test_prepared_collector_commit_writes_as_on_iterate(tmp_path):
-    # Save Video's collector carries its writer: the commit writes a prepared frame
-    # through it, and on_iterate keeps its one-frame contract.
+@pytest.mark.parametrize(
+    ("container", "additional", "pipe"),
+    [
+        ("MKV", None, "gbrp16le"),
+        ("GIF", None, "bgr24"),  # the palette's input
+        ("MKV", "-pix_fmt bgr0", "bgr24"),  # 8-bit RGB output
+    ],
+)
+def test_prepared_collector_commit_writes_as_on_iterate(
+    tmp_path, container, additional, pipe
+):
+    # Save Video's collector carries its writer: its prepare makes the payload in the
+    # writer's pipe format, the commit writes it through the writer as on_iterate
+    # writes the frame, and on_iterate keeps its one-frame contract.
     from nodes.impl.item_window import Prepared
 
     frame = np.linspace(0, 1, 12, dtype=np.float32).reshape(2, 2, 3)
@@ -2804,11 +2815,20 @@ def test_prepared_collector_commit_writes_as_on_iterate(tmp_path):
     for prepared in (False, True):
         env = FakeFFmpeg()
         g = load("native", "save_video", env)
-        collector = g["save_video_node"](**node_args(g, Context(), tmp_path))
+        arguments = node_args(
+            g,
+            Context(),
+            tmp_path,
+            container=g["VideoFormat"][container],
+            additional_parameters=additional,
+        )
+        collector = g["save_video_node"](**arguments)
         assert isinstance(collector, g["VideoCollector"])
         assert isinstance(collector.writer, g["Writer"])
-        holder = Prepared(g["rgb_payload"](frame))
+        assert collector.writer.pipe_format == pipe
         item = (frame, None, None, None)  # Image Sequence, Y, U, V
+        holder = Prepared(g["prepare_video_frame"](collector, list(item)))
+        assert holder.value.dtype == (np.uint8 if pipe == "bgr24" else np.uint16)
         with pytest.raises(TypeError):
             collector.on_iterate(item, holder)  # one argument, as Collector declares
         if prepared:
@@ -2819,3 +2839,14 @@ def test_prepared_collector_commit_writes_as_on_iterate(tmp_path):
         collector.on_complete()
         assert holder.used == prepared
     assert results[0] == results[1]
+
+
+def test_planes_mode_prepares_nothing(tmp_path):
+    # Planes are coded as the first frame's commit decides, so the node runs whole,
+    # also with an image left connected.
+    g = load("native", "save_video", FakeFFmpeg())
+    arguments = node_args(g, Context(), tmp_path, mode=g["VideoInputMode"].PLANES)
+    collector = g["save_video_node"](**arguments)
+    plane, image = np.full((2, 2), 0.5, np.float32), np.zeros((2, 2, 3), np.float32)
+    for first in (None, image):
+        assert g["prepare_video_frame"](collector, [first, plane, plane, plane]) is None

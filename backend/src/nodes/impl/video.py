@@ -32,6 +32,7 @@ from .colour_info import (
     code_to_float,
     detect_colour_info,
     pixel_layout,
+    swscale_matrix,
 )
 from .ffmpeg import FFMpegEnv
 from .native_graph import graph
@@ -41,16 +42,6 @@ if TYPE_CHECKING:
 
     from av.video.frame import VideoFrame
     from av.video.stream import VideoStream
-
-# The scale filter's in_color_matrix names; libswscale converts no other matrix.
-SWSCALE_MATRICES = {
-    Matrix.BT709: "bt709",
-    Matrix.BT470BG: "bt470",
-    Matrix.SMPTE170M: "smpte170m",
-    Matrix.FCC: "fcc",
-    Matrix.SMPTE240M: "smpte240m",
-    Matrix.BT2020_NCL: "bt2020",
-}
 
 
 @dataclass(frozen=True)
@@ -101,8 +92,7 @@ class FrameFormat:
 
     def unpack(self, data: np.ndarray) -> object:
         """A frame's bytes (uint8) as its values: a BGR uint8 image (bgr24), a BGR float32
-        image (gbrpf32le) or the list of planes, float32 Y, U and V (U and V None for
-        gray video)."""
+        image (gbrpf32le) or the list of planes, float32 Y, U and V."""
         if data.size != self.frame_bytes:
             raise RuntimeError(
                 f"FFmpeg's frame ended after {data.size} of {self.frame_bytes} bytes."
@@ -116,15 +106,17 @@ class FrameFormat:
         colour = self.colour
         assert colour is not None
         dtype = np.dtype(np.uint8 if colour.bit_depth <= 8 else "<u2")
-        planes: list[np.ndarray | None] = [None, None, None]
+        planes: list[np.ndarray] = []
         offset = 0
         for index, (rows, row_bytes) in enumerate(self.planes):
             codes = data[offset : offset + rows * row_bytes].view(dtype)
-            planes[index] = code_to_float(
-                codes.reshape(rows, row_bytes // dtype.itemsize),
-                colour.bit_depth,
-                colour.full_range,
-                chroma=index > 0,
+            planes.append(
+                code_to_float(
+                    codes.reshape(rows, row_bytes // dtype.itemsize),
+                    colour.bit_depth,
+                    colour.full_range,
+                    chroma=index > 0,
+                )
             )
             offset += rows * row_bytes
         return planes
@@ -357,14 +349,29 @@ class VideoLoader:
             colour, warnings = detect_colour_info(stream)
             if colour.transfer in (Transfer.PQ, Transfer.HLG) and colour.hdr is None:
                 # HEVC and AV1 carry HDR10 metadata in the bitstream, which ffprobe
-                # reports on frames only: the first frame's.
-                probe = ffmpeg.probe(
-                    str(path),
-                    cmd=ffmpeg_env.ffprobe,
-                    select_streams="v:0",
-                    read_intervals="%+#1",
-                    show_frames=None,
-                )
+                # reports on frames only: the first frame's. Without it, the video is
+                # read with no HDR10 metadata.
+                try:
+                    probe = ffmpeg.probe(
+                        str(path),
+                        cmd=ffmpeg_env.ffprobe,
+                        select_streams="v:0",
+                        read_intervals="%+#1",
+                        show_frames=None,
+                    )
+                except ffmpeg.Error as error:
+                    message = (
+                        str(error)
+                        if error.stderr is None
+                        else error.stderr.decode("utf-8", "replace").strip()
+                    )
+                    logger.warning(
+                        "%s: its first frame's HDR10 metadata could not be read, so it"
+                        " is left out: %s",
+                        path,
+                        message,
+                    )
+                    probe = {}
                 frames = probe.get("frames") or [{}]
                 frame_side_data = frames[0].get("side_data_list") or []
                 if frame_side_data:
@@ -407,6 +414,11 @@ class VideoLoader:
                     f"{path.name} is RGB-coded, so it has no Y, U and V planes; read it"
                     " in RGB mode."
                 )
+            if layout.kind == "gray":
+                raise ValueError(
+                    f"{path.name} is gray video, so it has no U and V planes; read it in"
+                    " RGB mode."
+                )
             if layout.planar is None:
                 raise ValueError(
                     f"Planes mode cannot read {path.name}'s pixel format"
@@ -428,12 +440,13 @@ class VideoLoader:
                 colour.chroma_size,
             )
             sample = 1 if colour.bit_depth <= 8 else 2
-            planes = [(height, width * sample)]
-            if layout.kind != "gray":
-                planes += [(chroma_height, chroma_width * sample)] * 2
+            planes = (
+                (height, width * sample),
+                *((chroma_height, chroma_width * sample),) * 2,
+            )
             formats.append(
                 FrameFormat(
-                    layout.planar, None, False, colour.luma_size, tuple(planes), colour
+                    layout.planar, None, False, colour.luma_size, planes, colour
                 )
             )
         return formats
@@ -446,22 +459,28 @@ class VideoLoader:
         settings: ReadSettings,
     ) -> FrameFormat:
         """Float32 RGB (gbrpf32le) or 8-bit RGB (bgr24), upright, converted by the colour
-        information with its chroma siting (libswscale otherwise assumes centre siting)."""
+        information's matrix and range; float also by its chroma siting (libswscale
+        otherwise assumes centre siting, as 8-bit RGB did before RGB Precision)."""
         width, height = metadata.width, metadata.height
         arguments = []
         if layout.kind != "rgb":
-            if colour.matrix not in SWSCALE_MATRICES:
+            # libswscale would convert BT.2020 constant luminance as non-constant.
+            matrix = swscale_matrix(colour.matrix.value)
+            if matrix is None or colour.matrix is Matrix.BT2020_CL:
                 raise ValueError(
                     f"RGB mode cannot convert the {MATRIX_LABELS[colour.matrix]} matrix;"
                     " read the video in Planes mode and convert it with Planes to RGB."
                 )
-            position = SWSCALE_CHROMA_POSITION[colour.chroma_location]
             arguments += [
-                f"in_color_matrix={SWSCALE_MATRICES[colour.matrix]}",
+                f"in_color_matrix={matrix}",
                 f"in_range={colour.range.value}",
-                f"in_h_chr_pos={position[0]}",
-                f"in_v_chr_pos={position[1]}",
             ]
+            if settings.float_rgb:
+                position = SWSCALE_CHROMA_POSITION[colour.chroma_location]
+                arguments += [
+                    f"in_h_chr_pos={position[0]}",
+                    f"in_v_chr_pos={position[1]}",
+                ]
         scale = ":".join([*arguments, f"flags={VideoLoader.SWS_FLAGS}"])
         if settings.float_rgb:
             planes = ((height, width * 4),) * 3

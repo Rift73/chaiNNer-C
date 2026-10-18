@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
+import ffmpeg
 import numpy as np
 import pytest
 
@@ -16,6 +17,7 @@ import pytest
 pytest.importorskip("nodes.impl._chainner_graph")
 
 from api import NodeContext, OutputId
+from nodes.impl import video
 from nodes.impl.colour_info import (
     ChromaLocation,
     ColourInfo,
@@ -199,6 +201,27 @@ def test_float_rgb_is_within_one_code_of_the_8_bit_reading(
         assert np.abs(exact * 255 - old.astype(np.float32)).max() <= 1
 
 
+@pytest.mark.parametrize("cli", [False, True])
+def test_8_bit_reading_ignores_a_transfer_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cli: bool
+):
+    # Sharp chroma edges, left-sited: a chroma siting would change the 8-bit frames.
+    path = make_video(
+        tmp_path / "left.mkv", SOURCE, "-c:v", "ffv1", "-pix_fmt", "yuv420p"
+    )
+    auto, colour, _ = load(
+        path, monkeypatch, cli, VideoMode.RGB, RgbPrecision.EIGHT_BIT
+    )
+    transfer = (AUTO[0], Transfer.LINEAR, *AUTO[2:])
+    chosen, _, _ = load(
+        path, monkeypatch, cli, VideoMode.RGB, RgbPrecision.EIGHT_BIT, transfer
+    )
+    assert colour.chroma_location is ChromaLocation.LEFT
+    for (old, *_), (new, *_) in zip(auto, chosen, strict=True):
+        assert old.dtype == new.dtype == np.uint8
+        np.testing.assert_array_equal(old, new)
+
+
 def test_colour_outputs_and_choices(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     path = make_video(
         tmp_path / "tagged.mkv",
@@ -232,6 +255,67 @@ def test_rgb_coded_video_has_no_planes(tmp_path: Path, monkeypatch: pytest.Monke
         load(path, monkeypatch, False, VideoMode.PLANES)
     items, colour, _ = load(path, monkeypatch, False, VideoMode.RGB)
     assert colour.matrix is Matrix.RGB and items[0][0].shape == (64, 96, 3)
+
+
+@pytest.mark.parametrize("pix_fmt", ["gray", "gray10le"])
+def test_gray_video_has_no_chroma_planes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pix_fmt: str
+):
+    # U and V are typed as images in Planes and Both, so gray video is refused there.
+    path = make_video(
+        tmp_path / "gray.mkv", SOURCE, "-c:v", "ffv1", "-pix_fmt", pix_fmt
+    )
+    for mode in (VideoMode.PLANES, VideoMode.BOTH):
+        with pytest.raises(ValueError, match="gray video, so it has no U and V planes"):
+            load(path, monkeypatch, False, mode)
+    items, _, _ = load(path, monkeypatch, False, VideoMode.RGB)
+    assert items[0][0].shape == (64, 96, 3) and items[0][2:] == (None, None, None)
+
+
+def test_failed_hdr_probe_reads_without_hdr_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A PQ stream without HDR side data has its first frame probed for the metadata;
+    # when that probe fails, the video is read without it and one warning says so.
+    path = make_video(
+        tmp_path / "pq.mkv",
+        SOURCE,
+        *("-c:v", "ffv1", "-pix_fmt", "yuv420p10le", "-colorspace", "bt2020nc"),
+        *("-color_primaries", "bt2020", "-color_trc", "smpte2084"),
+    )
+    probe, warnings = ffmpeg.probe, []
+
+    def failing_frame_probe(*args: Any, **kwargs: Any) -> Any:
+        if "show_frames" in kwargs:
+            raise ffmpeg.Error("ffprobe", b"", b"simulated failure")
+        return probe(*args, **kwargs)
+
+    monkeypatch.setattr(ffmpeg, "probe", failing_frame_probe)
+    monkeypatch.setattr(
+        video.logger, "warning", lambda *a: warnings.append(a[0] % a[1:])
+    )
+    items, colour, _ = load(path, monkeypatch, False, VideoMode.PLANES)
+    assert len(items) == 3 and colour.transfer is Transfer.PQ and colour.hdr is None
+    [message] = [w for w in warnings if "HDR10" in w]
+    assert message == (
+        f"{path}: its first frame's HDR10 metadata could not be read, so it is left"
+        " out: simulated failure"
+    )
+
+
+def test_rgb_mode_refuses_constant_luminance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # libswscale would convert BT.2020 constant luminance as non-constant.
+    path = make_video(
+        tmp_path / "cl.mkv",
+        SOURCE,
+        *("-c:v", "ffv1", "-pix_fmt", "yuv420p10le", "-colorspace", "bt2020c"),
+    )
+    with pytest.raises(
+        ValueError, match=r"cannot convert the BT\.2020 constant matrix"
+    ):
+        load(path, monkeypatch, False, VideoMode.RGB)
 
 
 def test_item_types_follow_the_mode():

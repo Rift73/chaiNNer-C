@@ -55,7 +55,9 @@ def get_item_types(info: FramesInfo):
     if info.mode is not VideoMode.RGB:
         chroma_width, chroma_height = info.colour.chroma_size
         types[OutputId(3)] = navi.Image(width=width, height=height, channels=1)
-        chroma = navi.Image(width=chroma_width, height=chroma_height, channels=1)
+        chroma = navi.Image(
+            width=chroma_width or None, height=chroma_height or None, channels=1
+        )
         types[OutputId(4)] = types[OutputId(5)] = chroma
     return types
 

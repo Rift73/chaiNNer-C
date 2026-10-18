@@ -284,6 +284,51 @@ def test_siting_correction_realigns_upscaled_left_sited_chroma(tmp_path: Path):
     )
 
 
+def test_siting_correction_realigns_upscaled_top_sited_chroma(tmp_path: Path):
+    # The left-sited case turned on its side: a top-sited 4:2:0 source whose U is a
+    # ramp of the source luma position y (sample j sits at y = 2j), upscaled 2x.
+    width, height = 16, 64
+    source_u = np.tile(
+        (0.3 + 0.01 * 2 * np.arange(height // 2, dtype=np.float32))[:, None],
+        (1, width // 2),
+    )
+    y = np.full((height * 2, width * 2), 0.5, np.float32)
+    up_u = resample_plane(source_u, width, height, Kernel.SPLINE36)
+    v = np.full_like(up_u, 0.5)
+    colour = ColourInfo(
+        matrix=Matrix.BT709,
+        transfer=Transfer.BT709,
+        primaries=Primaries.BT709,
+        range=Range.LIMITED,
+        chroma_location=ChromaLocation.TOP,
+        bit_depth=10,
+        luma_size=(width, height),
+        chroma_size=(width // 2, height // 2),
+    )
+    frames = [(None, y, up_u, v)] * 2
+    results = {}
+    for siting in (SitingCorrection.AUTO, SitingCorrection.OFF):
+        directory = tmp_path / siting.value
+        directory.mkdir()
+        saved = save(directory, frames, VideoInputMode.PLANES, colour, siting=siting)
+        items, saved_colour = load(saved, VideoMode.PLANES)
+        assert saved_colour.chroma_location is ChromaLocation.TOP
+        results[siting] = items[0][3][:, 4]
+    n = np.arange(height, dtype=np.float32)
+    step = 1 / 224 / 4  # one 10-bit chroma code
+    interior = slice(4, height - 4)
+    np.testing.assert_allclose(
+        results[SitingCorrection.AUTO][interior],
+        (0.3 + 0.01 * (n - 0.25))[interior],
+        atol=step,
+    )
+    np.testing.assert_allclose(
+        results[SitingCorrection.OFF][interior],
+        (0.3 + 0.01 * (n - 0.5))[interior],
+        atol=step,
+    )
+
+
 def old_reader(path: Path, matrix: str | None) -> list[np.ndarray]:
     """The frames as the CLI reader read them before Load Video's Mode."""
     scale = (
@@ -399,6 +444,46 @@ def test_bit_depth_auto_follows_the_colour_info_within_the_encoders_cap(
     _, saved_colour = load(saved, VideoMode.PLANES)
     assert saved_colour.bit_depth == 12  # FFV1 keeps the source's
     assert replace(saved_colour, origin=()) == colour
+
+
+@pytest.mark.parametrize(
+    ("encoder", "depths"),
+    [
+        (VideoEncoder.FFV1, (9, 12, 14)),  # FFV1 writes 9, 10, 12, 14 and 16 bits
+        (VideoEncoder.H265, (10, 10, 10)),  # 10, 12 and 12, at most 10
+        (VideoEncoder.VP9, (10, 10, 10)),
+        (VideoEncoder.H264, (8, 8, 8)),  # at most 8
+    ],
+)
+def test_bit_depth_auto_rounds_up_to_a_depth_the_encoder_writes(
+    tmp_path: Path, encoder: VideoEncoder, depths: tuple[int, int, int]
+):
+    planes = (
+        None,
+        np.full((48, 64), 0.5, np.float32),
+        np.full((24, 32), 0.5, np.float32),
+        np.full((24, 32), 0.5, np.float32),
+    )
+    saved_depths = []
+    for depth in (9, 11, 14):
+        colour = ColourInfo(
+            matrix=Matrix.BT709,
+            transfer=Transfer.BT709,
+            primaries=Primaries.BT709,
+            range=Range.LIMITED,
+            chroma_location=ChromaLocation.LEFT,
+            bit_depth=depth,
+            luma_size=(64, 48),
+            chroma_size=(32, 24),
+        )
+        directory = tmp_path / str(depth)
+        directory.mkdir()
+        saved = save(
+            directory, [planes] * 2, VideoInputMode.PLANES, colour, encoder=encoder
+        )
+        _, saved_colour = load(saved, VideoMode.PLANES)
+        saved_depths.append(saved_colour.bit_depth)
+    assert tuple(saved_depths) == depths
 
 
 def test_rgb_coded_planes_are_coded_like_luma(tmp_path: Path):
