@@ -217,11 +217,13 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   EXIF orientation; straight-alpha and grey+alpha TIFFs; TIFF ExtraSamples; lossless WebP `exact`; GIF palette per
   frame; CPU-only NCNN tiles by available RAM; a vitest runs the app's schema check over the real node list; CLI ends its
   backend; system-Python option removed; Python download honours the proxy; pip's errors reach the UI; Spandrel
-  `0.4.2+c4` (fork release `v0.4.2-c4`, SHA-256 `de24e48f…`; c2: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
+  `0.4.2+c5` (fork release `v0.4.2-c5`, SHA-256 `b7885418…`; c2: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
   padding per input for 12; c3, 2026-10-16: DUAL runs in fp16, its last group's dynamic conv in fp32, 1x Light 512²
   343 → 199 ms, 2x 87 → 52 ms vs fp32+TF32; c4, 2026-10-18: HAT and DAT run in fp16, the last group's closing conv
   and the final norm in fp32 (trained 4x HAT-L writes 722k there, DAT2 121k), 70-71 dB from fp32, 256² HAT-L 476 → 250
-  ms, DAT2 313 → 229 ms). PyTorch tries cuDNN attention first (owner, 2026-10-16: every model in
+  ms, DAT2 313 → 229 ms; c5, 2026-10-18: DAT2 fp16 256² 217 → 103 ms in PyTorch, channels-last windows, shift masks on
+  the device; Convert To ONNX pads HAT heads to 8 and freezes HAT/DAT position biases, TensorRT 256² fp16 level 3
+  HAT-L 89.20 → 71.56 ms, DAT2 57.72 → 47.57 ms). PyTorch tries cuDNN attention first (owner, 2026-10-16: every model in
   fp16, not DUAL only; DUAL fp16 197.5 → 182.0 ms 1x, 52.0 → 47.0 ms 2x; Windows PyTorch has no Flash Attention).
   With the fp16 setting on, DUAL TensorRT exports start from fp16-rounded weights (68.5–88.6 dB vs exact, below the
   engine's bf16 noise; owner accepted). Deviations: ARCHITECTURE section 7.

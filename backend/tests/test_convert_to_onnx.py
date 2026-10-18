@@ -11,12 +11,16 @@ import torch
 from ncnn import ncnn
 from spandrel import ImageModelDescriptor, ModelLoader
 from spandrel.architectures.Compact import Compact
+from spandrel.architectures.DAT import DAT
 from spandrel.architectures.ESRGAN import ESRGAN
+from spandrel.architectures.HAT import HAT
+from spandrel.architectures.HAT.__arch.HAT import OCAB, WindowAttention
 from spandrel.architectures.MixDehazeNet import MixDehazeNet
 
 from nodes.impl.ncnn.model import NcnnModelWrapper
 from nodes.impl.onnx.onnx_to_ncnn import Onnx2NcnnConverter
 from nodes.impl.onnx.utils import safely_optimize_onnx_model
+from nodes.impl.pytorch import attention_export
 from nodes.impl.pytorch.convert_to_onnx_impl import convert_to_onnx_impl
 
 ARCHS: dict[str, Callable[[], torch.nn.Module]] = {
@@ -24,6 +28,22 @@ ARCHS: dict[str, Callable[[], torch.nn.Module]] = {
     "ESRGAN": lambda: ESRGAN(num_filters=8, num_blocks=1, scale=4),
     "MixDehazeNet": lambda: MixDehazeNet(
         embed_dims=[12, 24, 48, 24, 12], depths=[1, 1, 1, 1, 1]
+    ),
+    # Heads of 6 channels, which the export pads to 8
+    "HAT": lambda: HAT(
+        embed_dim=12,
+        depths=(2,),
+        num_heads=(2,),
+        window_size=8,
+        compress_ratio=2,
+        squeeze_factor=4,
+        upsampler="pixelshuffle",
+        upscale=2,
+    ),
+    # Three blocks: the third shifts its windows (16 channels: DAT's spatial
+    # interaction keeps a sixteenth of them)
+    "DAT": lambda: DAT(
+        embed_dim=16, depth=[3], num_heads=[2], upsampler="pixelshuffle", upscale=2
     ),
 }
 # The export traces a 32x32 image; 37x51 checks that height and width stay dynamic.
@@ -55,7 +75,13 @@ def images(sizes: list[tuple[int, int]]):
 
 @pytest.mark.parametrize(
     ("arch", "sizes"),
-    [("Compact", SIZES), ("ESRGAN", SIZES), ("MixDehazeNet", MIN_40_SIZES)],
+    [
+        ("Compact", SIZES),
+        ("ESRGAN", SIZES),
+        ("MixDehazeNet", MIN_40_SIZES),
+        ("HAT", SIZES),
+        ("DAT", SIZES),
+    ],
 )
 def test_convert_to_onnx_matches_pytorch(arch: str, sizes: list[tuple[int, int]]):
     model = tiny_model(arch)
@@ -68,6 +94,31 @@ def test_convert_to_onnx_matches_pytorch(arch: str, sizes: list[tuple[int, int]]
         np.testing.assert_allclose(
             np.asarray(actual)[0], torch_output(model, image), rtol=0, atol=1e-5
         )
+
+
+@pytest.mark.parametrize("arch", ["HAT", "DAT"])
+def test_the_attention_rewrite_works_on_a_copy(arch: str):
+    model = tiny_model(arch)
+    weights = {k: v.clone() for k, v in model.model.state_dict().items()}
+    export = attention_export.for_export(model)
+    assert export.model is not model.model
+    state = model.model.state_dict()
+    assert state.keys() == weights.keys()
+    assert all(torch.equal(state[k], v) for k, v in weights.items())
+    image = torch.rand(1, 3, 32, 32)
+    with torch.no_grad():
+        torch.testing.assert_close(export(image), model(image), rtol=0, atol=1e-6)
+
+
+def test_hat_heads_are_padded_to_a_multiple_of_8():
+    export = attention_export.for_export(tiny_model("HAT"))
+    attention = [
+        m for m in export.model.modules() if isinstance(m, WindowAttention | OCAB)
+    ]
+    assert len(attention) == 3  # two blocks' window attention and the OCAB
+    for module in attention:
+        assert module.qkv.out_features == 3 * module.num_heads * 8
+        assert module.proj.in_features == module.num_heads * 8
 
 
 def test_convert_model_with_trainable_weights():

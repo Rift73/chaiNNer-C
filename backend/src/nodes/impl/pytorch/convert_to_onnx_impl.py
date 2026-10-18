@@ -6,6 +6,8 @@ from spandrel.architectures.CRAFT import CRAFT
 from spandrel.architectures.SAFMN import SAFMN
 from spandrel.architectures.SCUNet import SCUNet
 
+from . import attention_export
+
 
 def is_onnx_supported(model: ModelDescriptor) -> bool:
     return not isinstance(model.model, (SCUNet, SAFMN, CRAFT))
@@ -38,6 +40,9 @@ def convert_to_onnx_impl(
     else:
         model.float()
         dummy_input = dummy_input.float()
+
+    # HAT and DAT: a copy with their attention laid out for TensorRT (exact)
+    model = attention_export.for_export(model)
 
     # The trace stores the weights as constants (FakeModel below holds the descriptor,
     # not the module), and a constant must not require grad. Load Model turns grad

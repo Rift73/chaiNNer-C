@@ -162,13 +162,14 @@ package = add_package(
             pypi_name="spandrel",
             # The fork's build of 0.4.2: adds DRFT, DUAL and SST; c2 computes fp16
             # LayerNorm statistics in fp32 and pads exported ONNX graphs per input;
-            # c3 runs DUAL in fp16; c4 runs HAT and DAT in fp16.
-            version="0.4.2+c4",
+            # c3 runs DUAL in fp16; c4 runs HAT and DAT in fp16; c5 lays out their
+            # attention for speed (DAT2 2x in PyTorch) and for ONNX export.
+            version="0.4.2+c5",
             size_estimate=530 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c4/"
-                "spandrel-0.4.2%2Bc4-py3-none-any.whl"
-                "#sha256=de24e48f4a3299903c06d9a235e382d5769235fc1e397b8ee3cceee03a59b4ad"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c5/"
+                "spandrel-0.4.2%2Bc5-py3-none-any.whl"
+                "#sha256=b788541817149bcbcb3124bb74e1e1df2e3724ffc8b9bbebdcdbfa2ffad9fb89"
             ),
         ),
         Dependency(
