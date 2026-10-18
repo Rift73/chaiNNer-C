@@ -2795,16 +2795,17 @@ def save_image_pipeline(
         pipeline.settle()
         return NEW.save.commit_save_image(inputs, prepared)
 
-    save = make_node("save", "regularNode", whole, 20, 0)
-    inputs = [BaseInput("any", f"Input{i}").with_id(i) for i in range(20)]
+    values = save_arguments(
+        NEW.save, None, directory, fmt=fmt, skip_existing_files=skip
+    )
+    # One input per argument of Save Image's node function.
+    save = make_node("save", "regularNode", whole, len(values), 0)
+    inputs = [BaseInput("any", f"Input{i}").with_id(i) for i in range(len(values))]
     inputs[0] = ImageInput().with_id(0).make_lazy()
     inputs[2].make_optional()  # the subdirectory
     object.__setattr__(save.data, "inputs", inputs)
     set_schema(save, SAVE_SCHEMA)
     chain.add_node(save)
-    values = save_arguments(
-        NEW.save, None, directory, fmt=fmt, skip_existing_files=skip
-    )
     for index, value in enumerate(values.values()):
         if index not in (0, 3):
             chain.inputs.set(NodeId("save"), InputId(index), value)
@@ -3192,15 +3193,15 @@ def batch(window, directory):
     namer.schema_id = "chainner:image:test-name"
     object.__setattr__(namer.data, "schema_id", namer.schema_id)
     chain.add_node(namer)
-    save = make_node("save", "regularNode", whole, 20, 0)
-    inputs = [BaseInput("any", f"Input{i}").with_id(i) for i in range(20)]
+    values = save_arguments(NEW.save, None, directory, fmt="GIF", skip_existing_files=True)
+    save = make_node("save", "regularNode", whole, len(values), 0)
+    inputs = [BaseInput("any", f"Input{i}").with_id(i) for i in range(len(values))]
     inputs[0].make_lazy()
     inputs[2].make_optional()
     object.__setattr__(save.data, "inputs", inputs)
     save.schema_id = "test:fresh-pillow:save"
     object.__setattr__(save.data, "schema_id", save.schema_id)
     chain.add_node(save)
-    values = save_arguments(NEW.save, None, directory, fmt="GIF", skip_existing_files=True)
     for index, value in enumerate(values.values()):
         if index not in (0, 3):
             chain.inputs.set(NodeId("save"), index, value)
@@ -3432,14 +3433,15 @@ def load_images_pipeline(monkeypatch, tmp_path, window, loader, *, fail_fast=Fal
         saving(inputs[3])
         return NEW.save.commit_save_image(inputs, prepared)
 
-    save = make_node("save", "regularNode", whole, 20, 0)
-    inputs = [BaseInput("any", f"Input{i}").with_id(i) for i in range(20)]
+    values = save_arguments(NEW.save, None, directory)
+    save = make_node("save", "regularNode", whole, len(values), 0)
+    inputs = [BaseInput("any", f"Input{i}").with_id(i) for i in range(len(values))]
     inputs[0] = ImageInput().with_id(0).make_lazy()
     inputs[2].make_optional()  # the subdirectory
     object.__setattr__(save.data, "inputs", inputs)
     set_schema(save, SAVE_SCHEMA)
     chain.add_node(save)
-    for index, value in enumerate(save_arguments(NEW.save, None, directory).values()):
+    for index, value in enumerate(values.values()):
         if index not in (0, 3):
             chain.inputs.set(NodeId("save"), InputId(index), value)
     for index in (0, 3):  # the image and its name
@@ -3474,7 +3476,9 @@ def load_video_pipeline(monkeypatch, tmp_path, window, frames):
         Generator=Generator,  # the executor's own
     )
     chain = pipeline.chain = Chain()
-    load = make_node("g0", "generator", module["load_video_node"], 10, 11, iterator=True)
+    load = make_node(
+        "g0", "generator", module["load_video_node"], 10, 11, iterator=True
+    )
     planes = [
         ImageOutput(label, channels=1, assume_normalized=True).null_unless(
             3, "VideoMode::Planes | VideoMode::Both"

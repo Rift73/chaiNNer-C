@@ -35,12 +35,29 @@ TEXCONV = ROOT / "backend/src/texconv/texconv.exe"
 # Save Image's formats before full DDS support: 8-bit targets, whose files must not
 # change with the intermediate.
 PNG_ERA_FORMATS = [
-    "BC1_UNORM_SRGB", "BC1_UNORM", "BC3_UNORM_SRGB", "BC3_UNORM", "BC4_UNORM",
-    "BC5_UNORM", "BC5_SNORM", "BC7_UNORM_SRGB", "BC7_UNORM", "DXT1", "DXT3", "DXT5",
-    "R8G8B8A8_UNORM_SRGB", "R8G8B8A8_UNORM", "B8G8R8A8_UNORM_SRGB", "B8G8R8A8_UNORM",
-    "B5G5R5A1_UNORM", "B5G6R5_UNORM", "B8G8R8X8_UNORM_SRGB", "B8G8R8X8_UNORM",
-    "R8G8_UNORM", "R8_UNORM",
-]  # fmt: skip
+    "BC1_UNORM_SRGB",
+    "BC1_UNORM",
+    "BC3_UNORM_SRGB",
+    "BC3_UNORM",
+    "BC4_UNORM",
+    "BC5_UNORM",
+    "BC5_SNORM",
+    "BC7_UNORM_SRGB",
+    "BC7_UNORM",
+    "DXT1",
+    "DXT3",
+    "DXT5",
+    "R8G8B8A8_UNORM_SRGB",
+    "R8G8B8A8_UNORM",
+    "B8G8R8A8_UNORM_SRGB",
+    "B8G8R8A8_UNORM",
+    "B5G5R5A1_UNORM",
+    "B5G6R5_UNORM",
+    "B8G8R8X8_UNORM_SRGB",
+    "B8G8R8X8_UNORM",
+    "R8G8_UNORM",
+    "R8_UNORM",
+]
 
 
 @pytest.fixture
@@ -225,10 +242,19 @@ ALL_FORMATS: list[DDSFormat] = [f for f, _ in save_image.SUPPORTED_DDS_FORMATS]
 # CPU codecs' results (BC1-BC3 colour 29.5, alpha BC2 34.3 and BC3 50.5; BC4 44.3;
 # BC5 50.4; BC6H 26.6 unsigned and 24.2 signed; BC7 34.9 and alpha 37.9).
 PSNR_FLOORS = {
-    "BC1": (27, None), "BC2": (27, 31), "BC3": (27, 47), "BC4": (42, None),
-    "BC5": (48, None), "BC6H": (22, None), "BC7": (32, 35), "DXT1": (27, None),
-    "DXT3": (27, 31), "DXT5": (27, 47), "ATI1": (42, None), "ATI2": (48, None),
-}  # fmt: skip
+    "BC1": (27, None),
+    "BC2": (27, 31),
+    "BC3": (27, 47),
+    "BC4": (42, None),
+    "BC5": (48, None),
+    "BC6H": (22, None),
+    "BC7": (32, 35),
+    "DXT1": (27, None),
+    "DXT3": (27, 31),
+    "DXT5": (27, 47),
+    "ATI1": (42, None),
+    "ATI2": (48, None),
+}
 
 
 def test_every_texconv_format_but_yuv_and_xr_bias_is_offered():
@@ -515,9 +541,12 @@ def test_mip_levels_and_filter(tmp_path, runs):
     # A box filter halves a power-of-two image by 2x2 means (opaque: the filter's
     # handling of alpha is texconv's own).
     path = save(
-        tmp_path, "box", image[..., :3], "R8G8B8A8_UNORM",
+        tmp_path,
+        "box",
+        image[..., :3],
+        "R8G8B8A8_UNORM",
         dds_mip_filter=save_image.DDSMipFilter.BOX,
-    )  # fmt: skip
+    )
     assert runs[-1][runs[-1].index("-if") + 1] == "BOX"
     top, half = rgba_mips(path, 2)
     means = top.reshape(16, 2, 12, 2, 4).astype(np.float64).mean(axis=(1, 3))
@@ -557,8 +586,19 @@ def raw_rgba_dds(
     rng = np.random.default_rng(count * 100 + mips)
     header = bytearray(148)
     flags = 0x2100F | 0x800000 * volume  # DDSD_DEPTH for a volume
-    struct.pack_into("<4s7I", header, 0, b"DDS ", 124, flags, height, width,
-                     width * 4, count if volume else 1, mips)  # fmt: skip
+    struct.pack_into(
+        "<4s7I",
+        header,
+        0,
+        b"DDS ",
+        124,
+        flags,
+        height,
+        width,
+        width * 4,
+        count if volume else 1,
+        mips,
+    )
     struct.pack_into("<2I4s", header, 76, 32, 0x4, b"DX10")
     caps2 = 0xFE00 if cubemap else 0x200000 if volume else 0
     struct.pack_into("<2I", header, 108, 0x401008, caps2)
@@ -568,12 +608,17 @@ def raw_rgba_dds(
     )
     levels = [
         [
-            rng.integers(0, 256, (max(1, count >> mip),) * volume
-                         + (max(1, height >> mip), max(1, width >> mip), 4), np.uint8)
+            rng.integers(
+                0,
+                256,
+                (max(1, count >> mip),) * volume
+                + (max(1, height >> mip), max(1, width >> mip), 4),
+                np.uint8,
+            )
             for mip in range(mips)
         ]
         for _ in range(1 if volume else count)
-    ]  # fmt: skip
+    ]
     path.write_bytes(bytes(header) + b"".join(m.tobytes() for i in levels for m in i))
     return levels
 
