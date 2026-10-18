@@ -94,13 +94,14 @@ byte-identical wherever the repository is checked out, and `.gitattributes` give
 
 ## Local portable package
 
-`native/tools/package_port.py` builds a portable package in `out\chaiNNer-C` from the full runtime above and an
-installed upstream nightly
-[`0.25.1-nightly.2025-10-21`](https://github.com/chaiNNer-org/chaiNNer-nightly/releases/tag/2025-10-21):
+`native/tools/package_port.py` builds a portable package in `out\chaiNNer-C` from the full runtime above and the
+upstream nightly
+[`0.25.1-nightly.2025-10-21`](https://github.com/chaiNNer-org/chaiNNer-nightly/releases/tag/2025-10-21), whose
+official Windows zip is extracted to `native\local\upstream\app-0.25.1-nightly2025-10-21` (git-ignored; the commands
+are in [`README.md`](README.md), Prerequisites):
 
 ```powershell
 $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\package_port.py',
-  '--installed-app', "$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21",
   '--installed-python', '.\native\runtime\cpython-3.14.8')
 & $py @pkg --validate-only   # check the inputs; writes nothing
 & $py @pkg                   # build, or refresh an existing package

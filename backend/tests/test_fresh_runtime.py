@@ -45,6 +45,13 @@ ABSENT = [
     "tensorrt",
     "cuda",
     "triton",
+    "modelopt",
+    "onnx_graphsurgeon",
+    "polygraphy",
+    "onnxscript",
+    "onnxslim",
+    "lief",
+    "cppimport",
     "vapoursynth",
     "vsaa",
     "vsdeband",
@@ -121,6 +128,7 @@ def start(absent: list[str], broken: list[str]) -> dict:
 
 PACKAGES = [
     "chaiNNer_external",
+    "chaiNNer_modelopt",
     "chaiNNer_ncnn",
     "chaiNNer_onnx",
     "chaiNNer_pytorch",

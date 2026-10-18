@@ -45,7 +45,25 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
   backend's bundled wheel), `google-re2` and `Sanic-Cors` (upstream's ONNX loader and server import them;
   chaiNNer-C does not) and `pynvml` (upstream's server declares it; chaiNNer-C declares `nvidia-ml-py`,
   which provides the `pynvml` module).
-- Installed app `$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21` (read-only).
+- The pinned upstream nightly at `native\local\upstream\app-0.25.1-nightly2025-10-21` (git-ignored, read-only;
+  `independent_ui.UPSTREAM_APP`, the one setting the packager, `make_oracle.py` and the tests read): upstream's
+  official Windows zip of
+  [`0.25.1-nightly.2025-10-21`](https://github.com/chaiNNer-org/chaiNNer-nightly/releases/tag/2025-10-21), extracted
+  there in each checkout or worktree; after the native build (Build), `make_oracle.py` makes the oracle tree the
+  layout gate and the runtime verifiers read:
+
+  ```powershell
+  $zip = "$env:TEMP\chaiNNer-windows-latest-nightly.2025-10-21.zip"
+  Invoke-WebRequest 'https://github.com/chaiNNer-org/chaiNNer-nightly/releases/download/2025-10-21/chaiNNer-windows-latest-nightly.2025-10-21.zip' -OutFile $zip
+  if ((Get-FileHash $zip).Hash -ne '8E93B1F47680A147143BFCD8F70170D68F54CA9B82362DDC9442EFC9318FF451') { throw 'unexpected zip' }
+  Expand-Archive $zip 'native\local\upstream\app-0.25.1-nightly2025-10-21'
+  & '.\native\.venv\Scripts\python.exe' -B native\tools\make_oracle.py
+  ```
+
+  It replaces the installed app (`$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21`), which the owner's chaiNNer
+  update removed on 2026-10-08. Its UI bundles are the pinned ones (`BASELINE_HASHES`); its backend is upstream's own,
+  without the installed copy's local delta (ARCHITECTURE section 2: the GPU lease's 4 files and 10 changed files: the
+  server, process, events and cache modules and 4 PyTorch files; no `chaiNNer_standard` node and not `texconv`).
 - `native\.venv`: the test and tool interpreter, made with
   `native\runtime\cpython-3.14.8\python.exe -m venv --system-site-packages native\.venv`; the runtime
   carries NumPy 2.5.3, OpenCV 5.0.0, pytest, pytest-asyncio and pytest-cov. `native\.venv-py311` keeps
@@ -159,13 +177,15 @@ $env:NUMBA_CACHE_DIR = "$env:TEMP\chainner-c-numba"
 
 ```powershell
 $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\package_port.py',
-  '--installed-app', "$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21",
   '--installed-python', '.\native\runtime\cpython-3.14.8')
 & $py @pkg --validate-only; if ($LASTEXITCODE -ne 0) { throw 'preflight failed' }
 & $py @pkg --refresh;       if ($LASTEXITCODE -ne 0) { throw 'refresh failed' }
 & $py @pkg --refresh;       if ($LASTEXITCODE -ne 0) { throw 'repeat failed' }
 ```
 
+- The shell comes from the pinned nightly (Prerequisites); `--installed-app <dir>` names another copy of it. The
+  manifest's identity records that path, so a package built from the removed installed app refuses `--refresh` from
+  the extracted one: build a new package (`--destination`) instead.
 - `--validate-only` checks the inputs (installed app, UI pins, backend inventory, git state, the
   runtime and its exclusions), prints counts, digests and the `python_stack` and `native_toolchain` records, writes nothing
   and does not inspect the destination. The repeat run must report result `verified_no_op` and leave
@@ -241,8 +261,8 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
 
 ```powershell
 .\native\.venv\Scripts\python.exe -B native\tools\bench.py [--a TREE] [--b TREE] [--cases CASE ...] [--repeats N] [--record-noise] [--env-a NAME=VALUE] [--env-b NAME=VALUE] [--profile] [--python-a PATH] [--python-b PATH] [--png-compare sha256|decoded]
-# against the installed chaiNNer (its app and Python are read-only; B is the package; PNG bytes differ by encoder, pixels do not):
-.\native\.venv\Scripts\python.exe -B native\tools\bench.py --a "$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21\resources\src" --python-a "$env:APPDATA\chaiNNer\python\python\python.exe" --png-compare decoded
+# against upstream's nightly (the pinned app's backend on the installed chaiNNer's Python, both read-only; B is the package; PNG bytes differ by encoder, pixels do not):
+.\native\.venv\Scripts\python.exe -B native\tools\bench.py --a native\local\upstream\app-0.25.1-nightly2025-10-21\resources\src --python-a "$env:APPDATA\chaiNNer\python\python\python.exe" --png-compare decoded
 ```
 
 - A defaults to the frozen B0 copy `native/reports/baselines/B0-20261001/src` (local, read-only), B to the packaged backend

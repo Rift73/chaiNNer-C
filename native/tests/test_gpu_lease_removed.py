@@ -3,10 +3,11 @@
 Each spot it hooked behaves as upstream d56e507f again: the host proxies /run,
 /run/individual, /kill and /status to the worker and closes it as upstream does, the
 SSE stream sends without acknowledgments, and auto tiling budgets from the total GPU
-memory. chaiNNer-C's own change at one of those spots stays: /run/individual responds
+memory. chaiNNer-C's own changes at those spots stay: /run/individual responds
 without waiting for its broadcasts, as upstream does, and a task releases the NumPy
-pool once they are sent. Upstream's sources come from git; nothing here starts a
-worker.
+pool once they are sent; /run and /kill restart the worker only when its response
+says its CUDA context is broken (a sticky CUDA error), never around a run. Upstream's
+sources come from git; nothing here starts a worker.
 """
 
 import ast
@@ -53,6 +54,12 @@ def here_and_upstream(relative, *path):
     )
 
 
+def replace_once(text, before, after):
+    """text with its one occurrence of before replaced by after."""
+    assert text.count(before) == 1, before
+    return text.replace(before, after)
+
+
 def test_no_backend_module_references_the_lease():
     assert [f for f in LEASE_FILES if (BACKEND / f).exists()] == []
     found = []
@@ -68,6 +75,16 @@ def test_run_proxies_without_recycling_the_worker():
     # Review focus 1: a GPU chain's run no longer stops and restarts the worker.
     for handler in ("run", "run_individual"):
         here, upstream = here_and_upstream("server_host.py", handler)
+        if handler == "run":
+            # chaiNNer-C: the worker is restarted after a response that says its CUDA
+            # context is broken (restart_if_broken; test_host_kill.py), else kept.
+            upstream = replace_once(
+                upstream,
+                "\n    return await worker.proxy_request(request, timeout=None)",
+                "\n    response = await worker.proxy_request(request, timeout=None)"
+                "\n    await restart_if_broken(worker, response)"
+                "\n    return response",
+            )
         assert here == upstream
     here, upstream = here_and_upstream("server_host.py", "AppContext", "__init__")
     assert here == upstream
@@ -90,10 +107,17 @@ def test_run_proxies_without_recycling_the_worker():
     upstream[upstream.index("from server_config import ServerConfig")] = (
         "from server_config import LOG_CONFIG, ServerConfig"
     )
-    # /kill leaves the worker running when it had no run to kill (see below).
+    # /kill leaves the worker running when it had no run to kill (see below), and
+    # restart_if_broken reads the worker's restart header from an HTTPResponse.
+    upstream[upstream.index("from sanic.response import json")] = (
+        "from sanic.response import HTTPResponse, json"
+    )
     upstream[
         upstream.index("from response import error_response, success_response")
-    ] = "from response import error_response, no_executor_response, success_response"
+    ] = (
+        "from response import RESTART_WORKER_HEADER, error_response, "
+        "no_executor_response, success_response"
+    )
     # Dependency changes run as a task of their own (WorkerServer.run_pip_job).
     upstream[upstream.index("from typing import Final")] = (
         "from typing import Any, Coroutine, Final"
@@ -121,8 +145,10 @@ def test_run_proxies_without_recycling_the_worker():
         for t in trees
     ]
     # change_dependencies only runs pip as a task of its own (d6aa1a8e); it neither
-    # stops nor starts the worker around a run.
+    # stops nor starts the worker around a run. restart_if_broken restarts it only
+    # after a response that asks for it.
     functions[0].remove("change_dependencies")
+    functions[0].remove("restart_if_broken")
     assert functions[0] == functions[1]
 
 
@@ -132,14 +158,31 @@ def test_kill_and_status_proxy_to_the_worker():
         here, upstream = here_and_upstream("server_host.py", handler)
         if handler == "kill":
             # chaiNNer-C: the worker's "no-executor" answer (Stop just as a run ended)
-            # no longer restarts the worker (test_host_kill.py).
+            # no longer restarts the worker, and a successful kill restarts it only
+            # when its response says its CUDA context is broken (test_host_kill.py).
             failed = "\n        if response.status > 200:"
-            assert upstream.count(failed) == 1
-            upstream = upstream.replace(
+            upstream = replace_once(
+                upstream,
                 failed,
                 "\n        if response.status == 400 and json_parse(response.body or"
                 " b'null') == no_executor_response():"
                 "\n            return json(success_response(), status=200)" + failed,
+            )
+            upstream = replace_once(
+                upstream,
+                "\n    try:",
+                "\n    killed: HTTPResponse | None = None\n    try:",
+            )
+            raised = "\n            raise Exception(response.body.decode())"
+            upstream = replace_once(
+                upstream, raised, raised + "\n        killed = response"
+            )
+            done = "\n    return json(success_response(), status=200)"
+            upstream = replace_once(
+                upstream,
+                done,
+                "\n    if killed is not None:"
+                "\n        await restart_if_broken(worker, killed)" + done,
             )
         assert here == upstream
 
@@ -158,8 +201,8 @@ def test_host_and_worker_close_as_upstream():
             # Sanic 25 loses a stop requested before it serves, so the host waits for
             # that first, as server.py does.
             stop = "\n    sanic_app.stop()"
-            assert upstream.count(stop) == 1
-            upstream = upstream.replace(
+            upstream = replace_once(
+                upstream,
                 stop,
                 "\n    while not sanic_app.state.is_running:"
                 "\n        await asyncio.sleep(0.01)" + stop,

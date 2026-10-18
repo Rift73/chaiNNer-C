@@ -32,6 +32,7 @@ import numpy as np
 # Imported for its side effect (x as x keeps it): registers Pillow's AVIF plugin.
 import pillow_avif as pillow_avif
 import pytest
+from independent_ui import UPSTREAM_APP
 from numpy.typing import DTypeLike
 from PIL import Image, TiffImagePlugin
 
@@ -44,13 +45,7 @@ from nodes.utils.utils import get_h_w_c, split_file_path
 ROOT = Path(__file__).resolve().parents[2]
 REF = Path(__file__).with_name("reference_image_io")
 NODE_DIR = "packages/chaiNNer_standard/image/io"
-BASELINE = Path(
-    os.environ["LOCALAPPDATA"],
-    "chaiNNer",
-    "app-0.25.1-nightly2025-10-21",
-    "resources",
-    "src",
-)
+BASELINE = UPSTREAM_APP / "resources/src"
 
 
 def extract(path, env, functions=None):

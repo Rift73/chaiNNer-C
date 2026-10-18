@@ -17,7 +17,11 @@ from types import SimpleNamespace
 
 from server_source import compiled, definition, source
 
-SCHEDULE = "app.loop.call_soon(collect_failed_run, ctx)"
+SCHEDULE = "asyncio.get_running_loop().call_soon(collect_failed_run, ctx)"
+# run's handlers that schedule one collection each: a failed run's, a stopped run's
+# Aborted and the cancellation of a stopped run's /run (the app's Stop drops the
+# request before /kill).
+SCHEDULING = ("Exception", "Aborted", "asyncio.CancelledError")
 
 
 class Block:
@@ -93,7 +97,8 @@ def test_collect_failed_run_returns_device_memory_when_idle():
 def test_a_failed_run_schedules_one_collection_after_its_error_event():
     # The error event is queued first and the 500 is returned after: call_soon runs the
     # collection on a later loop iteration, once the handler has returned and dropped
-    # the exception, so neither waits for it.
+    # the exception, so neither waits for it. The 500 carries the header that asks the
+    # host to restart a worker whose CUDA context is broken (restart_headers).
     (handler,) = handlers(
         definition(ast.parse(source("server.py")), "run"), "Exception"
     )
@@ -103,7 +108,8 @@ def test_a_failed_run_schedules_one_collection_after_its_error_event():
     )
     assert ast.unparse(scheduled) == SCHEDULE
     assert ast.unparse(returned) == (
-        "return json(error_response('Error running nodes!', exception), status=500)"
+        "return json(error_response('Error running nodes!', exception), status=500, "
+        "headers=restart_headers())"
     )
     calls = [n for n in ast.walk(handler) if isinstance(n, ast.Call)]
     assert [ast.unparse(n) for n in calls].count(SCHEDULE) == 1
@@ -138,8 +144,8 @@ def test_gc_is_used_only_by_collect_failed_run_and_return_device_memory():
 
 def test_no_finally_schedules_a_collection():
     # A finally runs on every exit, a successful run's included, and so can any code
-    # outside run's two handlers. collect_failed_run is named only by its definition
-    # and by the call in run's except Exception and except Aborted handlers.
+    # outside run's SCHEDULING handlers. collect_failed_run is named only by its
+    # definition and by the call in each of those handlers.
     tree = ast.parse(source("server.py"))
     in_finally = [
         ast.unparse(s)
@@ -155,24 +161,29 @@ def test_no_finally_schedules_a_collection():
     run = definition(tree, "run")
     sites = [
         statement
-        for name in ("Exception", "Aborted")
+        for name in SCHEDULING
         for handler in handlers(run, name)
         for statement in handler.body
         if ast.unparse(statement) == SCHEDULE
     ]
-    assert len(sites) == 2
+    assert len(sites) == len(SCHEDULING)
     in_sites = {n for s in sites for n in ast.walk(s)}
     named = [
         n
         for n in ast.walk(tree)
         if isinstance(n, ast.Name) and n.id == "collect_failed_run"
     ]
-    assert len(named) == 2 and all(n in in_sites for n in named)
+    assert len(named) == len(SCHEDULING) and all(n in in_sites for n in named)
 
 
 def test_a_stopped_run_schedules_one_collection():
     # Stop raises Aborted out of executor.run(), and the controller's Stop probe found
-    # a stopped run's arrays still held after the next /runs (D). The inner finally is
-    # unchanged; test_native_profile pins it.
-    (handler,) = handlers(definition(ast.parse(source("server.py")), "run"), "Aborted")
-    assert [ast.unparse(s) for s in handler.body] == [SCHEDULE]
+    # a stopped run's arrays still held after the next /runs (D). The app's Stop
+    # usually drops its /run request first, so the run ends cancelled instead: that
+    # handler schedules the same one collection and lets the cancellation go on. The
+    # inner finally is unchanged; test_native_profile pins it.
+    run = definition(ast.parse(source("server.py")), "run")
+    (aborted,) = handlers(run, "Aborted")
+    assert [ast.unparse(s) for s in aborted.body] == [SCHEDULE]
+    (cancelled,) = handlers(run, "asyncio.CancelledError")
+    assert [ast.unparse(s) for s in cancelled.body] == [SCHEDULE, "raise"]

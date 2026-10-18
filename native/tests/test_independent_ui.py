@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -12,13 +11,11 @@ from pathlib import Path
 import independent_ui
 import pytest
 
-# The installed nightly is the pinned UI baseline (independent_ui.BASELINE_HASHES).
-INSTALLED_APP = Path(
-    os.environ["LOCALAPPDATA"], "chaiNNer", "app-0.25.1-nightly2025-10-21"
-)
 NODE = Path(r"C:\nvm4w\nodejs\node.exe")
-needs_installed_app = pytest.mark.skipif(
-    not INSTALLED_APP.is_dir(), reason="the installed chaiNNer baseline is absent"
+# The pinned nightly is the UI baseline (independent_ui.BASELINE_HASHES).
+needs_upstream_app = pytest.mark.skipif(
+    not independent_ui.UPSTREAM_APP.is_dir(),
+    reason="the pinned chaiNNer nightly is absent",
 )
 
 # Just the main-bundle anchors the patcher requires, in the installed bundle's form.
@@ -50,7 +47,7 @@ def patch_main(monkeypatch, python_check, edits=MAIN_EDITS):
 
 @pytest.fixture(scope="module")
 def patched_bundles():
-    overrides, _ = independent_ui.build_ui_overrides(INSTALLED_APP)
+    overrides, _ = independent_ui.build_ui_overrides(independent_ui.UPSTREAM_APP)
     return {path: data.decode("utf-8") for path, data in overrides.items()}
 
 
@@ -70,7 +67,7 @@ def test_main_keeps_an_integrated_python_of_3_14_or_newer(monkeypatch):
     assert patched.count('if(gR.gte(s.version,"3.14.0"))return s}') == 1
 
 
-@needs_installed_app
+@needs_upstream_app
 def test_header_shows_the_product_version_without_the_alpha_badge(patched_bundles):
     renderer = patched_bundles[independent_ui.RENDERER]
     start = renderer.index(",llr=W.memo(")
@@ -83,7 +80,7 @@ def test_header_shows_the_product_version_without_the_alpha_badge(patched_bundle
     assert renderer.count('["v",VTt]') == 0
 
 
-@needs_installed_app
+@needs_upstream_app
 def test_no_upstream_update_behavior_remains(patched_bundles):
     renderer = patched_bundles[independent_ui.RENDERER]
     main = patched_bundles[independent_ui.MAIN]
@@ -126,7 +123,7 @@ def test_main_patch_fails_if_release_or_download_behavior_remains(monkeypatch):
         )
 
 
-@needs_installed_app
+@needs_upstream_app
 def test_main_shows_chainner_c_and_keeps_app_get_version(patched_bundles):
     main = patched_bundles[independent_ui.MAIN]
     for shown in (
@@ -142,20 +139,22 @@ def test_main_shows_chainner_c_and_keeps_app_get_version(patched_bundles):
     assert main.count("xf=Wg.app.getVersion()") == 1
 
 
-@needs_installed_app
+@needs_upstream_app
 def test_the_shown_upstream_version_must_be_the_installed_apps(monkeypatch):
     installed = json.loads(
-        (INSTALLED_APP / independent_ui.PACKAGE_JSON).read_text(encoding="utf-8")
+        (independent_ui.UPSTREAM_APP / independent_ui.PACKAGE_JSON).read_text(
+            encoding="utf-8"
+        )
     )["version"]
     assert installed == independent_ui.UPSTREAM_VERSION == "0.25.1-nightly.2025-10-21"
     monkeypatch.setattr(independent_ui, "UPSTREAM_VERSION", "0.25.1-nightly2025-10-21")
     with pytest.raises(
         ValueError, match=f"Unreviewed installed app version {installed}"
     ):
-        independent_ui.build_ui_overrides(INSTALLED_APP)
+        independent_ui.build_ui_overrides(independent_ui.UPSTREAM_APP)
 
 
-@needs_installed_app
+@needs_upstream_app
 def test_main_closes_the_integrated_python_redownload_branch(patched_bundles):
     main = patched_bundles[independent_ui.MAIN]
     start = main.index("xrA=async(A,g)=>{")
@@ -167,7 +166,7 @@ def test_main_closes_the_integrated_python_redownload_branch(patched_bundles):
     )
 
 
-@needs_installed_app
+@needs_upstream_app
 @pytest.mark.skipif(not NODE.is_file(), reason="Node is absent")
 def test_the_bundle_verifier_passes_the_patches_and_fails_upstreams_main(
     tmp_path, patched_bundles
@@ -177,7 +176,7 @@ def test_the_bundle_verifier_passes_the_patches_and_fails_upstreams_main(
         (package / relative).parent.mkdir(parents=True, exist_ok=True)
         (package / relative).write_bytes(text.encode("utf-8"))
     shutil.copyfile(
-        INSTALLED_APP / "resources/app/package.json",
+        independent_ui.UPSTREAM_APP / "resources/app/package.json",
         package / "resources/app/package.json",
     )
 
@@ -189,7 +188,7 @@ def test_the_bundle_verifier_passes_the_patches_and_fails_upstreams_main(
                     Path(independent_ui.__file__).with_name("verify_independent_ui.cjs")
                 ),
                 "--installed-app",
-                str(INSTALLED_APP),
+                str(independent_ui.UPSTREAM_APP),
                 "--package",
                 str(package),
             ],
@@ -202,7 +201,9 @@ def test_the_bundle_verifier_passes_the_patches_and_fails_upstreams_main(
     passed = verify()
     assert passed.returncode == 0, passed.stdout
     assert "PASS verify_independent_ui: 23 passed, 0 failed" in passed.stdout
-    shutil.copyfile(INSTALLED_APP / independent_ui.MAIN, package / independent_ui.MAIN)
+    shutil.copyfile(
+        independent_ui.UPSTREAM_APP / independent_ui.MAIN, package / independent_ui.MAIN
+    )
     failed = verify()
     assert failed.returncode == 1
     for name in (
@@ -218,7 +219,7 @@ def test_anchors_must_occur_exactly_once(data):
         independent_ui.replace_once(data, "anchor", "patched")
 
 
-@needs_installed_app
+@needs_upstream_app
 def test_tensorrt_types_reach_both_scopes_the_accent_and_the_stylesheet(
     patched_bundles,
 ):
@@ -237,7 +238,7 @@ def test_tensorrt_types_reach_both_scopes_the_accent_and_the_stylesheet(
     assert css.count("--type-color-tensorrt: #90c41c}") == 1
 
 
-@needs_installed_app
+@needs_upstream_app
 def test_tensorrt_nodes_get_a_clear_item_and_removed_nodes_clear_their_cache(
     patched_bundles,
 ):

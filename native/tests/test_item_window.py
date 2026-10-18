@@ -3125,7 +3125,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 root, case, out = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
-sys.path[:0] = [str(root / "backend/src"), str(root / "native/tests")]
+# The suite's pythonpath (root pyproject.toml), then the tests themselves.
+sys.path[:0] = [
+    str(root / "backend/src"),
+    str(root / "native/tools"),
+    str(root / "native/tests"),
+]
 
 # The system C++ runtime before Pillow's bundled copy, as in the suite and the worker:
 # importing conftest loads the system msvcp140.dll on Windows.

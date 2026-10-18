@@ -94,6 +94,8 @@ OVERRIDES: dict[str, dict[str, object]] = {
         "Width": 50,
         "Height": 40,
     },
+    # A descale's target is no larger than its image.
+    "chainner:image:descale": {"Width": 60, "Height": 36},
     "chainner:image:divide": {"Divide": 1.7},
     "chainner:image:gamma": {"Gamma": 1.6},
     "chainner:image:hue_and_saturation": {

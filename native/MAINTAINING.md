@@ -96,8 +96,9 @@ Checklists for the changes that touch the exactness contract, the build or the p
 1. Upstream base: `src/`, `tests/` and `backend/tests` are upstream `d56e507f`. Rebase onto the new commit, keep the
    native wiring in `backend/src`, take the new `backend/tests`, and update `UPSTREAM` in
    `native/tests/test_gpu_lease_removed.py`.
-2. Install the new nightly (read-only), then point the tools at it: `INSTALLED_APP` in `native/tools/make_oracle.py`
-   and the `--installed-app` path in the README commands.
+2. Extract the new nightly's official Windows zip into `native/local/upstream/` (git-ignored, read-only), then point
+   the tools at it: `UPSTREAM_APP` in `native/tools/independent_ui.py` (the packager, `make_oracle.py` and the tests
+   read it), and the zip's URL, SHA-256 and folder in README's Prerequisites.
 3. Re-anchor the patches: new `BASELINE_HASHES` in `independent_ui.py`, each patch JSON's baseline hashes and
    anchors, `INSTALLED_SHA256` in `native/tools/bundle_verify_common.cjs`; review the minified names the
    `verify_*.cjs` tools use. Unknown bundles fail closed until this is done.
