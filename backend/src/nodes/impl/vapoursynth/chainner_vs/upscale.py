@@ -34,6 +34,9 @@ PRECISIONS = ("fp32", "fp16")
 
 # chaiNNer's default GPU setting: the first CUDA device.
 GPU_INDEX = 0
+# Execution contexts of the native runner's filter: one frame's planes are copied while
+# another is upscaled.
+RUNNER_STREAMS = 2
 
 
 @dataclass(frozen=True)
@@ -154,7 +157,7 @@ def _onnx(path: str) -> Upscaler:
     )
 
 
-def _tensorrt(path: str) -> Upscaler:
+def _require_gpu() -> None:
     from gpu import cuda_pci_addresses
 
     if not cuda_pci_addresses():
@@ -163,6 +166,10 @@ def _tensorrt(path: str) -> Upscaler:
             " CUDA_VISIBLE_DEVICES hides it). Choose the PyTorch or ONNX backend"
             " to run on the CPU."
         )
+
+
+def _tensorrt(path: str) -> Upscaler:
+    _require_gpu()
 
     from nodes.impl.compressed_file import read_file
     from nodes.impl.tensorrt.engine_info import deserialize_engine, read_engine_info
@@ -209,7 +216,8 @@ def load(model: str, backend: str, precision: str) -> Upscaler:
     return _tensorrt(model)
 
 
-def _upscaler(model: str, backend: str, precision: str) -> Upscaler:
+def _model_key(model: str, backend: str, precision: str) -> tuple[str, str, str]:
+    """Checks a model file for a backend; its key in `loaded`."""
     suffixes = BACKENDS.get(backend)
     if suffixes is None:
         raise ValueError(
@@ -233,7 +241,11 @@ def _upscaler(model: str, backend: str, precision: str) -> Upscaler:
         raise FileNotFoundError(f"The model file {model} does not exist.")
     # ONNX models and TensorRT engines run in their own precision: nodes that differ
     # only in their (hidden) precision input share one session.
-    key = (model, backend, precision if backend == "PyTorch" else "")
+    return (model, backend, precision if backend == "PyTorch" else "")
+
+
+def _upscaler(model: str, backend: str, precision: str) -> Upscaler:
+    key = _model_key(model, backend, precision)
     with _loading:
         upscaler = loaded.get(key)
         if upscaler is None:
@@ -266,6 +278,27 @@ def _write(img: np.ndarray, frame: Any) -> None:
         np.copyto(np.asarray(frame[plane]), img[:, :, channel])
 
 
+def _runner_clip(clip: Any, model: str) -> Any:
+    """AI Upscale on the native TensorRT runner's VapourSynth filter (the hidden switch of
+    nodes/impl/tensorrt/runner.py): frames are converted, tiled and blended on the GPU,
+    with no Python per frame, and come out as the bridge makes them (clipped to 0-1
+    before and after the engine, properties and _Matrix as below)."""
+    _require_gpu()
+
+    from nodes.impl.compressed_file import read_file
+    from nodes.impl.tensorrt.runner import load_tensorrt, plugin_path
+
+    load_tensorrt()  # the plugin's delay-loaded TensorRT imports find these DLLs
+    core = vs.core
+    if not hasattr(core, "chainner_trt"):
+        core.std.LoadPlugin(str(plugin_path()))
+    upscaled = core.chainner_trt.Upscale(
+        clip, engine=read_file(model), streams=RUNNER_STREAMS, device=GPU_INDEX
+    )
+    core.std.SetVideoCache(upscaled, mode=1)  # as `upscale` caches its clip
+    return upscaled
+
+
 def upscale(clip: Any, model: str, backend: str, precision: str, tile: int) -> Any:
     """The VideoNode `clip` (RGBS or GRAYS) upscaled by the model file `model` on
     `backend` ("PyTorch", "ONNX" or "TensorRT"), as a VideoNode. `precision` ("fp32" or
@@ -295,6 +328,12 @@ def upscale(clip: Any, model: str, backend: str, precision: str, tile: int) -> A
             f"{tile} is not a tile size: use 0 (Auto), -1 (no tiling), -2 (maximum) or"
             " a size in pixels."
         )
+    if backend == "TensorRT":
+        from nodes.impl.tensorrt.runner import runner_enabled
+
+        if runner_enabled():
+            _model_key(model, backend, precision)
+            return _runner_clip(clip, model)
     upscaler = _upscaler(model, backend, precision)
     # As the Upscale Image nodes: the clip's channels, unless the model changes them
     # (a gray clip goes through an RGB model as BGR and comes back as gray).

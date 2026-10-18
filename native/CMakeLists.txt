@@ -257,12 +257,12 @@ endforeach()
 set(chainner_c_tensorrt_major 11)
 set(chainner_c_cuda_major 13)
 set(CHAINNER_C_TENSORRT_ROOT "" CACHE PATH
-    "TensorRT ${chainner_c_tensorrt_major} SDK root (include, lib) for vosr2_qkv.dll; empty: not built")
+    "TensorRT ${chainner_c_tensorrt_major} SDK root (include, lib) for vosr2_qkv.dll and the TensorRT runner; empty: not built")
 set(CHAINNER_C_CUDA_ROOT "" CACHE PATH
-    "CUDA ${chainner_c_cuda_major} toolkit root (bin/nvcc.exe, include, lib/x64) for vosr2_qkv.dll; empty: not built")
+    "CUDA ${chainner_c_cuda_major} toolkit root (bin/nvcc.exe, include, lib/x64) for vosr2_qkv.dll and the TensorRT runner; empty: not built")
 if(NOT CHAINNER_C_TENSORRT_ROOT AND NOT CHAINNER_C_CUDA_ROOT)
-    message(STATUS "VOSR TensorRT plugin (vosr2_qkv.dll) skipped: set CHAINNER_C_TENSORRT_ROOT and "
-        "CHAINNER_C_CUDA_ROOT to build it")
+    message(STATUS "VOSR TensorRT plugin (vosr2_qkv.dll) and TensorRT runner (trt_runner) skipped: set "
+        "CHAINNER_C_TENSORRT_ROOT and CHAINNER_C_CUDA_ROOT to build them")
     return()
 endif()
 if(NOT CHAINNER_C_TENSORRT_ROOT OR NOT CHAINNER_C_CUDA_ROOT)
@@ -342,3 +342,6 @@ if(CHAINNER_C_PDB)
     target_link_options(vosr2_qkv PRIVATE /DEBUG /OPT:REF /OPT:ICF
         "/MAP:${CHAINNER_C_OUTPUT_DIR}/pytorch/vosr2_qkv.map")
 endif()
+
+# The TensorRT runner (trt_runner/CMakeLists.txt), from the same two roots.
+add_subdirectory(trt_runner)

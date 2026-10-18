@@ -19,13 +19,23 @@ from packaging.utils import canonicalize_name
 # Git-ignored build outputs that ship inside backend/src. chainner_ext's tracked
 # __init__.py and __init__.pyi ship as git lists them. VOSR's TensorRT plugin is
 # an optional target of the native build (native/README.md, Build), so it ships
-# when it was built.
+# when it was built. The TensorRT runner (native/trt_runner) builds from the same
+# TensorRT and CUDA roots, its VapourSynth plugin only with VapourSynth's headers:
+# both ship when built and are never required, since the runner stays off unless
+# CHAINNER_C_TRT_RUNNER=1 (nodes/impl/tensorrt/runner.py).
+RUNNER_BINARIES = frozenset(
+    {
+        "nodes/impl/tensorrt/_chainner_trt.pyd",
+        "nodes/impl/tensorrt/chainner_trt_vs.dll",
+    }
+)
 NATIVE_BINARIES = frozenset(
     {
         "nodes/impl/chainner_native.dll",
         "nodes/impl/_chainner_graph.pyd",
         "chainner_ext/chainner_ext.pyd",
         "nodes/impl/pytorch/vosr2_qkv.dll",
+        *RUNNER_BINARIES,
     }
 )
 OPTIONAL_NATIVE_BINARIES = frozenset({"nodes/impl/pytorch/vosr2_qkv.dll"})
@@ -336,7 +346,7 @@ def backend_inventory(root: Path, tracked: set[str]) -> dict[str, bytes]:
     found = set(walk(root, cache_skip))
     expected = tracked | NATIVE_BINARIES
     untracked = sorted(found - expected)
-    missing = sorted(expected - found - OPTIONAL_NATIVE_BINARIES)
+    missing = sorted(expected - found - OPTIONAL_NATIVE_BINARIES - RUNNER_BINARIES)
     if untracked or missing:
         raise ValueError(
             "backend/src must equal git ls-files plus the native binaries; "

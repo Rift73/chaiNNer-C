@@ -7,6 +7,7 @@ from api import NodeContext
 from nodes.groups import Condition, if_group
 from nodes.impl.tensorrt.inference import use_tensorrt_session
 from nodes.impl.tensorrt.model import TensorRTEngine
+from nodes.impl.tensorrt.runner import runner_enabled, use_runner_session
 from nodes.impl.tensorrt.tiling import tiled_upscale
 from nodes.impl.upscale.convenient_upscale import convenient_upscale
 from nodes.properties.inputs import BoolInput, ImageInput, TensorRTEngineInput
@@ -66,6 +67,20 @@ if processing_group is not None:
 
         h, w, c = get_h_w_c(img)
         logger.debug("Upscaling a %dx%dx%d image with TensorRT", h, w, c)
+
+        if runner_enabled():
+            # The native runner (hidden switch, off until a GPU session verifies it):
+            # kept and locked as the session below.
+            with use_runner_session(
+                engine, settings.gpu_index, context.node_id
+            ) as runner, held(runner.lock):
+                return convenient_upscale(
+                    img,
+                    engine.input_channels,
+                    engine.output_channels,
+                    runner.upscale,
+                    separate_alpha,
+                )
 
         # The session outlives the run; clearing this node frees it. Its lock lets
         # items computed ahead share it; their wait for it is not their time.

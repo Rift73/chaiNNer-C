@@ -718,6 +718,24 @@ def test_the_optional_vosr_plugin_ships_only_when_built(package_case, monkeypatc
     assert case.run()["result"] == "verified_no_op"
 
 
+def test_the_tensorrt_runner_ships_when_built_and_is_never_required(package_case):
+    case = package_case
+    case.run()
+    for name in package_files.RUNNER_BINARIES:
+        write(case.backend, name, b"TensorRT runner fixture")
+    result = case.run()
+    assert (result["result"], result["written_files"]) == ("refreshed", 2)
+    backend = package_manifest.load(case.manifest)["backend"]
+    assert all(packaged(name) in backend for name in package_files.RUNNER_BINARIES)
+    for name in package_files.RUNNER_BINARIES:
+        (case.backend / name).unlink()
+    # Without them packaging needs no variable, unlike VOSR's plugin.
+    assert case.run()["result"] == "refreshed"
+    backend = package_manifest.load(case.manifest)["backend"]
+    assert not any(packaged(name) in backend for name in package_files.RUNNER_BINARIES)
+    assert case.run()["result"] == "verified_no_op"
+
+
 def test_removed_backend_file_differing_from_its_record_is_kept(package_case):
     case = package_case
     case.run()
