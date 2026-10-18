@@ -9,13 +9,19 @@ Matrix.RGB planes are G, B and R as they are (FFmpeg's gbr order), not 0.5-centr
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 from ..utils.utils import get_h_w_c
 from .colour_info import (
     MATRIX_LABELS,
     ChromaLocation,
+    ColourInfo,
     Matrix,
+    Primaries,
+    Range,
+    Transfer,
     chroma_size_for,
     subsampling_from_sizes,
 )
@@ -74,6 +80,54 @@ def _siting(
     else:
         offset_h = 0.0
     return scale_w, scale_h, offset_w, offset_h
+
+
+def guess_colour_info(
+    luma_size: tuple[int, int], chroma_size: tuple[int, int]
+) -> ColourInfo:
+    """The guesses for untagged YUV planes of these sizes (mpv's, as video detection
+    makes them): BT.709 from 1280 wide or above 576 high, else BT.601 (BT.470 BG
+    primaries at 576 lines, SMPTE 170M at 480 or 486); limited range, left-sited
+    chroma, 8-bit."""
+    w, h = luma_size
+    sd = w < 1280 and h <= 576
+    pal = sd and h == 576
+    ntsc = sd and h in (480, 486)
+    return ColourInfo(
+        matrix=Matrix.BT470BG if pal else Matrix.SMPTE170M if sd else Matrix.BT709,
+        transfer=Transfer.BT709,
+        primaries=(
+            Primaries.BT470BG
+            if pal
+            else Primaries.SMPTE170M
+            if ntsc
+            else Primaries.BT709
+        ),
+        range=Range.LIMITED,
+        chroma_location=ChromaLocation.LEFT,
+        bit_depth=8,
+        luma_size=luma_size,
+        chroma_size=chroma_size,
+    )
+
+
+def resolve_colour_info(
+    info: ColourInfo | None,
+    luma_size: tuple[int, int],
+    chroma_size: tuple[int, int],
+    matrix: Matrix,
+    transfer: Transfer,
+    primaries: Primaries,
+    range_: Range,
+    chroma_location: ChromaLocation,
+) -> ColourInfo:
+    """`info` (else the guesses for planes of `luma_size`) with every non-Auto choice
+    applied, re-issued for planes of these sizes."""
+    if info is None:
+        info = guess_colour_info(luma_size, chroma_size)
+    else:
+        info = replace(info, luma_size=luma_size, chroma_size=chroma_size)
+    return info.with_choices(matrix, transfer, primaries, range_, chroma_location)
 
 
 def _check_rgb_subsampling(matrix: Matrix, subsampling: tuple[int, int]) -> None:
