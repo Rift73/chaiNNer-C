@@ -5,15 +5,22 @@ Each axis is a separate pass of per-tap gathers. Output sample i (centre i + 0.5
 input position (i + 0.5) * src_width / width + src_left. When downscaling, the kernel is
 widened by the scale factor; each output's taps are normalised to sum to 1, and taps
 outside the plane are mirrored about its edge (then clamped to it). An axis whose size
-and source window do not change is copied, as zimg skips it. Values are not clipped."""
+and source window do not change is copied, as zimg skips it. Values are not clipped.
+
+The passes run in C (native_planes.resample_axis) with each geometry's taps computed
+once here and cached; native/tests/reference_yuv_planes keeps the NumPy passes they
+match bit for bit."""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Callable
 from enum import Enum
+from functools import lru_cache
 
 import numpy as np
+
+from . import native_planes
 
 
 class Kernel(Enum):
@@ -109,10 +116,12 @@ def _round_halfup(x: np.ndarray) -> np.ndarray:
     return np.where(x < 0, np.floor(x + 0.5), np.floor(x + 0.49999999999999994))
 
 
+@lru_cache(maxsize=64)
 def _taps(
     kernel: Kernel, src_dim: int, dst_dim: int, shift: float, width: float
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Input indices and float32 weights (each dst_dim x taps) of zimg's compute_filter."""
+    """Input indices (int32) and float32 weights of zimg's compute_filter, each
+    taps x dst_dim (tap-major, as the C passes read them). Cached, so read-only."""
     support, f = _KERNELS[kernel]
     scale = dst_dim / width
     step = min(scale, 1.0)
@@ -125,29 +134,10 @@ def _taps(
         xpos < 0, -xpos, np.where(xpos >= src_dim, 2.0 * src_dim - xpos, xpos)
     )
     np.clip(mirrored, 0.0, np.nextafter(src_dim, -np.inf), out=mirrored)
-    return np.floor(mirrored).astype(np.intp), weights.astype(np.float32)
-
-
-def _resample_axis(
-    plane: np.ndarray,
-    axis: int,
-    dst_dim: int,
-    kernel: Kernel,
-    shift: float,
-    width: float,
-) -> np.ndarray:
-    src_dim = plane.shape[axis]
-    if src_dim == dst_dim and shift == 0 and width == src_dim:
-        return plane
-    index, weights = _taps(kernel, src_dim, dst_dim, shift, width)
-    shape = list(plane.shape)
-    shape[axis] = dst_dim
-    out = np.zeros(shape, np.float32)
-    for tap in range(index.shape[1]):
-        gathered = np.take(plane, index[:, tap], axis=axis)
-        gathered *= weights[:, tap] if axis == 1 else weights[:, tap, None]
-        out += gathered
-    return out
+    index = np.ascontiguousarray(np.floor(mirrored).T, np.int32)
+    weights = np.ascontiguousarray(weights.T, np.float32)
+    index.flags.writeable = weights.flags.writeable = False
+    return index, weights
 
 
 def resample_plane(
@@ -164,6 +154,26 @@ def resample_plane(
     `src_left`..`src_left + src_width` (and `src_top`..`src_top + src_height`), in input
     pixels, mapped onto the whole output (zimg's src_left/src_top/src_width/src_height).
     The window defaults to the whole plane."""
+    return resample_plane_biased(
+        plane, width, height, kernel, src_left, src_top, src_width, src_height, 0, 0
+    )
+
+
+def resample_plane_biased(
+    plane: np.ndarray,
+    width: int,
+    height: int,
+    kernel: Kernel,
+    src_left: float,
+    src_top: float,
+    src_width: float | None,
+    src_height: float | None,
+    bias_in: float,
+    bias_out: float,
+) -> np.ndarray:
+    """resample_plane of `plane - bias_in`, plus `bias_out` (each only when it is not
+    0), both inside the C passes: the values of a separate float32 subtraction and
+    addition, without their passes over the plane."""
     if plane.ndim != 2:
         raise ValueError(f"A plane has 2 dimensions, not {plane.ndim}.")
     if width < 1 or height < 1:
@@ -174,6 +184,26 @@ def resample_plane(
     if window_w <= 0 or window_h <= 0:
         raise ValueError(f"The source window {window_w:g}x{window_h:g} is empty.")
     plane = plane.astype(np.float32, copy=False)
-    out = _resample_axis(plane, 1, width, kernel, src_left, window_w)
-    out = _resample_axis(out, 0, height, kernel, src_top, window_h)
-    return out if out is not plane else plane.copy()
+    passes = [
+        (axis, size, shift, window)
+        for axis, size, shift, window in (
+            (1, width, src_left, window_w),
+            (0, height, src_top, window_h),
+        )
+        if not (plane.shape[axis] == size and shift == 0 and window == size)
+    ]
+    if not passes:
+        out = plane - np.float32(bias_in) if bias_in else plane.copy()
+        return out + np.float32(bias_out) if bias_out else out
+    out = plane
+    for number, (axis, size, shift, window) in enumerate(passes):
+        index, weights = _taps(kernel, out.shape[axis], size, shift, window)
+        out = native_planes.resample_axis(
+            out,
+            axis == 0,
+            index,
+            weights,
+            bias_in if number == 0 else 0,
+            bias_out if number == len(passes) - 1 else 0,
+        )
+    return out

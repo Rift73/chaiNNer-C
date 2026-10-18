@@ -17,6 +17,8 @@ from enum import Enum
 
 import numpy as np
 
+from . import native_planes
+
 
 class Matrix(Enum):
     AUTO = "auto"
@@ -291,15 +293,21 @@ def _scale(bit_depth: int, full_range: bool, chroma: bool) -> tuple[float, float
     return (128.0 if chroma else 16.0) * step, (224.0 if chroma else 219.0) * step
 
 
+_CODE_DTYPES = (np.dtype(np.uint8), np.dtype(np.uint16))
+
+
+def _native_depth(bit_depth: int) -> bool:
+    return 8 <= bit_depth <= 16
+
+
 def code_to_float(
     plane: np.ndarray, bit_depth: int, full_range: bool, chroma: bool
 ) -> np.ndarray:
     """A plane's stored codes (uint8 or uint16) as float32 plane values."""
-    offset, scale = _scale(bit_depth, full_range, chroma)
-    out = (plane.astype(np.float32) - np.float32(offset)) / np.float32(scale)
-    if chroma:
-        out += np.float32(0.5)
-    return out
+    if plane.dtype in _CODE_DTYPES and _native_depth(bit_depth):
+        offset, scale = _scale(bit_depth, full_range, chroma)
+        return native_planes.codes_to_float(plane, offset, scale, chroma)
+    return _numpy_code_to_float(plane, bit_depth, full_range, chroma)
 
 
 def float_to_code(
@@ -307,6 +315,27 @@ def float_to_code(
 ) -> np.ndarray:
     """Float32 plane values as codes, rounded to nearest and clipped to the code range:
     uint8 up to 8 bits, else uint16."""
+    if _native_depth(bit_depth):
+        offset, scale = _scale(bit_depth, full_range, chroma)
+        return native_planes.float_to_codes(plane, offset, scale, chroma, bit_depth)
+    return _numpy_float_to_code(plane, bit_depth, full_range, chroma)
+
+
+# The NumPy forms: the reference that the C kernels (native_planes.py) match bit for
+# bit, and the path for other dtypes and bit depths.
+def _numpy_code_to_float(
+    plane: np.ndarray, bit_depth: int, full_range: bool, chroma: bool
+) -> np.ndarray:
+    offset, scale = _scale(bit_depth, full_range, chroma)
+    out = (plane.astype(np.float32) - np.float32(offset)) / np.float32(scale)
+    if chroma:
+        out += np.float32(0.5)
+    return out
+
+
+def _numpy_float_to_code(
+    plane: np.ndarray, bit_depth: int, full_range: bool, chroma: bool
+) -> np.ndarray:
     offset, scale = _scale(bit_depth, full_range, chroma)
     values = plane.astype(np.float32)
     if chroma:

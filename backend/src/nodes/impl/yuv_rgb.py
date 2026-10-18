@@ -5,7 +5,11 @@ float. Nothing is clipped.
 
 A chroma sample covers 2^subsampling luma pixels per axis, also beside an odd luma size
 (whose last chroma sample half overhangs it); zimg accepts only sizes it divides.
-Matrix.RGB planes are G, B and R as they are (FFmpeg's gbr order), not 0.5-centred."""
+Matrix.RGB planes are G, B and R as they are (FFmpeg's gbr order), not 0.5-centred.
+
+The matrix step and the resampling run in C (native_planes.py), the chroma's 0.5 centre
+inside them; native/tests/reference_yuv_planes keeps the NumPy form they match bit for
+bit."""
 
 from __future__ import annotations
 
@@ -25,7 +29,8 @@ from .colour_info import (
     chroma_size_for,
     subsampling_from_sizes,
 )
-from .plane_resample import Kernel, resample_plane
+from .native_planes import bgr_to_yuv, yuv_to_bgr
+from .plane_resample import Kernel, resample_plane_biased
 
 # Kr and Kb of each luma-weighted matrix (zimg's values).
 _KR_KB = {
@@ -156,25 +161,18 @@ def planes_to_rgb(
     if matrix is Matrix.RGB:
         return np.dstack((u, y, v)).astype(np.float32, copy=False)
     to_rgb = np.linalg.inv(_rgb_to_yuv_matrix(matrix)).astype(np.float32)
+    y, u, v = (plane.astype(np.float32, copy=False) for plane in (y, u, v))
+    if subsampling == (0, 0):
+        # zimg skips both axes of 4:4:4 chroma: the matrix step centres it.
+        return yuv_to_bgr(y, u, v, to_rgb, 0.5)
     scale_w, scale_h, offset_w, offset_h = _siting(chroma_location, subsampling)
-    y = y.astype(np.float32, copy=False)
     u, v = (
-        resample_plane(
-            plane.astype(np.float32, copy=False) - np.float32(0.5),
-            w,
-            h,
-            kernel,
-            src_left=-offset_w,
-            src_top=-offset_h,
-            src_width=w * scale_w,
-            src_height=h * scale_h,
+        resample_plane_biased(
+            plane, w, h, kernel, -offset_w, -offset_h, w * scale_w, h * scale_h, 0.5, 0
         )
         for plane in (u, v)
     )
-    out = np.empty((h, w, 3), np.float32)
-    for channel, row in zip((2, 1, 0), to_rgb):
-        out[..., channel] = row[0] * y + row[1] * u + row[2] * v
-    return out
+    return yuv_to_bgr(y, u, v, to_rgb, 0)
 
 
 def rgb_to_planes(
@@ -191,25 +189,29 @@ def rgb_to_planes(
     if c != 3:
         raise ValueError(f"RGB to planes needs a 3-channel image, not {c} channels.")
     _check_rgb_subsampling(matrix, subsampling)
-    b, g, r = (img[..., i].astype(np.float32) for i in range(3))
     if matrix is Matrix.RGB:
+        b, g, r = (img[..., i].astype(np.float32) for i in range(3))
         return g, b, r
     to_yuv = _rgb_to_yuv_matrix(matrix).astype(np.float32)
-    y, u, v = (row[0] * r + row[1] * g + row[2] * b for row in to_yuv)
+    if subsampling == (0, 0):
+        # zimg skips both axes of 4:4:4 chroma: the matrix step centres it.
+        return bgr_to_yuv(img, to_yuv, 0.5)
+    y, u, v = bgr_to_yuv(img, to_yuv, 0)
     chroma_w, chroma_h = chroma_size_for((w, h), subsampling)
     scale_w, scale_h, offset_w, offset_h = _siting(chroma_location, subsampling)
     u, v = (
-        resample_plane(
+        resample_plane_biased(
             plane,
             chroma_w,
             chroma_h,
             kernel,
-            src_left=offset_w / scale_w,
-            src_top=offset_h / scale_h,
-            src_width=w * (chroma_w / (w * scale_w)),
-            src_height=h * (chroma_h / (h * scale_h)),
+            offset_w / scale_w,
+            offset_h / scale_h,
+            w * (chroma_w / (w * scale_w)),
+            h * (chroma_h / (h * scale_h)),
+            0,
+            0.5,
         )
-        + np.float32(0.5)
         for plane in (u, v)
     )
     return y, u, v
