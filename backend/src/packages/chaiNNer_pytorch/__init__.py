@@ -163,13 +163,14 @@ package = add_package(
             # The fork's build of 0.4.2: adds DRFT, DUAL and SST; c2 computes fp16
             # LayerNorm statistics in fp32 and pads exported ONNX graphs per input;
             # c3 runs DUAL in fp16; c4 runs HAT and DAT in fp16; c5 lays out their
-            # attention for speed (DAT2 2x in PyTorch) and for ONNX export.
-            version="0.4.2+c5",
+            # attention for speed (DAT2 2x in PyTorch) and for ONNX export; c6 runs it
+            # through scaled_dot_product_attention (cuDNN or memory-efficient attention).
+            version="0.4.2+c6",
             size_estimate=530 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c5/"
-                "spandrel-0.4.2%2Bc5-py3-none-any.whl"
-                "#sha256=b788541817149bcbcb3124bb74e1e1df2e3724ffc8b9bbebdcdbfa2ffad9fb89"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c6/"
+                "spandrel-0.4.2%2Bc6-py3-none-any.whl"
+                "#sha256=0f6fd5f93d020111357f16bf2aeecf2d90428a0a704fbaf11a968c3240ca3bdf"
             ),
         ),
         Dependency(

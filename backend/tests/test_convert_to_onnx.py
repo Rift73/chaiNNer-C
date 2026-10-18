@@ -12,6 +12,7 @@ from ncnn import ncnn
 from spandrel import ImageModelDescriptor, ModelLoader
 from spandrel.architectures.Compact import Compact
 from spandrel.architectures.DAT import DAT
+from spandrel.architectures.DAT.__arch.DAT import Adaptive_Spatial_Attention
 from spandrel.architectures.ESRGAN import ESRGAN
 from spandrel.architectures.HAT import HAT
 from spandrel.architectures.HAT.__arch.HAT import OCAB, WindowAttention
@@ -40,10 +41,10 @@ ARCHS: dict[str, Callable[[], torch.nn.Module]] = {
         upsampler="pixelshuffle",
         upscale=2,
     ),
-    # Three blocks: the third shifts its windows (16 channels: DAT's spatial
-    # interaction keeps a sixteenth of them)
+    # Three blocks: the third shifts its windows; heads of 6 channels, which the export
+    # pads to 8 (24 channels: DAT's spatial interaction keeps a sixteenth of them)
     "DAT": lambda: DAT(
-        embed_dim=16, depth=[3], num_heads=[2], upsampler="pixelshuffle", upscale=2
+        embed_dim=24, depth=[3], num_heads=[4], upsampler="pixelshuffle", upscale=2
     ),
 }
 # The export traces a 32x32 image; 37x51 checks that height and width stay dynamic.
@@ -119,6 +120,18 @@ def test_hat_heads_are_padded_to_a_multiple_of_8():
     for module in attention:
         assert module.qkv.out_features == 3 * module.num_heads * 8
         assert module.proj.in_features == module.num_heads * 8
+
+
+def test_dat_spatial_heads_are_padded_to_a_multiple_of_8():
+    export = attention_export.for_export(tiny_model("DAT"))
+    attention = [
+        m for m in export.model.modules() if isinstance(m, Adaptive_Spatial_Attention)
+    ]
+    assert len(attention) == 2  # the first and third blocks; the second is channel
+    for module in attention:
+        assert module.qkv.out_features == 3 * module.num_heads * 8
+        # DAT drops the padded channels itself before its output projection
+        assert module.proj.in_features == 24
 
 
 def test_convert_model_with_trainable_weights():
