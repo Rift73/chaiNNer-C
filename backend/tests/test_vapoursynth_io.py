@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -19,6 +20,18 @@ import numpy as np
 import pytest
 
 from api import MB, Aborted, NodeAttributedError, NodeContext, SettingsParser
+from nodes.impl.colour_info import (
+    FIELDS,
+    ChromaLocation,
+    ColourInfo,
+    Matrix,
+    Primaries,
+    Range,
+    Transfer,
+    VideoMode,
+    code_to_float,
+)
+from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
 from nodes.impl.vapoursynth import runner
 from nodes.impl.vapoursynth.runner import VSScriptError, clip_info, read_frames
 from nodes.impl.vapoursynth.script import VideoClip, clip_var, compile_script
@@ -397,16 +410,21 @@ def test_clip_frames_count_and_values(
         " fpsden=1, color=[10 * i, 20 * i, 30 * i]) for i in range(5)])",
     )
     ctx = context(tmp_path, "frames")
-    generator, fps = clip_frames_node(ctx, frames)
+    generator, fps, colour = clip_frames_node(ctx, frames, VideoMode.RGB)
 
     assert fps == 25
     assert generator.expected_length == 5
-    items = cast(list[tuple[np.ndarray, int]], list(generator.supplier()))
+    # An RGB clip without colour properties: identity matrix, full range.
+    assert (colour.matrix, colour.range) == (Matrix.RGB, Range.FULL)
+    assert (colour.luma_size, colour.bit_depth) == ((8, 6), 8)
+    items = cast(list[tuple[Any, ...]], list(generator.supplier()))
     cast(Context, ctx).run_cleanups()
-    # One --info for the length and FPS; the frames' run reuses it.
+    # One --info for the length, FPS and colour; the frames' run reuses it.
     assert len(info_runs) == 1
-    assert [index for _, index in items] == list(range(5))
-    for i, (frame, _) in enumerate(items):
+    assert [item[1] for item in items] == list(range(5))
+    for i, (frame, _, *planes) in enumerate(items):
+        # Mode RGB: no planes.
+        assert planes == [None, None, None]
         assert isinstance(frame, np.ndarray)
         assert frame.shape == (6, 8, 3)
         assert frame.dtype == np.float32
@@ -462,58 +480,245 @@ def test_read_frames_with_info_matches_without(tmp_path: Path, vs: Any, output: 
 FFMPEG_DIR = Path(os.environ.get("APPDATA", "")) / "chaiNNer" / "backend-storage"
 
 
-def test_frames_to_clip_roundtrip_8bit(
-    tmp_path: Path, vs: Any, monkeypatch: pytest.MonkeyPatch
-):
-    # Save Video's FFmpeg writer is native code, which GitHub's checks do not build.
-    pytest.importorskip("nodes.impl._chainner_graph")
-    from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
-    from packages.chaiNNer_vapoursynth.vapoursynth.frames_to_clip import (
-        frames_to_clip_node,
-    )
-
+@pytest.fixture
+def integrated_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> FFMpegEnv:
+    """The downloaded FFmpeg as the nodes' integrated one (their storage is tmp_path)."""
     ffmpeg, ffprobe = map(str, get_executable_path(FFMPEG_DIR / "ffmpeg"))
     if not Path(ffmpeg).exists():
         pytest.skip("the integrated FFmpeg is not downloaded")
-    # The node's storage is tmp_path; its FFmpeg is the downloaded one.
-    monkeypatch.setattr(
-        FFMpegEnv, "get_integrated", staticmethod(lambda _: FFMpegEnv(ffmpeg, ffprobe))
+    env = FFMpegEnv(ffmpeg, ffprobe)
+    monkeypatch.setattr(FFMpegEnv, "get_integrated", staticmethod(lambda _: env))
+    return env
+
+
+def collect(
+    storage: Path,
+    items: list[tuple[np.ndarray | None, ...]],
+    source: str = "frames",
+    precision: str = "16",
+    colour: ColourInfo | None = None,
+    choices: tuple[Enum, ...] = (),
+) -> VideoClip:
+    """A run of Frames to Clip, node "collect", at 23.976 fps over `items` (Frames, Y,
+    U, V each), with these settings and colour choices (the rest Auto)."""
+    from packages.chaiNNer_vapoursynth.vapoursynth.frames_to_clip import (
+        ClipPrecision,
+        ClipSource,
+        frames_to_clip_node,
     )
 
-    rng = np.random.default_rng(5)
-    # An odd size, and values between the 8-bit levels.
-    images = [rng.random((5, 7, 3), dtype=np.float32) for _ in range(3)]
-
-    def run() -> VideoClip:
-        ctx = context(tmp_path, "collect")
-        collector = frames_to_clip_node(ctx, None, 23.976)
-        for image in images:
-            collector.on_iterate(image)
-        result = collector.on_complete()
+    chosen: dict[type, Any] = {type(choice): choice for choice in choices}
+    ctx = context(storage, "collect")
+    collector = frames_to_clip_node(
+        ctx,
+        ClipSource(source),
+        None,
+        ClipPrecision(precision),
+        None,
+        None,
+        None,
+        colour,
+        chosen.get(Matrix, Matrix.AUTO),
+        chosen.get(Transfer, Transfer.AUTO),
+        chosen.get(Primaries, Primaries.AUTO),
+        chosen.get(Range, Range.AUTO),
+        chosen.get(ChromaLocation, ChromaLocation.AUTO),
+        23.976,
+    )
+    try:
+        for item in items:
+            collector.on_iterate(item)
+        return collector.on_complete()
+    finally:
         cast(Context, ctx).run_cleanups()
-        return result
 
-    first = run()
+
+@pytest.mark.parametrize(
+    ("precision", "channels", "format_name"),
+    [
+        ("16", 3, "RGB48"),
+        ("16", 1, "Gray16"),
+        ("32", 3, "RGBS"),
+        ("32", 1, "GrayS"),
+    ],
+)
+def test_frames_to_clip_roundtrip(
+    tmp_path: Path,
+    vs: Any,
+    integrated_ffmpeg: FFMpegEnv,
+    precision: str,
+    channels: int,
+    format_name: str,
+):
+    rng = np.random.default_rng(5)
+    # An odd size, values between the 16-bit levels and outside 0-1. Gray frames come
+    # as ImageInput gives them: HxW.
+    shape = (5, 7, 3) if channels == 3 else (5, 7)
+    images = [rng.uniform(-0.25, 1.25, shape).astype(np.float32) for _ in range(3)]
+    items = [(image, None, None, None) for image in images]
+
+    first = collect(tmp_path, items, precision=precision)
     assert "core.bs.VideoSource(" in first.stmt
     assert first.var == clip_var("collect")
     assert first.deps == ()
     folder = tmp_path / "vapoursynth" / "chains" / "collect"
-    assert len(list(folder.glob("*.mkv"))) == 1
+    suffix = ".nut" if precision == "32" else ".mkv"
+    assert [p.suffix for p in folder.glob("frames-*")] == [suffix]
 
     script = tmp_path / "roundtrip.vpy"
     script.write_text(compile_script([(first, "Frames")], cache_mb=256), "utf-8")
     info = clip_info(script, 0)
     assert (info.width, info.height, info.num_frames) == (7, 5, 3)
     assert (info.fps_num, info.fps_den) == (24000, 1001)
-    assert info.format_name == "RGB24"
+    assert info.format_name == format_name
     for image, frame in zip(images, read_frames(script, 0, 0, 3), strict=True):
-        assert frame.shape == (5, 7, 3)
-        assert np.abs(frame - image).max() <= 1 / 255
+        assert frame.shape == (5, 7, channels)
+        values = frame.reshape(image.shape)
+        if precision == "32":
+            # Every value as it was, also outside 0-1.
+            np.testing.assert_array_equal(values, image)
+        else:
+            # Clipped to 0-1, within half a 16-bit step (and float32's rounding).
+            expected = np.clip(image, 0, 1)
+            assert np.abs(values - expected).max() <= 0.5 / 65535 + 1e-7
 
     # The next run of the same node replaces the previous run's file.
-    second = run()
+    second = collect(tmp_path, items, precision=precision)
     assert second.stmt != first.stmt
-    assert len(list(folder.glob("*.mkv"))) == 1
+    assert len(list(folder.glob("frames-*"))) == 1
+
+
+def random_planes(
+    rng: np.random.Generator,
+    size: tuple[int, int],
+    subsampling: tuple[int, int],
+    full_range: bool,
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Every 16-bit code at random in Y, U, V planes of a luma `size` (width, height),
+    and the planes' values (colour_info's convention)."""
+    width, height = size
+    chroma = (height >> subsampling[1], width >> subsampling[0])
+    codes = [
+        rng.integers(0, 65536, shape, dtype=np.uint16)
+        for shape in ((height, width), chroma, chroma)
+    ]
+    values = [
+        code_to_float(c, 16, full_range, chroma=i > 0) for i, c in enumerate(codes)
+    ]
+    return codes, values
+
+
+@pytest.mark.parametrize(
+    ("subsampling", "colour", "choices", "props"),
+    [
+        # 4:2:0 HDR10, from a Colour Info: its tags.
+        (
+            (1, 1),
+            ColourInfo(
+                Matrix.BT2020_NCL,
+                Transfer.PQ,
+                Primaries.BT2020,
+                Range.LIMITED,
+                ChromaLocation.TOP_LEFT,
+                10,
+                (8, 6),
+                (4, 3),
+            ),
+            (),
+            (9, 16, 9, 0, 2),
+        ),
+        # 4:2:2 without Colour Info: the guesses for an 8x6 picture (BT.601's matrix,
+        # BT.709's primaries and transfer), full range and centre siting chosen.
+        ((1, 0), None, (Range.FULL, ChromaLocation.CENTER), (6, 1, 1, 1, 1)),
+        # 4:4:4 with a choice over the Colour Info's matrix; bottom-left siting, which
+        # Matroska cannot store, set by the statement; the transfer that FFmpeg's
+        # option calls gamma22.
+        (
+            (0, 0),
+            ColourInfo(
+                Matrix.SMPTE170M,
+                Transfer.BT470M,
+                Primaries.DISPLAY_P3,
+                Range.FULL,
+                ChromaLocation.BOTTOM_LEFT,
+                8,
+                (8, 6),
+                (8, 6),
+            ),
+            (Matrix.BT709,),
+            (1, 4, 12, 1, 4),
+        ),
+    ],
+)
+def test_frames_to_clip_planes(
+    tmp_path: Path,
+    vs: Any,
+    integrated_ffmpeg: FFMpegEnv,
+    subsampling: tuple[int, int],
+    colour: ColourInfo | None,
+    choices: tuple[Enum, ...],
+    props: tuple[int, ...],
+):
+    rng = np.random.default_rng(7)
+    full_range = props[3] == 1
+    frames = [random_planes(rng, (8, 6), subsampling, full_range) for _ in range(3)]
+    clip_record = collect(
+        tmp_path,
+        [(None, *values) for _, values in frames],
+        "planes",
+        colour=colour,
+        choices=choices,
+    )
+
+    # The clip as VapourSynth makes it from the node's statement: the planes' codes
+    # exactly, and the colour tags as frame properties.
+    scope = {"core": vs.core, "vs": vs}
+    exec(clip_record.stmt, scope)
+    clip = scope[clip_record.var]
+    layout = {(0, 0): "444", (1, 0): "422", (1, 1): "420"}[subsampling]
+    assert clip.format.name == f"YUV{layout}P16"
+    assert (clip.width, clip.height, clip.num_frames) == (8, 6, 3)
+    for n, (codes, _) in enumerate(frames):
+        frame = clip.get_frame(n)
+        for plane, expected in enumerate(codes):
+            np.testing.assert_array_equal(np.asarray(frame[plane]), expected)
+        keys = ("_Matrix", "_Transfer", "_Primaries", "_Range", "_ChromaLocation")
+        assert tuple(int(frame.props[k]) for k in keys) == props
+
+
+def test_frames_to_clip_errors(
+    tmp_path: Path, integrated_ffmpeg: FFMpegEnv, monkeypatch: pytest.MonkeyPatch
+):
+    from packages.chaiNNer_vapoursynth.vapoursynth import frames_to_clip
+
+    rgb = np.zeros((4, 6, 3), np.float32)
+    with pytest.raises(ValueError, match="got no frames"):
+        collect(tmp_path, [])
+    with pytest.raises(
+        ValueError, match=r"were 6x4 with 3 channels, these are 6x4 with 1"
+    ):
+        collect(tmp_path, [(rgb, None, None, None), (rgb[:, :, 0], None, None, None)])
+    with pytest.raises(ValueError, match="needs Frames"):
+        collect(tmp_path, [(None, None, None, None)])
+
+    y, u = np.zeros((6, 8), np.float32), np.zeros((3, 4), np.float32)
+    with pytest.raises(ValueError, match="needs Y, U and V"):
+        collect(tmp_path, [(rgb, y, u, None)], "planes")
+    with pytest.raises(ValueError, match="U is 4x3, V is 8x6"):
+        collect(tmp_path, [(None, y, u, y)], "planes")
+    with pytest.raises(ValueError, match="not a Y plane 8x6 with U and V planes 2x6"):
+        collect(tmp_path, [(None, y, y[:, :2], y[:, :2])], "planes")
+    with pytest.raises(ValueError, match=r"4:2:0 planes to be a multiple of 2x2.* 7x6"):
+        collect(tmp_path, [(None, y[:, :7], u, u)], "planes")
+    with pytest.raises(ValueError, match=r"RGB \(identity\)"):
+        collect(tmp_path, [(None, y, u, u)], "planes", choices=(Matrix.RGB,))
+    with pytest.raises(ValueError, match="were 8x6 with 1 channels, 4x3 with 1"):
+        collect(tmp_path, [(None, y, u, u), (None, y, y, y)], "planes")
+
+    # FFmpeg rejects an option (another codec's tag): its exit code and its message.
+    monkeypatch.setattr(frames_to_clip, "GBRPF32_NUT_TAG", "FFV1")
+    with pytest.raises(RuntimeError, match=r"FFmpeg stopped .*exit code 1.*FFV1"):
+        collect(tmp_path, [(rgb, None, None, None)] * 3, precision="32")
 
 
 def test_save_script_runs_in_vspipe(tmp_path: Path, vs: Any):
@@ -559,7 +764,7 @@ def test_vspipe_failure_names_the_node(tmp_path: Path, vs: Any):
     # An error when vspipe evaluates the script: the node run fails.
     bad = clip("bad", f"{clip_var('src')}.std.Crop(left=-4)", source)
     with pytest.raises(VSScriptError, match="negative corner coordinates") as raised:
-        clip_frames_node(context(tmp_path, "frames"), bad)
+        clip_frames_node(context(tmp_path, "frames"), bad, VideoMode.RGB)
     assert raised.value.node_id == "bad"
 
     # An error at frame 2: the iteration fails (vspipe renders ahead in parallel, so
@@ -571,7 +776,7 @@ def test_vspipe_failure_names_the_node(tmp_path: Path, vs: Any):
         source,
     )
     ctx = context(tmp_path, "frames")
-    generator, _ = clip_frames_node(ctx, late)
+    generator, _, _ = clip_frames_node(ctx, late, VideoMode.RGB)
     delivered = []
     with pytest.raises(VSScriptError, match="ZeroDivisionError") as raised:
         for item in generator.supplier():
@@ -592,7 +797,9 @@ def test_plugin_frame_error_shows_on_clip_frames(tmp_path: Path, vs: Any):
     source = clip("src", "core.std.BlankClip(format=vs.YUV420P8, width=64, height=48)")
     rgb = clip("rgb", f"{clip_var('src')}.resize.Bicubic(format=vs.RGB24)", source)
     ctx = context(tmp_path, "frames")
-    generator, _ = clip_frames_node(ctx, rgb)
+    generator, _, colour = clip_frames_node(ctx, rgb, VideoMode.RGB)
+    # The first frame fails: no colour properties, every value guessed.
+    assert {colour.origin_of(name) for name in FIELDS} == {"guessed"}
     with pytest.raises(VSScriptError, match="Failed to retrieve frame") as raised:
         for _ in generator.supplier():
             pass
@@ -605,3 +812,206 @@ def test_plugin_frame_error_shows_on_clip_frames(tmp_path: Path, vs: Any):
     moved = on_failing_node(raised.value, nodes)
     assert isinstance(moved, NodeExecutionError)
     assert (moved.node_id, moved.__cause__) == ("frames", raised.value)
+
+
+@pytest.mark.parametrize(
+    ("format_name", "pix_fmt"),
+    [
+        ("YUV420P8", "yuv420p"),
+        ("YUV422P10", "yuv422p10le"),
+        ("YUV444PS", "yuv444p16le"),
+        ("YUV410P8", "yuv410p"),
+        ("Gray8", "gray"),
+        ("GrayH", "gray16le"),
+        ("RGB24", "gbrp"),
+        ("RGB30", "gbrp10le"),
+        ("RGBS", "gbrp16le"),
+        ("Variable", ""),
+    ],
+)
+def test_vapoursynth_formats_as_ffmpegs(format_name: str, pix_fmt: str):
+    from nodes.impl.vapoursynth.colour_props import vs_pix_fmt
+
+    assert vs_pix_fmt(format_name) == pix_fmt
+
+
+def test_colour_props_as_an_ffprobe_entry():
+    from nodes.impl.vapoursynth.colour_props import colour_stream
+
+    props = {"_Matrix": 9, "_Transfer": 16, "_Primaries": 2, "_ChromaLocation": 2}
+    assert colour_stream(props | {"_Range": 0}, "yuv420p10le", 64, 48) == {
+        "pix_fmt": "yuv420p10le",
+        "width": 64,
+        "height": 48,
+        "color_space": "bt2020nc",
+        "color_transfer": "smpte2084",
+        # Unspecified (2) is no tag; for the siting, 2 is top-left.
+        "color_range": "tv",
+        "chroma_location": "topleft",
+    }
+    # Codes FFmpeg has no name for keep their number.
+    stream = colour_stream({"_Transfer": 99, "_Range": 1}, "gray", 8, 8)
+    assert (stream["color_transfer"], stream["color_range"]) == ("H.273 code 99", "pc")
+
+
+def test_clip_frames_item_types_follow_the_mode():
+    from packages.chaiNNer_vapoursynth.vapoursynth.clip_frames import (
+        FramesInfo,
+        get_item_types,
+    )
+
+    clip_record = runner.ClipInfo(64, 48, 5, 24, 1, "YUV420P10")
+    colour = ColourInfo(
+        Matrix.BT709,
+        Transfer.BT709,
+        Primaries.BT709,
+        Range.LIMITED,
+        ChromaLocation.LEFT,
+        10,
+        (64, 48),
+        (32, 24),
+    )
+    import navi
+
+    image = {"width": 64, "height": 48}
+    for mode, outputs in (
+        (VideoMode.RGB, {0: 3}),
+        (VideoMode.PLANES, {3: 1, 4: 1, 5: 1}),
+        (VideoMode.BOTH, {0: 3, 3: 1, 4: 1, 5: 1}),
+    ):
+        types = get_item_types(FramesInfo(clip_record, mode, colour))
+        assert set(types) == set(outputs)
+        for output, channels in outputs.items():
+            size = image if output in (0, 3) else {"width": 32, "height": 24}
+            expected = navi.Image(**size, channels=channels)
+            assert types[cast(Any, output)] == expected
+
+
+def frames_items(
+    storage: Path, record: VideoClip, mode: VideoMode, node_id: str = "frames"
+) -> tuple[list[tuple[Any, ...]], ColourInfo]:
+    """A run of Clip Frames over `record`: its items and its Colour Info."""
+    from packages.chaiNNer_vapoursynth.vapoursynth.clip_frames import (
+        clip_frames_node,
+    )
+
+    ctx = context(storage, node_id)
+    generator, _, colour = clip_frames_node(ctx, record, mode)
+    try:
+        return cast(list[tuple[Any, ...]], list(generator.supplier())), colour
+    finally:
+        cast(Context, ctx).run_cleanups()
+
+
+@pytest.mark.parametrize(
+    ("subsampling", "full_range"), [((1, 1), False), ((1, 0), True), ((0, 0), False)]
+)
+def test_planes_roundtrip_through_frames_to_clip_and_clip_frames(
+    tmp_path: Path,
+    vs: Any,
+    integrated_ffmpeg: FFMpegEnv,
+    subsampling: tuple[int, int],
+    full_range: bool,
+):
+    rng = np.random.default_rng(11)
+    frames = [random_planes(rng, (8, 6), subsampling, full_range) for _ in range(3)]
+    chroma_size = (8 >> subsampling[0], 6 >> subsampling[1])
+    tags = ColourInfo(
+        Matrix.BT709,
+        Transfer.HLG,
+        Primaries.BT2020,
+        Range.FULL if full_range else Range.LIMITED,
+        ChromaLocation.TOP,
+        10,
+        (8, 6),
+        chroma_size,
+    )
+    record = collect(
+        tmp_path, [(None, *values) for _, values in frames], "planes", colour=tags
+    )
+
+    items, colour = frames_items(tmp_path, record, VideoMode.PLANES)
+    # Every plane value exactly as it went in.
+    assert [item[1] for item in items] == [0, 1, 2]
+    for (frame, _, *planes), (_, values) in zip(items, frames, strict=True):
+        assert frame is None
+        for plane, expected in zip(planes, values, strict=True):
+            assert plane.dtype == np.float32
+            np.testing.assert_array_equal(plane, expected)
+    # The clip's Colour Info: its tags, from the file, at 16 bits and the clip's sizes.
+    assert colour == ColourInfo(
+        Matrix.BT709,
+        Transfer.HLG,
+        Primaries.BT2020,
+        tags.range,
+        ChromaLocation.TOP,
+        16,
+        (8, 6),
+        chroma_size,
+        origin=tuple((name, "file") for name in sorted(FIELDS)),
+    )
+
+    # Both: RGB frames as Mode RGB gives them, and the same planes, from one render.
+    rgb, _ = frames_items(tmp_path, record, VideoMode.RGB)
+    both, _ = frames_items(tmp_path, record, VideoMode.BOTH)
+    for rgb_item, both_item, planes_item in zip(rgb, both, items, strict=True):
+        assert both_item[0].shape == (6, 8, 3)
+        np.testing.assert_array_equal(both_item[0], rgb_item[0])
+        for got, expected in zip(both_item[2:], planes_item[2:], strict=True):
+            np.testing.assert_array_equal(got, expected)
+
+
+def test_clip_frames_planes_of_float_and_retagged_clips(
+    tmp_path: Path, vs: Any, caplog: pytest.LogCaptureFixture
+):
+    # Float samples as they are, VapourSynth's zero-centred chroma moved to 0.5;
+    # no properties: every value guessed for 64x48.
+    float_clip = clip(
+        "float",
+        "core.std.BlankClip(format=vs.YUV444PS, width=64, height=48, length=2,"
+        " color=[0.25, -0.125, 1.5])",
+    )
+    items, colour = frames_items(tmp_path, float_clip, VideoMode.PLANES)
+    for _, _, y, u, v in items:
+        assert (y.shape, u.shape, v.shape) == ((48, 64),) * 3
+        for plane, value in ((y, 0.25), (u, 0.375), (v, 2.0)):
+            np.testing.assert_array_equal(plane, np.full((48, 64), value, np.float32))
+    assert (colour.matrix, colour.range, colour.bit_depth) == (
+        Matrix.SMPTE170M,
+        Range.LIMITED,
+        16,
+    )
+    assert {colour.origin_of(name) for name in FIELDS} == {"guessed"}
+
+    # A matrix code chaiNNer does not convert: guessed (BT.2020 beside a PQ transfer),
+    # with a warning; the other properties as set. Limited 8-bit codes.
+    tagged = clip(
+        "tagged",
+        "core.std.BlankClip(format=vs.YUV420P8, width=64, height=48, length=1,"
+        " color=[235, 16, 128]).std.SetFrameProps(_Matrix=11, _Transfer=16,"
+        " _Primaries=9, _Range=0, _ChromaLocation=2)",
+    )
+    with caplog.at_level(logging.WARNING):
+        items, colour = frames_items(tmp_path, tagged, VideoMode.PLANES)
+    assert any("smpte2085" in r.getMessage() for r in caplog.records)
+    assert colour.matrix is Matrix.BT2020_NCL
+    assert colour.origin_of("matrix") == "guessed"
+    assert (colour.transfer, colour.primaries) == (Transfer.PQ, Primaries.BT2020)
+    assert (colour.range, colour.chroma_location) == (
+        Range.LIMITED,
+        ChromaLocation.TOP_LEFT,
+    )
+    assert (colour.chroma_size, colour.bit_depth) == ((32, 24), 8)
+    _, _, y, u, v = items[0]
+    np.testing.assert_array_equal(y, np.ones((48, 64), np.float32))
+    low = code_to_float(np.full((24, 32), 16, np.uint8), 8, False, chroma=True)
+    np.testing.assert_array_equal(u, low)
+    np.testing.assert_array_equal(v, np.full((24, 32), 0.5, np.float32))
+
+    # Planes and Both need a YUV clip.
+    rgb_clip = clip("rgb", "core.std.BlankClip(format=vs.RGB24, width=8, height=6)")
+    for mode in (VideoMode.PLANES, VideoMode.BOTH):
+        with pytest.raises(
+            ValueError, match=r"needs a YUV clip, and this clip is RGB24"
+        ):
+            frames_items(tmp_path, rgb_clip, mode)

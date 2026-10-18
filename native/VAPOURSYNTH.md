@@ -48,7 +48,7 @@ statement is reported on its own node with the end of VapourSynth's message, and
 | --- | --- |
 | Preview Clips | `<storage>\vapoursynth\chains\<node id>\preview.vpy`, with `vsview.log` beside it |
 | Clip Frames | `<storage>\vapoursynth\chains\<node id>\frames.vpy` |
-| Frames to Clip | `frames-<id>.mkv`, a temporary lossless video, in the same kind of folder |
+| Frames to Clip | `frames-<id>.mkv` (16-bit) or `.nut` (32-bit float), a temporary video, in the same kind of folder |
 | Save Script | `<Directory>\<Script Name>.vpy` |
 
 `<node id>` is the random name chaiNNer gives each node; sort `chains` by date. When chaiNNer-C starts it deletes the
@@ -69,9 +69,20 @@ one (so does a restart of chaiNNer-C). vsview keeps its settings in `%LOCALAPPDA
 
 **Clip Frames** (a loop, like Load Video) outputs Frame, Index and FPS (0 if the rate varies). Gray clips give gray
 images; any other clip becomes RGB (YUV by its matrix, else by its size as Load Video; add Convert Format before it to choose).
-Every frame needs one size and format. **Frames to Clip** ends a loop of 3-channel images, with an FPS, and saves them
-as a lossless FFV1 video that BestSource reads as a clip. It is 8-bit RGB: chaiNNer's float frames are rounded to 8
-bits, and the next run replaces the file.
+**Mode** (as Load Video's) Planes gives a YUV clip's Y, U and V planes at their stored sizes instead (Y 0 to 1 from black
+to white, U and V centred on 0.5, the clip's range and bit depth undone; float clips as they are); Both gives the RGB
+frames and the planes from one render of the chain. **Colour Info** comes from the first frame's `_Matrix`, `_Transfer`,
+`_Primaries`, `_Range` and `_ChromaLocation`; one that is not set is guessed as Load Video guesses it. Reading them
+renders the first frame once more when the run starts.
+Every frame needs one size and format. **Frames to Clip** ends a loop of RGB or gray images, with an FPS, and saves
+them as a file that BestSource reads as a clip; the next run replaces it. **Precision** 16-bit (default) rounds the
+values to 16 bits, clipped to 0-1, in a lossless FFV1 video (`.mkv`, an RGB48 or Gray16 clip); 32-bit float keeps every
+value, also outside 0-1, uncompressed (`.nut`, an RGBS or GrayS clip): 12 bytes per pixel, gray frames too (about
+25 MB per 1080p frame; the log says the size). **Input** Planes takes Y, U and V planes at their own sizes (as Load
+Video's Planes mode gives them; 4:4:4, 4:2:2 or 4:2:0, the Y plane a multiple of the subsampling) and an optional
+Colour Info, and makes a 16-bit YUV clip tagged with it (the clip's `_Matrix`, `_Transfer`, `_Primaries`, `_Range` and
+`_ChromaLocation`); each colour dropdown other than Auto replaces the Colour Info's value, and without Colour Info Auto
+guesses from the size as Load Video does for untagged video.
 
 ## Family nodes
 
@@ -145,6 +156,6 @@ and re-reads the overlays.
   prefilter (that one also leaves dark areas out).
 - AI Upscale: TensorRT has not been run on a GPU yet (2026-10-15). It ignores chaiNNer's PyTorch and ONNX settings (GPU
   choice, memory limit), offers no BF16, and takes gray through the nodes' BT.601 luma.
-- Frames to Clip takes 3-channel images only. Any Function calls a class's method without constructor settings. An error
-  in an import line shows on the node that runs the script, a bad filter setting on the node it is wired into.
+- Any Function calls a class's method without constructor settings. An error in an import line shows on the node that
+  runs the script, a bad filter setting on the node it is wired into.
 - Do not upgrade MVTools: the dependency manager accepts a newer version, but 10 breaks Motion-compensated degrain.

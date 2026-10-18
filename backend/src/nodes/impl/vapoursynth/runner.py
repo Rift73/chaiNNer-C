@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import os
 import re
 import subprocess
@@ -15,18 +16,24 @@ import threading
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import Generator, Iterator
+from typing import Callable, Generator, Iterator, TypeVar
 
 import numpy as np
 
 from api import NodeAttributedError, NodeContext
 
+from ..colour_info import high_definition, pixel_layout
+from .colour_props import PROPS, vs_pix_fmt
 from .script import node_for_line
+
+T = TypeVar("T")
 
 # How many of vspipe's last stderr lines an error message keeps.
 STDERR_TAIL_LINES = 20
 # How often a wait for vspipe checks for Stop.
 STOP_POLL_SECONDS = 0.05
+# The colour frame properties clip_props reads.
+COLOUR_PROPS = tuple(prop for prop, _ in PROPS.values())
 
 # R81 says on every run that it refuses API 3 plugins, and vs-jetpack's extras install
 # one (bm3dcpu): the line says nothing about the script.
@@ -207,6 +214,63 @@ def clip_info(
     return _video_output(script.resolve(), output, context)[0]
 
 
+def _script_copy(script: Path, lines: str, suffix: str) -> Path:
+    """The script with `lines` appended, in a new file next to it, so that it finds
+    what the script finds there; the caller deletes it."""
+    handle, name = tempfile.mkstemp(
+        prefix=f"{script.stem}.", suffix=suffix, dir=script.parent
+    )
+    copy = Path(name)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            file.write(script.read_text(encoding="utf-8") + lines)
+    except BaseException:
+        copy.unlink(missing_ok=True)
+        raise
+    return copy
+
+
+def clip_props(
+    script: Path, output: int, context: NodeContext | None = None
+) -> tuple[ClipInfo, dict[str, int]]:
+    """clip_info of a script's output and the colour frame properties (COLOUR_PROPS)
+    of its first frame that are set, in one evaluation of the script. A first frame
+    that fails gives none: the run of the frames fails on it and reports the error."""
+    script = script.resolve()
+    handle, name = tempfile.mkstemp(suffix=".json")
+    os.close(handle)
+    props = Path(name)
+    lines = (
+        "\n# chaiNNer reads the colour properties of the first frame.\n"
+        "import json\n"
+        "import vapoursynth\n"
+        "_props = {}\n"
+        f"if {output} in vapoursynth.get_outputs():\n"
+        "    try:\n"
+        f"        _props = vapoursynth.get_output({output}).clip.get_frame(0).props\n"
+        "    except vapoursynth.Error:\n"
+        "        # The run of the frames fails on this frame again, and reports it.\n"
+        "        pass\n"
+        f"with open({str(props)!r}, 'w', encoding='utf-8') as _file:\n"
+        f"    json.dump({{k: int(_props[k]) for k in {COLOUR_PROPS!r} if k in _props}},"
+        " _file)\n"
+    )
+    copy = _script_copy(script, lines, ".props.vpy")
+    try:
+        info = _video_output(copy, output, context)[0]
+        return info, json.loads(props.read_text(encoding="utf-8"))
+    finally:
+        copy.unlink(missing_ok=True)
+        props.unlink(missing_ok=True)
+
+
+def _yuv_to_rgbs(info: ClipInfo) -> str:
+    # The _Matrix frame property, when set, beats matrix_in. Else Load Video's guess
+    # for untagged video: BT.709 for HD, else SMPTE 170M.
+    matrix = 1 if high_definition(info.width, info.height) else 6
+    return f"format=vapoursynth.RGBS, matrix_in={matrix}"
+
+
 def _float_output(info: ClipInfo, fields: dict[str, str], output: int) -> str | None:
     """Script lines that turn the output into float32 RGB (RGBS) or gray (GRAYS) frames
     without alpha, or None when it already is such a clip."""
@@ -216,11 +280,7 @@ def _float_output(info: ClipInfo, fields: dict[str, str], output: int) -> str | 
     elif family == "RGB":
         to = "format=vapoursynth.RGBS"
     else:
-        # The _Matrix frame property, when set, beats matrix_in. Else Load Video's
-        # guess for untagged video: BT.709 for HD (width >= 1280 or height > 576),
-        # else SMPTE 170M.
-        matrix = 1 if info.width >= 1280 or info.height > 576 else 6
-        to = f"format=vapoursynth.RGBS, matrix_in={matrix}"
+        to = _yuv_to_rgbs(info)
     float32 = fields["Sample Type"] == "Float" and fields["Bits"] == "32"
     if float32 and family != "YUV":
         if fields["Alpha"] == "No":
@@ -260,12 +320,16 @@ def _vspipe_frames(
     output: int,
     start: int,
     end: int,
-    shape: tuple[int, int, int],
+    shape: tuple[int, ...],
+    unpack: Callable[[np.ndarray], T],
+    views: bool,
     context: NodeContext | None,
-) -> Iterator[np.ndarray]:
-    channels, height, width = shape
+) -> Iterator[T]:
+    """Frames start..end-1 of an output that vspipe writes as float32 arrays of `shape`,
+    each made an item by `unpack`. Items that copy what they take from the array let
+    the next frame reuse it; items that are `views` of it get a new array per frame."""
     command = [str(vspipe()), "-o", str(output), "-s", str(start), "-e", str(end - 1)]
-    planes: np.ndarray | None = None
+    buffer: np.ndarray | None = None
     count = 0
     with tempfile.TemporaryFile() as stderr:
         with subprocess.Popen(
@@ -288,18 +352,12 @@ def _vspipe_frames(
                 ).start()
             try:
                 while count < end - start:
-                    # Gray frames are views of their own buffer (no copy); RGB frames
-                    # are interleaved copies, so their planes' buffer is reused.
-                    if planes is None or channels == 1:
-                        planes = np.empty(shape, np.float32)
-                    if not _read_into(stdout, memoryview(planes).cast("B")):
+                    if buffer is None or views:
+                        buffer = np.empty(shape, np.float32)
+                    if not _read_into(stdout, memoryview(buffer).cast("B")):
                         break
                     count += 1
-                    if channels == 1:
-                        yield planes.reshape(height, width, 1)
-                    else:
-                        # vspipe writes RGB planes as G, B, R (ffmpeg's gbrp order).
-                        yield np.stack((planes[1], planes[0], planes[2]), axis=2)
+                    yield unpack(buffer)
                 stdout.read()
                 returncode = process.wait()
             finally:
@@ -313,6 +371,15 @@ def _vspipe_frames(
             stderr.seek(0)
             text = stderr.read().decode("utf-8", "replace")
             raise script_error(script, text, returncode)
+
+
+def _gray_frame(planes: np.ndarray) -> np.ndarray:
+    return planes.reshape(*planes.shape[1:], 1)
+
+
+def _rgb_frame(planes: np.ndarray) -> np.ndarray:
+    # vspipe writes RGB planes as G, B, R (ffmpeg's gbrp order).
+    return np.stack((planes[1], planes[0], planes[2]), axis=2)
 
 
 def _info_fields(info: ClipInfo) -> dict[str, str]:
@@ -329,6 +396,21 @@ def _info_fields(info: ClipInfo) -> dict[str, str]:
     if bits is not None:
         fields["Sample Type"], fields["Bits"] = "Float", bits
     return fields
+
+
+def _check_range(info: ClipInfo, output: int, start: int, end: int) -> None:
+    if not 0 <= start <= end <= info.num_frames:
+        raise ValueError(
+            f"Frames {start} to {end} are outside the {info.num_frames} frames of"
+            f" output {output}."
+        )
+
+
+def _varying(output: int) -> VSScriptError:
+    return VSScriptError(
+        f"Output {output} changes size or format between frames. Add a Resize or"
+        " Convert Format node so that every frame has the same size and format."
+    )
 
 
 def read_frames(
@@ -350,34 +432,105 @@ def read_frames(
         info, fields = _video_output(script, output, context)
     else:
         fields = _info_fields(info)
-    if not 0 <= start <= end <= info.num_frames:
-        raise ValueError(
-            f"Frames {start} to {end} are outside the {info.num_frames} frames of"
-            f" output {output}."
-        )
+    _check_range(info, output, start, end)
     if not info.width or not info.height or "Color Family" not in fields:
-        raise VSScriptError(
-            f"Output {output} changes size or format between frames. Add a Resize or"
-            " Convert Format node so that every frame has the same size and format."
-        )
+        raise _varying(output)
     if start == end:
         return
-    shape = (1 if fields["Color Family"] == "Gray" else 3, info.height, info.width)
+    gray = fields["Color Family"] == "Gray"
+    # Gray frames are views of their own array (no copy); RGB frames are interleaved
+    # copies.
+    shape = (1 if gray else 3, info.height, info.width)
+    unpack = _gray_frame if gray else _rgb_frame
     lines = _float_output(info, fields, output)
     if lines is None:
-        yield from _vspipe_frames(script, output, start, end, shape, context)
+        yield from _vspipe_frames(
+            script, output, start, end, shape, unpack, gray, context
+        )
         return
-    # A copy next to the script, so that the script finds what it finds there.
-    handle, name = tempfile.mkstemp(
-        prefix=f"{script.stem}.", suffix=".frames.vpy", dir=script.parent
-    )
-    converted = Path(name)
+    converted = _script_copy(script, lines, ".frames.vpy")
     try:
-        with os.fdopen(handle, "w", encoding="utf-8") as file:
-            file.write(script.read_text(encoding="utf-8") + lines)
-        yield from _vspipe_frames(converted, output, start, end, shape, context)
+        yield from _vspipe_frames(
+            converted, output, start, end, shape, unpack, gray, context
+        )
     finally:
         converted.unlink(missing_ok=True)
+
+
+def read_planes(
+    script: Path,
+    output: int,
+    start: int,
+    end: int,
+    *,
+    info: ClipInfo,
+    rgb: bool,
+    context: NodeContext | None = None,
+) -> Generator[tuple[np.ndarray | None, np.ndarray, np.ndarray, np.ndarray]]:
+    """Frames start..end-1 of a script's YUV output, rendered by vspipe, as their Y, U
+    and V planes at their stored sizes: float32 arrays of the stored values (integer
+    codes, or float samples, chroma centred on 0, as VapourSynth has them). With
+    `rgb`, each comes with the frame as read_frames gives it (None without), from the
+    same render. `info` is the output's clip_info from this same script."""
+    script = script.resolve()
+    _check_range(info, output, start, end)
+    if not info.width or not info.height or info.format_name == "Variable":
+        raise _varying(output)
+    layout = pixel_layout(vs_pix_fmt(info.format_name))
+    if layout.kind != "yuv":
+        raise VSScriptError(f"Output {output} is {info.format_name}, not YUV.")
+    if start == end:
+        return
+    width, height = info.width, info.height
+    chroma_width = width >> layout.subsampling[0]
+    chroma_height = height >> layout.subsampling[1]
+    # One float32 frame of every plane stacked, padded to the luma's width: one render
+    # of the chain gives both the planes and RGB. std.Expr keeps the integer codes.
+    planes = (
+        "[_clip.std.ShufflePlanes(planes=i, colorfamily=vapoursynth.GRAY)"
+        ".std.Expr('x', format=vapoursynth.GRAYS) for i in range(3)]"
+    )
+    to_rgb = ""
+    if rgb:
+        # G, B and R (vspipe's order of RGB planes) of the clip read_frames reads.
+        to_rgb = f"_rgb = _clip.resize.Bicubic({_yuv_to_rgbs(info)})\n"
+        planes = (
+            "[_rgb.std.ShufflePlanes(planes=i, colorfamily=vapoursynth.GRAY)"
+            f" for i in (1, 2, 0)] + {planes}"
+        )
+    lines = (
+        "\n# chaiNNer reads the planes' values as float32, stacked.\n"
+        "import vapoursynth\n"
+        f"_clip = vapoursynth.get_output({output}).clip\n"
+        f"{to_rgb}"
+        f"_planes = {planes}\n"
+        "vapoursynth.core.std.StackVertical("
+        "[p.std.AddBorders(right=_clip.width - p.width) for p in _planes]"
+        f").set_output({output})\n"
+    )
+    rows = (3 * height if rgb else 0) + height + 2 * chroma_height
+
+    def unpack(
+        stack: np.ndarray,
+    ) -> tuple[np.ndarray | None, np.ndarray, np.ndarray, np.ndarray]:
+        top = 3 * height if rgb else 0
+        frame = None
+        if rgb:
+            frame = _rgb_frame(stack[:top].reshape(3, height, width))
+        y = stack[top : top + height].copy()
+        top += height
+        u = stack[top : top + chroma_height, :chroma_width].copy()
+        top += chroma_height
+        v = stack[top : top + chroma_height, :chroma_width].copy()
+        return frame, y, u, v
+
+    stacked = _script_copy(script, lines, ".frames.vpy")
+    try:
+        yield from _vspipe_frames(
+            stacked, output, start, end, (rows, width), unpack, False, context
+        )
+    finally:
+        stacked.unlink(missing_ok=True)
 
 
 # The vsview of each preview key (a Preview Clips node), kept while its window is open.
