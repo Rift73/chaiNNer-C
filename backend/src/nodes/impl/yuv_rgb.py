@@ -27,6 +27,7 @@ from .colour_info import (
     Range,
     Transfer,
     chroma_size_for,
+    size_guesses,
     subsampling_from_sizes,
 )
 from .native_planes import bgr_to_yuv, yuv_to_bgr
@@ -70,7 +71,7 @@ def _rgb_to_yuv_matrix(matrix: Matrix) -> np.ndarray:
     )
 
 
-def _siting(
+def siting(
     location: ChromaLocation, subsampling: tuple[int, int]
 ) -> tuple[float, float, float, float]:
     """(horizontal scale, vertical scale, horizontal offset, vertical offset) of the
@@ -90,24 +91,13 @@ def _siting(
 def guess_colour_info(
     luma_size: tuple[int, int], chroma_size: tuple[int, int]
 ) -> ColourInfo:
-    """The guesses for untagged YUV planes of these sizes (mpv's, as video detection
-    makes them): BT.709 from 1280 wide or above 576 high, else BT.601 (BT.470 BG
-    primaries at 576 lines, SMPTE 170M at 480 or 486); limited range, left-sited
-    chroma, 8-bit."""
-    w, h = luma_size
-    sd = w < 1280 and h <= 576
-    pal = sd and h == 576
-    ntsc = sd and h in (480, 486)
+    """The guesses for untagged YUV planes of these sizes, video detection's
+    (colour_info.size_guesses): limited range, left-sited chroma, 8-bit."""
+    matrix, primaries = size_guesses(*luma_size)
     return ColourInfo(
-        matrix=Matrix.BT470BG if pal else Matrix.SMPTE170M if sd else Matrix.BT709,
+        matrix=matrix,
         transfer=Transfer.BT709,
-        primaries=(
-            Primaries.BT470BG
-            if pal
-            else Primaries.SMPTE170M
-            if ntsc
-            else Primaries.BT709
-        ),
+        primaries=primaries,
         range=Range.LIMITED,
         chroma_location=ChromaLocation.LEFT,
         bit_depth=8,
@@ -165,7 +155,7 @@ def planes_to_rgb(
     if subsampling == (0, 0):
         # zimg skips both axes of 4:4:4 chroma: the matrix step centres it.
         return yuv_to_bgr(y, u, v, to_rgb, 0.5)
-    scale_w, scale_h, offset_w, offset_h = _siting(chroma_location, subsampling)
+    scale_w, scale_h, offset_w, offset_h = siting(chroma_location, subsampling)
     u, v = (
         resample_plane_biased(
             plane, w, h, kernel, -offset_w, -offset_h, w * scale_w, h * scale_h, 0.5, 0
@@ -198,7 +188,7 @@ def rgb_to_planes(
         return bgr_to_yuv(img, to_yuv, 0.5)
     y, u, v = bgr_to_yuv(img, to_yuv, 0)
     chroma_w, chroma_h = chroma_size_for((w, h), subsampling)
-    scale_w, scale_h, offset_w, offset_h = _siting(chroma_location, subsampling)
+    scale_w, scale_h, offset_w, offset_h = siting(chroma_location, subsampling)
     u, v = (
         resample_plane_biased(
             plane,

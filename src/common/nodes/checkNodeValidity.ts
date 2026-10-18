@@ -1,7 +1,8 @@
+import { isSameType } from '@chainner/navi';
 import { Input, InputData, InputId, NodeSchema } from '../common-types';
 import { FunctionInstance } from '../types/function';
 import { generateAssignmentErrorTrace, printErrorTrace, simpleError } from '../types/mismatch';
-import { withoutNull } from '../types/util';
+import { nullType, withoutNull } from '../types/util';
 import { assertNever } from '../util';
 import { VALID, Validity, invalid } from '../Validity';
 import { testInputCondition } from './condition';
@@ -90,6 +91,17 @@ export const checkNodeValidity = ({
 
     // Type check
     if (functionInstance) {
+        // An output typed `null` does not exist under its node's current settings (canConnect).
+        for (const inputId of connectedInputs) {
+            const assigned = functionInstance.inputs.get(inputId);
+            if (assigned !== undefined && isSameType(assigned, nullType)) {
+                const input = schema.inputs.find((i) => i.id === inputId)!;
+                return invalid(
+                    `Input ${input.label} is connected to an output that is not available with its node's current settings.`
+                );
+            }
+        }
+
         for (const { inputId, assignedType, inputType } of functionInstance.inputErrors) {
             const input = schema.inputs.find((i) => i.id === inputId)!;
 

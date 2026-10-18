@@ -19,16 +19,38 @@ import pytest
 pytest.importorskip("nodes.impl._chainner_graph")
 
 from api import NodeContext
+from nodes.impl.colour_info import (
+    ChromaLocation,
+    Matrix,
+    Primaries,
+    Range,
+    Transfer,
+)
 from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
 from nodes.impl.video import VideoLoader
 from packages.chaiNNer_standard.image.video_frames.save_video import (
     AudioSettings,
+    BitDepth,
     SimpleVideoFormat,
     Simplicity,
+    SitingCorrection,
     VideoEncoder,
     VideoFormat,
+    VideoInputMode,
     VideoPreset,
     save_video_node,
+)
+
+# No Colour Info, every colour choice Auto, Bit Depth Auto, siting correction Auto.
+RGB_AUTO = (
+    None,
+    Matrix.AUTO,
+    Transfer.AUTO,
+    Primaries.AUTO,
+    Range.AUTO,
+    ChromaLocation.AUTO,
+    BitDepth.AUTO,
+    SitingCorrection.AUTO,
 )
 
 # The FFmpeg the backend downloads to its storage on first use (FFMpegEnv.get_integrated).
@@ -97,6 +119,10 @@ def save(
         None,
         tmp_path,
         "out",
+        VideoInputMode.RGB,
+        None,
+        None,
+        None,
         Simplicity.ADVANCED,
         container,
         encoder,
@@ -108,9 +134,10 @@ def save(
         2,
         None,
         AudioSettings.AUTO,
+        *RGB_AUTO,
     )
     for _ in range(2):
-        collector.on_iterate(image)
+        collector.on_iterate((image, None, None, None))  # Image Sequence, Y, U, V
     collector.on_complete()
     return tmp_path / f"out.{container.ext}"
 

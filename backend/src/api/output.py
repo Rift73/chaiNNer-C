@@ -28,6 +28,7 @@ class BaseOutput(Generic[T]):
         self.kind: OutputKind = kind
         self.has_handle: bool = has_handle
         self.passthrough_of: InputId | None = None
+        self.nullable: bool = False
 
         self.associated_type: Any = associated_type
 
@@ -68,6 +69,17 @@ class BaseOutput(Generic[T]):
         self.passthrough_of = InputId(input_id)
         return self
 
+    def null_unless(self, input_id: InputId | int, variants: navi.ExpressionJson):
+        """Makes this output exist only while the dropdown `input_id` has one of
+        `variants` (its options' types, e.g. "Mode::Planes | Mode::Both"). Under the other
+        options its type is `null`, which the frontend does not connect, and the node
+        returns None for it."""
+        self.output_type = navi.match(
+            f"Input{input_id}", (variants, None, self.output_type), default="null"
+        )
+        self.nullable = True
+        return self
+
     def get_broadcast_data(self, _value: T) -> BroadcastData | None:
         return None
 
@@ -77,3 +89,9 @@ class BaseOutput(Generic[T]):
     def enforce(self, value: object) -> T:
         assert value is not None
         return value  # type: ignore
+
+    # This is the method that should be called by the processing code
+    def enforce_(self, value: object) -> T | None:
+        if self.nullable and value is None:
+            return None
+        return self.enforce(value)

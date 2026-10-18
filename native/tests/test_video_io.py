@@ -36,7 +36,8 @@ import ffmpeg
 import numpy as np
 import pytest
 
-from nodes.impl.image_utils import to_uint8
+from nodes.impl import colour_info
+from nodes.impl.image_utils import to_uint8, to_uint16
 from nodes.impl.native_graph import graph
 from nodes.utils.utils import get_h_w_c, split_file_path
 
@@ -513,6 +514,7 @@ class Writer:
         params.setdefault("color_primaries", primaries)
         params.setdefault("color_trc", "bt709" if family == "bt2020" else family)
     params.setdefault("color_range", "tv")
+    params.setdefault("chroma_sample_location", "left")
     matrices = {
         "bt709": "bt709",
         "smpte170m": "smpte170m",
@@ -525,12 +527,24 @@ class Writer:
         "bt2020_cl": "bt2020",
     }
     matrix, colour_range = str(params.get("colorspace", "")), str(params["color_range"])
+    positions = {
+        "left": (0, 128),
+        "center": (128, 128),
+        "topleft": (0, 0),
+        "top": (128, 0),
+        "bottomleft": (0, 256),
+        "bottom": (128, 256),
+    }
+    location = str(params.get("chroma_sample_location", ""))
     filters = [params.pop(key) for key in ("vf", "filter:v", "filter") if key in params]
     scale = "scale="
     if matrix in matrices:
         scale += f"out_color_matrix={matrices[matrix]}:"
     if colour_range in ("tv", "mpeg", "pc", "jpeg"):
         scale += f"out_range={colour_range}:"
+    if location in positions:
+        scale += f"out_h_chr_pos={positions[location][0]}:"
+        scale += f"out_v_chr_pos={positions[location][1]}:"
     params["vf"] = ",".join([*filters, scale + "flags=accurate_rnd+full_chroma_int"])
     return params
 
@@ -551,6 +565,48 @@ class Writer:
                             height,
                         )
                     )""",
+    ),
+]
+
+
+# (l) RGB frames are piped as gbrp16le (16-bit G, B and R planes), so FFmpeg's YUV
+# conversion keeps more than 8 bits of the float image; GIF and RGB output of up to 8
+# bits keep bgr24, which stays exact there.
+INTENDED_RGB16 = [
+    (
+        """@dataclass
+class Writer:
+""",
+        """def rgb_pipe(container, params):  # (l)
+    fmt = str(params.get("pix_fmt", "")) if hasattr(params, "get") else None
+    output = None if fmt is None else pixel_layout(fmt)
+    if container == VideoFormat.GIF or (
+        output is not None and output.kind == "rgb" and output.bit_depth <= 8
+    ):
+        return "bgr24"
+    return "gbrp16le"
+
+
+@dataclass
+class Writer:
+""",
+    ),
+    (
+        """                        pix_fmt="bgr24",
+""",
+        """                        pix_fmt=rgb_pipe(self.container, self.output_params),
+""",
+    ),
+    (
+        """        out_frame = to_uint8(img, normalized=True)
+""",
+        """        if rgb_pipe(self.container, self.output_params) == "bgr24":
+            out_frame = to_uint8(img, normalized=True)
+        else:
+            out_frame = np.ascontiguousarray(
+                to_uint16(img, normalized=True).transpose(2, 0, 1)[[1, 0, 2]]
+            )
+""",
     ),
 ]
 
@@ -618,6 +674,60 @@ class Writer:
 ]
 
 
+COLOUR_NAMES = (
+    "MATRIX_LABELS SWSCALE_CHROMA_POSITION VIDEO_MODE_LABELS ChromaLocation ColourInfo"
+    " Matrix PixelLayout Primaries Range Transfer VideoMode code_to_float"
+    " detect_colour_info float_to_code high_definition option_value pixel_layout"
+    " subsampling_from_sizes"
+).split()
+
+
+def link_loader(g, vg):
+    """Load Video's namespace with the video module's names it imports."""
+    for name in ("VideoLoader", "VideoMetadata", "ReadSettings"):
+        if name in vg:
+            g[name] = vg[name]
+
+
+def call_load_video(kind, g, context, path, use_limit, limit):
+    """Load Video's node as the installed node is called. This repository's node is
+    given Mode RGB, RGB Precision "8-bit (as before)" and every colour choice Auto,
+    which read as the installed node did; its extra Colour Info outputs are dropped."""
+    if kind == "installed":
+        return g["load_video_node"](context, path, use_limit, limit)
+    auto = (
+        colour_info.Matrix.AUTO,
+        colour_info.Transfer.AUTO,
+        colour_info.Primaries.AUTO,
+        colour_info.Range.AUTO,
+        colour_info.ChromaLocation.AUTO,
+    )
+    outputs = g["load_video_node"](
+        context,
+        path,
+        use_limit,
+        limit,
+        colour_info.VideoMode.RGB,
+        g["RgbPrecision"].EIGHT_BIT,
+        *auto,
+    )
+    return outputs[:5]
+
+
+def installed_item(item):
+    """An item of this repository's Load Video as the installed node yields it: its
+    Y, U and V (None in RGB mode) dropped."""
+    if isinstance(item, tuple) and len(item) == 5:
+        assert item[2:] == (None, None, None)
+        return item[:2]
+    return item
+
+
+def installed_metadata(metadata):
+    """This repository's LoadedVideo wraps the installed node's VideoMetadata."""
+    return getattr(metadata, "metadata", metadata)
+
+
 def load(kind, component, env=None):
     rel = "nodes/impl/video.py" if component == "video" else NODE + component + ".py"
     path = (
@@ -649,6 +759,8 @@ def load(kind, component, env=None):
             "Literal": Literal,
             "get_h_w_c": get_h_w_c,
             "to_uint8": to_uint8,
+            "to_uint16": to_uint16,
+            "pixel_layout": colour_info.pixel_layout,
             "split_file_path": split_file_path,
             "Generator": API["Generator"],
             "Collector": API["Collector"],
@@ -660,12 +772,16 @@ def load(kind, component, env=None):
             ),
         }
     )
+    if kind.startswith("native"):
+        # The names this repository's video modules import from colour_info.py.
+        g.update({name: getattr(colour_info, name) for name in COLOUR_NAMES})
     text = path.read_text(encoding="utf-8")
     if kind == "intended" and component == "save_video":
         for frozen, corrected in [
             INTENDED_MUX,
             *INTENDED_COLOURS,
             *INTENDED_ENCODER_ERRORS,
+            *INTENDED_RGB16,
         ]:
             assert text.count(frozen) == 1
             text = text.replace(frozen, corrected)
@@ -746,26 +862,64 @@ def mock_os(env, exists=True):
     )
 
 
+def registration(path: Path, name: str) -> tuple[ast.FunctionDef, dict[str, ast.expr]]:
+    tree = ast.parse(path.read_text())
+    node = next(
+        x
+        for x in tree.body
+        if isinstance(x, ast.FunctionDef) and x.name == name + "_node"
+    )
+    (decorator,) = node.decorator_list
+    assert isinstance(decorator, ast.Call)
+    return node, {k.arg: k.value for k in decorator.keywords if k.arg is not None}
+
+
+def unwrapped(item: ast.expr) -> str:
+    """An input or output as the installed node registers it: without the groups, the
+    null_unless(...) or the make_optional() (its Mode) this repository puts around it."""
+    while isinstance(item, ast.Call):
+        if isinstance(item.func, ast.Attribute) and item.func.attr in (
+            "null_unless",
+            "make_optional",
+        ):
+            item = item.func.value
+        elif isinstance(item.func, ast.Call) and len(item.args) == 1:
+            item = item.args[0]
+        else:
+            break
+    return ast.dump(item)
+
+
 def test_reference_hashes_and_registration_contracts():
     for entry in json.loads((REFERENCE / "manifest.json").read_text())["files"]:
         assert (
             hashlib.sha256((REFERENCE / entry["snapshot"]).read_bytes()).hexdigest()
             == entry["sha256"]
         )
+    # Old chains keep working: the installed registration with inputs and outputs
+    # added (Load Video's Mode and planes, Save Video's), every installed one kept in
+    # order with its id, and the installed parameters in order.
+    appended = {"inputs", "outputs", "iterator_inputs", "iterator_outputs"}
     for name in ("load_video", "save_video"):
-        old = ast.parse((REFERENCE / "installed" / (NODE + name + ".py")).read_text())
-        new = ast.parse((ROOT / "backend/src" / (NODE + name + ".py")).read_text())
-        for tree in (old, new):
-            node = next(
-                x
-                for x in tree.body
-                if isinstance(x, ast.FunctionDef) and x.name == name + "_node"
-            )
-            node.body = [ast.Pass()]
-            if tree is old:
-                expected = ast.dump(node)
-            else:
-                assert ast.dump(node) == expected
+        old, old_keywords = registration(
+            REFERENCE / "installed" / (NODE + name + ".py"), name
+        )
+        new, new_keywords = registration(
+            ROOT / "backend/src" / (NODE + name + ".py"), name
+        )
+        for key in old_keywords.keys() | new_keywords.keys():
+            if key not in appended:
+                assert ast.dump(old_keywords[key]) == ast.dump(new_keywords[key]), key
+        for key in ("inputs", "outputs"):
+            old_items = old_keywords[key]
+            new_items = new_keywords[key]
+            assert isinstance(old_items, ast.List) and isinstance(new_items, ast.List)
+            remaining = iter([unwrapped(x) for x in new_items.elts])
+            for item in old_items.elts:
+                assert unwrapped(item) in remaining, (name, key, ast.unparse(item))
+        new_arguments = iter([ast.dump(a) for a in new.args.args])
+        for argument in old.args.args:
+            assert ast.dump(argument) in new_arguments, (name, argument.arg)
 
 
 PROBE_CASES = [
@@ -1304,6 +1458,21 @@ def node_args(g, context, directory, **changes):
         "audio": None,
         "audio_settings": g["AudioSettings"].AUTO,
     }
+    if "VideoInputMode" in g:
+        kwargs.update(
+            mode=g["VideoInputMode"].RGB,
+            _y=None,
+            _u=None,
+            _v=None,
+            colour_info=None,
+            matrix=colour_info.Matrix.AUTO,
+            transfer=colour_info.Transfer.AUTO,
+            primaries=colour_info.Primaries.AUTO,
+            range_=colour_info.Range.AUTO,
+            chroma_location=colour_info.ChromaLocation.AUTO,
+            bit_depth=g["BitDepth"].AUTO,
+            siting_correction=g["SitingCorrection"].AUTO,
+        )
     kwargs.update(changes)
     return kwargs
 
@@ -1338,7 +1507,13 @@ def test_additional_argument_policy(tmp_path, additional):
 
         def capture(**kwargs):
             captured.append(
-                snap({k: v for k, v in kwargs.items() if k != "ffmpeg_env"})
+                snap(
+                    {
+                        k: v
+                        for k, v in kwargs.items()
+                        if k not in ("ffmpeg_env", "settings")
+                    }
+                )
             )
             return original_writer(**kwargs)
 
@@ -1496,18 +1671,18 @@ def test_loader_node_index_limit_audio_and_supplier_reuse(use_limit, limit):
         env = FakeFFmpeg(chunks=[bytes([i] * 12) for i in range(3)])
         vg = load(kind, "video", env)
         g = load(kind, "load_video", env)
-        g["VideoLoader"], g["VideoMetadata"] = vg["VideoLoader"], vg["VideoMetadata"]
+        link_loader(g, vg)
         context = Context()
-        generated, directory, name, fps, audio = g["load_video_node"](
-            context, Path("folder/test.mkv"), use_limit, limit
+        generated, directory, name, fps, audio = call_load_video(
+            kind, g, context, Path("folder/test.mkv"), use_limit, limit
         )
-        first = list(generated.supplier())
-        second = list(generated.supplier())
+        first = [installed_item(x) for x in generated.supplier()]
+        second = [installed_item(x) for x in generated.supplier()]
         assert snap(first) == snap(second)
         results.append(
             (
                 generated.expected_length,
-                vars(generated.metadata),
+                vars(installed_metadata(generated.metadata)),
                 snap(first),
                 directory,
                 name,
@@ -1710,7 +1885,15 @@ def test_real_user_filter_options_reach_ffmpeg(tmp_path, container, key):
     finally:
         w._native_video_resource.abort()
     size = subprocess.run(
-        [FFPROBE, "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0"]
+        [
+            FFPROBE,
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+        ]
         + [w.save_path],
         capture_output=True,
         check=True,
@@ -1836,15 +2019,24 @@ def test_writer_duplicate_log_level_keyword_original_error():
         g = load(kind, "save_video", env)
         w = writer(g)
         w.output_params["loglevel"] = "quiet"
-        results.append((outcome(lambda w=w: w.start(2, 2)), env.events.copy()))
-    assert results[0] == results[1]
+        events = env.events
+        results.append((outcome(lambda w=w: w.start(2, 2)), events.copy()))
+    # (l) This repository pipes RGB as gbrp16le; the rest equals installed.
+    pipe = ("pix_fmt", "gbrp16le")
+    native = [
+        (*event[:2], tuple(("pix_fmt", "bgr24") if x == pipe else x for x in event[2]))
+        if event[0] == "input"
+        else event
+        for event in results[1][1]
+    ]
+    assert results[0] == (results[1][0], native)
 
 
 def test_reader_supplier_creation_remains_lazy():
     env = FakeFFmpeg(chunks=[bytes(12)])
     vg = load("native", "video", env)
     g = load("native", "load_video", env)
-    g["VideoLoader"], g["VideoMetadata"] = vg["VideoLoader"], vg["VideoMetadata"]
+    link_loader(g, vg)
     calls = []
     original = vg["VideoLoader"].stream_frames
 
@@ -1854,7 +2046,7 @@ def test_reader_supplier_creation_remains_lazy():
 
     vg["VideoLoader"].stream_frames = tracked
     context = Context()
-    gen = g["load_video_node"](context, Path("x"), False, 1)[0]
+    gen = call_load_video("native", g, context, Path("x"), False, 1)[0]
     unused = gen.supplier()
     assert not calls
     unused.close()
@@ -1870,9 +2062,11 @@ def test_loader_declares_no_per_item_source_files():
     env = FakeFFmpeg(chunks=[bytes(12)])
     vg = load("native", "video", env)
     g = load("native", "load_video", env)
-    g["VideoLoader"], g["VideoMetadata"] = vg["VideoLoader"], vg["VideoMetadata"]
+    link_loader(g, vg)
     context = Context()
-    assert g["load_video_node"](context, Path("x"), False, 1)[0].source_paths == ()
+    assert (
+        call_load_video("native", g, context, Path("x"), False, 1)[0].source_paths == ()
+    )
     context.cleanup()
 
 
@@ -1900,7 +2094,7 @@ def test_real_cpu_all_exposed_encoder_container_pairs(tmp_path, container, encod
         np.full((24, 32, 3), 0.5, np.float32),
     ]
     outputs = []
-    for kind in ("installed", "native"):
+    for kind in ("intended", "native"):
         directory = tmp_path / kind
         g = real_module(kind, "save_video")
         g["FFMpegEnv"] = types.SimpleNamespace(
@@ -2049,7 +2243,13 @@ def test_simple_node_overrides_and_gif_audio_suppression(tmp_path, simple):
 
         def capture(**kwargs):
             captured.append(
-                snap({k: v for k, v in kwargs.items() if k != "ffmpeg_env"})
+                snap(
+                    {
+                        k: v
+                        for k, v in kwargs.items()
+                        if k not in ("ffmpeg_env", "settings")
+                    }
+                )
             )
             return original(**kwargs)
 
@@ -2224,9 +2424,9 @@ def test_indexed_reader_reentrant_close_does_not_poison_iteration():
         env = FakeFFmpeg(chunks=[bytes(12), bytes([1] * 12)])
         vg = load(kind, "video", env)
         g = load(kind, "load_video", env)
-        g["VideoLoader"], g["VideoMetadata"] = vg["VideoLoader"], vg["VideoMetadata"]
+        link_loader(g, vg)
         context = Context()
-        it = g["load_video_node"](context, Path("x"), False, 1)[0].supplier()
+        it = call_load_video(kind, g, context, Path("x"), False, 1)[0].supplier()
         old_record = env.record
         reentrant = []
 
@@ -2237,7 +2437,7 @@ def test_indexed_reader_reentrant_close_does_not_poison_iteration():
             return old_record(name, *args)
 
         env.record = record
-        result = (snap(list(it)), reentrant)
+        result = (snap([installed_item(x) for x in it]), reentrant)
         context.cleanup()
         return result
 
@@ -2273,11 +2473,8 @@ def test_reader_cleanup_reentry_remains_running(indexed, phase, event):
         context = Context()
         if indexed:
             g = load(kind, "load_video", env)
-            g["VideoLoader"], g["VideoMetadata"] = (
-                vg["VideoLoader"],
-                vg["VideoMetadata"],
-            )
-            it = g["load_video_node"](context, Path("x"), phase == "limit", 1)[
+            link_loader(g, vg)
+            it = call_load_video(kind, g, context, Path("x"), phase == "limit", 1)[
                 0
             ].supplier()
         else:
@@ -2563,8 +2760,8 @@ def test_stalled_pipe_cancellation_covers_io_start_after_first_cancel(monkeypatc
 
 
 def test_prepared_frames_write_todays_payload():
-    # A prepared uint8 frame (SP3-P9) is only the payload: start-up on the first frame
-    # and every pipe write are today's, for a first and a later frame.
+    # A prepared frame (SP3-P9) is only the payload: start-up on the first frame and
+    # every pipe write are today's, for a first and a later frame.
     from nodes.impl.item_window import Prepared
 
     frames = [
@@ -2576,14 +2773,13 @@ def test_prepared_frames_write_todays_payload():
         env = FakeFFmpeg()
         g = load("native", "save_video", env)
         converted = []
-        g["to_uint8"] = lambda value, **options: (
-            converted.append(value) or to_uint8(value, **options)
-        )
+        payload = g["rgb_payload"]
+        g["rgb_payload"] = lambda value: converted.append(value) or payload(value)
         w = writer(g)
         holders = []
         for frame in frames:
             if prepared:
-                holders.append(Prepared(to_uint8(frame, normalized=True)))
+                holders.append(Prepared(payload(frame)))
                 w.write_frame(frame, holders[-1])
             else:
                 w.write_frame(frame)
@@ -2611,13 +2807,14 @@ def test_prepared_collector_commit_writes_as_on_iterate(tmp_path):
         collector = g["save_video_node"](**node_args(g, Context(), tmp_path))
         assert isinstance(collector, g["VideoCollector"])
         assert isinstance(collector.writer, g["Writer"])
-        holder = Prepared(to_uint8(frame, normalized=True))
+        holder = Prepared(g["rgb_payload"](frame))
+        item = (frame, None, None, None)  # Image Sequence, Y, U, V
         with pytest.raises(TypeError):
-            collector.on_iterate(frame, holder)  # one argument, as Collector declares
+            collector.on_iterate(item, holder)  # one argument, as Collector declares
         if prepared:
-            g["commit_video_frame"](collector, [frame], holder)
+            g["commit_video_frame"](collector, list(item), holder)
         else:
-            collector.on_iterate(frame)
+            collector.on_iterate(item)
         results.append(env.events.copy())
         collector.on_complete()
         assert holder.used == prepared

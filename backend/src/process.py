@@ -155,7 +155,7 @@ def enforce_output(raw_output: object, node: NodeData) -> RegularOutput:
             f"Expected all {node.name} nodes to have {l} output(s) but found {len(output)}."
         )
     for i, o in enumerate(node.outputs):
-        output[i] = o.enforce(output[i])
+        output[i] = o.enforce_(output[i])
     return RegularOutput(output)
 
 
@@ -179,7 +179,7 @@ def enforce_generator_output(raw_output: object, node: NodeData) -> GeneratorOut
     assert len(rest) == l - len(generator_output.outputs)
     for i, o in enumerate(node.outputs):
         if o.id not in generator_output.outputs:
-            partial[i] = o.enforce(rest.pop(0))
+            partial[i] = o.enforce_(rest.pop(0))
     return GeneratorOutput(
         info=generator_output, generator=iterator, partial_output=partial
     )
@@ -1284,7 +1284,7 @@ class Executor:
         output: Output = partial_output.copy()
         for index, o in enumerate(node.data.outputs):
             if o.id in iterable_output.outputs:
-                output[index] = o.enforce(values_list.pop(0))
+                output[index] = o.enforce_(values_list.pop(0))
         return output
 
     def __describe(

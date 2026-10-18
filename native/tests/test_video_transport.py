@@ -36,6 +36,8 @@ def make_writer(callback):
     env = FakeFFmpeg()
     module = load("native", "save_video", env)
     result = writer(module, out=types.SimpleNamespace(stdin=Sink(callback)))
+    # 8-bit RGB output: frames are piped as bgr24, to_uint8's bytes.
+    result.output_params["pix_fmt"] = "bgr0"
     return module, result
 
 

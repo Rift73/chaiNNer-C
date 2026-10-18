@@ -12,12 +12,16 @@ ColourInfo."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from enum import Enum
+from typing import TypeVar
 
 import numpy as np
 
 from . import native_planes
+
+E = TypeVar("E", bound=Enum)
 
 
 class Matrix(Enum):
@@ -81,6 +85,20 @@ class ChromaLocation(Enum):
     BOTTOM_LEFT = "bottomleft"
     BOTTOM = "bottom"
 
+
+class VideoMode(Enum):
+    """What a video node reads or writes: RGB images, planes, or both."""
+
+    RGB = "rgb"
+    PLANES = "planes"
+    BOTH = "both"
+
+
+VIDEO_MODE_LABELS = {
+    VideoMode.RGB: "RGB",
+    VideoMode.PLANES: "Planes",
+    VideoMode.BOTH: "Both",
+}
 
 MATRIX_LABELS = {
     Matrix.AUTO: "Auto",
@@ -151,6 +169,20 @@ SWSCALE_CHROMA_POSITION = {
     ChromaLocation.BOTTOM_LEFT: (0, 256),
     ChromaLocation.BOTTOM: (128, 256),
 }
+
+_OPTION_VALUES: dict[Enum, str] = {
+    Matrix.RGB: "rgb",
+    Transfer.BT470M: "gamma22",
+    Transfer.BT470BG: "gamma28",
+}
+
+
+def option_value(value: Enum) -> str:
+    """The value FFmpeg's -colorspace, -color_trc, -color_primaries, -color_range and
+    -chroma_sample_location take for a ColourInfo field: ffprobe's name, except for
+    the three values whose option names differ."""
+    return _OPTION_VALUES.get(value, str(value.value))
+
 
 ORIGINS = ("file", "guessed", "set")
 FIELDS = ("matrix", "transfer", "primaries", "range", "chroma_location")
@@ -343,3 +375,290 @@ def _numpy_float_to_code(
     codes = np.rint(values * np.float32(scale) + np.float32(offset))
     np.clip(codes, 0, (1 << bit_depth) - 1, out=codes)
     return codes.astype(np.uint8 if bit_depth <= 8 else np.uint16)
+
+
+@dataclass(frozen=True)
+class PixelLayout:
+    """A pixel format's coding: `kind` "yuv", "gray" or "rgb" ("other" for formats
+    chaiNNer does not know), its bit depth and chroma subsampling (log2 width, height),
+    `planar` the planar format its planes are read in (None when they cannot be: float
+    and unknown formats) and `jpeg` for FFmpeg's full-range yuvj formats."""
+
+    kind: str
+    bit_depth: int
+    subsampling: tuple[int, int]
+    planar: str | None
+    jpeg: bool = False
+
+
+_SUBSAMPLING = {
+    "444": (0, 0),
+    "422": (1, 0),
+    "420": (1, 1),
+    "440": (0, 1),
+    "411": (2, 0),
+    "410": (2, 2),
+}
+# Semi-planar and packed YUV formats (without their le/be suffix): their layout and
+# bit depth; their planes are read in the planar format of the same layout and depth.
+_INTERLEAVED_YUV = {
+    "nv12": ("420", 8),
+    "nv21": ("420", 8),
+    "nv16": ("422", 8),
+    "nv20": ("422", 10),
+    "nv24": ("444", 8),
+    "nv42": ("444", 8),
+    "p010": ("420", 10),
+    "p012": ("420", 12),
+    "p016": ("420", 16),
+    "p210": ("422", 10),
+    "p212": ("422", 12),
+    "p216": ("422", 16),
+    "p410": ("444", 10),
+    "p412": ("444", 12),
+    "p416": ("444", 16),
+    "yuyv422": ("422", 8),
+    "uyvy422": ("422", 8),
+    "yvyu422": ("422", 8),
+    "y210": ("422", 10),
+    "y212": ("422", 12),
+    "xv30": ("444", 10),
+    "xv36": ("444", 12),
+    "vuya": ("444", 8),
+    "vuyx": ("444", 8),
+    "ayuv64": ("444", 16),
+    "uyyvyy411": ("411", 8),
+}
+
+
+def _planar_yuv(layout: str, bit_depth: int, jpeg: bool = False) -> str:
+    depth = f"{bit_depth}le" if bit_depth > 8 else ""
+    return f"yuv{'j' if jpeg else ''}{layout}p{depth}"
+
+
+def pixel_layout(pix_fmt: str) -> PixelLayout:
+    """The coding of an FFmpeg pixel format (ffprobe's pix_fmt)."""
+    planar = re.fullmatch(r"yuva?(j?)(4[0-4][0-4])p(\d*)(le|be)?", pix_fmt)
+    if planar is not None and planar[2] in _SUBSAMPLING:
+        jpeg, layout = planar[1] == "j", planar[2]
+        bit_depth = int(planar[3] or 8)
+        return PixelLayout(
+            "yuv",
+            bit_depth,
+            _SUBSAMPLING[layout],
+            _planar_yuv(layout, bit_depth, jpeg),
+            jpeg,
+        )
+    base = re.sub(r"(le|be)$", "", pix_fmt)
+    if base in _INTERLEAVED_YUV:
+        layout, bit_depth = _INTERLEAVED_YUV[base]
+        return PixelLayout(
+            "yuv", bit_depth, _SUBSAMPLING[layout], _planar_yuv(layout, bit_depth)
+        )
+    gray = re.fullmatch(r"(?:gray|ya)(\d*)(f32)?", base)
+    if gray is not None:
+        if gray[2]:
+            return PixelLayout("gray", 16, (0, 0), None)
+        bit_depth = int(gray[1] or 8)
+        planar_gray = "gray" if bit_depth == 8 else f"gray{bit_depth}le"
+        return PixelLayout("gray", bit_depth, (0, 0), planar_gray)
+    if re.match(r"(gbr|rgb|bgr|argb|abgr|0rgb|0bgr|x2rgb|x2bgr|pal8)", base):
+        bit_depth = 8
+        if "f32" in base or "f16" in base:
+            bit_depth = 16
+        elif base.startswith("gbr") and re.search(r"\d+$", base):
+            bit_depth = int(re.findall(r"\d+$", base)[0])
+        elif base.startswith(("rgb48", "bgr48", "rgba64", "bgra64")):
+            bit_depth = 16
+        elif base.startswith(("x2rgb10", "x2bgr10")):
+            bit_depth = 10
+        return PixelLayout("rgb", bit_depth, (0, 0), None)
+    return PixelLayout("other", 8, (0, 0), None)
+
+
+def high_definition(width: int, height: int) -> bool:
+    """mpv's guess for untagged video: HD (BT.709) when at least 1280 wide or taller
+    than 576 lines, else SD (BT.601)."""
+    return width >= 1280 or height > 576
+
+
+def size_guesses(width: int, height: int) -> tuple[Matrix, Primaries]:
+    """mpv's and libplacebo's matrix and primaries for untagged YUV of a stored size:
+    BT.709 when HD, else BT.601 (PAL's at 576 lines, NTSC's otherwise), and primaries
+    by height (576 lines PAL, 480 or 486 NTSC, else BT.709)."""
+    if high_definition(width, height):
+        return Matrix.BT709, Primaries.BT709
+    if height == 576:
+        return Matrix.BT470BG, Primaries.BT470BG
+    if height in (480, 486):
+        return Matrix.SMPTE170M, Primaries.SMPTE170M
+    return Matrix.SMPTE170M, Primaries.BT709
+
+
+_UNTAGGED = (None, "", "unknown", "unspecified", "reserved")
+FIELD_INPUTS = {
+    "matrix": "Matrix",
+    "transfer": "Transfer",
+    "primaries": "Primaries",
+    "range": "Range",
+    "chroma_location": "Chroma Siting",
+}
+
+
+def _fraction(value: object) -> float | None:
+    if not isinstance(value, str):
+        return None
+    numerator, _, denominator = value.partition("/")
+    try:
+        return int(numerator) / int(denominator or 1)
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def _hdr_info(side_data: list[dict[str, object]]) -> HdrInfo | None:
+    """HDR10 static metadata from ffprobe's side_data_list; the mastering display as
+    FFmpeg and x265 write it, chromaticities in 1/50000 and luminance in 1/10000 cd/m2."""
+    mastering: str | None = None
+    max_cll: int | None = None
+    max_fall: int | None = None
+    present = False
+    for entry in side_data:
+        kind = entry.get("side_data_type")
+        if kind == "Mastering display metadata":
+            present = True
+            names = ("green", "blue", "red", "white_point")
+            coords = [
+                _fraction(entry.get(f"{n}_{axis}")) for n in names for axis in "xy"
+            ]
+            luminance = [_fraction(entry.get(f"{k}_luminance")) for k in ("max", "min")]
+            c = [round(v * 50000) for v in coords if v is not None]
+            lum = [round(v * 10000) for v in luminance if v is not None]
+            if len(c) == 8 and len(lum) == 2:
+                mastering = (
+                    f"G({c[0]},{c[1]})B({c[2]},{c[3]})R({c[4]},{c[5]})"
+                    f"WP({c[6]},{c[7]})L({lum[0]},{lum[1]})"
+                )
+        elif kind == "Content light level metadata":
+            present = True
+            content, average = entry.get("max_content"), entry.get("max_average")
+            max_cll = int(content) if isinstance(content, (int, str)) else None
+            max_fall = int(average) if isinstance(average, (int, str)) else None
+    if not present:
+        return None
+    return HdrInfo(mastering_display=mastering, max_cll=max_cll, max_fall=max_fall)
+
+
+def _tag(
+    stream: dict[str, object], key: str, name: str, enum: type[E], warnings: list[str]
+) -> E | None:
+    value = stream.get(key)
+    if value in _UNTAGGED:
+        return None
+    text = {"bt2020_ncl": "bt2020nc", "bt2020_cl": "bt2020c"}.get(
+        str(value), str(value)
+    )
+    for member in enum:
+        if member.value == text and member.value != "auto":
+            return member
+    warnings.append(
+        f"The video's {name.replace('_', ' ')} tag {text} is not one chaiNNer converts,"
+        f" so it is guessed; set {FIELD_INPUTS[name]} to choose it."
+    )
+    return None
+
+
+def detect_colour_info(stream: dict[str, object]) -> tuple[ColourInfo, list[str]]:
+    """The ColourInfo of a video stream from its ffprobe entry (codec_name, pix_fmt,
+    width, height, the colour tags and side_data_list), and warnings for the node to log
+    about tags chaiNNer cannot use and implausible combinations.
+
+    Each field takes the stream's tag (origin "file"), else is guessed as mpv and
+    libplacebo guess (origin "guessed"): HDR side data without a transfer tag means PQ,
+    without a primaries tag BT.2020; BT.2020 primaries or matrix, or a PQ or HLG
+    transfer, mean a BT.2020 non-constant matrix and BT.2020 primaries; RGB formats are
+    identity-coded, full range, BT.709 primaries and sRGB; YUV is BT.709 when HD and
+    BT.601 otherwise (primaries by height: 576 lines PAL, 480 or 486 NTSC, else BT.709)
+    with BT.709's transfer and limited range except the yuvj formats; gray is full range,
+    as libswscale reads it; chroma is centre-sited at full range and for MJPEG and
+    MPEG-1, else left-sited."""
+    layout = pixel_layout(str(stream.get("pix_fmt") or ""))
+    width, height = int(str(stream["width"])), int(str(stream["height"]))
+    codec = str(stream.get("codec_name") or "")
+    warnings: list[str] = []
+    matrix = _tag(stream, "color_space", "matrix", Matrix, warnings)
+    transfer = _tag(stream, "color_transfer", "transfer", Transfer, warnings)
+    primaries = _tag(stream, "color_primaries", "primaries", Primaries, warnings)
+    range_ = _tag(stream, "color_range", "range", Range, warnings)
+    chroma_location = _tag(
+        stream, "chroma_location", "chroma_location", ChromaLocation, warnings
+    )
+    tagged = (matrix, transfer, primaries, range_, chroma_location)
+    origin: dict[str, str] = dict.fromkeys(FIELDS, "guessed")
+    origin.update({k: "file" for k, v in zip(FIELDS, tagged) if v is not None})
+
+    side_data = stream.get("side_data_list")
+    hdr = _hdr_info(side_data if isinstance(side_data, list) else [])
+    if hdr is not None:
+        transfer = transfer or Transfer.PQ
+        primaries = primaries or Primaries.BT2020
+    if (
+        primaries is Primaries.BT2020
+        or matrix in (Matrix.BT2020_NCL, Matrix.BT2020_CL)
+        or transfer in (Transfer.PQ, Transfer.HLG)
+    ):
+        matrix = matrix or Matrix.BT2020_NCL
+        primaries = primaries or Primaries.BT2020
+    if layout.kind == "rgb":
+        matrix = matrix or Matrix.RGB
+        range_ = range_ or Range.FULL
+        primaries = primaries or Primaries.BT709
+        transfer = transfer or Transfer.SRGB
+
+    hd = high_definition(width, height)
+    guessed_matrix, guessed_primaries = size_guesses(width, height)
+    matrix = matrix or guessed_matrix
+    primaries = primaries or guessed_primaries
+    transfer = transfer or Transfer.BT709
+    if range_ is None:
+        range_ = Range.FULL if layout.jpeg or layout.kind == "gray" else Range.LIMITED
+    if chroma_location is None:
+        centred = range_ is Range.FULL or codec in ("mjpeg", "mpeg1video")
+        chroma_location = ChromaLocation.CENTER if centred else ChromaLocation.LEFT
+
+    if transfer in (Transfer.PQ, Transfer.HLG) and layout.bit_depth <= 8:
+        warnings.append(
+            f"The video's transfer is {TRANSFER_LABELS[transfer]} at"
+            f" {layout.bit_depth} bits, which HDR video never is; if its colours look"
+            " wrong, set Transfer."
+        )
+    for name, value in (("matrix", matrix), ("primaries", primaries)):
+        if value in (Primaries.BT2020, Matrix.BT2020_NCL, Matrix.BT2020_CL) and not hd:
+            warnings.append(
+                f"The video's {name} is BT.2020 at {width}x{height}, which SD video"
+                f" rarely is; if its colours look wrong, set {FIELD_INPUTS[name]}."
+            )
+        if (
+            value in (Primaries.BT709, Matrix.BT709)
+            and origin[name] == "file"
+            and codec == "mpeg2video"
+            and height == 576
+        ):
+            warnings.append(
+                f"The video is 576-line MPEG-2 tagged with the BT.709 {name}, which PAL"
+                f" video rarely is; if its colours look wrong, set {FIELD_INPUTS[name]}."
+            )
+
+    luma_size = (width, height)
+    info = ColourInfo(
+        matrix=matrix,
+        transfer=transfer,
+        primaries=primaries,
+        range=range_,
+        chroma_location=chroma_location,
+        bit_depth=layout.bit_depth,
+        luma_size=luma_size,
+        chroma_size=chroma_size_for(luma_size, layout.subsampling),
+        hdr=hdr,
+        origin=tuple(sorted(origin.items())),
+    )
+    return info, warnings

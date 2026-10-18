@@ -55,7 +55,7 @@ from api import (
     OutputId,
 )
 from chain.chain import Chain, Edge, EdgeSource, EdgeTarget
-from nodes.impl import item_window
+from nodes.impl import colour_info, item_window
 from nodes.impl.execution_scheduler import LOCKED_DEVICE_NODES
 from nodes.impl.item_window import (
     SERIAL_PRODUCER_VARIABLE,
@@ -74,6 +74,7 @@ from nodes.impl.item_window import (
 from nodes.properties.inputs import DirectoryInput, ImageInput, OrderEnum
 from nodes.properties.outputs import (
     AudioStreamOutput,
+    ColourInfoOutput,
     DirectoryOutput,
     FileNameOutput,
     ImageOutput,
@@ -1600,9 +1601,9 @@ def test_dependents_of_a_stored_error_meet_it_at_the_nesting_point(
     assert stripped(runs["3"].events) == stripped(runs["1"].events)
 
 
-# The 115 schema ids admitted by pure_cpu_dependency's per-node conditions, each
+# The 117 schema ids admitted by pure_cpu_dependency's per-node conditions, each
 # audited in native/reports/sp3/thread-safety-audit.md (SP3 Task 4; the locked device
-# node, 2026-10-08; Descale, 2026-10-16).
+# node, 2026-10-08; Descale, 2026-10-16; Planes to RGB and RGB to Planes, 2026-10-18).
 AUDITED_SPECULATION_IDS: frozenset[str] = frozenset(
     [
         f"chainner:image:{name}"
@@ -1617,8 +1618,9 @@ AUDITED_SPECULATION_IDS: frozenset[str] = frozenset(
         image_convolve image_metrics image_statistics inpaint invert lens_blur log2lin
         lut median_blur merge_channels merge_transparency metal_to_specular multiply
         normal_generator normalize_normal_map opacity pad palette_dither
-        palette_from_image pick_color pixelate premultiplied_alpha quantize_to_referece
-        remove_border resize resize_pixel_art resize_to_side rotate sharpen sharpen_hbf
+        palette_from_image pick_color pixelate planes_to_rgb premultiplied_alpha
+        quantize_to_referece remove_border resize resize_pixel_art resize_to_side
+        rgb_to_planes rotate sharpen sharpen_hbf
         shift specular_to_metal split_channels split_transparency stack
         strengthen_normals stretch_contrast text_as_image threshold threshold_adaptive
         z_stack
@@ -3458,10 +3460,17 @@ def load_video_pipeline(monkeypatch, tmp_path, window, frames):
     module.update(
         VideoLoader=video["VideoLoader"],
         VideoMetadata=video["VideoMetadata"],
+        ReadSettings=video["ReadSettings"],
         Generator=Generator,  # the executor's own
     )
     chain = pipeline.chain = Chain()
-    load = make_node("g0", "generator", module["load_video_node"], 3, 6, iterator=True)
+    load = make_node("g0", "generator", module["load_video_node"], 10, 11, iterator=True)
+    planes = [
+        ImageOutput(label, channels=1, assume_normalized=True).null_unless(
+            3, "VideoMode::Planes | VideoMode::Both"
+        )
+        for label in "YUV"
+    ]
     generator_outputs(
         load,
         [
@@ -3471,11 +3480,24 @@ def load_video_pipeline(monkeypatch, tmp_path, window, frames):
             FileNameOutput("Name", of_input=0),
             NumberOutput("FPS", output_type="0.."),
             AudioStreamOutput(),
+            *planes,
+            ColourInfoOutput(),
+            TextOutput("Colour"),
         ],
-        [0, 1],
+        [0, 1, 6, 7, 8],
     )
     chain.add_node(load)
-    for index, value in enumerate((tmp_path / "video.mkv", False, 0)):
+    # Mode RGB, RGB Precision "8-bit (as before)" and every colour choice Auto.
+    settings = (
+        colour_info.VideoMode.RGB,
+        module["RgbPrecision"].EIGHT_BIT,
+        colour_info.Matrix.AUTO,
+        colour_info.Transfer.AUTO,
+        colour_info.Primaries.AUTO,
+        colour_info.Range.AUTO,
+        colour_info.ChromaLocation.AUTO,
+    )
+    for index, value in enumerate((tmp_path / "video.mkv", False, 0, *settings)):
         chain.inputs.set(NodeId("g0"), InputId(index), value)
 
     def sink(frame, index):

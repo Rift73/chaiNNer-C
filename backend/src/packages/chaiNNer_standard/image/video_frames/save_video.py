@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # `x as x` imports: the native mirror reads these names in native/src/video_io.cpp
 import os as os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from subprocess import Popen
@@ -13,22 +13,41 @@ import numpy as np
 from sanic.log import logger as logger
 
 from api import Collector, IteratorInputInfo, KeyInfo, NodeContext
-from nodes.groups import Condition, if_enum_group, if_group
+from nodes.groups import Condition, if_enum_group, if_group, required
+from nodes.impl.colour_info import (
+    MATRIX_LABELS,
+    SWSCALE_CHROMA_POSITION,
+    ChromaLocation,
+    ColourInfo,
+    Matrix,
+    Primaries,
+    Range,
+    Transfer,
+    float_to_code,
+    high_definition,
+    option_value,
+    pixel_layout,
+    subsampling_from_sizes,
+)
 from nodes.impl.ffmpeg import FFMpegEnv
-from nodes.impl.image_utils import to_uint8
+from nodes.impl.image_utils import to_uint8, to_uint16
 from nodes.impl.item_window import Prepared, register_phases
 from nodes.impl.native_graph import graph
+from nodes.impl.plane_resample import Kernel, resample_plane
+from nodes.impl.yuv_rgb import guess_colour_info, resolve_colour_info, siting
 from nodes.properties.inputs import (
+    ColourInfoInput,
     DirectoryInput,
     EnumInput,
     ImageInput,
     RelativePathInput,
     SliderInput,
     TextInput,
+    colour_override_inputs,
 )
 from nodes.properties.inputs.generic_inputs import AudioStreamInput
 from nodes.properties.inputs.numeric_inputs import NumberInput
-from nodes.utils.utils import get_h_w_c as get_h_w_c
+from nodes.utils.utils import get_h_w_c
 
 from .. import video_frames_group
 
@@ -60,6 +79,32 @@ class VideoEncoder(Enum):
     def formats(self) -> tuple[VideoFormat, ...]:
         return graph().video_encoder_formats(globals(), self)
 
+    @property
+    def pixel_formats(self) -> tuple[str, ...]:
+        """The YUV and RGB pixel formats the encoder takes in chaiNNer's FFmpeg 5.1.2
+        (ffmpeg -h encoder=...), of those Save Video writes."""
+        depths = {
+            VideoEncoder.H264: ("", "10le"),
+            VideoEncoder.H265: ("", "10le", "12le"),
+            VideoEncoder.VP9: ("", "10le", "12le"),
+            VideoEncoder.FFV1: ("", "9le", "10le", "12le", "14le", "16le"),
+        }[self]
+        layouts = ("420", "422", "444")
+        formats = [f"yuv{layout}p{depth}" for layout in layouts for depth in depths]
+        if self is not VideoEncoder.H264:
+            formats += [f"gbrp{depth}" for depth in depths]
+        if self is VideoEncoder.FFV1:
+            formats.remove("gbrp")  # FFV1 takes 8-bit RGB as bgr0 only
+        return tuple(formats)
+
+    @property
+    def auto_depth(self) -> int | None:
+        """The most bits Bit Depth Auto gives the encoder: what players commonly
+        decode (H.264 8, H.265 and VP9 10); FFV1 keeps the source's."""
+        return {VideoEncoder.H264: 8, VideoEncoder.H265: 10, VideoEncoder.VP9: 10}.get(
+            self
+        )
+
 
 class VideoPreset(Enum):
     ULTRA_FAST = "ultrafast"
@@ -90,6 +135,25 @@ class SimpleVideoFormat(Enum):
     GIF = "gif"
 
 
+class VideoInputMode(Enum):
+    RGB = "rgb"
+    PLANES = "planes"
+
+
+class BitDepth(Enum):
+    AUTO = "auto"
+    BITS_8 = "8"
+    BITS_10 = "10"
+    BITS_12 = "12"
+    BITS_16 = "16"
+
+
+class SitingCorrection(Enum):
+    AUTO = "auto"
+    OFF = "off"
+    ON = "on"
+
+
 def get_simple_format(
     simple_video_format: SimpleVideoFormat, quality: int
 ) -> tuple[VideoFormat, VideoEncoder, VideoPreset, int]:
@@ -104,6 +168,37 @@ PARAMETERS: dict[VideoEncoder, list[Literal["preset", "crf"]]] = {
 }
 
 
+@dataclass(frozen=True)
+class WriteSettings:
+    """Save Video's input mode, Colour Info input (None when unconnected), the five
+    colour choices (ColourInfo.with_choices's arguments), bit depth and chroma siting
+    correction."""
+
+    mode: VideoInputMode
+    colour: ColourInfo | None
+    choices: tuple[Matrix, Transfer, Primaries, Range, ChromaLocation]
+    bit_depth: BitDepth
+    siting: SitingCorrection
+
+
+def rgb_payload(img: np.ndarray) -> np.ndarray:
+    """An RGB frame as Save Video pipes it: gbrp16le, the G, B and R planes in 16 bits,
+    so FFmpeg's YUV conversion keeps more than 8 bits of the float image."""
+    return np.ascontiguousarray(
+        to_uint16(img, normalized=True).transpose(2, 0, 1)[[1, 0, 2]]
+    )
+
+
+def planar_format(colour: ColourInfo) -> str:
+    """The planar pixel format of planes coded as `colour` says (4:4:4, 4:2:2 or 4:2:0
+    YUV, or RGB for the identity matrix)."""
+    depth = "" if colour.bit_depth == 8 else f"{colour.bit_depth}le"
+    if colour.matrix is Matrix.RGB:
+        return f"gbrp{depth}"
+    layout = {(0, 0): "444", (1, 0): "422", (1, 1): "420"}[colour.subsampling]
+    return f"yuv{layout}p{depth}"
+
+
 @dataclass
 class Writer:
     container: VideoFormat
@@ -116,21 +211,372 @@ class Writer:
     global_params: list[str]
     ffmpeg_env: FFMpegEnv
     out: Popen | None = None
+    # Save Video's colour settings; None writes RGB as without them (Auto, 8-bit).
+    settings: WriteSettings | None = None
+    # In Planes mode, how the planes are coded (from the first frame).
+    coding: ColourInfo | None = None
 
     def start(self, width: int, height: int):
         # Create the writer and run process
         graph().video_writer_start(globals(), self, width, height)
 
-    def write_frame(self, img: np.ndarray, prepared: Prepared | None = None):
-        # Create the writer and run process
-        graph().video_writer_frame(globals(), self, img, prepared)
+    def write_frame(self, frame: object, prepared: Prepared | None = None):
+        """Writes a frame: an image, or Save Video's iterated inputs (Image Sequence,
+        Y, U, V), of which its Input Mode takes the image or the planes."""
+        graph().video_writer_frame(globals(), self, frame, prepared)
 
     def close(self):
         graph().video_writer_close(globals(), self)
 
+    def _planes(
+        self, frame: object
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """The frame's Y, U and V planes in Planes mode, None in RGB mode."""
+        settings = self.settings
+        if settings is None or settings.mode is VideoInputMode.RGB:
+            return None
+        assert isinstance(frame, tuple)
+        _, y, u, v = frame
+        if y is None or u is None or v is None:
+            raise ValueError(
+                "Save Video's Planes mode needs the Y, U and V planes (gray video, without"
+                " U and V, cannot be written)."
+            )
+        return y, u, v
+
+    @staticmethod
+    def _image(frame: object) -> np.ndarray:
+        image = frame[0] if isinstance(frame, tuple) else frame
+        if image is None:
+            raise ValueError("Save Video's RGB mode needs the Image Sequence.")
+        assert isinstance(image, np.ndarray)
+        return image
+
+    def first_frame(self, frame: object) -> tuple[int, int]:
+        """The video's (width, height) from its first frame: the image's, or in Planes
+        mode the Y plane's, when the planes' coding is also set. The pixel format is
+        checked here, before FFmpeg starts (whose failure to start is only logged)."""
+        planes = self._planes(frame)
+        if planes is None:
+            h, w, _ = get_h_w_c(self._image(frame))
+            self._check_pixel_format(w, h)
+            return w, h
+        settings = self.settings
+        assert settings is not None
+        y, u, v = planes
+        luma, chroma = (y.shape[1], y.shape[0]), (u.shape[1], u.shape[0])
+        if u.shape != v.shape:
+            raise ValueError(
+                f"The U and V planes must have one size, not {chroma[0]}x{chroma[1]} and"
+                f" {v.shape[1]}x{v.shape[0]}."
+            )
+        subsampling = subsampling_from_sizes(luma, chroma)
+        if subsampling not in ((0, 0), (1, 0), (1, 1)):
+            raise ValueError(
+                f"Save Video writes 4:4:4, 4:2:2 and 4:2:0 planes; U and V of"
+                f" {chroma[0]}x{chroma[1]} beside a {luma[0]}x{luma[1]} Y are none of them."
+            )
+        colour = resolve_colour_info(settings.colour, luma, chroma, *settings.choices)
+        if colour.matrix is Matrix.RGB and subsampling != (0, 0):
+            raise ValueError(
+                "RGB-coded planes (G, B, R) cannot be subsampled: use 4:4:4."
+            )
+        self.coding = replace(colour, bit_depth=self._bit_depth())
+        self._check_pixel_format(*luma)
+        return luma
+
+    def _bit_depth(self) -> int:
+        """Bit Depth, or for Auto the Colour Info's (8 without it), at most the encoder's
+        auto_depth."""
+        settings = self.settings
+        if settings is not None and settings.bit_depth is not BitDepth.AUTO:
+            return int(settings.bit_depth.value)
+        if settings is None or settings.colour is None:
+            return 8
+        depth = max(8, settings.colour.bit_depth)
+        cap = None if self.encoder is None else self.encoder.auto_depth
+        return depth if cap is None else min(depth, cap)
+
+    @property
+    def pipe_format(self) -> str:
+        """The pixel format frames are piped in: the planes' own; RGB as gbrp16le, so
+        a YUV conversion keeps more than 8 bits, but as bgr24 for GIF's palette and RGB
+        output of up to 8 bits, which then stay exact (libswscale reduces 16 bits to 8
+        by a shift, off by one for half the codes)."""
+        if self.coding is not None:
+            return planar_format(self.coding)
+        params = self.output_params
+        output = (
+            pixel_layout(str(params.get("pix_fmt", "")))
+            if hasattr(params, "get")
+            else None
+        )
+        if self.container is VideoFormat.GIF or (
+            output is not None and output.kind == "rgb" and output.bit_depth <= 8
+        ):
+            return "bgr24"
+        return "gbrp16le"
+
+    def payload(self, frame: object) -> np.ndarray:
+        """A frame's bytes in pipe_format."""
+        coding = self.coding
+        planes = self._planes(frame)
+        if coding is None or planes is None:
+            if self.pipe_format == "bgr24":
+                return to_uint8(self._image(frame), normalized=True)
+            return rgb_payload(self._image(frame))
+        y, u, v = planes
+        luma, chroma = coding.luma_size, coding.chroma_size
+        if (y.shape[1], y.shape[0]) != luma or (u.shape[1], u.shape[0]) != chroma:
+            raise ValueError(
+                f"The planes changed size: Y {y.shape[1]}x{y.shape[0]} and U"
+                f" {u.shape[1]}x{u.shape[0]} after Y {luma[0]}x{luma[1]} and U"
+                f" {chroma[0]}x{chroma[1]}."
+            )
+        u, v = self._sited(u, v)
+        chroma_coded = coding.matrix is not Matrix.RGB
+        codes = [
+            float_to_code(
+                plane, coding.bit_depth, coding.full_range, chroma_coded and i > 0
+            )
+            for i, plane in enumerate((y, u, v))
+        ]
+        return np.concatenate([c.ravel() for c in codes])
+
+    def _sited(self, u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """U and V moved by the chroma siting correction: resized planes keep the source's
+        chroma positions only where its siting is centred, so left- or top-sited chroma
+        is resampled (Spline36) to where the saved siting places it. Auto corrects when
+        the Colour Info says the source was left- or top-left-sited and the chroma grew."""
+        settings, coding = self.settings, self.coding
+        assert settings is not None and coding is not None
+        source = settings.colour
+        if settings.siting is SitingCorrection.OFF:
+            return u, v
+        if source is None:
+            if settings.siting is SitingCorrection.ON:
+                raise ValueError(
+                    "Chroma Siting Correction On needs the Colour Info input: the source's"
+                    " plane sizes."
+                )
+            return u, v
+        (width, height), (source_width, source_height) = (
+            coding.chroma_size,
+            source.chroma_size,
+        )
+        if settings.siting is SitingCorrection.AUTO and not (
+            source.chroma_location in (ChromaLocation.LEFT, ChromaLocation.TOP_LEFT)
+            and (width > source_width or height > source_height)
+        ):
+            return u, v
+        _, _, new_left, new_top = siting(coding.chroma_location, coding.subsampling)
+        _, _, old_left, old_top = siting(source.chroma_location, source.subsampling)
+        # In chroma pixels of the saved planes: where the saved siting expects each
+        # sample, less where the source's siting put the sample now there.
+        left = new_left - old_left * width / source_width
+        top = new_top - old_top * height / source_height
+        if left == 0 and top == 0:
+            return u, v
+        u, v = (
+            resample_plane(
+                p, width, height, Kernel.SPLINE36, src_left=left, src_top=top
+            )
+            for p in (u, v)
+        )
+        return u, v
+
+    def colour_options(self, params: dict[str, Any], width: int, height: int) -> None:
+        """Save Video's colour options (owner-approved 2026-10-09), in place, before the
+        writer starts: GIF gets a palette made for each frame; YUV output carries all its
+        colour tags, -chroma_sample_location included, and is converted to match them
+        with filtered chroma, exact rounding and explicit chroma positions (libswscale
+        otherwise assumes centre siting). A tag the user gives in Additional parameters
+        wins and a user -vf runs before the conversion; RGB output and a user
+        -filter_complex (or -lavfi) keep FFmpeg's own conversion. Planes are written in
+        their own format, without conversion."""
+        if "pix_fmt" not in params or {"filter_complex", "lavfi"} & params.keys():
+            return
+        if self.container is VideoFormat.GIF:
+            # FFmpeg would replace yuv420p with the fixed 3-3-2 palette of bgr8.
+            if str(params["pix_fmt"]) == "yuv420p":
+                params["pix_fmt"] = "pal8"
+                _append_filter(
+                    params,
+                    "split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1",
+                )
+            return
+        coding = self.coding
+        if coding is not None:
+            params["pix_fmt"] = planar_format(coding)
+            self._tag(params, coding)
+            return
+        depth = self._bit_depth()
+        if depth > 8 and str(params["pix_fmt"]) == "yuv420p":
+            params["pix_fmt"] = f"yuv420p{depth}le"
+        if not str(params["pix_fmt"]).startswith(("yuv", "nv")):
+            return
+        colour = self._rgb_colour(width, height)
+        if colour is None:
+            self._tag_by_size(params, width, height)
+        else:
+            self._tag(params, colour)
+        self._append_conversion(params)
+
+    def _rgb_colour(self, width: int, height: int) -> ColourInfo | None:
+        """The YUV output's colour in RGB mode: the Colour Info input (else the size
+        guess) with the choices applied; None without either (the size guess by tags).
+        An RGB-coded Colour Info gives its transfer and primaries only."""
+        settings = self.settings
+        if settings is None:
+            return None
+        chosen = any(choice.value != "auto" for choice in settings.choices)
+        if settings.colour is None and not chosen:
+            return None
+        guess = guess_colour_info((width, height), (-(-width // 2), -(-height // 2)))
+        base = settings.colour or guess
+        if base.matrix is Matrix.RGB:
+            base = replace(
+                base,
+                matrix=guess.matrix,
+                range=guess.range,
+                chroma_location=guess.chroma_location,
+            )
+        colour = base.with_choices(*settings.choices)
+        if colour.matrix in (Matrix.BT2020_CL, Matrix.YCGCO, Matrix.ICTCP, Matrix.RGB):
+            raise ValueError(
+                f"Save Video's RGB mode cannot convert to the {MATRIX_LABELS[colour.matrix]}"
+                " matrix (FFmpeg's scale filter has no such conversion). Convert with RGB"
+                " to Planes and save in Planes mode, or choose another Matrix."
+            )
+        return colour
+
+    @staticmethod
+    def _tag(params: dict[str, Any], colour: ColourInfo) -> None:
+        """The colour tags, and for H.265 the HDR10 metadata (the mastering display and
+        light levels) as x265 writes it; a user's tag or x265 option wins."""
+        tags = {
+            "colorspace": colour.matrix,
+            "color_primaries": colour.primaries,
+            "color_trc": colour.transfer,
+            "color_range": colour.range,
+            "chroma_sample_location": colour.chroma_location,
+        }
+        for key, value in tags.items():
+            params.setdefault(key, option_value(value))
+        hdr = colour.hdr
+        if hdr is None or params.get("vcodec") != VideoEncoder.H265.value:
+            return
+        user = str(params.get("x265-params", ""))
+        options = [user] if user else []
+        if hdr.mastering_display is not None and "master-display=" not in user:
+            options.append(f"master-display={hdr.mastering_display}")
+        if (hdr.max_cll, hdr.max_fall) != (None, None) and "max-cll=" not in user:
+            options.append(f"max-cll={hdr.max_cll or 0},{hdr.max_fall or 0}")
+        if options:
+            params["x265-params"] = ":".join(options)
+
+    @staticmethod
+    def _tag_by_size(params: dict[str, Any], width: int, height: int) -> None:
+        """Without a user matrix, primaries or transfer, the size picks BT.601 or BT.709
+        (players disagree on untagged video, upstream chaiNNer #3053). A user matrix picks
+        the missing primaries and transfer of its own family (BT.2020: bt2020 primaries
+        and BT.709's curve, which H.273 makes BT.2020's at 8 bits); primaries or a
+        transfer without a matrix, or a matrix of no family here, add neither. Chroma is
+        left-sited, as MPEG-2, H.264, HEVC and VP9 decoders assume."""
+        family = None
+        if not {"colorspace", "color_primaries", "color_trc"} & params.keys():
+            family = "bt709" if high_definition(width, height) else "smpte170m"
+        elif "colorspace" in params:
+            family = {
+                "bt709": "bt709",
+                "smpte170m": "smpte170m",
+                "bt470bg": "smpte170m",
+                "bt2020nc": "bt2020",
+                "bt2020_ncl": "bt2020",
+                "bt2020c": "bt2020",
+                "bt2020_cl": "bt2020",
+            }.get(str(params["colorspace"]))
+        if family is not None:
+            primaries = "bt470bg" if family == "smpte170m" and height == 576 else family
+            params.setdefault("colorspace", family)
+            params.setdefault("color_primaries", primaries)
+            params.setdefault("color_trc", "bt709" if family == "bt2020" else family)
+        params.setdefault("color_range", "tv")
+        params.setdefault("chroma_sample_location", "left")
+
+    @staticmethod
+    def _append_conversion(params: dict[str, Any]) -> None:
+        """The scale filter to the final tags: scale's names for the matrices FFmpeg can
+        tag (another tag converts as FFmpeg's default), the range and the chroma
+        positions."""
+        matrices = {
+            "bt709": "bt709",
+            "smpte170m": "smpte170m",
+            "bt470bg": "bt470",
+            "fcc": "fcc",
+            "smpte240m": "smpte240m",
+            "bt2020nc": "bt2020",
+            "bt2020_ncl": "bt2020",
+            "bt2020c": "bt2020",
+            "bt2020_cl": "bt2020",
+        }
+        matrix, colour_range = (
+            str(params.get("colorspace", "")),
+            str(params["color_range"]),
+        )
+        location = str(params.get("chroma_sample_location", ""))
+        positions = {loc.value: pos for loc, pos in SWSCALE_CHROMA_POSITION.items()}
+        scale = "scale="
+        if matrix in matrices:
+            scale += f"out_color_matrix={matrices[matrix]}:"
+        if colour_range in ("tv", "mpeg", "pc", "jpeg"):
+            scale += f"out_range={colour_range}:"
+        if location in positions:
+            scale += f"out_h_chr_pos={positions[location][0]}:"
+            scale += f"out_v_chr_pos={positions[location][1]}:"
+        _append_filter(params, scale + "flags=accurate_rnd+full_chroma_int")
+
+    def _check_pixel_format(self, width: int, height: int) -> None:
+        """Refuses a pixel format the encoder cannot take, and warns about 4:4:4, which
+        many hardware players cannot play, and about a -pix_fmt Planes mode ignores."""
+        if "pix_fmt" not in self.output_params:
+            return
+        params = dict(self.output_params)
+        given = str(params["pix_fmt"])
+        self.colour_options(params, width, height)
+        fmt = str(params["pix_fmt"])
+        if self.coding is not None and given not in ("yuv420p", fmt):
+            logger.warning(
+                "Save Video writes the planes as %s, not the -pix_fmt %s given.",
+                fmt,
+                given,
+            )
+        encoder = next(
+            (e for e in VideoEncoder if e.value == params.get("vcodec")), None
+        )
+        if encoder is None or not fmt.startswith(("yuv4", "gbrp")):
+            return
+        if fmt not in encoder.pixel_formats:
+            raise ValueError(
+                f"The {encoder.value} encoder cannot write {fmt}; it writes"
+                f" {', '.join(encoder.pixel_formats)}. Choose another Bit Depth or"
+                " encoder (FFV1 writes every layout up to 16 bits)."
+            )
+        if fmt.startswith("yuv444") and encoder is not VideoEncoder.FFV1:
+            logger.warning(
+                "%s is 4:4:4, which many hardware players cannot play.", self.save_path
+            )
+
+
+def _append_filter(params: dict[str, Any], chain: str) -> None:
+    """The user's -vf (or -filter:v, or -filter) runs first, then `chain`: FFmpeg keeps
+    only the last of several, so a -filter left beside it would be dropped."""
+    filters = [params.pop(key) for key in ("vf", "filter:v", "filter") if key in params]
+    params["vf"] = ",".join([*filters, chain])
+
 
 @dataclass
-class VideoCollector(Collector[np.ndarray, None]):
+class VideoCollector(Collector[tuple[np.ndarray | None, ...], None]):
     """Save Video's collector; its commit phase writes prepared frames to `writer`."""
 
     writer: Writer
@@ -146,9 +592,31 @@ class VideoCollector(Collector[np.ndarray, None]):
     ],
     icon="MdVideoCameraBack",
     inputs=[
-        ImageInput("Image Sequence", channels=3),
+        if_enum_group(19, VideoInputMode.RGB)(
+            required()(ImageInput("Image Sequence", channels=3).make_optional())
+        ),
         DirectoryInput(must_exist=False),
         RelativePathInput("Video Name"),
+        EnumInput(
+            VideoInputMode,
+            "Input Mode",
+            default=VideoInputMode.RGB,
+            option_labels={VideoInputMode.RGB: "RGB", VideoInputMode.PLANES: "Planes"},
+            preferred_style="tabs",
+        )
+        .with_id(19)
+        .with_docs(
+            "RGB saves RGB images. Planes saves Y, U and V planes (Load Video's Planes"
+            " mode) as they are, at the bit depth chosen below: equal sizes are 4:4:4,"
+            " U and V of half Y's width 4:2:2, of half its width and height 4:2:0."
+        ),
+        if_enum_group(19, VideoInputMode.PLANES)(
+            required()(
+                ImageInput("Y", channels=1).make_optional().with_id(20),
+                ImageInput("U", channels=1).make_optional().with_id(21),
+                ImageInput("V", channels=1).make_optional().with_id(22),
+            )
+        ),
         EnumInput(Simplicity, default=Simplicity.SIMPLE, preferred_style="tabs")
         .with_id(16)
         .with_docs(
@@ -262,8 +730,50 @@ class VideoCollector(Collector[np.ndarray, None]):
                 .with_id(10)
             ),
         ),
+        ColourInfoInput()
+        .make_optional()
+        .with_id(23)
+        .with_docs(
+            "The source's colour information (Load Video's Colour Info): the colour"
+            " tags, the bit depth for Auto and the source's plane sizes for the chroma"
+            " siting correction."
+        ),
+        *colour_override_inputs(24),
+        EnumInput(
+            BitDepth,
+            "Bit Depth",
+            default=BitDepth.AUTO,
+            option_labels={
+                BitDepth.AUTO: "Auto",
+                BitDepth.BITS_8: "8-bit",
+                BitDepth.BITS_10: "10-bit",
+                BitDepth.BITS_12: "12-bit",
+                BitDepth.BITS_16: "16-bit",
+            },
+        )
+        .with_id(29)
+        .with_docs(
+            "Auto writes the Colour Info's bit depth, at most 8 bits for H.264 and 10 for"
+            " H.265 and VP9 (what players commonly decode), and 8 bits without Colour"
+            " Info. 16-bit needs FFV1."
+        ),
+        if_enum_group(19, VideoInputMode.PLANES)(
+            EnumInput(
+                SitingCorrection,
+                "Chroma Siting Correction",
+                default=SitingCorrection.AUTO,
+            )
+            .with_id(30)
+            .with_docs(
+                "Planes resized on their own (an upscale) keep the source's chroma"
+                " positions only for centre-sited chroma. Auto moves U and V to where"
+                " the saved chroma siting places them when the Colour Info says the"
+                " source was left- or top-left-sited and the chroma grew; On always"
+                " realigns by the Colour Info's plane sizes, Off never."
+            ),
+        ),
     ],
-    iterator_inputs=IteratorInputInfo(inputs=0),
+    iterator_inputs=IteratorInputInfo(inputs=[0, 20, 21, 22]),
     outputs=[],
     key_info=KeyInfo.enum(4),
     kind="collector",
@@ -275,6 +785,10 @@ def save_video_node(
     _: None,
     save_dir: Path,
     video_name: str,
+    mode: VideoInputMode,
+    _y: None,
+    _u: None,
+    _v: None,
     simplicity: Simplicity,
     container: VideoFormat,
     encoder: VideoEncoder,
@@ -286,7 +800,22 @@ def save_video_node(
     fps: float,
     audio: Any,
     audio_settings: AudioSettings,
-) -> Collector[np.ndarray, None]:
+    colour_info: ColourInfo | None,
+    matrix: Matrix,
+    transfer: Transfer,
+    primaries: Primaries,
+    range_: Range,
+    chroma_location: ChromaLocation,
+    bit_depth: BitDepth,
+    siting_correction: SitingCorrection,
+) -> Collector[tuple[np.ndarray | None, ...], None]:
+    settings = WriteSettings(
+        mode,
+        colour_info,
+        (matrix, transfer, primaries, range_, chroma_location),
+        bit_depth,
+        siting_correction,
+    )
     return graph().video_save(
         globals(),
         node_context,
@@ -304,19 +833,25 @@ def save_video_node(
         fps,
         audio,
         audio_settings,
+        settings,
     )
 
 
-def prepare_video_frame(inputs: list[np.ndarray]) -> np.ndarray:
-    """The uint8 frame Save Video would write for this iteration (SP3-P9)."""
-    return to_uint8(inputs[0], normalized=True)
+def prepare_video_frame(inputs: list[np.ndarray | None]) -> np.ndarray | None:
+    """The frame Save Video would pipe for this iteration in RGB mode (SP3-P9); without
+    an image (Planes mode), None: the node runs whole."""
+    image = inputs[0]
+    return None if image is None else rgb_payload(image)
 
 
 def commit_video_frame(
-    collector: VideoCollector, inputs: list[np.ndarray], prepared: Prepared
+    collector: VideoCollector, inputs: list[np.ndarray | None], prepared: Prepared
 ) -> None:
-    """Save Video's iteration with its prepared frame as the pipe payload."""
-    collector.writer.write_frame(inputs[0], prepared)
+    """Save Video's iteration with its prepared frame as the pipe payload, when the
+    frame is piped as gbrp16le RGB."""
+    writer = collector.writer
+    gbrp16 = writer.coding is None and writer.pipe_format == "gbrp16le"
+    writer.write_frame(tuple(inputs), prepared if gbrp16 else None)
 
 
 register_phases("chainner:image:save_video", prepare_video_frame, commit_video_frame)

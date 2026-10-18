@@ -121,7 +121,7 @@ CONTRACT = {
     ),
     "packages.chaiNNer_standard.image.video_frames.load_video": (
         VIDEO_IO,
-        "FFMpegEnv Generator VideoLoader split_file_path",
+        "FFMpegEnv Generator LoadedVideo VideoLoader split_file_path",
         False,
     ),
     "packages.chaiNNer_standard.image.video_frames.save_video": (
@@ -129,7 +129,7 @@ CONTRACT = {
         (
             "AudioSettings FFMpegEnv PARAMETERS SimpleVideoFormat Simplicity"
             " VideoCollector VideoEncoder VideoFormat VideoPreset Writer ffmpeg"
-            " get_h_w_c get_simple_format logger np os to_uint8"
+            " get_simple_format logger np os"
         ),
         False,
     ),

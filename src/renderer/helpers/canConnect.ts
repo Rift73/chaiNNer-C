@@ -1,3 +1,4 @@
+import { isSameType } from '@chainner/navi';
 import { checkAssignedLineage } from '../../common/nodes/checkNodeValidity';
 import { EdgeState } from '../../common/nodes/EdgeState';
 import { ChainLineage } from '../../common/nodes/lineage';
@@ -7,7 +8,7 @@ import {
     printErrorTrace,
     simpleError,
 } from '../../common/types/mismatch';
-import { withoutNull } from '../../common/types/util';
+import { nullType, withoutNull } from '../../common/types/util';
 import { EMPTY_ARRAY, ParsedSourceHandle, ParsedTargetHandle } from '../../common/util';
 import { VALID, Validity, invalid } from '../../common/Validity';
 
@@ -63,6 +64,12 @@ export const canConnect = (
     const targetSchema = targetFn.definition.schema;
 
     const outputType = sourceFn.outputs.get(sourceOutputId);
+    // An output typed `null` does not exist under its node's current settings (the backend's
+    // null_unless); an optional input would otherwise accept it as a missing value.
+    if (outputType !== undefined && isSameType(outputType, nullType)) {
+        const output = sourceFn.definition.schema.outputs.find((o) => o.id === sourceOutputId)!;
+        return invalid(`Output ${output.label} is not available with its node's current settings.`);
+    }
     if (outputType !== undefined && !targetFn.canAssign(targetInputId, outputType)) {
         const schema = targetSchema;
         const input = schema.inputs.find((i) => i.id === targetInputId)!;

@@ -147,6 +147,8 @@ void loader_init(const py::dict&g,const O&self,const O&path,const O&env) {
     self.attr("path")=path; self.attr("ffmpeg_env")=env;
     O video;
     self.attr("metadata")=probe_metadata(g,path,env,video);
+    // The probe entry Load Video detects the colour information from (video.py).
+    self.attr("video_stream")=video;
     // Both readers convert YUV by the file's matrix tag; untagged HD video (the stored
     // size, as mpv guesses) is BT.709, as players show it, where FFmpeg assumes BT.601
     // (upstream chaiNNer #3053, owner-approved 2026-10-09). None keeps FFmpeg's choice.
@@ -390,65 +392,6 @@ std::shared_ptr<WriterResource> resource(const O&self) {
     auto owned=std::make_shared<WriterResource>();
     self.attr("_native_video_resource")=py::cast(owned); return owned;
 }
-// The user's -vf (or -filter:v, or -filter) runs first, then this chain: FFmpeg keeps only
-// the last of several, so a -filter left beside it would be dropped.
-void append_filter(py::dict&params,const std::string&filter) {
-    py::list filters;
-    for(const char*key: {"vf","filter:v","filter"})if(params.contains(key))filters.append(params.attr("pop")(key));
-    filters.append(py::str(filter));
-    params["vf"]=py::str(",").attr("join")(filters);
-}
-// Save Video's YUV output (owner-approved 2026-10-09) carries all four colour tags and is
-// converted to match them with filtered chroma and exact rounding, where FFmpeg 5.1.2's
-// default point-samples chroma and turns grey 128 into (125,128,125). A tag the user gives
-// in Additional parameters wins, the conversion follows the final matrix and range, and a
-// user -vf runs before it. RGB output keeps FFmpeg's own conversion.
-// GIF (owner-approved 2026-10-09) gets a palette made for each frame, where FFmpeg
-// replaces the node's yuv420p with the fixed 3-3-2 palette of bgr8 (grey 128 is 43 levels
-// off, gradients more). Frames reach FFmpeg one at a time, so the per-frame palette needs no
-// buffering. A user -vf runs first; a user pixel format keeps FFmpeg's conversion, and so
-// does a user -filter_complex (or -lavfi), which FFmpeg refuses beside a -vf.
-void colour_options(const py::dict&g,const O&self,py::dict&params,const O&width,const O&height) {
-    if(!params.contains("pix_fmt") || params.contains("filter_complex") || params.contains("lavfi"))return;
-    if(eq(self.attr("container"),member(g,"VideoFormat","GIF"))) {
-        if(!eq(builtin("str")(params["pix_fmt"]),py::str("yuv420p")))return;
-        params["pix_fmt"]="pal8";
-        append_filter(params,"split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1");
-        return;
-    }
-    if(!truth(builtin("str")(params["pix_fmt"]).attr("startswith")(py::make_tuple("yuv","nv"))))return;
-    // Without a user matrix, primaries or transfer, the size picks BT.601 or BT.709. A user
-    // matrix picks the missing primaries and transfer of its own family (BT.2020: bt2020
-    // primaries and BT.709's curve, which H.273 makes BT.2020's at 8 bits); primaries or a
-    // transfer without a matrix, or a matrix of no family here, add neither.
-    std::string family;
-    if(!params.contains("colorspace") && !params.contains("color_primaries") && !params.contains("color_trc"))
-        family=high_definition(width,height)?"bt709":"smpte170m";
-    else if(params.contains("colorspace")) {
-        const std::string user=builtin("str")(params["colorspace"]).cast<std::string>();
-        if(user=="bt709")family="bt709";
-        else if(user=="smpte170m" || user=="bt470bg")family="smpte170m";
-        else if(user=="bt2020nc" || user=="bt2020_ncl" || user=="bt2020c" || user=="bt2020_cl")family="bt2020";
-    }
-    if(!family.empty()) {
-        const std::string primaries=family!="smpte170m"?family:eq(height,py::int_(576))?"bt470bg":"smpte170m";
-        const std::string defaults[][2]={{"colorspace",family},{"color_primaries",primaries},
-            {"color_trc",family=="bt2020"?"bt709":family}};
-        for(const auto&tag:defaults)if(!params.contains(tag[0].c_str()))params[tag[0].c_str()]=tag[1];
-    }
-    if(!params.contains("color_range"))params["color_range"]="tv";
-    // scale's names for the matrices FFmpeg can tag; another tag converts as FFmpeg's default.
-    const py::dict matrices=dict({{"bt709",py::str("bt709")},{"smpte170m",py::str("smpte170m")},
-        {"bt470bg",py::str("bt470")},{"fcc",py::str("fcc")},{"smpte240m",py::str("smpte240m")},
-        {"bt2020nc",py::str("bt2020")},{"bt2020_ncl",py::str("bt2020")},{"bt2020c",py::str("bt2020")},
-        {"bt2020_cl",py::str("bt2020")}});
-    const py::tuple ranges=py::make_tuple("tv","mpeg","pc","jpeg");
-    O matrix=builtin("str")(params.attr("get")("colorspace","")),range=builtin("str")(params["color_range"]);
-    std::string scale="scale=";
-    if(matrices.contains(matrix))scale+="out_color_matrix="+matrices[matrix].cast<std::string>()+":";
-    if(graphpy::contains(ranges,range))scale+="out_range="+range.cast<std::string>()+":";
-    append_filter(params,scale+"flags=accurate_rnd+full_chroma_int");
-}
 void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
     if(!self.attr("out").is_none())return;
     if(resource(self)->aborted)fail(PyExc_RuntimeError,"Video writer was aborted");
@@ -456,7 +399,9 @@ void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
         graphpy::require(eq(mod(height,py::int_(2)),py::int_(0)) && eq(mod(width,py::int_(2)),py::int_(0)),
             fmt("The \"{}\" encoder requires an even-number frame resolution.",self.attr("encoder").attr("value")));
     try {
-        O stream=global(g,"ffmpeg").attr("input")("pipe:",py::arg("format")="rawvideo",py::arg("pix_fmt")="bgr24",
+        // Frames are piped as the writer's pipe_format (save_video.py): gbrp16le RGB or the
+        // planes' own format.
+        O stream=global(g,"ffmpeg").attr("input")("pipe:",py::arg("format")="rawvideo",py::arg("pix_fmt")=self.attr("pipe_format"),
             py::arg("s")=py::str("{}x{}").attr("format")(width,height),py::arg("r")=self.attr("fps"),py::arg("loglevel")="error");
         O output=stream.attr("output");
         py::dict params=keyword_mapping(output,self.attr("output_params"));
@@ -465,7 +410,8 @@ void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
             graphpy::raise(PyExc_TypeError,label);
         }
         params["loglevel"]="error";
-        colour_options(g,self,params,width,height);
+        // Save Video's colour options (save_video.py Writer.colour_options), in place.
+        self.attr("colour_options")(params,width,height);
         stream=call(output,py::tuple(),params).attr("overwrite_output")();
         O global_args=stream.attr("global_args");
         stream=call(global_args,star_arguments(global_args,self.attr("global_params")));
@@ -549,11 +495,11 @@ void raise_if_encoder_stopped(const O&self,const py::error_already_set&error) {
 }
 void writer_frame(const py::dict&g,const O&self,const O&image,const O&prepared) {
     if(self.attr("out").is_none()) {
-        O shape=global(g,"get_h_w_c")(image);
-        self.attr("start")(shape[py::int_(1)],shape[py::int_(0)]);
+        O size=self.attr("first_frame")(image);
+        self.attr("start")(size[py::int_(0)],size[py::int_(1)]);
     }
-    // A prepared frame (SP3-P9) is to_uint8's result computed ahead: only the payload.
-    O frame=prepared.is_none()?O(global(g,"to_uint8")(image,py::arg("normalized")=true)):O(prepared.attr("result")());
+    // A prepared frame (SP3-P9) is the payload computed ahead.
+    O frame=prepared.is_none()?O(self.attr("payload")(image)):O(prepared.attr("result")());
     if(!self.attr("out").is_none() && !self.attr("out").attr("stdin").is_none()) {
         O write=self.attr("out").attr("stdin").attr("write"),payload=frame_payload(g,frame);
         try {write_frame_payload(write,payload);}
@@ -676,7 +622,8 @@ void writer_close(const py::dict&g,const O&self) {
 }
 
 O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O&name,const O&simplicity,
-    O container,O encoder,O preset,O crf,O additional,const O&simple,const O&quality,const O&fps,O audio,const O&audio_settings) {
+    O container,O encoder,O preset,O crf,O additional,const O&simple,const O&quality,const O&fps,O audio,const O&audio_settings,
+    const O&settings) {
     (void)unused;
     if(eq(simplicity,member(g,"Simplicity","SIMPLE"))) {
         O settings=global(g,"get_simple_format")(simple,quality);
@@ -713,7 +660,8 @@ O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O
     O writer=global(g,"Writer")(py::arg("container")=container,py::arg("encoder")=encoder,py::arg("fps")=fps,
         py::arg("audio")=audio,py::arg("audio_settings")=audio_settings,py::arg("save_path")=builtin("str")(path),
         py::arg("output_params")=params,py::arg("global_params")=globals,
-        py::arg("ffmpeg_env")=global(g,"FFMpegEnv").attr("get_integrated")(context.attr("storage_dir")));
+        py::arg("ffmpeg_env")=global(g,"FFMpegEnv").attr("get_integrated")(context.attr("storage_dir")),
+        py::arg("settings")=settings);
     auto state=resource(writer);
     context.attr("add_cleanup")(py::cpp_function([state](){state->abort();}));
     O iterate=py::cpp_function([writer](const O&frame){writer.attr("write_frame")(frame);});
@@ -723,20 +671,33 @@ O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O
     return global(g,"VideoCollector")(py::arg("on_iterate")=iterate,py::arg("on_complete")=complete,py::arg("writer")=writer);
 }
 
+// Without a format, frames are bgr24 as Load Video read them before its Mode (W x H x 3
+// uint8). A format (video.py FrameFormat) gives the pixel format, the scale filter, the
+// input options and the bytes of a frame, and turns each frame's bytes into its values.
 class FrameIterator {
     py::dict globals_;
-    O loader_,process_=py::none(),width_=py::none(),height_=py::none();
+    O loader_,format_,process_=py::none(),width_=py::none(),height_=py::none();
     bool started_=false,entered_=false,closed_=false,running_=false;
     void start() {
         started_=true;
         const char*flags="lanczos+accurate_rnd+full_chroma_int+full_chroma_inp+bitexact";
-        py::dict options=dict({{"format",py::str("rawvideo")},{"pix_fmt",py::str("bgr24")},{"sws_flags",py::str(flags)}});
-        // The loader's matrix for untagged HD video (loader_init); a loader without one
-        // converts as FFmpeg chooses.
-        O matrix=py::getattr(loader_,"input_matrix",py::none());
-        if(!matrix.is_none())options["vf"]=py::str("scale=in_color_matrix={}:flags={}").attr("format")(matrix,flags);
+        O output;
+        py::dict options;
+        if(format_.is_none()) {
+            options=dict({{"format",py::str("rawvideo")},{"pix_fmt",py::str("bgr24")},{"sws_flags",py::str(flags)}});
+            // The loader's matrix for untagged HD video (loader_init); a loader without one
+            // converts as FFmpeg chooses.
+            O matrix=py::getattr(loader_,"input_matrix",py::none());
+            if(!matrix.is_none())options["vf"]=py::str("scale=in_color_matrix={}:flags={}").attr("format")(matrix,flags);
+            output=global(globals_,"ffmpeg").attr("input")(loader_.attr("path")).attr("output");
+        } else {
+            options=dict({{"format",py::str("rawvideo")},{"pix_fmt",format_.attr("pix_fmt")},{"sws_flags",py::str(flags)}});
+            O scale=format_.attr("scale");
+            if(!scale.is_none())options["vf"]=py::str("scale={}").attr("format")(scale);
+            py::dict input_options=format_.attr("input_options");
+            output=call(global(globals_,"ffmpeg").attr("input"),py::make_tuple(loader_.attr("path")),input_options).attr("output");
+        }
         options["loglevel"]="error";
-        O output=global(globals_,"ffmpeg").attr("input")(loader_.attr("path")).attr("output");
         process_=call(output,py::make_tuple("pipe:"),options)
             .attr("run_async")(py::arg("pipe_stdout")=true,py::arg("pipe_stderr")=false,
                 py::arg("cmd")=loader_.attr("ffmpeg_env").attr("ffmpeg"));
@@ -763,7 +724,7 @@ class FrameIterator {
         }
     }
 public:
-    FrameIterator(py::dict g,O loader):globals_(std::move(g)),loader_(std::move(loader)) {}
+    FrameIterator(py::dict g,O loader,O format):globals_(std::move(g)),loader_(std::move(loader)),format_(std::move(format)) {}
     O next() {
         if(running_)fail(PyExc_ValueError,"generator already executing");
         if(closed_)throw py::stop_iteration();
@@ -774,7 +735,7 @@ public:
             // serves. BufferedReader.readinto fills it as read(size) did: it reads until
             // the frame is full or the pipe ends.
             O np=global(globals_,"np");
-            O size=mul(mul(width_,height_),py::int_(3));
+            O size=format_.is_none()?mul(mul(width_,height_),py::int_(3)):O(format_.attr("frame_bytes"));
             O buffer=np.attr("empty")(size,np.attr("uint8"));
             O count=process_.attr("stdout").attr("readinto")(buffer);
             if(!truth(count)) {
@@ -787,6 +748,7 @@ public:
             buffer.attr("setflags")(py::arg("write")=false);
             // A short read reshapes only the bytes read: today's frombuffer(...).reshape error.
             O data=cmp(count,size,Py_LT)?O(buffer[py::slice(py::none(),count,py::none())]):buffer;
+            if(!format_.is_none())return format_.attr("unpack")(data);
             return data.attr("reshape")(shape);
         } catch(const py::error_already_set&e) {
             if(closed_)throw;
@@ -811,6 +773,7 @@ public:
     }
 };
 
+// Yields (frame, index, Y, U, V) from the loader's stream_items (video.py).
 class IndexedFrames {
     O loader_,iterator_=py::none(),use_limit_,limit_,index_=py::int_(0);
     bool yielded_=false,closed_=false,running_=false;
@@ -836,14 +799,14 @@ public:
         if(closed_)throw py::stop_iteration();
         struct Running {bool&v;explicit Running(bool&b):v(b){v=true;}~Running(){v=false;}} guard(running_);
         try {
-            if(iterator_.is_none())iterator_=builtin("iter")(loader_.attr("stream_frames")());
+            if(iterator_.is_none())iterator_=builtin("iter")(loader_.attr("stream_items")());
             if(yielded_) {
                 // The original limit check is after yield, including limit <= 0.
                 if(truth(use_limit_) && cmp(add(index_,py::int_(1)),limit_,Py_GE)) {finish();throw py::stop_iteration();}
                 index_=add(index_,py::int_(1));
             }
-            O frame=builtin("next")(iterator_);yielded_=true;
-            return py::make_tuple(frame,index_);
+            O item=builtin("next")(iterator_);yielded_=true;
+            return py::make_tuple(item[py::int_(0)],index_,item[py::int_(1)],item[py::int_(2)],item[py::int_(3)]);
         } catch(const py::error_already_set&e) {
             GraphHandledException handled(e);finish();throw;
         }
@@ -856,9 +819,12 @@ public:
     }
 };
 
-O load_video(const py::dict&g,const O&context,const O&path,const O&use_limit,const O&limit) {
+// `settings` (video.py ReadSettings) carries Load Video's Mode, RGB precision and colour
+// choices; the generator's metadata, a LoadedVideo, gives the node's item types and
+// Colour outputs.
+O load_video(const py::dict&g,const O&context,const O&path,const O&use_limit,const O&limit,const O&settings) {
     O parts=global(g,"split_file_path")(path);
-    O loader=global(g,"VideoLoader")(path,global(g,"FFMpegEnv").attr("get_integrated")(context.attr("storage_dir")));
+    O loader=global(g,"VideoLoader")(path,global(g,"FFMpegEnv").attr("get_integrated")(context.attr("storage_dir")),settings);
     O count=loader.attr("metadata").attr("frame_count");
     if(truth(use_limit))count=builtin("min")(count,limit);
     O audio=loader.attr("get_audio_stream")();
@@ -867,8 +833,9 @@ O load_video(const py::dict&g,const O&context,const O&path,const O&use_limit,con
         context.attr("add_cleanup")(py::cpp_function([it](){it->close();}));
         return py::cast(it);
     });
+    O metadata=global(g,"LoadedVideo")(loader.attr("metadata"),settings.attr("mode"),loader.attr("colour"));
     O generator=global(g,"Generator").attr("from_iter")(py::arg("supplier")=supplier,py::arg("expected_length")=count)
-        .attr("with_metadata")(loader.attr("metadata"));
+        .attr("with_metadata")(metadata);
     generator.attr("source_paths")=py::tuple(); // Frames come from the FFmpeg pipe.
     return py::make_tuple(generator,parts[py::int_(0)],parts[py::int_(1)],loader.attr("metadata").attr("fps"),audio);
 }
@@ -883,7 +850,8 @@ void cn_bind_video_io(pybind11::module_&m) {
         .def("__iter__",[](const std::shared_ptr<IndexedFrames>&s){return s;})
         .def("__next__",&IndexedFrames::next).def("close",&IndexedFrames::close);
     m.def("video_metadata",&metadata);m.def("video_loader_init",&loader_init);m.def("video_audio_stream",&audio_stream);
-    m.def("video_stream_frames",[](const py::dict&g,const O&loader){return std::make_shared<FrameIterator>(g,loader);});
+    m.def("video_stream_frames",[](const py::dict&g,const O&loader,const O&format){return std::make_shared<FrameIterator>(g,loader,format);},
+        py::arg("globals"),py::arg("loader"),py::arg("format")=py::none());
     m.def("video_container_encoders",&container_encoders);m.def("video_encoder_formats",&encoder_formats);
     m.def("video_simple_format",&simple_format);m.def("video_writer_start",&writer_start);m.def("video_writer_frame",&writer_frame);
     m.def("video_writer_close",&writer_close);
