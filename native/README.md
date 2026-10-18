@@ -147,6 +147,11 @@ $env:NUMBA_CACHE_DIR = "$env:TEMP\chainner-c-numba"
 & '.\native\.venv\Scripts\python.exe' -B -m pytest native/tests backend/tests -q -p no:cacheprovider
 ```
 
+- Faster, the same tests and results: `& '.\native\.venv\Scripts\python.exe' -B native\tools\run_tests.py` sets that
+  environment itself and runs one pytest process per shard, each pinned to its own two CPUs with thread pools capped
+  to them (`test_parallel*.py` run unpinned), balanced by the durations it keeps in `native/local/test-durations.json`:
+  102 s instead of 744 s on 16 cores. Extra arguments go to every shard's pytest.
+
 - `CUDA_VISIBLE_DEVICES` hides the GPU from CUDA only. `native/tests/conftest.py` sets
   `VK_LOADER_DRIVERS_DISABLE=*`, which hides it from ncnn's Vulkan (the port's ncnn modules query it when
   they load), as the runtime verifiers do for their hosts; never the package, the bench or a real launch.
