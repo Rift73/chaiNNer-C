@@ -3,6 +3,7 @@ import { PackageSettings, SchemaId, WindowSize } from '../common-types';
 export interface ChainnerSettings {
     // renderer
     theme: string;
+    checkForUpdatesOnStartup: boolean;
     startupTemplate: string;
     animateChain: boolean;
     snapToGrid: boolean;
@@ -26,6 +27,7 @@ export interface ChainnerSettings {
 export const defaultSettings: Readonly<ChainnerSettings> = {
     // renderer
     theme: 'default-dark',
+    checkForUpdatesOnStartup: true,
     startupTemplate: '',
     animateChain: true,
     snapToGrid: false,

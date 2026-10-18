@@ -8,5 +8,6 @@ interface Window {
         isMac: boolean;
         isArmMac: boolean;
         appDataPath: string;
+        buildInfo: import('./common/version').BuildInfo;
     };
 }

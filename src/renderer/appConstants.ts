@@ -3,4 +3,4 @@
  * These are loaded synchronously during preload and exposed directly to the renderer.
  */
 
-export const { appVersion, isMac, isArmMac, appDataPath } = window.appConstants;
+export const { appVersion, isMac, isArmMac, appDataPath, buildInfo } = window.appConstants;

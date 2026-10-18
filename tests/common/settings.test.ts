@@ -105,3 +105,18 @@ test(`Saved system Python settings are dropped`, () => {
     expect(settings).not.toHaveProperty('useSystemPython');
     expect(settings).not.toHaveProperty('systemPythonLocation');
 });
+
+test(`The update check on start-up is on unless it was turned off`, () => {
+    // settings saved by chaiNNer-C releases without the update check
+    expect(migrateSettings({ theme: 'default-light' }).checkForUpdatesOnStartup).toBe(true);
+    // settings saved by upstream chaiNNer
+    expect(migrateSettings({ checkForUpdatesOnStartup: false }).checkForUpdatesOnStartup).toBe(
+        false
+    );
+    // upstream chaiNNer's old local storage
+    const old = migrateOldStorageSettings({
+        keys: ['check-upd-on-strtup-2'],
+        getItem: (key) => (key === 'check-upd-on-strtup-2' ? 'false' : null),
+    });
+    expect(migrateSettings(old).checkForUpdatesOnStartup).toBe(false);
+});

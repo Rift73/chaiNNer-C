@@ -28,3 +28,8 @@ declare module 'rregex/lib/rregex.wasm?url' {
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string;
 declare const MAIN_WINDOW_VITE_NAME: string;
+// the build's fingerprint, defined in the main bundle only (vite/main.config.ts); the renderer
+// reads it from window.appConstants
+declare const BUILD_TREE: string;
+declare const BUILD_DATE: string;
+declare const BUILD_DIRTY: boolean;

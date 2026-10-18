@@ -127,6 +127,7 @@ export interface SendChannels {
     'window-maximized-change': SendChannelInfo<[maximized: boolean]>;
     'window-blur': SendChannelInfo;
     'show-collected-information': SendChannelInfo<[info: Record<string, unknown>]>;
+    'check-for-updates': SendChannelInfo;
     'disable-menu': SendChannelInfo;
     'enable-menu': SendChannelInfo;
     'save-before-exit': SendChannelInfo;
@@ -142,6 +143,7 @@ export interface SendChannels {
     'get-is-mac-sync': SendChannelInfo;
     'get-is-arm-mac-sync': SendChannelInfo;
     'get-appdata-sync': SendChannelInfo;
+    'get-build-info-sync': SendChannelInfo;
 
     // history
     'history-undo': SendChannelInfo;

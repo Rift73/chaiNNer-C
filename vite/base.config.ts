@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
 import os from 'node:os';
 import type { AddressInfo } from 'node:net';
@@ -55,6 +56,33 @@ export const getBuildDefine = (env: ConfigEnv<'build'>) => {
     }, {} as Record<string, any>);
 
     return define;
+};
+
+// The fingerprint of the commit the build is made from (BuildInfo in src/common/version.ts): its
+// tree, its commit date and whether the checkout has uncommitted changes.
+export const getBuildInfoDefine = (root: string) => {
+    const git = (...args: string[]) =>
+        execFileSync('git', args, {
+            cwd: root,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+    const define = (tree: string, date: string, dirty: boolean) => ({
+        BUILD_TREE: JSON.stringify(tree),
+        BUILD_DATE: JSON.stringify(date),
+        BUILD_DIRTY: JSON.stringify(dirty),
+    });
+
+    try {
+        return define(
+            git('rev-parse', 'HEAD^{tree}'),
+            git('log', '-1', '--format=%cI'),
+            git('status', '--porcelain') !== ''
+        );
+    } catch {
+        // not a git checkout, or no git: empty values, a development build
+        return define('', '', false);
+    }
 };
 
 export const pluginExposeRenderer = (name: string): Plugin => {

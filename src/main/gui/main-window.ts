@@ -23,6 +23,7 @@ import { chainnerCVersion } from '../../common/version';
 import { OpenArguments, parseArgs } from '../arguments';
 import { BackendProcess } from '../backend/process';
 import { setupBackend } from '../backend/setup';
+import { buildInfo } from '../buildInfo';
 import { readClipboardImageAsPng } from '../clipboardImage';
 import { isArmMac, isMac } from '../env';
 import { addBrowserWindow, addFile, addFiles, removeFile, removeFiles } from '../fileWatcher';
@@ -82,6 +83,10 @@ const registerEventHandlerPreSetup = (
     ipcMain.on('get-appdata-sync', (event) => {
         // eslint-disable-next-line no-param-reassign
         event.returnValue = getRootDir();
+    });
+    ipcMain.on('get-build-info-sync', (event) => {
+        // eslint-disable-next-line no-param-reassign
+        event.returnValue = buildInfo;
     });
 
     ipcMain.handle('refresh-nodes', () => args.refresh);

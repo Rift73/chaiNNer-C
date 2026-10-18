@@ -4,7 +4,8 @@ import { Menu, MenuItemConstructorOptions, app, dialog } from 'electron/main';
 import os from 'os';
 import path from 'path';
 import { links } from '../../common/links';
-import { chainnerCVersion } from '../../common/version';
+import { chainnerCVersion, isDevelopmentBuild } from '../../common/version';
+import { buildInfo } from '../buildInfo';
 import { isMac } from '../env';
 import { getLogsFolder } from '../platform';
 import { BrowserWindowWithSafeIpc } from '../safeIpc';
@@ -28,7 +29,9 @@ export const setMainMenu = ({ mainWindow, menuData, enabled = false }: MainMenuA
     const showAboutDialog = async () => {
         const response = await dialog.showMessageBox(mainWindow, {
             title: 'About chaiNNer',
-            message: `chaiNNer v${chainnerCVersion}`,
+            message: `chaiNNer v${chainnerCVersion}${
+                isDevelopmentBuild(buildInfo) ? ' (development build)' : ''
+            }`,
             detail: `chaiNNer is an open source (GPLv3 licensed) tool created by @joeyballentine, with support from other community members. Support the project by donating to my Ko-Fi via the button below. Also, many thanks to these members specifically: @RunDevelopment and @theflyingzamboni for ongoing development, and @Kim2091 for testing.`,
             buttons: ['Open Ko-Fi', 'Close'],
             defaultId: 0,
@@ -426,6 +429,19 @@ export const setMainMenu = ({ mainWindow, menuData, enabled = false }: MainMenuA
                 },
                 { type: 'separator' },
                 ...(!isMac ? [{ label: 'About chaiNNer', click: showAboutDialog }] : []),
+                {
+                    label: 'Release Notes',
+                    click: async () => {
+                        await shell.openExternal('https://github.com/Rift73/chaiNNer-C/releases');
+                    },
+                },
+                {
+                    label: 'Check for Updates...',
+                    click: () => {
+                        mainWindow.webContents.send('check-for-updates');
+                    },
+                    enabled,
+                },
 
                 { type: 'separator' },
                 {
