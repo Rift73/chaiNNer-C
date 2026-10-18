@@ -136,6 +136,7 @@ struct DdsMipMaps;
 struct RotateInterpolationMode;
 struct TileSize;
 struct AudioStream;
+struct ColourInfo;
 
 enum FpMode { fp32, fp16 }
 

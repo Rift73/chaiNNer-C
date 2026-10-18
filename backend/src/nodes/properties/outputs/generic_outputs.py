@@ -130,3 +130,10 @@ class AnyOutput(BaseOutput):
 
     def enforce(self, value: object) -> object:
         return value
+
+
+class ColourInfoOutput(BaseOutput):
+    """A video's colour information (nodes.impl.colour_info.ColourInfo)."""
+
+    def __init__(self, label: str = "Colour Info"):
+        super().__init__(output_type="ColourInfo", label=label, kind="generic")

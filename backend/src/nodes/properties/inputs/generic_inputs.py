@@ -660,3 +660,10 @@ def AnchorInput(label: str = "Anchor", icon: str = "BsFillImageFill") -> DropDow
         preferred_style="anchor",
         default=Anchor.CENTER,
     )
+
+
+class ColourInfoInput(BaseInput):
+    """A video's colour information (nodes.impl.colour_info.ColourInfo)."""
+
+    def __init__(self, label: str = "Colour Info"):
+        super().__init__("ColourInfo", label, kind="generic")
