@@ -196,7 +196,10 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   Verify, Build Engine's Precision. Since 2026-10-16 (owner) Build Engine's Workspace (GiB, any amount; 0 =
   automatic: TensorRT's default, up to the GPU's memory, since 2026-10-17 when 4 GiB failed an FDAT 2048x2048
   build by 8 MB; 8 for DUAL), Allow TF32, Sparse Weights and Optimization Level (0-5, default 3) apply to every
-  ONNX, DUAL's worker included (its defaults stay the guide's: 8 GiB, TF32 off, dense, level 3). Save Engine's
+  ONNX, DUAL's worker included (its defaults stay the guide's: 8 GiB, TF32 off, dense, level 3). Build Engine's
+  Tiling Optimization (2026-10-18; TensorRT's L2-cache tiling, None/Fast/Moderate/Full, default None, hidden for
+  DUAL): at 256x256, level 3, FP16, DAT2 57.72 -> 51.79 ms with Full (build 56 -> 301 s), HAT-L 89.20 -> 83.36
+  ms with Moderate (84.45 Full). Save Engine's
   Compress (owner, 2026-10-16; default on) writes LZMA, or Zstandard level 19 (Compression, owner 2026-10-17),
   and appends "_compressed" to the name; Load Engine and VapourSynth's AI Upscale decompress by the xz or zstd
   header (`nodes/impl/compressed_file.py`). Measured on the owner's 1x DUAL Light engine: 47.5 MB -> 11.7 MB,

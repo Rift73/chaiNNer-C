@@ -34,6 +34,9 @@ class BuildConfig:
     optimization_level: int = 3
     # 2:4 structured-sparse kernels for weights that are already 2:4 sparse.
     sparse_weights: bool = False
+    # TensorRT's tiling optimization (fused kernels that keep their intermediate tensors
+    # in the L2 cache; not image tiling): "none" is TensorRT's default.
+    tiling_optimization: Literal["none", "fast", "moderate", "full"] = "none"
 
 
 # TensorRT skipping a tactic for want of memory (a warning), and the bytes it asked for.
@@ -208,6 +211,9 @@ def build_engine_from_onnx(
     if config.sparse_weights:
         builder_config.set_flag(trt.BuilderFlag.SPARSE_WEIGHTS)
     builder_config.builder_optimization_level = config.optimization_level
+    builder_config.tiling_optimization_level = getattr(
+        trt.TilingOptimizationLevel, config.tiling_optimization.upper()
+    )
 
     # Configure dynamic shapes if needed
     has_dynamic = any(d == -1 for d in input_shape)

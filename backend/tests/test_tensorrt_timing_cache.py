@@ -31,6 +31,7 @@ class _Config:
         self.flags = {"tf32"}  # TensorRT's default
         self.workspace: int | None = None  # TensorRT's default: the GPU's memory
         self.builder_optimization_level = 3
+        self.tiling_optimization_level = "NONE"  # TensorRT's default
 
     def set_memory_pool_limit(self, _pool: object, size: int) -> None:
         self.workspace = size
@@ -97,6 +98,9 @@ def _fake_tensorrt() -> ModuleType:
     )
     trt.NetworkDefinitionCreationFlag = SimpleNamespace(EXPLICIT_BATCH=0)
     trt.MemoryPoolType = SimpleNamespace(WORKSPACE="workspace")
+    trt.TilingOptimizationLevel = SimpleNamespace(
+        NONE="NONE", FAST="FAST", MODERATE="MODERATE", FULL="FULL"
+    )
     trt.Logger = type("Logger", (), {"WARNING": 2, "__init__": lambda self, _: None})
     severity = SimpleNamespace(INTERNAL_ERROR=0, ERROR=1, WARNING=2, INFO=3, VERBOSE=4)
     trt.ILogger = type("ILogger", (), {"Severity": severity})
@@ -153,14 +157,19 @@ def _build(engine_builder: ModuleType, cache: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("tf32", "sparse", "level", "flags"),
-    [(False, False, 3, set()), (True, True, 5, {"tf32", "sparse"})],
+    ("tf32", "sparse", "level", "tiling", "flags"),
+    [
+        (False, False, 3, "none", set()),
+        (True, True, 5, "full", {"tf32", "sparse"}),
+        (False, False, 3, "moderate", set()),
+    ],
 )
 def test_the_build_settings_reach_tensorrt(
     engine_builder: ModuleType,
     tf32: bool,
     sparse: bool,
     level: int,
+    tiling: str,
     flags: set[str],
 ):
     config = engine_builder.BuildConfig(
@@ -173,11 +182,13 @@ def test_the_build_settings_reach_tensorrt(
         allow_tf32=tf32,
         optimization_level=level,
         sparse_weights=sparse,
+        tiling_optimization=tiling,
     )
     engine_builder.build_engine_from_onnx(b"onnx", config)
     (built,) = _CONFIGS
     assert built.flags == flags
     assert built.builder_optimization_level == level
+    assert built.tiling_optimization_level == tiling.upper()
     assert built.workspace == int(12.5 * 1024**3)
 
 
