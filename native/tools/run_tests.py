@@ -4,13 +4,14 @@ The test files of native/tests and backend/tests are split into shards balanced 
 last measured durations (by file size before any are measured), and each shard runs in
 its own pytest process with the environment of README Test. Every process loads the
 suite's conftest.py as the one-process run does, so a shard runs exactly like the suite.
-The shards' JUnit reports give one summary, the failures, and each file's duration for
-the next run's balance, kept in the git-ignored native/local/test-durations.json.
+Each shard reports every test phase as a JSON line (the shard_report.py plugin), which
+gives one summary, the failures, and each file's duration for the next run's balance,
+kept in the git-ignored native/local/test-durations.json.
 
 usage: python -B native/tools/run_tests.py [--workers N] [PYTEST_ARG ...]
 
 Arguments it does not know go to every shard's pytest. The exit status is 1 when a test
-failed or errored, or a shard ended without its report.
+failed or errored, or a shard could not run its tests (collection or internal error).
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -79,8 +79,13 @@ def shards(
     return [group for group in groups if group]
 
 
-def environment(threads: int | None) -> dict[str, str]:
+def environment(threads: int | None, report: Path) -> dict[str, str]:
     env = dict(os.environ)
+    # pytest imports -p plugins before it applies its pythonpath setting
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(ROOT / "native" / "tools"), *filter(None, [env.get("PYTHONPATH")])]
+    )
+    env["CHAINNER_C_SHARD_REPORT"] = str(report)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["CUDA_VISIBLE_DEVICES"] = "-1"
     env["NUMBA_CACHE_DIR"] = str(Path(tempfile.gettempdir()) / "chainner-c-numba")
@@ -99,22 +104,23 @@ def environment(threads: int | None) -> dict[str, str]:
 
 
 def read_report(report: Path, totals: Totals) -> None:
-    for case in ET.parse(report).getroot().iter("testcase"):
-        name = case.get("file", "").replace("\\", "/")
-        totals.durations[name] = totals.durations.get(name, 0.0) + float(
-            case.get("time", "0")
-        )
-        outcome = {child.tag for child in case}
-        if "failure" in outcome:
+    phases: dict[str, dict[str, str]] = {}
+    for line in report.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        phases.setdefault(record["nodeid"], {})[record["when"]] = record["outcome"]
+        name = record["nodeid"].split("::", 1)[0]
+        totals.durations[name] = totals.durations.get(name, 0.0) + record["duration"]
+    for nodeid, outcome in phases.items():
+        if outcome.get("call") == "failed":
             totals.failed += 1
-        elif "error" in outcome:
+            totals.failures.append(nodeid)
+        elif "failed" in outcome.values():
             totals.errors += 1
-        elif "skipped" in outcome:
+            totals.failures.append(nodeid)
+        elif "skipped" in outcome.values():
             totals.skipped += 1
         else:
             totals.passed += 1
-        if outcome & {"failure", "error"}:
-            totals.failures.append(f"{case.get('classname')}::{case.get('name')}")
 
 
 def main() -> int:
@@ -145,7 +151,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="chainner-c-tests-") as temporary:
         running: list[tuple[subprocess.Popen[bytes], Path, Path]] = []
         for index, (group, shard_cpus) in enumerate(placed):
-            report = Path(temporary) / f"shard-{index}.xml"
+            report = Path(temporary) / f"shard-{index}.jsonl"
             log = Path(temporary) / f"shard-{index}.log"
             command = [
                 sys.executable,
@@ -155,9 +161,8 @@ def main() -> int:
                 "-q",
                 "-p",
                 "no:cacheprovider",
-                f"--junitxml={report}",
-                "-o",
-                "junit_family=xunit1",
+                "-p",
+                "shard_report",
                 *pytest_args,
                 *group,
             ]
@@ -165,7 +170,9 @@ def main() -> int:
                 process = subprocess.Popen(
                     command,
                     cwd=ROOT,
-                    env=environment(None if shard_cpus is None else len(shard_cpus)),
+                    env=environment(
+                        None if shard_cpus is None else len(shard_cpus), report
+                    ),
                     stdin=subprocess.DEVNULL,
                     stdout=output,
                     stderr=subprocess.STDOUT,
@@ -175,8 +182,8 @@ def main() -> int:
                 psutil.Process(process.pid).cpu_affinity(shard_cpus)
             running.append((process, report, log))
         for process, report, log in running:
-            process.wait()
-            if report.exists():
+            # 0: passed, 1: a test failed, 5: no tests; otherwise tests did not run
+            if process.wait() in (0, 1, 5) and report.exists():
                 read_report(report, totals)
             else:
                 tail = log.read_text(encoding="utf-8", errors="replace")[-2000:]
@@ -193,7 +200,7 @@ def main() -> int:
     for name in totals.failures:
         print(f"FAILED {name}")
     for shard in broken:
-        print(f"SHARD WITHOUT A REPORT {shard}")
+        print(f"SHARD DID NOT RUN ITS TESTS {shard}")
     print(
         f"{totals.passed} passed, {totals.failed} failed, {totals.errors} errors,"
         f" {totals.skipped} skipped in {seconds:.0f} s ({len(placed)} shards)"
