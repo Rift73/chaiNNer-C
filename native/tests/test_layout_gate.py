@@ -132,6 +132,7 @@ GRAY_ONLY = frozenset(
         "chainner:image:distance_transform",
         "chainner:image:get_bbox",
         "chainner:image:image_statistics",
+        "chainner:image:planes_to_rgb",
         "chainner:image:threshold_adaptive",
     }
 )

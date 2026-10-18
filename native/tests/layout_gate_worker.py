@@ -367,6 +367,10 @@ def inputs_for(
             values.append(str(save) if value == "@save" else value)
         elif isinstance(i, tree.image_input):
             values.append(None)
+        elif i.optional and not hasattr(i, "default"):
+            # An unconnected optional input without a default (Colour Info) reaches
+            # the node as None, as the executor passes it.
+            values.append(None)
         else:
             values.append(i.default)
     return values, tiles
