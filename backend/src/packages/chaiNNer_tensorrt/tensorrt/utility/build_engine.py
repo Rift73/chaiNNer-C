@@ -89,7 +89,7 @@ if utility_group is not None:
             "Building an engine can take several minutes depending on the model size and optimization settings.",
             "The built engine is optimized specifically for your GPU and TensorRT version.",
             "It is recommended to save the built engine for reuse, as building is slow.",
-            "A DUAL ONNX from Convert To ONNX builds in its own mixed precision (BF16 body, FP32 input and output) with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Precision and Tiling Optimization do not apply and are hidden; Workspace, Allow TF32, Sparse Weights and Optimization Level do. Upscale Image replays DUAL engines from a CUDA graph per input size.",
+            "A DUAL ONNX from Convert To ONNX builds in its own mixed precision (BF16 body, FP32 input and output) with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Precision does not apply and is hidden; Workspace, Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do. Upscale Image replays DUAL engines from a CUDA graph per input size.",
         ],
         icon="BsNvidia",
         inputs=[
@@ -212,21 +212,19 @@ if utility_group is not None:
                 " takes longer and the engine may run faster. 3 is TensorRT's default; 5 can take"
                 " much longer.",
             ),
-            if_group(NOT_DUAL)(
-                EnumInput(
-                    TilingOptimization,
-                    label="Tiling Optimization",
-                    default=TilingOptimization.NONE,
-                    option_labels=TILING_OPTIMIZATION_LABELS,
-                ).with_docs(
-                    "Lets TensorRT fuse chains of layers into kernels that keep their"
-                    " intermediate results in the GPU's L2 cache instead of writing them to"
-                    " memory. This is not image tiling: it changes only how the engine runs.",
-                    "It helps models limited by memory traffic, such as the window attention"
-                    " of HAT and DAT: at 256x256 with Optimization Level 3, Full ran DAT2 10%"
-                    " faster and Moderate ran HAT-L 7% faster, with builds 3 to 5 times longer.",
-                    "None keeps TensorRT's default (no tiling optimization).",
-                ),
+            EnumInput(
+                TilingOptimization,
+                label="Tiling Optimization",
+                default=TilingOptimization.NONE,
+                option_labels=TILING_OPTIMIZATION_LABELS,
+            ).with_docs(
+                "Lets TensorRT fuse chains of layers into kernels that keep their"
+                " intermediate results in the GPU's L2 cache instead of writing them to"
+                " memory. This is not image tiling: it changes only how the engine runs.",
+                "Gains depend on the model. On a 4x HAT-L and DAT2 from Convert To ONNX at"
+                " 256x256 (Optimization Level 3), Full ran 0.5% and 1.6% faster than None"
+                " and made the build 4 to 5 times longer.",
+                "None keeps TensorRT's default (no tiling optimization).",
             ),
         ],
         outputs=[
@@ -278,6 +276,7 @@ if utility_group is not None:
                 optimization_level=optimization_level,
                 tf32=allow_tf32,
                 sparse_weights=sparse_weights,
+                tiling_optimization=tiling_optimization.value,
             )
         # One timing cache per model, GPU and TensorRT version
         timing_cache_path = None
@@ -338,11 +337,12 @@ def build_dual_engine(
     optimization_level: int,
     tf32: bool,
     sparse_weights: bool,
+    tiling_optimization: str,
 ) -> TensorRTEngine:
     """DUAL's specialized engine, in the ONNX's mixed precision. A dynamic DUAL ONNX
     takes the node's shape inputs as its (height, width) profile; a fixed one has its
     own size. The node's precision input does not apply (hidden); its workspace, TF32,
-    sparsity and optimization level do."""
+    sparsity, optimization level and tiling optimization do."""
     major, minor = get_cuda_compute_capability(settings.gpu_index)
     spec = manifest["specialization"]
     if spec.get("dynamic", False):
@@ -353,7 +353,7 @@ def build_dual_engine(
     low, high = profile[0], profile[2]
     logger.info(
         "Building a DUAL engine (%s x%d, %dx%d to %dx%d, plugins %s, SM %d%d):"
-        " workspace=%gGiB, tf32=%s, sparse=%s, level=%d",
+        " workspace=%gGiB, tf32=%s, sparse=%s, level=%d, tiling=%s",
         spec["factory"],
         spec["scale"],
         low[1],
@@ -367,6 +367,7 @@ def build_dual_engine(
         tf32,
         sparse_weights,
         optimization_level,
+        tiling_optimization,
     )
     engine_bytes = dual.build_engine(
         onnx_model.bytes,
@@ -377,6 +378,7 @@ def build_dual_engine(
         optimization_level=optimization_level,
         tf32=tf32,
         sparse_weights=sparse_weights,
+        tiling_optimization=tiling_optimization,
         context=context,
     )
     min_shape, opt_shape, max_shape = ((1, 3, h, w) for h, w in profile)

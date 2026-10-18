@@ -247,9 +247,10 @@ def test_the_build_settings_reach_the_engine_worker(
         optimization_level=5,
         tf32=True,
         sparse_weights=True,
+        tiling_optimization="full",
     )
     assert engine == b"engine"
     ((_, _, _, _, gpu, plugin, *rest),) = calls
     assert (gpu, plugin) == ("0", key)
     sizes = ["64x64", "256x256", "512x512", "4"] if dynamic else []
-    assert rest == ["12.5", "5", "1", "1", *sizes]
+    assert rest == ["12.5", "5", "1", "1", "full", *sizes]

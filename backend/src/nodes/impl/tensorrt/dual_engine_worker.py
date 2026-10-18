@@ -3,14 +3,15 @@ the guide's ONNX with its plugin nodes replaced by AOT Python plugins (dual_aot.
 compiled by Triton for this GPU and embedded in the engine. The builder policy is the
 guide's trtexec command (vendor/dual_tensorrt/scripts/dual_tensorrt/build.py, engine()):
 strongly typed, no auxiliary streams, detailed profiling verbosity and a fresh timing
-cache, with Build Engine's workspace (GiB), optimization level, TF32 (1/0) and sparse
-weights (1/0); the guide's are 8, 3, 0 and 0. A width-only key (c<C>) is a
+cache, with Build Engine's workspace (GiB), optimization level, TF32 (1/0), sparse
+weights (1/0) and tiling optimization (none, fast, moderate or full); the guide's are
+8, 3, 0, 0 and none. A width-only key (c<C>) is a
 dynamic-shape ONNX: its engine gets one optimization profile, minimum, optimum and
 maximum input sizes given as HxW, and its input is named for the ONNX's input
 alignment (dual.aligned_input_name), which Upscale Image's tiler reads.
 
     python -m nodes.impl.tensorrt.dual_engine_worker ONNX ENGINE GPU_INDEX PLUGIN_KEY
-        WORKSPACE_GIB LEVEL TF32 SPARSE [MIN OPT MAX ALIGNMENT]
+        WORKSPACE_GIB LEVEL TF32 SPARSE TILING [MIN OPT MAX ALIGNMENT]
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ def main(
     level: str,
     tf32: str,
     sparse: str,
+    tiling: str,
     *profile: str,
 ) -> None:
     import onnx
@@ -64,6 +66,9 @@ def main(
     if sparse == "1":
         config.set_flag(trt.BuilderFlag.SPARSE_WEIGHTS)
     config.builder_optimization_level = int(level)
+    config.tiling_optimization_level = getattr(
+        trt.TilingOptimizationLevel, tiling.upper()
+    )
     config.max_aux_streams = 0
     config.set_memory_pool_limit(
         trt.MemoryPoolType.WORKSPACE, int(float(workspace_gib) * (1 << 30))
