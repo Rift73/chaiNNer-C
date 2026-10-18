@@ -237,13 +237,15 @@ def build_engine(
     optimization_level: int = 3,
     tf32: bool = False,
     sparse_weights: bool = False,
+    tiling_optimization: str = "none",
     context: NodeContext | None = None,
 ) -> bytes:
     """A TensorRT engine of a DUAL ONNX with its plugins (AOT Python plugins, Triton
     kernels compiled for this GPU) embedded, built by chaiNNer-C's TensorRT, the version
     that loads it, in dual_engine_worker.py. A dynamic ONNX takes its engine's
     (minimum, optimal, maximum) (height, width) profile (see check_profile). The
-    defaults are the guide's build policy (8 GiB, level 3, TF32 off, dense)."""
+    defaults are the guide's build policy (8 GiB, level 3, TF32 off, dense, no tiling
+    optimization); `tiling_optimization` is none, fast, moderate or full."""
     spec = manifest["specialization"]
     if spec.get("dynamic", False) != (profile is not None):
         raise ValueError("Only a dynamic DUAL ONNX takes a size profile.")
@@ -252,6 +254,7 @@ def build_engine(
         str(optimization_level),
         "1" if tf32 else "0",
         "1" if sparse_weights else "0",
+        tiling_optimization,
     ]
     sizes = (
         []

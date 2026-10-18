@@ -1,13 +1,14 @@
-"""Copy the installed chaiNNer's backend into the oracle tree and patch it.
+"""Copy the pinned upstream nightly's backend into the oracle tree and patch it.
 
-The oracle (spec 3) is the installed app's resources/src, run on this project's
-runtime and wheels. Each run copies it afresh, without __pycache__, to
-native/build/oracle/src, applies the one tracked native/tests/oracle/compat.diff
-there with git apply, and adds chaiNNer-C's C chainner_ext from backend/src
-(verify_runtime.CHAINNER_EXT: the package, with chainner_native.dll beside its
-pyd). It records the source hashes, the app version, the diff hash and the four
-chainner_ext hashes in native/build/oracle/oracle.json. The installed app and
-backend/src are only read, and nothing is written outside native/build/oracle.
+The oracle (spec 3) is the pinned app's resources/src (independent_ui.UPSTREAM_APP),
+run on this project's runtime and wheels. Each run copies it afresh, without
+__pycache__, to native/build/oracle/src, applies the one tracked
+native/tests/oracle/compat.diff there with git apply, and adds chaiNNer-C's C
+chainner_ext from backend/src (verify_runtime.CHAINNER_EXT: the package, with
+chainner_native.dll beside its pyd). It records the source hashes, the app
+version, the diff hash and the four chainner_ext hashes in
+native/build/oracle/oracle.json. The pinned app and backend/src are only read,
+and nothing is written outside native/build/oracle.
 
 chainner_ext is neither a compat.diff hunk nor a site-packages install, and
 backend/src is never on the oracle's sys.path. The runtime verifiers refuse an
@@ -31,12 +32,10 @@ from pathlib import Path
 from typing import Any
 
 import package_files
+from independent_ui import UPSTREAM_APP
 from verify_runtime import CHAINNER_EXT, ORACLE, ORACLE_RECORD, digest, write_json
 
 PROJECT = Path(__file__).resolve().parents[2]
-INSTALLED_APP = Path(
-    os.environ["LOCALAPPDATA"], "chaiNNer", "app-0.25.1-nightly2025-10-21"
-)
 BACKEND = PROJECT / "backend/src"
 COMPAT = PROJECT / "native/tests/oracle/compat.diff"
 
@@ -89,11 +88,11 @@ def make_oracle(
     backend is chaiNNer-C's backend/src, where the four CHAINNER_EXT files are
     built. Every write stays inside oracle, which must be a real absolute path.
     With check, nothing is written: the sources are checked and the diff is
-    checked against the installed source.
+    checked against the upstream source.
     """
     source = app / "resources/src"
     if not source.is_dir():
-        raise ValueError(f"Installed backend source missing: {source}")
+        raise ValueError(f"Upstream backend source missing: {source}")
     missing = [
         str(backend / name) for name in CHAINNER_EXT if not (backend / name).is_file()
     ]
@@ -109,7 +108,7 @@ def make_oracle(
         raise ValueError(f"Oracle directory is not a real absolute path: {oracle}")
     names = package_files.walk(source, package_files.cache_skip)
     if not names:
-        raise ValueError(f"Installed backend source is empty: {source}")
+        raise ValueError(f"Upstream backend source is empty: {source}")
     target = oracle / "src"
     if check:
         files = {name: package_files.hash_file(source / name) for name in names}
@@ -150,7 +149,7 @@ def make_oracle(
 
 def main() -> int:
     args = parse_arguments()
-    record = make_oracle(INSTALLED_APP, BACKEND, COMPAT, ORACLE, args.check)
+    record = make_oracle(UPSTREAM_APP, BACKEND, COMPAT, ORACLE, args.check)
     summary = {
         "result": "checked" if args.check else "written",
         "record": None if args.check else str(ORACLE / ORACLE_RECORD),

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
 import os from 'node:os';
 import type { AddressInfo } from 'node:net';
@@ -55,6 +56,42 @@ export const getBuildDefine = (env: ConfigEnv<'build'>) => {
     }, {} as Record<string, any>);
 
     return define;
+};
+
+// The fingerprint of the commit the build is made from (BuildInfo in src/common/version.ts): its
+// tree, its commit date and whether tracked files have uncommitted changes (untracked files, such
+// as local build folders, are not part of the build's commit). The build prints it once, so a
+// release build made from a dirty checkout shows in the make log.
+export const getBuildInfoDefine = (root: string) => {
+    const git = (...args: string[]) =>
+        execFileSync('git', args, {
+            cwd: root,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+    const define = (tree: string, date: string, dirty: boolean) => {
+        process.stdout.write(
+            `Build fingerprint: BUILD_TREE=${tree} BUILD_DATE=${date} BUILD_DIRTY=${String(
+                dirty
+            )}\n`
+        );
+        return {
+            BUILD_TREE: JSON.stringify(tree),
+            BUILD_DATE: JSON.stringify(date),
+            BUILD_DIRTY: JSON.stringify(dirty),
+        };
+    };
+
+    try {
+        return define(
+            git('rev-parse', 'HEAD^{tree}'),
+            git('log', '-1', '--format=%cI'),
+            git('status', '--porcelain', '--untracked-files=no') !== ''
+        );
+    } catch {
+        // not a git checkout, or no git: empty values, a development build
+        return define('', '', false);
+    }
 };
 
 export const pluginExposeRenderer = (name: string): Plugin => {

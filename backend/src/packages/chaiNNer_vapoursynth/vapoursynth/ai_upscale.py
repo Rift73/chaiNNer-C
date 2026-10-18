@@ -95,7 +95,11 @@ class AiUpscalePrecision(Enum):
         .with_id(2)
         .with_docs(
             "PyTorch and ONNX run on the first NVIDIA GPU when there is one, else on"
-            " the CPU. TensorRT engines need an NVIDIA GPU."
+            " the CPU. TensorRT engines need an NVIDIA GPU.",
+            "TensorRT engines run on chaiNNer-C's native TensorRT runner by default,"
+            " which converts, tiles and blends frames on the GPU. They tile by the engine's"
+            " shape range (the sizes it was built for), so there is no tile size for"
+            " them.",
         ),
         if_enum_group(2, AiUpscaleBackend.PYTORCH)(
             EnumInput(
@@ -134,6 +138,22 @@ class AiUpscalePrecision(Enum):
                 ).with_id(5),
             ),
         ),
+        if_enum_group(2, AiUpscaleBackend.TENSORRT)(
+            NumberInput("Streams", min=1, max=4, default=1)
+            .with_id(6)
+            .with_docs(
+                "How many frames the TensorRT runner upscales at once. Each extra"
+                " stream keeps another frame's buffers and the engine's working memory"
+                " on the GPU, about one more frame's worth of VRAM (1x FP16 at 1080p:"
+                " 650 -> 1124 MiB for 2 streams; 4x from 1080p to 8K: 2363 -> 4548"
+                " MiB).",
+                "More streams are faster mainly for light models (a light ESRGAN at"
+                " 1080p: 72.9 -> 70.2 ms per frame with 2 streams). Use 1 for large"
+                " models or resolutions.",
+                "The Python path (CHAINNER_C_TRT_RUNNER=0, or a build without the"
+                " runner) upscales one frame at a time and ignores this.",
+            ),
+        ),
     ],
     outputs=[VideoClipOutput()],
     node_context=True,
@@ -146,12 +166,13 @@ def ai_upscale_node(
     precision: AiUpscalePrecision,
     tile_size: TileSize,
     custom_tile_size: int,
+    streams: int,
 ) -> VideoClip:
     var = clip_var(context.node_id)
     tile = custom_tile_size if tile_size == CUSTOM else tile_size
     call = (
         f"chainner_vs.upscale({one_clip(clip, 'Clip')}, {os.path.abspath(model)!r},"
-        f" {backend.value!r}, {precision.value!r}, {int(tile)})"
+        f" {backend.value!r}, {precision.value!r}, {int(tile)}, {int(streams)})"
     )
     return VideoClip(
         var=var,

@@ -154,7 +154,7 @@ def _onnx(path: str) -> Upscaler:
     )
 
 
-def _tensorrt(path: str) -> Upscaler:
+def _require_gpu() -> None:
     from gpu import cuda_pci_addresses
 
     if not cuda_pci_addresses():
@@ -163,6 +163,10 @@ def _tensorrt(path: str) -> Upscaler:
             " CUDA_VISIBLE_DEVICES hides it). Choose the PyTorch or ONNX backend"
             " to run on the CPU."
         )
+
+
+def _tensorrt(path: str) -> Upscaler:
+    _require_gpu()
 
     from nodes.impl.compressed_file import read_file
     from nodes.impl.tensorrt.engine_info import deserialize_engine, read_engine_info
@@ -209,7 +213,8 @@ def load(model: str, backend: str, precision: str) -> Upscaler:
     return _tensorrt(model)
 
 
-def _upscaler(model: str, backend: str, precision: str) -> Upscaler:
+def _model_key(model: str, backend: str, precision: str) -> tuple[str, str, str]:
+    """Checks a model file for a backend; its key in `loaded`."""
     suffixes = BACKENDS.get(backend)
     if suffixes is None:
         raise ValueError(
@@ -233,7 +238,11 @@ def _upscaler(model: str, backend: str, precision: str) -> Upscaler:
         raise FileNotFoundError(f"The model file {model} does not exist.")
     # ONNX models and TensorRT engines run in their own precision: nodes that differ
     # only in their (hidden) precision input share one session.
-    key = (model, backend, precision if backend == "PyTorch" else "")
+    return (model, backend, precision if backend == "PyTorch" else "")
+
+
+def _upscaler(model: str, backend: str, precision: str) -> Upscaler:
+    key = _model_key(model, backend, precision)
     with _loading:
         upscaler = loaded.get(key)
         if upscaler is None:
@@ -266,11 +275,37 @@ def _write(img: np.ndarray, frame: Any) -> None:
         np.copyto(np.asarray(frame[plane]), img[:, :, channel])
 
 
-def upscale(clip: Any, model: str, backend: str, precision: str, tile: int) -> Any:
+def _runner_clip(clip: Any, model: str, plugin: Path, streams: int) -> Any:
+    """AI Upscale on the native TensorRT runner's VapourSynth filter (`plugin`, see
+    nodes/impl/tensorrt/runner.py) with `streams` execution contexts: frames are
+    converted, tiled and blended on the GPU, with no Python per frame, and come out as
+    the bridge makes them (clipped to 0-1 before and after the engine, properties and
+    _Matrix as below)."""
+    _require_gpu()
+
+    from nodes.impl.compressed_file import read_file
+    from nodes.impl.tensorrt.runner import load_tensorrt
+
+    load_tensorrt()  # the plugin's delay-loaded TensorRT imports find these DLLs
+    core = vs.core
+    if not hasattr(core, "chainner_trt"):
+        core.std.LoadPlugin(str(plugin))
+    upscaled = core.chainner_trt.Upscale(
+        clip, engine=read_file(model), streams=streams, device=GPU_INDEX
+    )
+    core.std.SetVideoCache(upscaled, mode=1)  # as `upscale` caches its clip
+    return upscaled
+
+
+def upscale(
+    clip: Any, model: str, backend: str, precision: str, tile: int, streams: int = 1
+) -> Any:
     """The VideoNode `clip` (RGBS or GRAYS) upscaled by the model file `model` on
     `backend` ("PyTorch", "ONNX" or "TensorRT"), as a VideoNode. `precision` ("fp32" or
     "fp16") is PyTorch's; `tile` is chaiNNer's tile size value: 0 Auto, -1 no tiling,
-    -2 maximum, else the largest tile in pixels.
+    -2 maximum, else the largest tile in pixels. `streams` (1 to 4) is the TensorRT
+    runner's: frames upscaled at once, each holding its own buffers on the GPU; the
+    Python bridge (CHAINNER_C_TRT_RUNNER=0, or a build without the runner) ignores it.
 
     The model gets each frame clipped to [0, 1], as chaiNNer's images always are (a
     float clip need not be), so a frame comes out as the Upscale Image node makes it
@@ -295,6 +330,15 @@ def upscale(clip: Any, model: str, backend: str, precision: str, tile: int) -> A
             f"{tile} is not a tile size: use 0 (Auto), -1 (no tiling), -2 (maximum) or"
             " a size in pixels."
         )
+    if not 1 <= streams <= 4:  # the AI Upscale node's Streams range
+        raise ValueError(f"{streams} is not a stream count: use 1 to 4.")
+    if backend == "TensorRT":
+        from nodes.impl.tensorrt.runner import runner_plugin
+
+        plugin = runner_plugin()
+        if plugin is not None:
+            _model_key(model, backend, precision)
+            return _runner_clip(clip, model, plugin, streams)
     upscaler = _upscaler(model, backend, precision)
     # As the Upscale Image nodes: the clip's channels, unless the model changes them
     # (a gray clip goes through an RGB model as BGR and comes back as gray).

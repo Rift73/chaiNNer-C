@@ -28,6 +28,7 @@ export const migrateOldStorageSettings = (settings: ReadonlyStorage): Partial<Ch
 
     return {
         theme: get('theme', 'dark'),
+        checkForUpdatesOnStartup: get('check-upd-on-strtup-2', true),
         startupTemplate: get<string>('startup-template', '') || '',
         animateChain: get('animate-chain', true),
         snapToGrid: get('snap-to-grid', false),

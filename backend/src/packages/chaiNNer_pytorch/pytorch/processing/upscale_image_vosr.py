@@ -32,7 +32,7 @@ from nodes.impl.pytorch.vosr2_trt_pipeline import (
     lease_full_session,
     release_full_session,
 )
-from nodes.impl.pytorch.vosr2_trt_restore import LatentStatistics, restore
+from nodes.impl.pytorch.vosr2_trt_restore import LOW_MEMORY, LatentStatistics, restore
 from nodes.properties.inputs import (
     BoolInput,
     EnumInput,
@@ -91,23 +91,21 @@ class _VideoState:
             default=VosrMemoryMode.DEFAULT,
             option_labels={VosrMemoryMode.LOW: "Low (under 7 GB)"},
         ).with_docs(
-            "Low keeps total GPU memory use, including other programs, under 7 GB by streaming the model weights. It is slower and always uses PyTorch.",
+            "Low keeps total GPU memory use, including other programs, under 7 GB, and is slower: PyTorch streams the model weights; TensorRT streams the part of its weights that does not fit and restores images larger than 512 pixels a side in overlapping tiles.",
             hint=True,
         ),
-        if_group(Condition.enum(4, VosrMemoryMode.DEFAULT))(
-            EnumInput(
-                VosrBackend,
-                "Backend",
-                default=VosrBackend.PYTORCH,
-                option_labels={
-                    VosrBackend.PYTORCH: "PyTorch",
-                    VosrBackend.TENSORRT: "TensorRT",
-                    VosrBackend.TENSORRT_FP8: "TensorRT FP8",
-                },
-            ).with_docs(
-                "TensorRT needs an NVIDIA GPU and the TensorRT package. TensorRT FP8 is faster and can slightly change fine detail; it needs an RTX 40 series or newer GPU and the official VOSR 2.0 weights, and downloads its calibrated graphs (about 3.5 GB) on first use.",
-                hint=True,
-            ),
+        EnumInput(
+            VosrBackend,
+            "Backend",
+            default=VosrBackend.PYTORCH,
+            option_labels={
+                VosrBackend.PYTORCH: "PyTorch",
+                VosrBackend.TENSORRT: "TensorRT",
+                VosrBackend.TENSORRT_FP8: "TensorRT FP8",
+            },
+        ).with_docs(
+            "TensorRT needs an NVIDIA GPU and the TensorRT package. TensorRT FP8 is faster and can slightly change fine detail; it needs an RTX 40 series or newer GPU and the official VOSR 2.0 weights, and downloads its calibrated graphs (about 3.5 GB) on first use.",
+            hint=True,
         ),
         if_group(Condition.iterated(0, LOAD_VIDEO))(
             EnumInput(
@@ -157,9 +155,6 @@ def upscale_image_vosr_node(
     texture: bool,
 ) -> np.ndarray:
     device = get_settings(context).device
-    # Low hides the backend: it always streams the PyTorch model.
-    if memory == VosrMemoryMode.LOW:
-        backend = VosrBackend.PYTORCH
     if backend != VosrBackend.PYTORCH:
         if device.type != "cuda":
             raise ValueError(
@@ -287,6 +282,7 @@ def _upscale(
         safe_cuda_cache_empty, after="node" if settings.force_cache_wipe else "chain"
     )
     if engine is not None:
+        low = LOW_MEMORY if memory == VosrMemoryMode.LOW else None
         with lease_full_session(context, engine, device, reuse=reuse) as session:
             release_bundle(context.node_id)
             statistics = LatentStatistics.load(model)
@@ -295,7 +291,7 @@ def _upscale(
                 memory,
                 context,
                 settings.budget_limit,
-                prepare=session.prepare,
+                prepare=lambda: session.prepare(None if low is None else low.reserve),
             ) as check:
                 return restore_with_texture(
                     lambda: restore(
@@ -308,6 +304,7 @@ def _upscale(
                         check,
                         session,
                         windows=windows,
+                        low=low,
                     ),
                     img,
                     scale,

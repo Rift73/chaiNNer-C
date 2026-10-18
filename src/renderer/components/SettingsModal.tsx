@@ -267,6 +267,9 @@ const PythonSettings = memo(() => {
 });
 
 const AdvancedSettings = memo(() => {
+    const [checkForUpdatesOnStartup, setCheckForUpdatesOnStartup] = useMutSetting(
+        'checkForUpdatesOnStartup'
+    );
     const [hardwareAcceleration, setHardwareAcceleration] = useMutSetting('hardwareAcceleration');
     const [allowMultipleInstances, setAllowMultipleInstances] =
         useMutSetting('allowMultipleInstances');
@@ -276,6 +279,15 @@ const AdvancedSettings = memo(() => {
             divider={<StackDivider />}
             w="full"
         >
+            <ToggleSetting
+                setValue={setCheckForUpdatesOnStartup}
+                setting={{
+                    label: 'Check for Update on Start-up',
+                    description:
+                        'Toggles checking for updates on start-up. An update is only announced: nothing is downloaded or installed.',
+                }}
+                value={checkForUpdatesOnStartup}
+            />
             <ToggleSetting
                 setValue={setHardwareAcceleration}
                 setting={{

@@ -2,7 +2,13 @@
 import os from 'os';
 import ignore from 'rollup-plugin-ignore';
 import { defineConfig, mergeConfig } from 'vite';
-import { external, getBuildConfig, getBuildDefine, pluginHotRestart } from './base.config';
+import {
+    external,
+    getBuildConfig,
+    getBuildDefine,
+    getBuildInfoDefine,
+    pluginHotRestart,
+} from './base.config';
 import type { ConfigEnv, UserConfig } from 'vite';
 import './forge-types';
 
@@ -11,8 +17,8 @@ const restart = process.env.HOT_RESTART !== undefined;
 // https://vitejs.dev/config
 export default defineConfig((env) => {
     const forgeEnv = env as ConfigEnv<'build'>;
-    const { forgeConfigSelf } = forgeEnv;
-    const define = getBuildDefine(forgeEnv);
+    const { root, forgeConfigSelf } = forgeEnv;
+    const define = { ...getBuildDefine(forgeEnv), ...getBuildInfoDefine(root) };
     const config: UserConfig = {
         build: {
             emptyOutDir: false,

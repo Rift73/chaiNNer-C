@@ -28,6 +28,23 @@ from .vosr2_trt_pipeline import FullSession
 
 
 @dataclass(frozen=True)
+class LowMemory:
+    """A Low memory run: outer tiles of at most `tile` output pixels a side, and
+    `reserve` bytes of the budget kept for their activations (the weights get the rest
+    and TensorRT streams what does not fit)."""
+
+    tile: int
+    reserve: int
+
+
+# RTX 5090, 2x: FP8 peaks 2.66 GB above idle and BF16 2.84 GB, at a 1536x1536 and a 3072x3072
+# output alike (1.1 and 1.7 s at 1536x1536; Default 0.6 and 0.8 s). 1024-pixel tiles were
+# slower (2.5 s FP8) and no closer to Default; a 1 GiB reserve left BF16 too little room for
+# the buffers a warm session keeps between images.
+LOW_MEMORY = LowMemory(tile=512, reserve=2 * 1024**3)
+
+
+@dataclass(frozen=True)
 class LatentStatistics:
     """Only the VAE normalization constants are needed by the full TRT path."""
 
@@ -115,12 +132,26 @@ def restore(
     check: Callable[[], None],
     session: FullSession,
     windows: WindowPlan | None = None,
+    low: LowMemory | None = None,
 ) -> np.ndarray:
-    """A video's `windows` keep each shot's window layout (outer tiles each their own)."""
+    """A video's `windows` keep each shot's window layout (outer tiles each their own).
+    `low` bounds a Low memory run: smaller outer tiles and streamed weights."""
     minimum, _, maximum = profiles("encoder_pre")["x"]
+    if low is not None:
+        maximum = (*maximum[:-2], low.tile, low.tile)
+    reserve = None if low is None else low.reserve
     if image.shape[-2] <= maximum[-2] and image.shape[-1] <= maximum[-1]:
         return _restore_tile(
-            statistics, image, reference, seed, color, progress, check, session, windows
+            statistics,
+            image,
+            reference,
+            seed,
+            color,
+            progress,
+            check,
+            session,
+            windows,
+            reserve,
         )
 
     # Tile the already resized RGB reference: interpolation is still performed
@@ -159,6 +190,7 @@ def restore(
                 check,
                 session,
                 windows,
+                reserve,
             )
             self.done += 1
             return result[:height, :width]
@@ -176,6 +208,7 @@ def _restore_tile(
     check: Callable[[], None],
     session: FullSession,
     windows: WindowPlan | None,
+    reserve: int | None,
 ) -> np.ndarray:
     image = pad_image(image)
     session.begin_image(image.shape[-2], image.shape[-1], seed)
@@ -183,7 +216,7 @@ def _restore_tile(
     checks = FiniteChecks()
     with torch.cuda.stream(session.stream):
         check()
-        session.activate(check)
+        session.activate(check, reserve)
         dino_image = image.to(device)
         latent = checks.add(session.vae("encoder", dino_image, check), "VAE encoding")
         # CPU-only window layout and routing overlap the already queued encoder work.

@@ -108,9 +108,10 @@ class Phases:
     """A side-effect node's two phases (SP3-P9).
 
     prepare receives the inputs the node would, enforced, a lazy input as the value it
-    produces (a collector's: its iterated inputs, as on_iterate receives them). It is
-    pure, so it may run ahead, and returns the value to commit with, or None to run the
-    node whole; a prepare that raises also leaves the node to run whole, so any error
+    produces: prepare(inputs) for a regular node, prepare(collector, inputs) for a
+    collector's iteration, with its iterated inputs as on_iterate receives them. It is
+    pure (it only reads the collector), so it may run ahead, and returns the value to
+    commit with, or None to run the node whole; a prepare that raises also leaves the node to run whole, so any error
     is the node's own, raised where it is today. commit is the node itself with that
     value: commit(inputs, prepared) for a regular node, commit(collector, inputs,
     prepared) for a collector's iteration; it calls prepared.result() where the node

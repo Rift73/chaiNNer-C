@@ -1,8 +1,8 @@
 # chaiNNer-C: build, test, package, bench
 
-chaiNNer-C v0.3.5, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
+chaiNNer-C v0.3.6, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
 installed nightly `0.25.1-nightly.2025-10-21` UI with pinned bundle patches, the single backend in `backend/src`, and a
-native C17/C++20 layer. The UI shows v0.3.5 (header, About, startup log, system information with `app.upstream`), while
+native C17/C++20 layer. The UI shows v0.3.6 (header, About, startup log, system information with `app.upstream`), while
 `app.getVersion()` stays upstream's, so saved chains keep the upstream version stamp and upstream's migrations read
 them correctly. Design: `ARCHITECTURE.md`. State and
 decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md` (user guide) and
@@ -30,8 +30,8 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
   `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools` (MSVC 14.44.35207's headers and libraries,
   and its bundled Ninja), Windows SDK 10.0.26100.0, and CMake 3.20 or newer.
 - Optional, for VOSR's TensorRT plugin (Build): a TensorRT 11 SDK (the zip's `include` and `lib`, for example
-  `TensorRT-11.2.1.2`) and a CUDA 13 toolkit (`nvcc`, for example
-  `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3`).
+  `TensorRT-11.4.0.106`) and a CUDA 13 toolkit (`nvcc`, for example
+  `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4`).
 - CPython 3.14.8 at `native\runtime\cpython-3.14.8`, provisioned by `native\tools\provision_runtime.ps1`
   from the tracked lock `native\python-stack.lock.txt` (interpreter, build tag, archive SHA-256, pip's version
   and every pin, installed without dependency resolution); the run fails unless `pip check` is clean and the
@@ -45,7 +45,26 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
   backend's bundled wheel), `google-re2` and `Sanic-Cors` (upstream's ONNX loader and server import them;
   chaiNNer-C does not) and `pynvml` (upstream's server declares it; chaiNNer-C declares `nvidia-ml-py`,
   which provides the `pynvml` module).
-- Installed app `$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21` (read-only).
+- The pinned upstream nightly at `native\local\upstream\app-0.25.1-nightly2025-10-21` (git-ignored, read-only;
+  `independent_ui.UPSTREAM_APP`, the one setting the packager, `make_oracle.py` and the tests read): upstream's
+  official Windows zip of
+  [`0.25.1-nightly.2025-10-21`](https://github.com/chaiNNer-org/chaiNNer-nightly/releases/tag/2025-10-21), extracted
+  there in each checkout or worktree, or once anywhere with `CHAINNER_C_UPSTREAM_APP` set to that folder (worktrees
+  can share one copy); after the native build (Build), `make_oracle.py` makes the oracle tree the layout gate and the
+  runtime verifiers read:
+
+  ```powershell
+  $zip = "$env:TEMP\chaiNNer-windows-latest-nightly.2025-10-21.zip"
+  Invoke-WebRequest 'https://github.com/chaiNNer-org/chaiNNer-nightly/releases/download/2025-10-21/chaiNNer-windows-latest-nightly.2025-10-21.zip' -OutFile $zip
+  if ((Get-FileHash $zip).Hash -ne '8E93B1F47680A147143BFCD8F70170D68F54CA9B82362DDC9442EFC9318FF451') { throw 'unexpected zip' }
+  Expand-Archive $zip 'native\local\upstream\app-0.25.1-nightly2025-10-21'
+  & '.\native\.venv\Scripts\python.exe' -B native\tools\make_oracle.py
+  ```
+
+  It replaces the installed app (`$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21`), which the owner's chaiNNer
+  update removed on 2026-10-08. Its UI bundles are the pinned ones (`BASELINE_HASHES`); its backend is upstream's own,
+  without the installed copy's local delta (ARCHITECTURE section 2: the GPU lease's 4 files and 10 changed files: the
+  server, process, events and cache modules and 4 PyTorch files; no `chaiNNer_standard` node and not `texconv`).
 - `native\.venv`: the test and tool interpreter, made with
   `native\runtime\cpython-3.14.8\python.exe -m venv --system-site-packages native\.venv`; the runtime
   carries NumPy 2.5.3, OpenCV 5.0.0, pytest, pytest-asyncio and pytest-cov. `native\.venv-py311` keeps
@@ -84,15 +103,17 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 `CHAINNER_C_EXT_OUTPUT_DIR`, default `backend/src/chainner_ext`), replacing the only known-good copies. Copy them to
 `native\build\held\` first and check `Get-FileHash` against those copies. The build is reproducible: the same sources
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
-map, `.gitattributes`). This source's binaries (portable builds: `chainner_native.dll` and
-`_chainner_graph.pyd` of 2026-10-16, after the upstream check and bug hunt; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
+map, `.gitattributes`). This source's binaries (portable builds of 2026-10-18, after the YUV planes, DDS and
+TensorRT runner work, with TensorRT 11.4.0.106 and CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
-| `chainner_native.dll` | `1f6c12a173f8a284aa3bfe900031597b58748a6625f2a2b3506230c1cc12c278` |
-| `_chainner_graph.pyd` | `4af8fc5901529dea858b17e585417a741099f8715a839a09013b63b3de9eaa40` |
+| `chainner_native.dll` | `cf438e3c3dbae42aacfee4bbc0198b7795255487b9e189ae5dcb9ab73b02bba7` |
+| `_chainner_graph.pyd` | `5b1297c1b5df57a73d02baa909f19fa4d2029f2642f21eb87fb0051e411fb322` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
-| `vosr2_qkv.dll` (TensorRT 11.2.1.2, CUDA 13.3.73) | `14dfaec0eeead27ea187ac51b3ba10b76796757af6d4d704d46f4399768196fc` |
+| `vosr2_qkv.dll` | `5b5cde9c2c037f0ed3d48ce0fe59b3ff01432c610edc358fdb7b0155e5b93497` |
+| `_chainner_trt.pyd` | `7d0f774c3426fb2900f05493ef5650f90aa66a997bb000d12c9c71f3cb05d947` |
+| `chainner_trt_vs.dll` | `f7d12717a7cbd02a09ea34728de92a1421ff0902acb73705107b095741b09a9c` |
 
 **VOSR's TensorRT plugin** `vosr2_qkv.dll` (`src/vosr2`, the VOSR TensorRT backends' Q/K/V packing) is an
 optional fourth target: `-Define CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>,CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit>`
@@ -106,6 +127,14 @@ and lld-link with the flags above (TensorRT's and CUDA's headers as system heade
 `nvinfer_11.dll` (CUDA 13's `cudart.lib` is the static runtime) and is reproducible like the others. Its hash is part
 of the VOSR TensorRT engine caches' identity, so a new DLL rebuilds those engines once.
 
+**The TensorRT runner** (`trt_runner`, the C++ engine runner) builds from the same two roots: `_chainner_trt.pyd`
+(the Python module) and, when `CHAINNER_C_VAPOURSYNTH_INCLUDE` names the directory of VapourSynth's `VapourSynth4.h`,
+`chainner_trt_vs.dll` (the VapourSynth plugin), both into `CHAINNER_C_OUTPUT_DIR\tensorrt`. `kernels.cu` is compiled
+by nvcc as `qkv.cu` is; without the include, configuration prints that the plugin was skipped. AI Upscale's TensorRT
+backend uses the runner by default and Upscale Image (TensorRT) only with `CHAINNER_C_TRT_RUNNER=1`;
+`CHAINNER_C_TRT_RUNNER=0` keeps the Python bridge everywhere, and a build without the runner falls back to the bridge
+with one log line.
+
 `generate_onnx_converter.py`, `generate_pixel_art_tables.py` and `generate_tiling_cpp.py` in `native/tools` turn pinned
 sources into C++ and never run in the application, as `native/tests/reference_ncnn/generate_optimizer_cpp.py` does for
 the NCNN optimizer with its recorded corrections. Rerun one only when its pinned input changes, and review the diff.
@@ -117,6 +146,11 @@ $env:PYTHONDONTWRITEBYTECODE = '1'; $env:CUDA_VISIBLE_DEVICES = '-1'
 $env:NUMBA_CACHE_DIR = "$env:TEMP\chainner-c-numba"
 & '.\native\.venv\Scripts\python.exe' -B -m pytest native/tests backend/tests -q -p no:cacheprovider
 ```
+
+- Faster, the same tests and results: `& '.\native\.venv\Scripts\python.exe' -B native\tools\run_tests.py` sets that
+  environment itself and runs one pytest process per shard, each pinned to its own two CPUs with thread pools capped
+  to them (`test_parallel*.py` run unpinned), balanced by the durations it keeps in `native/local/test-durations.json`:
+  102 s instead of 744 s on 16 cores. Extra arguments go to every shard's pytest.
 
 - `CUDA_VISIBLE_DEVICES` hides the GPU from CUDA only. `native/tests/conftest.py` sets
   `VK_LOADER_DRIVERS_DISABLE=*`, which hides it from ncnn's Vulkan (the port's ncnn modules query it when
@@ -159,13 +193,15 @@ $env:NUMBA_CACHE_DIR = "$env:TEMP\chainner-c-numba"
 
 ```powershell
 $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\package_port.py',
-  '--installed-app', "$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21",
   '--installed-python', '.\native\runtime\cpython-3.14.8')
 & $py @pkg --validate-only; if ($LASTEXITCODE -ne 0) { throw 'preflight failed' }
 & $py @pkg --refresh;       if ($LASTEXITCODE -ne 0) { throw 'refresh failed' }
 & $py @pkg --refresh;       if ($LASTEXITCODE -ne 0) { throw 'repeat failed' }
 ```
 
+- The shell comes from the pinned nightly (Prerequisites); `--installed-app <dir>` names another copy of it. The
+  manifest's identity records that path, so a package built from the removed installed app refuses `--refresh` from
+  the extracted one: build a new package (`--destination`) instead.
 - `--validate-only` checks the inputs (installed app, UI pins, backend inventory, git state, the
   runtime and its exclusions), prints counts, digests and the `python_stack` and `native_toolchain` records, writes nothing
   and does not inspect the destination. The repeat run must report result `verified_no_op` and leave
@@ -241,8 +277,8 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
 
 ```powershell
 .\native\.venv\Scripts\python.exe -B native\tools\bench.py [--a TREE] [--b TREE] [--cases CASE ...] [--repeats N] [--record-noise] [--env-a NAME=VALUE] [--env-b NAME=VALUE] [--profile] [--python-a PATH] [--python-b PATH] [--png-compare sha256|decoded]
-# against the installed chaiNNer (its app and Python are read-only; B is the package; PNG bytes differ by encoder, pixels do not):
-.\native\.venv\Scripts\python.exe -B native\tools\bench.py --a "$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21\resources\src" --python-a "$env:APPDATA\chaiNNer\python\python\python.exe" --png-compare decoded
+# against upstream's nightly (the pinned app's backend on the installed chaiNNer's Python, both read-only; B is the package; PNG bytes differ by encoder, pixels do not):
+.\native\.venv\Scripts\python.exe -B native\tools\bench.py --a native\local\upstream\app-0.25.1-nightly2025-10-21\resources\src --python-a "$env:APPDATA\chaiNNer\python\python\python.exe" --png-compare decoded
 ```
 
 - A defaults to the frozen B0 copy `native/reports/baselines/B0-20261001/src` (local, read-only), B to the packaged backend

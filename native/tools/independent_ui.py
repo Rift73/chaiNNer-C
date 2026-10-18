@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 RENDERER = "resources/app/.vite/renderer/main_window/index.js"
@@ -19,7 +20,7 @@ MAIN = "resources/app/.vite/build/main.js"
 CSS = "resources/app/.vite/renderer/main_window/index.css"
 # The product version shown in the header. The package manifest's app_version
 # stays the installed UI baseline (upstream package.json); this is display only.
-PRODUCT_VERSION = "0.3.5"
+PRODUCT_VERSION = "0.3.6"
 BASELINE_HASHES = {
     RENDERER: "50f22a101c16c97fd1db413e3e0becf647c360b817f09b8a3089fa649fd16877",
     MAIN: "df979a26746d814f4dd8e4ce555f6114304a0b7f72cef429de783c646ad26f10",
@@ -35,6 +36,16 @@ PYTHON_CHECK_PORT = 'if(gR.gte(s.version,"3.14.0"))return s}'
 # the reviewed output never follows an unpinned file.
 UPSTREAM_VERSION = "0.25.1-nightly.2025-10-21"
 PACKAGE_JSON = "resources/app/package.json"
+# The pinned app itself: upstream's official Windows zip of that nightly, extracted
+# into this git-ignored folder (native/README.md, Prerequisites), or the folder that
+# CHAINNER_C_UPSTREAM_APP names, so worktrees can share one extracted copy. The
+# packager's shell, make_oracle.py's source and the tests' texconv.exe and bundles
+# come from here; nothing writes to it.
+UPSTREAM_APP = Path(
+    os.environ.get("CHAINNER_C_UPSTREAM_APP")
+    or Path(__file__).resolve().parents[2]
+    / "native/local/upstream/app-0.25.1-nightly2025-10-21"
+)
 # What the patched main bundle logs at startup, and the error its integrated-Python
 # check throws instead of upstream's delete and download (Q6); the real-use pass
 # reads both in the package's log.

@@ -96,8 +96,9 @@ Checklists for the changes that touch the exactness contract, the build or the p
 1. Upstream base: `src/`, `tests/` and `backend/tests` are upstream `d56e507f`. Rebase onto the new commit, keep the
    native wiring in `backend/src`, take the new `backend/tests`, and update `UPSTREAM` in
    `native/tests/test_gpu_lease_removed.py`.
-2. Install the new nightly (read-only), then point the tools at it: `INSTALLED_APP` in `native/tools/make_oracle.py`
-   and the `--installed-app` path in the README commands.
+2. Extract the new nightly's official Windows zip into `native/local/upstream/` (git-ignored, read-only), then point
+   the tools at it: `UPSTREAM_APP` in `native/tools/independent_ui.py` (the packager, `make_oracle.py` and the tests
+   read it), and the zip's URL, SHA-256 and folder in README's Prerequisites.
 3. Re-anchor the patches: new `BASELINE_HASHES` in `independent_ui.py`, each patch JSON's baseline hashes and
    anchors, `INSTALLED_SHA256` in `native/tools/bundle_verify_common.cjs`; review the minified names the
    `verify_*.cjs` tools use. Unknown bundles fail closed until this is done.
@@ -111,11 +112,13 @@ VOSR's TensorRT backends need `vosr2_qkv.dll`: build the native layer with the T
 packaging (section 4, item 6; README Build). VOSR's modules, engine caches, hosted FP8 set and tests:
 [`VOSR2-MAINTAINING.md`](VOSR2-MAINTAINING.md).
 
-1. Pins live in `backend/src/packages/chaiNNer_tensorrt/__init__.py` (`tensorrt` 11.2.1.2 with `auto_update=False`,
-   `cuda-python` 13.4.1); they are GPU-only and not in the lock.
-2. A serialized engine loads only on the TensorRT version and GPU architecture that built it
-   (`nodes/impl/tensorrt/engine_info.py`). `auto_update=False` keeps a pin bump from replacing an installed TensorRT
-   at startup; after a bump, users rebuild engines with Build Engine (VOSR's engines rebuild themselves once).
+1. Pins live in `backend/src/packages/chaiNNer_tensorrt/__init__.py` (`tensorrt` 11.4.0.106, `cuda-python` 13.4.1);
+   they are GPU-only and not in the lock.
+2. The native binaries (`vosr2_qkv.dll`, the runner's `_chainner_trt.pyd` and `chainner_trt_vs.dll`) are built
+   against the pinned SDK, and TensorRT runs a binary only on the version it was built against or a later one, so an
+   installed TensorRT older than the pin is replaced at startup (auto update, no fallback). A serialized engine loads
+   only on the TensorRT version and GPU architecture that built it (`nodes/impl/tensorrt/engine_info.py`): after a
+   bump, users rebuild engines with Build Engine (VOSR's engines rebuild themselves once).
 3. API changes: update the stubs `stubs/tensorrt/__init__.pyi` and `stubs/cuda/bindings/runtime.pyi` (pyright).
 4. CPU tests: `backend/tests/test_tensorrt_tiling.py` (tiling and seams), `native/tests/test_tensorrt_cache.py`
    (sharing and release). GPU runs are manual.

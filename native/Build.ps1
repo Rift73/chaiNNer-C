@@ -12,7 +12,9 @@ CHAINNER_C_PDB=ON, CHAINNER_C_REGEX_ONLY=ON or, for local builds only, CHAINNER_
 icelake-server; never for releases); on a directory's first configure, toolchain.cmake's roots
 chainner_c_llvm, chainner_c_vc_tools, chainner_c_sdk and chainner_c_sdk_version (defaults in that file);
 CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK> with CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit> also builds VOSR's
-TensorRT plugin vosr2_qkv.dll (on any configure; without them it is skipped).
+TensorRT plugin vosr2_qkv.dll and the TensorRT runner _chainner_trt.pyd (on any configure; without them both are
+skipped), and CHAINNER_C_VAPOURSYNTH_INCLUDE=<directory of VapourSynth4.h> the runner's VapourSynth plugin
+chainner_trt_vs.dll.
 
 .PARAMETER Ninja
 ninja.exe (default: the Visual Studio 2022 Build Tools' copy); it must exist.

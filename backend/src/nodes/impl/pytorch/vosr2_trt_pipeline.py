@@ -15,7 +15,7 @@ from gpu import nvidia
 from nodes.impl.tensorrt.cache import SharedCache
 
 from .vosr2_export import rotary_tables
-from .vosr2_plan_file import compressed
+from .vosr2_plan_file import compressed, plain
 from .vosr2_trt_execution import BoundedQueue, Stage, StageExecution
 from .vosr2_trt_models import STAGES
 from .vosr2_trt_plugin import load_plugin
@@ -24,9 +24,16 @@ _LIVE: WeakSet[FullSession] = WeakSet()
 
 
 class FullSession:
-    """Resident model stages; live scratch follows actual input dimensions."""
+    """Resident model stages; live scratch follows actual input dimensions. `plan`
+    places a stage's plan in `directory`: compressed in a cached set (the default), plain
+    in a build's (build_session)."""
 
-    def __init__(self, directory: Path, device: torch.device):
+    def __init__(
+        self,
+        directory: Path,
+        device: torch.device,
+        plan: Callable[[Path, str], Path] = compressed,
+    ):
         from nodes.impl.tensorrt.trt_logger import TRT_LOGGER
 
         load_plugin()
@@ -38,6 +45,8 @@ class FullSession:
         self.stages: dict[str, Stage] = {}
         self.ropes: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         self.budget = 0
+        # The activation reserve the weights were admitted with (None: all resident)
+        self.reserve: int | None = None
         self.execution = StageExecution(self.device, self.stream)
         self.geometry: tuple[int, int, int] | None = None
         self.constants: dict[object, torch.Tensor] = {}
@@ -46,34 +55,49 @@ class FullSession:
             with torch.cuda.device(self.device):
                 for name in STAGES:
                     self.stages[name] = Stage(
-                        compressed(directory, name), self.logger, self.device
+                        plan(directory, name), self.logger, self.device
                     )
         except BaseException:
             self.close()
             raise
         _LIVE.add(self)
 
-    def prepare(self) -> None:
-        """Drop warm weights when the device is nearly full before admission."""
+    def prepare(self, reserve: int | None = None) -> None:
+        """Before admission, drop warm weights admitted with another activation reserve
+        (another memory mode: a Low budget would count them as another program's), or
+        when the device is nearly full."""
+        if self.budget and reserve != self.reserve:
+            self.offload()
+            return
         gpu = next(g for g in nvidia.devices if g.index == self.device.index)
         usage = gpu.get_current_vram_usage()
         if usage.used >= usage.total - 1_200_000_000:
             self.offload()
 
-    def activate(self, check: Callable[[], None]) -> None:
+    def activate(self, check: Callable[[], None], reserve: int | None = None) -> None:
+        """Admit the stages with every weight on the device, or, given a `reserve` (Low
+        memory), with as much of each stage's weights as leaves `reserve` bytes of the
+        budget for activations; TensorRT streams the rest from host memory as it runs."""
         import tensorrt as trt
 
         check()
-        if self.budget:
+        if self.budget and reserve == self.reserve:
             return
+        if self.budget:
+            # Admitted for another memory mode
+            self.offload()
         engines = [stage.engine for stage in self.stages.values()]
         if any(engine is None for engine in engines):
             raise RuntimeError("VOSR BF16 session is closed.")
-        budget = sum(
+        streamable = sum(
             engine.streamable_weights_size for engine in engines if engine is not None
         )
         total = torch.cuda.get_device_properties(self.device).total_memory
         previous = torch.cuda.get_per_process_memory_fraction(self.device)
+        budget = streamable
+        if reserve is not None:
+            free = int(total * previous) - torch.cuda.memory_allocated(self.device)
+            budget = max(0, min(streamable, free - reserve))
         cap = int(total * previous) - budget
         if cap <= torch.cuda.memory_allocated(self.device) + 512 * 1024**2:
             raise RuntimeError("Insufficient memory to admit VOSR BF16 model stages.")
@@ -85,12 +109,14 @@ class FullSession:
                 engine = stage.engine
                 if engine is None:
                     raise RuntimeError("Closed VOSR stage.")
-                if engine.streamable_weights_size:
-                    engine.weight_streaming_budget_v2 = engine.streamable_weights_size
-                    if (
-                        engine.weight_streaming_budget_v2
-                        != engine.streamable_weights_size
-                    ):
+                size = engine.streamable_weights_size
+                if size:
+                    # Each stage keeps the same share of its weights
+                    resident = (
+                        size if budget == streamable else size * budget // streamable
+                    )
+                    engine.weight_streaming_budget_v2 = resident
+                    if engine.weight_streaming_budget_v2 != resident:
                         raise RuntimeError(
                             f"TensorRT rejected VOSR {stage.name} weight residency."
                         )
@@ -101,6 +127,7 @@ class FullSession:
                     raise RuntimeError(f"VOSR could not allocate {stage.name} context.")
                 check()
             self.budget = budget
+            self.reserve = reserve
         except BaseException:
             self.offload()
             raise
@@ -186,6 +213,12 @@ class FullSession:
             stage.close()
         self.stages.clear()
         _LIVE.discard(self)
+
+
+def build_session(directory: Path, device: torch.device) -> FullSession:
+    """A build's session over the plans it just compiled, to check them: plain, since the
+    cache compresses a set only once its build passed."""
+    return FullSession(directory, device, plain)
 
 
 @atexit.register

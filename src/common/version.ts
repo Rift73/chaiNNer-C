@@ -3,7 +3,20 @@ import { Version } from './common-types';
 
 // chaiNNer-C's product version, shown in the header, About, the startup log and system
 // information. app.getVersion() stays upstream's: it stamps saved chains, and migrations read it.
-export const chainnerCVersion = '0.3.5';
+export const chainnerCVersion = '0.3.6';
+
+// The build's fingerprint, embedded at build time (vite/base.config.ts): a re-release keeps its
+// tag, so its git tree and commit date tell it apart. A build made outside git has empty values.
+export interface BuildInfo {
+    tree: string;
+    date: string;
+    dirty: boolean;
+    packaged: boolean;
+}
+
+// Not packaged, built with uncommitted changes or outside git: no automatic update check.
+export const isDevelopmentBuild = ({ tree, date, dirty, packaged }: BuildInfo): boolean =>
+    !packaged || dirty || !tree || !date;
 
 export const parse = (v: string): Version => {
     const version = semver.coerce(v);

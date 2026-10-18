@@ -1,6 +1,6 @@
 """Build or refresh the independent portable chaiNNer-C package.
 
-The installed nightly supplies the shell (without its resources/src and logs);
+The pinned nightly supplies the shell (without its resources/src and logs);
 the provisioned runtime native/runtime/cpython-<version> supplies Python, less
 the distributions package_files.EXCLUDED names and every __pycache__; this
 project's backend/src is the whole backend. A fresh build compiles the copied
@@ -57,9 +57,10 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--installed-app",
-        required=True,
         type=Path,
-        help="Versioned directory containing chaiNNer.exe and resources",
+        default=independent_ui.UPSTREAM_APP,
+        help="Versioned directory containing chaiNNer.exe and resources (default: "
+        "the pinned nightly, independent_ui.UPSTREAM_APP)",
     )
     parser.add_argument(
         "--installed-python",

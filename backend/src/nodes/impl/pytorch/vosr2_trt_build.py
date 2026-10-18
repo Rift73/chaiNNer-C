@@ -55,13 +55,14 @@ def main() -> None:
     from api import Progress
     from nodes.impl.pytorch.vosr2 import BundlePaths, VosrBundle, VosrMemoryMode
     from nodes.impl.pytorch.vosr2_memory import vram_budget
+    from nodes.impl.pytorch.vosr2_plan_file import plain
     from nodes.impl.pytorch.vosr2_trt_compile import (
         compile_stage,
         report_stage,
         timing_cache,
     )
     from nodes.impl.pytorch.vosr2_trt_models import STAGES, export_model, profiles
-    from nodes.impl.pytorch.vosr2_trt_pipeline import FullSession
+    from nodes.impl.pytorch.vosr2_trt_pipeline import build_session
     from nodes.impl.pytorch.vosr2_trt_plugin import load_plugin
     from nodes.impl.pytorch.vosr2_trt_rewrite import rewrite, split_dit
 
@@ -132,7 +133,7 @@ def main() -> None:
         compile_stage(
             name,
             args.directory / f"{name}.onnx",
-            args.directory / f"{name}.plan",
+            plain(args.directory, name),
             logger,
             timing,
         )
@@ -143,7 +144,7 @@ def main() -> None:
     )
     records = []
     generator = torch.Generator(device="cpu").manual_seed(937)
-    session = FullSession(args.directory, device)
+    session = build_session(args.directory, device)
     try:
         with torch.inference_mode(), vram_budget(
             device, VosrMemoryMode.DEFAULT, progress
@@ -224,7 +225,7 @@ def main() -> None:
         session.close()
     engines = {}
     for name in STAGES:
-        with (args.directory / f"{name}.plan").open("rb") as file:
+        with plain(args.directory, name).open("rb") as file:
             engines[name] = hashlib.file_digest(file, "sha256").hexdigest()
     (args.directory / "validation.json").write_text(
         json.dumps({"engines": engines, "profiles": records}, indent=2),

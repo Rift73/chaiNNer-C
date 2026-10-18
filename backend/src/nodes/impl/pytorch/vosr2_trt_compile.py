@@ -91,6 +91,9 @@ def compile_stage(
         config.clear_flag(trt.BuilderFlag.TF32)
     if name != "attention":
         config.set_flag(trt.BuilderFlag.WEIGHT_STREAMING)
+    # Activation memory sized to each run's shapes, not to the profile's largest: without
+    # it the VAE encoder takes 7.6 GiB for any image, a 512x512 Low tile included
+    config.set_preview_feature(trt.PreviewFeature.RUNTIME_ACTIVATION_RESIZE_10_10, True)
     profile = builder.create_optimization_profile()
     for key, shapes in profiles(name).items():
         profile.set_shape(key, shapes[0], shapes[1], shapes[2])

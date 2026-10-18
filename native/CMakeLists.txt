@@ -117,12 +117,14 @@ add_library(chainner_native SHARED
     src/canny_ops.cpp src/inpaint_ops.cpp src/pixel_art_ops.cpp
     src/bilateral_ops.c src/denoise_ops.cpp src/onnx_runtime.cpp src/framework_image_ops.cpp src/framework_shared_ops.cpp
     src/clipboard_ops.c src/image_setup_ops.c src/scratch.c src/planar_ops.c src/descale_ops.c
+    src/yuv_planes_ops.c src/plane_resample_ops.c
     # ISA units (SP4 spec 4.3): export-free, one file per kernel family and level, compiled
     # for that level only and reached through a C entry's ISA dispatch, which runs a unit
     # only when the CPU has its level (src/isa.c) or CHAINNER_C_ISA caps it lower.
     src/separable_avx2.c src/convolution_avx2.c src/convert_avx2.c src/lens_avx2.c
     src/morphology_avx2.c src/palette_avx2.c src/dither_avx2.c src/blend_avx2.c
     src/resample_avx2.c src/spectral_avx2.c src/color_avx2.c src/planar_avx2.c
+    src/yuv_planes_avx2.c src/plane_resample_avx2.c
     src/separable_avx512.c src/convolution_avx512.c)
 # The levels' instruction sets, exactly what src/isa.c checks: AVX2 is AVX2, FMA, BMI1 and
 # BMI2; AVX-512 adds F, DQ, CD, BW and VL.
@@ -130,7 +132,7 @@ set(chainner_c_avx2_options /clang:-mavx2 /clang:-mfma /clang:-mbmi /clang:-mbmi
 set_source_files_properties(src/separable_avx2.c src/convolution_avx2.c src/convert_avx2.c
     src/lens_avx2.c src/morphology_avx2.c src/palette_avx2.c src/dither_avx2.c
     src/blend_avx2.c src/resample_avx2.c src/spectral_avx2.c src/color_avx2.c
-    src/planar_avx2.c
+    src/planar_avx2.c src/yuv_planes_avx2.c src/plane_resample_avx2.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
 set_source_files_properties(src/separable_avx512.c src/convolution_avx512.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options};/clang:-mavx512f;/clang:-mavx512dq;/clang:-mavx512cd;/clang:-mavx512bw;/clang:-mavx512vl")
@@ -257,12 +259,12 @@ endforeach()
 set(chainner_c_tensorrt_major 11)
 set(chainner_c_cuda_major 13)
 set(CHAINNER_C_TENSORRT_ROOT "" CACHE PATH
-    "TensorRT ${chainner_c_tensorrt_major} SDK root (include, lib) for vosr2_qkv.dll; empty: not built")
+    "TensorRT ${chainner_c_tensorrt_major} SDK root (include, lib) for vosr2_qkv.dll and the TensorRT runner; empty: not built")
 set(CHAINNER_C_CUDA_ROOT "" CACHE PATH
-    "CUDA ${chainner_c_cuda_major} toolkit root (bin/nvcc.exe, include, lib/x64) for vosr2_qkv.dll; empty: not built")
+    "CUDA ${chainner_c_cuda_major} toolkit root (bin/nvcc.exe, include, lib/x64) for vosr2_qkv.dll and the TensorRT runner; empty: not built")
 if(NOT CHAINNER_C_TENSORRT_ROOT AND NOT CHAINNER_C_CUDA_ROOT)
-    message(STATUS "VOSR TensorRT plugin (vosr2_qkv.dll) skipped: set CHAINNER_C_TENSORRT_ROOT and "
-        "CHAINNER_C_CUDA_ROOT to build it")
+    message(STATUS "VOSR TensorRT plugin (vosr2_qkv.dll) and TensorRT runner (trt_runner) skipped: set "
+        "CHAINNER_C_TENSORRT_ROOT and CHAINNER_C_CUDA_ROOT to build them")
     return()
 endif()
 if(NOT CHAINNER_C_TENSORRT_ROOT OR NOT CHAINNER_C_CUDA_ROOT)
@@ -342,3 +344,6 @@ if(CHAINNER_C_PDB)
     target_link_options(vosr2_qkv PRIVATE /DEBUG /OPT:REF /OPT:ICF
         "/MAP:${CHAINNER_C_OUTPUT_DIR}/pytorch/vosr2_qkv.map")
 endif()
+
+# The TensorRT runner (trt_runner/CMakeLists.txt), from the same two roots.
+add_subdirectory(trt_runner)
