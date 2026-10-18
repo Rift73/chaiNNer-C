@@ -49,8 +49,9 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
   `independent_ui.UPSTREAM_APP`, the one setting the packager, `make_oracle.py` and the tests read): upstream's
   official Windows zip of
   [`0.25.1-nightly.2025-10-21`](https://github.com/chaiNNer-org/chaiNNer-nightly/releases/tag/2025-10-21), extracted
-  there in each checkout or worktree; after the native build (Build), `make_oracle.py` makes the oracle tree the
-  layout gate and the runtime verifiers read:
+  there in each checkout or worktree, or once anywhere with `CHAINNER_C_UPSTREAM_APP` set to that folder (worktrees
+  can share one copy); after the native build (Build), `make_oracle.py` makes the oracle tree the layout gate and the
+  runtime verifiers read:
 
   ```powershell
   $zip = "$env:TEMP\chaiNNer-windows-latest-nightly.2025-10-21.zip"

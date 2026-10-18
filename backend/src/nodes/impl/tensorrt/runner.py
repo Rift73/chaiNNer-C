@@ -1,7 +1,8 @@
-"""chaiNNer-C's native TensorRT runner (native/trt_runner) for TensorRT's Upscale Image node and
-AI Upscale's TensorRT backend, behind a hidden switch that stays off until a GPU session
-verifies it: CHAINNER_C_TRT_RUNNER=1 turns it on; any other value, or none, keeps the Python
-session (inference.py).
+"""chaiNNer-C's native TensorRT runner (native/trt_runner) for AI Upscale's TensorRT backend
+and TensorRT's Upscale Image node. AI Upscale uses it by default (its VapourSynth plugin);
+CHAINNER_C_TRT_RUNNER=0 keeps its Python bridge (chainner_vs/upscale.py). The Upscale Image
+node keeps the Python session (inference.py) unless CHAINNER_C_TRT_RUNNER=1 turns the runner
+on for it too. A build without the runner's binaries uses the Python paths, with one log line.
 
 The runner uploads planes as stored and converts, tiles and blends them on the GPU, one CUDA
 stream per execution context. Its tiles, blend weights and channel rules are tiling.py's and
@@ -16,6 +17,7 @@ import threading
 from contextlib import AbstractContextManager
 from functools import lru_cache
 from importlib import import_module
+from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
 
@@ -28,22 +30,44 @@ from .cache import SharedCache
 from .model import TensorRTEngine
 
 RUNNER_VARIABLE = "CHAINNER_C_TRT_RUNNER"
+MODULE = "nodes.impl.tensorrt._chainner_trt"
+PLUGIN = Path(__file__).with_name("chainner_trt_vs.dll")
 # The node upscales one image at a time (its session lock), its tiles back to back on the
 # GPU, so one execution context serves it.
 NODE_STREAMS = 1
+# Binaries reported missing, each logged once per process.
+_reported: set[str] = set()
+
+
+def _built(present: bool, name: str) -> bool:
+    """Whether a runner binary is in this build; logs its absence once."""
+    if not present and name not in _reported:
+        _reported.add(name)
+        logger.warning(
+            "The TensorRT runner's %s is not in this build: TensorRT runs on the Python"
+            " path.",
+            name,
+        )
+    return present
 
 
 def runner_enabled() -> bool:
-    """Whether the runner replaces the Python session: only the value "1" asks for it."""
-    return os.environ.get(RUNNER_VARIABLE) == "1"
+    """Whether the Upscale Image node uses the runner: when CHAINNER_C_TRT_RUNNER is "1"
+    and the build has the runner's module."""
+    return os.environ.get(RUNNER_VARIABLE) == "1" and _built(
+        find_spec(MODULE) is not None, "module _chainner_trt.pyd"
+    )
 
 
-def _missing(name: str) -> RuntimeError:
-    return RuntimeError(
-        f"The TensorRT runner's {name} is missing: this build was made without it. Unset"
-        f" {RUNNER_VARIABLE}, or build it with native/Build.ps1 -Define"
-        " CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>,CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit>"
-        " (and CHAINNER_C_VAPOURSYNTH_INCLUDE=<VapourSynth headers> for the plugin)."
+def runner_plugin() -> Path | None:
+    """AI Upscale's runner plugin (namespace chainner_trt), or None for the Python bridge:
+    when CHAINNER_C_TRT_RUNNER is "0", or the build lacks the plugin."""
+    if os.environ.get(RUNNER_VARIABLE) == "0":
+        return None
+    return (
+        PLUGIN
+        if _built(PLUGIN.is_file(), f"VapourSynth plugin {PLUGIN.name}")
+        else None
     )
 
 
@@ -59,18 +83,7 @@ def load_tensorrt() -> None:
 def native() -> ModuleType:
     """The runner's binding, _chainner_trt."""
     load_tensorrt()
-    try:
-        return import_module("nodes.impl.tensorrt._chainner_trt")
-    except ModuleNotFoundError as e:
-        raise _missing("module _chainner_trt.pyd") from e
-
-
-def plugin_path() -> Path:
-    """The runner's VapourSynth plugin (namespace chainner_trt)."""
-    path = Path(__file__).with_name("chainner_trt_vs.dll")
-    if not path.is_file():
-        raise _missing(f"VapourSynth plugin {path.name}")
-    return path
+    return import_module(MODULE)
 
 
 class RunnerSession:

@@ -621,16 +621,65 @@ print(json.dumps({{
 
 
 @pytest.mark.parametrize(
-    ("value", "enabled"), [("1", True), ("0", False), ("true", False), (None, False)]
+    ("value", "node", "clip"),
+    [
+        ("1", True, True),
+        ("0", False, False),
+        ("true", False, True),
+        (None, False, True),
+    ],
 )
-def test_runner_switch_is_hidden_and_off_by_default(
-    monkeypatch: pytest.MonkeyPatch, value: str | None, enabled: bool
+def test_runner_is_ai_upscales_default_and_the_nodes_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    value: str | None,
+    node: bool,
+    clip: bool,
 ):
+    """AI Upscale's TensorRT backend uses the runner's plugin unless the switch is "0";
+    the Upscale Image node only when it is "1"."""
+    from nodes.impl.tensorrt import runner as runner_module
+
+    plugin = tmp_path / "chainner_trt_vs.dll"
+    plugin.write_bytes(b"")
+    monkeypatch.setattr(runner_module, "PLUGIN", plugin)
+    monkeypatch.setattr(runner_module, "MODULE", "nodes.impl.tensorrt.tiling")
     if value is None:
         monkeypatch.delenv(RUNNER_VARIABLE, raising=False)
     else:
         monkeypatch.setenv(RUNNER_VARIABLE, value)
-    assert runner_enabled() is enabled
+    assert runner_enabled() is node
+    assert runner_module.runner_plugin() == (plugin if clip else None)
+
+
+def test_a_build_without_the_runner_uses_the_python_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Missing binaries are no error: the Python paths run, and each absence is logged
+    once."""
+    from nodes.impl.tensorrt import runner as runner_module
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        runner_module,
+        "logger",
+        SimpleNamespace(warning=lambda message, *args: warnings.append(message % args)),
+    )
+    monkeypatch.setattr(runner_module, "_reported", set())
+    monkeypatch.setattr(runner_module, "PLUGIN", tmp_path / "chainner_trt_vs.dll")
+    monkeypatch.setattr(runner_module, "MODULE", "nodes.impl.tensorrt._missing_runner")
+    monkeypatch.setenv(RUNNER_VARIABLE, "1")
+    for _ in range(2):
+        assert runner_module.runner_plugin() is None
+        assert runner_enabled() is False
+    assert warnings == [
+        f"The TensorRT runner's {name} is not in this build: TensorRT runs on the"
+        " Python path."
+        for name in (
+            "VapourSynth plugin chainner_trt_vs.dll",
+            "module _chainner_trt.pyd",
+        )
+    ]
 
 
 # GPU tests: an owner-approved GPU session only (ESRGAN engines only).

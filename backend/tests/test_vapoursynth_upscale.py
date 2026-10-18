@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import inspect
 import subprocess
 import threading
 import time
@@ -31,6 +32,7 @@ from nodes.impl.upscale.auto_split_tiles import (
 from nodes.impl.upscale.basic_upscale import PaddingType
 from nodes.impl.vapoursynth.runner import vs_env, vs_python, vspipe
 from nodes.impl.vapoursynth.script import VideoClip, compile_script
+from nodes.properties.inputs import NumberInput
 from packages.chaiNNer_onnx.onnx.io.load_model import (
     load_model_node as load_onnx_model_node,
 )
@@ -43,6 +45,7 @@ from packages.chaiNNer_pytorch.pytorch.io.load_model import (
 from packages.chaiNNer_pytorch.pytorch.processing.upscale_image import (
     upscale_image_node as pytorch_upscale_image_node,
 )
+from packages.chaiNNer_vapoursynth.vapoursynth import functions_group
 from packages.chaiNNer_vapoursynth.vapoursynth.ai_upscale import (
     AiUpscaleBackend,
     AiUpscalePrecision,
@@ -265,6 +268,76 @@ def test_colour_props_follow_a_colour_family_change(monkeypatch: pytest.MonkeyPa
     gray_out.resize.Bicubic(format=vs.RGBS).get_frame(0)
 
 
+@pytest.mark.parametrize("build", ["runner", "switched off", "no plugin"])
+def test_tensorrt_runs_on_the_runner_unless_switched_off_or_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, build: str
+):
+    """AI Upscale's TensorRT backend: the runner's filter with the node's Streams by
+    default; the Python bridge with CHAINNER_C_TRT_RUNNER=0 or without the plugin."""
+    runner_module = importlib.import_module("nodes.impl.tensorrt.runner")
+    engine = tmp_path / "model.engine"
+    engine.write_bytes(b"")
+    plugin = tmp_path / "chainner_trt_vs.dll"
+    if build != "no plugin":
+        plugin.write_bytes(b"")
+    monkeypatch.setattr(runner_module, "PLUGIN", plugin)
+    monkeypatch.setattr(runner_module, "_reported", set())
+    monkeypatch.setattr(runner_module, "logger", SimpleNamespace(warning=print))
+    if build == "switched off":
+        monkeypatch.setenv(runner_module.RUNNER_VARIABLE, "0")
+    else:
+        monkeypatch.delenv(runner_module.RUNNER_VARIABLE, raising=False)
+    calls: list[tuple[str, Path, int]] = []
+
+    def runner_clip(clip: Any, model: str, plugin: Path, streams: int) -> Any:
+        calls.append((model, plugin, streams))
+        return clip
+
+    monkeypatch.setattr(bridge, "_runner_clip", runner_clip)
+    fake_load(monkeypatch, 3, 3)
+    source = clip_of(images(1))
+
+    out = chainner_vs.upscale(source, str(engine), "TensorRT", "fp32", 0, 3)
+
+    if build == "runner":
+        assert calls == [(str(engine), plugin, 3)]
+    else:
+        assert calls == []
+        assert (out.width, out.height) == (2 * WIDTH, 2 * HEIGHT)
+        out.get_frame(0)
+
+
+def test_the_node_passes_streams_and_old_chains_get_1():
+    source = VideoClip(
+        var="n_src_0",
+        stmt="n_src_0 = core.std.BlankClip(format=vs.RGBS)",
+        deps=(),
+        imports=frozenset(),
+        node_id="src",
+    )
+    node = ai_upscale_node(
+        cast(NodeContext, SimpleNamespace(node_id="up")),
+        source,
+        ESRGAN_2X,
+        AiUpscaleBackend.TENSORRT,
+        AiUpscalePrecision.FP32,
+        ESTIMATE,
+        256,
+        2,
+    )
+    assert node.stmt.endswith(f", 'TensorRT', 'fp32', {int(ESTIMATE)}, 2)")
+    data = next(
+        n
+        for n in functions_group.nodes
+        if n.schema_id == "chainner:vapoursynth:ai_upscale"
+    )
+    streams = next(i for i in data.inputs if i.id == 6)
+    assert isinstance(streams, NumberInput)
+    assert (streams.label, streams.default) == ("Streams", 1)
+    # A script written before Streams calls upscale with five arguments.
+    assert inspect.signature(chainner_vs.upscale).parameters["streams"].default == 1
+
+
 def test_model_loaded_once(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(bridge, "loaded", {})
     keys: list[tuple[str, ...]] = []
@@ -408,6 +481,7 @@ def test_parallel_frame_requests_are_serialized(tmp_path: Path):
             AiUpscalePrecision.FP32,
             tile_size,
             48,
+            1,
         )
         for node_id, tile_size in (("up_a", ESTIMATE), ("up_b", CUSTOM))
     ]
@@ -496,6 +570,7 @@ def test_script_reloads_after_local_packages_are_evicted(tmp_path: Path):
         AiUpscalePrecision.FP32,
         ESTIMATE,
         256,
+        1,
     )
     script = tmp_path / "chain.vpy"
     script.write_text(compile_script([(node, "Upscaled")], cache_mb=256), "utf-8")
@@ -542,6 +617,8 @@ def test_clear_errors(tmp_path: Path):
         chainner_vs.upscale(rgb, str(ESRGAN_2X), "NCNN", "fp32", 0)
     with pytest.raises(ValueError, match="Unknown precision"):
         chainner_vs.upscale(rgb, str(ESRGAN_2X), "PyTorch", "bf16", 0)
+    with pytest.raises(ValueError, match="stream count"):
+        chainner_vs.upscale(rgb, str(ESRGAN_2X), "PyTorch", "fp32", 0, 5)
     with pytest.raises(ValueError, match="tile size"):
         chainner_vs.upscale(rgb, str(ESRGAN_2X), "PyTorch", "fp32", CUSTOM)
     with pytest.raises(FileNotFoundError):

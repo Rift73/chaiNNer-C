@@ -11,8 +11,8 @@ verify_runtime.oracle_python picks from a package manifest.
 
 The other packages' image nodes are not run. PyTorch, ONNX and NCNN pick a GPU
 engine or need a model, and the owner's rule allows no GPU probe; Stable
-Diffusion calls a network API. save_video and save_dds_texture are excluded too
-(EXCLUDED holds the reasons).
+Diffusion calls a network API. save_video is excluded too (EXCLUDED holds the
+reason); save_dds_texture runs as a texture array with its default DDS format, BC1.
 
 - Layout-sensitive consumers are the nodes whose run enters native_palette,
   native_transfer, native_analysis or native_numpy_reduce (CONSUMERS; the trace must

@@ -7,6 +7,7 @@
 #include "fpng.h"
 #include <pybind11/numpy.h>
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <cstdint>
@@ -618,13 +619,15 @@ void run_texconv(py::dict g,O args,O error_message) {
 // DDS files (Microsoft's DDS_HEADER, DDS_PIXELFORMAT and DDS_HEADER_DXT10). texconv
 // does every format conversion; chaiNNer writes and reads only uncompressed
 // intermediates: R8G8B8A8_UNORM for formats of at most 8 bits per channel,
-// R16G16B16A16_UNORM for 16-bit UNORM ones, R32G32B32A32_FLOAT for every other.
+// R16G16B16A16_UNORM for 16-bit UNORM and SNORM ones, R32G32B32A32_FLOAT for every
+// other. texconv maps UNORM 0..1 to SNORM -1..1 and back, but takes float as is.
 uint32_t le32(const uint8_t* p) {return uint32_t(p[0])|uint32_t(p[1])<<8|uint32_t(p[2])<<16|uint32_t(p[3])<<24;}
 constexpr uint32_t fourcc(const char (&c)[5]) {return uint32_t(uint8_t(c[0]))|uint32_t(uint8_t(c[1]))<<8|uint32_t(uint8_t(c[2]))<<16|uint32_t(uint8_t(c[3]))<<24;}
 enum class DdsDepth {unorm8,unorm16,float32};
 DdsDepth dds_depth(uint32_t format) {
     switch(format) {
-    case 11: case 35: case 56: return DdsDepth::unorm16; // R16G16B16A16, R16G16, R16 UNORM
+    // R16G16B16A16, R16G16, R16 UNORM and SNORM
+    case 11: case 13: case 35: case 37: case 56: case 58: return DdsDepth::unorm16;
     // 0: a legacy format DXGI lacks (R8G8B8, A4L4, palettized, ...), all of 8 bits or less.
     case 0: case 27: case 28: case 29: case 31: case 48: case 49: case 51: case 60: case 61: case 63: case 65:
     case 68: case 69: case 85: case 86: case 87: case 88: case 90: case 91: case 92: case 93: case 97: case 98:
@@ -666,10 +669,25 @@ uint32_t legacy_format(uint32_t flags,uint32_t code,uint32_t bits,const uint32_t
     } else if((flags&0x2)&&bits==8)return 65; // DDPF_ALPHA
     return 0;
 }
+// A legacy mask format's name in D3DFORMAT's style, its channels from the highest bit
+// down with their widths ("R8G8B8 (legacy)", "A4L4 (legacy)", "P8 (legacy)"); empty
+// without masks.
+std::string mask_name(uint32_t flags,const uint32_t (&m)[4]) {
+    if(flags&0x20)return flags&0x1?"A8P8 (legacy)":"P8 (legacy)"; // DDPF_PALETTEINDEXED8, ALPHAPIXELS
+    // DDPF_BUMPDUDV, DDPF_BUMPLUMINANCE, DDPF_LUMINANCE, else RGB or DDPF_ALPHA
+    const char* letters=flags&0x80000?"UVWA":flags&0x40000?"UVLA":flags&0x20000?"L--A":"RGBA";
+    std::vector<std::pair<uint32_t,char>> channels;
+    for(int i=0;i<4;++i)if(m[i])channels.emplace_back(m[i],letters[i]);
+    std::sort(channels.begin(),channels.end(),std::greater<>());
+    std::string name;
+    for(const auto& [mask,letter]:channels)name+=letter+std::to_string(std::popcount(mask));
+    return name.empty()?name:name+" (legacy)";
+}
 struct DdsHeader {
     uint32_t format=0,width=0,height=0,depth=1,mips=1,array=1;
     bool cubemap=false,volume=false;
     std::string fourcc; // a legacy header's four characters, empty otherwise
+    std::string masks;  // a legacy mask format's name when DXGI lacks it, empty otherwise
     size_t data=0;      // offset of the first image
     uint32_t images() const {return cubemap?array*6:array;} // a cubemap's faces each count
 };
@@ -689,8 +707,10 @@ DdsHeader parse_dds(const O& file) {
         h.volume=le32(p+132)==4;          // D3D10_RESOURCE_DIMENSION_TEXTURE3D
         h.cubemap=(le32(p+136)&0x4)!=0;   // D3D11_RESOURCE_MISC_TEXTURECUBE
     } else {
-        h.format=legacy_format(flags,code,le32(p+88),{le32(p+92),le32(p+96),le32(p+100),le32(p+104)});
+        const uint32_t masks[4]={le32(p+92),le32(p+96),le32(p+100),le32(p+104)};
+        h.format=legacy_format(flags,code,le32(p+88),masks);
         if(flags&0x4)h.fourcc.assign(reinterpret_cast<const char*>(p+84),4);
+        else if(!h.format)h.masks=mask_name(flags,masks);
     }
     if(h.volume)h.depth=std::max(1u,le32(p+24));
     if(!h.width||!h.height||!h.array)raise(PyExc_ValueError,py::str("Invalid DDS dimensions"));
@@ -799,15 +819,18 @@ O raw_dds(const std::vector<py::array>& images,const std::string& kind,bool one_
     }
     return result;
 }
-O read_bytes(O path) {
+// A file's bytes: all of them, or its first `size`.
+O read_bytes(O path,py::ssize_t size=-1) {
     O data;
-    with_object(graphpy::builtin("open")(path,"rb"),[&](O file){data=file.attr("read")();});
+    with_object(graphpy::builtin("open")(path,"rb"),[&](O file){data=file.attr("read")(size);});
     return data;
 }
-// The intermediate a source format is read through. R16_UNORM stays itself: texconv's
-// R16 -> R16G16B16A16 conversion is off by a step at times.
+// A DDS file's header with its DX10 extension (148 bytes), not its images.
+DdsHeader read_dds_header(O path) {return parse_dds(read_bytes(path,148));}
+// The intermediate a source format is read through. R16_UNORM and R16_SNORM read as
+// R16_UNORM: texconv's R16 -> R16G16B16A16 conversion is off by a step at times.
 const char* intermediate_name(uint32_t source) {
-    if(source==56)return "R16_UNORM";
+    if(source==56||source==58)return "R16_UNORM";
     const DdsDepth depth=dds_depth(source);
     return depth==DdsDepth::unorm8?"R8G8B8A8_UNORM":depth==DdsDepth::unorm16?"R16G16B16A16_UNORM":"R32G32B32A32_FLOAT";
 }
@@ -836,7 +859,7 @@ void check_mip(const DdsHeader& source,uint32_t mip) {
     if(mip>=source.mips)raise(PyExc_ValueError,format("Mip level {} does not exist: the file has {}",mip,source.mips));
 }
 O dds_read(py::dict g,O path,uint32_t mip,uint32_t layer,uint32_t slice) {
-    const DdsHeader source=parse_dds(read_bytes(path));
+    const DdsHeader source=read_dds_header(path);
     check_mip(source,mip);
     if(layer>=source.images())raise(PyExc_ValueError,format("Layer {} does not exist: the file has {}{}",layer,source.images(),source.cubemap?" (cubemap faces)":""));
     if(slice>=level(source.depth,mip))raise(PyExc_ValueError,format("Slice {} does not exist: mip level {} has {}",slice,mip,level(source.depth,mip)));
@@ -846,7 +869,7 @@ O dds_read(py::dict g,O path,uint32_t mip,uint32_t layer,uint32_t slice) {
 }
 // Every image of a mip level: each layer (cubemap faces) or, for a volume, each slice.
 py::list dds_read_all(py::dict g,O path,uint32_t mip) {
-    const DdsHeader source=parse_dds(read_bytes(path));
+    const DdsHeader source=read_dds_header(path);
     check_mip(source,mip);
     py::list images;
     dds_convert(g,path,source,mip!=0,[&](const O& file,const DdsHeader& h) {
@@ -856,11 +879,12 @@ py::list dds_read_all(py::dict g,O path,uint32_t mip) {
     return images;
 }
 // A DDS file's header: its DXGI format value (0 for a legacy format DXGI lacks), the
-// legacy FourCC (empty for DX10 and masks), size, depth, mip levels, array size
-// (cubemaps: cubes) and whether it is a cubemap.
+// legacy FourCC (empty for DX10 and masks), the name of a mask format DXGI lacks (empty
+// otherwise), size, depth, mip levels, array size (cubemaps: cubes) and whether it is a
+// cubemap.
 py::tuple dds_info(O path) {
-    const DdsHeader h=parse_dds(read_bytes(path));
-    return py::make_tuple(h.format,h.fourcc,h.width,h.height,h.depth,h.mips,h.array,h.cubemap);
+    const DdsHeader h=read_dds_header(path);
+    return py::make_tuple(h.format,h.fourcc,h.masks,h.width,h.height,h.depth,h.mips,h.array,h.cubemap);
 }
 // IEC 61966-2-1's sRGB curve, either way, on B, G and R (or grey) of a C-contiguous
 // float32 image in place; odd below zero, so negative values mirror positive ones.

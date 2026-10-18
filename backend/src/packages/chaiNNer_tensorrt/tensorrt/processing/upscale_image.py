@@ -69,8 +69,8 @@ if processing_group is not None:
         logger.debug("Upscaling a %dx%dx%d image with TensorRT", h, w, c)
 
         if runner_enabled():
-            # The native runner (hidden switch, off until a GPU session verifies it):
-            # kept and locked as the session below.
+            # The native runner (opt-in: CHAINNER_C_TRT_RUNNER=1): kept and locked as
+            # the session below.
             with use_runner_session(
                 engine, settings.gpu_index, context.node_id
             ) as runner, held(runner.lock):

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 RENDERER = "resources/app/.vite/renderer/main_window/index.js"
@@ -36,11 +37,13 @@ PYTHON_CHECK_PORT = 'if(gR.gte(s.version,"3.14.0"))return s}'
 UPSTREAM_VERSION = "0.25.1-nightly.2025-10-21"
 PACKAGE_JSON = "resources/app/package.json"
 # The pinned app itself: upstream's official Windows zip of that nightly, extracted
-# into this git-ignored folder (native/README.md, Prerequisites). The packager's
-# shell, make_oracle.py's source and the tests' texconv.exe and bundles come from
-# here; nothing writes to it.
-UPSTREAM_APP = (
-    Path(__file__).resolve().parents[2]
+# into this git-ignored folder (native/README.md, Prerequisites), or the folder that
+# CHAINNER_C_UPSTREAM_APP names, so worktrees can share one extracted copy. The
+# packager's shell, make_oracle.py's source and the tests' texconv.exe and bundles
+# come from here; nothing writes to it.
+UPSTREAM_APP = Path(
+    os.environ.get("CHAINNER_C_UPSTREAM_APP")
+    or Path(__file__).resolve().parents[2]
     / "native/local/upstream/app-0.25.1-nightly2025-10-21"
 )
 # What the patched main bundle logs at startup, and the error its integrated-Python

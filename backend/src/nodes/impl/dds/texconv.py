@@ -71,7 +71,8 @@ def read_dds_images(path: Path, mip_level: int = 0) -> list[np.ndarray]:
 
 class DdsInfo(NamedTuple):
     format: str
-    """The DXGI format, or the FourCC of a legacy one (DXT1-DXT5, ATI1, ATI2)."""
+    """The DXGI format, the FourCC of a legacy one (DXT1-DXT5, ATI1, ATI2), or the name
+    of a legacy mask format DXGI lacks ("R8G8B8 (legacy)")."""
     width: int
     height: int
     depth: int
@@ -87,10 +88,15 @@ _LEGACY_FOURCCS = {*LEGACY_TO_DXGI, "DXT2", "DXT4"}
 
 def read_dds_info(path: Path) -> DdsInfo:
     """The header of the given DDS file."""
-    code, fourcc, width, height, depth, mips, array, cubemap = (
+    code, fourcc, masks, width, height, depth, mips, array, cubemap = (
         graph().image_io_dds_info(path)
     )
-    name = fourcc if fourcc in _LEGACY_FOURCCS else _DXGI_NAMES.get(code, "UNKNOWN")
+    if fourcc in _LEGACY_FOURCCS:
+        name = fourcc
+    elif masks:  # a mask format DXGI lacks
+        name = masks
+    else:
+        name = _DXGI_NAMES.get(code, "UNKNOWN")
     return DdsInfo(
         name, width, height, depth, mips, array * 6 if cubemap else array, cubemap
     )

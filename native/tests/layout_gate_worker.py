@@ -68,11 +68,12 @@ EXCLUDED = {
     "its frames are to_uint8's result, written as C-order bytes "
     "(video_io.cpp frame_payload: a memoryview only of a C-contiguous frame, else "
     "tobytes)",
-    "chainner:image:save_dds_texture": "its DDS format dropdown reaches BC6H and BC7, "
-    "which texconv encodes on the GPU by default (GPU Compression); test_dds.py runs "
-    "it with -nogpu; its images reach texconv as an uncompressed DDS read through "
-    "their strides (image_io.cpp raw_dds), whatever their layout",
 }
+# Dropdowns that keep their default, by label. Save DDS Texture's format stays BC1:
+# BC6H and BC7 encode on the GPU by default (test_dds.py runs every format, -nogpu).
+# Its texture type stays an array: a cubemap takes 6 images (ITERATIONS gives 2), and
+# every type reads its images through their strides alike (image_io.cpp raw_dds).
+DEFAULT_ONLY = {"chainner:image:save_dds_texture": {"DDS Format", "Texture Type"}}
 # Non-image inputs by label; "@save" is the run's own output directory.
 OVERRIDES: dict[str, dict[str, object]] = {
     "chainner:image:add": {"Add": 12},
@@ -125,6 +126,12 @@ OVERRIDES: dict[str, dict[str, object]] = {
     "chainner:image:resize_to_side": {"Size Target": 60},
     "chainner:image:rotate": {"Rotation Angle": 30},
     "chainner:image:save": {"Directory": "@save", "Image Name": "gate"},
+    # texconv on the CPU (-nogpu) for certain, though BC1 never takes the GPU
+    "chainner:image:save_dds_texture": {
+        "Directory": "@save",
+        "Texture Name": "gate",
+        "GPU Compression": False,
+    },
     "chainner:image:shift": {"X": 7, "Y": -5},
     "chainner:image:split_spritesheet": {
         "Number of rows (height)": 2,
@@ -249,10 +256,12 @@ def case_channels(tree: Tree, node: Any, count: int) -> dict[int, int] | None:
 
 
 def variants(tree: Tree, node: Any) -> list[tuple[str, dict[int, object]]]:
-    """The default case, each other option of each dropdown on its own, EXTRA_CASES."""
+    """The default case, each other option of each dropdown on its own (but those in
+    DEFAULT_ONLY), EXTRA_CASES."""
     found: list[tuple[str, dict[int, object]]] = [("default", {})]
+    pinned = DEFAULT_ONLY.get(node.schema_id, set())
     for index, i in enumerate(node.inputs):
-        if isinstance(i, tree.dropdown):
+        if isinstance(i, tree.dropdown) and i.label not in pinned:
             found.extend(
                 (f"{i.label}={option['value']}", {index: option["value"]})
                 for option in i.options

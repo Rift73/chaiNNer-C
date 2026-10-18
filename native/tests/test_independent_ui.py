@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import independent_ui
@@ -17,6 +19,23 @@ needs_upstream_app = pytest.mark.skipif(
     not independent_ui.UPSTREAM_APP.is_dir(),
     reason="the pinned chaiNNer nightly is absent",
 )
+
+
+def test_an_environment_variable_names_a_shared_upstream_app(tmp_path):
+    """Worktrees can share one extracted nightly: CHAINNER_C_UPSTREAM_APP names it."""
+    tools = str(Path(independent_ui.__file__).parent)
+    code = f"import sys; sys.path.insert(0, {tools!r}); import independent_ui as u; print(u.UPSTREAM_APP)"
+    done = subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        env={**os.environ, "CHAINNER_C_UPSTREAM_APP": str(tmp_path)},
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    assert Path(done.stdout.strip()) == tmp_path
+
 
 # Just the main-bundle anchors the patcher requires, in the installed bundle's form.
 MAIN_SETTINGS = (

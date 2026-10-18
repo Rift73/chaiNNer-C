@@ -112,10 +112,10 @@ class TiffCompression(Enum):
 
 
 # Every format texconv writes but typeless, depth/stencil, YUV/video, palettized,
-# R1, XR_BIAS and sampler feedback ones. Formats of 8 bits or less (8-bit SNORM maps
-# 0..1 to -1..1) are written from 8-bit values, 16-bit UNORM from 16-bit values and
-# every other from the float values as they are: 16-bit SNORM and float keep negative
-# values and values above 1, integer formats store the values themselves.
+# R1, XR_BIAS and sampler feedback ones. Formats of 8 bits or less are written from
+# 8-bit values, 16-bit UNORM and SNORM from 16-bit values (SNORM maps 0..1 to -1..1 at
+# every depth) and every other from the float values as they are: float formats keep
+# negative values and values above 1, integer formats store the values themselves.
 SUPPORTED_DDS_FORMATS: list[tuple[DDSFormat, str]] = [
     ("BC1_UNORM_SRGB", "BC1 (4bpp, sRGB, 1-bit Alpha)"),
     ("BC1_UNORM", "BC1 (4bpp, Linear, 1-bit Alpha)"),
@@ -208,6 +208,8 @@ def DdsFormatDropdown() -> DropDownInput:
             DropDownGroup("Integer", start_at="R32G32B32A32_UINT"),
             DropDownGroup("Legacy Compressed", start_at="DXT1"),
         ],
+    ).with_docs(
+        "How the image's values are stored: 8-bit and 16-bit formats store 0..1 (values outside are clipped); SNORM (signed) formats map 0..1 to -1..1 at every depth; float formats store the values as they are, negative values and values above 1 included (unsigned ones clip negative values); integer formats store the values themselves, so a 0..1 image becomes 0 and 1."
     )
 
 

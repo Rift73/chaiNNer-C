@@ -3,6 +3,7 @@ intermediates chaiNNer writes and reads in place of PNG."""
 
 from __future__ import annotations
 
+import builtins
 import inspect
 import platform
 import shutil
@@ -20,6 +21,7 @@ from nodes.impl.dds import texconv
 from nodes.impl.dds.format import DXGI_CODES, DDSFormat
 from nodes.impl.image_utils import to_uint8, to_uint16
 from nodes.impl.native_image_io import cv_save_image
+from packages.chaiNNer_standard.image import batch_processing_group, io_group
 from packages.chaiNNer_standard.image.batch_processing import (
     load_dds_images,
     save_dds_texture,
@@ -32,6 +34,8 @@ pytestmark = pytest.mark.skipif(
 
 ROOT = Path(__file__).resolve().parents[2]
 TEXCONV = ROOT / "backend/src/texconv/texconv.exe"
+# The Load DDS nodes output an 8-bit read as float32 / 255.
+BYTE = np.float32(255)
 # Save Image's formats before full DDS support: 8-bit targets, whose files must not
 # change with the intermediate.
 PNG_ERA_FORMATS = [
@@ -347,8 +351,8 @@ def expected(dxgi: str, want: np.ndarray) -> tuple[np.ndarray, Any]:
         return want, np.where(depth < 8, 1 / (2.0**depth - 1) + 0.5 / 255, 0)
     if k == "u16":
         return to_uint16(want, normalized=True) / np.float32(65535), 0
-    if k == "s16":
-        return np.clip(want, -1, 1), 0.5 / 32767
+    if k == "s16":  # 0..1 mapped to -1..1: half of 1/32767
+        return to_uint16(want, normalized=True) / np.float32(65535), 0.5 / 32767
     if k == "R10G10B10A2_UNORM":
         # texconv truncates here too (up to one quantum)
         return np.clip(want, 0, 1), 1 / np.array([1023, 1023, 1023, 3])
@@ -372,7 +376,7 @@ def test_round_trip_and_header_of_every_format(tmp_path, runs, fmt):
     if k.startswith("bc"):  # BC1's 1-bit alpha would black out the colour below 0.5
         ramp = np.linspace(0.1, 1, 24, dtype=np.float32)
         base[..., 3] = 1 if dxgi.startswith("BC1") else ramp
-    if k not in ("u8", "s8", "u16", "bc", "int"):
+    if k not in ("u8", "s8", "u16", "s16", "bc", "int"):
         base = base * np.float32(2.5) - np.float32(0.5)
     if k == "int":
         base = np.round(base * 290 - 40)
@@ -401,6 +405,11 @@ def test_round_trip_and_header_of_every_format(tmp_path, runs, fmt):
         limit = np.broadcast_to(np.asarray(tolerance, np.float64) + 1e-7, want.shape)
         error = np.abs(back - want)[..., channels]
         assert (error <= limit[..., channels]).all(), float(error.max())
+        if k == "s16":  # the file holds -1..1 (R, G, B, A order)
+            order = [c for c in (2, 1, 0, 3) if c in channels]
+            raw = np.frombuffer(path.read_bytes()[148:], "<i2").reshape(16, 24, -1)
+            stored_error = np.abs(raw / 32767 - (2 * want[..., order] - 1))
+            assert stored_error.max() <= 0.5 / 32767 + 1e-7
 
     # (iv) The header follows the rule (legacy and PREFER_DX9 formats DX9, every
     # other DX10) and texconv reads the file as the format chosen.
@@ -558,7 +567,7 @@ def test_load_dds_reads_every_mip_and_the_header(tmp_path, runs):
     levels = rgba_mips(path, 6)
     for mip, expected in enumerate(levels):
         image, *info = load_dds.load_dds_node(path, mip, 0, 0)
-        assert np.array_equal(image, expected[..., [2, 1, 0, 3]])
+        assert np.array_equal(image, expected[..., [2, 1, 0, 3]] / BYTE)
         assert info == ["R8G8B8A8_UNORM", 24, 32, 6, 1, 1, False]
         assert runs[-1][runs[-1].index("-m") + 1] == ("6" if mip else "1")
     with pytest.raises(ValueError, match="Mip level 6 does not exist"):
@@ -631,23 +640,104 @@ def test_load_dds_reads_layers_cubemap_faces_and_volume_slices(tmp_path, runs):
     for layer in range(3):
         for mip in range(2):
             image, *info = load_dds.load_dds_node(tmp_path / "array.dds", mip, layer, 0)
-            assert np.array_equal(image, array[layer][mip][..., bgra_order])
+            assert np.array_equal(image, array[layer][mip][..., bgra_order] / BYTE)
             assert info == ["R8G8B8A8_UNORM", 12, 8, 2, 3, 1, False]
     for face in range(6):
         image, *info = load_dds.load_dds_node(tmp_path / "cube.dds", 0, face, 0)
-        assert np.array_equal(image, cube[face][0][..., bgra_order])
+        assert np.array_equal(image, cube[face][0][..., bgra_order] / BYTE)
         assert info == ["R8G8B8A8_UNORM", 8, 8, 1, 6, 1, True]
     for mip, depth in [(0, 4), (1, 2)]:
         for depth_slice in range(depth):
             image, *info = load_dds.load_dds_node(
                 tmp_path / "volume.dds", mip, 0, depth_slice
             )
-            assert np.array_equal(image, volume[0][mip][depth_slice][..., bgra_order])
+            want = volume[0][mip][depth_slice][..., bgra_order] / BYTE
+            assert np.array_equal(image, want)
             assert info == ["R8G8B8A8_UNORM", 8, 8, 2, 1, 4, False]
     with pytest.raises(ValueError, match="Layer 6 does not exist"):
         load_dds.load_dds_node(tmp_path / "cube.dds", 0, 6, 0)
     with pytest.raises(ValueError, match="Slice 2 does not exist"):
         load_dds.load_dds_node(tmp_path / "volume.dds", 1, 0, 2)
+
+
+def image_output(schema_id: str) -> Any:
+    nodes = [*io_group.nodes, *batch_processing_group.nodes]
+    return next(n for n in nodes if n.schema_id == schema_id).outputs[0]
+
+
+def test_load_dds_nodes_keep_values_outside_0_1(tmp_path, runs):
+    # Float formats keep negative values and values above 1 through both nodes and
+    # their image outputs; an 8-bit read is float32 / 255.
+    image = synthetic(8, 12, 4) * np.float32(3) - np.float32(1)
+    path = tmp_path / "hdr.dds"
+    texconv.save_as_dds(path, image, "R32G32B32A32_FLOAT", 1)
+    ((item, _),) = generated(path)
+    for schema_id, read_image in [
+        ("chainner:image:load_dds", load_dds.load_dds_node(path, 0, 0, 0)[0]),
+        ("chainner:image:load_dds_images", item),
+    ]:
+        assert np.array_equal(image_output(schema_id).enforce(read_image), image)
+    ldr = synthetic(8, 12, 4)
+    path = save(tmp_path, "ldr", ldr, "R8G8B8A8_UNORM", dds_mipmap_levels=1)
+    read_image = load_dds.load_dds_node(path, 0, 0, 0)[0]
+    assert read_image.dtype == np.float32
+    assert np.array_equal(read_image, to_uint8(ldr, normalized=True) / BYTE)
+
+
+def test_dds_headers_are_read_alone(tmp_path, runs, monkeypatch):
+    # The header (148 bytes) tells the format and size; only texconv reads the images.
+    path = save(tmp_path, "big", synthetic(64, 64, 4), "R8G8B8A8_UNORM")
+    sizes: list[int] = []
+    real_open = builtins.open
+
+    class Recording:
+        def __init__(self, file):
+            self.file = file
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exception):
+            return self.file.__exit__(*exception)
+
+        def read(self, size=-1):
+            sizes.append(size)
+            return self.file.read(size)
+
+    def recording_open(file, *args, **kwargs):
+        opened = real_open(file, *args, **kwargs)
+        return Recording(opened) if Path(file) == path else opened
+
+    monkeypatch.setattr(builtins, "open", recording_open)
+    texconv.read_dds_info(path)
+    load_dds.load_dds_node(path, 0, 0, 0)
+    generated(path)
+    assert sizes == [148] * 4  # the info; Load DDS's info and read; the iterator
+
+
+def legacy_mask_dds(path: Path, flags: int, bits: int, masks: list[int]) -> None:
+    """A 4x2 DDS of a legacy mask pixel format (DX9 header, no FourCC), pixels 0..7."""
+    header = bytearray(128)
+    struct.pack_into("<4s5I", header, 0, b"DDS ", 124, 0x100F, 2, 4, 4 * bits // 8)
+    struct.pack_into("<8I", header, 76, 32, flags, 0, bits, *masks)
+    struct.pack_into("<I", header, 108, 0x1000)
+    path.write_bytes(bytes(header) + bytes(range(8 * bits // 8)))
+
+
+def test_legacy_mask_formats_dxgi_lacks_are_named(tmp_path, runs):
+    rgb = tmp_path / "r8g8b8.dds"
+    legacy_mask_dds(rgb, 0x40, 24, [0xFF0000, 0xFF00, 0xFF, 0])  # DDPF_RGB
+    image, name, *_ = load_dds.load_dds_node(rgb, 0, 0, 0)
+    assert name == "R8G8B8 (legacy)"
+    # B, G, R bytes in that order: the masks' little-endian 24-bit pixels
+    want = np.arange(24, dtype=np.uint8).reshape(2, 4, 3) / BYTE
+    assert np.array_equal(image, want)
+    a4l4 = tmp_path / "a4l4.dds"
+    legacy_mask_dds(a4l4, 0x20001, 8, [0x0F, 0, 0, 0xF0])  # LUMINANCE, ALPHAPIXELS
+    assert texconv.read_dds_info(a4l4).format == "A4L4 (legacy)"
+    known = tmp_path / "x8r8g8b8.dds"
+    legacy_mask_dds(known, 0x40, 32, [0xFF0000, 0xFF00, 0xFF, 0])
+    assert texconv.read_dds_info(known).format == "B8G8R8X8_UNORM"
 
 
 def texture(
@@ -685,12 +775,12 @@ def test_save_dds_texture_writes_arrays_cubemaps_and_volumes(tmp_path, runs):
     assert runs[-1][runs[-1].index("-f") + 2] == "-dx9"  # DX9 holds a cubemap
     for face, image in enumerate(faces):
         read_face, *info = load_dds.load_dds_node(cube, 0, face, 0)
-        assert np.array_equal(read_face, to_uint8(image, normalized=True))
+        assert np.array_equal(read_face, to_uint8(image, normalized=True) / BYTE)
         assert info == ["R8G8B8A8_UNORM", 8, 8, 1, 6, 1, True]
     items = generated(cube)
     assert [index for _, index in items] == list(range(6))
     assert all(
-        np.array_equal(i, to_uint8(f, normalized=True))
+        np.array_equal(i, to_uint8(f, normalized=True) / BYTE)
         for (i, _), f in zip(items, faces, strict=True)
     )
 
