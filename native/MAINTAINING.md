@@ -111,7 +111,7 @@ VOSR's TensorRT backends need `vosr2_qkv.dll`: build the native layer with the T
 packaging (section 4, item 6; README Build). VOSR's modules, engine caches, hosted FP8 set and tests:
 [`VOSR2-MAINTAINING.md`](VOSR2-MAINTAINING.md).
 
-1. Pins live in `backend/src/packages/chaiNNer_tensorrt/__init__.py` (`tensorrt` 11.2.1.2 with `auto_update=False`,
+1. Pins live in `backend/src/packages/chaiNNer_tensorrt/__init__.py` (`tensorrt` 11.4.0.106 with `auto_update=False`,
    `cuda-python` 13.4.1); they are GPU-only and not in the lock.
 2. A serialized engine loads only on the TensorRT version and GPU architecture that built it
    (`nodes/impl/tensorrt/engine_info.py`). `auto_update=False` keeps a pin bump from replacing an installed TensorRT

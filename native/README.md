@@ -30,7 +30,7 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
   `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools` (MSVC 14.44.35207's headers and libraries,
   and its bundled Ninja), Windows SDK 10.0.26100.0, and CMake 3.20 or newer.
 - Optional, for VOSR's TensorRT plugin (Build): a TensorRT 11 SDK (the zip's `include` and `lib`, for example
-  `TensorRT-11.2.1.2`) and a CUDA 13 toolkit (`nvcc`, for example
+  `TensorRT-11.4.0.106`) and a CUDA 13 toolkit (`nvcc`, for example
   `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3`).
 - CPython 3.14.8 at `native\runtime\cpython-3.14.8`, provisioned by `native\tools\provision_runtime.ps1`
   from the tracked lock `native\python-stack.lock.txt` (interpreter, build tag, archive SHA-256, pip's version

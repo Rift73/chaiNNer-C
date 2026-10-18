@@ -28,7 +28,7 @@ package = add_package(
         Dependency(
             display_name="TensorRT",
             pypi_name="tensorrt",
-            version="11.2.1.2",
+            version="11.4.0.106",
             size_estimate=int(1.2 * GB),
             auto_update=False,
         ),
