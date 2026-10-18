@@ -461,3 +461,35 @@ def test_warm_session_is_released_only_when_the_device_is_nearly_full(
     monkeypatch.setattr(vosr2_trt_pipeline, "nvidia", SimpleNamespace(devices=[gpu]))
     session.prepare()
     assert len(calls) == expected
+
+
+@pytest.mark.parametrize("build", [True, False])
+def test_a_build_checks_its_plain_plans_and_a_cached_set_its_compressed_ones(
+    monkeypatch, tmp_path, build
+):
+    # A build's last stage checks the plans it just compiled, which the cache compresses
+    # only once the build passed (opening the compressed names failed every first build).
+    pytest.importorskip("tensorrt")
+    opened: list[Path] = []
+
+    class OpenedStage:
+        def __init__(self, path: Path, logger: object, device: torch.device) -> None:
+            opened.append(path)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(vosr2_trt_pipeline, "Stage", OpenedStage)
+    monkeypatch.setattr(vosr2_trt_pipeline, "load_plugin", lambda: None)
+    monkeypatch.setattr(vosr2_trt_pipeline, "StageExecution", lambda *_: None)
+    monkeypatch.setattr(torch.cuda, "device", contextlib.nullcontext)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "Stream", lambda **_: None)
+    device = torch.device("cuda:0")
+    if build:
+        session = vosr2_trt_pipeline.build_session(tmp_path, device)
+    else:
+        session = FullSession(tmp_path, device)
+    vosr2_trt_pipeline._LIVE.discard(session)
+    place = vosr2_plan_file.plain if build else compressed
+    assert opened == [place(tmp_path, name) for name in STAGES]

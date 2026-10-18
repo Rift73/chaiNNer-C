@@ -15,7 +15,7 @@ from gpu import nvidia
 from nodes.impl.tensorrt.cache import SharedCache
 
 from .vosr2_export import rotary_tables
-from .vosr2_plan_file import compressed
+from .vosr2_plan_file import compressed, plain
 from .vosr2_trt_execution import BoundedQueue, Stage, StageExecution
 from .vosr2_trt_models import STAGES
 from .vosr2_trt_plugin import load_plugin
@@ -24,9 +24,16 @@ _LIVE: WeakSet[FullSession] = WeakSet()
 
 
 class FullSession:
-    """Resident model stages; live scratch follows actual input dimensions."""
+    """Resident model stages; live scratch follows actual input dimensions. `plan`
+    places a stage's plan in `directory`: compressed in a cached set (the default), plain
+    in a build's (build_session)."""
 
-    def __init__(self, directory: Path, device: torch.device):
+    def __init__(
+        self,
+        directory: Path,
+        device: torch.device,
+        plan: Callable[[Path, str], Path] = compressed,
+    ):
         from nodes.impl.tensorrt.trt_logger import TRT_LOGGER
 
         load_plugin()
@@ -46,7 +53,7 @@ class FullSession:
             with torch.cuda.device(self.device):
                 for name in STAGES:
                     self.stages[name] = Stage(
-                        compressed(directory, name), self.logger, self.device
+                        plan(directory, name), self.logger, self.device
                     )
         except BaseException:
             self.close()
@@ -186,6 +193,12 @@ class FullSession:
             stage.close()
         self.stages.clear()
         _LIVE.discard(self)
+
+
+def build_session(directory: Path, device: torch.device) -> FullSession:
+    """A build's session over the plans it just compiled, to check them: plain, since the
+    cache compresses a set only once its build passed."""
+    return FullSession(directory, device, plain)
 
 
 @atexit.register

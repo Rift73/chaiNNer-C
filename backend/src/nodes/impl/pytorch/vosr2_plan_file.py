@@ -19,14 +19,20 @@ SUFFIX = ".plan.zst"
 
 
 def compressed(directory: Path, name: str) -> Path:
+    """A stage's plan as a cache keeps it."""
     return directory / f"{name}{SUFFIX}"
+
+
+def plain(directory: Path, name: str) -> Path:
+    """A stage's plan as a build writes it."""
+    return directory / f"{name}.plan"
 
 
 def stored(directory: Path, manifest: dict, name: str) -> Path:
     """A cached set's plan of a stage, as its manifest describes the set."""
     if manifest.get("compression") == "zstd":
         return compressed(directory, name)
-    return directory / f"{name}.plan"
+    return plain(directory, name)
 
 
 def compress(source: Path, target: Path) -> None:
