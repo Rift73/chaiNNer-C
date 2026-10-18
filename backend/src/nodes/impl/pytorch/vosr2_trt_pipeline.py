@@ -45,6 +45,8 @@ class FullSession:
         self.stages: dict[str, Stage] = {}
         self.ropes: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         self.budget = 0
+        # The activation reserve the weights were admitted with (None: all resident)
+        self.reserve: int | None = None
         self.execution = StageExecution(self.device, self.stream)
         self.geometry: tuple[int, int, int] | None = None
         self.constants: dict[object, torch.Tensor] = {}
@@ -60,27 +62,42 @@ class FullSession:
             raise
         _LIVE.add(self)
 
-    def prepare(self) -> None:
-        """Drop warm weights when the device is nearly full before admission."""
+    def prepare(self, reserve: int | None = None) -> None:
+        """Before admission, drop warm weights admitted with another activation reserve
+        (another memory mode: a Low budget would count them as another program's), or
+        when the device is nearly full."""
+        if self.budget and reserve != self.reserve:
+            self.offload()
+            return
         gpu = next(g for g in nvidia.devices if g.index == self.device.index)
         usage = gpu.get_current_vram_usage()
         if usage.used >= usage.total - 1_200_000_000:
             self.offload()
 
-    def activate(self, check: Callable[[], None]) -> None:
+    def activate(self, check: Callable[[], None], reserve: int | None = None) -> None:
+        """Admit the stages with every weight on the device, or, given a `reserve` (Low
+        memory), with as much of each stage's weights as leaves `reserve` bytes of the
+        budget for activations; TensorRT streams the rest from host memory as it runs."""
         import tensorrt as trt
 
         check()
-        if self.budget:
+        if self.budget and reserve == self.reserve:
             return
+        if self.budget:
+            # Admitted for another memory mode
+            self.offload()
         engines = [stage.engine for stage in self.stages.values()]
         if any(engine is None for engine in engines):
             raise RuntimeError("VOSR BF16 session is closed.")
-        budget = sum(
+        streamable = sum(
             engine.streamable_weights_size for engine in engines if engine is not None
         )
         total = torch.cuda.get_device_properties(self.device).total_memory
         previous = torch.cuda.get_per_process_memory_fraction(self.device)
+        budget = streamable
+        if reserve is not None:
+            free = int(total * previous) - torch.cuda.memory_allocated(self.device)
+            budget = max(0, min(streamable, free - reserve))
         cap = int(total * previous) - budget
         if cap <= torch.cuda.memory_allocated(self.device) + 512 * 1024**2:
             raise RuntimeError("Insufficient memory to admit VOSR BF16 model stages.")
@@ -92,12 +109,14 @@ class FullSession:
                 engine = stage.engine
                 if engine is None:
                     raise RuntimeError("Closed VOSR stage.")
-                if engine.streamable_weights_size:
-                    engine.weight_streaming_budget_v2 = engine.streamable_weights_size
-                    if (
-                        engine.weight_streaming_budget_v2
-                        != engine.streamable_weights_size
-                    ):
+                size = engine.streamable_weights_size
+                if size:
+                    # Each stage keeps the same share of its weights
+                    resident = (
+                        size if budget == streamable else size * budget // streamable
+                    )
+                    engine.weight_streaming_budget_v2 = resident
+                    if engine.weight_streaming_budget_v2 != resident:
                         raise RuntimeError(
                             f"TensorRT rejected VOSR {stage.name} weight residency."
                         )
@@ -108,6 +127,7 @@ class FullSession:
                     raise RuntimeError(f"VOSR could not allocate {stage.name} context.")
                 check()
             self.budget = budget
+            self.reserve = reserve
         except BaseException:
             self.offload()
             raise

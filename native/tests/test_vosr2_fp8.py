@@ -42,11 +42,12 @@ def use_device(monkeypatch, node, device):
         (VosrMemoryMode.DEFAULT, VosrBackend.TENSORRT, "bf16"),
         (VosrMemoryMode.DEFAULT, VosrBackend.TENSORRT_FP8, "fp8"),
         (VosrMemoryMode.DEFAULT, VosrBackend.PYTORCH, "pytorch"),
-        (VosrMemoryMode.LOW, VosrBackend.TENSORRT, "pytorch"),
-        (VosrMemoryMode.LOW, VosrBackend.TENSORRT_FP8, "pytorch"),
+        (VosrMemoryMode.LOW, VosrBackend.TENSORRT, "bf16"),
+        (VosrMemoryMode.LOW, VosrBackend.TENSORRT_FP8, "fp8"),
+        (VosrMemoryMode.LOW, VosrBackend.PYTORCH, "pytorch"),
     ],
 )
-def test_node_routes_backends_and_low_memory_always_uses_pytorch(
+def test_node_routes_backends_in_both_memory_modes(
     monkeypatch, tmp_path, memory, backend, expected
 ):
     from packages.chaiNNer_pytorch.pytorch.processing import upscale_image_vosr as node
@@ -170,9 +171,10 @@ def test_full_trt_node_does_not_load_unused_pytorch_models(
     def unexpected(*args, **kwargs):
         pytest.fail("Full TensorRT attempted to load PyTorch model weights")
 
-    def restore(*args, windows):
+    def restore(*args, windows, low):
         assert args[0] is statistics and args[-1] is session
         assert isinstance(windows, WindowPlan)
+        assert low is None  # Default memory
         return expected
 
     monkeypatch.setattr(node, "lease_bundle", unexpected)

@@ -561,7 +561,7 @@ def test_tensorrt_blends_a_face_window_the_same_way(monkeypatch):
         def begin_image(self, height, width, seed):
             pass
 
-        def activate(self, check):
+        def activate(self, check, reserve=None):
             pass
 
         def constant(self, key, value):
@@ -605,6 +605,7 @@ def test_tensorrt_blends_a_face_window_the_same_way(monkeypatch):
         Progress.noop_progress(),
         lambda: None,
         cast(vosr2_trt_restore.FullSession, session),
+        None,
         None,
     )
     latent = session.decoder_input

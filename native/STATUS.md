@@ -44,7 +44,13 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   and TensorRT FP8 backends. In a Load Video loop the node stabilizes frames (Three Frames or Persistent Detail,
   strength 65 %) with frames ahead from the item window's new look-ahead (`NodeContext.iteration`, the `iterated`
   input condition; ARCHITECTURE section 4), else from past frames only. Gone: VOSR 2.0 Upscale, Temporal Sequence,
-  Precision, Original mode and tile inputs, FP16, High. The TensorRT plugin `vosr2_qkv.dll` is an optional native target
+  Precision, Original mode and tile inputs, FP16, High. 2026-10-19 (owner): GPU Memory Low offers TensorRT and
+  TensorRT FP8 (were PyTorch only): weights streamed beyond a 2 GiB activation reserve, outer tiles of 512 px;
+  engines built with RUNTIME_ACTIVATION_RESIZE (every set rebuilds once), so activations follow the input instead
+  of the 2176x3840 profile (VAE encoder 7.6 GiB at any size before). RTX 5090, 768^2 2x: FP8 Default 11.47 -> 6.04 GB
+  above idle at 0.6 s; Low FP8 2.66 GB 1.1 s, BF16 2.84 GB 1.7 s, the same peaks at a 3072^2 output; Low PyTorch
+  ran out of its budget on that case. Low tiles: 34 dB from Default (textures differ per tile).
+  The TensorRT plugin `vosr2_qkv.dll` is an optional native target
   (`14dfaec0…`, four reproducible builds); the FP8 graphs are hosted (`vosr2-fp8-f9e142df5846`, 3.45 GB, SHA-256
   pinned) and compiled on first use (191 s, compile 177 s). Since 2026-10-17 (owner) the set is hosted and kept
   Zstandard-compressed (`vosr2-fp8-3ebb2423591d`, format 2, 2.68 GB; each file's `zstd` entry) and unpacked only

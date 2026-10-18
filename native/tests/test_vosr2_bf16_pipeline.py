@@ -453,6 +453,7 @@ def test_warm_session_is_released_only_when_the_device_is_nearly_full(
     calls = []
     session = FullSession.__new__(FullSession)
     session.device = torch.device("cuda:0")
+    session.budget = 0
     monkeypatch.setattr(session, "offload", lambda: calls.append(True))
     gpu = SimpleNamespace(
         index=0,
@@ -493,3 +494,67 @@ def test_a_build_checks_its_plain_plans_and_a_cached_set_its_compressed_ones(
     vosr2_trt_pipeline._LIVE.discard(session)
     place = vosr2_plan_file.plain if build else compressed
     assert opened == [place(tmp_path, name) for name in STAGES]
+
+
+def test_low_memory_streams_every_stage_the_same_share_of_its_weights(monkeypatch):
+    pytest.importorskip("tensorrt")
+    session = FullSession.__new__(FullSession)
+    session.device = torch.device("cuda:0")
+    session.budget = 0
+    session.reserve = None
+
+    class Engine:
+        def __init__(self, size: int) -> None:
+            self.streamable_weights_size = size
+            self.weight_streaming_budget_v2 = 0
+
+        def create_execution_context(self, strategy):
+            return object()
+
+    dit, vae = Engine(3 * 1024**3), Engine(1024**3)
+    session.stages = {
+        name: cast(Stage, SimpleNamespace(name=name, engine=engine, context=None))
+        for name, engine in (("dit", dit), ("vae", vae))
+    }
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda _: SimpleNamespace(total_memory=8 * 1024**3),
+    )
+    monkeypatch.setattr(torch.cuda, "get_per_process_memory_fraction", lambda _: 1.0)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda _: 0)
+    monkeypatch.setattr(torch.cuda, "set_per_process_memory_fraction", lambda *_: None)
+    # 8 GiB, 6 GiB kept for activations: 2 of the 4 GiB of weights stay resident
+    session.activate(lambda: None, 6 * 1024**3)
+    assert session.budget == 2 * 1024**3
+    assert dit.weight_streaming_budget_v2 == 3 * 1024**3 // 2
+    assert vae.weight_streaming_budget_v2 == 1024**3 // 2
+
+
+@pytest.mark.parametrize(
+    "admitted,requested,offloaded",
+    [
+        (None, 3 * 1024**3, True),
+        (3 * 1024**3, None, True),
+        (3 * 1024**3, 3 * 1024**3, False),
+    ],
+)
+def test_a_warm_session_admitted_for_another_memory_mode_is_released(
+    monkeypatch, admitted, requested, offloaded
+):
+    # A Low budget counts resident weights as another program's memory
+    calls = []
+    session = FullSession.__new__(FullSession)
+    session.device = torch.device("cuda:0")
+    session.budget = 1000
+    session.reserve = admitted
+    monkeypatch.setattr(session, "offload", lambda: calls.append(True))
+    gpu = SimpleNamespace(
+        index=0,
+        get_current_vram_usage=lambda: SimpleNamespace(
+            used=2 * 1024**3, total=32 * 1024**3
+        ),
+    )
+    monkeypatch.setattr(vosr2_trt_pipeline, "nvidia", SimpleNamespace(devices=[gpu]))
+    session.prepare(requested)
+    assert bool(calls) == offloaded

@@ -156,6 +156,8 @@ def cache_identity(device: torch.device) -> dict:
     sources = [
         *sorted((Path(__file__).resolve().parents[3] / "vendor/vosr2").glob("*.py")),
         Path(__file__).with_name("vosr2_export.py"),
+        # The builder's configuration (as the FP8 set's identity has it)
+        Path(__file__).with_name("vosr2_trt_compile.py"),
     ]
     model = "".join(
         inspect.getsource(code) for code in (VosrBundle.__init__, load_weights)
