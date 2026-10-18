@@ -13,6 +13,7 @@ import sys
 import threading
 from collections import deque
 from importlib import import_module
+from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -555,15 +556,12 @@ def test_node_session_matches_python_session(
         assert np.array_equal(convenient_upscale(img, 3, 3, session.upscale), expected)
 
 
-VS_PYTHON = Path(
-    r"<VapourSynth dev venv>\Scripts\python.exe"
-)
 PLUGIN = BACKEND_SRC / "nodes" / "impl" / "tensorrt" / "chainner_trt_vs.dll"
 
 
 @pytest.mark.skipif(
-    not VS_PYTHON.is_file() or not PLUGIN.is_file(),
-    reason="needs the VapourSynth dev venv and chainner_trt_vs.dll",
+    find_spec("vapoursynth") is None or not PLUGIN.is_file(),
+    reason="needs VapourSynth (run under its venv, as the VapourSynth tests) and chainner_trt_vs.dll",
 )
 def test_vapoursynth_plugin_loads_and_checks_its_arguments(tmp_path: Path):
     """The plugin registers chainner_trt.Upscale (API 4) and refuses bad clips, stream
@@ -595,7 +593,7 @@ print(json.dumps({{
 }}))
 """
     result = subprocess.run(
-        [str(VS_PYTHON), "-I", "-c", code],
+        [sys.executable, "-I", "-c", code],
         capture_output=True,
         text=True,
         env={**os.environ, "CUDA_VISIBLE_DEVICES": "-1"},
