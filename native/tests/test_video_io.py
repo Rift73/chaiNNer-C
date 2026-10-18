@@ -2828,6 +2828,7 @@ def test_prepared_collector_commit_writes_as_on_iterate(
         assert collector.writer.pipe_format == pipe
         item = (frame, None, None, None)  # Image Sequence, Y, U, V
         holder = Prepared(g["prepare_video_frame"](collector, list(item)))
+        assert isinstance(holder.value, np.ndarray)
         assert holder.value.dtype == (np.uint8 if pipe == "bgr24" else np.uint16)
         with pytest.raises(TypeError):
             collector.on_iterate(item, holder)  # one argument, as Collector declares
