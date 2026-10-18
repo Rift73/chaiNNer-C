@@ -333,9 +333,16 @@ Runner::Runner(void const* engine, std::size_t size, int device, int streams) : 
     m.runtime = nvinfer1::createInferRuntime(m.logger);
     if (!m.runtime) m.logger.fail("TensorRT could not create its runtime");
     m.engine = m.runtime->deserializeCudaEngine(engine, size);
-    if (!m.engine)
-        m.logger.fail("Failed to deserialize the TensorRT engine. It may have been built with an incompatible "
-                      "TensorRT version or for a different GPU architecture");
+    if (!m.engine) {
+        // (MAJOR * 100 + MINOR) * 100 + PATCH
+        int const version = getInferLibVersion();
+        m.logger.fail("Failed to deserialize the TensorRT engine. It may have been built with another TensorRT "
+                      "version than this chaiNNer-C's (" +
+                      std::to_string(version / 10000) + "." + std::to_string(version / 100 % 100) + "." +
+                      std::to_string(version % 100) +
+                      ") or for a different GPU architecture: build it again from its ONNX model with the Build "
+                      "Engine node");
+    }
 
     std::vector<std::string> inputs, outputs;
     for (int i = 0; i < m.engine->getNbIOTensors(); ++i) {

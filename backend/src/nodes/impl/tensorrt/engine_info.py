@@ -27,8 +27,10 @@ def deserialize_engine(engine_bytes: bytes, gpu_index: int) -> DeserializedEngin
     engine = runtime.deserialize_cuda_engine(engine_bytes)
     if engine is None:
         raise RuntimeError(
-            "Failed to deserialize the TensorRT engine. It may have been built with an"
-            " incompatible TensorRT version or for a different GPU architecture."
+            "Failed to deserialize the TensorRT engine. It may have been built with"
+            f" another TensorRT version than this chaiNNer-C's ({trt.__version__}) or"
+            " for a different GPU architecture: build it again from its ONNX model with"
+            " the Build Engine node."
         )
     return DeserializedEngine(runtime, engine, gpu_index)
 
