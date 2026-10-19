@@ -35,7 +35,8 @@ def image(seed: int, height: int, width: int, channels: int, layout: str) -> np.
 @pytest.mark.parametrize("axis", [a.value for a in FlipAxis])
 def test_flip_matches(axis, size, channels, layout):
     seed = zlib.crc32(repr((axis, size, channels, layout)).encode())
-    img = image(seed, *size, channels, layout)
+    height, width = size
+    img = image(seed, height, width, channels, layout)
     assert_native_matches("chainner:image:flip", [img, axis])
 
 

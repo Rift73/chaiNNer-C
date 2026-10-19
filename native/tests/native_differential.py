@@ -79,7 +79,7 @@ def run_both(schema_id: str, inputs: list[object]) -> tuple[tuple[str, object], 
     assert not node.node_context, f"{schema_id} takes a NodeContext, which run_native does not provide yet"
     assert node.kind == "regularNode", f"{schema_id} is a {node.kind}; run_native runs regular nodes"
     assert schema_id in graph().native_schema_ids(), f"{schema_id} has no native entry point"
-    enforced = process.enforce_inputs(list(inputs), node, "native-differential", [])
+    enforced = process.enforce_inputs(list(inputs), node, api.NodeId("native-differential"), [])
     python = _outcome(node, lambda: node.run(*enforced))
     native = _outcome(node, lambda: _single(node, graph().run_native(schema_id, enforced)))
     return python, native
@@ -100,9 +100,11 @@ def assert_native_matches(schema_id: str, inputs: list[object]) -> tuple[str, ob
     if python[0] == "error":
         assert python[1] == native[1], f"{schema_id}: errors differ: Python {python[1]}, native {native[1]}"
         return native
-    expected = [comparable(value) for value in python[1]]
-    actual = [comparable(value) for value in native[1]]
+    python_outputs, native_outputs = python[1], native[1]
+    assert isinstance(python_outputs, list) and isinstance(native_outputs, list)
+    expected = [comparable(value) for value in python_outputs]
+    actual = [comparable(value) for value in native_outputs]
     assert len(expected) == len(actual), f"{schema_id}: {len(expected)} outputs vs {len(actual)}"
     for index, (e, a) in enumerate(zip(expected, actual)):
-        assert e == a, f"{schema_id}: output {index} differs: Python {e[:3]}, native {a[:3]}"
+        assert e == a, f"{schema_id}: output {index} differs: Python {e!r:.200}, native {a!r:.200}"
     return native
