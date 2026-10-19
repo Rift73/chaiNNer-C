@@ -229,10 +229,11 @@ struct Key {
 
 /* The memo cache (DESIGN.md section 2, amendment A3): in this process only, the outputs of deterministic,
  * side-effect-free nodes by key (schema, enforced constant inputs, package settings, upstream keys; a file's
- * identity for Load Image and Load Images' items), least recently used first out, within a budget of
- * min(2 GiB, 10 % of the RAM) apart from the item window's (CHAINNER_C_MEMO_BUDGET_MIB, 0 = off); an entry above a
- * budget's eighth is not kept. A dependency change restarts the worker process (server_host.change_dependencies), which
- * drops it. */
+ * identity for Load Image and Load Images' items), least recently used first out, within a budget apart from the item
+ * window's: the Result Cache setting's, which each run sets at its start (memo_set_budget), min(2 GiB, 10 % of the RAM)
+ * until then; CHAINNER_C_MEMO_BUDGET_MIB (0 = off), a diagnostic override, wins over both. An entry above a budget's
+ * eighth is not kept. A dependency change restarts the worker process (server_host.change_dependencies), which drops
+ * it. */
 class Memo {
 public:
     static Memo &get()
@@ -263,13 +264,7 @@ public:
         std::vector<Entry> evicted;  // released outside the lock
         std::lock_guard<std::mutex> locked(mutex_);
         if (!enabled() || entry.bytes > budget_ / 8 || entries_.count(key)) return;
-        while (bytes_ + entry.bytes > budget_ && !order_.empty()) {
-            auto victim = entries_.find(order_.front());
-            bytes_ -= victim->second.entry.bytes;
-            evicted.push_back(std::move(victim->second.entry));
-            entries_.erase(victim);
-            order_.pop_front();
-        }
+        while (bytes_ + entry.bytes > budget_ && !order_.empty()) evict(order_.begin(), evicted);
         bytes_ += entry.bytes;
         order_.push_back(key);
         entries_.emplace(key, Slot{std::move(entry), std::prev(order_.end())});
@@ -281,6 +276,23 @@ public:
         released.swap(entries_);
         order_.clear();
         bytes_ = 0;
+    }
+    /* The Result Cache setting's budget (0: off), unless CHAINNER_C_MEMO_BUDGET_MIB set one, which stays: the
+     * entries above its eighth go, then the least recently used until the rest fits; off, every entry goes. Returns
+     * the budget in effect. */
+    int64_t set_budget(int64_t budget)
+    {
+        std::vector<Entry> evicted;  // released outside the lock
+        std::lock_guard<std::mutex> locked(mutex_);
+        if (overridden_) return budget_;
+        budget_ = std::max<int64_t>(budget, 0);
+        for (auto position = order_.begin(); position != order_.end();) {
+            auto next = std::next(position);
+            if (!enabled() || entries_.find(*position)->second.entry.bytes > budget_ / 8) evict(position, evicted);
+            position = next;
+        }
+        while (bytes_ > budget_ && !order_.empty()) evict(order_.begin(), evicted);
+        return budget_;
     }
     py::dict stats()
     {
@@ -306,18 +318,30 @@ private:
         if (_dupenv_s(&value, &size, "CHAINNER_C_MEMO_BUDGET_MIB") == 0 && value) {
             std::string text(value);
             free(value);
-            if (!text.empty() && text.size() <= 9 && text.find_first_not_of("0123456789") == std::string::npos)
+            if (!text.empty() && text.size() <= 9 && text.find_first_not_of("0123456789") == std::string::npos) {
                 budget_ = int64_t(std::stoll(text)) << 20;
+                overridden_ = true;
+            }
         }
     }
     struct Slot {
         Entry entry;
         std::list<Key>::iterator position;
     };
+    /* mutex_ held; the entry released by the caller, outside it. */
+    void evict(std::list<Key>::iterator position, std::vector<Entry> &evicted)
+    {
+        auto victim = entries_.find(*position);
+        bytes_ -= victim->second.entry.bytes;
+        evicted.push_back(std::move(victim->second.entry));
+        entries_.erase(victim);
+        order_.erase(position);
+    }
     std::mutex mutex_;
     std::map<Key, Slot> entries_;
     std::list<Key> order_;  // least recently used first
     int64_t budget_ = 0, bytes_ = 0;
+    bool overridden_ = false;  // CHAINNER_C_MEMO_BUDGET_MIB set the budget
     uint64_t hits_ = 0, misses_ = 0;
 };
 
@@ -3575,6 +3599,10 @@ void cn_bind_run_executor(py::module_ &module)
         .def("peek", &Run::peek, py::arg("node"), py::arg("input"), py::arg("offset"), py::arg("origin"));
     module.def("memo_stats", [] { return cn::run::Memo::get().stats(); },
                "The memo cache's entries, bytes, budget, hits and misses (amendment A3).");
+    module.def("memo_set_budget", [](int64_t budget) { return cn::run::Memo::get().set_budget(budget); },
+               py::arg("budget"),
+               "Sets the memo cache's budget in bytes (0: off), trimming it, unless CHAINNER_C_MEMO_BUDGET_MIB set "
+               "one; returns the budget in effect.");
     module.def("memo_clear", [] {
         cn::run::Memo::get().clear();
         cn::run::PreviewCache::get().clear();

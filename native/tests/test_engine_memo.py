@@ -1,11 +1,12 @@
 """The native engine's memo cache (native/local/instant-exec/DESIGN.md amendment A3): its allow-list, hits that send
 the events of a computed node (judged against process.Executor by native/tools/engine_differential.py), keys that
-follow a source file's identity, and its budget (CHAINNER_C_MEMO_BUDGET_MIB, an entry above an eighth of it not
-kept)."""
+follow a source file's identity, its budget (an entry above an eighth of it not kept), and the Result Cache settings
+that set it at each run's start (on, size), over which CHAINNER_C_MEMO_BUDGET_MIB wins."""
 
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from typing import cast
 
 import cv2
 import numpy as np
+import psutil
 import pytest
 from bench_oracle import FFMPEG
 from engine_differential import execute, load_registry_errors, mismatches
@@ -25,6 +27,7 @@ import api
 import native_executor
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
+from nodes.impl import result_cache
 from nodes.impl.native_graph import graph
 
 BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
@@ -149,12 +152,49 @@ def single_chain(schemas, image: Path, output: Path) -> list[dict]:
     ]
 
 
-def run(kind: str, nodes: list[dict], tmp_path: Path, output: Path):
+def board_chain(schemas, size: int, output: Path) -> list[dict]:
+    """Create Checkerboard (size x size RGBA float32: 1 MiB at 256) into Gaussian Blur and Save Image."""
+    return [
+        make_node(
+            schemas,
+            "board",
+            "chainner:image:create_checkerboard",
+            {0: size, 1: size, 4: 3},
+        ),
+        make_node(
+            schemas,
+            "blur",
+            "chainner:image:gaussian_blur",
+            {0: edge("board"), 1: 1, 2: 1},
+        ),
+        make_node(
+            schemas,
+            "save",
+            "chainner:image:save",
+            {0: edge("blur"), 1: str(output), 2: None, 3: "b", 4: "png", 15: "u8"},
+        ),
+    ]
+
+
+def cache_settings(**settings: object) -> dict[str, dict[str, object]]:
+    """The run options of these Result Cache settings."""
+    return {result_cache.PACKAGE: settings}
+
+
+def run(
+    kind: str,
+    nodes: list[dict],
+    tmp_path: Path,
+    output: Path,
+    options: dict[str, dict[str, object]] | None = None,
+):
     shutil.rmtree(output, ignore_errors=True)
     output.mkdir(parents=True)
     chain = parse_json(cast("list[JsonNode]", nodes))
     optimize(chain)
-    return chain, execute(kind, chain, storage=tmp_path / "storage", output=output)
+    return chain, execute(
+        kind, chain, storage=tmp_path / "storage", output=output, options=options
+    )
 
 
 def test_allow_list_is_the_audited_set(schemas):
@@ -381,6 +421,7 @@ from verify_runtime import edge, make_node
 schemas = {s: {"inputs": [i.to_dict() for i in d.inputs], "kind": d.kind} for s, (d, _) in api.registry.nodes.items()}
 work = Path(os.environ["WORK"])
 size = int(os.environ["SIZE"])
+options = json.loads(os.environ["OPTIONS"])
 nodes = [
     make_node(schemas, "board", "chainner:image:create_checkerboard", {0: size, 1: size, 4: 3}),
     make_node(schemas, "blur", "chainner:image:gaussian_blur", {0: edge("board"), 1: 1, 2: 1}),
@@ -389,23 +430,25 @@ nodes = [
 for _ in range(2):
     chain = parse_json(nodes)
     optimize(chain)
-    assert execute("native", chain, storage=work / "storage").error is None
+    assert execute("native", chain, storage=work / "storage", options=options).error is None
 print(json.dumps(graph().memo_stats()))
 """
 
 
-@pytest.mark.parametrize(
-    "budget, size, cached",
-    [("0", 64, False), ("1", 64, True), ("1", 256, False)],
-    ids=["off", "small entry kept", "entry above an eighth not kept"],
-)
-def test_budget(tmp_path, budget, size, cached):
-    # A fresh interpreter: the budget is read once per process.
+def budget_stats(
+    tmp_path: Path,
+    budget: str,
+    size: int,
+    options: dict[str, dict[str, object]] | None = None,
+) -> dict[str, int]:
+    """The memo's stats after two runs of a size x size board chain with these run options, in a fresh interpreter
+    with CHAINNER_C_MEMO_BUDGET_MIB=budget (read once per process)."""
     environment = dict(
         os.environ,
         CHAINNER_C_MEMO_BUDGET_MIB=budget,
         WORK=str(tmp_path),
         SIZE=str(size),
+        OPTIONS=json.dumps(options or {}),
         TOOLS=str(BACKEND.parents[1] / "native" / "tools"),
     )
     result = subprocess.run(
@@ -418,10 +461,129 @@ def test_budget(tmp_path, budget, size, cached):
         check=False,
     )
     assert result.returncode == 0, result.stderr[-2000:]
-    stats = __import__("json").loads(result.stdout.strip().splitlines()[-1])
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.parametrize(
+    "budget, size, cached",
+    [("0", 64, False), ("1", 64, True), ("1", 256, False)],
+    ids=["off", "small entry kept", "entry above an eighth not kept"],
+)
+def test_budget(tmp_path, budget, size, cached):
+    stats = budget_stats(tmp_path, budget, size)
     assert stats["budget"] == int(budget) << 20
     # A 256 x 256 RGBA float32 image is 1 MiB, above an eighth of a 1 MiB budget; a 64 x 64 one fits.
     assert (stats["hits"] > 0) == cached, stats
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [{result_cache.ENABLED: False}, {result_cache.SIZE_MIB: 64}],
+    ids=["over off", "over a size"],
+)
+def test_the_environment_variable_wins_over_the_settings(tmp_path, settings):
+    # The diagnostic override keeps its 1 MiB budget whatever the Result Cache settings ask for.
+    stats = budget_stats(tmp_path, "1", 64, cache_settings(**settings))
+    assert stats["budget"] == 1 << 20
+    assert stats["hits"] > 0, stats
+
+
+EDITOR_PACKAGES = """
+import asyncio, importlib, os, sys
+from types import SimpleNamespace
+sys.modules["__main__"].__file__ = os.path.abspath("run.py")
+import api
+importlib.import_module("packages.chaiNNer_standard")
+api.registry.load_nodes(os.path.abspath("server.py"))
+import server
+answer = asyncio.run(server.get_packages(SimpleNamespace(args={}, app=server.app)))
+print(answer.body.decode())
+"""
+
+
+def test_the_editor_gets_the_result_cache_settings():
+    # The editor's /packages (internal packages hidden) has the standard package for its settings alone, without the
+    # dependencies the dependency manager would list.
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", textwrap.dedent(EDITOR_PACKAGES)],
+        cwd=BACKEND,
+        env=dict(os.environ, CUDA_VISIBLE_DEVICES="-1"),
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    packages = {p["id"]: p for p in json.loads(result.stdout.strip().splitlines()[-1])}
+    standard = packages[result_cache.PACKAGE]
+    assert standard["dependencies"] == []
+    assert [(s["key"], s["type"]) for s in standard["settings"]] == [
+        (result_cache.ENABLED, "toggle"),
+        (result_cache.SIZE_MIB, "number"),
+    ]
+
+
+def test_result_cache_is_on_by_default_at_the_computed_size(schemas, tmp_path):
+    package = {p.id: p for p in api.registry.packages.values()}[result_cache.PACKAGE]
+    settings = {s.key: s for s in package.settings}
+    assert settings[result_cache.ENABLED].default is True
+    size = settings[result_cache.SIZE_MIB]
+    # The engine's own budget: the smaller of 2 GiB and 10 % of the RAM.
+    default = result_cache.default_size_mib()
+    assert default == min(2048, psutil.virtual_memory().total // 10 >> 20)
+    assert size.default == default
+    assert f"({default} MiB here)" in size.description
+    output = tmp_path / "out"
+    nodes = board_chain(schemas, 64, output)
+    run("native", nodes, tmp_path, output)
+    before = graph().memo_stats()
+    _, result = run("native", nodes, tmp_path, output)
+    after = graph().memo_stats()
+    assert result.error is None
+    assert after["budget"] == default << 20
+    assert after["hits"] - before["hits"] >= 2
+
+
+def test_result_cache_off_keeps_nothing(schemas, tmp_path):
+    output = tmp_path / "out"
+    nodes = board_chain(schemas, 64, output)
+    run("native", nodes, tmp_path, output)
+    assert graph().memo_stats()["entries"] > 0
+    off = cache_settings(**{result_cache.ENABLED: False})
+    for _ in range(2):
+        before = graph().memo_stats()
+        _, result = run("native", nodes, tmp_path, output, off)
+        after = graph().memo_stats()
+        assert result.error is None
+        assert after["hits"] == before["hits"]
+        assert (after["entries"], after["bytes"], after["budget"]) == (0, 0, 0)
+    # On again: nothing was kept, so the run computes every node and fills the cache.
+    before = graph().memo_stats()
+    run("native", nodes, tmp_path, output)
+    after = graph().memo_stats()
+    assert after["hits"] == before["hits"]
+    assert after["entries"] > 0
+
+
+def test_result_cache_size_change_trims_at_the_next_run(schemas, tmp_path):
+    output = tmp_path / "out"
+    nodes = board_chain(schemas, 256, output)  # 1 MiB outputs
+    run("native", nodes, tmp_path, output)
+    # Another size keeps the entries' keys: the next run reads the board and the blur from the cache.
+    before = graph().memo_stats()
+    run(
+        "native", nodes, tmp_path, output, cache_settings(**{result_cache.SIZE_MIB: 64})
+    )
+    after = graph().memo_stats()
+    assert after["budget"] == 64 << 20
+    assert after["hits"] - before["hits"] >= 2
+    # 4 MiB: the run's start drops the 1 MiB entries (above an eighth of it) before any lookup, so it computes them.
+    before = after
+    run("native", nodes, tmp_path, output, cache_settings(**{result_cache.SIZE_MIB: 4}))
+    after = graph().memo_stats()
+    assert after["budget"] == 4 << 20
+    assert after["hits"] == before["hits"]
+    assert after["bytes"] <= 4 << 20
 
 
 def test_memo_bytes_count_a_views_whole_base():
@@ -509,7 +671,7 @@ def test_views_keep_the_memo_within_its_budget(tmp_path, shape):
         check=False,
     )
     assert result.returncode == 0, result.stderr[-2000:]
-    stats = __import__("json").loads(result.stdout.strip().splitlines()[-1])
+    stats = json.loads(result.stdout.strip().splitlines()[-1])
     assert stats["bytes"] <= stats["budget"] == 64 << 20
     assert stats["held"] < (64 + 48) << 20, stats
 

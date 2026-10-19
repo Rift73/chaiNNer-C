@@ -210,11 +210,15 @@ Memo cache (amendment A3, in the same file). In-process outputs of allow-listed 
 effects or a context, except Add Noise and Create Noise; 16 audited Python nodes listed in `native_executor.py` and
 `test_engine_memo.py`; Load Image keyed by its file's identity read as it runs, or, precached, the identity its
 individual run recorded; Load Images' items by their file's identity), keyed by schema, constant inputs, package
-settings and upstream keys; a generator's per-run outputs only when they follow from its inputs alone (not Load Video's
-FPS, read from its file). Least recently used first out within min(2 GiB, 10 % of RAM) (`CHAINNER_C_MEMO_BUDGET_MIB`,
-0 = off), apart from the window's budget; an entry counts each storage it keeps alive once and whole (a view keeps its
-parent), and one above a budget's eighth is not kept. A hit sends the events of a computed node. A dependency change
-restarts the worker process, which drops it. Tests: `native/tests/test_engine_{differential,scenarios,robustness,memo,
+settings (but the Result Cache's own) and upstream keys; a generator's per-run outputs only when they follow from its
+inputs alone (not Load Video's FPS, read from its file). Least recently used first out within a budget apart from the
+window's: the user setting Result Cache (Settings > Python > chaiNNer_standard: on/off, default on; Result Cache Size
+(MiB), default min(2 GiB, 10 % of RAM) to the MiB; `backend/src/nodes/impl/result_cache.py`), which each run applies
+at its start (`memo_set_budget`: a smaller size drops the entries above its eighth, then the least recently used until
+the rest fits; off drops every entry and keeps none). `CHAINNER_C_MEMO_BUDGET_MIB` (0 = off), read once per worker
+process, is a diagnostic override that wins over both settings. An entry counts each storage it keeps alive once and
+whole (a view keeps its parent), and one above a budget's eighth is not kept. A hit sends the events of a computed
+node. A dependency change restarts the worker process, which drops it. Tests: `native/tests/test_engine_{differential,scenarios,robustness,memo,
 server}.py` (`native/tools/engine_differential.py` compares both executors' outcomes, events, A6 order and files).
 
 A node's reported time (`node-finish`) is its own work: `timed_supplier` leaves out what its call spends in

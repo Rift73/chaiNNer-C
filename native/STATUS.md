@@ -22,8 +22,10 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   engine (ARCHITECTURE section 4), the default executor since `2912a49a`; `CHAINNER_C_EXECUTOR=python` runs
   process.Executor, the diagnostic oracle, never a user setting (A5). Pure nodes run on shared workers across branches
   and window items, the others on each run's driver thread in today's order; events are built in C++ and posted in
-  batches; a memo cache keeps allow-listed nodes' outputs across runs inside the worker (min(2 GiB, 10 % of RAM),
-  `CHAINNER_C_MEMO_BUDGET_MIB`, 0 = off; a hit sends a computed node's events). The differential suite
+  batches; a memo cache keeps allow-listed nodes' outputs across runs inside the worker (the user setting Result
+  Cache: on by default, size default min(2 GiB, 10 % of RAM), applied at each run's start;
+  `CHAINNER_C_MEMO_BUDGET_MIB`, 0 = off, a diagnostic override that wins; a hit sends a computed node's events). The
+  differential suite
   (`native/tools/engine_differential.py`: both executors over every bench chain and the executor scenarios; outputs,
   events, A6 order, files) is green; the concurrency review's findings (C1, C2, H1-H4, M1-M3, then N1, N2 and a native
   preview returning no output) are fixed (`review-engine.md`). In process, 32 synthetic 512x384 JPEGs, ms per item at

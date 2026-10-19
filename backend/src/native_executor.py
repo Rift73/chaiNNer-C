@@ -63,6 +63,7 @@ from nodes.impl.item_window import (
     window_size,
 )
 from nodes.impl.native_graph import graph
+from nodes.impl.result_cache import cache_budget, keyed_settings
 from process import (
     CollectorOutput,
     ExecutionId,
@@ -1071,7 +1072,9 @@ def build_plan(
                 "run_keyed": data.schema_id in MEMO_GENERATORS,
                 "identity_input": 0 if data.schema_id == LOAD_IMAGE else -1,
                 "settings_key": json.dumps(
-                    options.get_package_settings_json(package_id),
+                    keyed_settings(
+                        package_id, options.get_package_settings_json(package_id)
+                    ),
                     sort_keys=True,
                     default=str,
                 ),
@@ -1168,6 +1171,9 @@ class NativeExecutor:
         )
         self.__nodes = nodes
         self.__hooks = _Hooks(id, nodes, contexts, queue, loop, inputs, chain)
+        # The Result Cache settings, before the engine reads its plan (whether the memo is on): a smaller size trims
+        # the memo, off empties it; CHAINNER_C_MEMO_BUDGET_MIB wins over both.
+        graph().memo_set_budget(cache_budget(options))
         self.__run_engine: _Engine = graph().RunEngine(plan, self.__hooks)
         engine.append(self.__run_engine)
         self.__hooks.engine = self.__run_engine

@@ -1055,6 +1055,10 @@ async def get_packages(request: Request):
     packages = []
     for package in api.registry.packages.values():
         if package.name == "chaiNNer_standard" and hide_internal:
+            # The editor gets the standard package for its settings (the Result Cache)
+            # alone: without its built-in dependencies, as the dependency manager lists
+            # only a package with dependencies.
+            packages.append({**package.to_dict(), "dependencies": []})
             continue
 
         pkg_dependencies = []
