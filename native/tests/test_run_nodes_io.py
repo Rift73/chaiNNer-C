@@ -324,19 +324,22 @@ def test_save_image_declines_a_dangling_link(tmp_path, skip):
         run_save(save_inputs(float_image(3), tmp_path, skip_existing_files=skip), True)
 
 
-# The worker module (server.py), server.import_packages()'s packages and node modules, then Pillow's limit; os._exit
-# skips the interpreter shutdown that crashes after every package loaded (native/STATUS.md).
+# The worker module (server.py), whether Pillow is loaded then, server.import_packages()'s packages and node modules,
+# then Load Image's Pillow limit; os._exit skips the interpreter shutdown that crashes after every package loaded
+# (native/STATUS.md).
 MAX_PIXELS = """
 import importlib, os
 __file__ = os.path.abspath("run.py")
 import server
+import sys
+pillow_at_start = "PIL.Image" in sys.modules
 import api
 
 for package in ("standard", "pytorch", "ncnn", "onnx", "external"):
     importlib.import_module("packages.chaiNNer_" + package)
 api.registry.load_nodes(os.path.abspath("server.py"))
-from PIL import Image
-print(Image.MAX_IMAGE_PIXELS, flush=True)
+from packages.chaiNNer_standard.image.io import load_image
+print(pillow_at_start, load_image.Image.MAX_IMAGE_PIXELS, flush=True)
 os._exit(0)
 """
 
@@ -353,4 +356,5 @@ def test_pillow_max_image_pixels_is_the_constant():
         timeout=300,
     )
     assert done.returncode == 0, done.stderr
-    assert done.stdout.splitlines()[-1] == "1600000000"
+    # No Pillow at the worker's start; Load Image's Pillow, which the native routes read, holds the limit.
+    assert done.stdout.splitlines()[-1] == "False 1600000000"

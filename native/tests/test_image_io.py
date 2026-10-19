@@ -36,6 +36,7 @@ from independent_ui import UPSTREAM_APP
 from numpy.typing import DTypeLike
 from PIL import Image, TiffImagePlugin
 
+import image_limits
 from nodes.impl import image_formats, image_utils, native_image_io
 from nodes.impl.dds import format as dds_format
 from nodes.impl.item_window import Prepared
@@ -98,6 +99,7 @@ def modules(current):
         "mkdtemp": mkdtemp,
         "time": time,
         "graph": graph,
+        "image_limits": image_limits,
         "get_h_w_c": get_h_w_c,
         "split_file_path": split_file_path,
         "sys": SimpleNamespace(

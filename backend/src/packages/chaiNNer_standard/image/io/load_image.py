@@ -10,9 +10,10 @@ from typing import Callable, Iterable, Union
 import cv2 as cv2
 import numpy as np
 import pillow_avif  # type: ignore # noqa: F401
-from PIL import Image, TiffImagePlugin
+from PIL import TiffImagePlugin
 from sanic.log import logger as logger
 
+import image_limits
 from nodes.impl.dds.texconv import read_dds_texconv as read_dds_texconv
 from nodes.impl.image_formats import get_available_image_formats
 from nodes.impl.image_formats import get_opencv_formats as get_opencv_formats
@@ -24,6 +25,9 @@ from nodes.utils.utils import get_h_w_c as get_h_w_c
 from nodes.utils.utils import split_file_path as split_file_path
 
 from .. import io_group
+
+# Pillow with the image-size limit, which read_pil and the native Pillow routes read live.
+Image = image_limits.pil_image()
 
 # Pillow builds its plugin registry on first use, and an open() racing another thread's
 # init() can fail to identify a valid file. Load Images decodes items in parallel

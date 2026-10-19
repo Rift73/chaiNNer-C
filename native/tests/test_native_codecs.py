@@ -1082,7 +1082,8 @@ import image_limits
 image_limits.apply()
 import cv2
 import numpy as np
-from PIL import Image
+
+Image = image_limits.pil_image()
 
 width, height = int(sys.argv[1]), int(sys.argv[2])
 with warnings.catch_warnings(record=True) as caught:
