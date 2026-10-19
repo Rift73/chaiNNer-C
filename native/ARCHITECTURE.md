@@ -8,7 +8,7 @@ Pre-SP1 history is readable at tag `chainner-c-checkpoint-20261001`.
 
 ```text
 Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle patches
-  -> owned Python/Sanic backend (backend/src): node registry, asyncio executor, HTTP + SSE
+  -> owned Python/Sanic backend (backend/src): node registry, native run engine, HTTP + SSE
      -> Python node contracts: schemas, validation, model objects
         -> chainner_native.dll  C17 kernels, ctypes C ABI v2 (GIL released during calls)
         -> _chainner_graph.pyd  C++20/pybind11: ONNX/NCNN graphs, tiling, codecs, video, utilities
@@ -23,7 +23,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 | Runtime ISA dispatch (scalar, AVX2 or AVX-512 per kernel; no CPU check beyond NumPy's x86-64-v2 baseline) | `native/src/isa.c` |
 | C ABI and kernels | `native/include/chainner.h`, `native/src/*.c`; bridges `backend/src/nodes/impl/native*.py` |
 | C++ modules | `native/src/graph_module.cpp` (pybind11 entry), `native/src/*.cpp`, `native/include/*.hpp` |
-| Executor | `backend/src/process.py` (the only executor), `backend/src/server.py` (worker app) |
+| Executor | The native run engine (section 4): `native/src/run/executor.cpp`, `backend/src/native_executor.py`, node ABI `native/include/run_engine.hpp`, entry points `native/src/run/nodes/*.cpp`; `backend/src/process.py` (the diagnostic oracle); `backend/src/server.py` (worker app) |
 | Scheduling and lifetime | `backend/src/nodes/impl/execution_scheduler.py`, `execution_cleanup.py`, `item_window.py`, `backend/src/api/lazy.py` |
 | Native CPU pool | `native/src/parallel.c`, `native/include/parallel.h` |
 | Mirrors' CRT math from the process's `ucrtbase.dll` (Consult 6 D-4; groups in the header) | `native/include/cn_crt_math.h`, `native/src/crt_math.c` |
@@ -112,6 +112,7 @@ Four pools. Only the native one is budgeted; the engines keep their defaults (se
 | Native `cn_parallel_for(count, grain)` | Windows threadpool; capacity = CPUs in the process affinity mask. `count <= grain` runs inline. A larger call runs `min(1 + (count - 1) / grain, 128)` chunks, a partition that depends on `(count, grain)` alone. The caller works on its own call; generic helpers join the active call with the fewest helpers and re-pick when the set of calls changes; a helper is admitted only while callers plus helpers fit the capacity. Every chunk runs under the caller's MXCSR. The DLL is never unloaded |
 | OpenCV internal pool | OpenCV defaults |
 | BLAS pool | NumPy's OpenBLAS defaults |
+| Native run engine | Workers, one per CPU of the affinity mask (`CHAINNER_C_ENGINE_THREADS`), shared by every run and preview; service threads for each run's driver, event pump, broadcaster and item-window producer, reused and ended after 30 s idle (`CHAINNER_C_ENGINE_IDLE_SECONDS`). At most 8 of them call Python at once (`CHAINNER_C_PYTHON_THREADS`) |
 
 Graph scheduling (`process.py` input gathering): consecutive eligible inputs are awaited together, up to 4 per
 `owned_gather`. Eligible means an eager, non-lazy edge whose upstream subgraph is pure CPU (`pure_cpu_dependency`:
@@ -172,6 +173,39 @@ the window has produced that item's value (beyond the memory budget, P and pause
 and returns the object the input will receive, or None when the item does not exist or fails before reaching the input;
 nothing runs twice and no event moves. If a node looks ahead during item 0, K is decided there instead of at item 1.
 Elsewhere `iteration` is None. Its user is Upscale Image (VOSR).
+
+Native run engine (instant-exec, the default since 2026-10-19; `_chainner_graph.RunEngine` in
+`native/src/run/executor.cpp`, its plan and Python calls in `backend/src/native_executor.py`). It runs /run and
+/run/individual with process.Executor's semantics, which stays as the diagnostic oracle (`CHAINNER_C_EXECUTOR=python`,
+never a user setting; amendment A5). A driver thread per run follows process.Executor's control flow (generator groups
+one after another, items in order, each item's sinks then collectors, then the sinks outside loops one after another)
+and runs every node that may not run beside others (side effects, a context, a GPU, a lazy input) there, in today's
+order; it gathers a node's inputs as `__gather_inputs` does (up to four with pure-CPU upstreams together, all drained,
+the first error in input order). Pure nodes (`pure_cpu_node`) run on the workers as soon as their inputs are done,
+across branches and the items of the window; a sink outside a loop has only its own upstream computed ahead. A cell a
+worker runs before the commit path needs it (a prefetch, a window job) holds its events until the commit path takes
+it, so a failing run sends none for branches Python never runs. The item window keeps item_window.py's K, budget and
+read-ahead decision; a producer describes items serially and materializes them on the workers (Load Images; the
+native generators Range and Split Spritesheet through `ItemSource`), and sinks' prepare phases run there too. A
+look-ahead is served by pure nodes and by serial ones (any other node without a lazy input, when every error ends the
+loop), computed ahead on the driver one item at a time in order with their iteration view at that item; the slot a
+look-ahead waits for is produced up to its origin + K − 1. Native entry points take engine values (images on the NumPy
+pool) and decline to the Python body (`RunPython`) on a path they do not mirror; any C++ exception becomes the node's
+error as pybind11 would raise it, and an engine thread's own fault stops the run with it as the error. Events are
+built in C++, posted in batches by the pump and flushed before the run's result; broadcasts go latest-first per node,
+image data and LargeImage previews computed natively (`image_preview.cpp`). An individual run's node runs on the
+driver, its output (a native node's as a `RegularOutput`) read before anything releases it. `close()` joins the run's
+threads, then drops every Python reference the engine holds.
+
+Memo cache (amendment A3, in the same file). In-process outputs of allow-listed nodes (native nodes without side
+effects or a context, except Add Noise and Create Noise; 16 audited Python nodes listed in `native_executor.py` and
+`test_engine_memo.py`; Load Image keyed by its file's identity read as it runs, or, precached, the identity its
+individual run recorded; Load Images' items by their file's identity), keyed by schema, constant inputs, package
+settings and upstream keys. Least recently used first out within min(2 GiB, 10 % of RAM) (`CHAINNER_C_MEMO_BUDGET_MIB`,
+0 = off), apart from the window's budget; an entry counts each storage it keeps alive once and whole (a view keeps its
+parent), and one above a budget's eighth is not kept. A hit sends the events of a computed node. A dependency change
+restarts the worker process, which drops it. Tests: `native/tests/test_engine_{differential,scenarios,robustness,memo,
+server}.py` (`native/tools/engine_differential.py` compares both executors' outcomes, events, A6 order and files).
 
 A node's reported time (`node-finish`) is its own work: `timed_supplier` leaves out what its call spends in
 `util.waiting`, as the executor leaves out lazy inputs' evaluation. The waits so marked are those for other work: a
