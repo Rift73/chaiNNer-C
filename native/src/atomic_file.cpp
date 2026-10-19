@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cstddef>
+#include <chrono>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -24,13 +26,46 @@ constexpr size_t block = size_t(1) << 20;
 
 std::atomic<uint64_t> sequence{0};
 
+// Whether Windows takes paths past MAX_PATH in this process (the LongPathsEnabled setting and a long-path-aware
+// manifest), as the libraries handed a temporary file's name see it.
+bool long_paths() {
+    using Query = BOOLEAN(NTAPI *)();
+    static const bool enabled = [] {
+        const auto query =
+            reinterpret_cast<Query>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlAreLongPathsEnabled"));
+        return query && query();
+    }();
+    return enabled;
+}
+
+// path made absolute as Windows does (GetFullPathNameW); as given when that fails.
+std::wstring full(const std::filesystem::path &path) {
+    const DWORD size = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+    std::wstring text(size, L'\0');
+    const DWORD written = size ? GetFullPathNameW(path.c_str(), size, text.data(), nullptr) : 0;
+    if (!written || written >= size) return path.native();
+    text.resize(written);
+    return text;
+}
+
+// path in the \\?\ form (\\?\UNC\ for a share) once its full path reaches MAX_PATH, which every Windows call takes
+// whatever the long-path setting; as given when shorter or already in a device form.
+std::filesystem::path extended(const std::filesystem::path &path) {
+    const std::wstring &text = path.native();
+    if (text.starts_with(L"\\\\?\\") || text.starts_with(L"\\\\.\\")) return path;
+    const std::wstring absolute = full(path);
+    if (absolute.size() < MAX_PATH) return path;
+    if (absolute.starts_with(L"\\\\")) return std::filesystem::path(L"\\\\?\\UNC\\" + absolute.substr(2));
+    return std::filesystem::path(L"\\\\?\\" + absolute);
+}
+
 // A file opened for reading with the sharing Python's open(path, "rb") grants; invalid when it cannot be opened (a
 // missing file or a folder).
 class Reader {
 public:
     explicit Reader(const std::filesystem::path &path)
-        : handle_(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                              nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr)) {}
+        : handle_(CreateFileW(extended(path).c_str(), GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr)) {}
     Reader(const Reader &) = delete;
     Reader &operator=(const Reader &) = delete;
     ~Reader() {
@@ -84,12 +119,22 @@ bool same_bytes(const std::filesystem::path &a, const std::filesystem::path &b) 
     return true;
 }
 
-// `<final>.chainner-c-<pid>-<seq>.tmp`, skipping a name some file already has (another process's leftover with this
-// process's id): this process never overwrites or deletes a file it did not create.
+// The temporary name for sequence number `seq` (the ruled format, fable-decisions P8):
+// `<final>.chainner-c-<pid>-<seq>.tmp`; `.cnc-<pid>-<seq>.tmp` in final's folder where that name would pass the
+// 255-unit name limit or, with long paths off, MAX_PATH. In the \\?\ form once its full path reaches MAX_PATH.
+std::filesystem::path temporary_candidate(const std::filesystem::path &final, uint64_t seq) {
+    const std::wstring tail = std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(seq) + L".tmp";
+    const std::filesystem::path ruled(final.native() + L".chainner-c-" + tail);
+    if (ruled.filename().native().size() <= 255 && (long_paths() || full(ruled).size() < MAX_PATH))
+        return extended(ruled);
+    return extended(final.parent_path() / (L".cnc-" + tail));
+}
+
+// temporary_candidate(), skipping a name some file already has (another process's leftover with this process's id):
+// this process never overwrites or deletes a file it did not create.
 std::filesystem::path temporary_name(const std::filesystem::path &final) {
-    const std::wstring prefix = final.native() + L".chainner-c-" + std::to_wstring(GetCurrentProcessId()) + L"-";
     for (;;) {
-        std::filesystem::path name(prefix + std::to_wstring(sequence.fetch_add(1)) + L".tmp");
+        std::filesystem::path name = temporary_candidate(final, sequence.fetch_add(1));
         if (GetFileAttributesW(name.c_str()) == INVALID_FILE_ATTRIBUTES) return name;
     }
 }
@@ -135,11 +180,72 @@ FileError os_error(DWORD error, const std::filesystem::path &final) {
     return mapped ? FileError(mapped, false, final) : FileError(int(error), true, final);
 }
 
-// open(final, "wb") refuses a folder with EACCES before it writes anything; so does this, before any temporary file.
-void refuse_folder(const std::filesystem::path &final) {
-    const DWORD attributes = GetFileAttributesW(final.c_str());
-    if (attributes != INVALID_FILE_ATTRIBUTES && attributes & FILE_ATTRIBUTE_DIRECTORY)
-        throw FileError(EACCES, false, final);
+// Renames `from` onto `to` by a DELETE handle on `from` with POSIX semantics: the name moves at once, also over a file
+// other programs hold open sharing delete (an antivirus, the indexer, a thumbnailer, cloud sync; they keep reading the
+// old bytes), while a holder that does not share delete still keeps the file. Both names in the \\?\ form past
+// MAX_PATH. 0, or the Windows error.
+DWORD rename_by_handle(const std::filesystem::path &from, const std::filesystem::path &to) {
+    const HANDLE handle = CreateFileW(extended(from).c_str(), DELETE | SYNCHRONIZE,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                      0, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return GetLastError();
+    const std::wstring name = extended(to).native();
+    std::vector<uint8_t> buffer(offsetof(FILE_RENAME_INFO, FileName) + (name.size() + 1) * sizeof(wchar_t));
+    auto *info = reinterpret_cast<FILE_RENAME_INFO *>(buffer.data());
+    info->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+    info->RootDirectory = nullptr;
+    info->FileNameLength = DWORD(name.size() * sizeof(wchar_t));
+    std::memcpy(info->FileName, name.c_str(), name.size() * sizeof(wchar_t));
+    const DWORD error =
+        SetFileInformationByHandle(handle, FileRenameInfoEx, info, DWORD(buffer.size())) ? 0 : GetLastError();
+    CloseHandle(handle);
+    return error;
+}
+
+// attempt() (0, or a Windows error) again while it fails with access denied or a sharing violation (a scanner holding a
+// file a moment, a rename racing another), for up to 250 ms. 0, or the last Windows error.
+template <class Attempt> DWORD retrying(Attempt attempt) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+    for (;;) {
+        const DWORD error = attempt();
+        if ((error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION) ||
+            std::chrono::steady_clock::now() >= deadline)
+            return error;
+        Sleep(10);
+    }
+}
+
+// rename_by_handle(), or MoveFileExW(MOVEFILE_REPLACE_EXISTING) where the volume or Windows lacks POSIX renames (FAT,
+// exFAT, some network shares, Windows before 10 1607), retrying(). 0, or the last Windows error.
+DWORD replace(const std::filesystem::path &from, const std::filesystem::path &to) {
+    return retrying([&] {
+        const DWORD error = rename_by_handle(from, to);
+        if (error != ERROR_INVALID_PARAMETER && error != ERROR_NOT_SUPPORTED) return error;
+        return MoveFileExW(extended(from).c_str(), extended(to).c_str(), MOVEFILE_REPLACE_EXISTING) ? DWORD(0)
+                                                                                                   : GetLastError();
+    });
+}
+
+// open(final, "wb") refuses a folder and a read-only, hidden or system file (CREATE_ALWAYS names neither attribute)
+// with EACCES before it writes anything; so does this, before any temporary file and again before the rename (which
+// would replace a hidden or system file and drop its attributes).
+void refuse_unwritable(const std::filesystem::path &final) {
+    const DWORD attributes = GetFileAttributesW(extended(final).c_str());
+    constexpr DWORD refused =
+        FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM;
+    if (attributes != INVALID_FILE_ATTRIBUTES && attributes & refused) throw FileError(EACCES, false, final);
+}
+
+// final with the name its existing file has on disk (another case, or the long name of a short one), which
+// open(final, "wb") keeps; as given when no file has it.
+std::filesystem::path on_disk(const std::filesystem::path &final) {
+    WIN32_FIND_DATAW found;
+    const HANDLE search = FindFirstFileW(extended(final).c_str(), &found);
+    if (search == INVALID_HANDLE_VALUE) return final;
+    FindClose(search);
+    std::filesystem::path spelled = final;
+    spelled.replace_filename(found.cFileName);
+    return spelled;
 }
 
 } // namespace
@@ -154,12 +260,26 @@ AtomicTarget::~AtomicTarget() { abandon(); }
 bool AtomicTarget::commit() {
     if (state_ != State::open) throw std::logic_error("The temporary file was already committed or abandoned");
     if (same_bytes(temp_, final_)) {
-        DeleteFileW(temp_.c_str());
-        state_ = State::committed;
+        // A temporary file another program still holds stays abandoned: a later abandon() or the destructor deletes it.
+        state_ = DeleteFileW(temp_.c_str()) ? State::committed : State::abandoned;
         return false;
     }
     rename();
     return true;
+}
+
+void AtomicTarget::check() const {
+    refuse_unwritable(final_);
+    // The DELETE access the rename needs, of the file itself (a link, not its target), as the rename replaces it.
+    const DWORD error = retrying([&] {
+        const HANDLE handle =
+            CreateFileW(extended(final_).c_str(), DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (handle == INVALID_HANDLE_VALUE) return GetLastError();
+        CloseHandle(handle);
+        return DWORD(0);
+    });
+    if (error && error != ERROR_FILE_NOT_FOUND) throw os_error(error, final_);
 }
 
 void AtomicTarget::abandon() noexcept {
@@ -169,8 +289,13 @@ void AtomicTarget::abandon() noexcept {
 }
 
 void AtomicTarget::rename() {
-    if (!MoveFileExW(temp_.c_str(), final_.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        const DWORD error = GetLastError();
+    try {
+        refuse_unwritable(final_);
+    } catch (const FileError &) {
+        abandon();
+        throw;
+    }
+    if (const DWORD error = replace(temp_, on_disk(final_))) {
         abandon();
         throw os_error(error, final_);
     }
@@ -179,7 +304,7 @@ void AtomicTarget::rename() {
 
 bool write_atomic(const std::filesystem::path &final, std::span<const uint8_t> data) {
     if (holds(final, data)) return false;
-    refuse_folder(final);
+    refuse_unwritable(final);
     AtomicTarget target(final);
     // The CRT's low-level I/O as Python's open(final, "wb") uses it, so its errno is the one Python reports; never
     // over an existing file.
@@ -204,10 +329,10 @@ bool write_atomic(const std::filesystem::path &final, std::span<const uint8_t> d
 
 bool move_atomic(const std::filesystem::path &source, const std::filesystem::path &final) {
     if (same_bytes(source, final)) return false;
-    refuse_folder(final);
+    refuse_unwritable(final);
     AtomicTarget target(final);
     // A rename on one volume; across volumes MoveFileExW copies the file and deletes the source.
-    if (!MoveFileExW(source.c_str(), target.temp().c_str(), MOVEFILE_COPY_ALLOWED))
+    if (!MoveFileExW(extended(source).c_str(), target.temp().c_str(), MOVEFILE_COPY_ALLOWED))
         throw os_error(GetLastError(), final);
     target.rename();
     return true;

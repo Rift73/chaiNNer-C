@@ -60,8 +60,8 @@ def save_model_node(
     # file, and a file that already holds these bytes is left untouched.
     if weight_format == WeightFormat.PTH:
         # torch.save names the archive inside after the file, so it writes the final name in
-        # chaiNNer's temporary folder.
-        with TemporaryDirectory(prefix="chaiNNer-") as folder:
+        # a temporary folder beside the target: one volume, so the move is a rename.
+        with TemporaryDirectory(prefix=".chainner-c-", dir=full_path.parent) as folder:
             staged = Path(folder) / full_path.name
             torch.save(model.model.state_dict(), staged)
             graph().atomic_move(staged, full_path)

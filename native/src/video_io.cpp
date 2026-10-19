@@ -723,6 +723,7 @@ O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O
     // FFmpeg writes a temporary file in the folder, renamed onto the path at a successful close;
     // its .tmp name picks no muxer, so the extension's is named.
     O target=global(g,"atomic_target")(builtin("str")(path));
+    target.attr("check")(); // a file the rename cannot replace fails now, not after the encode
     py::dict params=dict({{"filename",target.attr("temp")},{"format",container.attr("muxer")},{"pix_fmt",py::str("yuv420p")},{"r",fps},{"movflags",py::str("faststart")}});
     if(graphpy::contains(container.attr("encoders"),encoder)) {
         params["vcodec"]=encoder.attr("value");

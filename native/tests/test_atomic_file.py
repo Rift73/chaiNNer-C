@@ -10,6 +10,7 @@ import gc
 import os
 import re
 import stat
+import threading
 from pathlib import Path
 
 import pytest
@@ -97,6 +98,44 @@ def test_temporary_name_is_in_the_folder_with_pid_and_sequence(tmp_path: Path):
     assert not list(tmp_path.iterdir())  # a target creates nothing itself
 
 
+@pytest.mark.parametrize("length", [236, 244, 250, 255])
+def test_long_names_write_as_open_does(tmp_path: Path, length: int):
+    # The ruled temporary name would pass the 255-character name limit: the writer
+    # takes the short .cnc-<pid>-<seq>.tmp in the same folder.
+    final = tmp_path / ("n" * (length - 4) + ".bin")
+    with open(final, "wb"):
+        pass
+    assert graph().atomic_write(final, b"long") is True
+    assert final.read_bytes() == b"long"
+    assert _commit(final, b"longer") is True
+    assert final.read_bytes() == b"longer"
+    temp = Path(graph().AtomicTarget(final).temp)
+    assert temp.parent == tmp_path
+    if len(f"{final.name}.chainner-c-{os.getpid()}-0.tmp") > 255:
+        assert re.fullmatch(rf"\.cnc-{os.getpid()}-\d+\.tmp", temp.name)
+    else:
+        assert TEMP.search(temp.name)
+    assert sorted(tmp_path.iterdir()) == [final]
+
+
+def test_a_full_path_past_max_path_goes_through_the_long_form(tmp_path: Path):
+    # Past MAX_PATH both names of the rename take the \\?\ form; errors name the
+    # path as given.
+    folder = tmp_path / ("d" * 120) / ("e" * 120)
+    folder.mkdir(parents=True)
+    final = folder / "f.bin"
+    assert len(str(final)) > 260
+    assert graph().atomic_write(final, b"deep") is True
+    assert _commit(final, b"deeper") is True
+    assert final.read_bytes() == b"deeper"
+    assert graph().AtomicTarget(final).temp.startswith("\\\\?\\")
+    assert sorted(folder.iterdir()) == [final]
+    missing = folder / "missing" / "f.bin"
+    with pytest.raises(FileNotFoundError) as raised:
+        graph().atomic_write(missing, b"x")
+    assert raised.value.filename == str(missing)
+
+
 def test_errors_name_the_final_path_as_open_does(tmp_path: Path):
     missing = tmp_path / "missing" / "a.bin"
     with pytest.raises(OSError) as before:
@@ -120,34 +159,58 @@ KERNEL32.CreateFileW.argtypes = [
     ctypes.c_void_p,
 ]
 KERNEL32.CloseHandle.argtypes = [ctypes.c_void_p]
+KERNEL32.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
+KERNEL32.ReadFile.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_uint32),
+    ctypes.c_void_p,
+]
+INVALID = (None, ctypes.c_void_p(-1).value)
+SHARE_READ_WRITE, FULL_SHARING = 1 | 2, 1 | 2 | 4  # FILE_SHARE_READ/WRITE/DELETE
 
 
-class Exclusive:
-    """A handle on a file that shares nothing, as another program can hold one."""
+def hold(path: Path, share: int) -> int | None:
+    """A read handle on path with this sharing, as another program holds one."""
+    generic_read, open_existing = 0x80000000, 3
+    return KERNEL32.CreateFileW(
+        str(path), generic_read, share, None, open_existing, 0, None
+    )
 
-    def __init__(self, path: Path):
-        generic_read, open_existing = 0x80000000, 3
-        self.handle = KERNEL32.CreateFileW(
-            str(path), generic_read, 0, None, open_existing, 0, None
-        )
-        assert self.handle not in (None, ctypes.c_void_p(-1).value)
+
+class Holder:
+    """A handle on a file with the given sharing (none by default)."""
+
+    def __init__(self, path: Path, share: int = 0):
+        self.handle = hold(path, share)
+        assert self.handle not in INVALID
+
+    def read(self, size: int) -> bytes:
+        buffer, got = ctypes.create_string_buffer(size), ctypes.c_uint32()
+        assert KERNEL32.ReadFile(self.handle, buffer, size, ctypes.byref(got), None)
+        return buffer.raw[: got.value]
 
     def close(self):
         KERNEL32.CloseHandle(self.handle)
 
 
 def test_failures_on_the_final_path_raise_what_open_raises(tmp_path: Path):
-    # A folder, a read-only file and a file another program holds: open(final, "wb")
-    # raises PermissionError [Errno 13]; the write raises the same, whether the CRT
-    # refuses its temporary file or the rename, and leaves no temporary file.
+    # A folder, a read-only, hidden or system file and a file another program holds:
+    # open(final, "wb") raises PermissionError [Errno 13]; the write raises the same,
+    # whether the CRT refuses its temporary file or the rename, and leaves no
+    # temporary file.
     read_only = aged(tmp_path / "ro.bin", b"keep")
     os.chmod(read_only, stat.S_IREAD)
+    hidden, system = aged(tmp_path / "h.bin", b"h"), aged(tmp_path / "s.bin", b"s")
+    for path, attribute in ((hidden, 2), (system, 4)):  # FILE_ATTRIBUTE_HIDDEN/SYSTEM
+        assert KERNEL32.SetFileAttributesW(str(path), attribute)
     held = aged(tmp_path / "held.bin", b"held")
     folder = tmp_path / "folder"
     folder.mkdir()
-    holder = Exclusive(held)
+    holder = Holder(held)
     try:
-        for final in (folder, read_only, held):
+        for final in (folder, read_only, hidden, system, held):
             with pytest.raises(OSError) as before:
                 open(final, "wb")
             for write in (graph().atomic_write, _commit):
@@ -160,8 +223,95 @@ def test_failures_on_the_final_path_raise_what_open_raises(tmp_path: Path):
     finally:
         holder.close()
         os.chmod(read_only, stat.S_IWRITE)
-    assert contents(tmp_path) == {folder: None, read_only: b"keep", held: b"held"}
-    assert read_only.stat().st_mtime == held.stat().st_mtime == OLD
+    assert contents(tmp_path) == {
+        folder: None,
+        read_only: b"keep",
+        hidden: b"h",
+        system: b"s",
+        held: b"held",
+    }
+    for path in (read_only, hidden, system, held):
+        assert path.stat().st_mtime == OLD
+
+
+def test_a_name_of_another_case_keeps_the_spelling_on_disk(tmp_path: Path):
+    # open("CASE.BIN", "wb") over case.bin writes case.bin: so do both writers.
+    final = tmp_path / "case.bin"
+    final.write_bytes(b"before")
+    for write, data in ((graph().atomic_write, b"one"), (_commit, b"two")):
+        assert write(tmp_path / "CASE.BIN", data) is True
+        assert os.listdir(tmp_path) == ["case.bin"]
+        assert final.read_bytes() == data
+
+
+def test_a_target_held_with_delete_sharing_is_replaced(tmp_path: Path):
+    # An antivirus, the indexer or a thumbnailer holds the file sharing read, write and
+    # delete: open(final, "wb") succeeds there, so do both writers, and the holder
+    # keeps reading the bytes it opened.
+    final = aged(tmp_path / "shared.bin", b"old")
+    holder = Holder(final, FULL_SHARING)
+    try:
+        assert graph().atomic_write(final, b"new") is True
+        assert final.read_bytes() == b"new"
+        assert _commit(final, b"newer") is True
+        assert final.read_bytes() == b"newer"
+        assert holder.read(16) == b"old"
+    finally:
+        holder.close()
+    assert contents(tmp_path) == {final: b"newer"}
+
+
+def test_a_target_held_without_delete_sharing_fails_as_before(tmp_path: Path):
+    # A holder that shares read and write but not delete keeps the file: both writers
+    # raise PermissionError [Errno 13] naming the path and leave no temporary file.
+    final = aged(tmp_path / "held.bin", b"held")
+    holder = Holder(final, SHARE_READ_WRITE)
+    try:
+        for write in (graph().atomic_write, _commit):
+            with pytest.raises(PermissionError) as raised:
+                write(final, b"new")
+            assert raised.value.errno == 13 and raised.value.filename == str(final)
+    finally:
+        holder.close()
+    assert contents(tmp_path) == {final: b"held"}
+    assert final.stat().st_mtime == OLD
+
+
+def test_concurrent_writers_and_a_reader_on_one_target(tmp_path: Path):
+    # Eight writers replace one file while another thread opens and closes it with full
+    # sharing, as a thumbnailer does: every write succeeds and the file is one whole
+    # payload.
+    final = tmp_path / "race.bin"
+    payloads = [bytes([i]) * (64 << 10) for i in range(8)]
+    final.write_bytes(payloads[0])
+    stop, errors = threading.Event(), []
+
+    def reader():
+        while not stop.is_set():
+            handle = hold(final, FULL_SHARING)
+            if handle not in INVALID:
+                KERNEL32.CloseHandle(handle)
+
+    def writer(data: bytes):
+        for i in range(10):
+            try:
+                (graph().atomic_write if i % 2 else _commit)(final, data + bytes(i))
+            except OSError as error:
+                errors.append(repr(error))
+
+    threads = [threading.Thread(target=writer, args=(p,)) for p in payloads]
+    watcher = threading.Thread(target=reader)
+    watcher.start()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    stop.set()
+    watcher.join()
+    assert errors == []
+    data = final.read_bytes()
+    assert any(data == p + bytes(i) for p in payloads for i in range(10))
+    assert sorted(tmp_path.iterdir()) == [final]
 
 
 def _commit(final: Path, data: bytes) -> bool:
@@ -179,6 +329,21 @@ def test_target_commit_and_equal_bytes(tmp_path: Path):
     assert _commit(final, b"model2") is True
     assert final.read_bytes() == b"model2"
     assert sorted(tmp_path.iterdir()) == [final]
+
+
+def test_an_equal_commit_whose_temporary_file_stays_deletes_it_later(tmp_path: Path):
+    # The final file holds the bytes already, and another program holds the temporary
+    # file, so it cannot go now: the commit reports the equal file, and abandon() (or
+    # the destructor) deletes the temporary file once let go.
+    final = aged(tmp_path / "m.pth", b"model")
+    target = graph().AtomicTarget(final)
+    Path(target.temp).write_bytes(b"model")
+    with open(target.temp, "rb"):  # shares read and write, not delete
+        assert target.commit() is False
+        assert Path(target.temp).exists()
+    target.abandon()
+    assert contents(tmp_path) == {final: b"model"}
+    assert final.stat().st_mtime == OLD
 
 
 def test_failed_library_write_leaves_no_partial_file(tmp_path: Path):

@@ -5,8 +5,10 @@ the temporary file, so the path keeps what it held."""
 
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
+import threading
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -206,6 +208,9 @@ def test_stop_deletes_only_the_temporary_file(
             self.target = module.graph().AtomicTarget(final)
             self.temp = self.target.temp
 
+        def check(self):
+            self.target.check()
+
         def abandon(self):
             existed.append(Path(self.temp).is_file())
             self.target.abandon()
@@ -233,3 +238,92 @@ def test_a_failed_encoder_leaves_the_file_before(tmp_path: Path):
         context.cleanup()
     assert contents(tmp_path) == {**others, path: b"the video before"}
     assert path.stat().st_mtime == OLD
+
+
+KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+KERNEL32.CreateFileW.restype = ctypes.c_void_p
+KERNEL32.CreateFileW.argtypes = [
+    ctypes.c_wchar_p,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_void_p,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_void_p,
+]
+KERNEL32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+
+def hold(path: Path) -> int:
+    """A read handle on path sharing read and write but not delete, as a player can
+    hold the video: the rename cannot replace the file meanwhile."""
+    generic_read, share_read_write, open_existing = 0x80000000, 3, 3
+    handle = KERNEL32.CreateFileW(
+        str(path), generic_read, share_read_write, None, open_existing, 0, None
+    )
+    assert handle not in (None, ctypes.c_void_p(-1).value)
+    return handle
+
+
+def test_a_target_the_rename_cannot_replace_fails_before_encoding(tmp_path: Path):
+    # The node checks the path before FFmpeg starts, so no encode is lost to a file
+    # another program holds: the error open(path, "wb") style names the path.
+    path = tmp_path / "out.mkv"
+    path.write_bytes(b"the video before")
+    os.utime(path, (OLD, OLD))
+    others = foreign(tmp_path)
+    handle = hold(path)
+    try:
+        with pytest.raises(PermissionError) as raised:
+            save(tmp_path, [], complete=False)
+        assert raised.value.errno == 13 and raised.value.filename == str(path)
+    finally:
+        KERNEL32.CloseHandle(handle)
+    assert contents(tmp_path) == {**others, path: b"the video before"}
+    assert path.stat().st_mtime == OLD
+
+
+@pytest.mark.parametrize("released", [True, False])
+def test_a_rename_failing_at_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, released: bool
+):
+    # The file is held when the finished video is renamed onto it: a holder that lets
+    # go within the commit's retries gets the new video; one that stays fails the run
+    # naming the path, which keeps the video before, and no temporary file is left.
+    path = tmp_path / "out.mkv"
+    path.write_bytes(b"the video before")
+    os.utime(path, (OLD, OLD))
+    others = foreign(tmp_path)
+
+    class HeldAtCommit:
+        def __init__(self, final: str):
+            self.target = module.graph().AtomicTarget(final)
+            self.temp = self.target.temp
+
+        def check(self):
+            self.target.check()
+
+        def abandon(self):
+            self.target.abandon()
+
+        def commit(self) -> bool:
+            handle = hold(path)
+            timer = threading.Timer(0.05, KERNEL32.CloseHandle, (handle,))
+            if released:
+                timer.start()
+            try:
+                return self.target.commit()
+            finally:
+                timer.join() if released else KERNEL32.CloseHandle(handle)
+
+    monkeypatch.setattr(module, "atomic_target", HeldAtCommit)
+    if released:
+        save(tmp_path, frames(0.1))
+        assert path.read_bytes()[:4] == bytes.fromhex("1a45dfa3")  # Matroska
+    else:
+        with pytest.raises(PermissionError) as raised:
+            save(tmp_path, frames(0.1))
+        assert raised.value.filename == str(path)
+        assert path.read_bytes() == b"the video before"
+        assert path.stat().st_mtime == OLD
+    assert contents(tmp_path) == {**others, path: path.read_bytes()}

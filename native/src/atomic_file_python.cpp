@@ -70,6 +70,13 @@ void cn_bind_atomic_file(py::module_ &module) {
                              "path; as a context manager it commits on success and abandons on an exception.")
         .def(py::init<std::filesystem::path>(), py::arg("path"))
         .def_property_readonly("temp", [](const AtomicTarget &target) { return target.temp().native(); })
+        .def("check",
+             [](const AtomicTarget &target) {
+                 py::gil_scoped_release release;
+                 target.check();
+             },
+             "Raises the OSError commit() would raise when path is a folder or a file the rename cannot replace (held "
+             "open without delete sharing), before a long write starts.")
         .def("commit",
              [](AtomicTarget &target) {
                  py::gil_scoped_release release;

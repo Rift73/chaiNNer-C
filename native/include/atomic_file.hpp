@@ -1,6 +1,10 @@
 /* Atomic file writes (GPL-3.0): a writer fills `<final>.chainner-c-<pid>-<seq>.tmp` in the target folder (pid this
- * process's id, seq a process-wide counter) and renames it onto the final name with MoveFileExW
- * (MOVEFILE_REPLACE_EXISTING, no flush), so a failure, Stop or crash never leaves a partial file under the final name.
+ * process's id, seq a process-wide counter; `.cnc-<pid>-<seq>.tmp` in that folder where the first would pass the
+ * 255-unit name limit or, with long paths off, MAX_PATH; both names of the rename in the \\?\ form past MAX_PATH, errors
+ * naming the path as given) and renames it onto the final name by handle with POSIX semantics (no
+ * flush; MoveFileExW MOVEFILE_REPLACE_EXISTING where the volume lacks them), so a failure, Stop or crash never leaves a
+ * partial file under the final name. The rename replaces a file other programs hold open sharing delete; one held
+ * without delete sharing fails as EACCES after up to 250 ms of retries.
  * A final file that already holds the same bytes (size, then 1 MiB blocks) is left untouched, its modification time
  * included, and the temporary file is deleted. Only this process's own temporary files are ever deleted. Nothing here
  * touches Python, so the run engine's threads call it as it is; the graph module raises FileError as the OSError
@@ -59,6 +63,9 @@ public:
     const std::filesystem::path &temp() const noexcept { return temp_; }
     /* Whether commit() or abandon() ran: a context manager commits an open target only. */
     bool open() const noexcept { return state_ == State::open; }
+    /* Throws the FileError commit() would throw when final is a folder or a file the rename cannot replace (held open
+     * without delete sharing), before a long write starts; nothing when final does not exist. */
+    void check() const;
     bool commit();
     void abandon() noexcept;
 

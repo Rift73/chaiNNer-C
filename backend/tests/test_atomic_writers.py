@@ -155,7 +155,10 @@ def test_pytorch_save_model_bytes_equal_skip_and_failure(
         save_model_node(model, out, "m", weight_format)
         assert path.stat().st_mtime == OLD
 
+    staged: list[Path] = []
+
     def fails(state: object, file: Path):
+        staged.append(Path(file))
         Path(file).write_bytes(b"partial")
         raise RuntimeError("the disk is full")
 
@@ -164,6 +167,8 @@ def test_pytorch_save_model_bytes_equal_skip_and_failure(
         module.weight.add_(1)
     with pytest.raises(RuntimeError, match="the disk is full"):
         save_model_node(model, out, "m", WeightFormat.PTH)
+    # Staged beside the target (one volume: the move is a rename), under the final name.
+    assert staged[0].parent.parent == out and staged[0].name == "m.pth"
     assert (out / "m.pth").read_bytes() == (reference / "m.pth").read_bytes()
     assert set(contents(out)) == {*others, out / "m.pth", out / "m.safetensors"}
 
