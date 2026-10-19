@@ -6,8 +6,10 @@
 #include "numpy_clip_f32.h"
 #include "numpy_trig_f32.h"
 #include <atomic>
+#include <bit>
 #include <cfenv>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 
 namespace {
@@ -71,6 +73,66 @@ void apply(void* opaque, size_t begin, size_t end) noexcept {
     std::fesetenv(&previous);
     job.flags.fetch_or(flags, std::memory_order_relaxed);
 }
+
+int raised() noexcept {
+    const int state = std::fetestexcept(FE_DIVBYZERO | FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID);
+    std::feclearexcept(FE_ALL_EXCEPT);
+    return ((state & FE_DIVBYZERO) ? 1 : 0) | ((state & FE_OVERFLOW) ? 2 : 0)
+        | ((state & FE_UNDERFLOW) ? 4 : 0) | ((state & FE_INVALID) ? 8 : 0);
+}
+/* NumPy 2.5.3's float32 multiply and add loops give, where both operands are NaN,
+ * the second one's, quieted; a single NaN or an invalid operation gives what the
+ * instruction gives in either operand order. NaN is tested on the bits, which
+ * raises nothing. */
+float second_nan(float value, float second) noexcept {
+    const uint32_t bits = std::bit_cast<uint32_t>(second);
+    return (bits & 0x7fffffffu) > 0x7f800000u ? std::bit_cast<float>(bits | 0x00400000u) : value;
+}
+constexpr size_t tile_block = 512; // elements per event stage
+struct TileJob {
+    float* out;
+    const float* tile;
+    const float* wy;
+    const float* wx;
+    size_t out_row, tile_row, width, channels;
+    std::atomic<int> flags[3]{};
+};
+/* Rows [begin, end): the weight row, then per block of pixels the tile product
+ * and the sum, each stage's events tested apart as NumPy's three ufunc calls. */
+void accumulate_rows(void* opaque, size_t begin, size_t end) noexcept {
+    auto& job = *static_cast<TileJob*>(opaque);
+    std::fenv_t previous;
+    std::fegetenv(&previous);
+    std::feclearexcept(FE_ALL_EXCEPT);
+    int flags[3] = {0, 0, 0};
+    float weights[tile_block], products[tile_block];
+    const size_t channels = job.channels, pixels = tile_block / channels;
+    for (size_t y = begin; y < end; ++y) {
+        float* out = job.out + y * job.out_row;
+        const float* tile = job.tile + y * job.tile_row;
+        const float wy = job.wy[y];
+        for (size_t x0 = 0; x0 < job.width; x0 += pixels) {
+            const size_t n = job.width - x0 < pixels ? job.width - x0 : pixels;
+            for (size_t x = 0; x < n; ++x) {
+                const float wx = job.wx[x0 + x];
+                weights[x] = second_nan(wy * wx, wx);
+            }
+            flags[0] |= raised();
+            const size_t first = x0 * channels;
+            for (size_t x = 0, k = 0; x < n; ++x) {
+                for (size_t c = 0; c < channels; ++c, ++k)
+                    products[k] = second_nan(tile[first + k] * weights[x], weights[x]);
+            }
+            flags[1] |= raised();
+            for (size_t k = 0; k < n * channels; ++k)
+                out[first + k] = second_nan(out[first + k] + products[k], products[k]);
+            flags[2] |= raised();
+        }
+    }
+    std::fesetenv(&previous);
+    for (size_t stage = 0; stage < 3; ++stage)
+        job.flags[stage].fetch_or(flags[stage], std::memory_order_relaxed);
+}
 }
 
 /* mode: clip=0, sine=1, half-sine=2, alpha difference=3, fill=4,
@@ -130,5 +192,40 @@ extern "C" CN_EXPORT cn_status cn_framework_shared(
     if (status == CN_OK) status = run(Step::sine, 0);
     if (status == CN_OK) status = run(Step::subtract, -1);
     if (status == CN_OK) status = run(Step::divide, 2);
+    return status;
+}
+
+/* TensorRT tiling's blend of one tile (tiling.py): out[y][x][c] += tile[y][x][c] *
+ * (wy[y] * wx[x]) for height x width pixels of channels (1-512) floats, rows of
+ * width * channels contiguous floats out_row and tile_row floats apart, with NumPy's
+ * three float32 roundings (no contraction), NaN operands (second_nan) and the
+ * events of the weight product, the tile product and the sum in events[0..2]. */
+extern "C" CN_EXPORT cn_status cn_framework_tile_accumulate(
+        float* out, size_t out_row, const float* tile, size_t tile_row,
+        const float* wy, const float* wx, size_t height, size_t width,
+        size_t channels, int* events) noexcept {
+    if (!height || !width || !channels || channels > tile_block) return CN_INVALID_ARGUMENT;
+    if (width > PTRDIFF_MAX / sizeof(float) / channels) return CN_SIZE_OVERFLOW;
+    const size_t row = width * channels;
+    if (out_row < row || tile_row < row) return CN_INVALID_ARGUMENT;
+    if (out_row > (PTRDIFF_MAX / sizeof(float) - row) / (height - 1 ? height - 1 : 1)
+        || tile_row > (PTRDIFF_MAX / sizeof(float) - row) / (height - 1 ? height - 1 : 1))
+        return CN_SIZE_OVERFLOW;
+    Range destination{}, source{}, rows{}, columns{}, flags{};
+    cn_status status = range(out, ((height - 1) * out_row + row) * sizeof(float), destination);
+    if (status == CN_OK) status = range(tile, ((height - 1) * tile_row + row) * sizeof(float), source);
+    if (status == CN_OK) status = range(wy, height * sizeof(float), rows);
+    if (status == CN_OK) status = range(wx, width * sizeof(float), columns);
+    if (status == CN_OK) status = range(events, 3 * sizeof(int), flags);
+    if (status != CN_OK) return status;
+    const Range inputs[] = {source, rows, columns, flags};
+    for (Range input : inputs)
+        if (overlaps(destination, input)) return CN_INVALID_ARGUMENT;
+    if (overlaps(flags, source) || overlaps(flags, rows) || overlaps(flags, columns))
+        return CN_INVALID_ARGUMENT;
+    TileJob job{out, tile, wy, wx, out_row, tile_row, width, channels};
+    status = cn_parallel_for(height, 1 + 65536 / row, accumulate_rows, &job);
+    for (size_t stage = 0; stage < 3; ++stage)
+        events[stage] = job.flags[stage].load(std::memory_order_relaxed);
     return status;
 }

@@ -22,6 +22,8 @@ import numpy as np
 
 from api import Progress
 
+from ..native_framework_shared import accumulate_tile
+
 TILE_ALIGNMENT = 64
 # Context margin discarded at each shared tile edge; the cross-fade band has
 # the same width, so neighbouring tiles overlap by at least 3 * TILE_OVERLAP.
@@ -146,8 +148,9 @@ def _blend(
 ) -> np.ndarray:
     if result is None:
         result = np.zeros((out_h, out_w, tile_out.shape[2]), dtype=np.float32)
-    weight = wy[:, None, None] * wx[None, :, None]
-    result[y0 : y0 + wy.size, x0 : x0 + wx.size] += tile_out * weight
+    # result[window] += tile_out * (wy[:, None, None] * wx[None, :, None]), as NumPy
+    # computes it, in one multithreaded pass
+    accumulate_tile(result[y0 : y0 + wy.size, x0 : x0 + wx.size], tile_out, wy, wx)
     return result
 
 

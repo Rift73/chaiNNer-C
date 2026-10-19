@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import contextlib
+import ctypes
+import warnings
 from collections import deque
+from collections.abc import Callable, Iterator
+from typing import Literal
 
 import numpy as np
 import pytest
 
+# The blend runs in the native backend, which GitHub's checks do not build.
+pytest.importorskip("nodes.impl._chainner_graph")
+
+from nodes.impl.native_framework_shared import accumulate_tile
+from nodes.impl.tensorrt import tiling
 from nodes.impl.tensorrt.tiling import (
     ShapeBounds,
     axis_weights,
@@ -159,3 +169,126 @@ def test_axis_weights_partition_of_unity():
         for s, w in zip(starts, axis_weights(starts, 512, length, SCALE)):
             total[s * SCALE : s * SCALE + w.size] += w
         np.testing.assert_allclose(total, 1.0, atol=1e-6)
+
+
+def numpy_blend(
+    result: np.ndarray | None,
+    tile_out: np.ndarray,
+    y0: int,
+    x0: int,
+    wy: np.ndarray,
+    wx: np.ndarray,
+    out_h: int,
+    out_w: int,
+) -> np.ndarray:
+    """The blend as NumPy computed it before the native pass."""
+    if result is None:
+        result = np.zeros((out_h, out_w, tile_out.shape[2]), dtype=np.float32)
+    weight = wy[:, None, None] * wx[None, :, None]
+    result[y0 : y0 + wy.size, x0 : x0 + wx.size] += tile_out * weight
+    return result
+
+
+class ExceptionalEngine(FakeEngine):
+    """FakeEngine whose tiles also hold a NaN with the tile's own payload at every
+    pixel (so two NaNs meet in each overlap), an infinity, -0 and the largest
+    float32, at seeded positions."""
+
+    def __init__(self, bounds: ShapeBounds) -> None:
+        super().__init__(bounds)
+        self.tiles = 0
+
+    def submit(self, tile: np.ndarray) -> None:
+        super().submit(tile)
+        out = self.queue[-1]
+        self.tiles += 1
+        rng = np.random.default_rng(self.tiles)
+        bits = out.view(np.uint32).reshape(-1)
+        bits[rng.choice(bits.size, 4000, replace=False)] = 0x7FC00000 + self.tiles
+        bits[rng.choice(bits.size, 50, replace=False)] = 0x7F800000
+        bits[rng.choice(bits.size, 50, replace=False)] = 0x80000000
+        bits[rng.choice(bits.size, 50, replace=False)] = 0x7F7FFFFF
+        bits[:: bits.size // 7] = 0x7FC0FFFF  # the same pixels in every tile
+
+
+@pytest.mark.parametrize(
+    "bounds", [STATIC_512, DYNAMIC_64_512], ids=["static512", "dynamic64-512"]
+)
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_native_blend_is_numpys_bit_for_bit(
+    monkeypatch: pytest.MonkeyPatch, bounds: ShapeBounds, channels: int
+):
+    img = np.ascontiguousarray(np.resize(_image()[:700, :1000], (700, 1000, channels)))
+
+    def run() -> tuple[np.ndarray, list[str]]:
+        with warnings.catch_warnings(record=True) as caught, np.errstate(all="warn"):
+            warnings.simplefilter("always")
+            out = tiled_upscale(img, SCALE, bounds, ExceptionalEngine(bounds))
+        return out, [str(w.message) for w in caught]
+
+    actual, actual_warnings = run()
+    monkeypatch.setattr(tiling, "_blend", numpy_blend)
+    expected, expected_warnings = run()
+    assert actual.tobytes() == expected.tobytes()
+    assert actual_warnings == expected_warnings
+    assert "invalid value encountered in multiply" in actual_warnings
+
+
+@contextlib.contextmanager
+def flushed(flush: bool) -> Iterator[None]:
+    """DAZ and FTZ on the calling thread (the CRT's _DN_FLUSH) when flush, which the
+    native pool's helpers take; the default afterwards."""
+    control = ctypes.CDLL("ucrtbase.dll")["_controlfp_s"]
+    control.argtypes = [ctypes.POINTER(ctypes.c_uint), ctypes.c_uint, ctypes.c_uint]
+    word = ctypes.c_uint()
+    if flush:
+        assert control(ctypes.byref(word), 0x01000000, 0x03000000) == 0
+    try:
+        yield
+    finally:
+        assert control(ctypes.byref(word), 0, 0x03000000) == 0
+
+
+def random_floats(shape: tuple[int, ...], seed: int) -> np.ndarray:
+    """Every float32 bit pattern: NaN payloads, infinities, denormals, -0."""
+    words = np.random.default_rng(seed).integers(0, 2**32, shape, dtype=np.uint64)
+    return words.astype(np.uint32).view(np.float32)
+
+
+@pytest.mark.parametrize("channels", [1, 3, 4, 7])
+@pytest.mark.parametrize("mode", ["warn", "raise", "ignore"])
+@pytest.mark.parametrize("flush", [False, True], ids=["default", "daz_ftz"])
+def test_accumulate_tile_is_the_numpy_expression(
+    channels: int, mode: Literal["warn", "raise", "ignore"], flush: bool
+):
+    # Any bits in the window, tile and weights; a strided tile, a window inside a
+    # wider image; denormals in both MXCSR states.
+    h, w = 37, 1531  # several pool chunks; rows of several 512-element blocks
+    image = random_floats((h + 3, w + 5, channels), 1)
+    tile = random_floats((h + 2, w + 9, channels), 2)[1:-1, 4:-5]
+    wy, wx = random_floats((h,), 3), random_floats((w,), 4)
+    wy[::3] = np.random.default_rng(5).random(wy[::3].shape, np.float32)
+    wx[::2] = 0
+    expected = image.copy()
+
+    def outcome(call: Callable[[], object]) -> tuple[str | None, list[str]]:
+        with warnings.catch_warnings(record=True) as caught, np.errstate(all=mode):
+            warnings.simplefilter("always")
+            try:
+                call()
+                failure = None
+            except FloatingPointError as error:
+                failure = str(error)
+        return failure, [str(item.message) for item in caught]
+
+    window = (slice(2, 2 + h), slice(3, 3 + w))
+    with flushed(flush):
+        actual_outcome = outcome(lambda: accumulate_tile(image[window], tile, wy, wx))
+        expected_outcome = outcome(
+            lambda: expected[window].__iadd__(
+                tile * (wy[:, None, None] * wx[None, :, None])
+            )
+        )
+    assert actual_outcome == expected_outcome
+    if mode != "raise":
+        assert image.tobytes() == expected.tobytes()

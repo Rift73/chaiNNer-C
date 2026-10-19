@@ -33,7 +33,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from .native import check, f32, lib
+from .native import check, checked_f32, f32, lib
 from .native_buffers import freeze_normalized
 from .native_channels import _assemble
 from .native_framework_images import _report
@@ -56,6 +56,19 @@ def _api():
         ct.c_void_p,
     ]
     library.cn_framework_shared.restype = ct.c_int
+    library.cn_framework_tile_accumulate.argtypes = [
+        ct.c_void_p,
+        ct.c_size_t,
+        ct.c_void_p,
+        ct.c_size_t,
+        ct.c_void_p,
+        ct.c_void_p,
+        ct.c_size_t,
+        ct.c_size_t,
+        ct.c_size_t,
+        ct.c_void_p,
+    ]
+    library.cn_framework_tile_accumulate.restype = ct.c_int
     return library
 
 
@@ -126,6 +139,61 @@ def copy_into(target: np.ndarray, source: np.ndarray) -> None:
         )
     )
     _report(events.value, "cast")
+
+
+def _row_stride(image: np.ndarray) -> int | None:
+    """The element stride between the rows of an aligned float32 (h, w, c) image
+    whose rows each hold w * c contiguous floats; else None."""
+    h, w, c = image.shape
+    if (
+        image.dtype != np.float32
+        or not image.flags.aligned
+        or (w > 1 and image.strides[1] != 4 * c)
+        or (c > 1 and image.strides[2] != 4)
+    ):
+        return None
+    if h == 1:
+        return w * c
+    row = image.strides[0]
+    return row // 4 if row % 4 == 0 and row >= 4 * w * c else None
+
+
+def accumulate_tile(
+    window: np.ndarray, tile: np.ndarray, wy: np.ndarray, wx: np.ndarray
+) -> None:
+    """window += tile * (wy[:, None, None] * wx[None, :, None]) in place, split
+    across the native pool, with NumPy's three float32 roundings, NaN operands and
+    warnings (TensorRT tiling's blend). window: a writable float32 (h, w, c) window of
+    rows of contiguous pixels; tile: float32 of its shape (copied first if its rows
+    are not contiguous); wy, wx: float32 weights of length h and w."""
+    h, w, c = window.shape
+    out_row = _row_stride(window) if window.flags.writeable else None
+    if out_row is None:
+        raise ValueError("Tile blending needs a writable window of contiguous rows")
+    if tile.shape != window.shape or wy.shape != (h,) or wx.shape != (w,):
+        raise ValueError("A tile and its weights must match its window")
+    tile_row = _row_stride(checked_f32(tile))
+    if tile_row is None:
+        tile = f32(tile)
+        tile_row = w * c
+    wy, wx = f32(wy), f32(wx)
+    events = (ct.c_int * 3)()
+    check(
+        _api().cn_framework_tile_accumulate(
+            window.ctypes.data,
+            out_row,
+            tile.ctypes.data,
+            tile_row,
+            wy.ctypes.data,
+            wx.ctypes.data,
+            h,
+            w,
+            c,
+            events,
+        )
+    )
+    for event, operation in zip(events, ("multiply", "multiply", "add"), strict=True):
+        _report(event, operation)
 
 
 def clip_image(image: np.ndarray, *, frozen: bool = False) -> np.ndarray:
