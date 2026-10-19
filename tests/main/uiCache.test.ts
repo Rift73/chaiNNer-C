@@ -34,7 +34,8 @@ beforeEach(async () => {
         ? path.join(directory, 'python/Lib/site-packages')
         : path.join(directory, 'python/lib/python3.14/site-packages');
     await mkdir(path.join(sitePackages, 'numpy-2.5.3.dist-info'), { recursive: true });
-    cacheFile = path.join(directory, 'cache', 'backend-ui.json');
+    const { getUiCacheFile } = await import('../../src/main/uiCache');
+    cacheFile = getUiCacheFile(directory);
 });
 
 afterEach(async () => {
@@ -76,6 +77,41 @@ test('a cache of another set of installed distributions is not used', async () =
     // the live list then rewrites the cache with the new key
     await next.write(data);
     await expect((await newCache()).read()).resolves.toEqual(data);
+});
+
+// The folders Electron's Chromium keeps in userData, which is the app's root folder. Chromium
+// clears and replaces them on its own, e.g. its HTTP cache `Cache` after an unclean exit.
+const CHROMIUM_FOLDERS = [
+    'blob_storage',
+    'Cache',
+    'Code Cache',
+    'Crashpad',
+    'databases',
+    'DawnCache',
+    'DawnGraphiteCache',
+    'DawnWebGPUCache',
+    'Dictionaries',
+    'GPUCache',
+    'GrShaderCache',
+    'IndexedDB',
+    'Local Storage',
+    'Network',
+    'Partitions',
+    'Service Worker',
+    'Session Storage',
+    'ShaderCache',
+    'Shared Dictionary',
+    'SharedStorage',
+    'VideoDecodeStats',
+    'WebStorage',
+];
+
+test('the cache is kept outside every folder Chromium manages', async () => {
+    const { UI_CACHE_FOLDER } = await import('../../src/main/uiCache');
+    // Windows' file names ignore case
+    const chromium = CHROMIUM_FOLDERS.map((folder) => folder.toLowerCase());
+    expect(chromium).not.toContain(UI_CACHE_FOLDER.toLowerCase());
+    expect(path.relative(directory, path.dirname(cacheFile))).toBe(UI_CACHE_FOLDER);
 });
 
 test('an unreadable cache file is no cache', async () => {

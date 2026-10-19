@@ -31,7 +31,7 @@ import { getLogsFolder, getRootDir, installDir } from '../platform';
 import { BrowserWindowWithSafeIpc, ipcMain } from '../safeIpc';
 import { SaveData, SaveFile, openSaveFile } from '../SaveFile';
 import { writeSettings } from '../setting-storage';
-import { UiCache } from '../uiCache';
+import { UiCache, getUiCacheFile } from '../uiCache';
 import { MenuData, setMainMenu } from './menu';
 
 const version = app.getVersion() as Version;
@@ -599,7 +599,7 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
         const uiCache = args.remoteBackend
             ? undefined
             : new UiCache(
-                  path.join(getRootDir(), 'cache', 'backend-ui.json'),
+                  getUiCacheFile(getRootDir()),
                   async () => (await backendPromise).python,
                   path.dirname(getBackendPath())
               );

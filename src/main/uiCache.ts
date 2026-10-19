@@ -10,6 +10,17 @@ import { chainnerCVersion, isDevelopmentBuild } from '../common/version';
 import { buildInfo } from './buildInfo';
 import { readTextFile, writeFileAtomic } from './util';
 
+/**
+ * The folder of the cache in the app's root folder, which is Electron's userData too. Not
+ * `cache`: on Windows that is Chromium's HTTP cache folder `Cache`, which Chromium clears and
+ * replaces (e.g. after an unclean exit), and with it the file.
+ */
+export const UI_CACHE_FOLDER = 'ui-cache';
+
+/** Where the node list cache of the app with this root folder is kept. */
+export const getUiCacheFile = (rootDir: string): string =>
+    path.join(rootDir, UI_CACHE_FOLDER, 'backend-ui.json');
+
 interface UiCacheFile {
     key: string;
     nodes: BackendData[0];

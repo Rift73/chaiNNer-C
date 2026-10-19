@@ -590,6 +590,7 @@ class RunIndividualRequest(TypedDict):
 async def run_individual(request: Request):
     """Runs a single node"""
     ctx = AppContext.get(request.app)
+    start = time.perf_counter()
     try:
         full_data: RunIndividualRequest = dict(request.json)  # type: ignore
         logger.debug(full_data)
@@ -670,6 +671,12 @@ async def run_individual(request: Request):
                 release.add_done_callback(individual_releases.discard)
                 # gc.collect() removed - called after every individual node, too frequent
 
+        # From the request's arrival, a wait for the node to load included: the time
+        # from a launch to a startup chain's first preview reads from the log.
+        logger.info(
+            f"Individual run of {full_data['schemaId']} finished in"
+            f" {(time.perf_counter() - start) * 1000:.0f} ms"
+        )
         return json({"success": True, "data": None})
     except Exception as exception:
         logger.error(exception, exc_info=True)
