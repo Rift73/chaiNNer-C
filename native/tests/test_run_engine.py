@@ -196,6 +196,17 @@ def test_normalized_conversion_raises_no_floating_point_errors_as_normalize():
         assert bits(through(values, normalize=True)) == bits(normalize(values))
 
 
+@pytest.mark.parametrize("shape", [(0, 4, 3), (5, 0), (0, 0, 4)])
+def test_empty_images_have_data(shape):
+    # An empty engine image still has a data block: kernels refuse a null pointer even for a zero count.
+    values = np.zeros(shape, np.uint8)
+    out = through(values, normalize=True)
+    assert out.dtype == np.float32 and out.shape == shape[:2] + shape[2:] and not out.flags.writeable
+    assert bits(out) == bits(normalize(values))
+    empty = np.zeros(shape, np.float32)
+    assert through(empty) is empty
+
+
 def test_known_normalized_array_is_borrowed():
     img = freeze_normalized(np.random.default_rng(7).random((6, 5, 4), dtype=np.float32))
     assert through(img, normalize=True) is img

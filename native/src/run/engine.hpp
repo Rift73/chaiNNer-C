@@ -16,7 +16,7 @@ namespace cn::run {
  * (a borrowed NumPy array; the owner's last reference is dropped with the GIL). */
 class ImageStorage {
 public:
-    explicit ImageStorage(size_t bytes);  // pooled, uninitialised; throws NodeError("MemoryError") when out of memory
+    explicit ImageStorage(size_t bytes);  // pooled, uninitialised, never null; NodeError("MemoryError") when out of memory
     ImageStorage(float *data, PyRef owner) noexcept : data_(data), owner_(std::move(owner)) {}
     ~ImageStorage();
     ImageStorage(const ImageStorage &) = delete;
