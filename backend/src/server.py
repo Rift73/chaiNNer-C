@@ -415,11 +415,9 @@ close_task = None
 
 async def nodes_available():
     """Waits until every node has loaded (or failed to): the node and package lists are
-    complete then. Shielded: a request given up while the nodes load (the worker serves
-    from its start) must cancel only itself, not the loading every later request waits
-    for."""
+    complete then."""
     if setup_task is not None:
-        await asyncio.shield(setup_task)
+        await setup_task
 
 
 async def wait_for_nodes(

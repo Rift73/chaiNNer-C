@@ -107,6 +107,21 @@ def planes_colour(
     return pix_fmt, info
 
 
+def ffv1_options(width: int, height: int, planes: int) -> list[str]:
+    """FFmpeg's encoder options for 16-bit frames of this size and plane count:
+    lossless FFV1 in 16 slices (level 3), which FFmpeg encodes on up to 16 threads,
+    where they are valid, else FFV1's default of one slice.
+
+    The integrated FFmpeg 5.1 refuses 16 slices (4x4) below 4 pixels or chroma samples
+    a side, and from 4 to 6 pixels writes slice positions that decoders misread,
+    corrupting the frames; from 7 every slice is where it belongs. It also refuses a
+    slice of more than 2^27 bits, at 17 bits a sample."""
+    slice_samples = -(-width // 4) * -(-height // 4) * planes
+    if min(width, height) >= 7 and slice_samples * 17 <= 1 << 27:
+        return ["-c:v", "ffv1", "-level", "3", "-slices", "16"]
+    return ["-c:v", "ffv1"]
+
+
 def frame_rate(fps: float) -> Fraction:
     """The clip's frame rate: an NTSC rate (24000/1001 for 23.976) when fps is one to
     the FPS input's 4 decimals, else fps as a fraction."""
@@ -342,7 +357,7 @@ def frames_to_clip_node(
         if tags is None:
             choices = (matrix, transfer, primaries, range_, chroma_location)
             pix_fmt, tags = planes_colour(y, u, v, colour_info, choices)
-            output = ["-c:v", "ffv1"]
+            output = ffv1_options(y.shape[1], y.shape[0], 3)
             for option, value in (
                 ("-colorspace", tags.matrix),
                 ("-color_trc", tags.transfer),
@@ -372,12 +387,10 @@ def frames_to_clip_node(
                     w * h * 12 / MB,
                 )
             else:
-                # Save Video's encoder: FFV1 in Matroska, lossless. (FFV1 level 3 or
-                # -slices corrupt frames smaller than a few pixels, and were no faster
-                # at 1080p.) Full range: VapourSynth reads an untagged gray clip as
-                # limited.
+                # FFV1 in Matroska, lossless. Full range: VapourSynth reads an
+                # untagged gray clip as limited.
                 pix_fmt = "gray16le" if c == 1 else "gbrp16le"
-                start(pix_fmt, (w, h), ["-c:v", "ffv1", "-color_range", "pc"])
+                start(pix_fmt, (w, h), [*ffv1_options(w, h, c), "-color_range", "pc"])
         assert writer is not None
         if not float32:
             # Clipped to 0-1 and rounded.

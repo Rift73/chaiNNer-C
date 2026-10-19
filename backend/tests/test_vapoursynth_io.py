@@ -723,6 +723,143 @@ def test_frames_to_clip_errors(
         collect(tmp_path, [(rgb, None, None, None)] * 3, precision="32")
 
 
+@pytest.mark.parametrize(
+    ("size", "planes", "sliced"),
+    [
+        ((1920, 1080), 3, True),
+        # 7 pixels a side at least: FFmpeg refuses 16 slices below 4 and misplaces
+        # slices from 4 to 6.
+        ((7, 7), 3, True),
+        ((6, 1080), 3, False),
+        ((1920, 6), 1, False),
+        ((3, 3), 1, False),
+        # A slice of at most 2^27 bits at 17 bits a sample: 2,631,720 samples a plane
+        # of three planes, 7,895,160 of one. A side not a multiple of 4 rounds up.
+        ((4 * 1620, 4 * 1624), 3, True),
+        ((4 * 1620 + 1, 4 * 1624), 3, False),
+        ((4 * 1620 + 1, 4 * 1624), 1, True),
+        ((4 * 2809, 4 * 2810), 1, True),
+        ((4 * 2810, 4 * 2810), 1, False),
+    ],
+)
+def test_frames_to_clip_ffv1_slices(size: tuple[int, int], planes: int, sliced: bool):
+    from packages.chaiNNer_vapoursynth.vapoursynth.frames_to_clip import ffv1_options
+
+    slices = ["-level", "3", "-slices", "16"] if sliced else []
+    assert ffv1_options(*size, planes) == ["-c:v", "ffv1", *slices]
+
+
+def ffv1_commands(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """The FFmpeg commands that encode FFV1 from here on."""
+    commands: list[list[str]] = []
+    popen = subprocess.Popen
+
+    def recording(command: list[str], **kwargs: Any) -> Any:
+        if "ffv1" in command:
+            commands.append(command)
+        return popen(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", recording)
+    return commands
+
+
+@pytest.mark.parametrize("bits", [8, 16])
+@pytest.mark.parametrize("channels", [3, 1])
+@pytest.mark.parametrize(
+    ("size", "sliced"),
+    [
+        # Below 7 pixels a side: one slice, as before; from 7 (odd sizes too): 16.
+        ((6, 9), False),
+        ((9, 6), False),
+        ((7, 7), True),
+        ((33, 17), True),
+        ((1920, 1080), True),
+    ],
+)
+def test_frames_to_clip_lossless_around_slice_threshold(
+    tmp_path: Path,
+    vs: Any,
+    integrated_ffmpeg: FFMpegEnv,
+    monkeypatch: pytest.MonkeyPatch,
+    bits: int,
+    channels: int,
+    size: tuple[int, int],
+    sliced: bool,
+):
+    commands = ffv1_commands(monkeypatch)
+    rng = np.random.default_rng(11)
+    width, height = size
+    shape = (height, width, channels) if channels == 3 else (height, width)
+    # Random codes of the bit depth, as 16-bit codes (8-bit: x257); frames of their
+    # values.
+    step = 65535 // ((1 << bits) - 1)
+    codes = [
+        rng.integers(0, 1 << bits, shape, dtype=np.uint16) * step for _ in range(2)
+    ]
+    record = collect(
+        tmp_path, [(c.astype(np.float32) / 65535, None, None, None) for c in codes]
+    )
+    assert len(commands) == 1
+    assert ("-slices" in commands[0]) == sliced
+
+    scope = {"core": vs.core, "vs": vs}
+    exec(record.stmt, scope)
+    clip = scope[record.var]
+    assert clip.format.name == ("RGB48" if channels == 3 else "Gray16")
+    for n, code in enumerate(codes):
+        frame = clip.get_frame(n)
+        # R, G, B planes of chaiNNer's BGR.
+        planes = (
+            [code[:, :, 2], code[:, :, 1], code[:, :, 0]] if channels == 3 else [code]
+        )
+        for plane, expected in enumerate(planes):
+            np.testing.assert_array_equal(np.asarray(frame[plane]), expected)
+
+
+@pytest.mark.parametrize(
+    ("subsampling", "size", "sliced"),
+    [
+        ((0, 0), (6, 8), False),
+        ((0, 0), (7, 7), True),
+        ((1, 0), (8, 6), False),
+        # 4:2:2 at 8 wide: 4 chroma samples a row, one a slice.
+        ((1, 0), (8, 8), True),
+        ((1, 1), (6, 8), False),
+        ((1, 1), (8, 8), True),
+        ((1, 1), (1920, 1080), True),
+    ],
+)
+def test_frames_to_clip_planes_lossless_around_slice_threshold(
+    tmp_path: Path,
+    vs: Any,
+    integrated_ffmpeg: FFMpegEnv,
+    monkeypatch: pytest.MonkeyPatch,
+    subsampling: tuple[int, int],
+    size: tuple[int, int],
+    sliced: bool,
+):
+    commands = ffv1_commands(monkeypatch)
+    rng = np.random.default_rng(13)
+    frames = [random_planes(rng, size, subsampling, True) for _ in range(2)]
+    record = collect(
+        tmp_path,
+        [(None, *values) for _, values in frames],
+        "planes",
+        choices=(Range.FULL,),
+    )
+    assert len(commands) == 1
+    assert ("-slices" in commands[0]) == sliced
+
+    scope = {"core": vs.core, "vs": vs}
+    exec(record.stmt, scope)
+    clip = scope[record.var]
+    assert (clip.width, clip.height, clip.num_frames) == (*size, 2)
+    for n, (codes, _) in enumerate(frames):
+        frame = clip.get_frame(n)
+        for plane, expected in enumerate(codes):
+            np.testing.assert_array_equal(np.asarray(frame[plane]), expected)
+
+
 def test_save_script_runs_in_vspipe(tmp_path: Path, vs: Any):
     from packages.chaiNNer_vapoursynth.vapoursynth.save_script import save_script_node
 
