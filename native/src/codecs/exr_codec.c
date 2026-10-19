@@ -39,6 +39,9 @@ static void exr_quiet(exr_const_context_t ctxt, exr_result_t code, const char *m
     (void)message;
 }
 
+/* exr_openjph.cpp: OpenJPH's message streams off, once per process. */
+void cn_exr_quiet_openjph(void);
+
 #define EXR_MAX_CHANNELS 4
 
 /* What part 0's channels become (readHeader and readData under IMREAD_UNCHANGED): the output's channel count and,
@@ -260,6 +263,7 @@ int cn_exr_signature(const uint8_t *data, size_t size) {
 
 cn_codec_status cn_exr_decode(const uint8_t *data, size_t size, cn_codec_allocate allocate, void *context) {
     if (!cn_exr_signature(data, size)) return CN_CODEC_FALLBACK;
+    cn_exr_quiet_openjph();
     exr_stream stream = {data, size};
     exr_context_initializer_t init = EXR_DEFAULT_CONTEXT_INITIALIZER;
     init.user_data = &stream;
