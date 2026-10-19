@@ -18,7 +18,10 @@ import hashlib
 import io
 import json
 import logging
+import os
 import struct
+import subprocess
+import sys
 import zlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -929,25 +932,39 @@ def test_save_lone_surrogate_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.parametrize(
-    "name",
+    ("name", "value", "native"),
     [
-        "OPENCV_IO_MAX_IMAGE_WIDTH",
-        "OPENCV_IO_MAX_IMAGE_HEIGHT",
-        "OPENCV_IO_MAX_IMAGE_PIXELS",
+        ("OPENCV_IO_MAX_IMAGE_WIDTH", "1024", True),
+        ("OPENCV_IO_MAX_IMAGE_WIDTH", str(BGR8.shape[1] - 1), False),
+        ("OPENCV_IO_MAX_IMAGE_HEIGHT", str(BGR8.shape[0]), True),
+        ("OPENCV_IO_MAX_IMAGE_HEIGHT", str(BGR8.shape[0] - 1), False),
+        ("OPENCV_IO_MAX_IMAGE_PIXELS", "1600000000", True),
+        ("OPENCV_IO_MAX_IMAGE_PIXELS", str(BGR8.shape[0] * BGR8.shape[1] - 1), False),
+        ("OPENCV_IO_MAX_IMAGE_PIXELS", "01048576", True),
+        ("OPENCV_IO_MAX_IMAGE_PIXELS", "0", False),
+        # Anything but a plain integer: declined (OpenCV's reading is not reproduced).
+        ("OPENCV_IO_MAX_IMAGE_PIXELS", "1MB", False),
+        ("OPENCV_IO_MAX_IMAGE_PIXELS", " 5", False),
+        ("OPENCV_IO_MAX_IMAGE_PIXELS", "5GB", False),
+        ("OPENCV_IO_MAX_IMAGE_PIXELS", "99999999999999999999", False),
     ],
 )
-def test_opencv_size_limit_setting_declines(
-    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_opencv_size_limit_settings(
+    name: str, value: str, native: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The codecs hold OpenCV's default size limits: a set limit sends files to OpenCV."""
+    """The native OpenCV route takes OpenCV's size limits from the environment when
+    they are plain integers; any other value sends every file to OpenCV."""
     path = tmp_path / "image.png"
     path.write_bytes(cv2.imencode(".png", BGR8)[1])
-    monkeypatch.setenv(name, "1048576")
+    monkeypatch.setenv(name, value)
     monkeypatch.setattr(
         load_image, "cv2", Probe(load_image.cv2, {"imdecode", "imread"})
     )
-    with pytest.raises(RuntimeError, match="Error reading image"):
-        load_image._read_cv(path)
+    if native:
+        assert load_image._read_cv(path).shape == BGR8.shape
+    else:
+        with pytest.raises(RuntimeError, match="Error reading image"):
+            load_image._read_cv(path)
 
 
 @pytest.mark.parametrize("ext", [".exr", ".hdr", ".pic", ".sr", ".ras", ".jp2"])
@@ -963,3 +980,143 @@ def test_unported_opencv_extension_is_not_read_natively(
     )
     with pytest.raises(RuntimeError, match="Error reading image"):
         load_image._read_cv(path)
+
+
+# ---------------------------------------------------------------------------------------------
+# The image-size limit (owner, 2026-10-19): 40,000 x 40,000 pixels on every route. Headers only:
+# the native decoders' requests are refused (image_io_decode_request), so nothing is allocated.
+
+
+def png_header(width: int, height: int) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(kind + data)
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(bytes(64)))
+        + chunk(b"IEND", b"")
+    )
+
+
+def bmp_header(width: int, height: int) -> bytes:
+    """An 8-bit RLE BMP (grey palette) that ends at once: its data is a few bytes."""
+    palette = bytes(1024)
+    info = struct.pack("<IiiHHIIiiII", 40, width, height, 1, 8, 1, 2, 0, 0, 0, 0)
+    offset = 14 + len(info) + len(palette)
+    return (
+        b"BM"
+        + struct.pack("<IHHI", offset + 2, 0, 0, offset)
+        + info
+        + palette
+        + b"\x00\x01"
+    )
+
+
+def jpeg_header(width: int, height: int) -> bytes:
+    jpeg = cv_bytes(".jpg", GREY8)
+    at = next(i for i in range(2, len(jpeg)) if jpeg[i : i + 2] == b"\xff\xc0")
+    return jpeg[: at + 5] + struct.pack(">HH", height, width) + jpeg[at + 9 :]
+
+
+def alpha_tiff_header(width: int, height: int) -> bytes:
+    short, long = 3, 4
+    entries = [
+        (256, long, width),
+        (257, long, height),
+        (258, short, 8),
+        (259, short, 5),
+        (262, short, 2),
+        (273, long, 8),
+        (277, short, 4),
+        (278, long, height),
+        (279, long, 1),
+        (338, short, 2),
+    ]
+    # Little-endian: a SHORT value is the low half of the 4-byte value field.
+    ifd = struct.pack("<H", len(entries)) + b"".join(
+        struct.pack("<HHII", tag, kind, 1, value) for tag, kind, value in entries
+    )
+    return b"II*\0" + struct.pack("<I", 8) + ifd + bytes(4)
+
+
+SIZE_GATES = {
+    "pxm": (lambda w, h: f"P2 {w} {h} 255\n0 0 0 0\n".encode().ljust(32), "cv"),
+    "bmp": (bmp_header, "cv"),
+    "png": (png_header, "cv"),
+    "jpeg-opencv": (jpeg_header, "cv"),
+    "jpeg-pillow": (jpeg_header, "pil-jpeg"),
+    "tiff-alpha": (alpha_tiff_header, "pil-tiff-alpha"),
+}
+
+
+@pytest.mark.parametrize("route", SIZE_GATES)
+def test_native_size_gates_take_40000_square(
+    route: str, monkeypatch: pytest.MonkeyPatch
+):
+    """Each native decoder asks for the buffer of a 40,000 x 40,000 image and declines
+    one pixel row or column more, under the worker's limits (the engine route uses the
+    same decoders and image_io_max_pixels)."""
+    import image_limits
+    from nodes.impl.native_graph import graph
+
+    make, decoder = SIZE_GATES[route]
+    limit = graph().image_io_max_pixels
+    assert limit == image_limits.MAX_IMAGE_PIXELS == 40_000 * 40_000
+    monkeypatch.setenv("OPENCV_IO_MAX_IMAGE_PIXELS", str(limit))
+    request = graph().image_io_decode_request
+    assert request(make(40_000, 40_000), decoder, limit)[:2] == (40_000, 40_000)
+    assert request(make(40_001, 40_000), decoder, limit) is None
+    assert request(make(40_000, 40_001), decoder, limit) is None
+
+
+# The worker's imports in their order: image_limits, then cv2 and Pillow.
+WORKER_GATE = r"""
+import sys
+import warnings
+
+import image_limits as image_limits
+import cv2
+import numpy as np
+from PIL import Image
+
+width, height = int(sys.argv[1]), int(sys.argv[2])
+with warnings.catch_warnings(record=True) as caught:
+    try:
+        Image._decompression_bomb_check((width, height))
+        print("pillow-taken", len(caught))
+    except (Image.DecompressionBombWarning, Image.DecompressionBombError):
+        print("pillow-refused", len(caught))
+data = np.frombuffer(f"P5 {width} {height} 255\n".encode() + bytes(32), np.uint8)
+try:
+    cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+    print("opencv-taken")
+except cv2.error as error:
+    print("opencv-refused" if "CV_IO_MAX_IMAGE_PIXELS" in str(error) else "opencv-error")
+"""
+
+
+@pytest.mark.parametrize(
+    ("width", "expected"),
+    [
+        (40_000, ["pillow-taken", "0", "opencv-taken"]),
+        (40_001, ["pillow-refused", "0", "opencv-refused"]),
+    ],
+)
+def test_python_route_in_a_worker_takes_40000_square(width: int, expected: list):
+    """Pillow takes 40,000 x 40,000 without a warning and refuses one pixel column more;
+    OpenCV's size check does the same (the header-only file then fails at its data)."""
+    env = {k: v for k, v in os.environ.items() if k != "OPENCV_IO_MAX_IMAGE_PIXELS"}
+    done = subprocess.run(
+        [sys.executable, "-B", "-c", WORKER_GATE, str(width), "40000"],
+        cwd=Path(__file__).resolve().parents[2] / "backend" / "src",
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split() == expected, done.stdout + done.stderr

@@ -87,7 +87,7 @@ static void png_quiet(png_structp png, png_const_charp message) {
     (void)message;
 }
 
-#define OPENCV_MAX_PIXELS (UINT64_C(1) << 30)
+#define OPENCV_MAX_PIXELS CN_MAX_IMAGE_PIXELS
 
 cn_codec_status cn_png_decode(const uint8_t *data, size_t size, cn_codec_allocate allocate, void *context) {
     png_walk walk;

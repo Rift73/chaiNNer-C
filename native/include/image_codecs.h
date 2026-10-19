@@ -18,6 +18,11 @@ extern "C" {
 
 typedef enum cn_codec_status { CN_CODEC_OK = 0, CN_CODEC_FALLBACK = 1 } cn_codec_status;
 
+/* The one image-size limit of every decode route (owner, 2026-10-19): 40,000 x 40,000 pixels in all, the value
+ * backend/src/image_limits.py gives Pillow and OpenCV. The decoders take no larger image; OpenCV's own limits
+ * (OPENCV_IO_MAX_IMAGE_*) are checked where the buffer is allocated (image_decode.cpp). */
+#define CN_MAX_IMAGE_PIXELS UINT64_C(1600000000)
+
 /* A decoded sample's type: its size in bytes in the low byte and its kind (unsigned, signed, float) above, so
  * CN_SAMPLE_U8 and CN_SAMPLE_U16 are the byte counts 1 and 2. */
 typedef enum cn_codec_sample {

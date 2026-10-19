@@ -40,9 +40,9 @@ static void source_skip(j_decompress_ptr info, long count) {
     source->bytes_in_buffer -= skipped;
 }
 
-/* OpenCV's IMREAD_UNCHANGED size limits (loadsave.cpp validateInputImageSize). */
+/* OpenCV's default side limit (loadsave.cpp validateInputImageSize) and the decoders' pixel limit. */
 #define OPENCV_MAX_SIDE (UINT32_C(1) << 20)
-#define OPENCV_MAX_PIXELS (UINT64_C(1) << 30)
+#define OPENCV_MAX_PIXELS CN_MAX_IMAGE_PIXELS
 #define ROWS_PER_READ 16
 
 /* Pillow: CMYK;I inverts each sample, cmyk2rgb gives CLIP8(nk - MULDIV255(c, nk)) with nk = 255 - k, here

@@ -22,12 +22,15 @@ struct Target {
     Shape shape;
     std::vector<uint8_t> scratch;
     uint64_t max_pixels = 0; // Image.MAX_IMAGE_PIXELS where Pillow checks the size at load; 0 for none
+    uint64_t max_width = 0, max_height = 0; // OpenCV's side limits on its route; 0 for none
 };
 
 // It runs inside the C codecs, so nothing may unwind out of it: a failed allocation declines the image.
 uint8_t *allocate_target(void *context, uint32_t height, uint32_t width, uint32_t channels, uint32_t sample) noexcept {
     auto &target = *static_cast<Target *>(context);
-    if (target.max_pixels && uint64_t(height) * width > target.max_pixels) return nullptr;
+    if ((target.max_pixels && uint64_t(height) * width > target.max_pixels) ||
+        (target.max_width && (width > target.max_width || height > target.max_height)))
+        return nullptr;
     target.shape = Shape{height, width, channels, Sample(sample)};
     if (target.orientation == 1) return target.allocate(target.shape);
     try {
@@ -254,14 +257,28 @@ OpenCvCodec opencv_codec(std::span<const uint8_t> f) {
     return OpenCvCodec::other;
 }
 
-// Whether the environment sets one of OpenCV's image size limits (loadsave.cpp reads OPENCV_IO_MAX_IMAGE_WIDTH,
-// _HEIGHT and _PIXELS once): the ported codecs hold the defaults, so a file then declines.
-bool opencv_limits_set() {
-    for (const wchar_t *name : {L"OPENCV_IO_MAX_IMAGE_WIDTH", L"OPENCV_IO_MAX_IMAGE_HEIGHT", L"OPENCV_IO_MAX_IMAGE_PIXELS"}) {
-        SetLastError(ERROR_SUCCESS);
-        if (GetEnvironmentVariableW(name, nullptr, 0) != 0 || GetLastError() != ERROR_ENVVAR_NOT_FOUND) return true;
+// One of OpenCV's image size limits (loadsave.cpp reads them through utils::getConfigurationParameterSizeT at
+// import): unset is the default, a plain decimal integer (what image_limits.py sets) is its value. False for every
+// other value, whose reading by OpenCV is not reproduced here, and the file declines.
+bool opencv_limit(const wchar_t *name, uint64_t fallback, uint64_t &limit) {
+    wchar_t value[64];
+    SetLastError(ERROR_SUCCESS);
+    const DWORD length = GetEnvironmentVariableW(name, value, DWORD(std::size(value)));
+    if (length == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND) {
+        limit = fallback;
+        return true;
     }
-    return false;
+    if (length == 0 || length >= std::size(value)) return false;
+    size_t digits = 0;
+    uint64_t v = 0;
+    for (; digits < length && value[digits] >= L'0' && value[digits] <= L'9'; ++digits) {
+        const uint64_t digit = uint64_t(value[digits] - L'0');
+        if (v > (UINT64_MAX - digit) / 10) return false;
+        v = v * 10 + digit;
+    }
+    if (!digits || digits != length) return false;
+    limit = v;
+    return true;
 }
 
 } // namespace
@@ -307,9 +324,15 @@ bool decode_pillow_jpeg(std::span<const uint8_t> file, uint64_t max_pixels, cons
 
 bool decode_opencv(std::span<const uint8_t> file, const Allocator &allocate) {
     const OpenCvCodec codec = opencv_codec(file);
-    if (codec == OpenCvCodec::other || opencv_limits_set()) return false;
+    uint64_t width = 0, height = 0, pixels = 0;
+    if (codec == OpenCvCodec::other || !opencv_limit(L"OPENCV_IO_MAX_IMAGE_WIDTH", 1 << 20, width) ||
+        !opencv_limit(L"OPENCV_IO_MAX_IMAGE_HEIGHT", 1 << 20, height) ||
+        !opencv_limit(L"OPENCV_IO_MAX_IMAGE_PIXELS", 1 << 30, pixels) || !width || !height || !pixels)
+        return false; // a limit of 0 refuses every image
     const std::string_view exif = exif_block(file.data(), file.size());
-    Target target{allocate, exif_orientation(reinterpret_cast<const uint8_t *>(exif.data()), exif.size()), {}, {}};
+    // validateInputImageSize's limits, checked as the codec asks for the buffer.
+    Target target{allocate, exif_orientation(reinterpret_cast<const uint8_t *>(exif.data()), exif.size()), {}, {},
+                  pixels, width, height};
     cn_codec_status status = CN_CODEC_FALLBACK;
     switch (codec) {
     case OpenCvCodec::bmp: status = cn_bmp_decode(file.data(), file.size(), allocate_target, &target); break;

@@ -1052,6 +1052,23 @@ void cn_bind_image_io(py::module_& module) {
     module.def("image_io_ext",&get_ext);module.def("image_io_alpha",&remove_alpha);
     module.def("image_io_read_cv",&read_cv);module.def("image_io_read_pil",&read_pil);module.def("image_io_read_dds",&read_dds);
     module.def("image_io_read_tiff_alpha",&read_tiff_alpha);
+    // The size gates' test hook: the (height, width, channels) a native decoder ("pil-jpeg", "pil-tiff-alpha" or
+    // "cv") asks its buffer for, which is refused so nothing is allocated, or None when it declines before that.
+    module.def("image_io_decode_request",[](py::bytes data,const std::string& decoder,uint64_t max_pixels)->O {
+        const std::string_view bytes=data;
+        const std::span<const uint8_t> file(reinterpret_cast<const uint8_t*>(bytes.data()),bytes.size());
+        bool asked=false;
+        cn::image_decode::Shape shape;
+        const cn::image_decode::Allocator refuse=[&](const cn::image_decode::Shape& s) noexcept->uint8_t* {
+            asked=true;shape=s;return nullptr;
+        };
+        if(decoder=="pil-jpeg")cn::image_decode::decode_pillow_jpeg(file,max_pixels,refuse);
+        else if(decoder=="pil-tiff-alpha")cn::image_decode::decode_pillow_tiff_alpha(file,max_pixels,refuse);
+        else if(decoder=="cv")cn::image_decode::decode_opencv(file,refuse);
+        else throw py::value_error("unknown decoder");
+        return asked?O(py::make_tuple(shape.height,shape.width,shape.channels)):O(py::none());
+    });
+    module.attr("image_io_max_pixels")=py::int_(CN_MAX_IMAGE_PIXELS);
     module.def("image_io_for_ext",&for_ext);module.def("image_io_load",&load_image);
     module.def("image_io_full_path",&full_path);module.def("image_io_save",&save_image);module.def("image_io_view",&view_image);
     module.def("image_io_save_prepare",&save_prepare);module.def("image_io_orient",&orient_tag);

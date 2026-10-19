@@ -93,8 +93,8 @@ bool listed(std::string_view extension, std::initializer_list<std::string_view> 
 }
 
 /* load_image.py's decoder order: pil-jpeg (.jpg .jpeg), pil-tiff-alpha (.tif .tiff), cv (OpenCV's list),
- * texconv-dds, pil (Pillow's list). Pillow 12.3's default Image.MAX_IMAGE_PIXELS bounds the Pillow routes. */
-constexpr uint64_t pillow_max_pixels = 89478485;
+ * texconv-dds, pil (Pillow's list). The worker's Image.MAX_IMAGE_PIXELS (image_limits.py) bounds the Pillow routes. */
+constexpr uint64_t pillow_max_pixels = CN_MAX_IMAGE_PIXELS; // backend/src/image_limits.py's Image.MAX_IMAGE_PIXELS
 
 /* normalize(): the decoded samples to float32 through cn_pixels_convert_checked, as ImageOutput.enforce does (the
  * type ids are native_buffers._TYPES); a floating-point event, which NumPy would report, declines. */

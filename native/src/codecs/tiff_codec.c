@@ -229,7 +229,7 @@ static tiff_orientation orientation_fix(uint16_t orientation, int full) {
 
 /* OpenCV's limits: imdecode's image size (validateInputImageSize), readData's tile and buffer sizes. */
 #define OPENCV_MAX_SIDE (UINT32_C(1) << 20)
-#define OPENCV_MAX_PIXELS (UINT64_C(1) << 30)
+#define OPENCV_MAX_PIXELS CN_MAX_IMAGE_PIXELS
 #define TILE_MAX_SIDE (UINT32_C(1) << 24)
 #define MAX_TILE_SIZE (UINT64_C(1) << 30)
 /* readData reads a strip or tile of this many bytes or more (as 32-bit RGBA for 8-bit images) scanline by scanline

@@ -324,11 +324,12 @@ def test_save_image_declines_a_dangling_link(tmp_path, skip):
         run_save(save_inputs(float_image(3), tmp_path, skip_existing_files=skip), True)
 
 
-# server.import_packages()'s packages and node modules, then Pillow's limit; os._exit skips the interpreter shutdown
-# that crashes after every package loaded (native/STATUS.md).
+# The worker module (server.py), server.import_packages()'s packages and node modules, then Pillow's limit; os._exit
+# skips the interpreter shutdown that crashes after every package loaded (native/STATUS.md).
 MAX_PIXELS = """
 import importlib, os
 __file__ = os.path.abspath("run.py")
+import server
 import api
 
 for package in ("standard", "pytorch", "ncnn", "onnx", "external"):
@@ -341,8 +342,8 @@ os._exit(0)
 
 
 def test_pillow_max_image_pixels_is_the_constant():
-    # The native Pillow route bounds images by Pillow's default limit (io.cpp pillow_max_pixels); nothing in the
-    # worker changes it (Fable, lane I Q4).
+    # The owner's limit (image_limits.py), which the native Pillow route also holds (io.cpp pillow_max_pixels): the
+    # live value after the worker's imports (Fable ruling, 2026-10-19).
     done = subprocess.run(
         [sys.executable, "-B", "-c", MAX_PIXELS],
         cwd=Path(__file__).resolve().parents[2] / "backend" / "src",
@@ -352,4 +353,4 @@ def test_pillow_max_image_pixels_is_the_constant():
         timeout=300,
     )
     assert done.returncode == 0, done.stderr
-    assert done.stdout.splitlines()[-1] == "89478485"
+    assert done.stdout.splitlines()[-1] == "1600000000"

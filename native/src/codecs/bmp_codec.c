@@ -234,7 +234,7 @@ cn_codec_status cn_bmp_decode(const uint8_t *data, size_t size, cn_codec_allocat
     const int bottom_up = height_field <= INT32_MAX;
     const uint32_t height = bottom_up ? height_field : 0u - height_field;
     /* imdecode's validateInputImageSize */
-    if (width > 1u << 20 || height > 1u << 20 || (uint64_t)width * height > 1u << 30) return CN_CODEC_FALLBACK;
+    if (width > 1u << 20 || height > 1u << 20 || (uint64_t)width * height > CN_MAX_IMAGE_PIXELS) return CN_CODEC_FALLBACK;
 
     /* readData */
     const uint32_t nch = channels > 1 ? 3 : 1, unit = bpp == 15 ? 16 : bpp;

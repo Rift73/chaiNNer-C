@@ -69,7 +69,7 @@ cn_codec_status cn_pxm_decode(const uint8_t *data, size_t size, cn_codec_allocat
     const int64_t width = pxm_number(&s, 0), height = pxm_number(&s, 0), maxval = bpp == 1 ? 1 : pxm_number(&s, 0);
     if (width <= 0 || height <= 0 || maxval <= 0 || maxval > 65535) return CN_CODEC_FALLBACK;
     /* imdecode's validateInputImageSize */
-    if (width > 1 << 20 || height > 1 << 20 || width * height > 1 << 30) return CN_CODEC_FALLBACK;
+    if (width > 1 << 20 || height > 1 << 20 || (uint64_t)(width * height) > CN_MAX_IMAGE_PIXELS) return CN_CODEC_FALLBACK;
 
     /* readData: maxval above 255 is 16-bit; 8-bit ASCII samples go through i * 255 / maxval (PBM's inverted), while
      * binary samples are taken as they are; ASCII samples above maxval are maxval. RGB is stored as BGR. */

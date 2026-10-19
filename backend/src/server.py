@@ -26,6 +26,7 @@ from sanic.request import Request
 from sanic.response import HTTPResponse, json
 
 import api
+import image_limits as image_limits  # Pillow's and OpenCV's size limit, before any module imports cv2
 from api import (
     ExecutionOptions,
     Group,
