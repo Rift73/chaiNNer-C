@@ -130,7 +130,14 @@ def test_the_onnx_holds_the_plugins_and_no_einsum(plugin_model: ImageModelDescri
         onnx.TensorProto.DataType.Name(tensor.data_type)
         for tensor in proto.graph.initializer
     )
-    assert types["BFLOAT16"] and types["FLOAT16"]
+    assert types["FLOAT16"] and not types["BFLOAT16"]
+
+
+def test_the_attention_logits_are_not_clamped(plugin_model: ImageModelDescriptor):
+    """spandrel's export-safe maths clamp the logits to +-50 (a Clip), which changes
+    the softmax wherever one passes 50; the export's attention does not."""
+    proto = onnx.load_from_string(drft_export.export_onnx(plugin_model))
+    assert "Clip" not in plugin_counts(proto)
 
 
 def test_the_dense_skip_exports_one_matmul_per_block(

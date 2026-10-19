@@ -113,7 +113,7 @@ CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
 | `_chainner_graph.pyd` | `4e0f27b75e495c395dd1163a8f89dba4b30d6e28ba5108b74e7ec0708c073105` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 | `vosr2_qkv.dll` | `5b5cde9c2c037f0ed3d48ce0fe59b3ff01432c610edc358fdb7b0155e5b93497` |
-| `drft_trt_plugins.dll` | `bcb6651d9189682043ef3ca4f231e54368b7d358fdd329b8e709ac84e1fdd9d9` |
+| `drft_trt_plugins.dll` | `2bc86cb6918a196d9a03b1f0bc3ab7e3a78c6440567eb6e191642f3f1bb89091` |
 | `_chainner_trt.pyd` | `7d0f774c3426fb2900f05493ef5650f90aa66a997bb000d12c9c71f3cb05d947` |
 | `chainner_trt_vs.dll` | `f7d12717a7cbd02a09ea34728de92a1421ff0902acb73705107b095741b09a9c` |
 
@@ -130,8 +130,9 @@ and lld-link with the flags above (TensorRT's and CUDA's headers as system heade
 of the VOSR TensorRT engine caches' identity, so a new DLL rebuilds those engines once.
 
 **Legacy DRFT's TensorRT plugins** `drft_trt_plugins.dll` (`src/drft`, Codex's LegacyBarrierV1 library: OCAB
-attention, relative bias and Q/K/V packing, the window neural bias, the identity barrier and the output tail) build
-from the same two roots into `CHAINNER_C_OUTPUT_DIR\tensorrt` (default `backend/src/nodes/impl/tensorrt`). DRFT
+attention, relative bias and Q/K/V packing, the window neural bias, the identity barrier and the output tail; the
+plugins the export uses take FP16, its precision since 2026-10-20, as well as Codex's BF16) build from the same two
+roots into `CHAINNER_C_OUTPUT_DIR\tensorrt` (default `backend/src/nodes/impl/tensorrt`). DRFT
 engines reference its plugins without carrying the DLL (TensorRT refuses a second registration of a carried library
 in one process); chaiNNer-C registers it once per process before loading engines, and users need no compiler. Its four
 `.cu` files are compiled by nvcc as `qkv.cu` is, with two differences: nvcc's default device math (contraction on,

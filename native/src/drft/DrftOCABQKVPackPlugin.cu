@@ -702,8 +702,14 @@ public:
         {
             return false;
         }
+        // BF16 or FP16 (the strongly typed ONNX's), the same for all four: the
+        // kernels move 16-bit values as bits, and their zero padding is +0 in both.
+        nvinfer1::DataType const type = inOut[position].desc.type;
+        bool const admittedType = position == 0
+            ? type == nvinfer1::DataType::kBF16 || type == nvinfer1::DataType::kHALF
+            : type == inOut[0].desc.type;
         return inOut[position].desc.format == nvinfer1::TensorFormat::kLINEAR
-            && inOut[position].desc.type == nvinfer1::DataType::kBF16;
+            && admittedType;
     }
 
     int32_t configurePlugin(nvinfer1::DynamicPluginTensorDesc const* inputs,

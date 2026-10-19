@@ -73,7 +73,7 @@ def load_onnx_model(model_or_bytes: onnx.ModelProto | bytes) -> OnnxModel:
 
     def fp_datatype(model: onnx.ModelProto) -> str:
         """A DUAL or legacy DRFT ONNX from Convert To ONNX keeps its own mixed
-        precision (BF16 body, FP32 input and output), as does one Convert To ONNX made
+        precision (a BF16 or FP16 body, FP32 input and output), as does one Convert To ONNX made
         mixed with ModelOpt ("mixed-fp16" or "mixed-bf16"); any other model has one.
         Called once with the parsed model, it also keeps the model's facts."""
         facts = _facts_of(model)

@@ -1,8 +1,10 @@
 """Legacy DRFT's TensorRT ONNX (drft.py): a deep copy of the model whose modules are
 swapped for stand-ins that compute the original maths and export as chaiNNer-C's DRFT
 TensorRT plugins (native/src/drft, Codex's LegacyBarrierV1 set; node attributes and
-layouts as in Codex's prepared graph), for every input size from MIN_SIZE up. Body
-BF16, upsampler and last convolution FP16, input and output FP32, opset 20."""
+layouts as in Codex's prepared graph), for every input size from MIN_SIZE up. FP16
+inside (the plugins take BF16 too: ONNX files exported in BF16 before still build), input
+and output FP32, opset 20. FP16, not Codex's BF16: on photos a DRFT-L x4 in BF16 was
+25.9-35.7 dB against PyTorch FP32 (PyTorch's own BF16 alike), in FP16 38.7-58.6 dB."""
 
 from __future__ import annotations
 
@@ -61,10 +63,12 @@ def _attention(
     bias: torch.Tensor,
     scale: float,
 ) -> torch.Tensor:
-    """spandrel's export-safe attention maths (k given transposed)."""
+    """spandrel's export-safe attention maths (k given transposed) without its clamp of
+    the logits to +-50: the softmax subtracts their maximum, so there is no overflow to
+    prevent, and the clamp changed the result wherever a logit passed 50 (DRFT-L x4 on
+    photos in FP32: 43-52 dB against PyTorch's own attention)."""
     attn = torch.matmul(q, k_t) * scale
     attn = attn + bias.to(dtype=attn.dtype)
-    attn = attn.clamp(-50.0, 50.0)
     attn = torch.softmax(attn.float(), dim=-1).to(dtype=v.dtype)
     return torch.matmul(attn, v)
 
@@ -582,7 +586,7 @@ def export_onnx(model: ImageModelDescriptor) -> bytes:
     for module in network.modules():
         if isinstance(module, legacy.ACTBlock) and module.window_size != window:
             raise ValueError("This DRFT's blocks do not all use its window size.")
-    wrapper = deployment(network, torch.bfloat16, torch.float16)
+    wrapper = deployment(network, torch.float16, torch.float16)
     side = 3 * window
     sample = torch.rand(1, model.input_channels, side, side)
     with tempfile.TemporaryDirectory(prefix="chainner-drft-export-") as temporary:

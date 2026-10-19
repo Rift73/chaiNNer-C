@@ -1,5 +1,6 @@
 #include <NvInfer.h>
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
 
 #include <cstdint>
@@ -12,12 +13,41 @@ constexpr char kPluginVersion[] = "1";
 constexpr int32_t kTactic = 3;
 constexpr int32_t kTile = 16;
 
-__global__ void windowNeuralBiasKernel(__nv_bfloat16 const* queryFactor,
-    __nv_bfloat16 const* keyFactor, __nv_bfloat16* output,
+// The factors and the bias in BF16 or FP16 (the ONNX's type), accumulated in FP32.
+__device__ __forceinline__ float toFloat(__nv_bfloat16 value)
+{
+    return __bfloat162float(value);
+}
+
+__device__ __forceinline__ float toFloat(__half value) { return __half2float(value); }
+
+template <typename Scalar>
+__device__ __forceinline__ Scalar fromFloat(float value);
+
+template <>
+__device__ __forceinline__ __nv_bfloat16 fromFloat(float value)
+{
+    return __float2bfloat16_rn(value);
+}
+
+template <>
+__device__ __forceinline__ __half fromFloat(float value)
+{
+    return __float2half_rn(value);
+}
+
+bool isSixteenBit(nvinfer1::DataType type)
+{
+    return type == nvinfer1::DataType::kBF16 || type == nvinfer1::DataType::kHALF;
+}
+
+template <typename Scalar>
+__global__ void windowNeuralBiasKernel(Scalar const* queryFactor,
+    Scalar const* keyFactor, Scalar* output,
     int32_t heads, int32_t queryTokens, int32_t keyTokens, int32_t rank)
 {
-    __shared__ __nv_bfloat16 queryTile[kTile][kTile];
-    __shared__ __nv_bfloat16 keyTile[kTile][kTile];
+    __shared__ Scalar queryTile[kTile][kTile];
+    __shared__ Scalar keyTile[kTile][kTile];
 
     int32_t const column = static_cast<int32_t>(blockIdx.x) * kTile
         + static_cast<int32_t>(threadIdx.x);
@@ -33,18 +63,18 @@ __global__ void windowNeuralBiasKernel(__nv_bfloat16 const* queryFactor,
         queryTile[threadIdx.y][threadIdx.x]
             = row < queryTokens && queryRank < rank
             ? queryFactor[(head * queryTokens + row) * rank + queryRank]
-            : __float2bfloat16(0.0F);
+            : fromFloat<Scalar>(0.0F);
         keyTile[threadIdx.y][threadIdx.x]
             = column < keyTokens && keyRank < rank
             ? keyFactor[(head * keyTokens + column) * rank + keyRank]
-            : __float2bfloat16(0.0F);
+            : fromFloat<Scalar>(0.0F);
         __syncthreads();
 
 #pragma unroll
         for (int32_t index = 0; index < kTile; ++index)
         {
-            accumulator += __bfloat162float(queryTile[threadIdx.y][index])
-                * __bfloat162float(keyTile[index][threadIdx.x]);
+            accumulator += toFloat(queryTile[threadIdx.y][index])
+                * toFloat(keyTile[index][threadIdx.x]);
         }
         __syncthreads();
     }
@@ -52,7 +82,7 @@ __global__ void windowNeuralBiasKernel(__nv_bfloat16 const* queryFactor,
     if (row < queryTokens && column < keyTokens && head < heads)
     {
         output[(head * queryTokens + row) * keyTokens + column]
-            = __float2bfloat16_rn(accumulator);
+            = fromFloat<Scalar>(accumulator);
     }
 }
 
@@ -66,7 +96,7 @@ bool validateDescriptors(nvinfer1::PluginTensorDesc const* inputs,
     {
         return false;
     }
-    if (inputs[0].type != nvinfer1::DataType::kBF16
+    if (!isSixteenBit(inputs[0].type)
         || inputs[1].type != inputs[0].type || outputs[0].type != inputs[0].type
         || inputs[0].format != nvinfer1::TensorFormat::kLINEAR
         || inputs[1].format != inputs[0].format || outputs[0].format != inputs[0].format)
@@ -120,7 +150,7 @@ public:
         int32_t nbInputs) const noexcept override
     {
         if (outputTypes == nullptr || inputTypes == nullptr || nbOutputs != 1
-            || nbInputs != 2 || inputTypes[0] != nvinfer1::DataType::kBF16
+            || nbInputs != 2 || !isSixteenBit(inputTypes[0])
             || inputTypes[1] != inputTypes[0])
         {
             return 1;
@@ -156,7 +186,9 @@ public:
         {
             return false;
         }
-        return inOut[position].desc.type == nvinfer1::DataType::kBF16
+        // BF16 or FP16 (the strongly typed ONNX's), the same for all three
+        nvinfer1::DataType const type = inOut[position].desc.type;
+        return (position == 0 ? isSixteenBit(type) : type == inOut[0].desc.type)
             && inOut[position].desc.format == nvinfer1::TensorFormat::kLINEAR;
     }
 
@@ -244,11 +276,22 @@ public:
             static_cast<uint32_t>((keyTokens + kTile - 1) / kTile),
             static_cast<uint32_t>((queryTokens + kTile - 1) / kTile),
             static_cast<uint32_t>(heads));
-        windowNeuralBiasKernel<<<grid, block, 0, stream>>>(
-            static_cast<__nv_bfloat16 const*>(inputs[0]),
-            static_cast<__nv_bfloat16 const*>(inputs[1]),
-            static_cast<__nv_bfloat16*>(outputs[0]), heads,
-            queryTokens, keyTokens, rank);
+        if (inputDescriptions[0].type == nvinfer1::DataType::kHALF)
+        {
+            windowNeuralBiasKernel<__half><<<grid, block, 0, stream>>>(
+                static_cast<__half const*>(inputs[0]),
+                static_cast<__half const*>(inputs[1]),
+                static_cast<__half*>(outputs[0]), heads,
+                queryTokens, keyTokens, rank);
+        }
+        else
+        {
+            windowNeuralBiasKernel<__nv_bfloat16><<<grid, block, 0, stream>>>(
+                static_cast<__nv_bfloat16 const*>(inputs[0]),
+                static_cast<__nv_bfloat16 const*>(inputs[1]),
+                static_cast<__nv_bfloat16*>(outputs[0]), heads,
+                queryTokens, keyTokens, rank);
+        }
         return cudaPeekAtLastError() == cudaSuccess ? 0 : 1;
     }
 
@@ -314,7 +357,7 @@ DRFT_WINDOW_BIAS_EXPORT int32_t drftLaunchWindowNeuralBias(
         static_cast<uint32_t>((keyTokens + kTile - 1) / kTile),
         static_cast<uint32_t>((queryTokens + kTile - 1) / kTile),
         static_cast<uint32_t>(heads));
-    windowNeuralBiasKernel<<<grid, block, 0, stream>>>(
+    windowNeuralBiasKernel<__nv_bfloat16><<<grid, block, 0, stream>>>(
         static_cast<__nv_bfloat16 const*>(queryFactor),
         static_cast<__nv_bfloat16 const*>(keyFactor),
         static_cast<__nv_bfloat16*>(output), heads,

@@ -1,6 +1,7 @@
 #include <NvInfer.h>
 #include <NvInferPlugin.h>
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <math_constants.h>
 #include <cuda_runtime_api.h>
 #include <mma.h>
@@ -758,6 +759,7 @@ public:
         }
         bool const admittedType
             = inOut[position].desc.type == nvinfer1::DataType::kBF16
+            || inOut[position].desc.type == nvinfer1::DataType::kHALF
 #if defined(DRFT_ENABLE_RELATIVE_BIAS_FP32)
             || inOut[position].desc.type == nvinfer1::DataType::kFLOAT
 #endif
@@ -846,6 +848,11 @@ public:
         if (inputDescriptions[0].type == nvinfer1::DataType::kBF16)
         {
             error = launchOCABRelativeBiasTyped<__nv_bfloat16>(
+                inputs[0], outputs[0], heads, mQueryWindow, mKeyWindow, stream);
+        }
+        else if (inputDescriptions[0].type == nvinfer1::DataType::kHALF)
+        {
+            error = launchOCABRelativeBiasTyped<__half>(
                 inputs[0], outputs[0], heads, mQueryWindow, mKeyWindow, stream);
         }
 #if defined(DRFT_ENABLE_RELATIVE_BIAS_FP32)

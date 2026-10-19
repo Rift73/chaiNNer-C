@@ -1,5 +1,6 @@
 #include <NvInfer.h>
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime_api.h>
 
 #include <algorithm>
@@ -22,7 +23,16 @@ struct SerializedState
     float mean[3];
 };
 
-__global__ void finalAffineCropKernel(__nv_bfloat16 const* input, float* output,
+__device__ __forceinline__ float toFloat(__nv_bfloat16 value)
+{
+    return __bfloat162float(value);
+}
+
+__device__ __forceinline__ float toFloat(__half value) { return __half2float(value); }
+
+// The body's output in BF16 or FP16 (the ONNX's type)
+template <typename Scalar>
+__global__ void finalAffineCropKernel(Scalar const* input, float* output,
     int64_t totalElements, int32_t channels, int32_t sourceHeight,
     int32_t sourceWidth, int32_t outputHeight, int32_t outputWidth,
     float mean0, float mean1, float mean2)
@@ -42,7 +52,7 @@ __global__ void finalAffineCropKernel(__nv_bfloat16 const* input, float* output,
             ((static_cast<int64_t>(batch) * channels + channel) * sourceHeight + y)
             * sourceWidth + x;
         float const mean = channel == 0 ? mean0 : (channel == 1 ? mean1 : mean2);
-        output[index] = __bfloat162float(input[sourceIndex]) + mean;
+        output[index] = toFloat(input[sourceIndex]) + mean;
     }
 }
 
@@ -91,7 +101,8 @@ public:
         }
         if (pos == 0)
         {
-            return inOut[0].type == nvinfer1::DataType::kBF16;
+            return inOut[0].type == nvinfer1::DataType::kBF16
+                || inOut[0].type == nvinfer1::DataType::kHALF;
         }
         return inOut[pos].type == nvinfer1::DataType::kFLOAT;
     }
@@ -141,11 +152,22 @@ public:
         int64_t const requestedBlocks = (totalElements + threads - 1) / threads;
         int32_t const blocks = static_cast<int32_t>(
             std::min<int64_t>(requestedBlocks, 65535));
-        finalAffineCropKernel<<<blocks, threads, 0, stream>>>(
-            static_cast<__nv_bfloat16 const*>(inputs[0]),
-            static_cast<float*>(outputs[0]),
-            totalElements, channels, sourceHeight, sourceWidth, outputHeight,
-            outputWidth, mMean[0], mMean[1], mMean[2]);
+        if (inputDesc[0].type == nvinfer1::DataType::kHALF)
+        {
+            finalAffineCropKernel<__half><<<blocks, threads, 0, stream>>>(
+                static_cast<__half const*>(inputs[0]),
+                static_cast<float*>(outputs[0]),
+                totalElements, channels, sourceHeight, sourceWidth, outputHeight,
+                outputWidth, mMean[0], mMean[1], mMean[2]);
+        }
+        else
+        {
+            finalAffineCropKernel<__nv_bfloat16><<<blocks, threads, 0, stream>>>(
+                static_cast<__nv_bfloat16 const*>(inputs[0]),
+                static_cast<float*>(outputs[0]),
+                totalElements, channels, sourceHeight, sourceWidth, outputHeight,
+                outputWidth, mMean[0], mMean[1], mMean[2]);
+        }
         return cudaPeekAtLastError() == cudaSuccess ? 0 : 1;
     }
 
