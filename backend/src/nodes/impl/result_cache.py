@@ -6,6 +6,7 @@ diagnostic override, wins over both settings."""
 from __future__ import annotations
 
 import psutil
+from sanic.log import logger
 
 from api import ExecutionOptions, SettingsJson
 
@@ -24,7 +25,13 @@ def cache_budget(options: ExecutionOptions) -> int:
     settings = options.get_package_settings(PACKAGE)
     if not settings.get_bool(ENABLED, True):
         return 0
-    return max(0, settings.get_int(SIZE_MIB, default_size_mib(), parse_str=True)) << 20
+    try:
+        size = int(settings.get_number(SIZE_MIB, default_size_mib()))
+    except (ValueError, OverflowError) as error:
+        # A size the field cannot hold (a hand-edited settings file) must not fail every run.
+        logger.warning(f"Result Cache Size: {error}; the default size is used")
+        size = default_size_mib()
+    return max(0, size) << 20
 
 
 def keyed_settings(package_id: str, settings: SettingsJson) -> SettingsJson:

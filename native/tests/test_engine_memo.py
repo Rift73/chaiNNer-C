@@ -544,6 +544,19 @@ def test_result_cache_is_on_by_default_at_the_computed_size(schemas, tmp_path):
     assert after["hits"] - before["hits"] >= 2
 
 
+@pytest.mark.parametrize(
+    ("value", "mib"),
+    [(1024, 1024), (1500.5, 1500), ("768", 768), ("not a size", None), (None, None)],
+)
+def test_result_cache_size_as_the_field_stores_it(value, mib):
+    """The size field stores what was typed as a number (a fraction too), an older
+    settings file a string; a size it cannot hold is the default size, never a failed
+    run (a ValueError here failed every run)."""
+    options = api.ExecutionOptions({result_cache.PACKAGE: {result_cache.SIZE_MIB: value}})
+    expected = result_cache.default_size_mib() if mib is None else mib
+    assert result_cache.cache_budget(options) == expected << 20
+
+
 def test_result_cache_off_keeps_nothing(schemas, tmp_path):
     output = tmp_path / "out"
     nodes = board_chain(schemas, 64, output)
