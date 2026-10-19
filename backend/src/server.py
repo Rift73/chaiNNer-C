@@ -26,7 +26,7 @@ from sanic.request import Request
 from sanic.response import HTTPResponse, json
 
 import api
-import image_limits as image_limits  # Pillow's and OpenCV's size limit, before any module imports cv2
+import image_limits
 from api import (
     ExecutionOptions,
     Group,
@@ -55,6 +55,9 @@ from response import (
 )
 from server_config import LOG_CONFIG, ServerConfig
 from system import load_system_cpp_runtime
+
+# Pillow's and OpenCV's image size limit, before any module imports cv2 (the node modules load later)
+image_limits.apply()
 
 POOL_SIZE = 8  # executor pool workers, each Executor's pool_size; item window P = max(1, POOL_SIZE - 2)
 

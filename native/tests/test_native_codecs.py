@@ -1077,7 +1077,9 @@ WORKER_GATE = r"""
 import sys
 import warnings
 
-import image_limits as image_limits
+import image_limits
+
+image_limits.apply()
 import cv2
 import numpy as np
 from PIL import Image
