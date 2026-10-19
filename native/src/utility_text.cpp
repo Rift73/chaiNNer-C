@@ -7,11 +7,13 @@
  * No runtime source evaluation and no shared mutable state. */
 #include <pybind11/gil_safe_call_once.h>
 #include <pybind11/pybind11.h>
+#include <atomic>
 #include <optional>
 #include <vector>
 #include "chainner_regex.h"
 #include "graph_python.hpp"
 #include "graph_unpack.hpp"
+#include "regex_api.hpp"
 
 namespace {
 namespace py = pybind11;
@@ -476,6 +478,20 @@ O text_slice(O text, O operation, O start, O length, O maximum,
     return py::none();
 }
 } // namespace
+
+const chn_regex_api* cn_regex_api() {
+    static std::atomic<const chn_regex_api*> kept{nullptr};
+    if (const chn_regex_api* api = kept.load(std::memory_order_acquire)) return api;
+    if (Py_IsFinalizing()) return nullptr;
+    py::gil_scoped_acquire held;
+    try {
+        const chn_regex_api* api = regex_engine().api;
+        kept.store(api, std::memory_order_release);
+        return api;
+    } catch (py::error_already_set&) {
+        return nullptr;
+    }
+}
 
 void cn_bind_utility_text(pybind11::module_& module) {
     module.def("utility_replacement_init", &replacement_init);
