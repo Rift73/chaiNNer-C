@@ -107,6 +107,19 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   lifting the 2026-10-06 scope line against `gc.freeze` (an explicit collection 136-164 ms -> about 0); skipped, never
   retried, while a run is in flight or after a heavy-package run.
 
+- instant-exec follow-ups (2026-10-19 evening; owner yes on the queue; shipped as v0.3.7 re-releases): v0.3.7 released
+  (fork tag `v0.3.7`; re-release 1 `043317fd`: a /nodes request given up while the nodes load no longer cancels the
+  loading, which left a GPU install's first start without a node list); `.exr` loads (vendored OpenEXRCore 3.5.2 with
+  Imath 3.2.3, zstd 1.5.7, libdeflate 1.26 and OpenJPH 0.32.0, `native/third_party/*/PROVENANCE.md`; OpenCV's EXR
+  semantics, float values clipped to 0..1 at Load Image's output like every float image (Fable); 4K RGBA half 18-36 ms);
+  the Result Cache as a setting (Settings > Python, "chaiNNer_standard": on by default at min(2 GiB, 10 % of RAM), a
+  size in MiB, off empties it; `CHAINNER_C_MEMO_BUDGET_MIB` still wins); Frames to Clip's FFV1 temp in 16 slices where
+  valid (sides >= 7 px, <= 2^27 bits a slice; 1080p 21.8 -> 10.6 ms, 4K 82.1 -> 37.2 ms per frame, frames equal);
+  spandrel 0.4.2+c7 (DRFT's fold without a per-channel loop: DRFT-XL 2447 -> 1652 ms, outputs equal); the image size
+  limit 40,000 x 40,000 pixels (owner); the disk Engine Cache stays off (owner: engines are built and saved); no pip
+  cache (owner). Open: the Python executor's retirement (owner, after v0.3.7's use); MAINTAINING section 10's checks
+  re-based on chaiNNer-C (they compare with upstream; Fable); the hosted CI fails on 18 older pyright errors.
+
 - YUV planes, colour information and high bit depth (2026-10-18, branch `feat/yuv-planes`; local design and
   rulings `native/local/yuv-planes/`): video planes are float32 gray images at their stored sizes (Y 0 = black,
   1 = white; U and V centred on 0.5; `nodes/impl/colour_info.py`, every code round-trips exactly). Load Video has
