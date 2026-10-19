@@ -144,7 +144,8 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   worker sets PYTORCH_CUDA_ALLOC_CONF to page-lock pinned RAM with 8 threads (about 1 s off a first overflow) unless
   the user set it. A 1x ESRGAN gains nothing (its peak is one op's working set). The pinned RAM goes back to Windows
   when a run ends (owner's option B; torch 2.14's internal `_host_emptyCache`): through the backend, DUAL 2176 px
-  moved 14.4 GiB and the worker held 2.3 GiB after the run.
+  moved 14.4 GiB and the worker held 2.3 GiB after the run. Released with the Stop loop fix as v0.3.7 re-release 4 (owner yes;
+  fork tag `bf43dbb6`, zip `923F5467...CE24`); both D: installs updated (196 nodes; the PGO-tuned install kept its binaries).
 
 - YUV planes, colour information and high bit depth (2026-10-18, branch `feat/yuv-planes`; local design and
   rulings `native/local/yuv-planes/`): video planes are float32 gray images at their stored sizes (Y 0 = black,
