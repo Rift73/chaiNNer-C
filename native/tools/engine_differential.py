@@ -87,7 +87,8 @@ class _EveryBroadcast(LatestBroadcasts):
 
 
 @contextlib.contextmanager
-def _every_broadcast():
+def every_broadcast():
+    """process.Executor sending every broadcast (the oracle: its LatestBroadcasts would drop some by timing)."""
     original = process.LatestBroadcasts
     process.LatestBroadcasts = _EveryBroadcast
     try:
@@ -201,7 +202,7 @@ def execute(
         pool.shutdown()
         return error, seconds
 
-    with _every_broadcast() if kind == "python" else contextlib.nullcontext():
+    with every_broadcast() if kind == "python" else contextlib.nullcontext():
         error, seconds = asyncio.run(main())
     if error is not None:
         queue.events.append(json.loads(json.dumps(_error_event(error))))
@@ -255,12 +256,13 @@ def order_violations(events: list[dict[str, Any]], chain: Chain) -> list[str]:
     )
     if failed:
         return violations
-    # A node fed only through lazy inputs of one reader runs inside that reader's execution, occurrence by occurrence;
-    # not a side-effect node (e.g. Load Image), which runs as a sink of its own, in sink order.
+    # A regular node fed only through lazy inputs of one reader runs inside that reader's execution, occurrence by
+    # occurrence; not a side-effect node (e.g. Load Image), which runs as a sink of its own, in sink order, nor a
+    # generator or collector, which its loop runs.
     for upstream_id, upstream in chain.nodes.items():
         edges = chain.edges_from(upstream_id)
         readers = {edge.target.id for edge in edges}
-        if not edges or len(readers) != 1 or upstream.data.side_effects:
+        if not edges or len(readers) != 1 or upstream.data.side_effects or not isinstance(upstream, FunctionNode):
             continue
         (reader_id,) = readers
         reader = chain.nodes[reader_id]

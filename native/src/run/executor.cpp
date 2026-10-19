@@ -2427,28 +2427,27 @@ void Run::drive()
                 process_regular(tail_[i], -1);
             }
         } else if (mode_ == "regular") {
-            result = process_regular(target_, -1);
+            // An individual run's result, as the server caches it: the node's RegularOutput, a native node's made of
+            // its outputs. Nothing consumes the cell (a side-effect node's run would release them): the run ends.
+            CellRef ref{target_, -1};
+            ensure(ref);
+            std::vector<Value> outputs;
             std::string identity;
             {
                 std::lock_guard<std::mutex> locked(mutex_);
-                identity = static_cells_[size_t(target_)].identity;
+                Cell &c = cell(ref);
+                if (c.state == State::failed) throw PythonError{c.error};
+                result = c.object;
+                outputs = c.outputs;
+                identity = c.identity;
             }
+            PythonSection python;
             if (!result.handle) {
-                // A memoized Load Image of an individual run: its RegularOutput, as the server caches it.
-                std::vector<Value> outputs;
-                {
-                    std::lock_guard<std::mutex> locked(mutex_);
-                    outputs = static_cells_[size_t(target_)].outputs;
-                }
-                PythonSection python;
                 py::list values;
                 for (const Value &value : outputs) values.append(to_python(value));
                 result = py_ref(hooks_.regular_output(values));
             }
-            if (!identity.empty()) {
-                PythonSection python;
-                hooks_.loaded(py::handle(static_cast<PyObject *>(result.handle.get())), identity);
-            }
+            if (!identity.empty()) hooks_.loaded(py::handle(static_cast<PyObject *>(result.handle.get())), identity);
         } else {
             result = process_generator(target_);
         }
