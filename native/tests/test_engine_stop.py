@@ -380,6 +380,9 @@ async def gpu_checks():
         returned.append(clock())
 
     async def then(ctx, request):
+        # Node clears (a deleted node) while the stopped node still runs: their memory return waits for it too.
+        server.return_device_memory_after_burst(ctx)
+        await asyncio.sleep(0.2)
         while ending_runs():
             await asyncio.sleep(0.05)
         await asyncio.sleep(0.3)

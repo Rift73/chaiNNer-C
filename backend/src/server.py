@@ -913,8 +913,10 @@ def return_device_memory_after_burst(ctx: AppContext) -> None:
     def run() -> None:
         global device_memory_return
         device_memory_return = None
-        # Not while a /run executes: it releases at its own end.
-        if ctx.executor is None:
+        # Not while a /run executes: it releases at its own end. Nor while a stopped
+        # run's node still runs: the release waits for its GPU work (2.1 s of a stalled
+        # loop in a VRAM overflow), and release_after_ending returns the memory after it.
+        if ctx.executor is None and not ending_runs():
             return_device_memory()
 
     device_memory_return = asyncio.get_running_loop().call_later(
