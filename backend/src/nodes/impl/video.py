@@ -187,6 +187,23 @@ def _converter(
     return graph
 
 
+def _free_converter(converter) -> None:
+    """Lets a converter's filter graph go with its last reference, not at a later
+    collection. PyAV's Graph and its FilterContexts refer to each other (the graph keeps
+    its contexts in dicts, each context keeps .graph), and a successful run never
+    collects, so the graph and the frames its filters pool (31.7 MiB for a 720p video)
+    stayed until some collection. PyAV has no call that frees a graph or drops its
+    contexts; the dicts are among its referents, so they are emptied here, once the
+    reader is done with the graph."""
+    # Imported here, as _pyav imports av: test_video_io.py runs this module's functions
+    # and classes in a namespace of its own, without the module's imports.
+    import gc
+
+    for referent in gc.get_referents(converter):
+        if isinstance(referent, dict):
+            referent.clear()
+
+
 def _frame_bytes(frame: VideoFrame, frame_format: FrameFormat) -> np.ndarray:
     """A converted frame's planes without their row padding, as the CLI pipes them."""
     data = np.empty(frame_format.frame_bytes, np.uint8)
@@ -266,50 +283,55 @@ def _pyav_frames(
         display = av.sidedata.sidedata.Type.DISPLAYMATRIX
         converters = None
         first = True
-        for packet in container.demux(stream):
-            try:
-                frames = packet.decode()
-            except av.error.InvalidDataError as error:
-                # The CLI skips a broken packet too (no -xerror).
-                logger.warning("Skipping undecodable data in %s: %s", path, error)
-                continue
-            for frame in frames:
-                if converters is None:
-                    # The CLI configures its filters from the first frame too.
-                    side = frame.side_data.get(display)
-                    rotation = (
-                        None if side is None else np.frombuffer(bytes(side), "<i4")
-                    )
-                    upright = _upright_filters(rotation)
-                    converters = [
-                        _converter(av, stream, upright if f.upright else [], f)
-                        for f in formats
-                    ]
-                values: list[object] = []
-                for frame_format, convert in zip(formats, converters):
-                    convert.push(frame)
-                    converted = convert.pull()
-                    size = (converted.width, converted.height)
-                    if size != frame_format.size:
-                        message = (
-                            f"a {size[0]}x{size[1]} frame where"
-                            f" {frame_format.size[0]}x{frame_format.size[1]} was expected"
+        try:
+            for packet in container.demux(stream):
+                try:
+                    frames = packet.decode()
+                except av.error.InvalidDataError as error:
+                    # The CLI skips a broken packet too (no -xerror).
+                    logger.warning("Skipping undecodable data in %s: %s", path, error)
+                    continue
+                for frame in frames:
+                    if converters is None:
+                        # The CLI configures its filters from the first frame too.
+                        side = frame.side_data.get(display)
+                        rotation = (
+                            None if side is None else np.frombuffer(bytes(side), "<i4")
                         )
-                        if first:
-                            raise _UseCliReader(message)
-                        raise RuntimeError(f"Video {path} changed size: {message}")
-                    if any(plane.line_size < 0 for plane in converted.planes):
-                        # The vflip filter a vertically flipped display matrix asks
-                        # for hands a frame it passes through unconverted (the file's
-                        # own pixel format) bottom-up: a negative row stride, whose
-                        # rows lie outside the plane's buffer.
-                        message = "its display matrix flips the frames vertically"
-                        if first:
-                            raise _UseCliReader(message)
-                        raise RuntimeError(f"Video {path}: {message}")
-                    values.append(_frame_values(converted, frame_format))
-                first = False
-                yield values
+                        upright = _upright_filters(rotation)
+                        converters = [
+                            _converter(av, stream, upright if f.upright else [], f)
+                            for f in formats
+                        ]
+                    values: list[object] = []
+                    for frame_format, convert in zip(formats, converters):
+                        convert.push(frame)
+                        converted = convert.pull()
+                        size = (converted.width, converted.height)
+                        if size != frame_format.size:
+                            message = (
+                                f"a {size[0]}x{size[1]} frame where"
+                                f" {frame_format.size[0]}x{frame_format.size[1]} was"
+                                " expected"
+                            )
+                            if first:
+                                raise _UseCliReader(message)
+                            raise RuntimeError(f"Video {path} changed size: {message}")
+                        if any(plane.line_size < 0 for plane in converted.planes):
+                            # The vflip filter a vertically flipped display matrix asks
+                            # for hands a frame it passes through unconverted (the
+                            # file's own pixel format) bottom-up: a negative row stride,
+                            # whose rows lie outside the plane's buffer.
+                            message = "its display matrix flips the frames vertically"
+                            if first:
+                                raise _UseCliReader(message)
+                            raise RuntimeError(f"Video {path}: {message}")
+                        values.append(_frame_values(converted, frame_format))
+                    first = False
+                    yield values
+        finally:
+            for convert in converters or ():
+                _free_converter(convert)
 
 
 def _resume(

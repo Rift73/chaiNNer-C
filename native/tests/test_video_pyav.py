@@ -4,11 +4,13 @@ or files PyAV cannot open."""
 
 from __future__ import annotations
 
+import gc
 import itertools
 import os
 import shutil
 import subprocess
 import types
+import weakref
 from fractions import Fraction
 from pathlib import Path
 
@@ -256,6 +258,30 @@ def test_a_concat_list_is_probed_again_when_its_part_changes(tmp_path, name):
         metadata = video.VideoMetadata.from_file(listing, env)
         sizes.append((metadata.width, metadata.height))
     assert sizes == [(320, 240), (640, 360)]
+
+
+def test_the_filter_graphs_go_when_the_reader_ends(tmp_path, monkeypatch):
+    # PyAV's Graph and its FilterContexts refer to each other and a successful run never
+    # collects, so the reader frees its graphs itself: before, a 720p read left 31.7 MiB
+    # (the graph and its filters' frame pools) until some later collection.
+    path = _clip(tmp_path / "clip.mkv", *_source("320x240"), "-c:v", "ffv1")
+    made: list[weakref.ref[object]] = []
+    converter = video._converter
+
+    def recording(*arguments):
+        graph = converter(*arguments)
+        made.append(weakref.ref(graph))
+        return graph
+
+    monkeypatch.setattr(video, "_converter", recording)
+    gc.collect()
+    gc.disable()
+    try:
+        in_process, frames = _read(path, monkeypatch, cli=False)
+        assert in_process and len(frames) == 30
+        assert made and [ref() for ref in made] == [None] * len(made)
+    finally:
+        gc.enable()
 
 
 def test_a_matroska_file_is_scanned_once_per_version(tmp_path, monkeypatch):
