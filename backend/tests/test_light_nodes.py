@@ -249,6 +249,8 @@ def test_of_two_previews_waiting_for_their_node_only_the_newer_runs(
         assert ran == [2]
         assert killed == []
         assert cache == {"node": "output 2"}
+        # no entry stays once no preview of the node waits
+        assert "node" not in server.latest_individual_arrival
         monkeypatch.setattr(api.registry, "nodes", {})
         pytorch.categories[0].node_groups.clear()
         loading.package_loaded["chaiNNer_pytorch"].clear()

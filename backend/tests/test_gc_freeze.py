@@ -96,7 +96,7 @@ def request(path: str, body: object) -> SimpleNamespace:
         ("/run", None, True),
     ],
 )
-def test_the_middleware_tracks_runs_and_their_nodes(
+def test_a_run_counts_while_its_handler_runs(
     server: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     path: str,
@@ -106,19 +106,51 @@ def test_the_middleware_tracks_runs_and_their_nodes(
     loading = server.NodeLoading()
     loading.light_schemata = frozenset({"chainner:image:load"})
     monkeypatch.setattr(server, "node_loading", loading)
+    counted: list[int] = []
 
-    asyncio.run(server.track_run_start(request(path, body)))
-    assert server.run_tracker.in_flight == 1
-    asyncio.run(server.track_run_end(request(path, body), None))
+    async def handler(_request: object) -> str:
+        counted.append(server.run_tracker.in_flight)
+        return "reply"
+
+    assert asyncio.run(server.track_run(handler)(request(path, body))) == "reply"
+    assert counted == [1]
     assert server.run_tracker.in_flight == 0
     assert server.run_tracker.ran_heavy_node == heavy
 
 
-def test_other_requests_are_not_runs(server: ModuleType):
-    asyncio.run(server.track_run_start(request("/nodes", None)))
-    asyncio.run(server.track_run_end(request("/nodes", None), None))
+def test_a_cancelled_run_stops_counting(
+    server: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    # The app's Stop drops its /run request, and Sanic cancels the handler, which
+    # skips the response middleware: the freeze would be skipped for good.
+    monkeypatch.setattr(server, "node_loading", server.NodeLoading())
+    started = asyncio.Event()
+
+    async def handler(_request: object) -> str:
+        started.set()
+        await asyncio.Event().wait()
+        return "never"
+
+    async def stop() -> None:
+        run = asyncio.create_task(
+            server.track_run(handler)(
+                request("/run", {"data": [{"schemaId": "chainner:pytorch:load_model"}]})
+            )
+        )
+        await started.wait()
+        assert server.run_tracker.in_flight == 1
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run
+
+    asyncio.run(stop())
     assert server.run_tracker.in_flight == 0
-    assert not server.run_tracker.ran_heavy_node
+    assert server.run_tracker.ran_heavy_node
+
+
+def test_both_run_routes_are_counted(server: ModuleType):
+    assert server.run.__wrapped__ is not None
+    assert server.run_individual.__wrapped__ is not None
 
 
 # After the start's freeze, with the collector off: a CPU-loaded model of the

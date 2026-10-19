@@ -527,7 +527,9 @@ async def setup(sanic_app: Sanic, loop: asyncio.AbstractEventLoop):
     try:
         await announce_registered_nodes(ctx, worker)
     except Exception as error:
-        logger.error(f"Following the worker's node loading failed: {error}")
+        logger.error(
+            f"Following the worker's node loading failed: {error}", exc_info=True
+        )
     ctx.setup_events.put({"event": "backend-nodes-loaded", "data": None})
 
 

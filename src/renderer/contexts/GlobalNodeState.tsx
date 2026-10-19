@@ -578,8 +578,15 @@ export const GlobalProvider = memo(
                 // backend's list has arrived, which may have it: opened now, it would lose it.
                 if (nodesFromCache && missingSchemata(schemata, savedData.nodes).length > 0) {
                     setDeferredOpen({ savedData, path, loadPosition });
+                    sendToast({
+                        status: 'info',
+                        duration: 5_000,
+                        description: `${path} opens once chaiNNer has loaded all of its nodes.`,
+                    });
                     return;
                 }
+                // a chain opened now replaces one that waited
+                setDeferredOpen(undefined);
                 if ((await saveUnsavedChanges()) === SaveResult.Canceled) {
                     return;
                 }
@@ -652,6 +659,7 @@ export const GlobalProvider = memo(
                 pushOpenPath,
                 schemata,
                 sendAlert,
+                sendToast,
                 setSavePath,
                 setViewport,
             ]
@@ -669,6 +677,8 @@ export const GlobalProvider = memo(
         }, [deferredOpen, nodesFromCache]);
 
         const clearState = useCallback(async () => {
+            // a new chain replaces one that waited to open
+            setDeferredOpen(undefined);
             if ((await saveUnsavedChanges()) === SaveResult.Canceled) {
                 return;
             }

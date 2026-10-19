@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import gc
 import importlib
 import itertools
@@ -12,11 +13,11 @@ import threading
 import time
 import traceback
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Coroutine, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
 from pathlib import Path
-from typing import Final, TypedDict
+from typing import Any, Final, TypedDict
 
 import psutil
 from sanic import Sanic
@@ -382,20 +383,26 @@ def run_schema_ids(request: Request) -> list[str] | None:
         return None
 
 
-@app.on_request
-async def track_run_start(request: Request):
-    if request.path in RunTracker.ROUTES:
+def track_run(
+    handler: Callable[[Request], Coroutine[Any, Any, HTTPResponse]],
+) -> Callable[[Request], Coroutine[Any, Any, HTTPResponse]]:
+    """Counts a /run or /run/individual handler as a run in flight (RunTracker) until it
+    ends, also when Sanic cancels it (a dropped request: how the app's Stop ends a /run),
+    which skips the response middleware."""
+
+    @functools.wraps(handler)
+    async def tracked(request: Request) -> HTTPResponse:
         run_tracker.started()
+        try:
+            return await handler(request)
+        finally:
+            schema_ids = run_schema_ids(request)
+            run_tracker.answered(
+                schema_ids is None
+                or any(s not in node_loading.light_schemata for s in schema_ids)
+            )
 
-
-@app.on_response
-async def track_run_end(request: Request, _response: HTTPResponse):
-    if request.path in RunTracker.ROUTES:
-        schema_ids = run_schema_ids(request)
-        run_tracker.answered(
-            schema_ids is None
-            or any(s not in node_loading.light_schemata for s in schema_ids)
-        )
+    return tracked
 
 
 setup_task = None
@@ -503,6 +510,7 @@ class RunRequest(TypedDict):
 
 
 @app.route("/run", methods=["POST"])
+@track_run
 async def run(request: Request):
     """Runs the provided nodes"""
     ctx = AppContext.get(request.app)
@@ -695,6 +703,7 @@ class RunIndividualRequest(TypedDict):
 
 
 @app.route("/run/individual", methods=["POST"])
+@track_run
 async def run_individual(request: Request):
     """Runs a single node"""
     ctx = AppContext.get(request.app)
@@ -711,12 +720,15 @@ async def run_individual(request: Request):
         # also one still waiting for its node to load.
         with run_individual_counter:
             await wait_for_nodes([full_data["schemaId"]])
-            if latest_individual_arrival[node_id] != arrival:
+            if latest_individual_arrival.get(node_id) != arrival:
                 # A newer preview of this node arrived while this one waited for its node
                 # to load (an input changed): the waiters resume in no particular order,
                 # and only the newest may run, else it could be killed by this one and
                 # this one's output cached.
                 return json({"success": True, "data": None})
+            # The newest has passed its wait: an older one still waiting finds no entry
+            # and stops, so the entry goes (else one stays per node ever previewed).
+            del latest_individual_arrival[node_id]
 
             schema_data = api.registry.nodes.get(full_data["schemaId"])
 
@@ -804,7 +816,8 @@ async def run_individual(request: Request):
 
 # The deferred NumPy pool releases of /run/individual, held until they finish.
 individual_releases: set[asyncio.Task[None]] = set()
-# /run/individual's arrival numbers, and by node id the newest arrival's.
+# /run/individual's arrival numbers, and by node id the newest arrival's while it waits
+# for its node.
 individual_arrivals = itertools.count()
 latest_individual_arrival: dict[NodeId, int] = {}
 
