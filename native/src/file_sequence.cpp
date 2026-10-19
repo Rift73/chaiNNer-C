@@ -4,13 +4,29 @@
  * wcmatch distribution (wcmatch-11.0.1.dist-info/licenses/LICENSE.md).
  * WCMatch/bracex pattern parsing remains an explicit library dependency.
  * Directory walking, pattern application, deduplication, natural-key assembly,
- * snapshot/limit policy and lazy per-file iterator state execute in C++.
+ * snapshot/limit policy and lazy per-file iterator state execute in C++. Load Images'
+ * own expressions (non-recursive and recursive) list with FindFirstFileExW, without
+ * the GIL.
  */
 #include "graph_python.hpp"
 #include "graph_unpack.hpp"
+#include <sys/stat.h>
+#include <algorithm>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
 
 namespace py = pybind11;
 namespace {
@@ -18,6 +34,60 @@ using graphpy::O;
 O checked(PyObject *value) {
     if (!value) throw py::error_already_set();
     return py::reinterpret_steal<O>(value);
+}
+// A str as the UTF-16 Windows takes (lone surrogates kept, as os.scandir reports them).
+std::wstring to_wide(const O &text) {
+    Py_ssize_t size = 0;
+    wchar_t *buffer = PyUnicode_AsWideCharString(text.ptr(), &size);
+    if (!buffer) throw py::error_already_set();
+    std::wstring result(buffer, static_cast<size_t>(size));
+    PyMem_Free(buffer);
+    return result;
+}
+
+// Directory identities: os.path.normcase(os.path.realpath(path)) as UTF-16.
+using Visited = std::unordered_set<std::wstring>;
+// Below the classic limit for a directory path, Windows opens a path without the
+// long-path setting, so realpath returns the final path without its \\?\ prefix.
+constexpr size_t short_directory_path = MAX_PATH - 12;
+
+// A name Windows keeps as it is in a path: no trailing dot or space (stripped), no
+// control character and no device name (CON, NUL, COM1, ...).
+bool plain_name(std::wstring_view name) {
+    if (name.empty() || name.back() == L'.' || name.back() == L' ') return false;
+    for (wchar_t c : name)
+        if (c < L' ') return false;
+    std::wstring_view stem = name.substr(0, name.find(L'.'));
+    while (!stem.empty() && stem.back() == L' ') stem.remove_suffix(1);
+    std::wstring upper;
+    for (wchar_t c : stem) upper += c >= L'a' && c <= L'z' ? static_cast<wchar_t>(c - 32) : c;
+    for (const wchar_t *device : {L"CON", L"PRN", L"AUX", L"NUL", L"CONIN$", L"CONOUT$"})
+        if (upper == device) return false;
+    if (upper.size() == 4 && (upper.starts_with(L"COM") || upper.starts_with(L"LPT"))) {
+        const wchar_t digit = upper.back();
+        if ((digit >= L'0' && digit <= L'9') || digit == L'\u00b9' || digit == L'\u00b2' || digit == L'\u00b3')
+            return false;
+    }
+    return true;
+}
+
+// The identity of a folder without a reparse point, named `name` in the folder whose
+// identity is `parent`, at `path` (os.path.join(root_dir, relative path)): the parent's
+// final path and the name as the listing reports it, lowercased as normcase does
+// (LCMapStringEx maps each UTF-16 unit on its own, so a path lowercases part by part).
+// None when only realpath can tell: an unusual name or a long path.
+std::optional<std::wstring> child_identity(const std::wstring &parent, std::wstring_view name,
+                                           size_t path) {
+    if (parent.empty() || path >= short_directory_path || !plain_name(name)) return std::nullopt;
+    std::wstring result = parent;
+    if (result.back() != L'\\') result += L'\\';
+    const size_t start = result.size();
+    const int size = static_cast<int>(name.size());
+    result.resize(start + name.size());
+    if (LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE, name.data(), size, result.data() + start,
+                      size, nullptr, nullptr, 0) != size || result.size() >= short_directory_path)
+        return std::nullopt;
+    return result;
 }
 [[noreturn]] void exhausted() {
     PyErr_SetNone(PyExc_StopIteration);
@@ -42,7 +112,7 @@ struct RecursiveCall {
     ~RecursiveCall() { Py_LeaveRecursiveCall(); }
 };
 
-struct Entry { O name; bool directory; bool hidden; bool link; };
+struct Entry { O name; bool directory; bool hidden; bool link; bool reparse; };
 struct Match { O path; bool directory; };
 using Sink = std::function<void(const Match &)>;
 
@@ -81,22 +151,20 @@ class Walker {
         O lowered_name = filename.attr("lower")();
         return equal(lowered_name, lowered_target);
     }
-    bool exists(const O &value) {
-        O full = absolute_ ? value : join(root_, value);
-        return graphpy::truth(path_.attr("lexists")(full));
-    }
+    O full_path(const O &value) { return absolute_ ? value : join(root_, value); }
+    bool exists(const O &value) { return graphpy::truth(path_.attr("lexists")(full_path(value))); }
     // A directory's identity: its final path, with every link and junction resolved.
-    O identity(const O &value) {
-        O full = absolute_ ? value : join(root_, value);
-        return path_.attr("normcase")(path_.attr("realpath")(full));
+    std::wstring identity(const O &value) {
+        return to_wide(path_.attr("normcase")(path_.attr("realpath")(full_path(value))));
     }
-    // A deep walk enters each directory once: a junction or link back to a directory
-    // it already entered (a cycle, or a second way to the same folder) is not entered.
-    bool first_visit(const O &visited, const O &value) {
-        O key = identity(value);
-        if (graphpy::contains(visited, key)) return false;
-        if (PySet_Add(visited.ptr(), key.ptr()) < 0) throw py::error_already_set();
-        return true;
+    // A child folder's identity from its parent's, without opening the folder; realpath
+    // for a junction, link or other reparse point and where child_identity cannot tell.
+    std::wstring identity(const std::wstring &parent, const Entry &entry, const O &value) {
+        if (!entry.reparse) {
+            const size_t path = to_wide(full_path(value)).size();
+            if (auto derived = child_identity(parent, to_wide(entry.name), path)) return *derived;
+        }
+        return identity(value);
     }
     bool excluded(O value, bool directory) {
         O patterns = config_.attr("npatterns");
@@ -111,7 +179,7 @@ class Walker {
         std::vector<Entry> result;
         // The original yields these before opening scandir, including on OSError.
         for (py::handle value : py::reinterpret_borrow<py::iterable>(specials_))
-            result.push_back({own(value), true, true, false});
+            result.push_back({own(value), true, true, false, false});
         try {
             O scan_path;
             if (absolute_ && graphpy::truth(current)) scan_path = current;
@@ -130,8 +198,13 @@ class Walker {
                         }
                         bool directory = graphpy::truth(entry.attr("is_dir")());
                         bool link = directory && graphpy::truth(entry.attr("is_symlink")());
+                        // The entry's own attributes: its cached lstat, no system call.
+                        bool reparse = directory &&
+                            (entry.attr("stat")(py::arg("follow_symlinks") = false)
+                                 .attr("st_file_attributes").cast<unsigned long>() &
+                             FILE_ATTRIBUTE_REPARSE_POINT);
                         if (!directory_only || directory)
-                            result.push_back({filename, directory, hidden, link});
+                            result.push_back({filename, directory, hidden, link, reparse});
                     } catch (const py::error_already_set &error) {
                         if (!error.matches(PyExc_OSError)) throw;
                     }
@@ -150,9 +223,12 @@ class Walker {
         }
         return result;
     }
-    // visited: the identities a deep walk entered (a set); None when not deep.
+    // visited: the identities a deep walk entered, null when not deep; key: the identity
+    // of current in a deep walk. A deep walk enters each directory once: a junction or
+    // link back to a directory it already entered (a cycle, or a second way to the
+    // same folder) is not entered.
     void directory(const O &current, const O &target, bool directory_only,
-                   bool deep, const Sink &sink, const O &visited) {
+                   const Sink &sink, Visited *visited, const std::wstring &key) {
         RecursiveCall recursion;
         auto files = entries(current, directory_only);
         for (const auto &entry : files) {
@@ -168,8 +244,10 @@ class Walker {
             bool selected = target.is_none() ? !entry.hidden : match(target, entry.name);
             if (selected) sink({full, entry.directory});
             bool follow = !entry.link || follow_;
-            if (deep && !entry.hidden && entry.directory && follow && first_visit(visited, full)) {
-                directory(full, target, directory_only, deep, sink, visited);
+            if (visited && !entry.hidden && entry.directory && follow) {
+                std::wstring child = identity(key, entry, full);
+                if (visited->insert(child).second)
+                    directory(full, target, directory_only, sink, visited, child);
             }
         }
     }
@@ -189,21 +267,21 @@ class Walker {
             } else target = py::none();
             if (globstar_end && graphpy::truth(current))
                 sink({join(current, empty_), true});
-            O visited = checked(PySet_New(nullptr));
-            first_visit(visited, current);
-            directory(current, target, directory_only, true, [&](const Match &candidate) {
+            const std::wstring start = identity(current);
+            Visited visited{start};
+            directory(current, target, directory_only, [&](const Match &candidate) {
                 if (next < parts.size()) {
                     glob(candidate.path, parts, next, sink);
                 } else sink(candidate);
-            }, visited);
+            }, &visited, start);
         } else if (!directory_only) {
-            directory(current, target, false, false, sink, py::none());
+            directory(current, target, false, sink, nullptr, {});
         } else {
-            directory(current, target, true, false, [&](const Match &candidate) {
+            directory(current, target, true, [&](const Match &candidate) {
                 if (at + 1 < parts.size()) {
                     glob(candidate.path, parts, at + 1, sink);
                 } else sink(candidate);
-            }, py::none());
+            }, nullptr, {});
         }
     }
     void emit(py::list &result, O value, bool directory, bool directory_only) {
@@ -309,8 +387,302 @@ O flags(const O &glob) {
     return value;
 }
 
+// ---- Load Images' own expressions ("*" and "**/*") without WCMatch ----
+// The Walker above with those patterns' flags (DOTGLOB: nothing hidden, no FOLLOW, no
+// MARK, unique results; "*" matches every name but a drive-like "X:..."), then
+// list_glob's extension filter and natural sort, in C++.
+
+O from_wide(std::wstring_view text) {
+    return checked(PyUnicode_FromWideChar(text.data(), static_cast<Py_ssize_t>(text.size())));
+}
+bool ascii(std::wstring_view text) {
+    for (wchar_t c : text)
+        if (c >= 0x80) return false;
+    return true;
+}
+
+// What only the WCMatch walker reproduces: a name with a colon (drive-like to the
+// patterns and to pathlib), a path longer than os.scandir accepts (a ValueError), a
+// folder whose path os.scandir rewrites (below).
+struct Unsupported {};
+constexpr size_t scandir_limit = 32767;
+
+// os.scandir lists a folder by its path normalized as a final part, which drops the
+// trailing dots and spaces of that part (and reads a device name as the device): a
+// "\*.*" after it would keep them, so such a folder is not listed here.
+bool rewritten(std::wstring_view directory) {
+    if (directory.empty() || directory.back() == L'\\' || directory.back() == L'/' || directory.back() == L':')
+        return false;
+    return !plain_name(directory.substr(directory.find_last_of(L"\\/") + 1));
+}
+
+// An entry as the Walker sees os.scandir's DirEntry on Windows.
+struct Found { std::wstring name; bool directory; bool link; bool reparse; };
+
+// os.scandir's join_path_filenameW: a separator unless the path ends in one or a colon.
+std::wstring joined(const std::wstring &directory, std::wstring_view name) {
+    std::wstring result = directory;
+    if (!result.empty() && result.back() != L'\\' && result.back() != L'/' && result.back() != L':')
+        result += L'\\';
+    result += name;
+    return result;
+}
+
+class PlainWalk {
+public:
+    // A relative path's identity (realpath; the root's is that of "").
+    using Resolve = std::function<std::wstring(const std::wstring &)>;
+    // A symlink entry's is_dir(), which follows it; None when it raises an OSError.
+    using Follow = std::function<std::optional<bool>(const std::wstring &)>;
+
+    // root: root_dir, listed as given; prefix: os.path.join(root_dir, "x") without the
+    // "x", which the Walker's joins of root_dir and a relative path come to.
+    PlainWalk(std::wstring root, std::wstring prefix, Resolve resolve, Follow follow)
+        : root_(std::move(root)), prefix_(std::move(prefix)), resolve_(std::move(resolve)),
+          follow_(std::move(follow)) {}
+
+    // The relative paths the Walker yields, in its order: a folder's listing, each
+    // entry followed (recursive) by the walk of its folder, each directory entered once
+    // by identity. Iterative, so depth costs no stack.
+    std::vector<std::wstring> run(bool recursive) {
+        struct Frame { std::vector<Found> entries; size_t next; std::wstring relative; std::wstring identity; };
+        std::vector<std::wstring> listed;
+        Visited visited;
+        std::vector<Frame> stack;
+        if (recursive) stack.push_back({{}, 0, {}, *visited.insert(resolve_({})).first});
+        else stack.emplace_back();
+        stack.back().entries = list(root_);
+        while (!stack.empty()) {
+            Frame &frame = stack.back();
+            if (frame.next == frame.entries.size()) {
+                stack.pop_back();
+                continue;
+            }
+            const Found &entry = frame.entries[frame.next++];
+            std::wstring relative = frame.relative.empty() ? entry.name : frame.relative + L'\\' + entry.name;
+            listed.push_back(relative);
+            if (!recursive || !entry.directory || entry.link) continue;
+            const std::wstring path = prefix_ + relative;
+            std::optional<std::wstring> derived;
+            if (!entry.reparse) derived = child_identity(frame.identity, entry.name, path.size());
+            std::wstring identity = derived ? std::move(*derived) : resolve_(relative);
+            if (!visited.insert(identity).second) continue;
+            std::vector<Found> entries = list(path);
+            stack.push_back({std::move(entries), 0, std::move(relative), std::move(identity)});
+        }
+        return listed;
+    }
+
+private:
+    std::wstring root_;
+    std::wstring prefix_;
+    Resolve resolve_;
+    Follow follow_;
+
+    // os.scandir on Windows ("<directory>\*.*" without "." and ".."). A listing that
+    // cannot start is empty and one that fails later keeps what it read, as the
+    // Walker's OSError handling has it; an entry whose is_dir() raises is left out.
+    std::vector<Found> list(const std::wstring &directory) {
+        if (directory.size() > scandir_limit || rewritten(directory)) throw Unsupported{};
+        std::vector<Found> found;
+        WIN32_FIND_DATAW data;
+        const std::wstring pattern = joined(directory, L"*.*");
+        HANDLE handle = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &data, FindExSearchNameMatch,
+                                         nullptr, FIND_FIRST_EX_LARGE_FETCH);
+        if (handle == INVALID_HANDLE_VALUE) return found;
+        const std::unique_ptr<void, decltype(&FindClose)> close(handle, &FindClose);
+        do {
+            const std::wstring_view name(data.cFileName);
+            if (name == L"." || name == L"..") continue;
+            if (name.find(L':') != std::wstring_view::npos) throw Unsupported{};
+            const bool reparse = (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+            const bool symlink = reparse && data.dwReserved0 == IO_REPARSE_TAG_SYMLINK;
+            bool directory_entry = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            if (symlink) {
+                const std::wstring path = joined(directory, name);
+                if (path.size() > scandir_limit) throw Unsupported{};
+                const std::optional<bool> target = follow_(path);
+                if (!target) continue;
+                directory_entry = *target;
+            }
+            found.push_back({std::wstring(name), directory_entry, directory_entry && symlink, reparse});
+        } while (FindNextFileW(handle, &data));
+        return found;
+    }
+};
+
+// One character of the extension pattern compiled with IGNORECASE: Python's re matches
+// an ASCII letter to its other case and to U+0130/U+0131 (i), U+212A (k), U+017F (s).
+bool same_letter(wchar_t name, wchar_t extension) {
+    if (name == extension) return true;
+    const wchar_t lower = static_cast<wchar_t>(extension | 0x20);
+    if (lower < L'a' || lower > L'z') return false;
+    if ((name | 0x20) == lower) return true;
+    switch (lower) {
+    case L'i': return name == 0x130 || name == 0x131;
+    case L'k': return name == 0x212A;
+    case L's': return name == 0x17F;
+    default: return false;
+    }
+}
+bool plain_extension(std::wstring_view extension) {
+    if (extension.empty()) return false;
+    for (wchar_t c : extension)
+        if (c != L'.' && !(c >= L'0' && c <= L'9') && !((c | 0x20) >= L'a' && (c | 0x20) <= L'z')) return false;
+    return true;
+}
+// "**/*@(<extensions>)" on a walked path: its name ends with one of the extensions.
+bool image(std::wstring_view relative, const std::vector<std::wstring> &extensions) {
+    const std::wstring_view name = relative.substr(relative.rfind(L'\\') + 1);
+    for (const auto &extension : extensions) {
+        if (extension.size() > name.size()) continue;
+        const std::wstring_view tail = name.substr(name.size() - extension.size());
+        if (std::equal(tail.begin(), tail.end(), extension.begin(), same_letter)) return true;
+    }
+    return false;
+}
+
+// Python's lower() and upper() of a walked path: ASCII here, other text through Python.
+std::wstring lowered(const std::wstring &text) {
+    if (!ascii(text)) return to_wide(from_wide(text).attr("lower")());
+    std::wstring result = text;
+    for (wchar_t &c : result)
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c + 32);
+    return result;
+}
+std::u32string uppered(const std::wstring &text) {
+    if (!ascii(text)) {
+        O upper = from_wide(text).attr("upper")();
+        Py_UCS4 *buffer = PyUnicode_AsUCS4Copy(upper.ptr());
+        if (!buffer) throw py::error_already_set();
+        std::u32string result(buffer, buffer + PyUnicode_GET_LENGTH(upper.ptr()));
+        PyMem_Free(buffer);
+        return result;
+    }
+    std::u32string result(text.begin(), text.end());
+    for (char32_t &c : result)
+        if (c >= U'a' && c <= U'z') c -= 32;
+    return result;
+}
+
+// A Unicode decimal digit's value, else -1 (re's \d and int()).
+int decimal(char32_t c) {
+    if (c < 0x80) return c >= U'0' && c <= U'9' ? static_cast<int>(c - U'0') : -1;
+    return Py_UNICODE_TODECIMAL(c);
+}
+// Python's comparison of two alphanumeric keys from uppercased text: text runs by code
+// point, digit runs by value, and a key that ends first sorts first.
+int natural_compare(std::u32string_view a, std::u32string_view b) {
+    size_t i = 0, j = 0;
+    while (true) {
+        const size_t text_a = i, text_b = j;
+        while (i < a.size() && decimal(a[i]) < 0) ++i;
+        while (j < b.size() && decimal(b[j]) < 0) ++j;
+        if (const int order = a.substr(text_a, i - text_a).compare(b.substr(text_b, j - text_b))) return order;
+        if (i == a.size() || j == b.size()) return (i < a.size()) - (j < b.size());
+        size_t digits_a = i, digits_b = j;
+        while (i < a.size() && decimal(a[i]) >= 0) ++i;
+        while (j < b.size() && decimal(b[j]) >= 0) ++j;
+        while (digits_a < i && decimal(a[digits_a]) == 0) ++digits_a;
+        while (digits_b < j && decimal(b[digits_b]) == 0) ++digits_b;
+        if (i - digits_a != j - digits_b) return i - digits_a < j - digits_b ? -1 : 1;
+        for (; digits_a < i; ++digits_a, ++digits_b)
+            if (const int order = decimal(a[digits_a]) - decimal(b[digits_b])) return order;
+    }
+}
+
+// list_glob for "*" and "**/*" with plain extensions ([.A-Za-z0-9]) under a
+// WindowsPath; None when the arguments need WCMatch. The walk runs without the GIL,
+// taking it back only for a junction's realpath and a symlink's is_dir().
+std::optional<py::list> plain_listing(const py::dict &globals, const O &directory, const O &expression,
+                                      const O &extensions) {
+    if (!PyUnicode_CheckExact(expression.ptr())) return std::nullopt;
+    const bool recursive = PyUnicode_CompareWithASCIIString(expression.ptr(), "**/*") == 0;
+    if (!recursive && PyUnicode_CompareWithASCIIString(expression.ptr(), "*") != 0) return std::nullopt;
+    O windows_path = py::module_::import("pathlib").attr("WindowsPath");
+    if (Py_TYPE(directory.ptr()) != reinterpret_cast<PyTypeObject *>(windows_path.ptr())) return std::nullopt;
+    if (!PyList_CheckExact(extensions.ptr()) && !PyTuple_CheckExact(extensions.ptr())) return std::nullopt;
+    std::vector<std::wstring> suffixes;
+    for (py::handle extension : extensions) {
+        if (!PyUnicode_CheckExact(extension.ptr())) return std::nullopt;
+        suffixes.push_back(to_wide(own(extension)));
+        if (!plain_extension(suffixes.back())) return std::nullopt;
+    }
+    if (suffixes.empty()) return std::nullopt;
+
+    O os = name(globals, "os");
+    O path = os.attr("path");
+    O root = os.attr("fspath")(directory);
+    std::wstring root_text = to_wide(root);
+    if (root_text.find(L'\0') != std::wstring::npos) return std::nullopt;
+    std::wstring prefix = to_wide(path.attr("join")(root, py::str("x")));
+    prefix.pop_back();
+    // str(directory / relative) is base + relative; the sort compares the relative
+    // parts alone, as base ends before any digit run (in a separator or a colon).
+    O probe = checked(PyObject_Str(checked(PyNumber_TrueDivide(directory.ptr(), py::str("x").ptr())).ptr()));
+    O base = checked(PyUnicode_Substring(probe.ptr(), 0, PyUnicode_GET_LENGTH(probe.ptr()) - 1));
+    const Py_ssize_t base_length = PyUnicode_GET_LENGTH(base.ptr());
+    if (base_length && Py_UNICODE_ISDECIMAL(PyUnicode_READ_CHAR(base.ptr(), base_length - 1))) return std::nullopt;
+
+    O join = path.attr("join"), realpath = path.attr("realpath"), normcase = path.attr("normcase");
+    O stat = py::module_::import("nt").attr("stat");
+    const auto resolve = [&](const std::wstring &relative) {
+        py::gil_scoped_acquire acquire;
+        return to_wide(normcase(realpath(join(root, from_wide(relative)))));
+    };
+    const auto follow = [&](const std::wstring &entry) -> std::optional<bool> {
+        py::gil_scoped_acquire acquire;
+        try {
+            const auto mode = stat(from_wide(entry)).attr("st_mode").cast<unsigned long>();
+            return (mode & _S_IFMT) == _S_IFDIR;
+        } catch (const py::error_already_set &error) {
+            if (error.matches(PyExc_FileNotFoundError)) return false;
+            if (error.matches(PyExc_OSError)) return std::nullopt;
+            throw;
+        }
+    };
+    std::vector<std::wstring> listed;
+    try {
+        py::gil_scoped_release release;
+        listed = PlainWalk(std::move(root_text), std::move(prefix), resolve, follow).run(recursive);
+    } catch (const Unsupported &) {
+        return std::nullopt;
+    }
+
+    // WCMatch's unique results: a path whose lower() was already yielded is not yielded
+    // again (it keeps the yielded paths as they are). Then the extension filter.
+    std::unordered_set<std::wstring> seen;
+    std::vector<O> paths;
+    std::vector<std::u32string> keys;
+    O unique = checked(PySet_New(nullptr));
+    for (const std::wstring &relative : listed) {
+        if (seen.contains(lowered(relative))) continue;
+        seen.insert(relative);
+        if (!image(relative, suffixes)) continue;
+        O text = checked(PyUnicode_Concat(base.ptr(), from_wide(relative).ptr()));
+        if (PySet_Add(unique.ptr(), text.ptr()) < 0) throw py::error_already_set();
+        paths.push_back(std::move(text));
+        keys.push_back(uppered(relative));
+    }
+    // sorted(set, key=alphanumeric_sort): stable over the set's iteration order.
+    std::unordered_map<PyObject *, size_t> position;
+    for (size_t index = 0; index < paths.size(); ++index) position.emplace(paths[index].ptr(), index);
+    std::vector<size_t> order;
+    for (py::handle text : unique) order.push_back(position.at(text.ptr()));
+    {
+        py::gil_scoped_release release;
+        std::stable_sort(order.begin(), order.end(),
+                         [&](size_t a, size_t b) { return natural_compare(keys[a], keys[b]) < 0; });
+    }
+    O path_type = name(globals, "Path");
+    py::list result;
+    for (size_t index : order) result.append(path_type(paths[index]));
+    return result;
+}
+
 O list_glob(const py::dict &globals, const O &directory, const O &expression, const O &extensions) {
     O extension_expression = extension_filter(extensions);
+    if (auto listed = plain_listing(globals, directory, expression, extensions)) return std::move(*listed);
     O glob = name(globals, "glob");
     O glob_flags = flags(glob);
     py::list discovered;
