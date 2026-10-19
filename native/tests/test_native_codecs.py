@@ -961,7 +961,9 @@ def test_opencv_size_limit_settings(
         load_image, "cv2", Probe(load_image.cv2, {"imdecode", "imread"})
     )
     if native:
-        assert load_image._read_cv(path).shape == BGR8.shape
+        image = load_image._read_cv(path)
+        assert image is not None
+        assert image.shape == BGR8.shape
     else:
         with pytest.raises(RuntimeError, match="Error reading image"):
             load_image._read_cv(path)
