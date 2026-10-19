@@ -139,6 +139,18 @@ def exif(orientation: int, endian: str = "<", header: bool = True) -> bytes:
     return (b"Exif\0\0" if header else b"") + tiff + ifd
 
 
+def exif_resolution(kind: int) -> bytes:
+    """An EXIF block whose IFD0 holds XResolution (282) as one value of TIFF type `kind`
+    ("5" for ASCII) and ResolutionUnit (296) 2, which Pillow reads when JFIF has no dpi."""
+    ifd = (
+        struct.pack("<HHHI", 2, 282, kind, 1)
+        + b"5\0\0\0"
+        + struct.pack("<HHIHH", 296, 3, 1, 2, 0)
+        + bytes(4)
+    )
+    return b"Exif\0\0II" + struct.pack("<HI", 42, 8) + ifd
+
+
 def with_segments(jpeg: bytes, *segments: bytes) -> bytes:
     """The JPEG with marker segments inserted after SOI."""
     return jpeg[:2] + b"".join(segments) + jpeg[2:]
@@ -417,6 +429,15 @@ def decode_cases() -> list[DecodeCase]:
             "1x1": lambda: cv_bytes(".jpg", BGR8[:1, :1].copy()),
         }
     )
+    # XResolution of one BYTE, ASCII or UNDEFINED value: Pillow's _read_dpi_from_exif
+    # indexes it past its end (IndexError), Image.open fails and OpenCV decodes.
+    for kind in (1, 2, 7):
+        for name, jpeg in (("", base), ("cmyk_", cmyk)):
+            jpegs[f"{name}exif_xres_type{kind}"] = lambda jpeg=jpeg, kind=kind: (
+                with_segments(
+                    without_marker(jpeg, 0xE0), segment(0xE1, exif_resolution(kind))
+                )
+            )
     for name, make in jpegs.items():
         add(f"jpg_{name}", "jpeg-pillow", ".jpg", make)
     add("jpeg_ext", "jpeg-pillow", ".jpeg", lambda: base)
@@ -866,3 +887,79 @@ def test_encode_matches_todays_path(
         )
         monkeypatch.setattr(save_image, "Image", Probe(save_image.Image, {"fromarray"}))
         assert saved(case, image, tmp_path / "probe") == expected
+
+
+# ---------------------------------------------------------------------------------------------
+# Names with a lone surrogate (NTFS takes unpaired UTF-16, Python keeps it in the str)
+
+
+@pytest.mark.parametrize("ext", [".png", ".jpe", ".jpg"])
+def test_decode_lone_surrogate_name(
+    ext: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    image = (np.arange(16 * 16 * 3) % 251).astype(np.uint16).reshape(16, 16, 3) * 200
+    if ext != ".png":
+        image = (image >> 8).astype(np.uint8)
+    path = tmp_path / f"a\udc00b{ext}"
+    path.write_bytes(cv2.imencode(".png" if ext == ".png" else ".jpg", image)[1])
+    monkeypatch.setenv("CHAINNER_C_NATIVE_CODECS", "0")
+    expected = decoded(path)
+    monkeypatch.delenv("CHAINNER_C_NATIVE_CODECS")
+    assert "raw" in expected and decoded(path) == expected
+    monkeypatch.setattr(load_image, "Image", Probe(load_image.Image, {"open"}))
+    monkeypatch.setattr(
+        load_image, "cv2", Probe(load_image.cv2, {"imdecode", "imread", "cvtColor"})
+    )
+    native = (load_image._read_pil if ext == ".jpg" else load_image._read_cv)(path)
+    assert native is not None and sha(native) == expected["raw"]
+
+
+def test_save_lone_surrogate_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    case = EncodeCase("png", 3, depth="u16")
+    image = image_for(case)
+    folder = tmp_path / "a\udc00b"
+    monkeypatch.setenv("CHAINNER_C_NATIVE_CODECS", "0")
+    expected = saved(case, image, folder / "oracle")
+    monkeypatch.delenv("CHAINNER_C_NATIVE_CODECS")
+    assert "file" in expected and saved(case, image, folder / "native") == expected
+
+
+# ---------------------------------------------------------------------------------------------
+# What today's OpenCV path does that the native one would not
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "OPENCV_IO_MAX_IMAGE_WIDTH",
+        "OPENCV_IO_MAX_IMAGE_HEIGHT",
+        "OPENCV_IO_MAX_IMAGE_PIXELS",
+    ],
+)
+def test_opencv_size_limit_setting_declines(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The codecs hold OpenCV's default size limits: a set limit sends files to OpenCV."""
+    path = tmp_path / "image.png"
+    path.write_bytes(cv2.imencode(".png", BGR8)[1])
+    monkeypatch.setenv(name, "1048576")
+    monkeypatch.setattr(
+        load_image, "cv2", Probe(load_image.cv2, {"imdecode", "imread"})
+    )
+    with pytest.raises(RuntimeError, match="Error reading image"):
+        load_image._read_cv(path)
+
+
+@pytest.mark.parametrize("ext", [".exr", ".hdr", ".pic", ".sr", ".ras", ".jp2"])
+def test_unported_opencv_extension_is_not_read_natively(
+    ext: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Formats without a native codec go straight to OpenCV (imdecode still takes a PNG by
+    its signature), so the file is read once."""
+    path = tmp_path / f"image{ext}"
+    path.write_bytes(cv2.imencode(".png", BGR8)[1])
+    monkeypatch.setattr(
+        load_image, "cv2", Probe(load_image.cv2, {"imdecode", "imread"})
+    )
+    with pytest.raises(RuntimeError, match="Error reading image"):
+        load_image._read_cv(path)

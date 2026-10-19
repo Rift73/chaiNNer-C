@@ -11,6 +11,8 @@
 #include "image_encode.hpp"
 
 #include <array>
+#include <memory>
+#include <new>
 #include <string>
 #include <string_view>
 
@@ -91,12 +93,12 @@ bool listed(std::string_view extension, std::initializer_list<std::string_view> 
 }
 
 /* load_image.py's decoder order: pil-jpeg (.jpg .jpeg), pil-tiff-alpha (.tif .tiff), cv (OpenCV's list),
- * texconv-dds, pil (Pillow's list). Pillow 12.3's default Image.MAX_IMAGE_PIXELS bounds the Pillow route. */
+ * texconv-dds, pil (Pillow's list). Pillow 12.3's default Image.MAX_IMAGE_PIXELS bounds the Pillow routes. */
 constexpr uint64_t pillow_max_pixels = 89478485;
 
 /* normalize(): the decoded samples to float32 through cn_pixels_convert_checked, as ImageOutput.enforce does (the
  * type ids are native_buffers._TYPES); a floating-point event, which NumPy would report, declines. */
-Image normalized(const std::vector<uint8_t> &pixels, const cn::image_decode::Shape &shape)
+Image normalized(const uint8_t *pixels, const cn::image_decode::Shape &shape)
 {
     using cn::image_decode::Sample;
     int type = 0;
@@ -114,7 +116,7 @@ Image normalized(const std::vector<uint8_t> &pixels, const cn::image_decode::Sha
     }
     MutableImage image = MutableImage::allocate(int32_t(shape.height), int32_t(shape.width), int32_t(shape.channels));
     int events = 0;
-    check(cn_pixels_convert_checked(pixels.data(), image.data(), image.height() * size_t(image.width()) * size_t(image.channels()),
+    check(cn_pixels_convert_checked(pixels, image.data(), image.height() * size_t(image.width()) * size_t(image.channels()),
                                     type, 0, 1, &events));
     if (events) throw RunPython{};
     return std::move(image).publish();
@@ -132,22 +134,27 @@ void load_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
     // A TIFF goes first to the straight-alpha decoder, whose native half takes only its plainest files; when it
     // declines, the Python decoder may still take the file, so the node's Python body runs.
     const bool tiff = listed(extension, {".tif", ".tiff"});
-    const bool opencv = listed(extension, {".bmp", ".dib", ".jpe", ".jp2", ".png", ".webp", ".pbm", ".pgm", ".ppm",
-                                           ".pxm", ".pnm", ".sr", ".ras", ".exr", ".hdr", ".pic"});
+    // OpenCV's list without the formats no native codec takes (JPEG 2000, Sun raster, OpenEXR, Radiance HDR), which
+    // the Python body reads once.
+    const bool opencv = listed(extension, {".bmp", ".dib", ".jpe", ".png", ".webp", ".pbm", ".pgm", ".ppm", ".pxm", ".pnm"});
     if ((!pillow && !tiff && !opencv) || !cn::image_decode::enabled()) throw RunPython{};
-    std::vector<uint8_t> file, pixels;
+    std::vector<uint8_t> file;
+    // Not zeroed: the codecs write every sample, and a file found corrupt after its header touches none of the pages.
+    std::unique_ptr<uint8_t[]> pixels;
     cn::image_decode::Shape shape;
-    const cn::image_decode::Allocator allocate = [&](const cn::image_decode::Shape &s) {
+    // A failed allocation declines (the C codecs call this; nothing may unwind through them): the node's Python body
+    // runs.
+    const cn::image_decode::Allocator allocate = [&](const cn::image_decode::Shape &s) noexcept -> uint8_t * {
         shape = s;
-        pixels.resize(s.bytes());
-        return pixels.data();
+        pixels.reset(new (std::nothrow) uint8_t[s.bytes()]);
+        return pixels.get();
     };
     if (!cn::image_decode::read_file(std::filesystem::path(text), file) ||
         !(pillow ? cn::image_decode::decode_pillow_jpeg(file, pillow_max_pixels, allocate)
-          : tiff ? cn::image_decode::decode_pillow_tiff_alpha(file, allocate)
+          : tiff ? cn::image_decode::decode_pillow_tiff_alpha(file, pillow_max_pixels, allocate)
                  : cn::image_decode::decode_opencv(file, allocate)))
         throw RunPython{};
-    outputs.push_back(normalized(pixels, shape));
+    outputs.push_back(normalized(pixels.get(), shape));
     outputs.push_back(Path{std::filesystem::path(parts.directory)});
     outputs.push_back(std::move(name));
 }

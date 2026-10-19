@@ -21,13 +21,20 @@ struct Target {
     int orientation;
     Shape shape;
     std::vector<uint8_t> scratch;
+    uint64_t max_pixels = 0; // Image.MAX_IMAGE_PIXELS where Pillow checks the size at load; 0 for none
 };
 
-uint8_t *allocate_target(void *context, uint32_t height, uint32_t width, uint32_t channels, uint32_t sample) {
+// It runs inside the C codecs, so nothing may unwind out of it: a failed allocation declines the image.
+uint8_t *allocate_target(void *context, uint32_t height, uint32_t width, uint32_t channels, uint32_t sample) noexcept {
     auto &target = *static_cast<Target *>(context);
+    if (target.max_pixels && uint64_t(height) * width > target.max_pixels) return nullptr;
     target.shape = Shape{height, width, channels, Sample(sample)};
     if (target.orientation == 1) return target.allocate(target.shape);
-    target.scratch.resize(target.shape.bytes());
+    try {
+        target.scratch.resize(target.shape.bytes());
+    } catch (...) {
+        return nullptr;
+    }
     return target.scratch.data();
 }
 
@@ -178,12 +185,13 @@ bool pillow_jpeg_header(std::span<const uint8_t> f, PillowJpeg &out) {
     }
 }
 
-// Whether Image.open of a JPEG warns (a Python UserWarning) in JpegImagePlugin._read_dpi_from_exif, which loads
-// info["exif"] as Image.Exif: IFD0's loader (TiffImagePlugin.ImageFileDirectory_v2.load, Pillow 12.3) warns when the
-// entry count, an entry, an out-of-line value or the next-IFD offset is cut short, and reading ResolutionUnit (296),
-// then XResolution (282), warns when the tag holds more than one value. Conservative where the JFIF density would
-// skip the read: such a file declines either way.
-bool pillow_exif_warns(std::string_view exif) {
+// Whether Image.open of a JPEG warns (a Python UserWarning) or fails in JpegImagePlugin._read_dpi_from_exif, which
+// loads info["exif"] as Image.Exif: IFD0's loader (TiffImagePlugin.ImageFileDirectory_v2.load, Pillow 12.3) warns when
+// the entry count, an entry, an out-of-line value or the next-IFD offset is cut short, and reading ResolutionUnit
+// (296), then XResolution (282), warns when the tag holds more than one value; with both read, x_resolution[1] raises
+// an IndexError the read does not catch for a BYTE, ASCII or UNDEFINED XResolution of one value (taken as any count
+// here). Conservative where the JFIF density would skip the read: such a file declines either way.
+bool pillow_exif_declines(std::string_view exif) {
     using namespace std::string_view_literals;
     while (exif.starts_with("Exif\0\0"sv)) exif.remove_prefix(6);
     // Image.Exif reads an 8-byte header; a shorter one, an unknown prefix or BigTIFF raises an error the read catches.
@@ -218,7 +226,8 @@ bool pillow_exif_warns(std::string_view exif) {
     if (!available(at, 4)) return true;
     // BYTE, ASCII and UNDEFINED load as one value; the other types as one value per count.
     const auto several = [](const Entry &e) { return e.present && e.type != 1 && e.type != 2 && e.type != 7 && e.count > 1; };
-    return unit.present && (several(unit) || several(resolution));
+    const bool indexed = resolution.present && (resolution.type == 1 || resolution.type == 2 || resolution.type == 7);
+    return unit.present && (several(unit) || several(resolution) || indexed);
 }
 
 // imdecode's codec by signature (loadsave.cpp findDecoder, in registration order: BMP, GIF, HDR, JPEG, WebP, Sun
@@ -243,6 +252,16 @@ OpenCvCodec opencv_codec(std::span<const uint8_t> f) {
         return OpenCvCodec::tiff;
     if (starts("\x89PNG\r\n\x1a\n")) return OpenCvCodec::png;
     return OpenCvCodec::other;
+}
+
+// Whether the environment sets one of OpenCV's image size limits (loadsave.cpp reads OPENCV_IO_MAX_IMAGE_WIDTH,
+// _HEIGHT and _PIXELS once): the ported codecs hold the defaults, so a file then declines.
+bool opencv_limits_set() {
+    for (const wchar_t *name : {L"OPENCV_IO_MAX_IMAGE_WIDTH", L"OPENCV_IO_MAX_IMAGE_HEIGHT", L"OPENCV_IO_MAX_IMAGE_PIXELS"}) {
+        SetLastError(ERROR_SUCCESS);
+        if (GetEnvironmentVariableW(name, nullptr, 0) != 0 || GetLastError() != ERROR_ENVVAR_NOT_FOUND) return true;
+    }
+    return false;
 }
 
 } // namespace
@@ -276,7 +295,7 @@ bool decode_pillow_jpeg(std::span<const uint8_t> file, uint64_t max_pixels, cons
     PillowJpeg header;
     if (!pillow_jpeg_header(file, header) || !header.width || !header.height) return false;
     if (max_pixels && uint64_t(header.width) * header.height > max_pixels) return false;
-    if (pillow_exif_warns(header.exif)) return false;
+    if (pillow_exif_declines(header.exif)) return false;
     Target target{allocate, exif_orientation(reinterpret_cast<const uint8_t *>(header.exif.data()), header.exif.size()),
                   {}, {}};
     if (cn_jpeg_decode(file.data(), file.size(), CN_JPEG_PILLOW, header.layers, allocate_target, &target) !=
@@ -288,7 +307,7 @@ bool decode_pillow_jpeg(std::span<const uint8_t> file, uint64_t max_pixels, cons
 
 bool decode_opencv(std::span<const uint8_t> file, const Allocator &allocate) {
     const OpenCvCodec codec = opencv_codec(file);
-    if (codec == OpenCvCodec::other) return false;
+    if (codec == OpenCvCodec::other || opencv_limits_set()) return false;
     const std::string_view exif = exif_block(file.data(), file.size());
     Target target{allocate, exif_orientation(reinterpret_cast<const uint8_t *>(exif.data()), exif.size()), {}, {}};
     cn_codec_status status = CN_CODEC_FALLBACK;
@@ -304,8 +323,8 @@ bool decode_opencv(std::span<const uint8_t> file, const Allocator &allocate) {
     return status == CN_CODEC_OK && finish(target);
 }
 
-bool decode_pillow_tiff_alpha(std::span<const uint8_t> file, const Allocator &allocate) {
-    Target target{allocate, 1, {}, {}};
+bool decode_pillow_tiff_alpha(std::span<const uint8_t> file, uint64_t max_pixels, const Allocator &allocate) {
+    Target target{allocate, 1, {}, {}, max_pixels};
     return cn_tiff_decode_pillow_alpha(file.data(), file.size(), allocate_target, &target, &target.orientation) ==
                CN_CODEC_OK &&
            finish(target);

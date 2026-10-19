@@ -11,6 +11,7 @@
 #include "image_preview.hpp"
 #include "numpy_pool.hpp"
 #include <pybind11/numpy.h>
+#include <pybind11/stl/filesystem.h>
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -214,7 +215,7 @@ O native_decode(py::dict g,O path,NativeDecoder decoder) {
     const bool pillow=decoder==NativeDecoder::pillow_jpeg;
     if(!cn::image_decode::enabled())return py::none();
     uint64_t max_pixels=0;
-    if(pillow) {
+    if(decoder!=NativeDecoder::opencv) {
         O limit=name(g,"Image").attr("MAX_IMAGE_PIXELS");
         if(!limit.is_none()) {
             if(!PyLong_CheckExact(limit.ptr()))return py::none();
@@ -223,51 +224,56 @@ O native_decode(py::dict g,O path,NativeDecoder decoder) {
             max_pixels=uint64_t(value);
         }
     }
-    const std::filesystem::path file(py::str(path).cast<std::wstring>());
+    const auto file=py::str(path).cast<std::filesystem::path>();
     O result=py::none();
     bool decoded=false;
     {
         py::gil_scoped_release release;
-        const cn::image_decode::Allocator allocate=[&](const cn::image_decode::Shape& shape)->uint8_t* {
+        // An array NumPy cannot make (MemoryError, a size it refuses) declines: nothing unwinds through the codecs.
+        const cn::image_decode::Allocator allocate=[&](const cn::image_decode::Shape& shape) noexcept->uint8_t* {
             py::gil_scoped_acquire acquire;
-            using cn::image_decode::Sample;
-            py::dtype dtype=py::dtype::of<uint8_t>();
-            switch(shape.sample) {
-                case Sample::u8:break;
-                case Sample::u16:dtype=py::dtype::of<uint16_t>();break;
-                case Sample::u32:dtype=py::dtype::of<uint32_t>();break;
-                case Sample::u64:dtype=py::dtype::of<uint64_t>();break;
-                case Sample::i8:dtype=py::dtype::of<int8_t>();break;
-                case Sample::i16:dtype=py::dtype::of<int16_t>();break;
-                case Sample::i32:dtype=py::dtype::of<int32_t>();break;
-                case Sample::i64:dtype=py::dtype::of<int64_t>();break;
-                case Sample::f32:dtype=py::dtype::of<float>();break;
-                case Sample::f64:dtype=py::dtype::of<double>();break;
-            }
-            py::array array=shape.channels==1?py::array(dtype,{py::ssize_t(shape.height),py::ssize_t(shape.width)}):
-                py::array(dtype,{py::ssize_t(shape.height),py::ssize_t(shape.width),py::ssize_t(shape.channels)});
-            result=array;
-            return static_cast<uint8_t*>(array.mutable_data());
+            try {
+                using cn::image_decode::Sample;
+                py::dtype dtype=py::dtype::of<uint8_t>();
+                switch(shape.sample) {
+                    case Sample::u8:break;
+                    case Sample::u16:dtype=py::dtype::of<uint16_t>();break;
+                    case Sample::u32:dtype=py::dtype::of<uint32_t>();break;
+                    case Sample::u64:dtype=py::dtype::of<uint64_t>();break;
+                    case Sample::i8:dtype=py::dtype::of<int8_t>();break;
+                    case Sample::i16:dtype=py::dtype::of<int16_t>();break;
+                    case Sample::i32:dtype=py::dtype::of<int32_t>();break;
+                    case Sample::i64:dtype=py::dtype::of<int64_t>();break;
+                    case Sample::f32:dtype=py::dtype::of<float>();break;
+                    case Sample::f64:dtype=py::dtype::of<double>();break;
+                }
+                py::array array=shape.channels==1?py::array(dtype,{py::ssize_t(shape.height),py::ssize_t(shape.width)}):
+                    py::array(dtype,{py::ssize_t(shape.height),py::ssize_t(shape.width),py::ssize_t(shape.channels)});
+                result=array;
+                return static_cast<uint8_t*>(array.mutable_data());
+            } catch(...) {return nullptr;}
         };
         try {
             std::vector<uint8_t> data;
             decoded=cn::image_decode::read_file(file,data) &&
                 (pillow?cn::image_decode::decode_pillow_jpeg(data,max_pixels,allocate):
                  decoder==NativeDecoder::opencv?cn::image_decode::decode_opencv(data,allocate):
-                 cn::image_decode::decode_pillow_tiff_alpha(data,allocate));
+                 cn::image_decode::decode_pillow_tiff_alpha(data,max_pixels,allocate));
         } catch(const std::bad_alloc&) {decoded=false;} // today's path reports it
     }
     return decoded?result:O(py::none());
 }
-bool native_jpeg_extension(const O& ext) {
-    for(const char* suffix:{".jpg",".jpeg",".jfif"})
+bool extension_in(const O& ext,std::initializer_list<const char*> suffixes) {
+    for(const char* suffix:suffixes)
         if(PyUnicode_Check(ext.ptr()) && PyUnicode_CompareWithASCIIString(ext.ptr(),suffix)==0)return true;
     return false;
 }
 O read_cv(py::dict g,O path) {
     O ext=name(g,"get_ext")(path);
     if(!contains(name(g,"get_opencv_formats")(),ext))return py::none();
-    if(O native=native_decode(g,path,NativeDecoder::opencv);!native.is_none())return native;
+    // JPEG 2000, Sun raster, OpenEXR and Radiance HDR have no native codec: such a file goes to OpenCV, read once.
+    if(!extension_in(ext,{".jp2",".sr",".ras",".exr",".hdr",".pic"}))
+        if(O native=native_decode(g,path,NativeDecoder::opencv);!native.is_none())return native;
     O image=py::none(),cv=name(g,"cv2");
     // IMREAD_UNCHANGED leaves EXIF Orientation to the caller; read it from the file's bytes.
     int orientation=1;
@@ -304,7 +310,7 @@ O read_cv(py::dict g,O path) {
 O read_pil(py::dict g,O path) {
     O ext=name(g,"get_ext")(path);
     if(!contains(name(g,"get_pil_formats")(),ext))return py::none();
-    if(native_jpeg_extension(ext))
+    if(extension_in(ext,{".jpg",".jpeg",".jfif"}))
         if(O native=native_decode(g,path,NativeDecoder::pillow_jpeg);!native.is_none())return native;
     O im=name(g,"Image").attr("open")(path);
     if(equal(im.attr("mode"),py::str("P")))im=im.attr("convert")(im.attr("palette").attr("mode"));
@@ -542,7 +548,7 @@ O encode(py::dict g,O extension,O image,O params) {
 // (cn::files::write_atomic, without the GIL): no partial file is ever left under path, and a file that already holds
 // these bytes is left untouched. A failure raises the OSError open() or write() raises, naming path.
 void write_file(const O& path,const O& data) {
-    const std::filesystem::path final(py::str(path).cast<std::wstring>());
+    const auto final=py::str(path).cast<std::filesystem::path>();
     Py_buffer view;
     if(PyObject_GetBuffer(data.ptr(),&view,PyBUF_SIMPLE)!=0)throw py::error_already_set();
     struct Release {Py_buffer& view; ~Release(){PyBuffer_Release(&view);}} release_view{view};
@@ -1028,7 +1034,7 @@ void save_dds(py::dict g,py::tuple values) {
         args.append(raw);name(g,"__run_texconv")(args,"Unable to write DDS");
         // The finished file goes to the target folder's temporary file, then onto the final name; a final file with
         // the same bytes is left untouched.
-        const std::filesystem::path written(py::str(raw).cast<std::wstring>()),final(py::str(path).cast<std::wstring>());
+        const auto written=py::str(raw).cast<std::filesystem::path>(),final=py::str(path).cast<std::filesystem::path>();
         py::gil_scoped_release release;
         cn::files::move_atomic(written,final);
     },[&]{name(g,"shutil").attr("rmtree")(temporary);});

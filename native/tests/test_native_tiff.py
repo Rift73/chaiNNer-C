@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import struct
+import warnings
 from types import SimpleNamespace
 
 import cv2
@@ -266,6 +267,78 @@ def test_straight_alpha_tiffs_decode_natively(tmp_path, monkeypatch):
             )
             native = load_image.load_image_node(path)[0]
         assert native.shape == today.shape and native.tobytes() == today.tobytes(), name
+
+
+@pytest.mark.parametrize("limit", [H * W - 1, (H * W - 1) // 2])
+def test_straight_alpha_tiff_over_pillow_limit_goes_to_today_path(
+    tmp_path, monkeypatch, limit
+):
+    """Above Image.MAX_IMAGE_PIXELS Pillow's load warns (DecompressionBombWarning),
+    above twice that it refuses and OpenCV decodes: the native decoder declines both.
+    (A one-strip raw file Pillow maps skips the check; declining it changes nothing.)"""
+    path = tmp_path / "large.tif"
+    path.write_bytes(
+        pillow_tiff(Image.fromarray(RGBA8, "RGBA"), compression="tiff_lzw")
+    )
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", limit)
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            load_image,
+            "TiffImagePlugin",
+            SimpleNamespace(ImageFileDirectory_v2=declined, TiffImageFile=declined),
+        )
+        with pytest.raises(RuntimeError, match="today's codec called"):
+            load_image._read_tiff_straight_alpha(path)
+    bomb = Image.DecompressionBombWarning if limit == H * W - 1 else None
+    monkeypatch.setenv("CHAINNER_C_NATIVE_CODECS", "0")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        today = load_image.load_image_node(path)[0]
+    monkeypatch.delenv("CHAINNER_C_NATIVE_CODECS")
+    with warnings.catch_warnings(record=True) as again:
+        warnings.simplefilter("always")
+        native = load_image.load_image_node(path)[0]
+    kinds = [w.category for w in caught]
+    assert (bomb in kinds) == (bomb is not None)
+    assert kinds == [w.category for w in again]
+    assert native.shape == today.shape and native.tobytes() == today.tobytes()
+
+
+class Unlimited:
+    """load_image's Image with MAX_IMAGE_PIXELS None; Pillow itself keeps its limit."""
+
+    MAX_IMAGE_PIXELS = None
+
+    def __getattr__(self, name: str):
+        return getattr(Image, name)
+
+
+def test_straight_alpha_tiff_failing_allocation_declines(tmp_path, monkeypatch):
+    """The array the native decoder asks for cannot be made (NumPy refuses its size):
+    the decoder declines, and today's path gives Pillow's own error."""
+    side = 2**31 - 1
+    short, long = 3, 4
+    entries = [
+        (256, long, side),
+        (257, long, side),
+        (258, short, 8),  # BitsPerSample 8 (one value for all four)
+        (259, short, 5),  # LZW: Pillow's libtiff load, which checks the size
+        (262, short, 2),
+        (273, long, 8),
+        (277, short, 4),
+        (278, long, side),
+        (279, long, 1),
+        (338, short, 2),
+    ]
+    # Little-endian: a SHORT value is the low half of the 4-byte value field.
+    ifd = struct.pack("<H", len(entries)) + b"".join(
+        struct.pack("<HHII", tag, kind, 1, value) for tag, kind, value in entries
+    )
+    path = tmp_path / "huge.tif"
+    path.write_bytes(b"II*\0" + struct.pack("<I", 8) + ifd + bytes(4))
+    monkeypatch.setattr(load_image, "Image", Unlimited())
+    with pytest.raises(Image.DecompressionBombError):
+        load_image._read_tiff_straight_alpha(path)
 
 
 UNPORTED = {

@@ -443,12 +443,12 @@ https://github.com/python-pillow/Pillow/tree/9.2.0
 
 The Python Imaging Library (PIL) is
 
-    Copyright ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© 1997-2011 by Secret Labs AB
-    Copyright ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© 1995-2011 by Fredrik Lundh
+    Copyright © 1997-2011 by Secret Labs AB
+    Copyright © 1995-2011 by Fredrik Lundh
 
 Pillow is the friendly PIL fork. It is
 
-    Copyright ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© 2010-2022 by Alex Clark and contributors
+    Copyright © 2010-2022 by Alex Clark and contributors
 
 Like PIL, Pillow is licensed under the open source HPND License:
 
@@ -3386,6 +3386,7 @@ Image codecs: native/third_party, linked into _chainner_graph.pyd (native/cmake/
 The image decoders and encoders of Load Image, Load Images and Save Image link these libraries, vendored
 unchanged (each folder's PROVENANCE.md names the release and its SHA-256). Their format handling follows
 OpenCV 5.0.0's imgcodecs (Apache License 2.0) and Pillow 12.3.0 (HPND); both notices are reproduced above.
+This software is based in part on the work of the Independent JPEG Group.
 
 ========================================================================
 libjpeg-turbo 3.1.4.1
@@ -3855,3 +3856,47 @@ from this software without specific prior written permission.
 THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
 IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
 WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+# LogLuv compression (tif_luv.c) license
+Copyright (c) 1997 Greg Ward Larson
+Copyright (c) 1997 Silicon Graphics, Inc.
+
+Permission to use, copy, modify, distribute, and sell this software and
+its documentation for any purpose is hereby granted without fee, provided
+that (i) the above copyright notices and this permission notice appear in
+all copies of the software and related documentation, and (ii) the names of
+Sam Leffler, Greg Larson and Silicon Graphics may not be used in any
+advertising or publicity relating to the software without the specific,
+prior written permission of Sam Leffler, Greg Larson and Silicon Graphics.
+
+THE SOFTWARE IS PROVIDED "AS-IS" AND WITHOUT WARRANTY OF ANY KIND,
+EXPRESS, IMPLIED OR OTHERWISE, INCLUDING WITHOUT LIMITATION, ANY
+WARRANTY OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+
+IN NO EVENT SHALL SAM LEFFLER, GREG LARSON OR SILICON GRAPHICS BE LIABLE
+FOR ANY SPECIAL, INCIDENTAL, INDIRECT OR CONSEQUENTIAL DAMAGES OF ANY KIND,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER OR NOT ADVISED OF THE POSSIBILITY OF DAMAGE, AND ON ANY THEORY OF
+LIABILITY, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
+OF THIS SOFTWARE.
+
+# Hash set functions (tif_hash_set.c) license (MIT)
+Copyright (c) 2008-2009, Even Rouault <even dot rouault at spatialys.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.

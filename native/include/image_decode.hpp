@@ -28,7 +28,8 @@ struct Shape {
     size_t bytes() const noexcept { return size_t(height) * width * channels * sample_bytes(); }
 };
 
-/* Returns the buffer of `shape.bytes()` bytes the image goes into, or nullptr to decline it. */
+/* Returns the buffer of `shape.bytes()` bytes the image goes into, or nullptr to decline it (a failed allocation
+ * too). It must not throw: the C codecs call it. */
 using Allocator = std::function<uint8_t *(const Shape &shape)>;
 
 /* Whether native decoding runs at all: CHAINNER_C_NATIVE_CODECS=0 (a diagnostic switch, read per call) sends every
@@ -41,17 +42,19 @@ bool read_file(const std::filesystem::path &path, std::vector<uint8_t> &data);
 /* Today's `pil` decoder for a JPEG (Image.open sniffs FF D8 FF first): JpegImagePlugin's marker walk, its mode from
  * the SOF's layers, libjpeg-turbo as JpegDecode runs it, CMYK as convert("RGB"), BGR, then info["exif"]'s
  * orientation. max_pixels is Image.MAX_IMAGE_PIXELS (0 for None): larger images decline (Pillow warns or refuses).
- * MPO files (an MPF segment) and files whose EXIF makes Image.open warn decline. */
+ * MPO files (an MPF segment) and files whose EXIF makes Image.open warn or fail decline. */
 bool decode_pillow_jpeg(std::span<const uint8_t> file, uint64_t max_pixels, const Allocator &allocate);
 
 /* Today's `cv` decoder for the bytes of a file: imdecode's codec by signature, decoded by the ported ones (BMP, JPEG,
- * WebP, PxM, TIFF, PNG), then the file's EXIF orientation as read_cv applies it. Other codecs decline. */
+ * WebP, PxM, TIFF, PNG), then the file's EXIF orientation as read_cv applies it. Other codecs decline, and every
+ * file does while the environment sets an OPENCV_IO_MAX_IMAGE_* limit. */
 bool decode_opencv(std::span<const uint8_t> file, const Allocator &allocate);
 
 /* Today's `pil-tiff-alpha` decoder (load_image.py's _read_tiff_straight_alpha) for the plain 8-bit RGBA and
- * grey+alpha TIFFs cn_tiff_decode_pillow_alpha takes: BGRA, turned as its Orientation tag says. Other files decline
- * and the Python decoder runs. */
-bool decode_pillow_tiff_alpha(std::span<const uint8_t> file, const Allocator &allocate);
+ * grey+alpha TIFFs cn_tiff_decode_pillow_alpha takes: BGRA, turned as its Orientation tag says. max_pixels is
+ * Image.MAX_IMAGE_PIXELS (0 for None), as for decode_pillow_jpeg: larger images decline (Pillow warns or refuses at
+ * load). Other files decline and the Python decoder runs. */
+bool decode_pillow_tiff_alpha(std::span<const uint8_t> file, uint64_t max_pixels, const Allocator &allocate);
 
 /* EXIF Orientation (tag 274) of an EXIF block, the TIFF header and IFD0 after an optional "Exif\0\0": 2-8, or 1 when
  * it is absent, malformed or out of range. */

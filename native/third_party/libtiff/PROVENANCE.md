@@ -8,8 +8,9 @@ of all 62 files there match; only OpenCV's own `CMakeLists.txt` differs).
 
 The files here are unmodified copies of the tarball's `libtiff/` sources and headers that OpenCV's build compiles
 for its codec set (core, Win32 I/O, LZW, ZIP, PackBits, CCITT/fax3, ThunderScan, NeXT, LogLuv, JPEG), and
-`LICENSE.md`. Left out: `tif_ojpeg.c`, `tif_lzma.c`, `tif_jbig.c`, `tif_zstd.c`, `tif_webp.c`, `tif_lerc.c`,
-`tif_pixarlog.c` and `tif_jpeg_12.c` (OpenCV compiles them to empty units with its configuration),
+`LICENSE.md`. Left out: `tif_ojpeg.c`, `tif_lzma.c`, `tif_jbig.c`, `tif_zstd.c`, `tif_webp.c`, `tif_pixarlog.c`
+and `tif_jpeg_12.c` (OpenCV compiles them to empty units with its configuration), `tif_lerc.c` (OpenCV's list
+leaves it out),
 `tif_stream.cxx` (the C++ stream API), `tif_unix.c` and the tools.
 
 `chainner/` holds the headers OpenCV 5.0.0's `3rdparty/libtiff/CMakeLists.txt` generates for its Windows x64 build
