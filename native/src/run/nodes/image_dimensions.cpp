@@ -20,13 +20,6 @@ using namespace cn::run;
 
 constexpr int64_t opencv_int_max = 2147483647;
 
-/* native_layout._shape / native_channels._shape: a nonempty image. */
-void nonempty(const Image &image)
-{
-    if (image.height == 0 || image.width == 0)
-        throw NodeError("ValueError", "Expected a nonempty two- or three-dimensional image");
-}
-
 /* An output size that an Image cannot hold declines to the Python body (NumPy allocates it or raises its own
  * MemoryError). */
 int32_t dimension(int64_t size)

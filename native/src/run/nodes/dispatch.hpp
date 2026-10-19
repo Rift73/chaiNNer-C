@@ -1,11 +1,11 @@
 /* Process facts that native node entry points pass to their kernels where the Python bridges read them from OpenCV
  * or NumPy at run time: OpenCV's SIMD dispatch per kernel family, NumPy's ufunc loop targets, the tested-OpenCV
- * gate, OpenCV's IPP state and CPU feature line.
+ * gate, OpenCV's IPP state, CPU feature line and thread count (cv2.getNumThreads, which Canny's IPP policy reads).
  *
  * Each fact is computed once per process by calling the very Python function the bridge calls (dispatch.cpp, the
  * one file under nodes/ that touches Python: it takes the GIL for that first call, never under a lock), then read
- * without the GIL or a lock. The backend never calls cv2.setUseOptimized or the IPP setters (only tests do), so these
- * are constants of the process. A Python error while computing a fact is raised as the bridge would raise it. */
+ * without the GIL or a lock. The backend never calls cv2.setUseOptimized, cv2.setNumThreads or the IPP setters (only
+ * tests do), so these are constants of the process. A Python error while computing a fact is raised as the bridge would raise it. */
 #pragma once
 
 #include <cstddef>

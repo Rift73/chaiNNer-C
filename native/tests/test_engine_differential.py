@@ -21,10 +21,11 @@ import pytest
 
 import api
 import bench_cases
+import process
 from bench_oracle import FFMPEG
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
-from engine_differential import execute, mismatches, order_violations
+from engine_differential import LAYOUT_DIFFERENCES, execute, mismatches, order_violations
 from nodes.impl.native_graph import graph
 from verify_runtime import edge, make_node
 
@@ -304,3 +305,93 @@ def test_lazy_shapes_match(schemas, lazy_images, tmp_path, shape):
     assert order_violations(oracle.events, chain) == []
     for engine_chain, engine in engines:
         assert mismatches(shape, engine_chain, oracle, engine, tmp_path) == []
+
+
+@pytest.fixture(scope="module")
+def layout_images(tmp_path_factory):
+    """zeros.tiff: 4-channel float noise whose first pixel is -0.0 and second 0.0 in every channel; gray.tiff:
+    1-channel float noise."""
+    folder = tmp_path_factory.mktemp("layout")
+    rng = np.random.default_rng(3)
+    zeros = rng.random((301, 457, 4), dtype=np.float32)
+    zeros[0, 0], zeros[0, 1] = -0.0, 0.0
+    assert cv2.imwrite(str(folder / "zeros.tiff"), zeros)
+    assert cv2.imwrite(str(folder / "gray.tiff"), rng.random((97, 131), dtype=np.float32))
+    return folder
+
+
+def layout_chain(schemas, case: str, images: Path, output: Path) -> list[dict]:
+    """A view-producing node (Crop to a narrow region, Separate RGBA, Lens Blur) into Image Statistics, whose outputs
+    name the saved image."""
+    source = {
+        "crop-statistics": [
+            make_node(schemas, "noise", "chainner:image:create_noise", {0: 640, 1: 480, 2: 7, 3: "Value Noise"}),
+            make_node(schemas, "view", "chainner:image:crop", {0: edge("noise"), 1: 2, 4: 115, 3: 171, 8: 265, 7: 264}),
+        ],
+        "split-statistics": [
+            make_node(schemas, "load", "chainner:image:load", {0: str(images / "zeros.tiff")}),
+            make_node(schemas, "view", "chainner:image:split_channels", {0: edge("load")}),
+        ],
+        "lens-blur-statistics": [
+            make_node(schemas, "load", "chainner:image:load", {0: str(images / "gray.tiff")}),
+            make_node(schemas, "view", "chainner:image:lens_blur", {0: edge("load"), 1: 5, 2: 5, 3: 5.0}),
+        ],
+    }[case]
+    return [
+        *source,
+        make_node(schemas, "stats", "chainner:image:image_statistics", {0: edge("view"), 1: 50}),
+        make_node(
+            schemas, "name", "chainner:utility:text_append",
+            {0: "_", 1: "stats", 2: edge("stats", 0), 3: edge("stats", 1), 4: edge("stats", 2)},
+        ),
+        make_node(
+            schemas, "save", "chainner:image:save",
+            {0: edge("view"), 1: str(output), 2: None, 3: edge("name"), 4: "png", 15: "u8"},
+        ),
+    ]
+
+
+def compact_body(schema_id: str, values: dict[int, object]) -> list[object]:
+    """schema_id's Python body on values (by input id, the others at their defaults), its image outputs made
+    C-contiguous: the reference layout."""
+    data = api.registry.nodes[schema_id][0]
+    raw = [values.get(i.id, i.to_dict().get("def")) for i in data.inputs]
+    enforced = process.enforce_inputs(raw, data, api.NodeId(schema_id), [])
+    output = process.enforce_output(data.run(*enforced), data).output
+    return [np.ascontiguousarray(value) if isinstance(value, np.ndarray) else value for value in output]
+
+
+def layout_reference(case: str, images: Path) -> list[object]:
+    """Image Statistics' outputs on a C-contiguous copy of its input."""
+    if case == "crop-statistics":
+        (noise,) = compact_body("chainner:image:create_noise", {0: 640, 1: 480, 2: 7, 3: "Value Noise"})
+        (view,) = compact_body("chainner:image:crop", {0: noise, 1: 2, 4: 115, 3: 171, 8: 265, 7: 264})
+    elif case == "split-statistics":
+        image = compact_body("chainner:image:load", {0: str(images / "zeros.tiff")})[0]
+        view = compact_body("chainner:image:split_channels", {0: image})[0]
+    else:
+        image = compact_body("chainner:image:load", {0: str(images / "gray.tiff")})[0]
+        (view,) = compact_body("chainner:image:lens_blur", {0: image, 1: 5, 2: 5, 3: 5.0})
+    return compact_body("chainner:image:image_statistics", {0: view, 1: 50})
+
+
+@pytest.mark.parametrize("case", LAYOUT_DIFFERENCES)
+def test_layout_chains_match_the_compact_reference(schemas, layout_images, tmp_path, case):
+    # The engine's statistics equal NumPy's on a C-contiguous copy (signed zeros included), and the oracle differs
+    # from the engine exactly as recorded (ruling P7).
+    output = tmp_path / "out"
+    results = []
+    for kind in ("python", "native"):
+        shutil.rmtree(output, ignore_errors=True)
+        output.mkdir(parents=True)
+        chain = parse_json(cast("list[JsonNode]", layout_chain(schemas, case, layout_images, output)))
+        optimize(chain)
+        results.append((chain, execute(kind, chain, storage=tmp_path / "storage", output=output)))
+    (_, oracle), (chain, engine) = results
+    assert engine.error is None, engine.error
+    broadcast = next(
+        e["data"] for e in reversed(engine.events) if e["event"] == "node-broadcast" and e["data"]["nodeId"] == "stats"
+    )
+    statistics = [broadcast["types"][str(index)]["value"] for index in range(4)]
+    assert list(map(repr, statistics)) == list(map(repr, layout_reference(case, layout_images)))
+    assert mismatches(case, chain, oracle, engine, tmp_path) == LAYOUT_DIFFERENCES[case]

@@ -12,7 +12,6 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace {
@@ -148,9 +147,6 @@ void lens_blur(NodeContext &, std::span<const Value> inputs, std::vector<Value> 
     outputs.push_back(std::move(out).publish());
 }
 
-/* Palette Dither's error diffusion maps (ErrorDiffusionMap values) in native_neighborhood.DIFFUSION_IDS order. */
-constexpr std::array<std::string_view, 8> diffusion_maps = {"FS", "JJN", "ST", "A", "B", "S", "S2", "SL"};
-
 /* chainner:image:palette_dither (image_filter/quantize/dither_palette.py) through native_neighborhood.palette_dither:
  * the palette's first row prepared by cn_neighborhood_palette_create, applied by cn_neighborhood_palette_apply in
  * mode 0 (none), 2 (diffusion, with its map) or 3 (Riemersma, with its history length). */
@@ -168,25 +164,16 @@ void palette_dither(NodeContext &, std::span<const Value> inputs, std::vector<Va
     if (top.height == 0 || top.width == 0) throw NodeError("ValueError", "Invalid image shape " + shape_text(top));
     int mode = algorithm == "None" ? 0 : algorithm == "Diffusion" ? 2 : 3;
     int diffusion = 0;
-    if (mode == 2) {
-        const std::string &map = std::get<std::string>(inputs[3]);
-        diffusion = int(std::find(diffusion_maps.begin(), diffusion_maps.end(), map) - diffusion_maps.begin());
-    }
+    if (mode == 2) diffusion = diffusion_map(std::get<std::string>(inputs[3]));
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
-    int64_t length = 16;
-    if (mode == 3) {
-        const int64_t *history = std::get_if<int64_t>(&inputs[4]);
-        /* A Python int beyond int64 (a PyRef) is beyond the range too. */
-        if (!history || *history < 2 || *history > int64_t(UINT32_MAX))
-            throw NodeError("ValueError", "History length must be an integer in [2,4294967295]");
-        length = *history;
-    }
+    uint32_t length = 16;
+    if (mode == 3) length = dither_count(inputs[4], "History length must be an integer in [2,4294967295]");
     void *handle = nullptr;
     size_t bytes = 0;
     check(cn_neighborhood_palette_create(top.data, size_t(top.width), size_t(top.channels), &handle, &bytes));
     std::unique_ptr<void, void (*)(void *)> plan(handle, cn_neighborhood_palette_free);
     check(cn_neighborhood_palette_apply(image.data, out.data(), size_t(image.height), size_t(image.width),
-                                        size_t(image.channels), plan.get(), mode, diffusion, uint32_t(length),
+                                        size_t(image.channels), plan.get(), mode, diffusion, length,
                                         float(1.0 / double(length)), nullptr));
     outputs.push_back(std::move(out).publish());
 }

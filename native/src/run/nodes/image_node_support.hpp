@@ -9,11 +9,13 @@
 #include "cn_crt_math.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -64,6 +66,13 @@ inline std::string shape_text(const Image &image)
 }
 
 inline size_t pixels(const Image &image) { return size_t(image.height) * size_t(image.width); }
+
+/* native_layout._shape, native_channels._shape and native_resample._shape: a nonempty image. */
+inline void nonempty(const Image &image)
+{
+    if (image.height == 0 || image.width == 0)
+        throw NodeError("ValueError", "Expected a nonempty two- or three-dimensional image");
+}
 
 /* The image's channels in the given order as a new image (NumPy's img[:, :, i] or img[:, :, a:b] slices, copied as
  * the output enforce copies them); an empty image gives an empty result of the same size. */
@@ -175,14 +184,68 @@ inline double python_round(double x, int ndigits)
     return result;
 }
 
-/* CPython's float ** float for a finite positive base and a finite exponent (float_pow): 1.0 for a zero exponent or a
- * base of 1, else the CRT's pow, whose infinite result raises OverflowError (errno ERANGE; a denormal does not). */
+/* CPython's float ** float (float_pow): its special cases for a zero exponent, NaN, infinite exponents and bases and
+ * a zero base, then the CRT's pow of the base's magnitude (negated for a negative base and an odd exponent), whose
+ * infinite result raises OverflowError (errno ERANGE; a denormal does not). A negative base with a fractional exponent
+ * (a complex result) declines to the Python body. */
 inline double python_pow(double base, double exponent)
 {
-    if (exponent == 0 || base == 1.0) return 1.0;
+    auto odd = [](double x) { return std::fmod(std::fabs(x), 2.0) == 1.0; };
+    if (exponent == 0) return 1.0;
+    if (std::isnan(base)) return base;
+    if (std::isnan(exponent)) return base == 1.0 ? 1.0 : exponent;
+    if (std::isinf(exponent)) {
+        double magnitude = std::fabs(base);
+        if (magnitude == 1.0) return 1.0;
+        return (exponent > 0) == (magnitude > 1.0) ? std::fabs(exponent) : 0.0;
+    }
+    if (std::isinf(base)) {
+        if (exponent > 0) return odd(exponent) ? base : std::fabs(base);
+        return odd(exponent) ? std::copysign(0.0, base) : 0.0;
+    }
+    if (base == 0) {
+        if (exponent < 0) throw NodeError("ZeroDivisionError", "zero to a negative power");
+        return odd(exponent) ? base : 0.0;
+    }
+    bool negate = false;
+    if (base < 0) {
+        if (exponent != std::floor(exponent)) throw RunPython{};
+        base = -base, negate = odd(exponent);
+    }
+    if (base == 1.0) return negate ? -1.0 : 1.0;
     double result = cn_crt.pow(base, exponent);
     if (std::isinf(result)) throw NodeError("OverflowError", "(34, 'Result too large')");
-    return result;
+    return negate ? -result : result;
+}
+
+/* native_analysis.binary of two images (operation 0 high pass, 1 thresholded unsharp, 2 squared difference, 3 product;
+ * scale and threshold as c_floats): each operand nonempty, both of one shape. */
+inline Image analysis_binary(const Image &image, const Image &other, int op, double scale = 0, double threshold = 0)
+{
+    for (const Image *operand : {&image, &other})
+        if (operand->height == 0 || operand->width == 0)
+            throw NodeError("ValueError", "Invalid image shape " + shape_text(*operand));
+    if (image.height != other.height || image.width != other.width || image.channels != other.channels)
+        throw NodeError("ValueError", "Native image operands must have the same shape");
+    MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
+    check(cn_analysis_binary(image.data, other.data, out.data(), image.values(), op, float(scale), float(threshold)));
+    return std::move(out).publish();
+}
+
+/* An ErrorDiffusionMap value's index in native_neighborhood.DIFFUSION_IDS. */
+inline int diffusion_map(const std::string &value)
+{
+    static constexpr std::array<std::string_view, 8> maps{"FS", "JJN", "ST", "A", "B", "S", "S2", "SL"};
+    return int(std::find(maps.begin(), maps.end(), value) - maps.begin());
+}
+
+/* An integer input that native_neighborhood checks against [2, 2**32) (a colour count, a Riemersma history length):
+ * its value, or ValueError with the message (a Python int beyond int64 is out of range too). */
+inline uint32_t dither_count(const Value &value, const char *message)
+{
+    const int64_t *count = std::get_if<int64_t>(&value);
+    if (!count || *count < 2 || *count > 0xFFFFFFFF) throw NodeError("ValueError", message);
+    return uint32_t(*count);
 }
 
 /* image_utils.to_uint8 of a float32 image (native_buffers.converted_pixels to uint8: normalized skips the clip to

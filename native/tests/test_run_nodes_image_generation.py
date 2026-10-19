@@ -2,9 +2,9 @@
 
 import numpy as np
 import pytest
-
-from image_node_cases import image, seed_of
 from native_differential import assert_native_matches
+from native_images import image, seed_of
+
 from nodes.impl.color.color import Color
 
 COLORS = [
@@ -109,6 +109,17 @@ NOISE = [
 def test_create_noise_matches(noise, seed, size):
     width, height = size
     assert_native_matches("chainner:image:create_noise", [width, height, seed, *noise])
+
+
+# NaN is rejected by the input enforce before the body runs.
+@pytest.mark.parametrize("ratio", [float("inf"), float("-inf")])
+@pytest.mark.parametrize("ratios", [(None, 2.0), (2.0, None)])
+@pytest.mark.parametrize("layers", [2, 3])
+def test_create_noise_non_finite_ratios_match(layers, ratios, ratio):
+    scale_ratio, brightness_ratio = (ratio if r is None else r for r in ratios)
+    fractal = ("Pink noise", layers, scale_ratio, brightness_ratio, True, 1.5)
+    noise = ("Simplex", 10.0, 50.0, False, False, False, *fractal)
+    assert_native_matches("chainner:image:create_noise", [7, 5, 3, *noise])
 
 
 def test_create_noise_declines_seeds_outside_u32():

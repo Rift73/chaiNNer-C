@@ -12,13 +12,6 @@ namespace {
 
 using namespace cn::run;
 
-/* native_layout._shape / native_channels._shape: a nonempty image. */
-void nonempty(const Image &image)
-{
-    if (image.height == 0 || image.width == 0)
-        throw NodeError("ValueError", "Expected a nonempty two- or three-dimensional image");
-}
-
 /* utils.round_half_up(numerator / denominator) of Python ints: math.floor(x + 0.5) of the true quotient. */
 int64_t round_half_up(int64_t numerator, int64_t denominator)
 {
@@ -339,15 +332,6 @@ void inpaint(NodeContext &, std::span<const Value> inputs, std::vector<Value> &o
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     check(cn_pixels_convert_checked(result.data(), out.data(), result.size(), 2, 0, 1, nullptr));
     outputs.push_back(std::move(out).publish());
-}
-
-/* native_analysis.binary of two one-shape images (operation 2 squared difference, 3 product). */
-Image analysis_binary(const Image &image, const Image &other, int op)
-{
-    for (const Image *operand : {&image, &other}) analysis_image(*operand);
-    MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
-    check(cn_analysis_binary(image.data, other.data, out.data(), image.values(), op, 0.0f, 0.0f));
-    return std::move(out).publish();
 }
 
 /* native_analysis.mean of a fresh C-ordered image (NumPy's float32 mean, one contiguous run). */

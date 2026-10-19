@@ -11,13 +11,6 @@ namespace {
 
 using namespace cn::run;
 
-/* native_channels._shape's check of an image. */
-void nonempty(const Image &image)
-{
-    if (image.height == 0 || image.width == 0)
-        throw NodeError("ValueError", "Expected a nonempty two- or three-dimensional image");
-}
-
 /* A channel input of native_channels' assembly: an image or a colour (ImageInput(allow_colors=True)). */
 const Image *as_image(const Value &value) { return std::get_if<Image>(&value); }
 

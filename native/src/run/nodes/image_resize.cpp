@@ -1,5 +1,6 @@
 /* nodes/impl/resize.py's resize() and its native_resample bridges, line by line (image_resize.hpp). */
 #include "image_resize.hpp"
+#include "image_node_support.hpp"
 
 #include "../kernel_status.hpp"
 #include "chainner_ext_kernels.h"
@@ -80,13 +81,6 @@ void check_memory(Extent width, Extent height, int32_t channels)
                                         " GB of memory, but only 16 GB are allowed.");
 }
 
-/* native_resample._shape: a nonempty image (channels are 1, 3 or 4 in the engine). */
-void check_shape(const Image &image)
-{
-    if (image.height == 0 || image.width == 0)
-        throw NodeError("ValueError", "Expected a nonempty two- or three-dimensional image");
-}
-
 /* The bridges' coordinate check, then the engine's image limit (decline: the body would return a larger image). */
 void check_target(uint64_t width, uint64_t height)
 {
@@ -98,7 +92,7 @@ void check_target(uint64_t width, uint64_t height)
 /* native_resample.nearest (dimensions positive). */
 Image nearest(const Image &image, uint64_t width, uint64_t height)
 {
-    check_shape(image);
+    nonempty(image);
     check_target(width, height);
     MutableImage out = MutableImage::allocate(int32_t(height), int32_t(width), image.channels);
     check(cn_resample_nearest(image.data, out.data(), size_t(image.height), size_t(image.width),
@@ -110,7 +104,7 @@ Image nearest(const Image &image, uint64_t width, uint64_t height)
  * upscale) is 0. */
 MutableImage filtered(const Image &image, uint64_t width, uint64_t height, int64_t filter, bool gamma_correction)
 {
-    check_shape(image);
+    nonempty(image);
     check_target(width, height);
     MutableImage out = MutableImage::allocate(int32_t(height), int32_t(width), image.channels);
     if (width == 0 || height == 0) return out;
@@ -156,7 +150,7 @@ Value resize(const Image &image, Extent width, Extent height, int64_t filter, bo
     bool premultiplied = !separate_alpha && image.channels == 4;
     Image source = image;
     if (premultiplied) {
-        check_shape(image);
+        nonempty(image);
         MutableImage alpha = MutableImage::allocate(image.height, image.width, 4);
         check(cn_resample_alpha(image.data, alpha.data(), size_t(image.height) * size_t(image.width), 0));
         source = std::move(alpha).publish();

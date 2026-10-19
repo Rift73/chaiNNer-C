@@ -34,8 +34,7 @@ void flip(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outp
 {
     const Image &image = std::get<Image>(inputs[0]);
     int64_t axis = std::get<int64_t>(inputs[1]);
-    if (image.height == 0 || image.width == 0)
-        throw NodeError("ValueError", "Expected a nonempty two- or three-dimensional image");
+    nonempty(image);
     if (axis == 2) {
         outputs.push_back(inputs[0]);
         return;

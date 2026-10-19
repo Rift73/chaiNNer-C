@@ -17,13 +17,6 @@ namespace {
 
 using namespace cn::run;
 
-/* native_layout._shape / native_channels._shape: a nonempty image. */
-void nonempty(const Image &image)
-{
-    if (image.height == 0 || image.width == 0)
-        throw NodeError("ValueError", "Expected a nonempty two- or three-dimensional image");
-}
-
 /* chainner:image:add_noise (noise/add_noise.py, nodes/impl/noise.py, native_noise.add_noise): NoiseType values as the
  * kernel's modes, NoiseColor rgb or gray. An empty image takes noise.py's NumPy fallback, so it declines to the
  * Python body. */
@@ -54,20 +47,6 @@ void pixelate(NodeContext &, std::span<const Value> inputs, std::vector<Value> &
     check(cn_layout_pixelate(image.data, out.data(), size_t(image.height), size_t(image.width), size_t(image.channels),
                              size_t(integer(inputs[1])), size_t(integer(inputs[2]))));
     outputs.push_back(std::move(out).publish());
-}
-
-/* native_analysis.binary of two images of one shape (op 0 high pass, 1 thresholded unsharp; scale and threshold as
- * c_floats). */
-Image analysis_binary(const Image &image, const Image &other, int op, double scale, double threshold)
-{
-    for (const Image *operand : {&image, &other})
-        if (operand->height == 0 || operand->width == 0)
-            throw NodeError("ValueError", "Invalid image shape " + shape_text(*operand));
-    if (image.height != other.height || image.width != other.width || image.channels != other.channels)
-        throw NodeError("ValueError", "Native image operands must have the same shape");
-    MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
-    check(cn_analysis_binary(image.data, other.data, out.data(), image.values(), op, float(scale), float(threshold)));
-    return std::move(out).publish();
 }
 
 /* chainner:image:sharpen (sharpen/unsharp_mask.py): native_unsharp.weighted (OpenCV's addWeighted on the "arithm"
@@ -118,6 +97,26 @@ void high_pass(NodeContext &, std::span<const Value> inputs, std::vector<Value> 
     outputs.push_back(alpha ? with_alpha(result, *alpha) : result);
 }
 
+/* float() of a decimal token (parse_kernel's syntax) beyond the doubles' range, where from_chars leaves its value
+ * unset: +-inf when the place of its leading nonzero digit plus its exponent is 0 or more (an overflow), else +-0 (an
+ * underflow). */
+double beyond_doubles(std::string_view token)
+{
+    size_t e = token.find_first_of("eE");
+    std::string_view mantissa = token.substr(0, e);
+    int64_t exponent = 0;
+    if (e != std::string_view::npos) {
+        bool negative = token[e + 1] == '-';
+        for (size_t i = e + 1 + (negative || token[e + 1] == '+'); i < token.size(); ++i)
+            exponent = std::min<int64_t>(exponent * 10 + (token[i] - '0'), 1'000'000);
+        if (negative) exponent = -exponent;
+    }
+    size_t point = std::min(mantissa.find('.'), mantissa.size());
+    size_t lead = mantissa.find_first_not_of("+-0.");
+    int64_t place = lead < point ? int64_t(point - lead) - 1 : -int64_t(lead - point);
+    return std::copysign(place + exponent >= 0 ? HUGE_VAL : 0.0, token[0] == '-' ? -1.0 : 1.0);
+}
+
 /* The kernel text of chainner:image:image_convolve as np.stack([l.split() for l in text.splitlines()]).astype(float):
  * rows of decimal numbers. Anything else (other characters, other number syntax, ragged or missing rows) declines to
  * the Python body, which parses or rejects it with NumPy. */
@@ -164,7 +163,8 @@ Kernel parse_kernel(const std::string &text)
             if (!decimal(token)) throw RunPython{};
             const char *first = token.data() + (token[0] == '+' ? 1 : 0);
             double value = 0;
-            std::from_chars(first, token.data() + token.size(), value);
+            if (std::from_chars(first, token.data() + token.size(), value).ec == std::errc::result_out_of_range)
+                value = beyond_doubles(token);
             kernel.values.push_back(value);
             ++columns;
             i += token.size();
@@ -420,28 +420,17 @@ void median_blur(NodeContext &, std::span<const Value> inputs, std::vector<Value
     outputs.push_back(std::move(out).publish());
 }
 
-/* An integer input that native_neighborhood checks against [2, 2**32): its value, or ValueError with the message
- * (a Python int beyond int64 is out of range too). */
-uint32_t dither_count(const Value &value, const char *message)
-{
-    const int64_t *count = std::get_if<int64_t>(&value);
-    if (!count || *count < 2 || *count > 0xFFFFFFFF) throw NodeError("ValueError", message);
-    return uint32_t(*count);
-}
-
 /* chainner:image:dither (quantize/dither.py, native_neighborhood.uniform_dither): UniformDitherAlgorithm "None",
  * "Ordered" (ThresholdMap B2-B16), "Diffusion" (ErrorDiffusionMap values) or "Riemersma". */
 void dither(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
-    static constexpr std::array<std::string_view, 8> diffusion{"FS", "JJN", "ST", "A", "B", "S", "S2", "SL"};
     const Image &image = std::get<Image>(inputs[0]);
     const std::string &algorithm = std::get<std::string>(inputs[2]);
     int mode = algorithm == "None" ? 0 : algorithm == "Ordered" ? 1 : algorithm == "Diffusion" ? 2 : 3;
     size_t map_size = 2;
     if (mode == 1) map_size = size_t(std::stoi(std::get<std::string>(inputs[3]).substr(1)));
     int map = 0;
-    if (mode == 2)
-        map = int(std::find(diffusion.begin(), diffusion.end(), std::get<std::string>(inputs[4])) - diffusion.begin());
+    if (mode == 2) map = diffusion_map(std::get<std::string>(inputs[4]));
     neighborhood_image(image);
     uint32_t colors = dither_count(inputs[1], "Dither colors must be an integer in [2,4294967295]");
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);

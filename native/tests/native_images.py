@@ -4,12 +4,17 @@ import zlib
 
 import numpy as np
 
+SIZES = [(1, 1), (3, 5), (17, 31), (64, 257)]
+CHANNELS = [1, 3, 4]
+EMPTY_SHAPES = [(0, 5, 3), (4, 0), (0, 0, 4)]
 # NaN with two payloads, both zeros, both infinities, a denormal, out-of-range values.
-EDGES = np.array(
-    [np.nan, -0.0, 0.0, np.inf, -np.inf, 1e-45, -0.25, 1.75, 1.0], dtype=np.float32
-)
 EDGES = np.concatenate(
-    [EDGES, np.array([0x7FC00123, 0xFFC00001], np.uint32).view(np.float32)]
+    [
+        np.array(
+            [np.nan, -0.0, 0.0, np.inf, -np.inf, 1e-45, -0.25, 1.75, 1.0], np.float32
+        ),
+        np.array([0x7FC00123, 0xFFC00001], np.uint32).view(np.float32),
+    ]
 )
 
 

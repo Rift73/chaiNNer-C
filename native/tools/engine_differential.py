@@ -50,6 +50,55 @@ from verify_runtime import sse_event_mismatches, sse_record
 
 KINDS = ("python", "native")
 
+# The owner's stand-in's ruling P7 (final review 1, H1): the native engine's compact (C-contiguous) images are the
+# reference; a reduction depends on the pixel values and shape only. Downstream of a NumPy view (a crop, a split
+# channel) the Python executor's reductions may differ in the last digit or a zero's sign. Per layout chain of
+# native/tests/test_engine_differential.py, the mismatches the oracle's run is recorded to give; any other fails.
+# Lens Blur into Image Statistics agrees: the statistics take one channel, and the review's difference was a
+# multi-channel call no chain makes.
+LAYOUT_DIFFERENCES: dict[str, list[str]] = {
+    "crop-statistics": [
+        "files differ: ['stats_0_255_118.6884.png', 'stats_0_255_118.6885.png']",
+        (
+            'name: broadcast {"data": {"data": {"0": null}, "nodeId": "name", "sequenceTypes": {}, "types": {"0":'
+            ' {"type": "string-literal", "value": "stats_0_255_118.6885"}}}, "event": "node-broadcast"} sent 1 ti'
+            'mes by converted, 0 by baseline'
+        ),
+        (
+            'stats: broadcast {"data": {"data": {"0": null, "1": null, "2": null, "3": null}, "nodeId": "stats", '
+            '"sequenceTypes": {}, "types": {"0": {"type": "numeric-literal", "value": 0.0}, "1": {"type": "numeri'
+            'c-literal", "value": 255.0}, "2": {"type": "numeric-literal", "value": 118.6885}, "3": {"type": "num'
+            'eric-literal", "value": 124.1034}}}, "event": "node-broadcast"} sent 1 times by converted, 0 by base'
+            'line'
+        ),
+        (
+            'name: final state differs ({"data": {"0": null}, "nodeId": "name", "sequenceTypes": {}, "types": {"0'
+            '": {"type": "string-literal", "value": "stats_0_255_118.6884"}}} baseline, {"data": {"0": null}, "no'
+            'deId": "name", "sequenceTypes": {}, "types": {"0": {"type": "string-literal", "value": "stats_0_255_'
+            '118.6885"}}} converted)'
+        ),
+        (
+            'stats: final state differs ({"data": {"0": null, "1": null, "2": null, "3": null}, "nodeId": "stats"'
+            ', "sequenceTypes": {}, "types": {"0": {"type": "numeric-literal", "value": 0.0}, "1": {"type": "nume'
+            'ric-literal", "value": 255.0}, "2": {"type": "numeric-literal", "value": 118.6884}, "3": {"type": "n'
+            'umeric-literal", "value": 124.1034}}} baseline, {"data": {"0": null, "1": null, "2": null, "3": null'
+            '}, "nodeId": "stats", "sequenceTypes": {}, "types": {"0": {"type": "numeric-literal", "value": 0.0},'
+            ' "1": {"type": "numeric-literal", "value": 255.0}, "2": {"type": "numeric-literal", "value": 118.688'
+            '5}, "3": {"type": "numeric-literal", "value": 124.1034}}} converted)'
+        ),
+    ],
+    "split-statistics": [
+        (
+            'stats: broadcast {"data": {"data": {"0": null, "1": null, "2": null, "3": null}, "nodeId": "stats", '
+            '"sequenceTypes": {}, "types": {"0": {"type": "numeric-literal", "value": -0.0}, "1": {"type": "numer'
+            'ic-literal", "value": 254.998}, "2": {"type": "numeric-literal", "value": 127.3388}, "3": {"type": "'
+            'numeric-literal", "value": 127.1562}}}, "event": "node-broadcast"} sent 1 times by converted, 0 by b'
+            'aseline'
+        ),
+    ],
+    "lens-blur-statistics": [],
+}
+
 
 @dataclass
 class Result:

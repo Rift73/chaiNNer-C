@@ -2,9 +2,9 @@
 
 import numpy as np
 import pytest
-
-from image_node_cases import CHANNELS, EMPTY_SHAPES, SIZES, image, seed_of
 from native_differential import assert_native_matches
+from native_images import CHANNELS, EMPTY_SHAPES, SIZES, image, seed_of
+
 from nodes.impl.native_graph import graph
 
 CASES = [(size, channels) for size in SIZES for channels in CHANNELS]

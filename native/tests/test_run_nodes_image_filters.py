@@ -2,9 +2,9 @@
 
 import numpy as np
 import pytest
-
-from image_node_cases import CHANNELS, EMPTY_SHAPES, SIZES, image, seed_of
 from native_differential import assert_native_matches
+from native_images import CHANNELS, EMPTY_SHAPES, SIZES, image, seed_of
+
 from nodes.utils.seed import Seed
 
 CASES = [(size, channels) for size in SIZES for channels in CHANNELS]
@@ -125,6 +125,12 @@ def test_convolve_edge_cases():
     assert_native_matches("chainner:image:image_convolve", [img, "1", 2**31])
     for shape in EMPTY_SHAPES:
         assert_native_matches("chainner:image:image_convolve", [np.zeros(shape, np.float32), "1 2", 0])
+
+
+@pytest.mark.parametrize("text", ["1e400", "-1e400", "-1e-400", "1e-0400", "+0.1e310 -00.10e-323\n1 -1e400"])
+def test_convolve_coefficients_beyond_the_doubles(text):
+    # float() gives +-inf above the doubles' range and +-0 below it.
+    assert_native_matches("chainner:image:image_convolve", [image(2, 6, 7, 3), text, 0])
 
 
 @pytest.mark.parametrize(("size", "channels"), CASES)

@@ -2,9 +2,9 @@
 
 import numpy as np
 import pytest
-
-from image_node_cases import CHANNELS, EMPTY_SHAPES, SIZES, image, seed_of
 from native_differential import assert_native_matches
+from native_images import CHANNELS, EMPTY_SHAPES, SIZES, image, seed_of
+
 from nodes.impl.color.color import Color
 from nodes.impl.native_graph import graph
 
