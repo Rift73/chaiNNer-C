@@ -212,8 +212,10 @@ def test_16_bit_grey_alpha_tiff_warns_of_the_loss(
     monkeypatch.setattr(load_image.logger, "warning", warnings.append)
     loaded = load_image_node(path)[0]
     assert warnings == [
-        ("16-bit grey+alpha TIFF: alpha dropped and depth reduced to 8 bit;"
-        f" save it as RGBA or PNG: {path}")
+        (
+            "16-bit grey+alpha TIFF: alpha dropped and depth reduced to 8 bit;"
+            f" save it as RGBA or PNG: {path}"
+        )
     ]
     # Still OpenCV's decode, no raise.
     expected = _read_cv(path)
