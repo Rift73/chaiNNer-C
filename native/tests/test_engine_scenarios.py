@@ -429,6 +429,61 @@ def look_ahead_blocked(trace: list[object]) -> Chain:
     return look_ahead_chain(trace, None)
 
 
+def look_ahead_serial_chain(trace: list[object], fail_fast: bool) -> Chain:
+    # A look-ahead through a serial node (a context node, as a GPU upscale): computed ahead on the driver one item at a
+    # time, in order, with its iteration view at that item and its state shared (process.py's serial candidates),
+    # only when every error ends the loop.
+    b = Builder()
+    b.node("frames", lambda: items(list(range(10)), fail_fast=fail_fast), kind="generator", inputs=0)
+
+    def upscale(context, x):
+        view = context.iteration
+        view.state = (view.state or 0) + 1
+        trace.append(("upscale", view.index, x, view.state))
+        return x * 100
+
+    b.node("upscale", upscale, context=True)
+
+    def temporal(context, frame):
+        view = context.iteration
+        ahead = view.lookahead(0)
+        trace.append(("temporal", view.index, frame, [view.peek(0, k) for k in range(1, ahead + 1)]))
+        return frame
+
+    b.node("temporal", temporal, context=True, side_effects=True)
+    b.edge("frames", 0, "upscale", 0)
+    b.edge("upscale", 0, "temporal", 0)
+    return b.chain
+
+
+def look_ahead_serial(trace: list[object]) -> Chain:
+    return look_ahead_serial_chain(trace, True)
+
+
+def look_ahead_serial_deferred_errors(trace: list[object]) -> Chain:
+    return look_ahead_serial_chain(trace, False)
+
+
+def failed_prefetched_branch(trace: list[object]) -> Chain:
+    # Two independent sinks, the first's branch failing: the second's, computed ahead beside it, sends no events
+    # (process.Executor never runs it).
+    b = Builder()
+
+    def fails(_):
+        time.sleep(0.05)
+        raise ValueError("branch a fails")
+
+    b.node("pa", fails)
+    b.value("pa", 0, 1)
+    b.node("pb", lambda x: x + 1)
+    b.value("pb", 0, 2)
+    b.node("sink_a", lambda x: trace.append(("a", x)), outputs=0, side_effects=True)
+    b.node("sink_b", lambda x: trace.append(("b", x)), outputs=0, side_effects=True)
+    b.edge("pa", 0, "sink_a", 0)
+    b.edge("pb", 0, "sink_b", 0)
+    return b.chain
+
+
 def side_effect_feeding(trace: list[object]) -> Chain:
     # A side-effect node read by another node: consumed by its reader and by the run (its extra reservation).
     b = Builder()
@@ -502,6 +557,9 @@ SCENARIOS = [
     collector_only,
     look_ahead,
     look_ahead_blocked,
+    look_ahead_serial,
+    look_ahead_serial_deferred_errors,
+    failed_prefetched_branch,
     side_effect_feeding,
     collector_iterate_error,
     collector_construction_error,

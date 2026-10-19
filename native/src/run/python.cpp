@@ -560,6 +560,11 @@ py::object to_python(const Value &value)
         value);
 }
 
+py::object python_exception(const NodeError &error)
+{
+    return exception_object(error);
+}
+
 void rethrow_python_error(py::error_already_set &error)
 {
     if (error.matches(names().aborted)) throw Aborted{};

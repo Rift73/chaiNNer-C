@@ -100,6 +100,36 @@ def video_frames_chain(schemas, assets: Path, output: Path) -> list[dict]:
     ]
 
 
+def range_chain(schemas, assets: Path, output: Path) -> list[dict]:
+    """A native generator (Range) through native nodes (Math, Create Checkerboard, Text Append) into Save Image."""
+    return [
+        make_node(schemas, "range", "chainner:utility:range", {0: 1, 1: True, 2: 6, 3: False}),
+        make_node(schemas, "size", "chainner:utility:math", {1: "mul", 0: edge("range"), 2: 16}),
+        make_node(schemas, "board", "chainner:image:create_checkerboard", {0: edge("size"), 1: edge("size"), 4: 5}),
+        make_node(schemas, "name", "chainner:utility:text_append", {0: "-", 1: "board", 2: edge("range")}),
+        make_node(
+            schemas, "save", "chainner:image:save",
+            {0: edge("board"), 1: str(output), 2: None, 3: edge("name"), 4: "png", 15: "u8"},
+        ),
+    ]
+
+
+def spritesheet_chain(schemas, assets: Path, output: Path) -> list[dict]:
+    """A native generator over an image (Split Spritesheet) into Save Image, named by its index."""
+    return [
+        make_node(schemas, "board", "chainner:image:create_checkerboard", {0: 90, 1: 64, 4: 7}),
+        make_node(schemas, "split", "chainner:image:split_spritesheet", {0: edge("board"), 1: 2, 2: 3}),
+        make_node(schemas, "name", "chainner:utility:text_append", {0: "_", 1: "sprite", 2: edge("split", 1)}),
+        make_node(
+            schemas, "save", "chainner:image:save",
+            {0: edge("split"), 1: str(output), 2: None, 3: edge("name"), 4: "png", 15: "u8"},
+        ),
+    ]
+
+
+CHAINS = {"resize": resize_chain, "range": range_chain, "spritesheet": spritesheet_chain}
+
+
 def run_case(schemas, assets: Path, tmp_path: Path, case: str) -> list[str]:
     output = tmp_path / "out"
     storage = assets / "storage"
@@ -107,8 +137,8 @@ def run_case(schemas, assets: Path, tmp_path: Path, case: str) -> list[str]:
     for kind in ("python", "native"):
         shutil.rmtree(output, ignore_errors=True)
         output.mkdir(parents=True)
-        if case == "resize":
-            nodes = resize_chain(schemas, assets, output)
+        if case in CHAINS:
+            nodes = CHAINS[case](schemas, assets, output)
         elif case == "video-frames":
             nodes = video_frames_chain(schemas, assets, output)
         else:
@@ -129,7 +159,7 @@ def run_case(schemas, assets: Path, tmp_path: Path, case: str) -> list[str]:
     return mismatches(case, chain, oracle, engine, tmp_path)
 
 
-@pytest.mark.parametrize("case", ["resize", *IMAGE_CASES])
+@pytest.mark.parametrize("case", [*CHAINS, *IMAGE_CASES])
 def test_image_chain_matches(schemas, assets, tmp_path, case):
     assert run_case(schemas, assets, tmp_path, case) == []
 

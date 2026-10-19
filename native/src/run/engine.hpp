@@ -67,5 +67,7 @@ pybind11::object to_python(const Value &value);
 
 /* Raises a NodeError or Aborted from the pending Python exception (GIL held). */
 [[noreturn]] void rethrow_python_error(pybind11::error_already_set &error);
+/* The Python exception a NodeError names, with its message (GIL held). */
+pybind11::object python_exception(const NodeError &error);
 
 }  // namespace cn::run

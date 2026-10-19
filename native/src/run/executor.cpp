@@ -21,6 +21,8 @@
  * here and posted to the server's queue in batches by one pump thread; broadcasts are computed latest-first, one at
  * a time, by one broadcaster thread (process.Executor's LatestBroadcasts). */
 #include "engine.hpp"
+#include "image_decode.hpp"
+#include "image_preview.hpp"
 #include "kernel_status.hpp"
 
 #include <pybind11/gil_safe_call_once.h>
@@ -34,12 +36,18 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
+#include <cstring>
 #include <exception>
+#include <functional>
+#include <list>
+#include <future>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <semaphore>
 #include <set>
+#include <stdexcept>
 #include <thread>
 #include <unordered_map>
 #ifndef NOMINMAX
@@ -145,6 +153,165 @@ PyRef current_error(py::error_already_set &error)
     return py_ref(error.value());
 }
 
+/* An error no caller can receive (an event's or a broadcast's), reported as Python's unraisable hook reports one
+ * (GIL held). */
+void report_unraisable(const char *where)
+{
+    try {
+        throw;
+    } catch (py::error_already_set &error) {
+        error.discard_as_unraisable(where);
+    } catch (const std::exception &error) {
+        PyErr_SetString(PyExc_RuntimeError, error.what());
+        PyErr_WriteUnraisable(py::str(where).ptr());
+    }
+}
+
+/* A C++ exception escaping native code (an allocation, a status check) as the node's error: a NodeError as itself,
+ * any other as pybind11 raises it when the same code runs under a Python body. */
+NodeError escaped(const std::exception &error)
+{
+    if (const auto *node = dynamic_cast<const NodeError *>(&error)) return *node;
+    const char *type = "RuntimeError";
+    if (dynamic_cast<const std::bad_alloc *>(&error))
+        type = "MemoryError";
+    else if (dynamic_cast<const std::out_of_range *>(&error))
+        type = "IndexError";
+    else if (dynamic_cast<const std::overflow_error *>(&error))
+        type = "OverflowError";
+    else if (dynamic_cast<const std::domain_error *>(&error) || dynamic_cast<const std::invalid_argument *>(&error) ||
+             dynamic_cast<const std::length_error *>(&error) || dynamic_cast<const std::range_error *>(&error))
+        type = "ValueError";
+    return NodeError(type, error.what());
+}
+
+/* A memo key: 128 bits of two independent 64-bit mixes over the key's parts. */
+struct Key {
+    uint64_t a = 0x9E3779B97F4A7C15ull, b = 0xC2B2AE3D27D4EB4Full;
+    bool operator==(const Key &other) const noexcept { return a == other.a && b == other.b; }
+    bool operator<(const Key &other) const noexcept { return a != other.a ? a < other.a : b < other.b; }
+
+    static uint64_t mix(uint64_t h)
+    {
+        h ^= h >> 33;
+        h *= 0xFF51AFD7ED558CCDull;
+        h ^= h >> 33;
+        h *= 0xC4CEB9FE1A85EC53ull;
+        return h ^ (h >> 33);
+    }
+    Key &add(uint64_t value)
+    {
+        a = mix(a ^ (value + 0x9E3779B97F4A7C15ull + (a << 6) + (a >> 2)));
+        b = mix(b + (value ^ 0xD6E8FEB86659FD93ull) * 0x2545F4914F6CDD1Dull);
+        return *this;
+    }
+    Key &add(std::string_view text)
+    {
+        add(uint64_t(text.size()));
+        for (size_t i = 0; i < text.size(); i += 8) {
+            uint64_t word = 0;
+            std::memcpy(&word, text.data() + i, std::min<size_t>(8, text.size() - i));
+            add(word);
+        }
+        return *this;
+    }
+    Key &add(const Key &other) { return add(other.a).add(other.b); }
+};
+
+/* The memo cache (DESIGN.md section 2, amendment A3): in this process only, the outputs of deterministic,
+ * side-effect-free nodes by key (schema, enforced constant inputs, package settings, upstream keys; a file's
+ * identity for Load Image and Load Images' items), least recently used first out, within a budget of
+ * min(2 GiB, 10 % of the RAM) apart from the item window's (CHAINNER_C_MEMO_BUDGET_MIB, 0 = off); an entry above a
+ * budget's eighth is not kept. A dependency change restarts the worker process (server_host.change_dependencies), which
+ * drops it. */
+class Memo {
+public:
+    static Memo &get()
+    {
+        static Memo *memo = new Memo();
+        return *memo;
+    }
+    struct Entry {
+        std::vector<Value> outputs;
+        PyRef object;  // a regular Python node's RegularOutput (an individual run returns it)
+        int64_t bytes = 0;
+    };
+    bool enabled() const noexcept { return budget_ > 0; }
+    std::optional<Entry> find(const Key &key)
+    {
+        std::lock_guard<std::mutex> locked(mutex_);
+        auto found = entries_.find(key);
+        if (found == entries_.end()) {
+            ++misses_;
+            return std::nullopt;
+        }
+        order_.splice(order_.end(), order_, found->second.position);
+        ++hits_;
+        return found->second.entry;
+    }
+    void insert(const Key &key, Entry entry)
+    {
+        std::vector<Entry> evicted;  // released outside the lock
+        std::lock_guard<std::mutex> locked(mutex_);
+        if (!enabled() || entry.bytes > budget_ / 8 || entries_.count(key)) return;
+        while (bytes_ + entry.bytes > budget_ && !order_.empty()) {
+            auto victim = entries_.find(order_.front());
+            bytes_ -= victim->second.entry.bytes;
+            evicted.push_back(std::move(victim->second.entry));
+            entries_.erase(victim);
+            order_.pop_front();
+        }
+        bytes_ += entry.bytes;
+        order_.push_back(key);
+        entries_.emplace(key, Slot{std::move(entry), std::prev(order_.end())});
+    }
+    void clear()
+    {
+        std::map<Key, Slot> released;
+        std::lock_guard<std::mutex> locked(mutex_);
+        released.swap(entries_);
+        order_.clear();
+        bytes_ = 0;
+    }
+    py::dict stats()
+    {
+        std::lock_guard<std::mutex> locked(mutex_);
+        py::dict result;
+        result["entries"] = entries_.size();
+        result["bytes"] = bytes_;
+        result["budget"] = budget_;
+        result["hits"] = hits_;
+        result["misses"] = misses_;
+        return result;
+    }
+
+private:
+    Memo()
+    {
+        MEMORYSTATUSEX memory = {};
+        memory.dwLength = sizeof(memory);
+        int64_t total = GlobalMemoryStatusEx(&memory) ? int64_t(memory.ullTotalPhys) : 0;
+        budget_ = std::min<int64_t>(int64_t(2) << 30, total / 10);
+        char *value = nullptr;
+        size_t size = 0;
+        if (_dupenv_s(&value, &size, "CHAINNER_C_MEMO_BUDGET_MIB") == 0 && value) {
+            std::string text(value);
+            free(value);
+            if (!text.empty() && text.size() <= 9 && text.find_first_not_of("0123456789") == std::string::npos)
+                budget_ = int64_t(std::stoll(text)) << 20;
+        }
+    }
+    struct Slot {
+        Entry entry;
+        std::list<Key>::iterator position;
+    };
+    std::mutex mutex_;
+    std::map<Key, Slot> entries_;
+    std::list<Key> order_;  // least recently used first
+    int64_t budget_ = 0, bytes_ = 0;
+    uint64_t hits_ = 0, misses_ = 0;
+};
+
 struct InputPlan {
     int source = -1;  // the node feeding it, -1 for a constant
     int output = 0;
@@ -155,10 +322,13 @@ struct InputPlan {
     bool image = false;    // ImageInput: the engine enforces images
     std::vector<int> channels;  // ImageInput.channels (empty: any)
     bool colors = false;        // ImageInput.allow_colors
+    std::optional<Key> constant_key;  // a constant's memo key part (its JSON); none: unkeyable
 };
 
 struct OutputPlan {
-    bool image = false;  // ImageOutput or LargeImageOutput: the engine enforces images
+    int64_t id = 0;
+    bool image = false;  // ImageOutput or LargeImageOutput: the engine enforces and broadcasts images
+    bool large = false;  // LargeImageOutput: its broadcast carries the UI's previews
     int channels = 0;    // 0: any
     bool assume_normalized = false;
 };
@@ -173,11 +343,15 @@ struct NodePlan {
     std::vector<OutputPlan> outputs;
     std::vector<int> iterable_outputs;
     int64_t hits = 0;  // -1: static
-    const Entry *native = nullptr;
+    const Entry *native = nullptr;  // a regular node's or a generator's native entry point
     std::map<std::string, Value, std::less<>> settings;
     bool precached = false;
     std::vector<Value> precached_outputs;
     bool phased = false;  // registered prepare and commit phases (item_window.register_phases)
+    bool not_speculated = false;  // Into Directory: never computed ahead of its item (process._NOT_SPECULATED)
+    bool memo = false;    // its outputs may be memoized (amendment A3's allow-list)
+    int identity_input = -1;  // Load Image: its file input, whose file identity keys it
+    Key settings_key;     // its package settings
 };
 
 struct GeneratorPlan {
@@ -202,8 +376,15 @@ struct Cell {
     PyRef inputs;  // a collector's inputs at its construction (the window's writer directories)
     PyRef error;
     int64_t hits = 0;
-    int64_t bytes = 0;  // its outputs' array bytes, measured at slot 0 (the window's per-item estimate)
-    // A window job's events, sent when the commit path takes it (process.ItemWindow.take_node's replay).
+    int64_t bytes = 0;  // its outputs' array bytes (the window's per-item estimate at slot 0, a memo entry's size)
+    enum class KeyState : uint8_t { unknown, none, known } key_state = KeyState::unknown;
+    Key key;
+    // A native generator's item source, with the context and inputs it was created with.
+    std::shared_ptr<ItemSource> items;
+    std::shared_ptr<NodeContext> items_context;
+    std::vector<Value> items_inputs;
+    bool demanded = false;  // the commit path needs it (its events are sent as it runs)
+    // A deferred job's events (see Run::defers), sent when the commit path takes it.
     bool deferred = false, deferred_ok = false;
     double deferred_seconds = 0;
     std::vector<Value> deferred_outputs;
@@ -224,10 +405,11 @@ struct CellRef {
 
 /* The hooks' bound methods (native_executor._Hooks), looked up once. */
 struct Hooks {
-    py::object install_thread, post, finish, warn, info, run_node, enforce_input, enforce_output, native_failure,
+    py::object post, finish, warn, info, run_node, enforce_input, enforce_output, native_failure,
         regular_outputs, generator_outputs, collector, node_cleanups, chain_cleanups, output_bytes,
         broadcast, items, describe, materialize, collector_iterate, collector_complete, prepare, begin_loop, iteration,
-        end_loop, window, warn_look_ahead_off, aborted_type;
+        end_loop, window, warn_look_ahead_off, native_generator, file_identity, item_identity, regular_output,
+        aborted_type;
 };
 
 struct Event {
@@ -273,9 +455,70 @@ struct UpstreamFailed {
 
 class EngineLazy;
 
+/* The run whose job (a service, a worker's job) the thread runs: close() never waits for its own thread. */
+thread_local const Run *serving_run = nullptr;
+
+class Serving {
+public:
+    explicit Serving(const Run *run) : previous_(serving_run) { serving_run = run; }
+    ~Serving() { serving_run = previous_; }
+    Serving(const Serving &) = delete;
+    Serving &operator=(const Serving &) = delete;
+
+private:
+    const Run *previous_;
+};
+
+/* Python state for a persistent engine thread, made once: a thread state kept for the thread's life and NumPy's
+ * data-memory handler (nodes/impl/numpy_pool.py), which a thread does not inherit. */
+void enter_python_thread()
+{
+    PyGILState_Ensure();
+    try {
+        py::module_::import("nodes.impl.numpy_pool").attr("install")();
+    } catch (py::error_already_set &error) {
+        error.discard_as_unraisable("chaiNNer-C engine thread setup");
+    }
+    PyEval_SaveThread();
+}
+
+/* The process's engine threads, persistent across runs (and previews): workers, as many as the CPUs of the
+ * affinity mask (cn_parallel_for's capacity: CHAINNER_C_ENGINE_THREADS overrides), that run the queued jobs of
+ * every run; and service threads, reused for each run's driver, event pump, broadcaster and window producer.
+ * A run offers one token per job it queues; a worker takes a token, then a job from that run (none when it was
+ * taken, dropped or paused meanwhile). The engine's lock is never held while taking a run's. */
+class Engine {
+public:
+    static Engine &get()
+    {
+        static Engine *engine = new Engine();  // never destroyed: its threads live as long as the process
+        return *engine;
+    }
+    void attach(Run *run);
+    void offer(Run *run, size_t jobs = 1);
+    /* Drops the run's tokens and waits until no worker is inside it. */
+    void detach(Run *run);
+    std::future<void> service(std::function<void()> task);
+    int workers() const noexcept { return workers_; }
+
+private:
+    Engine();
+    void work();
+    void serve();
+
+    int workers_ = 1;
+    std::mutex mutex_;
+    std::condition_variable work_, idle_, services_changed_;
+    std::deque<Run *> tokens_;
+    std::unordered_map<Run *, int> active_;
+    std::deque<std::packaged_task<void()>> services_;
+    int idle_services_ = 0;
+};
+
 struct GeneratorRun {
     int node = -1;
     PyRef output, iterator;
+    std::shared_ptr<ItemSource> native;  // a native generator's items (describe serial, materialize anywhere)
     std::vector<Value> partial;  // its GeneratorOutput's partial_output (its static outputs)
     bool split = false, fail_fast = true;
     int64_t expected = 0;
@@ -307,7 +550,9 @@ struct Task {
     enum Kind { materialize, prepare } kind;
     int64_t slot;
     int index;  // materialize: the generator's position in its group; prepare: the sink
-    PyRef token;
+    PyRef token;      // a Python generator's item token
+    int64_t item = 0;  // a native generator's item token
+    std::optional<Key> key;  // the item's memo key (a split iterator's file identity)
 };
 
 /* One generator group's loop and its item window (process.Executor's _LoopRun and ItemWindow). */
@@ -317,6 +562,7 @@ struct Loop {
     std::vector<CollectorRun> *collectors = nullptr;
     std::vector<int> sinks;  // the group's side-effect nodes, then its collectors
     bool decided = false, active = false, halted = false, stop = false;
+    bool fail_fast = true;  // every generator's errors end the loop (serial nodes may then run ahead)
     int k = 1;
     int64_t budget = 0, estimate = 0, committed = 0;
     std::optional<std::string> blocker;
@@ -327,7 +573,8 @@ struct Loop {
     std::map<int64_t, std::vector<Outcome>> outcomes;
     std::map<std::pair<int, int64_t>, Prepare> prepares;
     std::map<int, bool> ahead;
-    std::thread producer;
+    std::set<int> serial;  // nodes computed ahead that are serial or depend on a serial one
+    std::future<void> producer;
 
     int generator_index(int node) const
     {
@@ -362,7 +609,7 @@ public:
     void flush_broadcasts();
     void close();
     int lookahead(int node, int input);
-    py::object peek(int node, int input, int64_t offset);
+    py::object peek(int node, int input, int64_t offset, int64_t origin);
 
     /* A lazy input's value (on the reading thread): its upstream evaluated (nested), the read consumed. */
     void read_lazy(EngineLazy &lazy);
@@ -392,9 +639,8 @@ private:
     std::deque<Task> tasks_;
     std::unique_ptr<Loop> loop_;  // the running group's loop (set and reset by the driver under mutex_)
     int running_ = 0, running_slots_ = 0;
-    bool workers_stop_ = false;
     bool dropping_ = false;  // the run failed: queued pure cells are not started
-    std::vector<std::thread> workers_;
+    bool slots_closing_ = false;  // the loop's end drains its slots: no slot work is queued any more
 
     // Run state
     std::atomic<bool> aborted_{false}, paused_{false};
@@ -402,15 +648,16 @@ private:
     double time_paused_ = 0;
     std::string mode_;
     int target_ = -1;
-    std::thread driver_;
+    std::future<void> driver_;
     bool started_ = false, closed_ = false;
+    std::string fault_;  // an engine thread's fault (under mutex_): the run's error
 
     // Events
     std::mutex events_mutex_;
     std::condition_variable events_changed_;
     std::vector<Event> events_;
     bool events_stop_ = false, pumping_ = false;
-    std::thread pump_;
+    std::future<void> pump_;
 
     // Broadcasts (LatestBroadcasts): one pending job per node, sent one at a time in submission order
     struct BroadcastJob {
@@ -422,7 +669,7 @@ private:
     std::deque<int> broadcast_order_;
     std::unordered_map<int, BroadcastJob> broadcast_jobs_;
     bool broadcasting_ = false, broadcasts_stop_ = false;
-    std::thread broadcaster_;
+    std::future<void> broadcaster_;
 
     Cell &cell(const CellRef &ref);
     CellRef source_of(const CellRef &ref, int input) const;
@@ -434,7 +681,9 @@ private:
     // Driver
     void drive();
     void suspend();
-    void ensure(const CellRef &ref);
+    void ensure(const CellRef &ref, bool commit = true);
+    bool parallel(const CellRef &ref);
+    void demand(const CellRef &ref);
     void want(const CellRef &ref);
     void prefetch(const CellRef &ref, std::set<std::pair<int, int64_t>> &seen);
     void dispatch();
@@ -445,7 +694,7 @@ private:
     void open_slot(int64_t slot);
     bool admits(const Loop &loop) const;
     void produce();
-    void set_item(int node, int64_t slot, std::vector<Value> outputs);
+    void set_item(int node, int64_t slot, std::vector<Value> outputs, std::optional<Key> key = std::nullopt);
     void want_window(int64_t slot);
     void run_task(const Task &task);
     PyRef take_prepared(int node, int64_t slot);
@@ -456,21 +705,32 @@ private:
     void decide_early();
     void take(const CellRef &ref);
     void release_slot(int64_t slot);
-    void finish_run(PyRef error, PyRef result);
     void drain_workers();
+    void fault(std::exception_ptr error);
 
     // Execution
-    void worker();
+    friend class Engine;
+    void work_one();
+    void queue(const CellRef &ref);
+    void queue(Task task);
     void execute(const CellRef &ref, bool on_driver);
+    void execute_cell(const CellRef &ref, bool on_driver);
     struct Gathered {
         std::vector<Value> values;               // inputs as the node receives them (lazy: an EngineLazy)
         std::vector<std::shared_ptr<EngineLazy>> lazies;
         bool defer = false;                      // a window job: its events wait for the commit path
     };
-    Gathered gather(const CellRef &ref);
+    bool defers(const CellRef &ref, bool on_driver);
+    Gathered gather(const CellRef &ref, bool on_driver);
     bool run_python(const CellRef &ref, const Gathered &inputs, Cell &result, double &lazy_seconds,
-                    const PyRef &prepared);
+                    const PyRef &prepared, bool ahead);
     NativeOutcome run_native(const CellRef &ref, const Gathered &inputs, Cell &result, double &lazy_seconds);
+    std::optional<NodeError> enforce_outputs(int node, std::vector<Value> &outputs, const std::vector<size_t> &which);
+    std::optional<Key> key_of(const CellRef &ref);
+    void identify_files();
+    std::optional<Key> item_key(const GeneratorRun &generator, const py::object &token);
+    std::vector<Value> fill_item(const GeneratorRun &generator, std::vector<Value> item);
+    std::vector<Value> native_item(const GeneratorRun &generator, int64_t token);
     py::list python_inputs(const CellRef &ref, const Gathered &inputs);
     void store(const CellRef &ref, Cell &&result);
     void consume(const CellRef &source);
@@ -512,7 +772,13 @@ public:
     {
         const Value &upstream = raw();
         if (!enforced_) {
-            value_ = run_.enforce_input(reader_.node, input_, upstream);
+            try {
+                value_ = run_.enforce_input(reader_.node, input_, upstream);
+            } catch (const NodeError &) {
+                // As an edge input whose enforce fails (run_native): the body enforces it itself, and runs or
+                // raises as it does today.
+                throw RunPython{};
+            }
             enforced_ = true;
         }
         return value_;
@@ -600,13 +866,14 @@ Value value_of(py::handle object)
 Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(hooks_object))
 {
     auto bind = [&](const char *name) { return hooks_object.attr(name); };
-    hooks_ = Hooks{bind("install_thread"), bind("post"), bind("finish"), bind("warn"), bind("info"), bind("run_node"),
+    hooks_ = Hooks{bind("post"), bind("finish"), bind("warn"), bind("info"), bind("run_node"),
                    bind("enforce_input"), bind("enforce_output"), bind("native_failure"),
                    bind("regular_outputs"), bind("generator_outputs"), bind("collector"), bind("node_cleanups"),
                    bind("chain_cleanups"), bind("output_bytes"), bind("broadcast"), bind("items"), bind("describe"),
                    bind("materialize"), bind("collector_iterate"), bind("collector_complete"), bind("prepare"),
                    bind("begin_loop"), bind("iteration"), bind("end_loop"), bind("window"),
-                   bind("warn_look_ahead_off"), bind("aborted_type")};
+                   bind("warn_look_ahead_off"), bind("native_generator"), bind("file_identity"),
+                   bind("item_identity"), bind("regular_output"), bind("aborted_type")};
     send_broadcast_data_ = plan["send_broadcast_data"].cast<bool>();
     for (py::handle id : plan["chain_start"]) chain_start_.push_back(id.cast<std::string>());
     for (py::handle node_handle : plan["nodes"]) {
@@ -620,10 +887,10 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
         plan_node.pure = node["pure"].cast<bool>();
         plan_node.node_context = node["node_context"].cast<bool>();
         plan_node.hits = node["hits"].cast<int64_t>();
-        bool native = node["native"].cast<bool>() && plan_node.kind == Kind::regular;
-        if (native) {
+        if (node["native"].cast<bool>() && plan_node.kind != Kind::collector) {
             const Entry *entry = find_entry(plan_node.schema);
-            if (entry && entry->run) plan_node.native = entry;
+            if (entry && (plan_node.kind == Kind::regular ? entry->run != nullptr : entry->generator != nullptr))
+                plan_node.native = entry;
         }
         for (py::handle input_handle : node["inputs"]) {
             py::tuple input = py::reinterpret_borrow<py::tuple>(input_handle);
@@ -642,15 +909,20 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
                 plan_input.colors = description[1].cast<bool>();
             }
             if (plan_node.native && plan_input.source < 0) plan_input.enforced = value_of(input[6]);
+            if (plan_input.source < 0 && !input[7].is_none()) plan_input.constant_key = Key().add(input[7].cast<std::string>());
             plan_node.inputs.push_back(std::move(plan_input));
         }
+        py::list output_ids = node["output_ids"];
+        size_t position = 0;
         for (py::handle output_handle : node["image_outputs"]) {
             OutputPlan output;
+            output.id = output_ids[position++].cast<int64_t>();
             if (!output_handle.is_none()) {
                 py::tuple description = py::reinterpret_borrow<py::tuple>(output_handle);
                 output.image = true;
                 output.channels = description[0].cast<int>();
                 output.assume_normalized = description[1].cast<bool>();
+                output.large = description[2].cast<bool>();
             }
             plan_node.outputs.push_back(output);
         }
@@ -660,6 +932,10 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
                 plan_node.settings.emplace(py::str(key), value_of(value));
         }
         plan_node.phased = node["phased"].cast<bool>();
+        plan_node.not_speculated = plan_node.schema == "chainner:utility:into_directory";
+        plan_node.memo = node["memo"].cast<bool>() && Memo::get().enabled();
+        plan_node.identity_input = node["identity_input"].cast<int>();
+        plan_node.settings_key = Key().add(node["settings_key"].cast<std::string>());
         py::object precached = node["precached"];
         if (!precached.is_none()) {
             plan_node.precached = true;
@@ -708,9 +984,14 @@ Run::~Run()
     }
 }
 
+/* A cell (mutex_ held); an item's cell only while its slot is open (open_slot makes it). */
 Cell &Run::cell(const CellRef &ref)
 {
-    if (ref.slot >= 0 && iterated_[size_t(ref.node)]) return slot_cells_[ref.slot][size_t(ref.node)];
+    if (ref.slot >= 0 && iterated_[size_t(ref.node)]) {
+        auto found = slot_cells_.find(ref.slot);
+        if (found == slot_cells_.end()) throw std::logic_error("The engine reached a cell of a slot it closed");
+        return found->second[size_t(ref.node)];
+    }
     return static_cells_[size_t(ref.node)];
 }
 
@@ -729,22 +1010,29 @@ void Run::start(const std::string &mode, int target)
     mode_ = mode;
     target_ = target;
     py::gil_scoped_release unlocked;
-    unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
-    DWORD_PTR process_mask = 0, system_mask = 0;
-    if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask) && process_mask)
-        cpus = unsigned(std::popcount(uint64_t(process_mask)));
-    unsigned count = unsigned(environment_count("CHAINNER_C_ENGINE_THREADS", int(std::max(2u, cpus))));
-    for (unsigned i = 0; i < count; ++i) workers_.emplace_back([this] { worker(); });
-    pump_ = std::thread([this] { pump(); });
-    broadcaster_ = std::thread([this] { broadcaster(); });
-    driver_ = std::thread([this] { drive(); });
+    Engine &engine = Engine::get();
+    engine.attach(this);
+    pump_ = engine.service([this] {
+        Serving serving(this);
+        pump();
+    });
+    broadcaster_ = engine.service([this] {
+        Serving serving(this);
+        broadcaster();
+    });
+    driver_ = engine.service([this] {
+        Serving serving(this);
+        drive();
+    });
 }
 
 void Run::kill()
 {
     aborted_ = true;
     {
+        // Workers drop a stopped run's queued jobs, also those a pause left without a worker.
         std::lock_guard<std::mutex> locked(mutex_);
+        if (started_ && !closed_) Engine::get().offer(this, ready_.size() + tasks_.size());
     }
     changed_.notify_all();
 }
@@ -755,108 +1043,146 @@ void Run::resume()
 {
     paused_ = false;
     {
+        // Workers drop a paused run's tokens: its queued jobs are offered again.
         std::lock_guard<std::mutex> locked(mutex_);
+        if (started_ && !closed_) Engine::get().offer(this, ready_.size() + tasks_.size());
     }
     changed_.notify_all();
 }
 
+/* Joins the run's threads, then drops every Python reference it holds (the hooks, cells, plan constants, broadcasts
+ * never sent): references the garbage collector cannot see, which would keep the executor and its outputs alive. */
 void Run::close()
 {
     if (closed_ || !started_) return;
+    if (serving_run == this) throw std::logic_error("A run cannot close on one of its own threads");
     closed_ = true;
-    if (driver_.joinable()) driver_.join();
+    if (driver_.valid()) driver_.wait();
     flush_broadcasts();
-    {
-        std::lock_guard<std::mutex> locked(mutex_);
-        workers_stop_ = true;
-    }
-    changed_.notify_all();
-    for (std::thread &worker : workers_) worker.join();
+    Engine::get().detach(this);
     {
         std::lock_guard<std::mutex> locked(broadcasts_mutex_);
         broadcasts_stop_ = true;
     }
     broadcasts_changed_.notify_all();
-    broadcaster_.join();
+    if (broadcaster_.valid()) broadcaster_.wait();
     {
         std::lock_guard<std::mutex> locked(events_mutex_);
         events_stop_ = true;
     }
     events_changed_.notify_all();
-    pump_.join();
+    if (pump_.valid()) pump_.wait();
+    py::gil_scoped_acquire python;
+    hooks_ = Hooks{};
+    hooks_object_ = PyRef{};
+    for (NodePlan &node : nodes_) {
+        for (InputPlan &input : node.inputs) {
+            input.constant = PyRef{};
+            input.enforced = Value{};
+        }
+        node.settings.clear();
+        node.precached_outputs.clear();
+    }
+    static_cells_.clear();
+    slot_cells_.clear();
+    broadcast_jobs_.clear();
+    broadcast_order_.clear();
+    events_.clear();
+    release_deferred();
 }
 
-/* Python state for an engine thread: a thread state kept for its life, its NumPy handler installed. */
-class ThreadPython {
-public:
-    explicit ThreadPython(const py::object &install)
-    {
-        state_ = PyGILState_Ensure();
-        try {
-            install();
-        } catch (py::error_already_set &error) {
-            error.discard_as_unraisable("chaiNNer-C engine thread setup");
-        }
-        saved_ = PyEval_SaveThread();
-    }
-    ~ThreadPython()
-    {
-        PyEval_RestoreThread(saved_);
-        release_deferred();
-        PyGILState_Release(state_);
-    }
-    ThreadPython(const ThreadPython &) = delete;
-    ThreadPython &operator=(const ThreadPython &) = delete;
-
-private:
-    PyGILState_STATE state_;
-    PyThreadState *saved_;
-};
-
-void Run::worker()
+/* An exception escaping an engine thread's job (an engine fault, an allocation outside any node): the run stops
+ * and reports it as its error, never a crash or a hang. */
+void Run::fault(std::exception_ptr error)
 {
-    ThreadPython python(hooks_.install_thread);
-    for (;;) {
-        CellRef ref{};
-        {
-            std::unique_lock<std::mutex> locked(mutex_);
-            changed_.wait(locked, [&] { return workers_stop_ || ((!ready_.empty() || !tasks_.empty()) && !paused_); });
-            if (ready_.empty() && tasks_.empty()) return;
-            if (!tasks_.empty()) {
-                Task task = std::move(tasks_.front());
-                tasks_.pop_front();
-                ++running_;
-                ++running_slots_;
+    std::string text = "The native run engine failed";
+    try {
+        std::rethrow_exception(error);
+    } catch (const std::exception &raised) {
+        text += std::string(": ") + raised.what();
+    } catch (...) {
+        text += " (an exception of an unknown type)";
+    }
+    {
+        std::lock_guard<std::mutex> locked(mutex_);
+        if (fault_.empty()) fault_ = std::move(text);
+    }
+    kill();
+}
+
+/* One job of the run for a worker of the engine: a window task first, else the oldest queued cell. A paused run's
+ * jobs wait for resume(), which offers them again; a stopped run's are dropped. */
+void Run::work_one()
+{
+    Serving serving(this);
+    std::optional<Task> task;
+    CellRef ref{};
+    {
+        std::unique_lock<std::mutex> locked(mutex_);
+        if (paused_ && !aborted_) return;
+        if (!tasks_.empty()) {
+            task = std::move(tasks_.front());
+            tasks_.pop_front();
+            if (aborted_) {
+                if (task->kind == Task::materialize) {
+                    --loop_->materializing;
+                } else if (auto found = loop_->prepares.find({task->index, task->slot}); found != loop_->prepares.end()) {
+                    found->second.kind = Prepare::done;  // nothing prepared
+                }
                 locked.unlock();
-                run_task(task);
-                locked.lock();
-                --running_;
-                --running_slots_;
-                dispatch();
                 changed_.notify_all();
-                continue;
+                return;
             }
+            ++running_slots_;
+        } else {
+            if (ready_.empty()) return;
             ref = ready_.front();
             ready_.pop_front();
             Cell &c = cell(ref);
             if (aborted_ || dropping_) {
                 c.state = State::idle;
                 c.wanted = false;
-                continue;
+                locked.unlock();
+                changed_.notify_all();
+                return;
             }
             c.state = State::running;
-            ++running_;
             if (ref.slot >= 0) ++running_slots_;
         }
-        execute(ref, false);
-        {
-            std::lock_guard<std::mutex> locked(mutex_);
-            --running_;
-            if (ref.slot >= 0) --running_slots_;
-            dispatch();
-        }
-        changed_.notify_all();
+        ++running_;
     }
+    bool faulted = false;
+    try {
+        if (task)
+            run_task(*task);
+        else
+            execute_cell(ref, false);
+    } catch (...) {
+        faulted = true;
+        fault(std::current_exception());
+    }
+    {
+        std::lock_guard<std::mutex> locked(mutex_);
+        --running_;
+        if (task || ref.slot >= 0) --running_slots_;
+        // A faulted cell is left to the stopped driver, which no longer waits for it.
+        if (faulted && !task && cell(ref).state == State::running) cell(ref).state = State::idle;
+        dispatch();
+    }
+    changed_.notify_all();
+}
+
+/* A ready cell or a window task queued for the engine's workers (mutex_ held). */
+void Run::queue(const CellRef &ref)
+{
+    ready_.push_back(ref);
+    Engine::get().offer(this);
+}
+
+void Run::queue(Task task)
+{
+    tasks_.push_back(std::move(task));
+    Engine::get().offer(this);
 }
 
 // Driver
@@ -876,7 +1202,7 @@ void Run::want(const CellRef &ref)
     Cell &c = cell(ref);
     if (c.state != State::idle || c.wanted) return;
     const NodePlan &node = nodes_[size_t(ref.node)];
-    if (!node.pure) return;
+    if (!node.pure || (node.not_speculated && ref.slot > commit_slot_)) return;
     c.wanted = true;
     for (size_t i = 0; i < node.inputs.size(); ++i) {
         const InputPlan &input = node.inputs[i];
@@ -921,9 +1247,9 @@ void Run::dispatch()
             if (input.source < 0 || input.lazy || input.ignored) continue;
             ready = cell(source_of(ref, int(i))).state == State::done;
         }
-        if (ready && !aborted_ && !dropping_) {
+        if (ready && !aborted_ && !dropping_ && !(ref.slot >= 0 && slots_closing_)) {
             c.state = State::queued;
-            ready_.push_back(ref);
+            queue(ref);
             queued = true;
             wanted_[w] = wanted_.back();
             wanted_.pop_back();
@@ -931,7 +1257,7 @@ void Run::dispatch()
         }
         ++w;
     }
-    if (loop_ && loop_->active && !aborted_ && !dropping_) {
+    if (loop_ && loop_->active && !aborted_ && !dropping_ && !slots_closing_) {
         for (auto &[key, prepare] : loop_->prepares) {
             if (prepare.kind != Prepare::waiting) continue;
             const auto [sink, slot] = key;
@@ -945,49 +1271,86 @@ void Run::dispatch()
             }
             if (!ready) continue;
             prepare.kind = Prepare::running;
-            tasks_.push_back(Task{Task::prepare, slot, sink, {}});
+            queue(Task{Task::prepare, slot, sink, {}, 0, std::nullopt});
             queued = true;
         }
     }
     if (queued) changed_.notify_all();
 }
 
-void Run::ensure(const CellRef &ref)
+/* The cell computed (or failed), its inputs first. commit: on the commit path, which takes what ran before it
+ * (replaying deferred events); a look-ahead's computation ahead takes nothing. */
+void Run::ensure(const CellRef &ref, bool commit)
 {
     bool done;
     {
         std::lock_guard<std::mutex> locked(mutex_);
-        done = settled(cell(ref));
+        Cell &c = cell(ref);
+        if (commit) c.demanded = true;
+        done = settled(c);
     }
     if (done) {
-        take(ref);
+        if (commit) take(ref);
         return;
     }
     const NodePlan &node = nodes_[size_t(ref.node)];
-    if (node.pure) {
+    // A pure node runs on the workers, beside the driver's work; an individual run's node on the driver (no hop).
+    bool workers = node.pure && mode_ == "run";
+    if (workers) {
         std::lock_guard<std::mutex> locked(mutex_);
         want(ref);
         dispatch();
     }
-    for (size_t i = 0; i < node.inputs.size(); ++i) {
-        const InputPlan &input = node.inputs[i];
-        if (input.source < 0 || input.lazy || input.ignored) continue;
-        CellRef source = source_of(ref, int(i));
-        ensure(source);
+    // process.Executor.__gather_inputs: up to four consecutive inputs whose upstream is pure CPU (or computed) are
+    // gathered together: each started and drained, the first error in input order reported; any other input (a
+    // constant, a lazy one included) ends the batch and is read alone, in order.
+    std::vector<CellRef> batch;
+    PyRef failed;
+    auto read = [&](const CellRef &source) {
+        ensure(source, commit);
         std::lock_guard<std::mutex> locked(mutex_);
-        Cell &from = cell(source);
-        if (from.state == State::failed) {
+        const Cell &from = cell(source);
+        if (from.state == State::failed && !failed.handle) failed = from.error;
+    };
+    auto gather = [&] {
+        if (commit) {
+            std::lock_guard<std::mutex> locked(mutex_);
+            for (const CellRef &source : batch) demand(source);
+        }
+        for (const CellRef &source : batch) read(source);
+        batch.clear();
+        return !failed.handle;
+    };
+    for (size_t i = 0; i < node.inputs.size() && !failed.handle; ++i) {
+        const InputPlan &input = node.inputs[i];
+        bool edge = input.source >= 0 && !input.lazy && !input.ignored;
+        CellRef source = edge ? source_of(ref, int(i)) : CellRef{-1, -1};
+        bool together;
+        {
+            std::lock_guard<std::mutex> locked(mutex_);
+            together = edge && parallel(source);
+        }
+        if (together) {
+            batch.push_back(source);
+            if (batch.size() < 4) continue;
+        }
+        if (gather() && edge && !together) read(source);
+    }
+    if (!failed.handle) gather();
+    if (failed.handle) {
+        {
+            std::lock_guard<std::mutex> locked(mutex_);
             Cell &c = cell(ref);
             if (c.state == State::idle) {
                 c.state = State::failed;
-                c.error = from.error;
+                c.error = failed;
                 c.wanted = false;
             }
-            changed_.notify_all();
-            return;
         }
+        changed_.notify_all();
+        return;
     }
-    if (node.pure) {
+    if (workers) {
         std::unique_lock<std::mutex> locked(mutex_);
         dispatch();
         changed_.wait(locked, [&] {
@@ -997,14 +1360,40 @@ void Run::ensure(const CellRef &ref)
         Cell &c = cell(ref);
         if (!settled(c)) throw StopRun{};
         locked.unlock();
-        take(ref);
+        if (commit) take(ref);
         return;
     }
     {
         std::lock_guard<std::mutex> locked(mutex_);
         cell(ref).state = State::running;
     }
-    execute(ref, true);
+    execute_cell(ref, true);
+}
+
+/* process's pure_cpu_dependency: a cell computed, or pure with every input such a cell (mutex_ held). */
+bool Run::parallel(const CellRef &ref)
+{
+    const Cell &c = cell(ref);
+    if (c.state == State::done || c.state == State::released) return true;
+    const NodePlan &node = nodes_[size_t(ref.node)];
+    if (!node.pure) return false;
+    for (size_t i = 0; i < node.inputs.size(); ++i)
+        if (node.inputs[i].source >= 0 && !parallel(source_of(ref, int(i)))) return false;
+    return true;
+}
+
+/* A gathered input's upstream, started together as Python's gather starts each branch: its cells not yet running
+ * send their events as they run (mutex_ held). */
+void Run::demand(const CellRef &ref)
+{
+    Cell &c = cell(ref);
+    if (c.demanded || settled(c)) return;
+    c.demanded = true;
+    const NodePlan &node = nodes_[size_t(ref.node)];
+    for (size_t i = 0; i < node.inputs.size(); ++i) {
+        const InputPlan &input = node.inputs[i];
+        if (input.source >= 0 && !input.lazy && !input.ignored) demand(source_of(ref, int(i)));
+    }
 }
 
 void Run::consume(const CellRef &source)
@@ -1123,7 +1512,6 @@ bool Run::admits(const Loop &loop) const
  * stops at its first end or error, as the loop's advance does. */
 void Run::produce()
 {
-    ThreadPython python(hooks_.install_thread);
     Loop &loop = *loop_;
     std::vector<GeneratorRun> &generators = *loop.generators;
     for (;;) {
@@ -1140,8 +1528,31 @@ void Run::produce()
             GeneratorRun &generator = generators[g];
             Outcome outcome;
             PyRef token;
+            int64_t item = 0;
+            bool native_token = false;
+            std::optional<Key> key;
             std::vector<Value> outputs;
-            {
+            if (generator.native) {
+                try {
+                    if (!generator.native->describe(item)) {
+                        outcome.kind = Outcome::ended;
+                    } else if (generators.size() > 1) {
+                        outputs = native_item(generator, item);
+                        outcome.kind = Outcome::ready;
+                    } else {
+                        native_token = true;
+                    }
+                } catch (const std::exception &error) {
+                    PythonSection python;
+                    outcome.kind = Outcome::failed;
+                    outcome.error = py_ref(python_exception(escaped(error)));
+                } catch (const PythonError &failure) {
+                    outcome.kind = Outcome::failed;
+                    outcome.error = failure.error;
+                } catch (const StopRun &) {
+                    return;
+                }
+            } else {
                 PythonSection section;
                 try {
                     py::handle iterator(static_cast<PyObject *>(generator.iterator.handle.get()));
@@ -1155,7 +1566,15 @@ void Run::produce()
                         for (py::handle value : values) outputs.push_back(py_ref(value));
                         outcome.kind = Outcome::ready;
                     } else {
-                        token = py_ref(described);
+                        key = generator.split ? item_key(generator, described) : std::nullopt;
+                        std::optional<Memo::Entry> memoized;
+                        if (key) memoized = Memo::get().find(*key);
+                        if (memoized) {
+                            outputs = memoized->outputs;  // the item's load, from the memo
+                            outcome.kind = Outcome::ready;
+                        } else {
+                            token = py_ref(described);
+                        }
                     }
                 } catch (py::error_already_set &error) {
                     outcome.kind = Outcome::failed;
@@ -1165,12 +1584,12 @@ void Run::produce()
             Outcome::Kind kind = outcome.kind;
             {
                 std::lock_guard<std::mutex> locked(mutex_);
-                if (kind == Outcome::ready) set_item(generator.node, slot, std::move(outputs));
+                if (kind == Outcome::ready) set_item(generator.node, slot, std::move(outputs), key);
                 if (kind == Outcome::ended && generators.size() == 1) loop.halted = true;
                 if (kind == Outcome::failed && generator.fail_fast) loop.halted = true;
-                if (token.handle) {
+                if (token.handle || native_token) {
                     ++loop.materializing;
-                    tasks_.push_back(Task{Task::materialize, slot, int(g), token});
+                    queue(Task{Task::materialize, slot, int(g), token, item, key});
                 }
                 loop.outcomes[slot].push_back(std::move(outcome));
             }
@@ -1180,14 +1599,17 @@ void Run::produce()
     }
 }
 
-/* A generator's item for a slot (mutex_ held): its cell done, the slot's window work wanted. */
-void Run::set_item(int node, int64_t slot, std::vector<Value> outputs)
+/* A generator's item for a slot (mutex_ held): its cell done (keyed when its file identity keys it), the slot's
+ * window work wanted. */
+void Run::set_item(int node, int64_t slot, std::vector<Value> outputs, std::optional<Key> key)
 {
     Cell &c = cell({node, slot});
     c.outputs = std::move(outputs);
     c.state = State::done;
     c.hits = -1;
-    if (loop_ && loop_->active) want_window(slot);
+    c.key_state = key ? Cell::KeyState::known : Cell::KeyState::none;
+    if (key) c.key = *key;
+    if (loop_ && loop_->active && !slots_closing_) want_window(slot);
     dispatch();
 }
 
@@ -1222,7 +1644,19 @@ void Run::run_task(const Task &task)
         GeneratorRun &generator = (*loop.generators)[size_t(task.index)];
         Outcome outcome;
         std::vector<Value> outputs;
-        {
+        if (generator.native) {
+            try {
+                outputs = native_item(generator, task.item);
+                outcome.kind = Outcome::ready;
+            } catch (const PythonError &failure) {
+                outcome.kind = Outcome::failed;
+                outcome.error = failure.error;
+            } catch (const StopRun &) {
+                std::lock_guard<std::mutex> locked(mutex_);
+                --loop.materializing;
+                return;
+            }
+        } else {
             PythonSection section;
             try {
                 py::list values = hooks_.materialize(
@@ -1231,6 +1665,9 @@ void Run::run_task(const Task &task)
                     py::handle(static_cast<PyObject *>(task.token.handle.get())), generator.split);
                 for (py::handle value : values) outputs.push_back(py_ref(value));
                 outcome.kind = Outcome::ready;
+                if (task.key)
+                    Memo::get().insert(*task.key,
+                                       Memo::Entry{outputs, PyRef{}, hooks_.output_bytes(values).cast<int64_t>()});
             } catch (py::error_already_set &error) {
                 outcome.kind = Outcome::failed;
                 outcome.error = current_error(error);
@@ -1238,7 +1675,7 @@ void Run::run_task(const Task &task)
         }
         std::lock_guard<std::mutex> locked(mutex_);
         --loop.materializing;
-        if (outcome.kind == Outcome::ready) set_item(generator.node, task.slot, std::move(outputs));
+        if (outcome.kind == Outcome::ready) set_item(generator.node, task.slot, std::move(outputs), task.key);
         if (outcome.kind == Outcome::failed && generator.fail_fast) loop.halted = true;
         for (Outcome &pending : loop.outcomes[task.slot])
             if (pending.kind == Outcome::pending) pending = std::move(outcome);
@@ -1296,7 +1733,9 @@ PyRef Run::take_prepared(int node, int64_t slot)
         loop_->prepares.erase(found);
         return {};
     }
-    changed_.wait(locked, [&] { return found->second.kind == Prepare::done; });
+    // Stop ends the wait: a paused run's workers take no task (they drop it once stopped).
+    changed_.wait(locked, [&] { return found->second.kind == Prepare::done || aborted_; });
+    if (found->second.kind != Prepare::done) throw StopRun{};
     PyRef value = std::move(found->second.value);
     loop_->prepares.erase(found);
     return value;
@@ -1350,7 +1789,14 @@ void Run::decide()
     std::lock_guard<std::mutex> locked(mutex_);
     loop.active = true;
     loop.produced = 1;
-    loop.producer = std::thread([this] { produce(); });
+    loop.producer = Engine::get().service([this] {
+        Serving serving(this);
+        try {
+            produce();
+        } catch (...) {
+            fault(std::current_exception());
+        }
+    });
 }
 
 /* The outcome of a generator's advance at a slot of the window, waited for (process.ItemWindow.take_advance). */
@@ -1370,7 +1816,10 @@ Outcome Run::take_advance(int64_t slot, size_t generator)
     return found->second[generator];
 }
 
-/* process.Executor's _ItemPlanner.ahead: a node a look-ahead may wait for at a later item (memoized per loop). */
+/* process.Executor's _ItemPlanner.ahead (memoized per loop): a node a look-ahead may wait for at a later item: an
+ * iterated regular node without side effects, pure CPU and not Into Directory, or serial (any other, without lazy
+ * inputs: computed on the driver one item at a time, in order) when every error ends the loop; whose inputs are
+ * constants, generator outputs, computed static values or such nodes. */
 bool Run::ahead(int node)
 {
     Loop &loop = *loop_;
@@ -1378,8 +1827,10 @@ bool Run::ahead(int node)
     if (memo != loop.ahead.end()) return memo->second;
     loop.ahead[node] = false;  // a cycle never qualifies
     const NodePlan &plan = nodes_[size_t(node)];
-    bool result = iterated_[size_t(node)] && plan.kind == Kind::regular && !plan.side_effects && plan.pure &&
-                  plan.schema != "chainner:utility:into_directory";
+    bool serial = !plan.pure && std::none_of(plan.inputs.begin(), plan.inputs.end(),
+                                             [](const InputPlan &input) { return input.lazy; });
+    bool result = iterated_[size_t(node)] && plan.kind == Kind::regular && !plan.side_effects &&
+                  ((plan.pure && !plan.not_speculated) || (serial && loop.fail_fast));
     for (size_t i = 0; result && i < plan.inputs.size(); ++i) {
         int source = plan.inputs[i].source;
         if (source < 0 || loop.generator_index(source) >= 0) continue;
@@ -1388,9 +1839,11 @@ bool Run::ahead(int node)
             result = static_cells_[size_t(source)].state == State::done;
         } else {
             result = ahead(source);
+            serial = serial || loop.serial.count(source) > 0;
         }
     }
     loop.ahead[node] = result;
+    if (result && serial) loop.serial.insert(node);
     return result;
 }
 
@@ -1430,53 +1883,69 @@ int Run::lookahead(int node, int input)
     return servable(node, input) ? loop.k - 1 : 0;
 }
 
-py::object Run::peek(int node, int input, int64_t offset)
+/* process.ItemWindow.peek: the node's input at a later item (offset items after origin, the committing item when
+ * -1, as a node computed ahead looks from its own), within the window; the source computed ahead now if needed: a
+ * serial one (or one depending on a serial one) at every item in between first, in order. None when the item never
+ * comes, its source fails there, or it is not computed ahead. */
+py::object Run::peek(int node, int input, int64_t offset, int64_t origin)
 {
     if (!loop_) return py::none();
     decide_early();
     Loop &loop = *loop_;
-    if (!loop.active || offset >= loop.k || !servable(node, input)) return py::none();
+    int64_t commit = commit_slot_;
+    int64_t start = origin < 0 ? commit : origin;
+    int64_t target = start + offset;
+    if (!loop.active || target <= commit || target >= start + loop.k || !servable(node, input)) return py::none();
     if (aborted_) {
         PyErr_SetNone(hooks_.aborted_type.ptr());
         throw py::error_already_set();
     }
     const InputPlan &plan = nodes_[size_t(node)].inputs[size_t(input)];
-    int64_t target = commit_slot_ + offset;
+    bool generator = loop.generator_index(plan.source) >= 0;
+    int64_t first = loop.serial.count(plan.source) ? commit + 1 : target;
     Value value;
     bool found = false, stopped = false;
     {
         PythonPause unlocked;
-        std::unique_lock<std::mutex> locked(mutex_);
-        loop.demand = std::max(loop.demand, target);
-        changed_.notify_all();
-        auto resolved = [&] {
-            auto outcome = loop.outcomes.find(target);
+        auto resolved = [&](int64_t slot) {  // the slot's generators all yielded, or it never comes (mutex_ held)
+            auto outcome = loop.outcomes.find(slot);
             if (outcome != loop.outcomes.end()) {
                 for (const Outcome &o : outcome->second)
                     if (o.kind != Outcome::ready) return o.kind != Outcome::pending;
                 return outcome->second.size() == loop.generators->size();
             }
-            return loop.halted && loop.produced <= target;
+            return loop.halted && loop.produced <= slot;
         };
-        changed_.wait(locked, [&] { return aborted_ || resolved(); });
-        stopped = aborted_;
-        auto outcome = loop.outcomes.find(target);
-        bool items = !stopped && outcome != loop.outcomes.end() && outcome->second.size() == loop.generators->size() &&
-                     std::all_of(outcome->second.begin(), outcome->second.end(),
-                                 [](const Outcome &o) { return o.kind == Outcome::ready; });
-        if (items) {
-            CellRef source{plan.source, target};
-            if (loop.generator_index(plan.source) < 0) {
-                want(source);
-                dispatch();
-                changed_.wait(locked, [&] { return aborted_ || settled(cell(source)); });
-                stopped = aborted_;
+        try {
+            {
+                std::lock_guard<std::mutex> locked(mutex_);
+                loop.demand = std::max(loop.demand, target);
             }
-            const Cell &c = cell(source);
-            if (!stopped && c.state == State::done) {
-                value = c.outputs[size_t(plan.output)];
-                found = true;
+            changed_.notify_all();
+            for (int64_t slot = first; slot <= target; ++slot) {
+                {
+                    std::unique_lock<std::mutex> locked(mutex_);
+                    changed_.wait(locked, [&] { return aborted_ || resolved(slot); });
+                    if (aborted_) throw StopRun{};
+                    auto outcome = loop.outcomes.find(slot);
+                    if (outcome == loop.outcomes.end() || outcome->second.size() != loop.generators->size() ||
+                        !std::all_of(outcome->second.begin(), outcome->second.end(),
+                                     [](const Outcome &o) { return o.kind == Outcome::ready; }))
+                        break;
+                }
+                CellRef source{plan.source, slot};
+                if (!generator) ensure(source, false);
+                std::lock_guard<std::mutex> locked(mutex_);
+                const Cell &c = cell(source);
+                if (aborted_) throw StopRun{};
+                if (c.state != State::done) break;
+                if (slot == target) {
+                    value = c.outputs[size_t(plan.output)];
+                    found = true;
+                }
             }
+        } catch (const StopRun &) {
+            stopped = true;
         }
     }
     if (stopped) {
@@ -1529,8 +1998,12 @@ void Run::iterate_group(const GroupPlan &group)
         {
             std::lock_guard<std::mutex> locked(mutex_);
             run.partial = static_cells_[size_t(plan.node)].outputs;
+            run.native = static_cells_[size_t(plan.node)].items;
         }
-        {
+        if (run.native) {
+            run.expected = run.native->expected_length();
+            run.fail_fast = run.native->fail_fast();
+        } else {
             PythonSection python;
             try {
                 py::tuple items = hooks_.items(py::handle(static_cast<PyObject *>(run.output.handle.get())));
@@ -1566,12 +2039,14 @@ void Run::iterate_group(const GroupPlan &group)
     {
         std::lock_guard<std::mutex> locked(mutex_);
         for (int node : group.iterated) iterated_[size_t(node)] = 1;
+        slots_closing_ = false;
         loop_ = std::make_unique<Loop>();
         loop_->group = &group;
         loop_->generators = &generators;
         loop_->collectors = &collectors;
         loop_->sinks = group.outputs;
         for (const CollectorRun &collector : collectors) loop_->sinks.push_back(collector.node);
+        for (const GeneratorRun &generator : generators) loop_->fail_fast = loop_->fail_fast && generator.fail_fast;
     }
     {
         PythonSection python;
@@ -1590,7 +2065,7 @@ void Run::iterate_group(const GroupPlan &group)
             loop_->stop = true;
         }
         changed_.notify_all();
-        if (loop_->producer.joinable()) loop_->producer.join();
+        if (loop_->producer.valid()) loop_->producer.wait();
         {
             PythonSection python;
             try {
@@ -1627,8 +2102,30 @@ void Run::iterate_group(const GroupPlan &group)
                         if (outcome.kind == Outcome::failed) throw PythonError{outcome.error};
                         std::lock_guard<std::mutex> locked(mutex_);
                         outputs = cell({generator.node, slot}).outputs;
+                    } else if (generator.native) {
+                        int64_t token = 0;
+                        bool more;
+                        try {
+                            more = generator.native->describe(token);
+                        } catch (const std::exception &error) {
+                            PythonSection python;
+                            throw PythonError{py_ref(python_exception(escaped(error)))};
+                        }
+                        if (!more) throw ItemsEnd{};
+                        outputs = native_item(generator, token);
+                        if (slot == 0)
+                            for (const Value &value : outputs)
+                                if (const Image *image = std::get_if<Image>(&value))
+                                    loop_->estimate += int64_t(image->values() * sizeof(float));
+                        suspend();
+                        {
+                            std::lock_guard<std::mutex> locked(mutex_);
+                            set_item(generator.node, slot, outputs);
+                        }
+                        changed_.notify_all();
                     } else {
                         bool more;
+                        std::optional<Key> item;
                         {
                             PythonSection python;
                             try {
@@ -1636,12 +2133,27 @@ void Run::iterate_group(const GroupPlan &group)
                                 py::object token = hooks_.describe(iterator, generator.split);
                                 more = !token.is_none();
                                 if (more) {
-                                    py::list values = hooks_.materialize(
-                                        generator.node, iterator,
-                                        py::handle(static_cast<PyObject *>(generator.output.handle.get())), token,
-                                        generator.split);
-                                    for (py::handle value : values) outputs.push_back(py_ref(value));
-                                    if (slot == 0) loop_->estimate += hooks_.output_bytes(values).cast<int64_t>();
+                                    std::optional<Key> key = generator.split ? item_key(generator, token) : std::nullopt;
+                                    std::optional<Memo::Entry> memoized;
+                                    if (key) memoized = Memo::get().find(*key);
+                                    if (memoized) {
+                                        outputs = memoized->outputs;
+                                    } else {
+                                        py::list values = hooks_.materialize(
+                                            generator.node, iterator,
+                                            py::handle(static_cast<PyObject *>(generator.output.handle.get())), token,
+                                            generator.split);
+                                        for (py::handle value : values) outputs.push_back(py_ref(value));
+                                        if (key)
+                                            Memo::get().insert(*key, Memo::Entry{outputs, PyRef{},
+                                                                                 hooks_.output_bytes(values).cast<int64_t>()});
+                                    }
+                                    if (slot == 0) {
+                                        py::list values;
+                                        for (const Value &value : outputs) values.append(to_python(value));
+                                        loop_->estimate += hooks_.output_bytes(values).cast<int64_t>();
+                                    }
+                                    item = key;
                                 }
                             } catch (py::error_already_set &error) {
                                 throw PythonError{current_error(error)};
@@ -1651,7 +2163,7 @@ void Run::iterate_group(const GroupPlan &group)
                         suspend();
                         {
                             std::lock_guard<std::mutex> locked(mutex_);
-                            set_item(generator.node, slot, outputs);
+                            set_item(generator.node, slot, outputs, item);
                         }
                         changed_.notify_all();
                     }
@@ -1796,20 +2308,27 @@ void Run::iterate_group(const GroupPlan &group)
     }
 }
 
-/* The end of a group's loop: no item's cell is queued or running afterwards, and none is kept. */
+/* The end of a group's loop: no item's cell is queued or running afterwards, and none is kept. Slot work a job
+ * finishing meanwhile would queue (a materialize's item wanting its window) is refused from the start, and purged
+ * again with the slots under one hold of the lock. */
 void Run::drain_slots()
 {
     std::unique_lock<std::mutex> locked(mutex_);
-    std::erase_if(ready_, [&](const CellRef &ref) {
-        if (ref.slot < 0) return false;
-        Cell &c = cell(ref);
-        c.state = State::idle;
-        c.wanted = false;
-        return true;
-    });
-    std::erase_if(wanted_, [](const CellRef &ref) { return ref.slot >= 0; });
-    tasks_.clear();
+    slots_closing_ = true;
+    auto purge = [&] {
+        std::erase_if(ready_, [&](const CellRef &ref) {
+            if (ref.slot < 0) return false;
+            Cell &c = cell(ref);
+            c.state = State::idle;
+            c.wanted = false;
+            return true;
+        });
+        std::erase_if(wanted_, [](const CellRef &ref) { return ref.slot >= 0; });
+        tasks_.clear();
+    };
+    purge();
     changed_.wait(locked, [&] { return running_slots_ == 0; });
+    purge();
     slot_cells_.clear();
 }
 
@@ -1828,25 +2347,39 @@ void Run::drain_workers()
 
 void Run::drive()
 {
-    ThreadPython python(hooks_.install_thread);
     PyRef error, result;
     bool stopped = false;
     try {
+        if (Memo::get().enabled()) identify_files();
         if (mode_ == "run") {
             emit(Event(Event::chain_start));
             for (const GroupPlan &group : groups_) iterate_group(group);
-            {
-                std::lock_guard<std::mutex> locked(mutex_);
-                std::set<std::pair<int, int64_t>> seen;
-                for (int node : tail_) prefetch({node, -1}, seen);
-                dispatch();
-            }
-            for (int node : tail_) {
+            for (size_t i = 0; i < tail_.size(); ++i) {
+                {
+                    // The sink's pure upstream and the next sink's, beside the driver's work: not every sink's at
+                    // once, which could hold every branch's outputs (Python runs the sinks one after another).
+                    std::lock_guard<std::mutex> locked(mutex_);
+                    std::set<std::pair<int, int64_t>> seen;
+                    for (size_t j = i; j < std::min(tail_.size(), i + 2); ++j) prefetch({tail_[j], -1}, seen);
+                    dispatch();
+                }
                 suspend();
-                process_regular(node, -1);
+                process_regular(tail_[i], -1);
             }
         } else if (mode_ == "regular") {
             result = process_regular(target_, -1);
+            if (!result.handle) {
+                // A memoized Load Image of an individual run: its RegularOutput, as the server caches it.
+                std::vector<Value> outputs;
+                {
+                    std::lock_guard<std::mutex> locked(mutex_);
+                    outputs = static_cells_[size_t(target_)].outputs;
+                }
+                PythonSection python;
+                py::list values;
+                for (const Value &value : outputs) values.append(to_python(value));
+                result = py_ref(hooks_.regular_output(values));
+            }
         } else {
             result = process_generator(target_);
         }
@@ -1857,11 +2390,22 @@ void Run::drive()
     } catch (const std::exception &failure) {
         PythonSection python;
         error = py_ref(py::reinterpret_borrow<py::object>(PyExc_RuntimeError)(failure.what()));
+    } catch (...) {
+        // Whatever ends the run, the request gets its result (and the run its cleanups).
+        PythonSection python;
+        error = py_ref(py::reinterpret_borrow<py::object>(PyExc_RuntimeError)("The native run engine failed"));
     }
     drain_workers();
     {
+        std::string fault;
+        {
+            std::lock_guard<std::mutex> locked(mutex_);
+            fault = fault_;
+        }
         PythonSection section;
-        if (stopped) error = py_ref(hooks_.aborted_type());
+        if (stopped)
+            error = fault.empty() ? py_ref(hooks_.aborted_type())
+                                  : py_ref(py::reinterpret_borrow<py::object>(PyExc_RuntimeError)(fault));
     }
     if (mode_ == "run") {
         try {
@@ -1898,12 +2442,22 @@ void Run::drive()
 
 // Execution
 
-Run::Gathered Run::gather(const CellRef &ref)
+/* Whether a cell's events wait for the commit path to take it (mutex_ held): a window job (process.ItemWindow's
+ * take_node replay), a serial node computed ahead on the driver for a look-ahead, or a cell a worker runs before the
+ * commit path needs it (a prefetch), whose events Python never sends when the run fails first. */
+bool Run::defers(const CellRef &ref, bool on_driver)
+{
+    bool window = ref.slot >= 0 && loop_ && loop_->active;
+    if (on_driver) return window && ref.slot > commit_slot_;
+    return window || !cell(ref).demanded;
+}
+
+Run::Gathered Run::gather(const CellRef &ref, bool on_driver)
 {
     const NodePlan &node = nodes_[size_t(ref.node)];
     Gathered gathered;
     std::lock_guard<std::mutex> locked(mutex_);
-    gathered.defer = ref.slot >= 0 && loop_ && loop_->active;
+    gathered.defer = defers(ref, on_driver);
     for (size_t i = 0; i < node.inputs.size(); ++i) {
         const InputPlan &input = node.inputs[i];
         if (input.ignored) {
@@ -1971,7 +2525,7 @@ py::list Run::python_inputs(const CellRef &ref, const Gathered &inputs)
 }
 
 bool Run::run_python(const CellRef &ref, const Gathered &inputs, Cell &result, double &lazy_seconds,
-                     const PyRef &prepared)
+                     const PyRef &prepared, bool ahead)
 {
     const NodePlan &node = nodes_[size_t(ref.node)];
     PythonSection python;
@@ -1979,7 +2533,8 @@ bool Run::run_python(const CellRef &ref, const Gathered &inputs, Cell &result, d
         py::list values = python_inputs(ref, inputs);
         py::object output = hooks_.run_node(
             ref.node, values,
-            prepared.handle ? py::handle(static_cast<PyObject *>(prepared.handle.get())) : py::none());
+            prepared.handle ? py::handle(static_cast<PyObject *>(prepared.handle.get())) : py::none(),
+            ahead ? ref.slot : int64_t(-1));
         result.object = py_ref(output);
         if (node.kind == Kind::regular) {
             py::list outputs = hooks_.regular_outputs(output);
@@ -2028,7 +2583,47 @@ Value Run::enforce_input(int node, int input, const Value &value)
         return value_of(hooks_.enforce_input(node, input, to_python(value)));
     } catch (py::error_already_set &error) {
         throw node_error(error);
+    } catch (const std::exception &error) {
+        throw escaped(error);  // a value an entry point cannot take (e.g. a 2-channel image)
     }
+}
+
+std::optional<NodeError> Run::enforce_outputs(int node_index, std::vector<Value> &outputs,
+                                              const std::vector<size_t> &which)
+{
+    const NodePlan &node = nodes_[size_t(node_index)];
+    std::vector<size_t> slow;
+    try {
+        for (size_t i : which) {
+            const OutputPlan &plan = node.outputs[i];
+            const Image *image = std::get_if<Image>(&outputs[i]);
+            if (plan.image && image && image->height > 0 && image->width > 0 &&
+                (plan.channels == 0 || plan.channels == image->channels)) {
+                if (!plan.assume_normalized) {
+                    // ImageOutput.enforce: borrowed when its clip changes no bit, else normalize's copy.
+                    int same = 0;
+                    check(cn_pixels_normalized_f32(image->data, image->values(), &same));
+                    if (!same) {
+                        MutableImage copy = MutableImage::allocate(image->height, image->width, image->channels);
+                        check(cn_pixels_convert_checked(image->data, copy.data(), image->values(), 0, 0, 1, nullptr));
+                        outputs[i] = std::move(copy).publish();
+                    }
+                }
+                continue;
+            }
+            slow.push_back(i);
+        }
+    } catch (const std::exception &error) {
+        return escaped(error);
+    }
+    if (slow.empty()) return std::nullopt;
+    PythonSection python;
+    try {
+        for (size_t i : slow) outputs[i] = py_ref(hooks_.enforce_output(node_index, int(i), to_python(outputs[i])));
+    } catch (py::error_already_set &raised) {
+        return node_error(raised);
+    }
+    return std::nullopt;
 }
 
 NativeOutcome Run::run_native(const CellRef &ref, const Gathered &inputs, Cell &result, double &lazy_seconds)
@@ -2057,11 +2652,13 @@ NativeOutcome Run::run_native(const CellRef &ref, const Gathered &inputs, Cell &
         return NativeOutcome::failed;
     };
     std::vector<Value> outputs;
-    EngineContext context(*this, node, storage_);
+    std::unique_ptr<ItemSource> source;
+    auto context = std::make_shared<EngineContext>(*this, node, storage_);
     try {
-        node.native->run(context, values, outputs);
-    } catch (const NodeError &error) {
-        return failure(error);
+        if (node.kind == Kind::generator)
+            source = node.native->generator(*context, values, outputs);
+        else
+            node.native->run(*context, values, outputs);
     } catch (const Aborted &) {
         PythonSection python;
         result.error = py_ref(py::module_::import("api").attr("Aborted")());
@@ -2074,45 +2671,62 @@ NativeOutcome Run::run_native(const CellRef &ref, const Gathered &inputs, Cell &
     } catch (const UpstreamFailed &failed) {
         result.error = failed.error;
         return NativeOutcome::failed;
+    } catch (const std::exception &error) {
+        return failure(escaped(error));
     }
     for (const auto &lazy : inputs.lazies) lazy_seconds += lazy->seconds();
+    if (node.kind == Kind::generator) {
+        // process.enforce_generator_output: the static outputs, enforced, beside the iterated ones (None).
+        size_t statics = node.outputs.size() - node.iterable_outputs.size();
+        if (!source) return failure(NodeError("AssertionError", "Expected the output to be a generator"));
+        if (outputs.size() != statics) return failure(NodeError("AssertionError", ""));
+        std::vector<Value> partial(node.outputs.size());
+        std::vector<size_t> which;
+        for (size_t i = 0, k = 0; i < node.outputs.size(); ++i) {
+            if (std::find(node.iterable_outputs.begin(), node.iterable_outputs.end(), int(i)) != node.iterable_outputs.end())
+                continue;
+            partial[i] = outputs[k++];
+            which.push_back(i);
+        }
+        if (auto error = enforce_outputs(ref.node, partial, which)) return failure(*error);
+        std::vector<std::filesystem::path> paths;
+        bool known = false;
+        try {
+            known = source->source_paths(paths);
+        } catch (const std::exception &error) {
+            return failure(escaped(error));
+        }
+        {
+            PythonSection python;
+            try {
+                py::list python_partial;
+                for (const Value &value : partial) python_partial.append(to_python(value));
+                py::object source_paths = py::none();
+                if (known) {
+                    py::list listed;
+                    for (const auto &p : paths) listed.append(to_python(Path{p}));
+                    source_paths = py::tuple(listed);
+                }
+                result.object = py_ref(hooks_.native_generator(ref.node, source->expected_length(),
+                                                               source->fail_fast(), source_paths, python_partial));
+            } catch (py::error_already_set &error) {
+                result.error = current_error(error);
+                return NativeOutcome::failed;
+            }
+        }
+        result.outputs = std::move(partial);
+        result.items = std::move(source);
+        result.items_context = context;
+        result.items_inputs = std::move(values);
+        return NativeOutcome::done;
+    }
     if (outputs.size() != node.outputs.size())
         return failure(NodeError("AssertionError", "Expected all " + node.name + " nodes to have " +
                                                        std::to_string(node.outputs.size()) + " output(s) but found " +
                                                        std::to_string(outputs.size()) + "."));
-    std::vector<size_t> enforce;
-    for (size_t i = 0; i < outputs.size(); ++i) {
-        const OutputPlan &plan = node.outputs[i];
-        const Image *image = std::get_if<Image>(&outputs[i]);
-        if (plan.image && image && image->height > 0 && image->width > 0 &&
-            (plan.channels == 0 || plan.channels == image->channels)) {
-            if (!plan.assume_normalized) {
-                // ImageOutput.enforce: borrowed when its clip changes no bit, else normalize's copy.
-                int same = 0;
-                check(cn_pixels_normalized_f32(image->data, image->values(), &same));
-                if (!same) {
-                    MutableImage copy = MutableImage::allocate(image->height, image->width, image->channels);
-                    check(cn_pixels_convert_checked(image->data, copy.data(), image->values(), 0, 0, 1, nullptr));
-                    outputs[i] = std::move(copy).publish();
-                }
-            }
-            continue;
-        }
-        enforce.push_back(i);
-    }
-    if (!enforce.empty()) {
-        std::optional<NodeError> error;
-        {
-            PythonSection python;
-            try {
-                for (size_t i : enforce)
-                    outputs[i] = py_ref(hooks_.enforce_output(ref.node, int(i), to_python(outputs[i])));
-            } catch (py::error_already_set &raised) {
-                error = node_error(raised);
-            }
-        }
-        if (error) return failure(*error);
-    }
+    std::vector<size_t> all(outputs.size());
+    for (size_t i = 0; i < all.size(); ++i) all[i] = i;
+    if (auto error = enforce_outputs(ref.node, outputs, all)) return failure(*error);
     if (ref.slot == 0)
         for (const Value &value : outputs)
             if (const Image *image = std::get_if<Image>(&value)) result.bytes += int64_t(image->values() * sizeof(float));
@@ -2120,16 +2734,133 @@ NativeOutcome Run::run_native(const CellRef &ref, const Gathered &inputs, Cell &
     return NativeOutcome::done;
 }
 
+/* A native generator's item as process.Executor.__generator_fill_partial_output fills it: the partial outputs with
+ * the item's iterated values in their places, enforced; an error is the item's (its Python exception, raw). */
+std::vector<Value> Run::fill_item(const GeneratorRun &generator, std::vector<Value> item)
+{
+    const NodePlan &node = nodes_[size_t(generator.node)];
+    if (item.size() != node.iterable_outputs.size()) {
+        PythonSection python;
+        throw PythonError{py_ref(py::reinterpret_borrow<py::object>(PyExc_AssertionError)())};
+    }
+    std::vector<Value> outputs = generator.partial;
+    std::vector<size_t> which;
+    for (size_t k = 0; k < item.size(); ++k) {
+        outputs[size_t(node.iterable_outputs[k])] = std::move(item[k]);
+        which.push_back(size_t(node.iterable_outputs[k]));
+    }
+    if (auto error = enforce_outputs(generator.node, outputs, which)) {
+        PythonSection python;
+        throw PythonError{py_ref(python_exception(*error))};
+    }
+    return outputs;
+}
+
+/* A described item of a native generator, materialized (GIL-free) and filled. */
+std::vector<Value> Run::native_item(const GeneratorRun &generator, int64_t token)
+{
+    std::vector<Value> item;
+    try {
+        generator.native->materialize(token, item);
+    } catch (const std::exception &error) {
+        PythonSection python;
+        throw PythonError{py_ref(python_exception(escaped(error)))};
+    } catch (const Aborted &) {
+        throw StopRun{};
+    }
+    return fill_item(generator, std::move(item));
+}
+
+/* A cell's memo key (mutex_ held): from its schema, package settings and inputs (a constant's JSON, a source's key
+ * and output index); a generator's item has the key its file identity gave it; a node outside the allow-list (or
+ * fed by one) has none. Structural: nothing runs to compute it. */
+std::optional<Key> Run::key_of(const CellRef &ref)
+{
+    Cell &c = cell(ref);
+    if (c.key_state == Cell::KeyState::known) return c.key;
+    if (c.key_state == Cell::KeyState::none) return std::nullopt;
+    const NodePlan &node = nodes_[size_t(ref.node)];
+    c.key_state = Cell::KeyState::none;
+    bool keyed = node.kind == Kind::generator ? ref.slot < 0 || !iterated_[size_t(ref.node)] : node.memo;
+    if (!keyed || node.identity_input >= 0) return std::nullopt;  // Load Image: identify_files keys it
+    Key key = Key().add(node.schema).add(node.settings_key);
+    for (size_t i = 0; i < node.inputs.size(); ++i) {
+        const InputPlan &input = node.inputs[i];
+        key.add(uint64_t(i));
+        if (input.ignored) continue;
+        if (input.source < 0) {
+            if (!input.constant_key) return std::nullopt;
+            key.add(*input.constant_key);
+            continue;
+        }
+        std::optional<Key> source = key_of(source_of(ref, int(i)));
+        if (!source) return std::nullopt;
+        key.add(*source).add(uint64_t(input.output));
+    }
+    c.key = key;
+    c.key_state = Cell::KeyState::known;
+    return key;
+}
+
+/* Load Image's key: its schema, settings and file input's constant with that file's identity (path, size, mtime,
+ * volume and file id), read once at the start of the run. */
+void Run::identify_files()
+{
+    std::vector<std::pair<size_t, std::string>> identities;
+    {
+        PythonSection python;
+        for (size_t n = 0; n < nodes_.size(); ++n) {
+            const NodePlan &node = nodes_[n];
+            if (node.identity_input < 0 || !node.memo) continue;
+            const InputPlan &input = node.inputs[size_t(node.identity_input)];
+            if (input.source >= 0) continue;
+            py::object identity = hooks_.file_identity(py::handle(static_cast<PyObject *>(input.constant.handle.get())));
+            if (!identity.is_none()) identities.emplace_back(n, identity.cast<std::string>());
+        }
+    }
+    std::lock_guard<std::mutex> locked(mutex_);
+    for (const auto &[n, identity] : identities) {
+        const NodePlan &node = nodes_[n];
+        Key key = Key().add(node.schema).add(node.settings_key).add(identity);
+        bool keyed = true;
+        for (const InputPlan &input : node.inputs) {
+            keyed = keyed && input.source < 0 && input.constant_key;
+            if (keyed) key.add(*input.constant_key);
+        }
+        if (!keyed) continue;
+        Cell &c = static_cells_[n];
+        c.key = key;
+        c.key_state = Cell::KeyState::known;
+    }
+}
+
+/* A Python split iterator's item key (GIL held): the generator's key with the identity of the file its token
+ * names (Load Images' (path, index)); none for other generators. */
+std::optional<Key> Run::item_key(const GeneratorRun &generator, const py::object &token)
+{
+    std::optional<Key> base;
+    {
+        std::lock_guard<std::mutex> locked(mutex_);
+        if (!Memo::get().enabled()) return std::nullopt;
+        base = key_of({generator.node, -1});
+    }
+    if (!base) return std::nullopt;
+    py::object identity = hooks_.item_identity(token);
+    if (identity.is_none()) return std::nullopt;
+    return Key(*base).add(std::string_view("item")).add(identity.cast<std::string>());
+}
+
 void Run::execute(const CellRef &ref, bool on_driver)
 {
     const NodePlan &node = nodes_[size_t(ref.node)];
-    Gathered inputs = gather(ref);
-    bool defer = inputs.defer && !on_driver;
+    Gathered inputs = gather(ref, on_driver);
+    bool defer = inputs.defer;
+    bool ahead = on_driver && defer;  // a serial node computed ahead for a look-ahead, with its view at that item
     if (on_driver) suspend();
     if (!defer) emit_start(ref.node);
     if (on_driver) suspend();
     PyRef prepared = on_driver && node.phased && ref.slot >= 0 ? take_prepared(ref.node, ref.slot) : PyRef{};
-    if (on_driver && node.node_context && node.kind == Kind::regular && ref.slot >= 0) {
+    if (on_driver && !ahead && node.node_context && node.kind == Kind::regular && ref.slot >= 0) {
         // process.Executor.__get_node_context: the loop's node gets its iteration view on the commit path.
         PythonSection python;
         hooks_.iteration(ref.node);
@@ -2138,7 +2869,26 @@ void Run::execute(const CellRef &ref, bool on_driver)
     double lazy_seconds = 0;
     Clock::time_point start = Clock::now();
     bool ok;
-    NativeOutcome outcome = node.native ? run_native(ref, inputs, result, lazy_seconds) : NativeOutcome::python;
+    std::optional<Key> key;
+    std::optional<Memo::Entry> memoized;
+    if (node.memo) {
+        {
+            std::lock_guard<std::mutex> locked(mutex_);
+            key = key_of(ref);
+        }
+        if (key) memoized = Memo::get().find(*key);
+    }
+    // A sink whose prepare phase ran ahead commits with it through its Python body (the window's encode ahead);
+    // without one it runs natively.
+    NativeOutcome outcome = memoized                         ? NativeOutcome::done
+                            : node.native && !prepared.handle ? run_native(ref, inputs, result, lazy_seconds)
+                                                              : NativeOutcome::python;
+    if (memoized) {
+        // A hit: the node's outputs as computed before, with the events a computed node sends.
+        result.outputs = memoized->outputs;
+        result.object = memoized->object;
+        result.bytes = memoized->bytes;
+    }
     if (outcome == NativeOutcome::declined) {
         std::lock_guard<std::mutex> locked(decline_mutex);
         ++decline_counts()[node.schema];
@@ -2146,11 +2896,29 @@ void Run::execute(const CellRef &ref, bool on_driver)
     if (outcome == NativeOutcome::declined || outcome == NativeOutcome::python) {
         result = Cell{};
         lazy_seconds = 0;
-        ok = run_python(ref, inputs, result, lazy_seconds, prepared);
+        ok = run_python(ref, inputs, result, lazy_seconds, prepared, ahead);
     } else {
         ok = outcome == NativeOutcome::done;
     }
     double seconds = seconds_since(start) - lazy_seconds;
+    if (ok && key && !memoized) {
+        result.key = *key;
+        result.key_state = Cell::KeyState::known;
+        int64_t bytes = 0;
+        bool python = false;
+        for (const Value &value : result.outputs) {
+            if (const Image *image = std::get_if<Image>(&value)) bytes += int64_t(image->values() * sizeof(float));
+            python = python || std::holds_alternative<PyRef>(value);
+        }
+        if (python) {
+            PythonSection section;
+            py::list values;
+            for (const Value &value : result.outputs)
+                if (std::holds_alternative<PyRef>(value)) values.append(to_python(value));
+            bytes += hooks_.output_bytes(values).cast<int64_t>();
+        }
+        Memo::get().insert(*key, Memo::Entry{result.outputs, result.object, bytes});
+    }
     if (node.node_context) {
         PythonSection python;
         try {
@@ -2188,6 +2956,38 @@ void Run::execute(const CellRef &ref, bool on_driver)
     store(ref, std::move(result));
 }
 
+/* execute(), with a C++ exception escaping it (a conversion, an allocation) as the node's error. */
+void Run::execute_cell(const CellRef &ref, bool on_driver)
+{
+    std::optional<NodeError> failure;
+    bool deferred = false;
+    try {
+        execute(ref, on_driver);
+    } catch (py::error_already_set &error) {
+        PythonSection python;
+        failure = node_error(error);
+    } catch (const std::exception &error) {
+        failure = escaped(error);
+    }
+    if (!failure) return;
+    {
+        std::lock_guard<std::mutex> locked(mutex_);
+        deferred = defers(ref, on_driver);
+    }
+    Cell result;
+    {
+        PythonSection python;
+        try {
+            result.error =
+                py_ref(hooks_.native_failure(ref.node, failure->python_type, failure->what(), py::list()));
+        } catch (py::error_already_set &again) {
+            result.error = current_error(again);
+        }
+    }
+    result.deferred = deferred;  // its start replayed by the commit path's take
+    store(ref, std::move(result));
+}
+
 void Run::store(const CellRef &ref, Cell &&result)
 {
     {
@@ -2202,6 +3002,13 @@ void Run::store(const CellRef &ref, Cell &&result)
             c.object = std::move(result.object);
             c.inputs = std::move(result.inputs);
             c.bytes = result.bytes;
+            if (result.key_state == Cell::KeyState::known) {
+                c.key = result.key;
+                c.key_state = result.key_state;
+            }
+            c.items = std::move(result.items);
+            c.items_context = std::move(result.items_context);
+            c.items_inputs = std::move(result.items_inputs);
             c.hits = nodes_[size_t(ref.node)].kind == Kind::collector ? 0 : c.hits;
         }
         c.deferred = result.deferred;
@@ -2265,7 +3072,6 @@ py::object Run::event_dict(const Event &event)
 
 void Run::pump()
 {
-    ThreadPython python(hooks_.install_thread);
     for (;;) {
         std::vector<Event> batch;
         bool stop;
@@ -2285,8 +3091,8 @@ void Run::pump()
                 for (const Event &event : batch) list.append(event_dict(event));
                 batch.clear();
                 hooks_.post(list);
-            } catch (py::error_already_set &error) {
-                error.discard_as_unraisable("chaiNNer-C engine events");
+            } catch (const std::exception &) {
+                report_unraisable("chaiNNer-C engine events");
             }
         }
         if (stop) return;
@@ -2311,29 +3117,84 @@ void Run::submit_broadcast(int node, const std::vector<Value> &outputs)
     broadcasts_changed_.notify_all();
 }
 
+/* A native image's broadcast (ImageOutput.get_broadcast_data and get_broadcast_type), computed without the GIL;
+ * LargeImageOutput's previews through image_preview.cpp, the same bytes as today's Python path. */
+struct ImageBroadcast {
+    size_t position;
+    int32_t height, width, channels;
+    std::vector<cn::image_preview::Preview> previews;
+    bool large;
+};
+
 void Run::broadcast_now(int node, const std::vector<Value> &outputs, const PyRef &generator)
 {
-    if (!send_broadcast_data_ || nodes_[size_t(node)].outputs.empty() || aborted_) return;
+    const NodePlan &plan = nodes_[size_t(node)];
+    if (!send_broadcast_data_ || plan.outputs.empty() || aborted_) return;
+    std::vector<ImageBroadcast> images;
+    try {
+        for (size_t i = 0; i < outputs.size() && i < plan.outputs.size(); ++i) {
+            const Image *image = std::get_if<Image>(&outputs[i]);
+            if (!plan.outputs[i].image || !image || image->height <= 0 || image->width <= 0) continue;
+            ImageBroadcast broadcast{i, image->height, image->width, image->channels, {}, plan.outputs[i].large};
+            // A preview the native encoder declines stays Python's (numpy_outputs._previews).
+            if (broadcast.large &&
+                !(cn::image_decode::enabled() &&
+                  cn::image_preview::previews(image->data, uint32_t(image->height), uint32_t(image->width),
+                                              uint32_t(image->channels), broadcast.previews)))
+                continue;
+            images.push_back(std::move(broadcast));
+        }
+    } catch (const std::exception &) {
+        images.clear();  // Python computes every broadcast (the same data)
+    }
+    if (aborted_) return;
     PythonSection python;
     try {
         py::list values;
+        py::dict native;
         for (const Value &value : outputs) values.append(to_python(value));
+        for (const ImageBroadcast &image : images) {
+            values[image.position] = py::none();
+            py::dict data;
+            if (image.large) {
+                py::list previews;
+                for (const auto &preview : image.previews) {
+                    py::dict entry;
+                    entry["width"] = preview.width;
+                    entry["height"] = preview.height;
+                    entry["url"] = py::str(preview.url);
+                    previews.append(entry);
+                }
+                data["previews"] = previews;
+            }
+            data["height"] = image.height;
+            data["width"] = image.width;
+            data["channels"] = image.channels;
+            py::dict fields;
+            fields["width"] = image.width;
+            fields["height"] = image.height;
+            fields["channels"] = image.channels;
+            py::dict type;
+            type["type"] = "named";
+            type["name"] = "Image";
+            type["fields"] = fields;
+            native[py::int_(image.position)] = py::make_tuple(data, type);
+        }
         py::object generator_object =
             generator.handle ? py::reinterpret_borrow<py::object>(static_cast<PyObject *>(generator.handle.get())) : py::none();
-        py::object event = hooks_.broadcast(node, values, generator_object);
+        py::object event = hooks_.broadcast(node, values, generator_object, native);
         if (!aborted_) {
             Event raw(Event::raw, node);
             raw.payload = py_ref(event);
             emit(std::move(raw));
         }
-    } catch (py::error_already_set &error) {
-        error.discard_as_unraisable("chaiNNer-C engine broadcast");
+    } catch (const std::exception &) {
+        report_unraisable("chaiNNer-C engine broadcast");
     }
 }
 
 void Run::broadcaster()
 {
-    ThreadPython python(hooks_.install_thread);
     for (;;) {
         BroadcastJob job;
         {
@@ -2363,6 +3224,97 @@ void Run::flush_broadcasts()
 }
 
 
+Engine::Engine()
+{
+    unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
+    DWORD_PTR process_mask = 0, system_mask = 0;
+    if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask) && process_mask)
+        cpus = unsigned(std::popcount(uint64_t(process_mask)));
+    workers_ = environment_count("CHAINNER_C_ENGINE_THREADS", int(std::max(2u, cpus)));
+    for (int i = 0; i < workers_; ++i) std::thread([this] { work(); }).detach();
+}
+
+void Engine::attach(Run *run)
+{
+    std::lock_guard<std::mutex> locked(mutex_);
+    active_[run] = 0;
+}
+
+void Engine::offer(Run *run, size_t jobs)
+{
+    if (jobs == 0) return;
+    {
+        std::lock_guard<std::mutex> locked(mutex_);
+        if (active_.find(run) == active_.end()) return;
+        tokens_.insert(tokens_.end(), jobs, run);
+    }
+    work_.notify_all();
+}
+
+void Engine::detach(Run *run)
+{
+    std::unique_lock<std::mutex> locked(mutex_);
+    std::erase(tokens_, run);
+    idle_.wait(locked, [&] { return active_[run] == 0; });
+    // A worker still inside the run may have offered tokens meanwhile: none may outlive the detach.
+    std::erase(tokens_, run);
+    active_.erase(run);
+}
+
+std::future<void> Engine::service(std::function<void()> task)
+{
+    std::packaged_task<void()> job(std::move(task));
+    std::future<void> done = job.get_future();
+    bool spawn;
+    {
+        std::lock_guard<std::mutex> locked(mutex_);
+        services_.push_back(std::move(job));
+        spawn = idle_services_ < int(services_.size());
+        if (spawn) ++idle_services_;  // counted idle until it takes its first service
+    }
+    if (spawn) std::thread([this] { serve(); }).detach();
+    services_changed_.notify_one();
+    return done;
+}
+
+void Engine::work()
+{
+    enter_python_thread();
+    for (;;) {
+        Run *run;
+        {
+            std::unique_lock<std::mutex> locked(mutex_);
+            work_.wait(locked, [&] { return !tokens_.empty(); });
+            run = tokens_.front();
+            tokens_.pop_front();
+            ++active_[run];
+        }
+        run->work_one();
+        {
+            std::lock_guard<std::mutex> locked(mutex_);
+            if (--active_[run] == 0) idle_.notify_all();
+        }
+    }
+}
+
+void Engine::serve()
+{
+    enter_python_thread();
+    for (;;) {
+        std::packaged_task<void()> job;
+        {
+            std::unique_lock<std::mutex> locked(mutex_);
+            services_changed_.wait(locked, [&] { return !services_.empty(); });
+            job = std::move(services_.front());
+            services_.pop_front();
+            --idle_services_;
+        }
+        job();
+        std::lock_guard<std::mutex> locked(mutex_);
+        ++idle_services_;
+    }
+}
+
 }  // namespace
 }  // namespace cn::run
 
@@ -2372,16 +3324,19 @@ void cn_bind_run_executor(py::module_ &module)
     py::class_<Run>(module, "RunEngine")
         .def(py::init<const py::dict &, py::object>(), py::arg("plan"), py::arg("hooks"))
         .def("start", &Run::start, py::arg("mode"), py::arg("target"))
-        .def("kill", &Run::kill)
-        .def("pause", &Run::pause)
-        .def("resume", &Run::resume)
+        .def("kill", &Run::kill, py::call_guard<py::gil_scoped_release>())
+        .def("pause", &Run::pause, py::call_guard<py::gil_scoped_release>())
+        .def("resume", &Run::resume, py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("aborted", &Run::aborted)
         .def_property_readonly("paused", &Run::paused)
         .def_property_readonly("commit_slot", &Run::commit_slot)
         .def("flush_broadcasts", &Run::flush_broadcasts, py::call_guard<py::gil_scoped_release>())
         .def("close", &Run::close, py::call_guard<py::gil_scoped_release>())
         .def("lookahead", &Run::lookahead)
-        .def("peek", &Run::peek);
+        .def("peek", &Run::peek, py::arg("node"), py::arg("input"), py::arg("offset"), py::arg("origin"));
+    module.def("memo_stats", [] { return cn::run::Memo::get().stats(); },
+               "The memo cache's entries, bytes, budget, hits and misses (amendment A3).");
+    module.def("memo_clear", [] { cn::run::Memo::get().clear(); }, "Drops every memo cache entry.");
     module.def("native_declines", [] {
         py::dict counts;
         std::lock_guard<std::mutex> locked(cn::run::decline_mutex);

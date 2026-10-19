@@ -86,7 +86,9 @@ class Executor:
         await asyncio.sleep(60)
 
 
+# Either executor CHAINNER_C_EXECUTOR selects.
 server.Executor = Executor
+server.NativeExecutor = Executor
 # Sanic gives its loop only to a serving app; this one is not served.
 type(server.app).loop = property(lambda _app: asyncio.get_running_loop())
 

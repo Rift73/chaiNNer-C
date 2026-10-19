@@ -37,10 +37,10 @@ from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
 from dependencies.store import installed_packages
 from events import EventConsumer, EventQueue, ExecutionErrorData
+from native_executor import NativeExecutor, executor_kind
 from nodes.impl import native, native_profile, numpy_pool
 from nodes.impl.cors import add_cors
 from nodes.impl.tensorrt import cache as tensorrt_cache
-from native_executor import NativeExecutor, executor_kind
 from process import ExecutionId, Executor, NodeExecutionError, NodeOutput
 from process_temp import use_process_temp_folder
 from progress_controller import Aborted
@@ -692,7 +692,9 @@ async def run_individual(request: Request):
 individual_releases: set[asyncio.Task[None]] = set()
 
 
-async def release_after_broadcasts(ctx: AppContext, executor: Executor | NativeExecutor) -> None:
+async def release_after_broadcasts(
+    ctx: AppContext, executor: Executor | NativeExecutor
+) -> None:
     """Releases the NumPy pool once an individual run's broadcasts are sent.
 
     The broadcasts free their temporaries when they finish; a release before that

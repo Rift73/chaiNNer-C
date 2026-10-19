@@ -1,7 +1,7 @@
 """The native run engine's Python side (native/local/instant-exec/DESIGN.md section 2).
 
-CHAINNER_C_EXECUTOR selects the executor of /run and /run/individual: "python" (process.Executor, the oracle) or
-"native" (this module); a diagnostic switch, never a user setting. The engine (native/src/run/executor.cpp,
+CHAINNER_C_EXECUTOR selects the executor of /run and /run/individual: "native" (this module, the default) or "python"
+(process.Executor, the diagnostic oracle: DESIGN.md amendment A5); a diagnostic switch, never a user setting. The engine (native/src/run/executor.cpp,
 _chainner_graph.RunEngine) owns the run: its driver thread follows process.Executor's control flow (generator
 groups one after another, items in order, each item's sinks then collectors, then the non-iterated sinks) and runs
 every node that may not run beside others (side effects, a context, a GPU, a lazy input) there, in today's order;
@@ -14,6 +14,8 @@ collector steps, contexts, cleanups, the item window's decision and the events t
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import os
 import sys
 import time
@@ -25,13 +27,16 @@ from sanic.log import logger
 
 import navi
 from api import (
+    BroadcastData,
     Collector,
     ExecutionOptions,
+    Generator,
     IterationView,
     IterOutputId,
     NodeContext,
     NodeData,
     NodeId,
+    OutputId,
     SettingsParser,
     registry,
 )
@@ -39,7 +44,6 @@ from chain.cache import OutputCache, get_cache_strategies
 from chain.chain import Chain, CollectorNode, FunctionNode, GeneratorNode, Node
 from chain.input import EdgeInput, Input, InputMap
 from events import EventConsumer
-from nodes.impl import numpy_pool
 from nodes.impl.execution_cleanup import run_cleanup_functions, run_cleanup_groups
 from nodes.impl.execution_scheduler import pure_cpu_node
 from nodes.impl.item_window import (
@@ -80,18 +84,86 @@ if TYPE_CHECKING:
     from events import Event
     from nodes.properties.inputs.numpy_inputs import ImageInput
     from nodes.properties.outputs.numpy_outputs import ImageOutput
+    from process import _SplitIterator
 
 EXECUTOR_VARIABLE = "CHAINNER_C_EXECUTOR"
 EXECUTORS = ("python", "native")
-DEFAULT_EXECUTOR = "python"
+DEFAULT_EXECUTOR = "native"
 STATIC_HITS = -1  # a static cache entry (StaticCaching) in the plan
+
+# The memo cache's allow-list (DESIGN.md amendment A3): native nodes without side effects or a context, except the
+# random generators below; these Python nodes, audited as deterministic and side-effect free (no file, clock, random,
+# network or GPU reads); and Load Image, keyed by its file's identity. test_engine_memo.py lists the sets.
+MEMO_PYTHON_NODES: frozenset[str] = frozenset(
+    {
+        "chainner:image:add_normals",
+        "chainner:image:average_color_fix",
+        "chainner:image:balance_normals",
+        "chainner:image:bilateral_blur",
+        "chainner:image:convert_normal_map",
+        "chainner:image:generate_hash",
+        "chainner:image:metal_to_specular",
+        "chainner:image:normal_generator",
+        "chainner:image:normalize_normal_map",
+        "chainner:image:planes_to_rgb",
+        "chainner:image:rgb_to_planes",
+        "chainner:image:specular_to_metal",
+        "chainner:image:strengthen_normals",
+        "chainner:utility:color_from_channels",
+        "chainner:utility:derive_seed",
+        "chainner:utility:separate_color",
+    }
+)
+MEMO_EXCLUDED_NATIVE: frozenset[str] = frozenset(
+    {"chainner:image:add_noise", "chainner:image:create_noise"}
+)
+LOAD_IMAGE = "chainner:image:load"
+
+
+def memo_eligible(data: NodeData, native: bool) -> bool:
+    """Whether the memo cache may keep the node's outputs (MEMO_PYTHON_NODES)."""
+    if data.schema_id == LOAD_IMAGE:
+        return True
+    if data.kind != "regularNode" or data.side_effects or data.node_context:
+        return False
+    return (
+        data.schema_id not in MEMO_EXCLUDED_NATIVE
+        if native
+        else data.schema_id in MEMO_PYTHON_NODES
+    )
+
+
+def memo_constant(value: object) -> str | None:
+    """A constant input's part of a memo key: its JSON, as the UI sent it; None when it has none."""
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+
+
+def file_identity(path: object) -> str | None:
+    """A file's identity for memo keys: its path, size, modification time, volume and file id; None when it cannot
+    be read."""
+    if not isinstance(path, (str, os.PathLike)):
+        return None
+    try:
+        stat = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return f"{os.fspath(path)}|{stat.st_size}|{stat.st_mtime_ns}|{stat.st_dev}|{stat.st_ino}"
 
 
 def executor_kind() -> str:
     """The executor CHAINNER_C_EXECUTOR selects; an unknown value is logged and the default is used."""
     value = os.environ.get(EXECUTOR_VARIABLE, "") or DEFAULT_EXECUTOR
     if value not in EXECUTORS:
-        logger.warning("%s=%r is not one of %s; using %s", EXECUTOR_VARIABLE, value, EXECUTORS, DEFAULT_EXECUTOR)
+        logger.warning(
+            "%s=%r is not one of %s; using %s",
+            EXECUTOR_VARIABLE,
+            value,
+            EXECUTORS,
+            DEFAULT_EXECUTOR,
+        )
         return DEFAULT_EXECUTOR
     return value
 
@@ -112,10 +184,14 @@ class _Engine(Protocol):
     def flush_broadcasts(self) -> None: ...
     def close(self) -> None: ...
     def lookahead(self, node: int, input_index: int) -> int: ...
-    def peek(self, node: int, input_index: int, offset: int) -> object | None: ...
+    def peek(
+        self, node: int, input_index: int, offset: int, origin: int
+    ) -> object | None: ...
 
 
-def _iterated_nodes(chain: Chain, node: GeneratorNode) -> tuple[list[CollectorNode], list[FunctionNode], set[Node]]:
+def _iterated_nodes(
+    chain: Chain, node: GeneratorNode
+) -> tuple[list[CollectorNode], list[FunctionNode], set[Node]]:
     """process.Executor.__get_iterated_nodes: the collectors and side-effect nodes a generator iterates and every
     node it reaches (itself included), in the same set iteration orders."""
     collectors: set[CollectorNode] = set()
@@ -154,7 +230,13 @@ def _groups(chain: Chain) -> list[list[GeneratorNode]]:
                 gens_by_outs.setdefault(sink.id, set()).add(node.id)
     groups: list[list[GeneratorNode]] = []
     for group in combine_sets(list(gens_by_outs.values())):
-        groups.append([n for n in (chain.nodes[node_id] for node_id in group) if isinstance(n, GeneratorNode)])
+        groups.append(
+            [
+                n
+                for n in (chain.nodes[node_id] for node_id in group)
+                if isinstance(n, GeneratorNode)
+            ]
+        )
     return groups
 
 
@@ -165,19 +247,37 @@ def _relative_path_input(i: object) -> bool:
 
 
 class _EngineIterationView(IterationView):
-    """A node's iteration view for one loop run: its index is the slot the engine commits; a look-ahead waits in the
-    engine (GIL released) for a later item."""
+    """A node's iteration view for one loop run: its index is the slot the engine commits (or the later slot a serial
+    node is computed ahead at, see at()); a look-ahead waits in the engine (GIL released) for a later item."""
 
-    def __init__(self, engine: _Engine, index: int, node: Node, sources: tuple[str | None, ...]) -> None:
+    def __init__(
+        self,
+        engine: _Engine,
+        index: int,
+        node: Node,
+        sources: tuple[str | None, ...],
+        base: _EngineIterationView | None = None,
+        slot: int = -1,
+    ) -> None:
         self.__engine = engine
         self.__index = index
         self.__node = node
         self.__sources = sources
         self.__state: object | None = None
+        self.__base = base  # the view whose state this one shares
+        # The item the node is computed ahead at; -1: the committing one.
+        self.__slot = slot
+
+    def at(self, slot: int) -> _EngineIterationView:
+        """This view as the node computed ahead at a later item sees it (process._IterationView.at): that item's
+        index, this view's state, look-aheads from that item."""
+        return _EngineIterationView(
+            self.__engine, self.__index, self.__node, self.__sources, self, slot
+        )
 
     @property
     def index(self) -> int:
-        return self.__engine.commit_slot
+        return self.__engine.commit_slot if self.__slot < 0 else self.__slot
 
     @property
     def source(self) -> str:
@@ -188,11 +288,14 @@ class _EngineIterationView(IterationView):
 
     @property
     def state(self) -> object | None:
-        return self.__state
+        return self.__state if self.__base is None else self.__base.state
 
     @state.setter
     def state(self, value: object | None) -> None:
-        self.__state = value
+        if self.__base is None:
+            self.__state = value
+        else:
+            self.__base.state = value
 
     def lookahead(self, input_id: int) -> int:
         return self.__engine.lookahead(self.__index, self.__input_index(input_id))
@@ -201,7 +304,7 @@ class _EngineIterationView(IterationView):
         if offset < 1:
             raise ValueError(f"A look-ahead offset must be at least 1, not {offset}.")
         index = self.__input_index(input_id)
-        value = self.__engine.peek(self.__index, index, offset)
+        value = self.__engine.peek(self.__index, index, offset, self.__slot)
         if value is None:
             return None
         try:
@@ -221,7 +324,13 @@ class _EngineContext(NodeContext):
     """A node's context in an engine run (process._ExecutorNodeContext's contract): Stop and Pause are the engine's;
     cleanups are kept here and run by the engine after the node and at the end of the run."""
 
-    def __init__(self, engine: Callable[[], _Engine], settings: SettingsParser, storage_dir: Path, node_id: NodeId):
+    def __init__(
+        self,
+        engine: Callable[[], _Engine],
+        settings: SettingsParser,
+        storage_dir: Path,
+        node_id: NodeId,
+    ):
         super().__init__()
         self.__engine = engine
         self.__settings = settings
@@ -259,7 +368,9 @@ class _EngineContext(NodeContext):
     def storage_dir(self) -> Path:
         return self.__storage_dir
 
-    def add_cleanup(self, fn: Callable[[], None], after: Literal["node", "chain"] = "chain") -> None:
+    def add_cleanup(
+        self, fn: Callable[[], None], after: Literal["node", "chain"] = "chain"
+    ) -> None:
         if after == "chain":
             self.chain_cleanup_fns.add(fn)
         elif after == "node":
@@ -275,7 +386,11 @@ def _exception_type(name: str) -> type[BaseException]:
         found = getattr(__import__(module or "builtins", fromlist=["_"]), qualname)
     except (ImportError, AttributeError):
         return RuntimeError
-    return found if isinstance(found, type) and issubclass(found, BaseException) else RuntimeError
+    return (
+        found
+        if isinstance(found, type) and issubclass(found, BaseException)
+        else RuntimeError
+    )
 
 
 class _Hooks:
@@ -308,10 +423,6 @@ class _Hooks:
 
     # Threads and events
 
-    def install_thread(self) -> None:
-        """An engine thread's first Python call: NumPy's data-memory handler is per thread."""
-        numpy_pool.install()
-
     def post(self, events: list[dict[str, object]]) -> None:
         self.loop.call_soon_threadsafe(self.__put, events)
 
@@ -338,11 +449,20 @@ class _Hooks:
 
     # Nodes
 
-    def run_node(self, index: int, inputs: list[object], prepared: object) -> NodeOutput | CollectorOutput:
-        """process.run_node; prepared: the value the node's prepare phase computed ahead (None: none)."""
+    def run_node(
+        self, index: int, inputs: list[object], prepared: object, ahead: int
+    ) -> NodeOutput | CollectorOutput:
+        """process.run_node; prepared: the value the node's prepare phase computed ahead (None: none); ahead: the
+        later item a serial node is computed at for a look-ahead, with its context there (process.Executor's
+        __ahead_context: its own, with its iteration view at that item), -1: none."""
         node = self.nodes[index]
         phase = None if prepared is None else Prepared(prepared)
-        return run_node(node.data, self.contexts[index], inputs, node.id, phase)
+        context = self.contexts[index]
+        if ahead >= 0:
+            view = context.iteration_view
+            context = copy.copy(context)
+            context.iteration_view = None if view is None else view.at(ahead)
+        return run_node(node.data, context, inputs, node.id, phase)
 
     def enforce_input(self, index: int, input_index: int, value: object) -> object:
         return self.nodes[index].data.inputs[input_index].enforce_(value)
@@ -350,11 +470,15 @@ class _Hooks:
     def enforce_output(self, index: int, output_index: int, value: object) -> object:
         return self.nodes[index].data.outputs[output_index].enforce_(value)
 
-    def native_failure(self, index: int, type_name: str, message: str, inputs: list[object]) -> NodeExecutionError:
+    def native_failure(
+        self, index: int, type_name: str, message: str, inputs: list[object]
+    ) -> NodeExecutionError:
         """A native entry point's NodeError as run_node reports a body's error."""
         node = self.nodes[index]
         cause = _exception_type(type_name)(message)
-        error = NodeExecutionError(node.id, node.data, str(cause), collect_input_information(node.data, inputs))
+        error = NodeExecutionError(
+            node.id, node.data, str(cause), collect_input_information(node.data, inputs)
+        )
         error.__cause__ = cause
         return error
 
@@ -373,7 +497,9 @@ class _Hooks:
     def node_cleanups(self, index: int, preserve_error: bool) -> None:
         context = self.contexts[index]
         if context.node_cleanup_fns:
-            run_cleanup_functions(context.node_cleanup_fns, preserve_error=preserve_error)
+            run_cleanup_functions(
+                context.node_cleanup_fns, preserve_error=preserve_error
+            )
 
     def chain_cleanups(self, preserve_error: bool) -> None:
         run_cleanup_groups(
@@ -390,17 +516,42 @@ class _Hooks:
 
     # Broadcasts
 
-    def broadcast(self, index: int, outputs: list[object], generator: object) -> dict[str, object]:
+    def broadcast(
+        self,
+        index: int,
+        outputs: list[object],
+        generator: object,
+        native: dict[int, tuple[BroadcastData, navi.ExpressionJson]],
+    ) -> dict[str, object]:
+        """process.Executor's broadcast payload; native: the engine's own image broadcasts by output position (their
+        values are None in outputs)."""
         node = self.nodes[index]
-        data, types = compute_broadcast(outputs, node.data.outputs)
+        computed, computed_types = compute_broadcast(outputs, node.data.outputs)
+        data: dict[OutputId, BroadcastData | None] = {}
+        types: dict[OutputId, navi.ExpressionJson | None] = {}
+        for position, output in enumerate(node.data.outputs):
+            if position in native:
+                data[output.id], types[output.id] = native[position]
+            elif output.id in computed:
+                data[output.id], types[output.id] = (
+                    computed[output.id],
+                    computed_types[output.id],
+                )
         sequence_types: dict[IterOutputId, navi.ExpressionJson] = {}
         if isinstance(generator, GeneratorOutput):
-            sequence_types, item_types = compute_sequence_broadcast([generator.generator], node.data.iterable_outputs)
+            sequence_types, item_types = compute_sequence_broadcast(
+                [generator.generator], node.data.iterable_outputs
+            )
             for output_id, kind in item_types.items():
                 types[output_id] = kind
         return {
             "event": "node-broadcast",
-            "data": {"nodeId": node.id, "data": data, "types": types, "sequenceTypes": sequence_types},
+            "data": {
+                "nodeId": node.id,
+                "data": data,
+                "types": types,
+                "sequenceTypes": sequence_types,
+            },
         }
 
     # Generators
@@ -410,7 +561,56 @@ class _Hooks:
         items (describe) apart from loading them (materialize), as Load Images' native iterator does."""
         assert isinstance(output, GeneratorOutput)
         iterator = output.generator.supplier().__iter__()
-        return iterator, hasattr(iterator, "describe"), output.generator.expected_length, output.generator.fail_fast
+        return (
+            iterator,
+            hasattr(iterator, "describe"),
+            output.generator.expected_length,
+            output.generator.fail_fast,
+        )
+
+    def file_identity(self, path: object) -> str | None:
+        return file_identity(path)
+
+    def item_identity(self, token: object) -> str | None:
+        """A split iterator's item token's file identity (Load Images' (path, index)); None for any other token."""
+        if not (isinstance(token, tuple) and len(token) == 1):
+            return None
+        described = token[0]
+        if not (
+            isinstance(described, tuple)
+            and len(described) == 2
+            and isinstance(described[1], int)
+        ):
+            return None
+        identity = file_identity(described[0])
+        return None if identity is None else f"{identity}|{described[1]}"
+
+    def regular_output(self, outputs: list[object]) -> RegularOutput:
+        return RegularOutput(outputs)
+
+    def native_generator(
+        self,
+        index: int,
+        expected_length: int,
+        fail_fast: bool,
+        source_paths: tuple[Path, ...] | None,
+        partial: list[object],
+    ) -> GeneratorOutput:
+        """A native generator's GeneratorOutput, for its broadcasts and the item window's decision: the engine reads
+        its items from the native item source, never through this generator's supplier."""
+
+        def supplier() -> Iterator[object]:
+            raise RuntimeError("A native generator's items are read by the engine")
+
+        node = self.nodes[index]
+        generator = Generator(
+            supplier, expected_length, fail_fast=fail_fast, source_paths=source_paths
+        )
+        return GeneratorOutput(
+            info=node.data.single_iterable_output,
+            generator=generator,
+            partial_output=partial,
+        )
 
     def fill(self, index: int, output: object, values: object) -> list[object]:
         """process.Executor.__generator_fill_partial_output: an item's outputs, its iterated values enforced."""
@@ -435,7 +635,7 @@ class _Hooks:
         is raised."""
         if split:
             try:
-                return (getattr(iterator, "describe")(),)
+                return (cast("_SplitIterator", iterator).describe(),)
             except StopIteration:
                 return None
         try:
@@ -447,24 +647,35 @@ class _Hooks:
         return (values,)
 
     def materialize(
-        self, index: int, iterator: Iterator[object], output: object, token: tuple[object], split: bool
+        self,
+        index: int,
+        iterator: Iterator[object],
+        output: object,
+        token: tuple[object],
+        split: bool,
     ) -> list[object]:
         """The item's outputs (process.Executor.__materialize / __materialize_split)."""
         (values,) = token
         if split:
-            values = getattr(iterator, "materialize")(values)
+            values = cast("_SplitIterator", iterator).materialize(values)
             if isinstance(values, Exception):
                 raise values
         return self.fill(index, output, values)
 
     # Collectors
 
-    def collector_iterate(self, index: int, inputs: list[object], collector: Collector, prepared: object) -> None:
+    def collector_iterate(
+        self, index: int, inputs: list[object], collector: Collector, prepared: object
+    ) -> None:
         node = self.nodes[index]
         assert isinstance(node, CollectorNode)
-        run_collector_iterate(node, inputs, collector, None if prepared is None else Prepared(prepared))
+        run_collector_iterate(
+            node, inputs, collector, None if prepared is None else Prepared(prepared)
+        )
 
-    def prepare(self, index: int, inputs: list[object], collector: Collector | None) -> object | None:
+    def prepare(
+        self, index: int, inputs: list[object], collector: Collector | None
+    ) -> object | None:
         """A sink's prepare phase ahead of its commit (process.prepare_node)."""
         return prepare_node(self.nodes[index].data, inputs, collector)
 
@@ -485,11 +696,16 @@ class _Hooks:
             assert self.engine is not None
             node = self.nodes[index]
             lineages = [self.__input_lineage(i) for i in self.inputs.get(node.id)]
-            assert any(lineage is not None for lineage in lineages), f"Iterated node {node.id} has no lineage"
-            sources = tuple(
-                None if lineage is None else self.chain.nodes[lineage].data.schema_id for lineage in lineages
+            assert any(lineage is not None for lineage in lineages), (
+                f"Iterated node {node.id} has no lineage"
             )
-            view = self.views[index] = _EngineIterationView(self.engine, index, node, sources)
+            sources = tuple(
+                None if lineage is None else self.chain.nodes[lineage].data.schema_id
+                for lineage in lineages
+            )
+            view = self.views[index] = _EngineIterationView(
+                self.engine, index, node, sources
+            )
         self.contexts[index].iteration_view = view
 
     def __lineage(self, node_id: NodeId) -> NodeId | None:
@@ -509,7 +725,10 @@ class _Hooks:
             return None
         source = self.chain.nodes[i.id]
         if isinstance(source, GeneratorNode):
-            if source.data.outputs[i.index].id in source.data.single_iterable_output.outputs:
+            if (
+                source.data.outputs[i.index].id
+                in source.data.single_iterable_output.outputs
+            ):
                 return i.id
         elif isinstance(source, FunctionNode) and i.id in self.loop_iterated:
             return self.__lineage(i.id)
@@ -540,9 +759,15 @@ class _Hooks:
             sources = []
             for node_index, output in zip(generators, generator_outputs):
                 assert isinstance(output, GeneratorOutput)
-                sources.append((self.nodes[node_index].id, output.generator.source_paths))
+                sources.append(
+                    (self.nodes[node_index].id, output.generator.source_paths)
+                )
             directories, targets = self.__writer_directories(
-                writers, dict(zip(generators, generator_outputs)), set(iterated), cached, collector_inputs
+                writers,
+                dict(zip(generators, generator_outputs)),
+                set(iterated),
+                cached,
+                collector_inputs,
             )
             blocker = read_ahead_blocker(sources, directories)
             if blocker is not None:
@@ -551,7 +776,9 @@ class _Hooks:
                 name = self.chain.nodes[writer].data.name
                 message = f"{name} writes to {folder}, outside its chosen folder."
                 logger.warning(message)
-                warnings.append({"event": "execution-warning", "data": {"message": message}})
+                warnings.append(
+                    {"event": "execution-warning", "data": {"message": message}}
+                )
         logger.info("item window K=%d (%s)", k, reason)
         return k, reason, blocker, memory_budget() if k > 1 else 0, warnings
 
@@ -585,8 +812,13 @@ class _Hooks:
                     source = self.chain.nodes[node_input.id]
                     output = generator_outputs[positions[node_input.id]]
                     assert isinstance(output, GeneratorOutput)
-                    is_iterated = source.data.outputs[node_input.index].id in source.data.single_iterable_output.outputs
-                    value = None if is_iterated else output.partial_output[node_input.index]
+                    is_iterated = (
+                        source.data.outputs[node_input.index].id
+                        in source.data.single_iterable_output.outputs
+                    )
+                    value = (
+                        None if is_iterated else output.partial_output[node_input.index]
+                    )
                 elif positions[node_input.id] in iterated:
                     value = None
                 elif isinstance(node, CollectorNode):
@@ -596,7 +828,9 @@ class _Hooks:
                     if not found:
                         value = None
                 if not relative:
-                    self.__add_target(node.id, base, parts, complete, directories, targets)
+                    self.__add_target(
+                        node.id, base, parts, complete, directories, targets
+                    )
                     base = Path(value) if isinstance(value, (str, Path)) else None
                     directories.append((node.id, base))
                     parts, complete = [], True
@@ -651,14 +885,21 @@ def _image_input(node_input: object) -> tuple[list[int] | None, bool] | None:
     return image.channels, image.allow_colors
 
 
-def _image_output(output: object) -> tuple[int, bool] | None:
-    """(channels or 0, assume_normalized) of an output whose enforce the engine performs for images: an ImageOutput
-    or LargeImageOutput itself."""
+def _image_output(output: object) -> tuple[int, bool, bool] | None:
+    """(channels or 0, assume_normalized, large) of an output whose enforce and broadcast the engine performs for
+    images: an ImageOutput or LargeImageOutput itself (large: LargeImageOutput, whose broadcast has previews)."""
     module = sys.modules.get("nodes.properties.outputs.numpy_outputs")
-    if module is None or type(output) not in (module.ImageOutput, module.LargeImageOutput):
+    if module is None or type(output) not in (
+        module.ImageOutput,
+        module.LargeImageOutput,
+    ):
         return None
     image = cast("ImageOutput", output)
-    return image.channels or 0, image.assume_normalized
+    return (
+        image.channels or 0,
+        image.assume_normalized,
+        type(output) is module.LargeImageOutput,
+    )
 
 
 def build_plan(
@@ -680,10 +921,29 @@ def build_plan(
     for node in nodes:
         data: NodeData = node.data
         package_id = registry.get_package(data.schema_id).id
-        contexts.append(_EngineContext(engine, options.get_package_settings(package_id), storage_dir, node.id))
-        ignored = set(data.single_iterable_input.inputs) if isinstance(node, CollectorNode) else set()
+        contexts.append(
+            _EngineContext(
+                engine, options.get_package_settings(package_id), storage_dir, node.id
+            )
+        )
+        ignored = (
+            set(data.single_iterable_input.inputs)
+            if isinstance(node, CollectorNode)
+            else set()
+        )
         native = data.schema_id in native_ids and not isinstance(node, CollectorNode)
-        plan_inputs: list[tuple[int, int, object, bool, bool, tuple[list[int] | None, bool] | None, object]] = []
+        plan_inputs: list[
+            tuple[
+                int,
+                int,
+                object,
+                bool,
+                bool,
+                tuple[list[int] | None, bool] | None,
+                object,
+                str | None,
+            ]
+        ] = []
         for node_input, assigned in zip(data.inputs, inputs.get(node.id)):
             source, output_index, value = -1, 0, None
             enforced: object = None
@@ -698,7 +958,16 @@ def build_plan(
                         # The Python body raises this enforce error, as run_node reports it.
                         native = False
             plan_inputs.append(
-                (source, output_index, value, node_input.lazy, node_input.id in ignored, _image_input(node_input), enforced)
+                (
+                    source,
+                    output_index,
+                    value,
+                    node_input.lazy,
+                    node_input.id in ignored,
+                    _image_input(node_input),
+                    enforced,
+                    None if source >= 0 else memo_constant(value),
+                )
             )
         strategy = strategies[node.id]
         precached = None if parent_cache is None else parent_cache.peek(node.id)
@@ -714,18 +983,32 @@ def build_plan(
                 "inputs": plan_inputs,
                 "outputs": len(data.outputs),
                 "iterable_outputs": [
-                    i for i, o in enumerate(data.outputs) if o.id in data.single_iterable_output.outputs
+                    i
+                    for i, o in enumerate(data.outputs)
+                    if o.id in data.single_iterable_output.outputs
                 ]
                 if data.kind == "generator"
                 else [],
                 "hits": STATIC_HITS if strategy.static else strategy.hits_to_live,
                 "native": native,
                 "phased": node_phases(data.schema_id) is not None,
+                "memo": memo_eligible(data, data.schema_id in native_ids),
+                "identity_input": 0 if data.schema_id == LOAD_IMAGE else -1,
+                "settings_key": json.dumps(
+                    options.get_package_settings_json(package_id),
+                    sort_keys=True,
+                    default=str,
+                ),
                 "image_outputs": [_image_output(o) for o in data.outputs],
+                "output_ids": [o.id for o in data.outputs],
                 "settings": options.get_package_settings_json(package_id),
                 "precached": None
                 if precached is None
-                else (precached.output if isinstance(precached, RegularOutput) else precached.partial_output),
+                else (
+                    precached.output
+                    if isinstance(precached, RegularOutput)
+                    else precached.partial_output
+                ),
             }
         )
     groups: list[dict[str, object]] = []
@@ -737,7 +1020,12 @@ def build_plan(
             collectors, outputs, seen = _iterated_nodes(chain, generator)
             output_nodes.update(outputs)
             iterated.update(positions[n.id] for n in seen)
-            entries.append({"node": positions[generator.id], "collectors": [positions[c.id] for c in collectors]})
+            entries.append(
+                {
+                    "node": positions[generator.id],
+                    "collectors": [positions[c.id] for c in collectors],
+                }
+            )
         groups.append(
             {
                 "generators": entries,
@@ -787,7 +1075,12 @@ class NativeExecutor:
         self.loop = loop
         self.progress = self
         plan, nodes, contexts, inputs = build_plan(
-            chain, options, storage_dir, send_broadcast_data, parent_cache, self.__engine
+            chain,
+            options,
+            storage_dir,
+            send_broadcast_data,
+            parent_cache,
+            self.__engine,
         )
         self.__nodes = nodes
         self.__hooks = _Hooks(id, nodes, contexts, queue, loop, inputs, chain)
@@ -846,7 +1139,9 @@ class NativeExecutor:
         return output
 
     def __position(self, node_id: NodeId) -> int:
-        return next(index for index, node in enumerate(self.__nodes) if node.id == node_id)
+        return next(
+            index for index, node in enumerate(self.__nodes) if node.id == node_id
+        )
 
     async def flush_broadcasts(self) -> None:
         await self.loop.run_in_executor(None, self.__run_engine.flush_broadcasts)
@@ -868,4 +1163,3 @@ class NativeExecutor:
     def kill(self) -> None:
         logger.debug("Killing native executor %s", self.id)
         self.__run_engine.kill()
-
