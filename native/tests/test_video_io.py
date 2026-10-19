@@ -240,6 +240,10 @@ class FakeTarget:
         self.env, self.temp = env, f"{path}.{env.targets}.tmp"
         env.targets += 1
 
+    def check(self):
+        """The real target's check opens the path the rename will replace; here every
+        path can be replaced (test_save_video_atomic.py tests a held one)."""
+
     def commit(self):
         self.env.record("commit", self.temp)
         return True
