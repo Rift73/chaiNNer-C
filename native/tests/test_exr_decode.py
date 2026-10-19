@@ -74,8 +74,14 @@ def smooth(c: int, width: int, height: int, xs: int = 1, ys: int = 1) -> np.ndar
     return value.astype(np.float32).astype(np.float16).astype(np.float32)
 
 
+def read(path: Path) -> np.ndarray:
+    image = load_image._read_cv(path)
+    assert image is not None
+    return image
+
+
 def decode(name: str) -> np.ndarray:
-    return load_image._read_cv(EXR / name)
+    return read(EXR / name)
 
 
 def assert_bits(actual: np.ndarray, expected: np.ndarray) -> None:
@@ -353,7 +359,7 @@ def test_file_written_from_the_specification(tmp_path: Path):
             5, 3, {"R": rgb[:, :, 0], "G": rgb[:, :, 1], "B": rgb[:, :, 2]}, (-2, 4)
         )
     )
-    assert_bits(load_image._read_cv(path), rgb[:, :, ::-1])
+    assert_bits(read(path), rgb[:, :, ::-1])
 
 
 def test_decoded_by_signature_whatever_the_name(
@@ -363,7 +369,7 @@ def test_decoded_by_signature_whatever_the_name(
     path = tmp_path / "exr_named.tif"
     shutil.copyfile(EXR / "rgba_half_zip.exr", path)
     monkeypatch.setattr(load_image, "cv2", Probe(load_image.cv2))
-    assert_bits(load_image._read_cv(path), rgba_half())
+    assert_bits(read(path), rgba_half())
 
 
 def test_decoded_with_native_codecs_off(monkeypatch: pytest.MonkeyPatch):
