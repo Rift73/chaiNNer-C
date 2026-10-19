@@ -276,7 +276,7 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
 ## Bench
 
 ```powershell
-.\native\.venv\Scripts\python.exe -B native\tools\bench.py [--a TREE] [--b TREE] [--cases CASE ...] [--repeats N] [--record-noise] [--env-a NAME=VALUE] [--env-b NAME=VALUE] [--profile] [--python-a PATH] [--python-b PATH] [--png-compare sha256|decoded]
+.\native\.venv\Scripts\python.exe -B native\tools\bench.py [--a TREE] [--b TREE] [--cases CASE ...] [--repeats N] [--record-noise] [--env-a NAME=VALUE] [--env-b NAME=VALUE] [--profile] [--python-a PATH] [--python-b PATH] [--png-compare sha256|decoded] [--allow-schema-change]
 # against upstream's nightly (the pinned app's backend on the installed chaiNNer's Python, both read-only; B is the package; PNG bytes differ by encoder, pixels do not):
 .\native\.venv\Scripts\python.exe -B native\tools\bench.py --a native\local\upstream\app-0.25.1-nightly2025-10-21\resources\src --python-a "$env:APPDATA\chaiNNer\python\python\python.exe" --png-compare decoded
 ```
@@ -290,7 +290,8 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
   `normal-map`, `caption`, `split-channels`, `palette-median`, `palette-dither`, `parallel-branches`, `video-ffv1`,
   `video-h264`, `video-resize-h264`. All 13 at 6 pairs take roughly 10-20 minutes.
 - Per case: one warm-up pair, then N measured pairs in alternating order (N even; verdicts need `MIN_PAIRS = 6`). Outputs and final
-  UI state must be identical in every trial or the run fails. Oracles: PNG files by SHA-256 (default) or, with `--png-compare
+  UI state must be identical in every trial or the run fails; so must both sides' `/nodes`, unless `--allow-schema-change`
+  (a before/after across a branch that changes node schemas) records the difference as `schema_change` instead. Oracles: PNG files by SHA-256 (default) or, with `--png-compare
   decoded`, by pixels and colour chunks (another encoder's files); ffprobe plus streamed FFmpeg raw BGR24 SHA-256; SSE tail validation.
 - Each trial records B's item-window decision and counts (`item_windows`); `CHAINNER_C_ITEM_WINDOW=k` in the environment forces K (`1` = sequential); `CHAINNER_C_SERIAL_PRODUCER=1` forces the serial producer (any other value is ignored); `CHAINNER_C_ISA=scalar|avx2|avx512` (set per side with `--env-a`/`--env-b`) caps our ISA units, while the C runtime's and the compiler's own dispatched code follow the CPU (logged as `native isa=...`, recorded as `native_isa`); `avx2` also caps the AVX-512 units, for a part that downclocks under them (spec 4.3 residual).
 - The native run engine runs every `/run` and `/run/individual` (ARCHITECTURE section 4); `CHAINNER_C_EXECUTOR=python` selects process.Executor, the diagnostic oracle (never a user setting). `CHAINNER_C_MEMO_BUDGET_MIB` is its memo cache's budget (default min(2 GiB, 10 % of RAM); `0` = off): a backend that runs a case again reuses those outputs, so set it to `0` with `--env-b` unless the memo is what you measure. `CHAINNER_C_ENGINE_THREADS` (workers, default one per CPU of the affinity mask, at least 2), `CHAINNER_C_PYTHON_THREADS` (engine threads in Python at once, default 8) and `CHAINNER_C_ENGINE_IDLE_SECONDS` (a service thread's idle time before it ends, default 30) take a positive count; any other value keeps the default. `CHAINNER_C_NATIVE_CODECS=0` sends every image decode and encode to today's Python path (the codec corpus's oracle).

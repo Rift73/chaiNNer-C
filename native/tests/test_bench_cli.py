@@ -9,6 +9,7 @@ import math
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -417,10 +418,68 @@ def test_compare_alternates_backends_in_balanced_pairs(tmp_path, monkeypatch):
     assert [t["native_profile"] for t in result["trials"]] == [None] * 6
     # Not a cross-stack run: A's warm-up is both sides' reference, and no label.
     assert result["cross_stack"] is None
+    assert result["schema_change"] is None
     summary = (run / "summary.md").read_text(encoding="utf-8")
     assert "- Label:" not in summary
     assert "## Cross-stack" not in summary
     assert not (tmp_path / "noise-floor.json").exists()
+
+
+class SchemaChange(FakeBenchBackend):
+    """A fake backend whose /nodes differs by side: A serves x, y and z, B serves z
+    and y (another order), y changed, and w."""
+
+    def __enter__(self):
+        self.info["schema_sha256"] = self.label
+        if self.label == "A":
+            self.schemas = {"x": {"v": 1}, "y": {"v": 1}, "z": {"v": 1}}
+        else:
+            self.schemas = {"z": {"v": 1}, "y": {"v": 2}, "w": {"v": 1}}
+        return self
+
+
+def test_differing_schemas_fail_the_run_before_any_trial(tmp_path, monkeypatch):
+    calls = stub_compare(tmp_path, monkeypatch)
+    monkeypatch.setattr(bench, "Backend", SchemaChange)
+    with pytest.raises(RuntimeError, match="Node schemas differ"):
+        bench.compare(tmp_path / "a", tmp_path / "b", ["gaussian"], 2, False)
+    assert calls == []
+    assert only_result(tmp_path)["success"] is False
+
+
+def test_allow_schema_change_records_the_difference_and_runs(tmp_path, monkeypatch):
+    calls = stub_compare(tmp_path, monkeypatch)
+    monkeypatch.setattr(bench, "Backend", SchemaChange)
+    bench.compare(
+        tmp_path / "a",
+        tmp_path / "b",
+        ["gaussian"],
+        2,
+        False,
+        allow_schema_change=True,
+    )
+    assert calls == ["A", "B", "B", "A", "A", "B"]
+    result = only_result(tmp_path)
+    assert result["success"] is True
+    assert result["schema_change"] == {
+        "schema_sha256": {"A": "A", "B": "B"},
+        "only_a": ["x"],
+        "only_b": ["w"],
+        "changed": ["y"],
+        "order_changed": True,
+    }
+    assert any("node schemas differ" in w for w in result["warnings"])
+
+
+def test_allow_schema_change_refuses_record_noise(tmp_path, monkeypatch):
+    created = refused_start(tmp_path, monkeypatch)
+    with pytest.raises(
+        ValueError, match="--record-noise refuses --allow-schema-change"
+    ):
+        bench.compare(
+            *identical_trees(tmp_path), ["gaussian"], 6, True, allow_schema_change=True
+        )
+    assert created() == set()
 
 
 @pytest.mark.parametrize("side", ["a", "b"])
@@ -1407,6 +1466,62 @@ def test_run_trial_records_job_page_faults_over_the_window_of_job_cpu(
     assert order == ["cpu_seconds", "page_faults", "run", "cpu_seconds", "page_faults"]
     assert trial["job_cpu_seconds"] == 2.5
     assert trial["job_page_faults"] == 250
+
+
+def test_a_failed_sse_wait_keeps_the_events_it_saw(tmp_path, monkeypatch):
+    earlier = {"event": "node-finish", "data": {"nodeId": "old"}}
+    seen = [
+        {"event": "node-finish", "data": {"nodeId": "n"}},
+        {"event": "node-broadcast", "data": {"nodeId": "n"}},
+    ]
+    events = SimpleNamespace(events=[earlier], received=[1.0], error=None)
+
+    def run(port, path, payload, timeout):
+        # The events arrive while the run is answered.
+        events.events += seen
+        events.received += [time.monotonic(), time.monotonic()]
+        return {"success": True}
+
+    def wait_for(*args, **kwargs):
+        raise RuntimeError("Missing SSE events: broadcast_after_finish=['n']")
+
+    events.wait_for = wait_for
+    backend = SimpleNamespace(
+        label="B",
+        directory=tmp_path,
+        port=0,
+        job=None,
+        schemas={"n": {"outputs": [], "kind": "generator"}},
+        events=events,
+        cpu_seconds=lambda: 0.0,
+        page_faults=lambda: 0,
+    )
+    (tmp_path / "backend.log").write_bytes(b"")
+    monkeypatch.setattr(
+        bench.bench_cases,
+        "graph",
+        lambda schemas, case, assets, output: ([{"id": "n", "schemaId": "n"}], 2, "x"),
+    )
+    monkeypatch.setattr(bench, "request", run)
+    with pytest.raises(RuntimeError, match="Missing SSE events"):
+        bench.run_trial(
+            cast(bench.Backend, backend),
+            "gaussian",
+            0,
+            Fixtures(tmp_path / "fixtures", {"assets": {}}),
+            tmp_path / "media",
+            False,
+            "sha256",
+        )
+    (path,) = (tmp_path / "media").rglob("events-failed.json")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    # Only this trial's events, in order, each with its arrival after the /run.
+    assert [
+        {k: v for k, v in e.items() if k != "received_s"} for e in record["events"]
+    ] == seen
+    arrivals = [e["received_s"] for e in record["events"]]
+    assert 0 <= arrivals[0] <= arrivals[1] <= record["run_answered_s"]
+    assert record["gave_up_s"] >= record["run_answered_s"]
 
 
 STARTUP_LINE = b"[x] [1] [INFO] [Worker] Starting worker...\r\n"
@@ -2683,8 +2798,8 @@ class FakeCompare:
 
     Call n writes bench-n holding the n-th verdicts (and ratios, CPU verdicts and
     CPU ratios) it was given. Each call's per-side environments and interpreters,
-    profile flag, PNG mode and cross-stack mode are recorded beside its positional
-    arguments.
+    profile flag, PNG mode, cross-stack mode and allow_schema_change are recorded
+    beside its positional arguments.
     """
 
     def __init__(
@@ -2708,6 +2823,7 @@ class FakeCompare:
         self.interpreters: list[tuple] = []
         self.png_modes: list[str] = []
         self.cross_stacks: list[bool] = []
+        self.schema_changes: list[bool] = []
 
     def __call__(
         self,
@@ -2725,6 +2841,7 @@ class FakeCompare:
         python_b=None,
         png_compare="sha256",
         cross_stack=False,
+        allow_schema_change=False,
     ):
         n = len(self.calls)
         self.calls.append((a, b, list(cases), repeats, record_noise))
@@ -2735,6 +2852,7 @@ class FakeCompare:
         self.interpreters.append((python_a, python_b))
         self.png_modes.append(png_compare)
         self.cross_stacks.append(cross_stack)
+        self.schema_changes.append(allow_schema_change)
 
         def nth(values):
             return values[n] if n < len(values) else None
@@ -3216,6 +3334,7 @@ def test_main_without_flagged_cases_runs_no_confirmation(tmp_path, monkeypatch):
     assert fake.interpreters == [(None, None)]
     assert fake.png_modes == ["sha256"]
     assert fake.cross_stacks == [False]
+    assert fake.schema_changes == [False]
     assert sorted(p.name for p in (tmp_path / "bench-1").iterdir()) == RUN_FILES
     assert not (tmp_path / "bench-2").exists()
 
@@ -3265,6 +3384,27 @@ def test_confirmation_runs_keep_the_cross_stack_mode(tmp_path, monkeypatch):
     # The first run, its confirmation run and the tie-break run.
     assert len(fake.calls) == 3
     assert fake.cross_stacks == [True] * 3
+
+
+def test_confirmation_runs_keep_allow_schema_change(tmp_path, monkeypatch):
+    fake = FakeCompare(
+        tmp_path,
+        {"gaussian": "win", "morphology": "regression"},
+        {"gaussian": "win", "morphology": "neutral"},
+        {"morphology": "neutral"},
+    )
+    monkeypatch.setattr(bench, "compare", fake)
+    run_main(
+        monkeypatch,
+        tmp_path,
+        "--cases",
+        "gaussian",
+        "morphology",
+        "--allow-schema-change",
+    )
+    # The first run, its confirmation run and the tie-break run.
+    assert len(fake.calls) == 3
+    assert fake.schema_changes == [True] * 3
 
 
 def test_confirmation_runs_keep_each_sides_environment(tmp_path, monkeypatch):

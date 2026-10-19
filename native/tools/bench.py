@@ -5,7 +5,7 @@ Usage, from the project root:
       [--a TREE] [--b TREE] [--cases CASE ...] [--repeats N] [--record-noise]
       [--env-a NAME=VALUE] [--env-b NAME=VALUE] [--profile]
       [--python-a PATH] [--python-b PATH] [--png-compare {sha256,decoded}]
-      [--cross-stack]
+      [--cross-stack] [--allow-schema-change]
 
 Defaults: A is frozen baseline B0 and B is the packaged backend. Each case runs
 one warm-up pair (AB), then N measured pairs in alternating order (BA, AB, ...).
@@ -14,6 +14,9 @@ one side, under --cross-stack; see Cross-stack runs), or the run fails and
 result.json keeps the failing trial. Records go to
 native/reports/bench-<UTC>/ and media to F:\\chaiNNer-C-diagnostics\\bench-<UTC>\\; a
 successful run keeps only each trial's JSON there, a failed run keeps everything.
+A trial whose SSE wait fails also keeps the events it saw, in order, each with
+its arrival in seconds after its /run was sent, as events-failed.json beside its
+outputs.
 
 Pairs: N (--repeats) must be even, so A runs first in exactly half the pairs and
 order effects cancel. Verdicts and noise floors need at least MIN_PAIRS = 6 pairs;
@@ -221,6 +224,16 @@ only read. The run is labelled "cross-stack <A's version> → <B's version>,
 recorded, not gating" in result.json (cross_stack.label, beside the probed
 versions) and summary.md; an ordinary run records cross_stack as None. The
 confirmation and tie-break runs keep the mode.
+
+Schema changes: the two backends' /nodes must be identical (schema_sha256), or
+the run fails before any trial. --allow-schema-change, for a before/after
+comparison across a branch that changes node schemas, records the difference
+instead, as schema_change in result.json: each side's schema_sha256, the schema
+ids only A or only B serves, those both serve with different schemas, and
+whether the node order differs; a WARNING names them. Each side's requests are
+built from its own schemas, as always, and outputs and final UI state must still
+match. An ordinary run records schema_change as None; --record-noise refuses
+the option, and the confirmation and tie-break runs keep it.
 
 Profile runs: --profile sets CHAINNER_C_PROFILE=1 on both sides. A tree with the
 timer (it holds nodes/impl/native_profile.py) then logs one line per /run after
@@ -529,6 +542,19 @@ def parse_env(values: list[str] | None) -> dict[str, str]:
 def has_timer(tree: Path) -> bool:
     """Whether a backend tree holds the native timer (B3 and B0 do not)."""
     return (tree / "nodes" / "impl" / "native_profile.py").is_file()
+
+
+def schema_change(a: Backend, b: Backend) -> dict:
+    """How B's /nodes differs from A's (see Schema changes)."""
+    common = a.schemas.keys() & b.schemas.keys()
+    return {
+        "schema_sha256": {"A": a.info["schema_sha256"], "B": b.info["schema_sha256"]},
+        "only_a": sorted(a.schemas.keys() - b.schemas.keys()),
+        "only_b": sorted(b.schemas.keys() - a.schemas.keys()),
+        "changed": sorted(s for s in common if a.schemas[s] != b.schemas[s]),
+        "order_changed": [s for s in a.schemas if s in common]
+        != [s for s in b.schemas if s in common],
+    }
 
 
 def python_version(python: Path) -> tuple[int, int]:
@@ -908,6 +934,7 @@ def run_trial(
     cpu_start = psutil.cpu_times()
     job_start = backend.cpu_seconds()
     faults_start = backend.page_faults()
+    sent = time.monotonic()  # The SSE collector's clock, for a failed wait's record.
     began = time.perf_counter_ns()
     response = request(backend.port, "/run", payload, timeout=300)
     seconds = (time.perf_counter_ns() - began) / 1e9
@@ -915,23 +942,41 @@ def run_trial(
     faults_end = backend.page_faults()
     cpu_end = psutil.cpu_times()
     # Everything below validates the trial and is outside the timed region.
+    answered = time.monotonic()
     check_success(response)
     # The generator broadcasts again after its finish (the final static-output
     # restoration, which the oracle requires); its initial broadcast alone must
     # not end the wait.
-    events = sse.wait_for(
-        {n["id"] for n in nodes},
-        start,
-        timeout=15,
-        expected_broadcasts={
-            n["id"] for n in nodes if backend.schemas[n["schemaId"]]["outputs"]
-        },
-        broadcast_after_finish={
-            n["id"]
-            for n in nodes
-            if backend.schemas[n["schemaId"]]["kind"] == "generator"
-        },
-    )
+    try:
+        events = sse.wait_for(
+            {n["id"] for n in nodes},
+            start,
+            timeout=15,
+            expected_broadcasts={
+                n["id"] for n in nodes if backend.schemas[n["schemaId"]]["outputs"]
+            },
+            broadcast_after_finish={
+                n["id"]
+                for n in nodes
+                if backend.schemas[n["schemaId"]]["kind"] == "generator"
+            },
+        )
+    except RuntimeError:
+        # Kept for diagnosis beside the trial's outputs: the events it saw, in
+        # order, each with its arrival in seconds after the /run was sent.
+        seen = sse.events[start:]
+        write_json(
+            output / "events-failed.json",
+            {
+                "run_answered_s": answered - sent,
+                "gave_up_s": time.monotonic() - sent,
+                "events": [
+                    {"received_s": at - sent, **event}
+                    for at, event in zip(sse.received[start:], seen, strict=False)
+                ],
+            },
+        )
+        raise
     write_json(output / "events.json", events)
     if sse.error:
         raise RuntimeError(f"SSE failure: {sse.error}")
@@ -1006,6 +1051,7 @@ def compare(
     python_b: Path | None = None,
     png_compare: str = "sha256",
     cross_stack: bool = False,
+    allow_schema_change: bool = False,
 ) -> Path:
     """Run the paired comparison and return its run directory.
 
@@ -1023,6 +1069,8 @@ def compare(
     its own side's first trial, and A against B is recorded per case by
     cross_stack_record, never failed; it refuses record_noise and two
     interpreters that python_version() finds to be one Python version.
+    allow_schema_change records differing node schemas instead of failing (see
+    Schema changes); it refuses record_noise.
     """
     # Every refusal comes first, so a refused start creates nothing.
     if PROFILE_VARIABLE in os.environ and not profile:
@@ -1056,6 +1104,11 @@ def compare(
         raise ValueError(
             "--record-noise refuses --env-a and --env-b: noise floors need both "
             "sides launched alike"
+        )
+    if record_noise and allow_schema_change:
+        raise ValueError(
+            "--record-noise refuses --allow-schema-change: noise floors need "
+            "identical trees"
         )
     if record_noise and (python_a is not None or python_b is not None):
         raise ValueError(
@@ -1140,6 +1193,7 @@ def compare(
         "oracle": oracle,
         "png_compare": png_compare,
         "cross_stack": cross,
+        "schema_change": None,
         "method": METHOD,
         "cpu_only": True,
         "ai_models": False,
@@ -1172,7 +1226,19 @@ def compare(
                 backends["A"].info["schema_sha256"]
                 != backends["B"].info["schema_sha256"]
             ):
-                raise RuntimeError("Node schemas differ: trees are not UI-compatible")
+                if not allow_schema_change:
+                    raise RuntimeError(
+                        "Node schemas differ: trees are not UI-compatible"
+                    )
+                change = schema_change(backends["A"], backends["B"])
+                result["schema_change"] = change
+                warn(
+                    result,
+                    "node schemas differ (--allow-schema-change): only A "
+                    f"{change['only_a']}, only B {change['only_b']}, changed "
+                    f"{change['changed']}, node order "
+                    f"{'differs' if change['order_changed'] else 'equal'}",
+                )
             for case in cases:
                 # Each trial must equal its reference: A's warm-up for both sides,
                 # or under --cross-stack the first trial of its own side.
@@ -1547,6 +1613,7 @@ def confirm(
     python_b: Path | None = None,
     png_compare: str = "sha256",
     cross_stack: bool = False,
+    allow_schema_change: bool = False,
 ) -> dict[str, str]:
     """Re-check the first run's win and regression cases on freshly started backends.
 
@@ -1557,8 +1624,9 @@ def confirm(
     regression (see tiebreak_cases and final_verdicts), are fresh launches whose
     speed bias is independent of the first run's. Both keep the first run's
     per-side environments (env_a, env_b) and interpreters (python_a, python_b),
-    its PNG mode (png_compare) and its cross-stack mode (cross_stack). The
-    combined records go into first_run: confirmation.json, confirmation.md, and
+    its PNG mode (png_compare), its cross-stack mode (cross_stack) and
+    allow_schema_change. The combined records go into first_run:
+    confirmation.json, confirmation.md, and
     the same table appended to summary.md. Each flagged case's final verdict is
     printed, and the final verdicts of every case are returned. With no flagged
     case nothing runs and nothing is written. A failing run propagates before anything is written; the
@@ -1582,6 +1650,7 @@ def confirm(
         python_b=python_b,
         png_compare=png_compare,
         cross_stack=cross_stack,
+        allow_schema_change=allow_schema_change,
     )
     second = run_outcome(confirmation_run)
     tied = tiebreak_cases(first, second[0])
@@ -1602,6 +1671,7 @@ def confirm(
             python_b=python_b,
             png_compare=png_compare,
             cross_stack=cross_stack,
+            allow_schema_change=allow_schema_change,
         )
         third = run_outcome(tiebreak_run)
     block = confirmation_block(flagged, [first_outcome, second, third])
@@ -1725,6 +1795,14 @@ def main() -> None:
         "decoded, never failed; refused unless the interpreters report different "
         "sys.version_info[:2], and with --record-noise; kept by the confirmation runs",
     )
+    parser.add_argument(
+        "--allow-schema-change",
+        action="store_true",
+        help="the trees' node schemas may differ (a before/after across a schema "
+        "change): the difference is recorded as schema_change and warned, not "
+        "failed; outputs and final UI state must still match; refused with "
+        "--record-noise; kept by the confirmation runs",
+    )
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error("--repeats must be at least 1")
@@ -1745,6 +1823,7 @@ def main() -> None:
         python_b=python_b,
         png_compare=args.png_compare,
         cross_stack=args.cross_stack,
+        allow_schema_change=args.allow_schema_change,
     )
     if not (args.record_noise or args.profile):
         confirm(
@@ -1758,6 +1837,7 @@ def main() -> None:
             python_b,
             args.png_compare,
             args.cross_stack,
+            args.allow_schema_change,
         )
 
 

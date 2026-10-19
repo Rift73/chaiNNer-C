@@ -1,8 +1,9 @@
 """The native run engine against process.Executor on the bench chains (native/tools/bench_cases.py), each run whole
 through both executors in this process on synthetic inputs (native/tools/engine_differential.py): same outcome,
 same output bytes, the SSE events as verify_runtime.sse_event_mismatches judges them, and the A6 order invariants
-in the engine's events; and no native entry point declines to its Python body on them. resize-real-256's saved request predates the current Save Image inputs, so its chain (Load
-Images, Resize 50 % Hermite, Save) is built from the schemas here."""
+in the engine's events; and no native entry point declines to its Python body on them. resize-real-256's saved request
+reads the user's dataset, so its chain (Load Images, Resize 50 % Hermite, Save) is built from the schemas here, on the
+synthetic inputs."""
 
 from __future__ import annotations
 

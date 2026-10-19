@@ -217,6 +217,8 @@ class Events:
     def __init__(self, port: int):
         self.port = port
         self.events = []
+        # time.monotonic() as each event arrived, for diagnosis; never compared.
+        self.received: list[float] = []
         self.error = None
         self.ready = threading.Event()
         self.stopping = threading.Event()
@@ -248,6 +250,7 @@ class Events:
                 elif line.startswith("data:"):
                     data.append(line[5:].strip())
                 elif not line and data:
+                    self.received.append(time.monotonic())
                     self.events.append(
                         {
                             "event": event or "message",

@@ -80,6 +80,26 @@
         },
         {
           "type": "value",
+          "value": "default"
+        },
+        {
+          "type": "value",
+          "value": 0
+        },
+        {
+          "type": "value",
+          "value": "keep"
+        },
+        {
+          "type": "value",
+          "value": 0
+        },
+        {
+          "type": "value",
+          "value": 1
+        },
+        {
+          "type": "value",
           "value": "4:2:0"
         },
         {
