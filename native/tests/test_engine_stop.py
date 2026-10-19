@@ -239,3 +239,197 @@ def test_stop_during_a_long_node(stops, kind, case):
     # The memo keeps the computed source, not the stopped node (the Python executor has no memo).
     assert stop["memo_entries"] == (1 if (kind, case) == ("native", "worker dropped") else 0), stop
     assert stop["alive"] == [False] * len(stop["alive"]), stop
+
+
+# The delta review of the change above: a run stopped before it started (behind a stopped run's node) leaks nothing
+# (H1); a stopped run's node that fails later is logged with its traceback (M1); a second Stop while a stopped node
+# still runs waits for it, so a node that never returns exceeds the host's /kill timeout and the host restarts the
+# worker, and a run waiting behind it says why (M2); the server's CUDA check and collection wait for that node (M3).
+REVIEW = DRIVER.split("results = {}", maxsplit=1)[0] + """
+import native_executor as ne
+from process import Aborted
+
+errors, gpu = [], []
+ne.logger = SimpleNamespace(debug=lambda *a, **k: None, info=lambda *a, **k: None, warning=lambda *a, **k: None,
+                            error=lambda *a, **k: errors.append((a[0] % a[1:], k.get("exc_info") is not None)))
+server.cuda_context_broken = lambda: gpu.append(("cuda check", clock())) or False
+server.return_device_memory = lambda collect=False: gpu.append(("return memory", clock()))
+
+
+def one_node(body, side_effects=True):
+    b = Builder()
+    b.node("slow", body, outputs=0, side_effects=side_effects)
+    b.value("slow", 0, 1)
+    return b.chain
+
+
+async def unstarted(stop):
+    loop = asyncio.get_running_loop()
+    payload = Output()
+    b = Builder()
+    b.node("src", lambda x: x)
+    b.value("src", 0, payload)
+    b.node("sink", lambda x: None, outputs=0, side_effects=True)
+    b.edge("src", 0, "sink", 0)
+    blocker = loop.create_future()
+    ending = loop.create_task(asyncio.wait((blocker,)))
+    # A stopped run still ending (a set of tasks before the review's fixes).
+    if isinstance(ne._ENDING_RUNS, dict):
+        ne._ENDING_RUNS[ending] = "slow"
+    else:
+        ne._ENDING_RUNS.add(ending)
+    executor = ne.NativeExecutor(id="x", chain=b.chain, send_broadcast_data=False,
+                                 options=api.ExecutionOptions.parse({}), loop=loop, queue=Recorder(),
+                                 storage_dir=Path(os.environ["WORK"]))
+    refs = [weakref.ref(executor), weakref.ref(payload)]
+    del payload, b
+    task = asyncio.ensure_future(executor.run())
+    await asyncio.sleep(0.1)
+    executor.kill() if stop == "kill" else task.cancel()
+    try:
+        await task
+    except (Aborted, asyncio.CancelledError):
+        pass
+    del executor, task
+    blocker.set_result(None)
+    await ending
+    if isinstance(ne._ENDING_RUNS, dict):
+        ne._ENDING_RUNS.pop(ending, None)
+    else:
+        ne._ENDING_RUNS.discard(ending)
+    gc.collect()
+    return [ref() is not None for ref in refs]
+
+
+async def through_server(chain, then):
+    ctx = server.app.ctx
+    ctx.__dict__["storage_dir"] = Path(os.environ["WORK"]) / "storage"
+    ctx.__dict__["queue"] = Recorder()
+    server.parse_json = lambda _data: chain
+    server.wait_for_nodes = no_wait
+    request = SimpleNamespace(app=server.app, json={"data": [], "options": {}, "sendBroadcastData": True})
+    run = asyncio.ensure_future(server.run(request))
+    while not ctx.executor:
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.3)
+    run.cancel()
+    began = clock()
+    await server.kill(SimpleNamespace(app=server.app))
+    first = clock() - began
+    try:
+        await run
+    except asyncio.CancelledError:
+        pass
+    return {"first_kill": round(first, 3), **await then(ctx, request)}
+
+
+async def failing():
+    def body(x):
+        time.sleep(1.5)
+        raise ValueError("the node failed late")
+
+    async def then(ctx, request):
+        while ending_runs():
+            await asyncio.sleep(0.05)
+        return {"errors": errors[:]}
+
+    return await through_server(one_node(body), then)
+
+
+async def hung():
+    release = threading.Event()
+
+    def body(x):
+        release.wait()
+
+    async def then(ctx, request):
+        result = {}
+        try:
+            await asyncio.wait_for(server.kill(SimpleNamespace(app=server.app)), 3.2)
+            result["second_kill"] = "returned"
+        except asyncio.TimeoutError:
+            result["second_kill"] = "waiting"
+        waiting = Recorder()
+        ctx.__dict__["queue"] = waiting
+        server.parse_json = lambda _data: one_node(lambda x: None)
+        behind = asyncio.ensure_future(server.run(SimpleNamespace(app=server.app, json=request.json)))
+        await asyncio.sleep(0.3)
+        try:
+            await asyncio.wait_for(server.kill(SimpleNamespace(app=server.app)), 1.5)
+            result["kill_behind"] = "returned"
+        except asyncio.TimeoutError:
+            result["kill_behind"] = "waiting"
+        result["warning"] = [e for e in waiting.events if e[1] == "execution-warning"] != []
+        release.set()
+        await behind
+        while ending_runs():
+            await asyncio.sleep(0.05)
+        return result
+
+    return await through_server(one_node(body), then)
+
+
+async def gpu_checks():
+    returned = []
+
+    def body(x):
+        time.sleep(1.5)
+        returned.append(clock())
+
+    async def then(ctx, request):
+        while ending_runs():
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.3)
+        return {"early": [name for name, at in gpu if at < returned[0]], "after": [name for name, at in gpu]}
+
+    return await through_server(one_node(body), then)
+
+
+os.environ["CHAINNER_C_EXECUTOR"] = "native"
+results = {"unstarted kill": asyncio.run(unstarted("kill")), "unstarted cancel": asyncio.run(unstarted("cancel"))}
+results["failing"] = asyncio.run(failing())
+gpu.clear()
+results["gpu"] = asyncio.run(gpu_checks())
+results["hung"] = asyncio.run(hung())
+print(json.dumps(results))
+"""
+
+
+@pytest.fixture(scope="module")
+def review(tmp_path_factory) -> dict[str, Any]:
+    work = tmp_path_factory.mktemp("review")
+    environment = dict(os.environ, WORK=str(work), TOOLS=str(TOOLS), TESTS=str(TESTS), SLOW_SECONDS="1",
+                       CUDA_VISIBLE_DEVICES="-1")
+    result = subprocess.run([sys.executable, "-B", "-c", textwrap.dedent(REVIEW)], cwd=BACKEND, env=environment,
+                            capture_output=True, text=True, timeout=600, check=False)
+    assert result.returncode == 0, (result.returncode, result.stdout[-3000:], result.stderr[-6000:])
+    found = json.loads(result.stdout.strip().splitlines()[-1])
+    print(json.dumps(found, indent=1))
+    return found
+
+
+@pytest.mark.parametrize("stop", ["kill", "cancel"])
+def test_a_run_stopped_before_it_started_is_freed(review, stop):
+    # Its executor and its plan's constants (a previewed output, a model) are not kept by its engine.
+    assert review[f"unstarted {stop}"] == [False, False]
+
+
+def test_a_stopped_nodes_late_error_is_logged(review):
+    found = review["failing"]
+    assert found["first_kill"] < KILL_LIMIT, found
+    assert any("the node failed late" in message and traceback for message, traceback in found["errors"]), found
+
+
+def test_a_second_stop_waits_for_a_node_that_never_returns(review):
+    found = review["hung"]
+    assert found["first_kill"] < KILL_LIMIT, found
+    # Past the host's 3 s: it restarts the worker, as before the prompt Stop.
+    assert found["second_kill"] == "waiting", found
+    assert found["kill_behind"] == "waiting", found
+    assert found["warning"], found
+
+
+def test_cuda_checks_wait_for_a_stopped_node(review):
+    found = review["gpu"]
+    assert found["first_kill"] < KILL_LIMIT, found
+    assert found["early"] == [] and "return memory" in found["after"], found

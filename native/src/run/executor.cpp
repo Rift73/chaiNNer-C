@@ -1059,7 +1059,7 @@ CellRef Run::source_of(const CellRef &ref, int input) const
 
 void Run::start(const std::string &mode, int target)
 {
-    if (started_) throw std::logic_error("A RunEngine starts once");
+    if (started_ || closed_) throw std::logic_error("A RunEngine starts once, before it closes");
     started_ = true;
     mode_ = mode;
     target_ = target;
@@ -1123,25 +1123,29 @@ void Run::resume()
  * never sent): references the garbage collector cannot see, which would keep the executor and its outputs alive. */
 void Run::close()
 {
-    if (closed_ || !started_) return;
-    if (serving_run == this) throw std::logic_error("A run cannot close on one of its own threads");
+    if (closed_) return;
+    // A run that never started (stopped while it waited for a stopped run's node) has no thread to join, but holds
+    // its plan's and hooks' references all the same: the hooks reach back to it, a cycle the collector cannot see.
+    if (started_ && serving_run == this) throw std::logic_error("A run cannot close on one of its own threads");
     closed_ = true;
     *open_ = false;
-    if (driver_.valid()) driver_.wait();
-    flush_broadcasts();
-    Engine::get().detach(this);
-    {
-        std::lock_guard<std::mutex> locked(broadcasts_mutex_);
-        broadcasts_stop_ = true;
+    if (started_) {
+        if (driver_.valid()) driver_.wait();
+        flush_broadcasts();
+        Engine::get().detach(this);
+        {
+            std::lock_guard<std::mutex> locked(broadcasts_mutex_);
+            broadcasts_stop_ = true;
+        }
+        broadcasts_changed_.notify_all();
+        if (broadcaster_.valid()) broadcaster_.wait();
+        {
+            std::lock_guard<std::mutex> locked(events_mutex_);
+            events_stop_ = true;
+        }
+        events_changed_.notify_all();
+        if (pump_.valid()) pump_.wait();
     }
-    broadcasts_changed_.notify_all();
-    if (broadcaster_.valid()) broadcaster_.wait();
-    {
-        std::lock_guard<std::mutex> locked(events_mutex_);
-        events_stop_ = true;
-    }
-    events_changed_.notify_all();
-    if (pump_.valid()) pump_.wait();
     py::gil_scoped_acquire python;
     hooks_ = Hooks{};
     hooks_object_ = PyRef{};

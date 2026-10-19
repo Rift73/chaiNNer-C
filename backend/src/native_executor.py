@@ -100,8 +100,16 @@ PREVIEW_INTERVAL = 0.25
 # body or native kernel without an abort check) finishes in the background, well within the host's 3 s for /kill.
 STOP_GRACE_SECONDS = 0.5
 # The runs ended for their requests while a node still ran, until their engines end and close (a task's only strong
-# reference: the loop keeps weak ones).
-_ENDING_RUNS: set[asyncio.Task[None]] = set()
+# reference: the loop keeps weak ones), with the names of the nodes they still ran.
+_ENDING_RUNS: dict[asyncio.Task[None], str] = {}
+
+
+def ending_runs() -> list[asyncio.Task[None]]:
+    """The stopped runs whose node still runs: a later run starts once they ended, a later Stop waits for them (a
+    node that never returns then exceeds the host's /kill timeout, which restarts the worker), and the server's CUDA
+    checks and collection wait for them (the node may still queue CUDA work)."""
+    return [task for task in _ENDING_RUNS if not task.done()]
+
 
 # The memo cache's allow-list (DESIGN.md amendment A3): native nodes without side effects or a context, except the
 # random generators below; these Python nodes, audited as deterministic and side-effect free (no file, clock, random,
@@ -464,6 +472,8 @@ class _Hooks:
         self.done: asyncio.Future[object] = loop.create_future()
         # The run ended for its request while its engine still ran a node: no event of it reaches the queue any more.
         self.ended = False
+        # The nodes started and not finished, as the events report them (the ones a stopped run still runs).
+        self.running: dict[str, None] = {}
         self.views: dict[int, _EngineIterationView] = {}
         self.engine: _Engine | None = None
         # The running loop's generators and iterated nodes, and its nodes' lineages (process._LoopRun).
@@ -479,6 +489,12 @@ class _Hooks:
         if self.ended:
             return
         for event in events:
+            data = event.get("data")
+            node_id = data.get("nodeId") if isinstance(data, dict) else None
+            if event["event"] == "node-start" and isinstance(node_id, str):
+                self.running[node_id] = None
+            elif event["event"] == "node-finish" and isinstance(node_id, str):
+                self.running.pop(node_id, None)
             self.queue.put(cast("Event", event))
 
     def finish(self, error: BaseException | None, result: object) -> None:
@@ -1177,7 +1193,13 @@ class NativeExecutor:
         """The run's result. Stopped (kill(), or the request dropped: the app's Stop drops its /run before /kill), it
         ends with its engine's end, or after STOP_GRACE_SECONDS as Aborted while a node still runs: that node's
         thread finishes in the background, where its cleanups and the run's then run and the engine closes."""
-        await self.__after_stopped_runs()
+        try:
+            await self.__after_stopped_runs()
+        except BaseException:
+            # Never started: its engine releases the plan's and hooks' references now.
+            self.__closed = True
+            self.__run_engine.close()
+            raise
         self.__run_engine.start(mode, target)
         done = self.__hooks.done
         try:
@@ -1204,12 +1226,22 @@ class NativeExecutor:
 
     async def __after_stopped_runs(self) -> None:
         """A run that ended while its node still ran ends wholly (that node, its cleanups and the run's, its engine's
-        close) before this run starts: two runs' nodes never overlap (their device memory), nor a stopped run's
-        cleanups this run's nodes. Stopped meanwhile, this run ends as Aborted without starting."""
+        close) before this run starts, nor do a stopped run's cleanups land in this run's nodes. Not so for a run
+        stopped within its grace (a superseded preview's old run): it is not ending yet, so this one may start beside
+        its last node. Stopped meanwhile, this run ends as Aborted without starting."""
+        warned = False
         while not self.__stopped.done():
-            ending = [task for task in _ENDING_RUNS if not task.done()]
+            ending = ending_runs()
             if not ending:
                 return
+            if not warned:
+                warned = True
+                names = ", ".join(n for n in (_ENDING_RUNS[t] for t in ending) if n)
+                message = f"Waiting for the stopped node {names or '(unknown)'} to finish before this run starts."
+                logger.warning(message)
+                self.__hooks.queue.put(
+                    {"event": "execution-warning", "data": {"message": message}}
+                )
             await asyncio.wait(
                 (*ending, self.__stopped), return_when=asyncio.FIRST_COMPLETED
             )
@@ -1219,15 +1251,25 @@ class NativeExecutor:
         self.__hooks.ended = True
         self.__closed = True  # the engine closes once it ends
         task = self.loop.create_task(self.__close_when_ended())
-        _ENDING_RUNS.add(task)
-        task.add_done_callback(_ENDING_RUNS.discard)
+        _ENDING_RUNS[task] = ", ".join(
+            self.chain.nodes[NodeId(node_id)].data.name
+            for node_id in self.__hooks.running
+            if NodeId(node_id) in self.chain.nodes
+        )
+        task.add_done_callback(_ENDING_RUNS.pop)
 
     async def __close_when_ended(self) -> None:
         done = self.__hooks.done
         await asyncio.wait((done,))
-        if not done.cancelled():
-            # Its Aborted, retrieved: never logged as unretrieved.
-            done.exception()
+        error = None if done.cancelled() else done.exception()
+        if error is not None and not isinstance(error, Aborted):
+            # The request already ended as stopped: the node's real error is only logged, never dropped.
+            logger.error(
+                "A stopped run's node failed after the run ended: %s",
+                error,
+                exc_info=error,
+            )
+        del error
         await self.loop.run_in_executor(None, self.__run_engine.close)
 
     async def run(self) -> None:

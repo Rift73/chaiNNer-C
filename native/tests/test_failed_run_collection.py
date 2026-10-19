@@ -53,6 +53,7 @@ def test_collect_failed_run_frees_cyclic_garbage_then_releases_when_idle():
         released = []
         collect = compiled(
             "collect_failed_run",
+            ending_runs=list,
             gc=gc,
             numpy_pool=SimpleNamespace(release=lambda: released.append(alive())),
             return_device_memory=lambda collect=True: None,
@@ -72,6 +73,7 @@ def test_collect_failed_run_never_releases_while_a_run_executes():
     events = []
     collect = compiled(
         "collect_failed_run",
+        ending_runs=list,
         gc=SimpleNamespace(collect=lambda: events.append("collect")),
         numpy_pool=SimpleNamespace(release=lambda: events.append("release")),
     )
@@ -86,6 +88,7 @@ def test_collect_failed_run_returns_device_memory_when_idle():
     events = []
     collect = compiled(
         "collect_failed_run",
+        ending_runs=list,
         gc=SimpleNamespace(collect=lambda: events.append("collect")),
         numpy_pool=SimpleNamespace(release=lambda: events.append("release")),
         return_device_memory=lambda collect=True: events.append(("return", collect)),

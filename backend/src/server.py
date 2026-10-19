@@ -38,7 +38,7 @@ from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
 from dependencies.store import installed_packages
 from events import EventConsumer, EventQueue, ExecutionErrorData, event_text
-from native_executor import NativeExecutor, executor_kind
+from native_executor import NativeExecutor, ending_runs, executor_kind
 from nodes.impl import native, native_profile, numpy_pool
 from nodes.impl.cors import add_cors
 from nodes.impl.tensorrt import cache as tensorrt_cache
@@ -657,11 +657,16 @@ def collect_failed_run(ctx: AppContext) -> None:
     run schedules this with call_soon, so it runs once the handler has returned and
     dropped the exception. A successful run never collects: gc's only other use is
     return_device_memory, outside runs. The tensors the collection frees stay
-    reserved by PyTorch, so they go back to the driver too.
+    reserved by PyTorch, so they go back to the driver too. While a stopped run's node
+    still runs (and may queue CUDA work), the release waits for that run's end.
     """
     gc.collect()
-    # Not while a /run executes: it releases at its own end.
-    if ctx.executor is None:
+    # Not while a /run executes: it releases at its own end. Nor while a stopped run's
+    # node still runs (it may still queue CUDA work): once it ended.
+    ending = ending_runs()
+    if ctx.executor is None and ending:
+        release_after_ending(ctx, ending)
+    elif ctx.executor is None:
         numpy_pool.release()
         try:
             return_device_memory(collect=False)
@@ -689,9 +694,33 @@ def cuda_context_broken() -> bool:
     return False
 
 
+# The releases that wait for stopped runs' nodes (the loop keeps weak references to tasks).
+deferred_releases: set[asyncio.Future[None]] = set()
+
+
+def release_after_ending(ctx: AppContext, ending: list[asyncio.Task[None]]) -> None:
+    """collect_failed_run's release, once the stopped runs whose node still ran ended."""
+
+    async def release() -> None:
+        await asyncio.wait(ending)
+        if ctx.executor is None and not ending_runs():
+            numpy_pool.release()
+            try:
+                return_device_memory(collect=False)
+            except Exception as error:
+                logger.error("Could not return the GPU's memory: %s", error)
+
+    task = asyncio.ensure_future(release())
+    deferred_releases.add(task)
+    task.add_done_callback(deferred_releases.discard)
+
+
 def restart_headers() -> dict[str, str]:
     """The headers that ask the host to restart this worker when its CUDA context is
-    broken; none otherwise."""
+    broken; none otherwise, and none checked while a stopped run's node still runs
+    (its CUDA work would stall the loop's synchronize; its run's end collects)."""
+    if ending_runs():
+        return {}
     return {RESTART_WORKER_HEADER: "1"} if cuda_context_broken() else {}
 
 
@@ -952,13 +981,27 @@ async def kill(request: Request):
     ctx = AppContext.get(request.app)
 
     logger.info("Attempting to kill executor...")
+    # Stopped runs whose node still runs (the native engine's): this Stop, a second one,
+    # waits for them as Stop waited before, so a node that never returns exceeds the
+    # host's /kill timeout and the host restarts the worker. A single Stop stays prompt.
+    ending = ending_runs()
+
+    async def after_ending() -> None:
+        if ending:
+            logger.info("Waiting for a stopped run's node to finish...")
+            await asyncio.wait(ending)
 
     if not ctx.executor:
         if ctx.run_starting:
             # A /run waiting for previews: it ends there instead of starting.
             ctx.run_stopped_early = True
             logger.info("Stopped a run that waited for previews.")
+            await after_ending()
             return json(success_response(), status=200)
+        if ending:
+            await after_ending()
+            logger.info("Killed executor.")
+            return json(success_response(), status=200, headers=restart_headers())
         logger.warning("No executor to kill.")
         return json(no_executor_response(), status=400)
 
@@ -966,6 +1009,7 @@ async def kill(request: Request):
         ctx.executor.kill()
         while ctx.executor:
             await asyncio.sleep(0.0001)
+        await after_ending()
         logger.info("Killed executor.")
         return json(success_response(), status=200, headers=restart_headers())
     except Exception as exception:

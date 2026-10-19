@@ -200,7 +200,11 @@ its engine's end, or, a node still running after 0.5 s (a Python body or native 
 Aborted at once (`NativeExecutor`; `/kill` well within the host's 3 s). That node's thread finishes in the background:
 no later node starts, its result is dropped (no event, no memo entry), its node cleanups and the run's chain cleanups
 run once after it, then the engine closes; the next run (or preview) is accepted at once and starts its nodes after
-that. The Python executor waits for the node (`await_owned_node`). Test: `native/tests/test_engine_stop.py`.
+that (with an `execution-warning` naming the node it waits for). A later Stop while that node still runs waits for it,
+as Stop did before, so a node that never returns exceeds the host's /kill timeout and the host restarts the worker. A
+late error of that node is logged with its traceback; the server's CUDA check and device-memory return wait for it; a
+run stopped before it started releases its references at once. The Python executor waits for the node
+(`await_owned_node`). Test: `native/tests/test_engine_stop.py`.
 
 Memo cache (amendment A3, in the same file). In-process outputs of allow-listed nodes (native nodes without side
 effects or a context, except Add Noise and Create Noise; 16 audited Python nodes listed in `native_executor.py` and
