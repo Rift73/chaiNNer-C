@@ -23,7 +23,7 @@ from sanic.log import logger
 from api import NodeContext
 from gpu import nvidia
 
-from .resource_cache import file_identity
+from ...utils.utils import file_identity
 from .vosr2 import BundlePaths, VosrBundle, load_weights, read_configs
 from .vosr2_official import FILES
 from .vosr2_plan_file import compress, compressed, stored

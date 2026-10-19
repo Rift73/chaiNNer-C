@@ -162,6 +162,56 @@ def test_rotated_files_are_upright_in_both_readers(tmp_path, monkeypatch, case):
             np.testing.assert_array_equal(frame, upright(original))
 
 
+VERTICAL_FLIPS = {
+    # Stored in the pixel format read, so the vflip filter passes the frames through
+    # bottom-up (a negative row stride): 8-bit RGB, which read memory outside the
+    # plane, and float RGB, which raised ValueError.
+    "bgr24": (".mov", ("-c:v", "rawvideo", "-pix_fmt", "bgr24"), False),
+    "gbrpf32le": (
+        ".mkv",
+        ("-c:v", "ffv1", "-level", "4", "-strict", "experimental"),
+        True,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(VERTICAL_FLIPS))
+def test_vertically_flipped_frames_use_the_cli_reader(tmp_path, monkeypatch, case):
+    assert FFMPEG is not None and FFPROBE is not None
+    suffix, codec, float_rgb = VERTICAL_FLIPS[case]
+    source = (*_source("320x240"), *codec, "-pix_fmt", case)
+    plain = _clip(tmp_path / f"plain{suffix}", *source)
+    flipped = _clip(
+        tmp_path / f"flipped{suffix}", "-display_vflip", "-i", str(plain), "-c", "copy"
+    )
+    reasons: list[str] = []
+    monkeypatch.setattr(
+        video.logger, "warning", lambda message, *args: reasons.append(message % args)
+    )
+    auto = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.AUTO)
+    settings = video.ReadSettings(VideoMode.RGB, float_rgb, auto)
+
+    def frames(path: Path, cli: bool) -> list[np.ndarray]:
+        if cli:
+            monkeypatch.setenv("CHAINNER_C_VIDEO_READER", "cli")
+        else:
+            monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+        loader = video.VideoLoader(
+            path, FFMpegEnv(ffmpeg=FFMPEG, ffprobe=FFPROBE), settings
+        )
+        return [item[0] for item in loader.stream_items()]
+
+    read = frames(flipped, cli=False)
+    reason = "its display matrix flips the frames vertically"
+    assert reasons == [f"Reading {flipped} through the FFmpeg CLI: {reason}"]
+    expected = frames(flipped, cli=True)
+    stored = frames(plain, cli=False)
+    assert len(read) == len(expected) == len(stored) == 30
+    for frame, reference, original in zip(read, expected, stored, strict=True):
+        np.testing.assert_array_equal(frame, reference)
+        np.testing.assert_array_equal(frame, original[::-1])
+
+
 @pytest.mark.parametrize("suffix", [".mp4", ".mkv", ".webm"])
 def test_variable_rate_files_use_the_cli_reader(tmp_path, monkeypatch, suffix):
     # Matroska and WebM report the same average and guessed rate for a variable-rate
@@ -190,6 +240,22 @@ def test_without_pyav_the_cli_reader_is_used(tmp_path, monkeypatch):
     monkeypatch.setattr(video, "_pyav", lambda: None)
     in_process, frames = _read(path, monkeypatch, cli=False)
     assert not in_process and len(frames) == 30
+
+
+@pytest.mark.parametrize("name", ["parts.ffconcat", "parts.txt"])
+def test_a_concat_list_is_probed_again_when_its_part_changes(tmp_path, name):
+    # ffprobe's answer for a concat list (by its extension or its header) follows the
+    # files it names, which the list's own version does not show, so it is not kept.
+    assert FFMPEG is not None and FFPROBE is not None
+    env = FFMpegEnv(ffmpeg=FFMPEG, ffprobe=FFPROBE)
+    listing = tmp_path / name
+    listing.write_bytes(b"ffconcat version 1.0\nfile 'part.mkv'\nduration 1\n")
+    sizes = []
+    for size in ("320x240", "640x360"):
+        _clip(tmp_path / "part.mkv", *_source(size), "-c:v", "ffv1")
+        metadata = video.VideoMetadata.from_file(listing, env)
+        sizes.append((metadata.width, metadata.height))
+    assert sizes == [(320, 240), (640, 360)]
 
 
 def test_a_matroska_file_is_scanned_once_per_version(tmp_path, monkeypatch):

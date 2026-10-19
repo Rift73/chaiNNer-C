@@ -18,6 +18,7 @@ import ffmpeg as ffmpeg
 import numpy as np
 from sanic.log import logger as logger
 
+from ..utils.utils import file_identity
 from .colour_info import (
     MATRIX_LABELS,
     SWSCALE_CHROMA_POSITION,
@@ -37,7 +38,6 @@ from .colour_info import (
 from .ffmpeg import FFMpegEnv
 from .native_framework_images import planes_to_interleaved
 from .native_graph import graph
-from .pytorch.resource_cache import file_identity
 
 if TYPE_CHECKING:
     from fractions import Fraction
@@ -298,6 +298,15 @@ def _pyav_frames(
                         if first:
                             raise _UseCliReader(message)
                         raise RuntimeError(f"Video {path} changed size: {message}")
+                    if any(plane.line_size < 0 for plane in converted.planes):
+                        # The vflip filter a vertically flipped display matrix asks
+                        # for hands a frame it passes through unconverted (the file's
+                        # own pixel format) bottom-up: a negative row stride, whose
+                        # rows lie outside the plane's buffer.
+                        message = "its display matrix flips the frames vertically"
+                        if first:
+                            raise _UseCliReader(message)
+                        raise RuntimeError(f"Video {path}: {message}")
                     values.append(_frame_values(converted, frame_format))
                 first = False
                 yield values

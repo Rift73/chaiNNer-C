@@ -40,8 +40,7 @@ from nodes.impl import colour_info
 from nodes.impl.image_utils import to_uint8, to_uint16
 from nodes.impl.native_framework_images import planes_to_interleaved
 from nodes.impl.native_graph import graph
-from nodes.impl.pytorch.resource_cache import file_identity
-from nodes.utils.utils import get_h_w_c, split_file_path
+from nodes.utils.utils import file_identity, get_h_w_c, split_file_path
 
 ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = Path(__file__).with_name("reference_video")
@@ -1314,6 +1313,93 @@ def test_probes_are_kept_per_file_version_ffprobe_and_options(tmp_path):
     env.failures.clear()
     g["VideoMetadata"].from_file(path, tools)
     assert probes() == 8
+
+
+def test_a_same_size_rewrite_with_its_time_put_back_is_probed_again(tmp_path):
+    # Windows' st_ctime_ns is the creation time, so the file's version includes its
+    # change time, which reading the file leaves and any write or time change moves.
+    path = tmp_path / "clip.mkv"
+    path.write_bytes(b"video")
+    env = FakeFFmpeg()
+    g = load("native", "video", env)
+    tools = types.SimpleNamespace(ffmpeg="f", ffprobe="p")
+    g["VideoMetadata"].from_file(path, tools)
+    before = file_identity(path)
+    assert path.read_bytes() == b"video" and file_identity(path) == before
+    info = path.stat()
+    time.sleep(0.05)  # past the file system clock's tick
+    with path.open("r+b") as file:
+        file.write(b"other")
+    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+    after = path.stat()
+    assert (after.st_size, after.st_mtime_ns) == (info.st_size, info.st_mtime_ns)
+    assert file_identity(path) != before
+    g["VideoMetadata"].from_file(path, tools)
+    assert sum(e[0] == "probe" for e in env.events) == 2
+
+
+def test_the_options_cannot_name_another_ffprobe(tmp_path):
+    path = tmp_path / "clip.mkv"
+    path.write_bytes(b"video")
+    env = FakeFFmpeg()
+    g = load("native", "video", env)
+    with pytest.raises(TypeError, match="multiple values for keyword argument 'cmd'"):
+        graph().video_probe(g, str(path), "p", cmd="other")
+    assert env.events == []
+
+
+def test_concurrent_probes_each_get_the_answer(tmp_path):
+    env = FakeFFmpeg()
+    g = load("native", "video", env)
+    tools = types.SimpleNamespace(ffmpeg="f", ffprobe="p")
+    paths = [tmp_path / f"clip{index}.mkv" for index in range(8)]
+    for path in paths:
+        path.write_bytes(b"video")
+    record = env.probe
+
+    def slow_probe(*args, **kwargs):
+        time.sleep(0.005)  # probes overlap
+        return record(*args, **kwargs)
+
+    env.probe = slow_probe
+    expected = g["VideoMetadata"].from_file(tmp_path / "missing.mkv", tools)
+
+    def read(offset):
+        return [
+            g["VideoMetadata"].from_file(paths[(offset + index) % 8], tools)
+            for index in range(24)
+        ]
+
+    with ThreadPoolExecutor(8) as pool:
+        results = list(pool.map(read, range(8)))
+    assert all(metadata == expected for result in results for metadata in result)
+    probed = sum(e[0] == "probe" for e in env.events)
+    assert 1 + 8 <= probed <= 1 + 8 * 8
+    for path in paths:
+        assert g["VideoMetadata"].from_file(path, tools) == expected
+    assert sum(e[0] == "probe" for e in env.events) == probed
+
+
+def test_the_64_newest_probes_are_kept(tmp_path):
+    env = FakeFFmpeg()
+    g = load("native", "video", env)
+    tools = types.SimpleNamespace(ffmpeg="f", ffprobe="p")
+    paths = [tmp_path / f"clip{index}.mkv" for index in range(65)]
+    for path in paths:
+        path.write_bytes(b"video")
+
+    def probed(indices):
+        before = sum(e[0] == "probe" for e in env.events)
+        for index in indices:
+            g["VideoMetadata"].from_file(paths[index], tools)
+        return sum(e[0] == "probe" for e in env.events) - before
+
+    assert probed(range(64)) == 64  # these 64 now fill the cache
+    assert probed(range(64)) == 0
+    assert probed([64]) == 1  # evicts the oldest, the first file
+    assert probed([0]) == 1  # evicts the second
+    assert probed(range(2, 65)) == 0
+    assert probed([1]) == 1
 
 
 @pytest.mark.parametrize("short", [b"1", b"123456", bytes(11)])

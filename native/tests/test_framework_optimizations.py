@@ -28,7 +28,7 @@ from ncnn import ncnn
 from api import Generator, NodeContext, NodeId, SettingsParser
 from nodes.impl.pytorch import resource_cache as resources
 from nodes.impl.upscale.tiler import Tiler
-from nodes.utils.utils import get_h_w_c, list_all_files_sorted
+from nodes.utils.utils import file_identity, get_h_w_c, list_all_files_sorted
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "backend/src"
@@ -157,7 +157,7 @@ def test_resource_lifetime_invalidation_cleanup_and_rerun(tmp_path, reuse):
 
     def get():
         with resources.lease_resource(
-            context, lambda: resources.file_identity(path), create, reuse=reuse
+            context, lambda: file_identity(path), create, reuse=reuse
         ) as value:
             return value
 
@@ -196,7 +196,7 @@ def test_missing_checkpoint_not_retained_and_first_download_key(tmp_path):
 
     for _ in range(3):
         with resources.lease_resource(
-            context, lambda: resources.file_identity(path), create, reuse=True
+            context, lambda: file_identity(path), create, reuse=True
         ):
             pass
     assert len(calls) == 2
@@ -449,7 +449,7 @@ def test_face_reuses_helper_and_releases_frame_state(tmp_path):
         get_settings=lambda _: settings,
         FaceRestoreHelper=Helper,
         lease_resource=resources.lease_resource,
-        file_identity=resources.file_identity,
+        file_identity=file_identity,
         allow_model_reuse=resources.allow_model_reuse,
         safe_cuda_cache_empty=lambda: None,
     )
@@ -483,7 +483,7 @@ def test_align_reuses_models_but_invalidates_weights_options_and_incomplete_stat
     module = functions(
         SOURCE / ALIGN,
         lease_resource=resources.lease_resource,
-        file_identity=resources.file_identity,
+        file_identity=file_identity,
         allow_model_reuse=resources.allow_model_reuse,
     )
     retainable = [True]
@@ -603,7 +603,7 @@ def test_alignment_real_preparation_path_reuses_only_complete_weights(
         IFNet=Model,
         XFeat=XModel,
         lease_resource=resources.lease_resource,
-        file_identity=resources.file_identity,
+        file_identity=file_identity,
         allow_model_reuse=resources.allow_model_reuse,
     )
     module.align_images.__globals__.update(
@@ -642,7 +642,7 @@ def test_version_change_during_load_is_not_mislabeled_as_cached(tmp_path):
     values = []
     for _ in range(3):
         with resources.lease_resource(
-            context, lambda: resources.file_identity(path), create, reuse=True
+            context, lambda: file_identity(path), create, reuse=True
         ) as value:
             values.append(value)
     assert calls == [b"old", b"new version"]

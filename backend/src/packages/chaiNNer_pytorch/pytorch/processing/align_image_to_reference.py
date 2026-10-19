@@ -12,16 +12,13 @@ from torch.nn import functional
 
 from api import NodeContext
 from nodes.impl.native_graph import graph
-from nodes.impl.pytorch.resource_cache import (
-    allow_model_reuse,
-    file_identity,
-    lease_resource,
-)
+from nodes.impl.pytorch.resource_cache import allow_model_reuse, lease_resource
 from nodes.impl.pytorch.rife.IFNet_HDv3_v4_14_align import IFNet
 from nodes.impl.pytorch.utils import np2tensor, safe_cuda_cache_empty, tensor2np
 from nodes.impl.pytorch.xfeat.xfeat_align import XFeat, gen_grid
 from nodes.properties.inputs import BoolInput, EnumInput, ImageInput
 from nodes.properties.outputs import ImageOutput
+from nodes.utils.utils import file_identity
 
 from ...settings import PyTorchSettings, get_settings
 from .. import processing_group

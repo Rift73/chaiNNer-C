@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Hashable, Iterator
 from contextlib import contextmanager
-from pathlib import Path
 from threading import RLock
 from typing import Any, TypeVar
 from weakref import WeakKeyDictionary
@@ -18,22 +17,6 @@ from sanic.log import logger
 from api import NodeContext
 
 T = TypeVar("T")
-
-
-def file_identity(path: Path) -> tuple:
-    """Cheap identity/version check; missing files still reach the loader."""
-    try:
-        stat = path.stat()
-    except FileNotFoundError:
-        return (str(path.absolute()), None)
-    return (
-        str(path.absolute()),
-        stat.st_dev,
-        stat.st_ino,
-        stat.st_size,
-        stat.st_mtime_ns,
-        stat.st_ctime_ns,
-    )
 
 
 class _Entry:

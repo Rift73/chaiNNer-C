@@ -109,29 +109,59 @@ bool quarter_turn(const O&stream) {
 bool high_definition(const O&width,const O&height) {
     return cmp(width,py::int_(1280),Py_GE) || cmp(height,py::int_(576),Py_GT);
 }
+// Whether ffprobe's answer for `path` depends on files besides it, which its version does
+// not show: an AviSynth or VapourSynth script, a concat list or an HLS playlist, by the
+// format option, the extension, or the header FFmpeg's concat and hls demuxers detect a
+// list by. A file that cannot be read is counted in (ffprobe reports why).
+bool reads_other_files(const py::dict&g,const O&path,const py::dict&options) {
+    if(options.contains("f"))
+        for(const char*name: {"avisynth","vapoursynth","concat","hls"})
+            if(eq(options["f"],py::str(name)))return true;
+    O extension=global(g,"os").attr("path").attr("splitext")(path)[py::int_(1)].attr("lower")();
+    for(const char*name: {".avs",".vpy",".ffconcat",".m3u8",".m3u",".hls"})
+        if(eq(extension,py::str(name)))return true;
+    O head;
+    try {
+        O file=builtin("open")(path,"rb");
+        try {head=file.attr("read")(16);}
+        catch(...) {file.attr("close")();throw;}
+        file.attr("close")();
+    } catch(const py::error_already_set&e) {
+        if(!e.matches(PyExc_OSError))throw;
+        return true;
+    }
+    return truth(head.attr("startswith")(py::make_tuple(py::bytes("ffconcat version"),py::bytes("#EXTM3U"))));
+}
 // ffmpeg.probe(path, cmd=ffprobe, **options), kept for the file's version: a file is
 // previewed and read many times, and each probe runs ffprobe (25-45 ms). The key is the
-// file's version (resource_cache.py file_identity's fields: absolute path, device, index,
-// size, modification and change times), the ffprobe and the options; the 64 newest are
-// kept. A file that cannot be stat'ed is probed every time and a failed probe is not
-// kept. Each call returns its own copy, which the caller may change.
+// file's version (video.py's file_identity: absolute path, device, index, size, last-write
+// time, st_ctime_ns, which is the creation time on Windows, and there also the change
+// time), the ffprobe and the options; the 64 newest are kept. A missing file, one whose
+// version cannot be read, or one that reads other files (reads_other_files) is probed every
+// time, and a failed probe is not kept. Each call returns its own copy, which the caller
+// may change. The options cannot name another ffprobe (cmd), which would leave the key's.
 O probe_file(const py::dict&g,const O&path,const O&ffprobe,const py::dict&options) {
+    if(options.contains("cmd"))
+        fail(PyExc_TypeError,"video_probe() got multiple values for keyword argument 'cmd'");
     py::dict arguments;
     arguments["cmd"]=ffprobe;
     for(auto item:options)arguments[item.first]=item.second;
-    O os=global(g,"os"),key=py::none();
+    O key=py::none();
     try {
-        O info=os.attr("stat")(path);
-        key=py::make_tuple(os.attr("path").attr("abspath")(path),info.attr("st_dev"),info.attr("st_ino"),
-            info.attr("st_size"),info.attr("st_mtime_ns"),info.attr("st_ctime_ns"),ffprobe,
-            builtin("tuple")(builtin("sorted")(options.attr("items")())));
+        O identity=global(g,"file_identity")(global(g,"Path")(path));
+        if(!identity[py::int_(1)].is_none() && !reads_other_files(g,path,options))
+            key=py::make_tuple(identity,ffprobe,builtin("tuple")(builtin("sorted")(options.attr("items")())));
     } catch(const py::error_already_set&e) {
         if(!e.matches(PyExc_OSError))throw;
     }
     PYBIND11_CONSTINIT static py::gil_safe_call_once_and_store<py::dict> storage;
     py::dict&probes=storage.call_once_and_store_result([]{return py::dict();}).get_stored();
     O deepcopy=py::module_::import("copy").attr("deepcopy");
-    if(!key.is_none() && probes.contains(key))return deepcopy(probes[key]);
+    if(!key.is_none()) {
+        // One lookup: another thread may evict the entry between two.
+        O kept=probes.attr("get")(key);
+        if(!kept.is_none())return deepcopy(kept);
+    }
     O probe=call(global(g,"ffmpeg").attr("probe"),py::make_tuple(path),arguments);
     if(!key.is_none()) {
         if(py::len(probes)>=64)probes.attr("pop")(builtin("next")(builtin("iter")(probes)));

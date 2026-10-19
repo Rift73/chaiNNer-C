@@ -1,10 +1,13 @@
 # From https://github.com/victorca25/iNNfer/blob/main/utils/utils.py
 from __future__ import annotations
 
+import ctypes
 import math
 import os
 import re
+import sys
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Tuple
 
@@ -92,6 +95,96 @@ def split_file_path(path: Path | str) -> tuple[Path, str, str]:
     base, ext = os.path.splitext(path)
     dirname, basename = os.path.split(base)
     return Path(dirname), basename, ext
+
+
+class _FileBasicInfo(ctypes.Structure):
+    _fields_ = [
+        ("CreationTime", ctypes.c_int64),
+        ("LastAccessTime", ctypes.c_int64),
+        ("LastWriteTime", ctypes.c_int64),
+        ("ChangeTime", ctypes.c_int64),
+        ("FileAttributes", ctypes.c_uint32),
+    ]
+
+
+@cache
+def _kernel32() -> ctypes.WinDLL:
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return kernel32
+
+
+def _change_time(path: Path) -> int | None:
+    """The time of the file's last data or metadata change (FILE_BASIC_INFO's
+    ChangeTime) on Windows, where os.stat's st_ctime_ns is its creation time; None
+    elsewhere, where st_ctime_ns is this time."""
+    if sys.platform != "win32":
+        return None
+    kernel32 = _kernel32()
+    # Reading attributes only: allowed whatever sharing the file's other users chose.
+    handle = kernel32.CreateFileW(
+        str(path),
+        0x80,  # FILE_READ_ATTRIBUTES
+        0x7,  # FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+        None,
+        3,  # OPEN_EXISTING
+        0x02000000,  # FILE_FLAG_BACKUP_SEMANTICS, so directories open too
+        None,
+    )
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        info = _FileBasicInfo()
+        basic_info = 0  # the FILE_INFO_BY_HANDLE_CLASS FileBasicInfo
+        if not kernel32.GetFileInformationByHandleEx(
+            handle, basic_info, ctypes.byref(info), ctypes.sizeof(info)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.CloseHandle(handle)
+    return info.ChangeTime
+
+
+def file_identity(path: Path) -> tuple:
+    """A file's version, cheap to check: its absolute path, device, index, size,
+    last-write time, creation (Windows) or change time and, on Windows, the change
+    time, so a same-size rewrite in place whose last-write time was put back is a
+    new version. A missing file is (absolute path, None), so it still reaches the
+    loader, which reports it."""
+    absolute = str(path.absolute())
+    try:
+        stat = path.stat()
+        changed = _change_time(path)
+    except FileNotFoundError:
+        return (absolute, None)
+    return (
+        absolute,
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+        changed,
+    )
 
 
 def walk_error_handler(exception_instance: Exception):

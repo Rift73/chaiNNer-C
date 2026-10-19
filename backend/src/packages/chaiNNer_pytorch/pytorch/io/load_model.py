@@ -12,11 +12,10 @@ from spandrel import MAIN_REGISTRY, ImageModelDescriptor, ModelDescriptor, Model
 from spandrel_extra_arches import EXTRA_REGISTRY
 
 from api import NodeContext
-from nodes.impl.pytorch.resource_cache import file_identity
 from nodes.impl.pytorch.skip_init import skip_random_init
 from nodes.properties.inputs import PthFileInput
 from nodes.properties.outputs import DirectoryOutput, FileNameOutput, ModelOutput
-from nodes.utils.utils import split_file_path
+from nodes.utils.utils import file_identity, split_file_path
 
 from ...settings import PyTorchSettings, get_settings
 from .. import io_group

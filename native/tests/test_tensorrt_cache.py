@@ -11,7 +11,6 @@ from threading import Event, Thread
 import pytest
 
 from api import NodeId
-from nodes.impl.pytorch.resource_cache import file_identity
 from nodes.impl.tensorrt import cache
 from nodes.impl.tensorrt.cache import SharedCache
 from nodes.impl.tensorrt.model import (
@@ -19,6 +18,7 @@ from nodes.impl.tensorrt.model import (
     TensorRTEngine,
     TensorRTEngineInfo,
 )
+from nodes.utils.utils import file_identity
 from util import timed_supplier
 
 A, B = NodeId("a"), NodeId("b")
