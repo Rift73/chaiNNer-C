@@ -195,7 +195,12 @@ error as pybind11 would raise it, and an engine thread's own fault stops the run
 built in C++, posted in batches by the pump and flushed before the run's result; broadcasts go latest-first per node,
 image data and LargeImage previews computed natively (`image_preview.cpp`). An individual run's node runs on the
 driver, its output (a native node's as a `RegularOutput`) read before anything releases it. `close()` joins the run's
-threads, then drops every Python reference the engine holds.
+threads, then drops every Python reference the engine holds. Stop (`/kill`, or the request dropped): the run ends with
+its engine's end, or, a node still running after 0.5 s (a Python body or native kernel without an abort check), as
+Aborted at once (`NativeExecutor`; `/kill` well within the host's 3 s). That node's thread finishes in the background:
+no later node starts, its result is dropped (no event, no memo entry), its node cleanups and the run's chain cleanups
+run once after it, then the engine closes; the next run (or preview) is accepted at once and starts its nodes after
+that. The Python executor waits for the node (`await_owned_node`). Test: `native/tests/test_engine_stop.py`.
 
 Memo cache (amendment A3, in the same file). In-process outputs of allow-listed nodes (native nodes without side
 effects or a context, except Add Noise and Create Noise; 16 audited Python nodes listed in `native_executor.py` and

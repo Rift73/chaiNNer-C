@@ -2984,7 +2984,8 @@ void Run::execute(const CellRef &ref, bool on_driver)
         ok = outcome == NativeOutcome::done;
     }
     double seconds = seconds_since(start) - lazy_seconds;
-    if (ok && key && !memoized) {
+    // A stopped run's node that still finished (its request ended without it: NativeExecutor's Stop) memoizes nothing.
+    if (ok && key && !memoized && !aborted_) {
         result.key = *key;
         result.key_state = Cell::KeyState::known;
         Memo::get().insert(*key, Memo::Entry{result.outputs, result.object, memo_bytes(result.outputs)});
