@@ -101,9 +101,11 @@ def _assemble(
     inputs: tuple[np.ndarray | Color, ...],
     selections: list[tuple[int, int]],
     order: tuple[int, ...] = (0, 1, 2),
+    out: np.ndarray | None = None,
 ) -> np.ndarray:
     """Copy selected channels or scalar colors in one pass without color images,
-    into a new image whose memory runs through its axes in order (numpy_order).
+    into a new image whose memory runs through its axes in order (numpy_order), or
+    into out, a new gapless image of the selections' shape that the caller owns.
     Interleaved and planar inputs are read in place; a planar result is written
     one plane at a time."""
     first = next(value for value in inputs if isinstance(value, np.ndarray))
@@ -126,7 +128,8 @@ def _assemble(
             descriptors[output_channel] = _Channel(
                 None, 0, 0, value.value[input_channel]
             )
-    out = empty_ordered((height, width, len(selections)), order)
+    if out is None:
+        out = empty_ordered((height, width, len(selections)), order)
     strides = pixel_strides(out)
     if strides == (len(selections), 1):
         check(

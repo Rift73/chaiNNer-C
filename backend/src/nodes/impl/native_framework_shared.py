@@ -35,6 +35,7 @@ import numpy as np
 
 from .native import check, f32, lib
 from .native_buffers import freeze_normalized
+from .native_channels import _assemble
 from .native_framework_images import _report
 from .native_numpy_simd import fma3, loop_target
 from .native_tensors import _allocate, _view, cast_numpy
@@ -167,13 +168,27 @@ def recover_alpha(white: np.ndarray, black: np.ndarray) -> np.ndarray:
     out = np.empty_like(intermediate)
     del intermediate
     white, black = np.broadcast_arrays(white, black)
+    if (
+        white.strides == black.strides == out.strides
+        and white.flags.aligned
+        and black.flags.aligned
+    ):
+        # Both have out's gapless layout: the kernel runs over the three buffers in
+        # memory order and writes out directly.
+        _run(white, out, 3, second=black)
+        return out
     result = np.empty(white.shape, np.float32)
     _run(f32(white), result, 3, second=f32(black))
     copy_into(out, result)
     return out
 
 
-def assemble_alpha(rgb: np.ndarray, alpha: np.ndarray | float) -> np.ndarray:
+def assemble_alpha(
+    rgb: np.ndarray, alpha: np.ndarray | float, *, frozen: bool = False
+) -> np.ndarray:
+    """np.dstack((rgb, alpha)), alpha a plane or a scalar. frozen: a float32 RGB
+    image's result is returned frozen and registered (freeze_normalized), so an
+    output check borrows it when its clip would leave every value as it is."""
     if rgb.dtype != np.float32 or (
         isinstance(alpha, np.ndarray) and alpha.dtype != np.float32
     ):
@@ -220,6 +235,7 @@ def assemble_alpha(rgb: np.ndarray, alpha: np.ndarray | float) -> np.ndarray:
         strides[axis] = stride
         stride *= shape[axis]
     out = np.ndarray(shape, np.float32, strides=tuple(strides))
-    copy_into(out[:, :, :3], rgb)
-    copy_into(out[:, :, 3], alpha)
-    return out
+    if out.size:
+        # One pass writes every output pixel's three colours and its alpha.
+        _assemble((rgb, alpha), [(0, 0), (0, 1), (0, 2), (1, 0)], out=out)
+    return freeze_normalized(out) if frozen else out

@@ -15,6 +15,7 @@ from test_buffers import ORIGINAL as OLD_IMAGE_UTILS
 
 from nodes.impl import native_framework_shared as native
 from nodes.impl.image_op import clipped
+from nodes.impl.native_buffers import normalized_readonly
 from nodes.impl.upscale import convenient_upscale as integration
 from nodes.impl.upscale import tile_blending as tiles
 
@@ -197,6 +198,60 @@ def test_assemble_alpha(shape, rgb_kind, alpha_kind):
     actual = native.assemble_alpha(rgb, alpha)
     exact(actual, expected)
     assert actual.strides == expected.strides
+
+
+def planar(image: np.ndarray) -> np.ndarray:
+    """(C, H, W) memory viewed as (H, W, C), as a model's output arrives."""
+    return np.ascontiguousarray(image.transpose(2, 0, 1)).transpose(1, 2, 0)
+
+
+def raw_floats(shape, seed):
+    """Every float32 bit pattern, NaN payloads and denormals included."""
+    words = np.random.default_rng(seed).integers(0, 2**32, shape, dtype=np.uint64)
+    return words.astype(np.uint32).view(np.float32)
+
+
+@pytest.mark.parametrize("white_kind", ["ordinary", "fortran", "planar"])
+@pytest.mark.parametrize("black_kind", ["ordinary", "fortran", "planar"])
+def test_recover_alpha_writes_out_across_chunks(white_kind, black_kind):
+    # Over the 65536-element grain; same-layout operands write out directly.
+    shape = (131, 257, 3)
+    white, black = (
+        planar(value) if kind == "planar" else layout(value, kind)
+        for value, kind in (
+            (raw_floats(shape, 71), white_kind),
+            (raw_floats(shape, 72), black_kind),
+        )
+    )
+    expected, expected_messages = recorded(lambda: 1 - (white - black))
+    actual, actual_messages = recorded(lambda: native.recover_alpha(white, black))
+    exact(actual, expected)
+    assert actual.strides == expected.strides
+    assert actual_messages == expected_messages
+
+
+@pytest.mark.parametrize("rgb_kind", ["ordinary", "fortran", "planar", "reverse"])
+@pytest.mark.parametrize("alpha_kind", ["ordinary", "fortran", "scalar"])
+@pytest.mark.parametrize("frozen", [False, True])
+def test_assemble_alpha_one_pass_across_chunks(rgb_kind, alpha_kind, frozen):
+    shape = (131, 257, 3)
+    rgb = raw_floats(shape, 73)
+    rgb = planar(rgb) if rgb_kind == "planar" else layout(rgb, rgb_kind)
+    alpha = (
+        0.25
+        if alpha_kind == "scalar"
+        else layout(raw_floats(shape[:2], 74), alpha_kind)
+    )
+    plane = np.full(shape[:2], alpha, np.float32) if alpha_kind == "scalar" else alpha
+    expected = np.dstack((rgb, plane))
+    actual = native.assemble_alpha(rgb, alpha, frozen=frozen)
+    assert actual.tobytes() == expected.tobytes()
+    assert actual.strides == expected.strides
+    assert actual.flags.writeable != frozen
+    if frozen:
+        normalized = np.clip(np.random.default_rng(75).random(shape, np.float32), 0, 1)
+        result = native.assemble_alpha(normalized, 0.5, frozen=True)
+        assert normalized_readonly(result) is result
 
 
 @pytest.mark.parametrize(

@@ -722,11 +722,11 @@ def upscaled_values(kind):
 def test_upscale_final_clip_is_borrowed_at_output_enforce(
     state, kind, channels, alpha, levels, monkeypatch
 ):
-    # convenient_upscale's final clip returns its fresh result frozen and registered:
-    # the enforced bytes, strides and warnings are those of the clip before (its result
-    # writable and unregistered, so enforce clipped a copy), and a model result returned
-    # as it is is borrowed by enforce exactly when the scan passes.
-    from nodes.impl.native_framework_shared import clip_image
+    # convenient_upscale's final clip and its RGBA assembly return their fresh results
+    # frozen and registered: the enforced bytes, strides and warnings are those of the
+    # unregistered results before (which enforce clipped as copies), and enforce borrows
+    # the result exactly when the scan passes.
+    from nodes.impl.native_framework_shared import assemble_alpha, clip_image
     from nodes.impl.upscale import convenient_upscale as module
 
     image = np.random.default_rng(57).random((9, 11, max(channels, 3)), np.float32)
@@ -746,19 +746,21 @@ def test_upscale_final_clip_is_borrowed_at_output_enforce(
             actual_warnings, actual = warned(upscale)
             with monkeypatch.context() as patch:
                 patch.setattr(module, "clipped", lambda op: lambda i: clip_image(op(i)))
+                patch.setattr(
+                    module, "assemble_alpha", lambda rgb, a, **_: assemble_alpha(rgb, a)
+                )
                 expected_warnings, expected = warned(
                     lambda: module.convenient_upscale(*args)
                 )
         assert actual_warnings == expected_warnings
         assert actual.shape == expected.shape and actual.strides == expected.strides
         assert actual.tobytes() == expected.tobytes(), (level, state)
-        if channels != 4:
-            out = outputs[-1]
-            assert not out.flags.writeable
-            # A negative denormal clips to +0, or to -0 under DAZ: never borrowed.
-            borrowed = passes(out.view(np.uint32))
-            assert borrowed == (kind == "unit")
-            assert np.shares_memory(actual, out) == borrowed, (level, state)
+        out = outputs[-1]
+        assert not out.flags.writeable
+        # A negative denormal clips to +0, or to -0 under DAZ: never borrowed.
+        borrowed = passes(out.view(np.uint32))
+        assert borrowed == (kind == "unit")
+        assert np.shares_memory(actual, out) == borrowed, (level, state)
 
 
 def test_freeze_normalized_registers_only_a_fresh_writable_owner():

@@ -71,7 +71,7 @@ def convenient_upscale(
             rgb = as_target_channels(
                 upscale(as_target_channels(img[:, :, :3], model_in_nc, True)), 3, True
             )
-            return assemble_alpha(rgb, alpha_value)
+            return assemble_alpha(rgb, alpha_value, frozen=True)
 
         if separate_alpha:
             # Upscale the RGB channels and alpha channel separately
@@ -81,7 +81,7 @@ def convenient_upscale(
             alpha = denoise_and_flatten_alpha(
                 upscale(as_target_channels(img[:, :, 3], model_in_nc, True))
             )
-            return assemble_alpha(rgb, alpha)
+            return assemble_alpha(rgb, alpha, frozen=True)
         else:
             # Transparency hack (white/black background difference alpha)
             black, white = with_black_and_white_backgrounds(img)
@@ -96,7 +96,7 @@ def convenient_upscale(
             alpha_candidates = recover_alpha(white_up, black_up)
             alpha = denoise_and_flatten_alpha(alpha_candidates)
 
-            return assemble_alpha(black_up, alpha)
+            return assemble_alpha(black_up, alpha, frozen=True)
 
     return as_target_channels(
         upscale(as_target_channels(img, model_in_nc, True)), in_img_c, True
