@@ -22,7 +22,7 @@ import functools
 import importlib
 import struct
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Literal
 
 import numpy as np
@@ -61,15 +61,26 @@ def error_name(error: BaseException) -> str:
 
 
 def comparable(value: object) -> object:
-    """A value's identity for the comparison: exact bits for arrays, floats and colours."""
+    """A value's identity for the comparison, recursively, always with its exact type: arrays by dtype, shape,
+    writeable flag and C-ordered bytes, floats and NumPy scalars by their bits (-0.0 is not 0.0, a NaN equals the
+    same NaN), paths by str() (case-sensitive), colours by their channels, tuples, lists and dicts by their items."""
+    kind = f"{type(value).__module__}.{type(value).__qualname__}"
     if isinstance(value, np.ndarray):
-        return ("ndarray", value.dtype.str, value.shape, value.tobytes())
+        return (kind, value.dtype.str, value.shape, value.flags.writeable, value.tobytes())
+    if isinstance(value, np.generic):
+        return (kind, value.dtype.str, value.tobytes())
     if isinstance(value, float):
-        return ("float", struct.pack("<d", value))
+        return (kind, struct.pack("<d", value))
+    if isinstance(value, PurePath):
+        return (kind, str(value))
     if isinstance(value, Color):
         # Channel types too: Color's _norm keeps an int at the bounds (Color.gray(0).value == (0,))
-        return ("Color", tuple((type(channel).__name__, struct.pack("<d", channel)) for channel in value.value))
-    return (f"{type(value).__module__}.{type(value).__qualname__}", value)
+        return (kind, comparable(value.value))
+    if isinstance(value, (tuple, list)):
+        return (kind, tuple(comparable(item) for item in value))
+    if isinstance(value, dict):
+        return (kind, tuple((comparable(key), comparable(item)) for key, item in value.items()))
+    return (kind, value)
 
 
 class DifferentialContext(api.NodeContext):
@@ -151,7 +162,7 @@ def _outcome(node: api.NodeData, run: Callable[[], object], max_items: int) -> O
             return "generator", (
                 generator.expected_length,
                 generator.fail_fast,
-                generator.source_paths,
+                comparable(generator.source_paths),
                 static,
                 _items(node, output, max_items),
             )

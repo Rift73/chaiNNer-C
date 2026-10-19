@@ -82,6 +82,15 @@ def test_math_unknown_operation_declines():
         graph().run_native("chainner:utility:math", ["bogus", 1.0, 2.0])
 
 
+@pytest.mark.parametrize("op", MATH_OPERATIONS)
+def test_math_numpy_scalars_match(op):
+    # NumberInput's enforce makes them floats; unenforced, the entry point declines (bad_variant_access).
+    a, b = np.float64(7.3), np.float64(-2.5)
+    assert_native_matches("chainner:utility:math", [op, a, b], declines=math_declines(op, float(a), float(b)))
+    with pytest.raises(graph().NativeDeclined):
+        graph().run_native("chainner:utility:math", [op, a, b])
+
+
 @pytest.mark.parametrize("op", [0, 1, 2, 3, 4, 5])
 def test_compare_matches(op):
     for left in OPERANDS:

@@ -53,7 +53,9 @@
  * engine's image storage from the same pool, without the GIL: at or above the threshold
  * through pool_allocate once an install has configured the pool (the release-ordered
  * flag below), else a 64-byte-aligned heap block; a free is routed by the table lookup,
- * as the handler's is.
+ * as the handler's is. The profile does not tell engine requests apart: at or above the
+ * threshold they are counted as mallocs in NumPy's table, and below it (the 64 KiB to
+ * threshold size classes included) they are not counted at all.
  *
  * Windows only (VirtualAlloc, SRW lock, QueryWorkingSetEx), as parallel.c and scratch.c
  * are. NumPy's headers are included in this unit only, without PY_ARRAY_UNIQUE_SYMBOL,

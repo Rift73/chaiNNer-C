@@ -207,6 +207,26 @@ def test_save_image_skips_existing_without_reading(tmp_path):
     assert target.read_bytes() == b"existing" and not reads
 
 
+@pytest.mark.parametrize(
+    "error",
+    [KeyError("x"), UnicodeDecodeError("utf-8", bytes([255]), 0, 1, "invalid start byte"), ValueError("v"),
+     OSError(2, "gone")],
+)
+def test_save_image_lazy_error_is_the_original(tmp_path, error):
+    # A Python error inside a native node (the lazy image's upstream) is raised as itself, with Python's own text.
+    from api import Lazy
+
+    def fail():
+        raise error
+
+    raised = []
+    for native in (False, True):
+        with pytest.raises(type(error)) as info:
+            run_save(save_inputs(Lazy(fail), tmp_path), native)
+        raised.append(info.value)
+    assert raised[1] is error and str(raised[1]) == str(raised[0])
+
+
 def test_save_image_equal_file_left_untouched(tmp_path):
     run_save(save_inputs(float_image(3), tmp_path), False)
     target = tmp_path / "image.png"

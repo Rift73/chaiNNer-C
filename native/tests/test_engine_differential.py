@@ -164,6 +164,26 @@ def test_image_chain_matches(schemas, assets, tmp_path, case):
     assert run_case(schemas, assets, tmp_path, case) == []
 
 
+def test_native_node_error_matches(schemas, assets, tmp_path):
+    # A native entry point's NodeError reaches NodeExecutionError through the engine's one exception mapping.
+    errors = []
+    for kind in ("python", "native"):
+        nodes = [
+            make_node(schemas, "size", "chainner:utility:math", {0: 1, 1: "div", 2: 0}),
+            make_node(schemas, "board", "chainner:image:create_checkerboard", {0: edge("size"), 1: 8, 4: 5}),
+            make_node(
+                schemas, "save", "chainner:image:save",
+                {0: edge("board"), 1: str(tmp_path), 2: None, 3: "x", 4: "png", 15: "u8"},
+            ),
+        ]
+        chain = parse_json(cast("list[JsonNode]", nodes))
+        optimize(chain)
+        error = execute(kind, chain, storage=assets / "storage").error
+        assert error is not None and error.__cause__ is not None, f"{kind}: {error!r}"
+        errors.append((type(error).__name__, type(error.__cause__).__name__, str(error), str(error.__cause__)))
+    assert errors[0] == errors[1] and errors[0][1] == "ZeroDivisionError"
+
+
 @pytest.mark.parametrize("case", [*VIDEO_CASES, "video-frames"])
 def test_video_chain_matches(schemas, assets, tmp_path, case):
     if not (assets / "moving.mkv").exists():

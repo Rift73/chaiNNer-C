@@ -87,11 +87,13 @@ public:
 };
 
 /* A node failure: message and Python exception type name become the NodeExecutionError cause, as the Python body
- * would raise them (e.g. {"ValueError", "..."}). */
+ * would raise them (e.g. {"ValueError", "..."}). A failure raised by Python code the node called (the engine's
+ * node_error) also keeps that exception object, and the cause is that object itself. */
 struct NodeError : std::runtime_error {
     NodeError(std::string python_type, const std::string &message)
         : std::runtime_error(message), python_type(std::move(python_type)) {}
     std::string python_type;
+    PyRef exception;  // the original Python exception; empty for an entry point's own error
 };
 
 /* Raised by NodeContext::check_aborted after Stop. */
@@ -120,7 +122,9 @@ using NativeRun = void (*)(NodeContext &context, std::span<const Value> inputs, 
 /* A generator's item source. describe() runs serially in item order and returns false at the end;
  * materialize() is const and thread-safe, may run on any engine thread, and fills the item's iterated outputs in
  * schema order. A NodeError thrown by materialize() is that item's error (deferred unless the generator fails
- * fast). */
+ * fast). materialize() must not hand back (no RunPython, no input of a type it does not take): the generator's
+ * body never ran, so there is no Python item to run instead; the engine reports a hand-back as the item's
+ * RuntimeError, naming the bug. Decline in the generator's entry point instead. */
 class ItemSource {
 public:
     virtual ~ItemSource() = default;
@@ -129,7 +133,7 @@ public:
     virtual bool describe(int64_t &token) = 0;
     virtual void materialize(int64_t token, std::vector<Value> &item) const = 0;
     /* The files each item reads (the read-ahead check); false when unknown. */
-    virtual bool source_paths(std::vector<std::filesystem::path> &paths) const { (void)paths; return false; }
+    virtual bool source_paths(std::vector<std::filesystem::path> &) const { return false; }
 };
 
 /* A generator node: returns its item source and fills its static (non-iterated) outputs in schema order. */

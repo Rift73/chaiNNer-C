@@ -7,14 +7,14 @@ import struct
 import subprocess
 import sys
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import numpy as np
 import pytest
 
 import api
 from nodes.impl.color.color import Color
-from nodes.impl.image_utils import FlipAxis, normalize
+from nodes.impl.image_utils import FlipAxis
 from nodes.impl.native_buffers import freeze_normalized
 from nodes.impl.native_graph import graph
 from nodes.properties.outputs import ImageOutput
@@ -52,6 +52,19 @@ def test_schema_ids_are_sorted_unique_and_registered():
 def test_unknown_schema_is_a_key_error():
     with pytest.raises(KeyError, match="No native entry point for chainner:image:nothing"):
         graph().run_native("chainner:image:nothing", [])
+
+
+@pytest.mark.parametrize("settings", [[("key", 1)], "key", 3])
+def test_settings_must_be_a_dict(settings):
+    with pytest.raises(TypeError, match="settings must be a dict"):
+        graph().run_native("chainner:utility:number", [1], settings=settings)
+
+
+@pytest.mark.parametrize("storage_dir", ["C:/storage", b"C:/storage", PurePosixPath("storage")])
+def test_storage_dir_must_be_a_path(storage_dir):
+    with pytest.raises(TypeError, match=r"storage_dir must be a pathlib.Path"):
+        graph().run_native("chainner:utility:number", [1], storage_dir=storage_dir)
+    assert graph().run_native("chainner:utility:number", [1], settings={}, storage_dir=Path("C:/storage")) == [1]
 
 
 # Images, enforced (run_native's inputs)
@@ -93,7 +106,6 @@ def test_engine_image_crosses_back_without_a_copy():
     out = engine_image()
     back = through(out)
     assert address(back) == address(out) and bits(back) == bits(out)
-    assert address(through(out, normalize=True)) == address(out)
 
 
 def test_engine_storage_outlives_the_array_that_produced_it():
@@ -162,61 +174,68 @@ def test_enforced_images_must_be_float32():
         through(np.zeros((2, 2, 3), np.float64))
 
 
-# Images, normalized (as ImageOutput.enforce)
+# Images, normalized (as the executor normalizes a native image output: normalized_output)
 
 
 def enforced(value: np.ndarray) -> np.ndarray:
     return ImageOutput().enforce(value)
 
 
-@pytest.mark.parametrize(
-    "values",
-    [
-        np.array([[[-0.5, 1.5, np.nan], [-0.0, 0.25, np.inf]]], np.float32),
-        np.array([[[-0.5, 1.5, np.nan], [-0.0, 0.25, -np.inf]]], np.float64),
-        np.arange(24, dtype=np.uint8).reshape(2, 4, 3) * 10,
-        np.arange(24, dtype=np.uint16).reshape(2, 4, 3) * 2500,
-        np.arange(-12, 12, dtype=np.int16).reshape(2, 4, 3),
-        np.array([[True, False], [False, True]]),
-    ],
-)
-def test_normalized_conversion_matches_image_output_enforce(values):
+def special_float32(channels=3) -> np.ndarray:
+    """float32 pixels around the clip: out of range, +-0, NaN payloads, infinities, subnormals, exact bounds."""
+    values = np.array(
+        [-0.5, 1.5, np.nan, -0.0, 0.25, np.inf, -np.inf, 1.0, 0.0, 1e-45, -1e-45, np.nextafter(1, 2, dtype=np.float32)],
+        np.float32,
+    )
+    raw = values.view(np.uint32).copy()
+    raw[2] = 0x7FC00042  # a quiet NaN with a payload
+    raw = np.concatenate([raw, np.array([0xFFC00001, 0x7F800001], np.uint32)])  # negative and signalling NaN
+    flat = raw.view(np.float32)
+    count = len(flat) - len(flat) % channels
+    return flat[:count].reshape(1, count // channels, channels).copy()
+
+
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_normalized_output_matches_image_output_enforce(channels):
+    values = special_float32(channels)
+    if channels == 1:
+        values = values[:, :, 0]
     with np.errstate(all="ignore"):
-        assert bits(through(values, normalize=True)) == bits(enforced(values))
+        expected = bits(enforced(values.copy()))
+        assert bits(through(values, normalize=True)) == expected
+        engine = graph().run_native("chainner:image:flip", [graph().run_native("chainner:image:flip", [values, 1])[0], 1])[0]
+        assert type(engine.base).__name__ == "PyCapsule"
+        assert bits(through(engine, normalize=True)) == expected
 
 
 def test_normalized_strided_input_matches_enforce():
-    planar = np.random.default_rng(5).random((4, 7, 6)) * 2 - 0.5
+    planar = (np.random.default_rng(5).random((4, 7, 6)) * 2 - 0.5).astype(np.float32)
     permuted = planar.transpose(1, 2, 0)
     assert bits(through(permuted, normalize=True)) == bits(enforced(permuted))
 
 
-def test_normalized_conversion_raises_no_floating_point_errors_as_normalize():
-    values = np.array([[[1e300, -1e300, np.nan], [np.inf, 5e-324, -0.0]]], np.float64)
-    with np.errstate(all="raise"):
-        assert bits(through(values, normalize=True)) == bits(normalize(values))
+def test_normalized_output_takes_only_engine_images():
+    # Every native image output is float32 (an Image); other dtypes never reach the engine's normalization.
+    for dtype in (np.float64, np.uint8, np.uint16, np.int32, np.int64, np.bool_, np.float16, ">f4"):
+        with pytest.raises(TypeError, match="float32"):
+            through(np.zeros((2, 2, 3), dtype), normalize=True)
 
 
 @pytest.mark.parametrize("shape", [(0, 4, 3), (5, 0), (0, 0, 4)])
-def test_empty_images_have_data(shape):
-    # An empty engine image still has a data block: kernels refuse a null pointer even for a zero count.
-    values = np.zeros(shape, np.uint8)
-    out = through(values, normalize=True)
-    assert out.dtype == np.float32 and out.shape == shape[:2] + shape[2:] and not out.flags.writeable
-    assert bits(out) == bits(normalize(values))
+def test_empty_images_cross_as_themselves(shape):
     empty = np.zeros(shape, np.float32)
     assert through(empty) is empty
+    assert through(empty, normalize=True) is empty
+
+
+def test_normalized_engine_image_is_itself():
+    out = engine_image()
+    assert address(through(out, normalize=True)) == address(out)
 
 
 def test_known_normalized_array_is_borrowed():
     img = freeze_normalized(np.random.default_rng(7).random((6, 5, 4), dtype=np.float32))
     assert through(img, normalize=True) is img
-
-
-def test_unknown_normalized_array_is_copied_with_its_bits():
-    img = np.random.default_rng(8).random((6, 5, 3), dtype=np.float32)
-    out = through(img, normalize=True)
-    assert out is not img and bits(out) == bits(img)
 
 
 def test_engine_image_out_of_range_is_converted():
@@ -250,6 +269,18 @@ def test_floats_round_trip_by_bits(value):
 
 @pytest.mark.parametrize("value", [2**63, -(2**63) - 1, "\ud800 lone", object(), [1, 2], b"bytes"])
 def test_other_objects_are_kept_as_themselves(value):
+    assert through(value) is value
+
+
+class TextSubclass(str):
+    pass
+
+
+@pytest.mark.parametrize(
+    "value",
+    [np.float64(1.5), np.float64(-0.0), np.str_("x"), TextSubclass("y"), PurePosixPath("a/b"), PureWindowsPath("C:/a")],
+)
+def test_subclasses_are_kept_as_themselves(value):
     assert through(value) is value
 
 
@@ -305,3 +336,22 @@ def test_seeds_beyond_int64_cross_as_themselves(value):
 def test_lazy_inputs_cross_as_themselves():
     lazy = api.Lazy.ready(np.zeros((2, 2), np.float32))
     assert through(lazy) is lazy
+
+
+# The differential harness's comparison (native_differential.comparable)
+
+
+def test_comparable_is_exact_and_recursive():
+    from native_differential import comparable
+
+    nan = struct.unpack("<d", struct.pack("<Q", 0x7FF8000000000001))[0]
+    assert comparable([(nan, -0.0)]) == comparable([(nan, -0.0)])
+    assert comparable((0.0,)) != comparable((-0.0,)) and comparable({"a": [0.0]}) != comparable({"a": [-0.0]})
+    assert comparable(np.float64(1.5)) != comparable(1.5) and comparable(np.float32(np.nan)) == comparable(np.float32(np.nan))
+    assert comparable(Path("C:/A")) != comparable(Path("c:/a")) and comparable(Path("a/b")) != comparable(PurePosixPath("a/b"))
+    assert comparable([Path("x")]) == comparable([Path("x")]) and comparable("1") != comparable(1)
+    frozen = np.zeros((2, 2), np.float32)
+    frozen.setflags(write=False)
+    assert comparable(frozen) != comparable(np.zeros((2, 2), np.float32)) != comparable(np.zeros((2, 2, 1), np.float32))
+    assert comparable(np.zeros(4, np.float32)) != comparable(np.zeros(4, np.int32))
+    assert comparable(Color((0.25,))) == comparable(Color((0.25,))) != comparable(Color((0.5,)))

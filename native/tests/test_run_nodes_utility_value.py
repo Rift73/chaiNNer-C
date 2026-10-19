@@ -1,7 +1,7 @@
 """Native utility value entry points (native/src/run/nodes/utility_value.cpp) against their Python bodies."""
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import numpy as np
 import pytest
@@ -85,6 +85,26 @@ def test_switch_matches(index, value):
     values = [None] * 10
     values[index] = value
     assert_native_matches("chainner:utility:switch", [index, *values])
+
+
+# Subclasses of the engine's scalar and path types: they cross as themselves (the body returns them unchanged).
+SUBCLASSED = [np.float64(-0.0), np.float64(0.1), np.str_("téxt"), PurePosixPath("a/b"), PureWindowsPath("C:/a"),
+              np.int64(3)]
+
+
+def test_pass_through_keeps_subclassed_values():
+    inputs = [*SUBCLASSED, None, None, None, None]
+    assert_native_matches("chainner:utility:pass_through", inputs)
+    outputs = graph().run_native("chainner:utility:pass_through", inputs)
+    assert all(output is value for output, value in zip(outputs[: len(SUBCLASSED)], SUBCLASSED, strict=True))
+
+
+@pytest.mark.parametrize("value", SUBCLASSED)
+def test_switch_keeps_subclassed_values(value):
+    values = [None] * 10
+    values[3] = value
+    assert_native_matches("chainner:utility:switch", [3, *values])
+    assert graph().run_native("chainner:utility:switch", [3, *values])[0] is value
 
 
 @pytest.mark.parametrize("index", [0, 4, 9])

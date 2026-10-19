@@ -23,7 +23,6 @@
 #include "engine.hpp"
 #include "image_decode.hpp"
 #include "image_preview.hpp"
-#include "kernel_status.hpp"
 
 #include <pybind11/gil_safe_call_once.h>
 #include <pybind11/numpy.h>
@@ -899,7 +898,7 @@ void EngineContext::check_aborted() const
 
 Value value_of(py::handle object)
 {
-    return to_value(object, ImageMode::enforced);
+    return to_value(object);
 }
 
 Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(hooks_object))
@@ -2639,15 +2638,6 @@ bool allowed_channels(const std::vector<int> &channels, int count)
     return channels.empty() || std::find(channels.begin(), channels.end(), count) != channels.end();
 }
 
-/* A Python exception as a native node's NodeError (its type's name, qualified unless a builtin, and its text). */
-NodeError node_error(py::error_already_set &error)
-{
-    py::object type = error.type();
-    std::string module = py::str(type.attr("__module__"));
-    std::string name = py::str(type.attr("__qualname__"));
-    return NodeError(module == "builtins" ? name : module + "." + name, py::str(error.value()));
-}
-
 Value Run::enforce_input(int node, int input, const Value &value)
 {
     const InputPlan &plan = nodes_[size_t(node)].inputs[size_t(input)];
@@ -2679,16 +2669,7 @@ std::optional<NodeError> Run::enforce_outputs(int node_index, std::vector<Value>
             const Image *image = std::get_if<Image>(&outputs[i]);
             if (plan.image && image && image->height > 0 && image->width > 0 &&
                 (plan.channels == 0 || plan.channels == image->channels)) {
-                if (!plan.assume_normalized) {
-                    // ImageOutput.enforce: borrowed when its clip changes no bit, else normalize's copy.
-                    int same = 0;
-                    check(cn_pixels_normalized_f32(image->data, image->values(), &same));
-                    if (!same) {
-                        MutableImage copy = MutableImage::allocate(image->height, image->width, image->channels);
-                        check(cn_pixels_convert_checked(image->data, copy.data(), image->values(), 0, 0, 1, nullptr));
-                        outputs[i] = std::move(copy).publish();
-                    }
-                }
+                if (!plan.assume_normalized) outputs[i] = normalized_output(*image);
                 continue;
             }
             slow.push_back(i);
@@ -2725,7 +2706,7 @@ NativeOutcome Run::run_native(const CellRef &ref, const Gathered &inputs, Cell &
             python_values.append(std::holds_alternative<std::shared_ptr<LazyValue>>(value) ? py::object(py::none())
                                                                                        : to_python(value));
         try {
-            result.error = py_ref(hooks_.native_failure(ref.node, error.python_type, error.what(), python_values));
+            result.error = py_ref(hooks_.native_failure(ref.node, python_exception(error), python_values));
         } catch (py::error_already_set &again) {
             result.error = current_error(again);
         }
@@ -2842,6 +2823,12 @@ std::vector<Value> Run::native_item(const GeneratorRun &generator, int64_t token
     std::vector<Value> item;
     try {
         generator.native->materialize(token, item);
+    } catch (const RunPython &) {
+        PythonSection python;
+        throw PythonError{py_ref(python_exception(materialize_handed_back()))};
+    } catch (const std::bad_variant_access &) {
+        PythonSection python;
+        throw PythonError{py_ref(python_exception(materialize_handed_back()))};
     } catch (const std::exception &error) {
         PythonSection python;
         throw PythonError{py_ref(python_exception(escaped(error)))};
@@ -3050,7 +3037,7 @@ void Run::execute_cell(const CellRef &ref, bool on_driver)
         PythonSection python;
         try {
             result.error =
-                py_ref(hooks_.native_failure(ref.node, failure->python_type, failure->what(), py::list()));
+                py_ref(hooks_.native_failure(ref.node, python_exception(*failure), py::list()));
         } catch (py::error_already_set &again) {
             result.error = current_error(again);
         }

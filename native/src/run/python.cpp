@@ -1,7 +1,6 @@
 /* The run engine's Python boundary: Value <-> Python conversion, NodeError/Aborted <-> Python exceptions, and the
  * test entries run_native and native_schema_ids (native/tests/native_differential.py). */
 #include "engine.hpp"
-#include "kernel_status.hpp"
 
 #include <pybind11/gil_safe_call_once.h>
 #include <pybind11/numpy.h>
@@ -9,6 +8,7 @@
 #include <exception>
 #include <limits>
 #include <mutex>
+#include <variant>
 
 namespace py = pybind11;
 
@@ -19,8 +19,7 @@ constexpr const char *image_capsule = "chainner_c.run.image";
 
 /* The Python names the conversion uses, imported at the first conversion. */
 struct Names {
-    py::object pure_path, path, enumeration, color, seed, lazy, aborted, generator, normalized_readonly, normalize,
-        require;
+    py::object path, path_type, enumeration, color, seed, lazy, aborted, generator, require;
 };
 
 const Names &names()
@@ -30,17 +29,14 @@ const Names &names()
         .call_once_and_store_result([] {
             py::module_ pathlib = py::module_::import("pathlib");
             py::module_ api = py::module_::import("api");
-            py::module_ buffers = py::module_::import("nodes.impl.native_buffers");
-            return Names{pathlib.attr("PurePath"),
-                         pathlib.attr("Path"),
+            return Names{pathlib.attr("Path"),
+                         py::type::of(pathlib.attr("Path")()),
                          py::module_::import("enum").attr("Enum"),
                          py::module_::import("nodes.impl.color.color").attr("Color"),
                          py::module_::import("nodes.utils.seed").attr("Seed"),
                          api.attr("Lazy"),
                          api.attr("Aborted"),
                          api.attr("Generator"),
-                         buffers.attr("normalized_readonly"),
-                         py::module_::import("nodes.impl.image_utils").attr("normalize"),
                          py::module_::import("numpy").attr("require")};
         })
         .get_stored();
@@ -81,12 +77,6 @@ Shape image_shape(const py::array &array)
     return {int32_t(array.shape(0)), int32_t(array.shape(1)), int32_t(channels)};
 }
 
-bool c_contiguous_f32(const py::array &array)
-{
-    return py::isinstance<py::array_t<float>>(array) && (array.flags() & py::array::c_style) &&
-           (array.flags() & py::detail::npy_api::NPY_ARRAY_ALIGNED_);
-}
-
 Image borrow(const py::array &array, const Shape &shape)
 {
     auto *data = static_cast<float *>(const_cast<void *>(array.data()));
@@ -105,55 +95,12 @@ py::array c_aligned(const py::array &array)
     return copy;
 }
 
-/* cn_pixels_convert_checked's type code of a native-order dtype (native_buffers._TYPES); -1 for any other. */
-int pixel_type(const py::dtype &dtype)
-{
-    if (dtype.byteorder() != '=' && dtype.byteorder() != '|') return -1;
-    switch (dtype.kind()) {
-    case 'f': return dtype.itemsize() == 4 ? 0 : dtype.itemsize() == 8 ? 1 : -1;
-    case 'u': return dtype.itemsize() == 1 ? 2 : dtype.itemsize() == 2 ? 3 : dtype.itemsize() == 4 ? 7 : dtype.itemsize() == 8 ? 9 : -1;
-    case 'i': return dtype.itemsize() == 1 ? 4 : dtype.itemsize() == 2 ? 5 : dtype.itemsize() == 4 ? 6 : dtype.itemsize() == 8 ? 8 : -1;
-    case 'b': return dtype.itemsize() == 1 ? 10 : -1;
-    default: return -1;
-    }
-}
-
-/* normalize(array) (image_utils): converted_pixels' clip to float32, in C order. */
-Image normalized_copy(const py::array &array, const Shape &shape, int type)
-{
-    py::array source = c_aligned(array);
-    MutableImage image = MutableImage::allocate(shape.height, shape.width, shape.channels);
-    cn_status status;
-    {
-        py::gil_scoped_release unlocked;
-        status = cn_pixels_convert_checked(source.data(), image.data(), size_t(source.size()), type, 0, 1, nullptr);
-    }
-    check(status);
-    return std::move(image).publish();
-}
-
-Image image_from_array(const py::array &array, ImageMode mode)
+Image image_from_array(const py::array &array)
 {
     Shape shape = image_shape(array);
-    if (mode == ImageMode::enforced) {
-        if (!py::isinstance<py::array_t<float>>(array))
-            throw py::type_error(py::str("An enforced image is float32, not {}").format(array.dtype()));
-        return borrow(c_aligned(array), shape);
-    }
-    if (c_contiguous_f32(array)) {
-        bool same;
-        if (std::shared_ptr<const ImageStorage> storage = engine_storage(array)) {
-            int normalized = 0;
-            check(cn_pixels_normalized_f32(static_cast<const float *>(array.data()), size_t(array.size()), &normalized));
-            same = normalized != 0;
-        } else {
-            same = names().normalized_readonly(array).is(array);
-        }
-        if (same) return borrow(array, shape);
-    }
-    int type = pixel_type(array.dtype());
-    if (type >= 0) return normalized_copy(array, shape, type);
-    return image_from_array(py::array(names().normalize(array)), ImageMode::enforced);
+    if (!py::isinstance<py::array_t<float>>(array))
+        throw py::type_error(py::str("An enforced image is float32, not {}").format(array.dtype()));
+    return borrow(c_aligned(array), shape);
 }
 
 /* The whole of a borrowed array: that array itself. */
@@ -197,7 +144,7 @@ py::object image_to_python(const Image &image)
 /* A LazyValue reading an api.Lazy (with the GIL, once). */
 class PythonLazy final : public LazyValue {
 public:
-    PythonLazy(PyRef lazy, ImageMode mode) : lazy_(std::move(lazy)), mode_(mode) {}
+    explicit PythonLazy(PyRef lazy) : lazy_(std::move(lazy)) {}
 
     const Value &value() override
     {
@@ -205,7 +152,7 @@ public:
             py::gil_scoped_acquire held;
             try {
                 try {
-                    value_ = to_value(py::handle(object()).attr("value"), mode_);
+                    value_ = to_value(py::handle(object()).attr("value"));
                 } catch (py::error_already_set &error) {
                     rethrow_python_error(error);
                 }
@@ -221,7 +168,6 @@ public:
 
 private:
     PyRef lazy_;
-    ImageMode mode_;
     std::once_flag once_;
     Value value_;
     std::exception_ptr error_;
@@ -252,10 +198,10 @@ py::object exception_type(const std::string &name)
     return type;
 }
 
-/* The exception a NodeError names, with its message (RuntimeError "<type>: <message>" when the name is no
- * exception type). */
+/* python_exception (engine.hpp). */
 py::object exception_object(const NodeError &error)
 {
+    if (error.exception.handle) return py::reinterpret_borrow<py::object>(static_cast<PyObject *>(error.exception.handle.get()));
     try {
         return exception_type(error.python_type)(py::str(error.what()));
     } catch (py::error_already_set &) {
@@ -333,6 +279,10 @@ public:
                     source_->materialize(token, item);
                 } catch (const NodeError &) {
                     failure = std::current_exception();
+                } catch (const RunPython &) {
+                    failure = std::make_exception_ptr(materialize_handed_back());
+                } catch (const std::bad_variant_access &) {
+                    failure = std::make_exception_ptr(materialize_handed_back());
                 }
             }
         }
@@ -381,7 +331,8 @@ py::object native_generator(const std::shared_ptr<NativeItems> &items)
 PyObject *native_declined = nullptr;
 
 /* Runs a node's native entry point on enforced inputs. A regular node returns its outputs; a generator returns
- * [api.Generator over its items, *static outputs]. An entry point that declines to Python raises NativeDeclined. */
+ * [api.Generator over its items, *static outputs]. An entry point that declines to Python (RunPython, or an input
+ * of a type it does not take: std::bad_variant_access, as the executor treats it) raises NativeDeclined. */
 py::list run_native(const std::string &schema_id, const py::list &inputs, const py::object &settings,
                     const std::string &node_id, const py::object &storage_dir)
 {
@@ -389,14 +340,23 @@ py::list run_native(const std::string &schema_id, const py::list &inputs, const 
     if (!entry) throw py::key_error("No native entry point for " + schema_id);
     std::vector<Value> values;
     values.reserve(inputs.size());
-    for (py::handle input : inputs) values.push_back(to_value(input, ImageMode::enforced));
+    for (py::handle input : inputs) values.push_back(to_value(input));
     std::map<std::string, Value, std::less<>> parsed;
     if (!settings.is_none()) {
+        if (!py::isinstance<py::dict>(settings))
+            throw py::type_error(
+                py::str("settings must be a dict, not {}").format(py::type::of(settings).attr("__name__")));
         for (auto [key, value] : py::reinterpret_borrow<py::dict>(settings))
-            parsed.emplace(py::str(key), to_value(value, ImageMode::enforced));
+            parsed.emplace(py::str(key), to_value(value));
     }
     std::filesystem::path directory;
-    if (!storage_dir.is_none()) directory = std::get<Path>(to_value(storage_dir, ImageMode::enforced)).value;
+    if (!storage_dir.is_none()) {
+        Value path = to_value(storage_dir);
+        if (!std::holds_alternative<Path>(path))
+            throw py::type_error(
+                py::str("storage_dir must be a pathlib.Path, not {}").format(py::type::of(storage_dir).attr("__name__")));
+        directory = std::get<Path>(path).value;
+    }
     auto context = std::make_shared<RunContext>(std::move(parsed), node_id, std::move(directory));
     std::vector<Value> outputs;
     py::list result;
@@ -408,6 +368,10 @@ py::list run_native(const std::string &schema_id, const py::list &inputs, const 
         else
             source = entry->generator(*context, values, outputs);
     } catch (const RunPython &) {
+        PyErr_SetString(native_declined, schema_id.c_str());
+        throw py::error_already_set();
+    } catch (const std::bad_variant_access &) {
+        // An input of a type the entry point does not take: the executor runs the body (Run::run_native).
         PyErr_SetString(native_declined, schema_id.c_str());
         throw py::error_already_set();
     }
@@ -460,21 +424,22 @@ void release_deferred()
     for (PyObject *object : pending) Py_DECREF(object);
 }
 
-Value to_value(py::handle object, ImageMode mode)
+Value to_value(py::handle object)
 {
     if (object.is_none()) return std::monostate{};
     if (PyBool_Check(object.ptr())) return object.ptr() == Py_True;
     const Names &python = names();
-    if (is_instance(object, python.enumeration)) return to_value(object.attr("value"), mode);
-    if (PyLong_Check(object.ptr())) {
+    if (is_instance(object, python.enumeration)) return to_value(object.attr("value"));
+    // Exact types: a subclass (np.float64, np.str_, an int subclass) stays itself, as its node's body keeps it.
+    if (PyLong_CheckExact(object.ptr())) {
         int overflow = 0;
         long long number = PyLong_AsLongLongAndOverflow(object.ptr(), &overflow);
         if (number == -1 && PyErr_Occurred()) throw py::error_already_set();
         if (overflow) return py_ref(object);
         return int64_t(number);
     }
-    if (PyFloat_Check(object.ptr())) return PyFloat_AsDouble(object.ptr());
-    if (PyUnicode_Check(object.ptr())) {
+    if (PyFloat_CheckExact(object.ptr())) return PyFloat_AS_DOUBLE(object.ptr());
+    if (PyUnicode_CheckExact(object.ptr())) {
         Py_ssize_t size = 0;
         const char *text = PyUnicode_AsUTF8AndSize(object.ptr(), &size);
         if (!text) {
@@ -483,7 +448,8 @@ Value to_value(py::handle object, ImageMode mode)
         }
         return std::string(text, size_t(size));
     }
-    if (is_instance(object, python.pure_path)) {
+    // The platform's concrete path type only (what to_python makes): a pure or foreign path stays itself.
+    if (Py_TYPE(object.ptr()) == reinterpret_cast<PyTypeObject *>(python.path_type.ptr())) {
         py::str text(object);
         Py_ssize_t size = 0;
         wchar_t *wide = PyUnicode_AsWideCharString(text.ptr(), &size);
@@ -523,8 +489,8 @@ Value to_value(py::handle object, ImageMode mode)
         if (overflow == 0) return Seed{seed};
         return py_ref(object);  // beyond int64: an entry point declines (RunPython)
     }
-    if (py::isinstance<py::array>(object)) return image_from_array(py::reinterpret_borrow<py::array>(object), mode);
-    if (is_instance(object, python.lazy)) return std::shared_ptr<LazyValue>(std::make_shared<PythonLazy>(py_ref(object), mode));
+    if (py::isinstance<py::array>(object)) return image_from_array(py::reinterpret_borrow<py::array>(object));
+    if (is_instance(object, python.lazy)) return std::shared_ptr<LazyValue>(std::make_shared<PythonLazy>(py_ref(object)));
     return py_ref(object);
 }
 
@@ -565,13 +531,26 @@ py::object python_exception(const NodeError &error)
     return exception_object(error);
 }
 
-void rethrow_python_error(py::error_already_set &error)
+NodeError materialize_handed_back()
 {
-    if (error.matches(names().aborted)) throw Aborted{};
+    return NodeError("RuntimeError", "A native item source handed an item back to Python in materialize(), which "
+                                     "it must not (run_engine.hpp ItemSource); this is a bug in the node's entry point");
+}
+
+NodeError node_error(py::error_already_set &error)
+{
     py::object type = error.type();
     std::string module = py::str(type.attr("__module__"));
     std::string name = py::str(type.attr("__qualname__"));
-    throw NodeError(module == "builtins" ? name : module + "." + name, py::str(error.value()));
+    NodeError failure(module == "builtins" ? name : module + "." + name, py::str(error.value()));
+    failure.exception = py_ref(error.value());
+    return failure;
+}
+
+void rethrow_python_error(py::error_already_set &error)
+{
+    if (error.matches(names().aborted)) throw Aborted{};
+    throw node_error(error);
 }
 
 }  // namespace cn::run
@@ -599,9 +578,12 @@ void cn_bind_run_engine(py::module_ &module)
     module.def(
         "run_engine_value",
         [](py::handle value, bool normalize) {
-            return cn::run::to_python(
-                cn::run::to_value(value, normalize ? cn::run::ImageMode::normalized : cn::run::ImageMode::enforced));
+            cn::run::Value converted = cn::run::to_value(value);
+            if (const auto *image = std::get_if<cn::run::Image>(&converted); image && normalize)
+                converted = cn::run::normalized_output(*image);
+            return cn::run::to_python(converted);
         },
         py::arg("value"), py::arg("normalize") = false,
-        "A value through the engine's conversion and back (images enforced, or normalized as ImageOutput.enforce).");
+        "A value through the engine's conversion and back; with normalize, an image is then normalized as the "
+        "executor normalizes a native image output (normalized_output, ImageOutput.enforce).");
 }

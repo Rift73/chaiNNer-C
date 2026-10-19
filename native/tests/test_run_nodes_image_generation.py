@@ -73,6 +73,20 @@ def test_sizes_beyond_an_image_decline():
     assert_native_matches("chainner:image:create_colorwheel", [2**64], declines=True)
 
 
+@pytest.mark.parametrize(
+    "color, width, height",
+    [
+        (COLORS[2], 2**22, 2**22),  # 192 TiB
+        (COLORS[1], 2**23, 2**23),  # 256 TiB, a 2-D shape
+        (COLORS[3], 2**24, 2**24),  # 4.00 PiB
+        (COLORS[1], 262144000, 2**20),  # 1000 TiB: no decimals
+    ],
+)
+def test_out_of_memory_is_numpys_memory_error(color, width, height):
+    outcome = assert_native_matches("chainner:image:create_color", [color, width, height])
+    assert outcome[0] == "error" and outcome[1][0] == "numpy._core._exceptions._ArrayMemoryError", outcome
+
+
 # (method, scale, brightness, tile h, tile v, tile spherical, fractal, layers, scale ratio, brightness ratio,
 #  increment seed, standard deviation)
 NOISE = [

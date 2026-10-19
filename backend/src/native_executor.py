@@ -435,20 +435,6 @@ class _EngineContext(NodeContext):
             raise ValueError(f"Unknown cleanup type: {after}")
 
 
-def _exception_type(name: str) -> type[BaseException]:
-    """The exception type a native NodeError names (builtins, or module.Name); RuntimeError for anything else."""
-    module, _, qualname = name.rpartition(".")
-    try:
-        found = getattr(__import__(module or "builtins", fromlist=["_"]), qualname)
-    except (ImportError, AttributeError):
-        return RuntimeError
-    return (
-        found
-        if isinstance(found, type) and issubclass(found, BaseException)
-        else RuntimeError
-    )
-
-
 class _Hooks:
     """The engine's calls into Python, made on engine threads with the GIL held."""
 
@@ -531,11 +517,11 @@ class _Hooks:
         return self.nodes[index].data.outputs[output_index].enforce_(value)
 
     def native_failure(
-        self, index: int, type_name: str, message: str, inputs: list[object]
+        self, index: int, cause: Exception, inputs: list[object]
     ) -> NodeExecutionError:
-        """A native entry point's NodeError as run_node reports a body's error."""
+        """A native entry point's error (cause: the engine's python_exception of
+        its NodeError) as run_node reports a body's error."""
         node = self.nodes[index]
-        cause = _exception_type(type_name)(message)
         error = NodeExecutionError(
             node.id, node.data, str(cause), collect_input_information(node.data, inputs)
         )
