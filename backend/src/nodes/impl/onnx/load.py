@@ -10,6 +10,7 @@ from google.protobuf.message import DecodeError
 from sanic.log import logger
 
 from ..native_graph import graph
+from ..tensorrt import drft
 from ..tensorrt.dual import export_manifest
 from .autocast import mixed_precision
 from .model import MIXED, OnnxGeneric, OnnxInfo, OnnxModel, OnnxRemBg, SizeReq
@@ -32,6 +33,9 @@ class ModelFacts:
     native_session: bool
     # The exporter's manifest of a DUAL ONNX from Convert To ONNX; None for any other
     dual_manifest: dict[str, Any] | None
+    # The exporter's manifest of a legacy DRFT ONNX from Convert To ONNX; None for any
+    # other
+    drft_manifest: dict[str, Any] | None = None
 
 
 # The facts load_onnx_model found while it parsed each model, so that its sessions and
@@ -44,7 +48,11 @@ def _facts_of(model: onnx.ModelProto) -> ModelFacts:
     # with this module.
     from ..native_onnx_runtime import supports_graph
 
-    return ModelFacts(supports_graph(model.graph), export_manifest(model))
+    return ModelFacts(
+        supports_graph(model.graph),
+        export_manifest(model),
+        drft.export_manifest(model),
+    )
 
 
 def model_facts(model: OnnxModel) -> ModelFacts:
@@ -64,13 +72,13 @@ def load_onnx_model(model_or_bytes: onnx.ModelProto | bytes) -> OnnxModel:
     parsed: list[ModelFacts] = []
 
     def fp_datatype(model: onnx.ModelProto) -> str:
-        """A DUAL ONNX from Convert To ONNX keeps its own mixed precision (BF16 body,
-        FP32 input and output), as does one Convert To ONNX made mixed with ModelOpt
-        ("mixed-fp16" or "mixed-bf16"); any other model has one. Called once with the
-        parsed model, it also keeps the model's facts."""
+        """A DUAL or legacy DRFT ONNX from Convert To ONNX keeps its own mixed
+        precision (BF16 body, FP32 input and output), as does one Convert To ONNX made
+        mixed with ModelOpt ("mixed-fp16" or "mixed-bf16"); any other model has one.
+        Called once with the parsed model, it also keeps the model's facts."""
         facts = _facts_of(model)
         parsed.append(facts)
-        if facts.dual_manifest is not None:
+        if facts.dual_manifest is not None or facts.drft_manifest is not None:
             return MIXED
         return mixed_precision(model) or get_tensor_fp_datatype(model)
 

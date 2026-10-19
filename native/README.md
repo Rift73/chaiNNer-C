@@ -113,6 +113,7 @@ since v0.3.2), for reference:
 | `_chainner_graph.pyd` | `4e0f27b75e495c395dd1163a8f89dba4b30d6e28ba5108b74e7ec0708c073105` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 | `vosr2_qkv.dll` | `5b5cde9c2c037f0ed3d48ce0fe59b3ff01432c610edc358fdb7b0155e5b93497` |
+| `drft_trt_plugins.dll` | `fe92b59b26641856c218cf0e237a418e9f0d66021df9d27f159ab1619e17cae9` |
 | `_chainner_trt.pyd` | `7d0f774c3426fb2900f05493ef5650f90aa66a997bb000d12c9c71f3cb05d947` |
 | `chainner_trt_vs.dll` | `f7d12717a7cbd02a09ea34728de92a1421ff0902acb73705107b095741b09a9c` |
 
@@ -127,6 +128,18 @@ compute_120 PTX, `/W4 /WX` on the host side and `-Werror all-warnings`. `qkv_plu
 and lld-link with the flags above (TensorRT's and CUDA's headers as system headers). The DLL imports only
 `nvinfer_11.dll` (CUDA 13's `cudart.lib` is the static runtime) and is reproducible like the others. Its hash is part
 of the VOSR TensorRT engine caches' identity, so a new DLL rebuilds those engines once.
+
+**Legacy DRFT's TensorRT plugins** `drft_trt_plugins.dll` (`src/drft`, Codex's LegacyBarrierV1 library: OCAB
+attention, relative bias and Q/K/V packing, the window neural bias, the identity barrier and the output tail) build
+from the same two roots into `CHAINNER_C_OUTPUT_DIR\tensorrt` (default `backend/src/nodes/impl/tensorrt`). DRFT
+engines reference its plugins without carrying the DLL (TensorRT refuses a second registration of a carried library
+in one process); chaiNNer-C registers it once per process before loading engines, and users need no compiler. Its four
+`.cu` files are compiled by nvcc as `qkv.cu` is, with two differences: nvcc's default device math (contraction on,
+IEEE division and square root), the numerics Codex measured, and host warnings at `/W4` but not fatal, since nvcc's
+generated stubs of kernels in anonymous namespaces raise C4211 and the output-tail plugin, the one on TensorRT's
+deprecated `IPluginV2DynamicExt`, raises EDG's #997. `DrftAliasedIdentityBarrierPlugin.cpp` and the link use clang-cl
+with `/W4 /WX`. The DLL imports only `KERNEL32.dll` and is reproducible like the others;
+`native/tests/test_drft_plugins.py` checks its six creators.
 
 **The TensorRT runner** (`trt_runner`, the C++ engine runner) builds from the same two roots: `_chainner_trt.pyd`
 (the Python module) and, when `CHAINNER_C_VAPOURSYNTH_INCLUDE` names the directory of VapourSynth's `VapourSynth4.h`,

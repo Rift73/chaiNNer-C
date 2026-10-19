@@ -261,11 +261,12 @@ endforeach()
 set(chainner_c_tensorrt_major 11)
 set(chainner_c_cuda_major 13)
 set(CHAINNER_C_TENSORRT_ROOT "" CACHE PATH
-    "TensorRT ${chainner_c_tensorrt_major} SDK root (include, lib) for vosr2_qkv.dll and the TensorRT runner; empty: not built")
+    "TensorRT ${chainner_c_tensorrt_major} SDK root (include, lib) for vosr2_qkv.dll, drft_trt_plugins.dll and the TensorRT runner; empty: not built")
 set(CHAINNER_C_CUDA_ROOT "" CACHE PATH
-    "CUDA ${chainner_c_cuda_major} toolkit root (bin/nvcc.exe, include, lib/x64) for vosr2_qkv.dll and the TensorRT runner; empty: not built")
+    "CUDA ${chainner_c_cuda_major} toolkit root (bin/nvcc.exe, include, lib/x64) for vosr2_qkv.dll, drft_trt_plugins.dll and the TensorRT runner; empty: not built")
 if(NOT CHAINNER_C_TENSORRT_ROOT AND NOT CHAINNER_C_CUDA_ROOT)
-    message(STATUS "VOSR TensorRT plugin (vosr2_qkv.dll) and TensorRT runner (trt_runner) skipped: set "
+    message(STATUS "VOSR and DRFT TensorRT plugins (vosr2_qkv.dll, drft_trt_plugins.dll) and TensorRT runner "
+        "(trt_runner) skipped: set "
         "CHAINNER_C_TENSORRT_ROOT and CHAINNER_C_CUDA_ROOT to build them")
     return()
 endif()
@@ -345,6 +346,54 @@ if(CHAINNER_C_PDB)
     target_compile_options(vosr2_qkv PRIVATE /Zi)
     target_link_options(vosr2_qkv PRIVATE /DEBUG /OPT:REF /OPT:ICF
         "/MAP:${CHAINNER_C_OUTPUT_DIR}/pytorch/vosr2_qkv.map")
+endif()
+
+# drft_trt_plugins.dll: the TensorRT plugins of legacy DRFT's engines (src/drft, Codex's
+# LegacyBarrierV1 library, compile definitions as his), from the same two roots, beside the DRFT
+# loader in nodes/impl/tensorrt. Engines embed it, so it is never loaded to run one. The four .cu
+# files (kernels and their plugin classes) are compiled by nvcc as qkv.cu is, except two points:
+# - device math: nvcc's defaults (contraction on, IEEE division and square root), the numerics
+#   Codex measured;
+# - /W4 without /WX or -Werror: two warning classes remain, C4211 in nvcc's generated stubs of
+#   Codex's kernels in anonymous namespaces, and EDG's #997 on DrftFinalAffineCrop_TRT, the one
+#   plugin on TensorRT's deprecated IPluginV2DynamicExt (its legacy overloads are private there).
+# DrftAliasedIdentityBarrierPlugin.cpp and the link use clang-cl and lld-link with /W4 /WX.
+set(chainner_c_drft_definitions -DDRFT_ENABLE_OCAB_QKV_PACK_PLUGIN=1
+    -DDRFT_ENABLE_OCAB_QKV_PACK_TOKEN_MAJOR=1 -DDRFT_ENABLE_RELATIVE_BIAS_FP32=1
+    -DDRFT_ENABLE_IDENTITY_BARRIER_PLUGIN=1 -DDRFT_ENABLE_FINAL_AFFINE_CROP_PLUGIN=1
+    -DDRFT_ENABLE_WINDOW_NEURAL_BIAS_PLUGIN=1 -DNOMINMAX -DWIN32_LEAN_AND_MEAN)
+set(chainner_c_drft_objects "")
+foreach(chainner_c_drft_source DrftOCABAttentionSafePlugin DrftOCABQKVPackPlugin
+        DrftFinalAffineCropPlugin DrftWindowNeuralBiasPlugin)
+    set(chainner_c_drft_object "${CMAKE_CURRENT_BINARY_DIR}/drft_${chainner_c_drft_source}.obj")
+    add_custom_command(OUTPUT "${chainner_c_drft_object}"
+        COMMAND "${CMAKE_COMMAND}" -E env "INCLUDE=${chainner_c_nvcc_include}"
+            "${chainner_c_nvcc}" -c "${CMAKE_CURRENT_SOURCE_DIR}/src/drft/${chainner_c_drft_source}.cu"
+            -o "${chainner_c_drft_object}" -ccbin "${chainner_c_nvcc_host}" -O3 -std=c++17
+            "-I${CHAINNER_C_TENSORRT_ROOT}/include" ${chainner_c_drft_definitions}
+            -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_86,code=sm_86
+            -gencode=arch=compute_89,code=sm_89 "-gencode=arch=compute_120,code=[sm_120,compute_120]"
+            --fmad=true --prec-div=true --prec-sqrt=true
+            -Xcompiler "$<IF:$<CONFIG:Debug>,/MTd,/MT>,/W4,/EHsc,/Zc:preprocessor,/fp:strict,/Brepro"
+        DEPENDS "src/drft/${chainner_c_drft_source}.cu"
+        COMMENT "Compiling src/drft/${chainner_c_drft_source}.cu with nvcc"
+        VERBATIM)
+    list(APPEND chainner_c_drft_objects "${chainner_c_drft_object}")
+endforeach()
+set_source_files_properties(${chainner_c_drft_objects} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+add_library(drft_trt_plugins MODULE src/drft/DrftAliasedIdentityBarrierPlugin.cpp ${chainner_c_drft_objects})
+target_include_directories(drft_trt_plugins SYSTEM PRIVATE
+    "${CHAINNER_C_TENSORRT_ROOT}/include" "${CHAINNER_C_CUDA_ROOT}/include")
+target_compile_definitions(drft_trt_plugins PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_link_libraries(drft_trt_plugins PRIVATE "${chainner_c_nvinfer_library}" "${chainner_c_cudart_library}")
+set_target_properties(drft_trt_plugins PROPERTIES PREFIX "" SUFFIX ".dll"
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO
+    LIBRARY_OUTPUT_DIRECTORY "${CHAINNER_C_OUTPUT_DIR}/tensorrt")
+target_compile_options(drft_trt_plugins PRIVATE /W4 /WX /EHsc)
+if(CHAINNER_C_PDB)
+    target_compile_options(drft_trt_plugins PRIVATE /Zi)
+    target_link_options(drft_trt_plugins PRIVATE /DEBUG /OPT:REF /OPT:ICF
+        "/MAP:${CHAINNER_C_OUTPUT_DIR}/tensorrt/drft_trt_plugins.map")
 endif()
 
 # The TensorRT runner (trt_runner/CMakeLists.txt), from the same two roots.

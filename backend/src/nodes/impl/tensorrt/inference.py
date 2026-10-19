@@ -109,7 +109,7 @@ class TensorRTSession:
             self._out = _IoDtype(cuda_engine.get_tensor_dtype(self.output_name))
 
             mins, _, maxs = cuda_engine.get_tensor_profile_shape(self.input_name, 0)
-            # A dynamic DUAL engine's input names the multiple its sizes must be.
+            # A DUAL or DRFT engine's input names the multiple its sizes must be.
             alignment = input_alignment(self.input_name) or TILE_ALIGNMENT
             self.bounds = ShapeBounds(mins[2], mins[3], maxs[2], maxs[3], alignment)
 

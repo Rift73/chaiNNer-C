@@ -8,6 +8,7 @@ import tensorrt as trt
 from cuda.bindings import runtime as cudart
 from sanic.log import logger
 
+from .drft import load_plugins
 from .dual import input_alignment
 from .memory import check_cuda, get_cuda_compute_capability
 from .model import DeserializedEngine, TensorRTEngineInfo
@@ -23,6 +24,7 @@ def deserialize_engine(engine_bytes: bytes, gpu_index: int) -> DeserializedEngin
     """Deserialize an engine on a GPU, kept together with its runtime."""
     check_cuda(cudart.cudaSetDevice(gpu_index))
     trt.init_libnvinfer_plugins(TRT_LOGGER, "")
+    load_plugins()
     runtime = trt.Runtime(TRT_LOGGER)
     engine = runtime.deserialize_cuda_engine(engine_bytes)
     if engine is None:
@@ -77,7 +79,7 @@ def read_engine_info(loaded: DeserializedEngine) -> TensorRTEngineInfo:
 
     input_dtype = engine.get_tensor_dtype(input_name)
     precision: Literal["fp32", "fp16", "bf16", "mixed"] = "fp32"
-    if input_alignment(input_name) is not None:  # DUAL's (dual.ALIGNMENT)
+    if input_alignment(input_name) is not None:  # DUAL's or DRFT's
         precision = "mixed"
     elif input_dtype == trt.DataType.HALF:
         precision = "fp16"

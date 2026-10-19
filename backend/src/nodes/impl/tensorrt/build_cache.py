@@ -3,7 +3,7 @@
 
 An engine is keyed by the SHA-256 of everything its build reads: the ONNX model's
 bytes, every build setting, the GPU's name and compute capability, the TensorRT
-version and, for a DUAL engine, its plugins' code; and by FORMAT_VERSION, the version
+version and, for a DUAL or DRFT engine, its plugins' code; and by FORMAT_VERSION, the version
 of the record a file holds (a record of another version is never read). Up to
 MEMORY_ENGINES engines and `memory_budget()` bytes are kept in memory, the least
 recently used dropped first; an engine above the budget is not kept. With the TensorRT "Engine Cache" setting on, they
@@ -35,7 +35,7 @@ import psutil
 from sanic.log import logger
 
 from ..onnx.model import OnnxModel
-from . import dual
+from . import drft, dual
 from .model import TensorRTEngine, TensorRTEngineInfo
 
 MEMORY_ENGINES = 4
@@ -49,6 +49,11 @@ _DUAL_PLUGIN_SOURCES = (
     Path(__file__).with_name("dual_dynamic_kernels.py"),
     Path(__file__).with_name("dual_engine_worker.py"),
     dual.VENDOR / "scripts" / "dual_tensorrt" / "kernels.py",
+)
+# What a DRFT engine's build runs besides TensorRT (drft.build_engine's worker)
+_DRFT_PLUGIN_SOURCES = (
+    drft.PLUGIN_LIBRARY,
+    Path(__file__).with_name("drft_engine_worker.py"),
 )
 
 
@@ -82,6 +87,18 @@ def dual_plugin_identity() -> str:
     return digest.hexdigest()
 
 
+@cache
+def drft_plugin_identity() -> str:
+    """The SHA-256 of DRFT's plugin library and the worker that builds with it."""
+    digest = hashlib.sha256()
+    for source in _DRFT_PLUGIN_SOURCES:
+        # A build without the library fails (drft.plugin_library), so no engine is
+        # kept under the identity of a missing one.
+        if source.is_file():
+            digest.update(source.read_bytes())
+    return digest.hexdigest()
+
+
 def engine_key(
     model: OnnxModel,
     settings: tuple[object, ...],
@@ -91,7 +108,8 @@ def engine_key(
     plugins: str | None,
 ) -> str:
     """The key of an engine of `model` built with `settings` (every build input) on a
-    GPU, by a TensorRT version, with DUAL's `plugins` identity (None otherwise)."""
+    GPU, by a TensorRT version, with DUAL's or DRFT's `plugins` identity (None
+    otherwise)."""
     digest = hashlib.sha256(_onnx_digest(model))
     digest.update(
         repr(

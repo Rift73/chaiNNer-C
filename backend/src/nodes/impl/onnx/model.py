@@ -45,8 +45,8 @@ class SizeReq:
         return w - width, h - height
 
 
-# The dtype of a DUAL ONNX from Convert To ONNX (BF16 body, FP32 input and output), the
-# one ONNX whose precision is mixed (load.py).
+# The dtype of a DUAL or legacy DRFT ONNX from Convert To ONNX (BF16 body, FP32 input and
+# output), whose precision is its own (load.py).
 MIXED = "mixed"
 
 

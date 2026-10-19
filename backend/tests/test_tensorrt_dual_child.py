@@ -98,7 +98,7 @@ def test_the_childs_output_and_failure_come_back(tmp_path: Path):
         "import sys; sys.stdout.write('o' * (1 << 20)); sys.stdout.flush(); "
         "sys.stderr.write('tail-marker'); sys.exit(3)"
     )
-    with pytest.raises(RuntimeError, match=r"DUAL stub failed \(exit 3\)") as error:
-        dual.run_child(["-c", failing], "stub", tmp_path)
+    with pytest.raises(RuntimeError, match=r"^DUAL stub failed \(exit 3\)") as error:
+        dual.run_child(["-c", failing], "DUAL stub", tmp_path)
     assert str(error.value).endswith("tail-marker")
     assert dual.run_child(["-c", "print('fine')"], "stub", tmp_path).strip() == "fine"

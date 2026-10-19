@@ -109,6 +109,7 @@ __pycache__/
 backend/src/nodes/impl/chainner_native.dll
 backend/src/nodes/impl/pytorch/vosr2_qkv.dll
 backend/src/nodes/impl/tensorrt/chainner_trt_vs.dll
+backend/src/nodes/impl/tensorrt/drft_trt_plugins.dll
 backend/src/nodes/impl/chainner_native.dylib
 
 # Distribution / packaging

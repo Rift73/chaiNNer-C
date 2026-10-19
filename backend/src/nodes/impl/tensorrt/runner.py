@@ -27,6 +27,7 @@ from sanic.log import logger
 from api import NodeId
 
 from .cache import SharedCache
+from .drft import load_plugins
 from .model import TensorRTEngine
 
 RUNNER_VARIABLE = "CHAINNER_C_TRT_RUNNER"
@@ -72,11 +73,13 @@ def runner_plugin() -> Path | None:
 
 
 def load_tensorrt() -> None:
-    """Loads TensorRT's DLLs (tensorrt_libs), which the runner's delay-loaded imports find."""
+    """Loads TensorRT's DLLs (tensorrt_libs), which the runner's delay-loaded imports find,
+    and registers the DRFT plugins (drft.load_plugins) for the engines the runner loads."""
     import tensorrt
 
     if not tensorrt.__version__.startswith("11."):
         raise RuntimeError("The TensorRT runner requires TensorRT 11.")
+    load_plugins()
 
 
 @lru_cache(maxsize=1)

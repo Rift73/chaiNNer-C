@@ -10,9 +10,10 @@ from api import NodeContext
 from nodes.groups import Condition, if_enum_group, if_group
 from nodes.impl.onnx.load import model_facts
 from nodes.impl.onnx.model import OnnxModel
-from nodes.impl.tensorrt import dual
+from nodes.impl.tensorrt import drft, dual
 from nodes.impl.tensorrt.build_cache import (
     cached_engine,
+    drft_plugin_identity,
     dual_plugin_identity,
     engine_key,
 )
@@ -97,6 +98,7 @@ if utility_group is not None:
             "The built engine is optimized specifically for your GPU and TensorRT version.",
             "It is recommended to save the built engine for reuse, as building is slow.",
             "A DUAL ONNX from Convert To ONNX builds in its own mixed precision (BF16 body, FP32 input and output) with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Precision does not apply and is hidden; Workspace, Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do. Upscale Image replays DUAL engines from a CUDA graph per input size.",
+            "A legacy DRFT ONNX from Convert To ONNX also builds in its own mixed precision, with chaiNNer-C's DRFT TensorRT plugins (chaiNNer-C loads them with the engine; another program needs the plugin library too). Its sizes, Fixed or Dynamic, must be multiples of the ONNX's alignment and at least its minimum size on each side (Build Engine says which if not). Precision does not apply; Workspace (0: TensorRT's default), Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do.",
         ],
         icon="BsNvidia",
         inputs=[
@@ -266,13 +268,27 @@ if utility_group is not None:
             min_height = opt_height = max_height = static_height
             min_width = opt_width = max_width = static_width
 
-        manifest = model_facts(onnx_model).dual_manifest
-        if manifest is not None:
-            profile = (
-                (min_height, min_width),
-                (opt_height, opt_width),
-                (max_height, max_width),
+        facts = model_facts(onnx_model)
+        profile = (
+            (min_height, min_width),
+            (opt_height, opt_width),
+            (max_height, max_width),
+        )
+        if facts.drft_manifest is not None:
+            return build_drft_engine(
+                context,
+                onnx_model,
+                facts.drft_manifest,
+                settings,
+                profile,
+                workspace_gib=workspace,
+                optimization_level=optimization_level,
+                tf32=allow_tf32,
+                sparse_weights=sparse_weights,
+                tiling_optimization=tiling_optimization.value,
             )
+        manifest = facts.dual_manifest
+        if manifest is not None:
             return build_dual_engine(
                 context,
                 onnx_model,
@@ -429,5 +445,90 @@ def build_dual_engine(
         (major, minor),
         trt.__version__,
         dual_plugin_identity(),
+    )
+    return cached_engine(key, build, settings.engine_cache_path)
+
+
+def build_drft_engine(
+    context: NodeContext,
+    onnx_model: OnnxModel,
+    manifest: dict,
+    settings: TensorRTSettings,
+    profile: tuple[tuple[int, int], tuple[int, int], tuple[int, int]],
+    *,
+    workspace_gib: float,
+    optimization_level: int,
+    tf32: bool,
+    sparse_weights: bool,
+    tiling_optimization: str,
+) -> TensorRTEngine:
+    """Legacy DRFT's engine with chaiNNer-C's DRFT plugins (registered at load), in the
+    ONNX's mixed precision. The node's shape inputs are its (height, width) profile,
+    fixed or dynamic; its precision input does not apply; its workspace (0: TensorRT's
+    default), TF32, sparsity, optimization level and tiling optimization do."""
+    major, minor = get_cuda_compute_capability(settings.gpu_index)
+    drft.check_profile(manifest, *profile)
+    low, high = profile[0], profile[2]
+    min_shape, opt_shape, max_shape = ((1, 3, h, w) for h, w in profile)
+    info = TensorRTEngineInfo(
+        precision="mixed",
+        input_channels=3,
+        output_channels=3,
+        scale=manifest["scale"],
+        gpu_architecture=f"sm_{major}{minor}",
+        tensorrt_version=trt.__version__,
+        has_dynamic_shapes=min_shape != max_shape,
+        min_shape=min_shape,
+        opt_shape=opt_shape,
+        max_shape=max_shape,
+    )
+
+    def build() -> TensorRTEngine:
+        logger.info(
+            "Building a DRFT engine (x%d, window %d, %dx%d to %dx%d, SM %d%d):"
+            " workspace=%s, tf32=%s, sparse=%s, level=%d, tiling=%s",
+            manifest["scale"],
+            manifest["window_size"],
+            low[1],
+            low[0],
+            high[1],
+            high[0],
+            major,
+            minor,
+            f"{workspace_gib:g}GiB" if workspace_gib > 0 else "automatic",
+            tf32,
+            sparse_weights,
+            optimization_level,
+            tiling_optimization,
+        )
+        engine_bytes = drft.build_engine(
+            onnx_model.bytes,
+            manifest,
+            settings.gpu_index,
+            profile,
+            workspace_gib=workspace_gib,
+            optimization_level=optimization_level,
+            tf32=tf32,
+            sparse_weights=sparse_weights,
+            tiling_optimization=tiling_optimization,
+            context=context,
+        )
+        return TensorRTEngine(engine_bytes, info)
+
+    key = engine_key(
+        onnx_model,
+        (
+            "drft",
+            profile,
+            workspace_gib,
+            optimization_level,
+            tf32,
+            sparse_weights,
+            tiling_optimization,
+        ),
+        get_cuda_device_name(settings.gpu_index),
+        (major, minor),
+        trt.__version__,
+        drft_plugin_identity(),
     )
     return cached_engine(key, build, settings.engine_cache_path)

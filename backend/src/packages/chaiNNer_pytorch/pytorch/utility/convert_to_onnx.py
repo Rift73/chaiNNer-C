@@ -22,7 +22,7 @@ from nodes.impl.pytorch.convert_to_onnx_impl import (
     export_onnx,
     is_onnx_supported,
 )
-from nodes.impl.tensorrt import dual
+from nodes.impl.tensorrt import drft_export, dual
 from nodes.properties.inputs import (
     BoolInput,
     EnumInput,
@@ -156,6 +156,12 @@ NOT_DUAL = Condition.type(
                 "With PyTorch's FP16 setting on, Load Model keeps a model in FP16; FP32 and"
                 " the mixed types read its file again for its FP32 weights (if the file"
                 " changed since, they export the FP16 weights, and the log says so).",
+                "A legacy DRFT model (LayerNorm, not i-LN) converts to a TensorRT-only"
+                " ONNX with chaiNNer-C's DRFT TensorRT plugins instead, which ONNX Runtime"
+                " cannot run: its precision is fixed and mixed (BF16 body, FP16 upsampler,"
+                " FP32 input and output), its opset is 20, it takes every input size from"
+                " 64 px (twice the window for larger windows), and Data Type, Opset and"
+                " Verify do not apply to it.",
                 hint=True,
             ),
             EnumInput(
@@ -297,6 +303,19 @@ def convert_to_onnx_node(
             context=context,
         )
         onnx_model = load_onnx_model(onnx_bytes)
+        assert onnx_model.sub_type == "Generic"
+        result = onnx_model, MIXED, "opset20"
+        _keep_export(model, key, _Export(result, verified=False))
+        return result
+
+    if drft_export.is_legacy_drft(model):
+        key = ("DRFT", model.dtype)
+        kept = _kept_export(model, key)
+        if kept is not None:
+            return kept.result
+        onnx_model = load_onnx_model(
+            drft_export.export_onnx(full_precision_source(model, "Convert To ONNX"))
+        )
         assert onnx_model.sub_type == "Generic"
         result = onnx_model, MIXED, "opset20"
         _keep_export(model, key, _Export(result, verified=False))

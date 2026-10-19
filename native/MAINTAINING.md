@@ -77,6 +77,11 @@ Checklists for the changes that touch the exactness contract, the build or the p
    `CMakeLists.txt`. After a change there (an SDK bump, a GPU architecture, an nvcc flag), build it twice from clean
    directories (same hash), load it (`import tensorrt`, then `ctypes.CDLL`), record its hash and SDK versions in the
    README table and run `native/tests/test_vosr2_trt_rewrite.py`. A new DLL rebuilds the VOSR TensorRT engines once.
+   The same exception covers legacy DRFT's plugin library `drft_trt_plugins.dll`: nvcc compiles the four `.cu` files
+   of `src/drft` (Codex's kernels and plugin classes) the same way, with nvcc's default device math (Codex's
+   numerics) and host warnings not fatal (README); the same checks apply, with `native/tests/test_drft_plugins.py`.
+   Engines reference its plugins without carrying the DLL (an engine carrying it registers it at every load, and
+   TensorRT refuses a second registration in a process); `drft.load_plugins` registers it once per process.
 
 ## 5. Any UI change
 

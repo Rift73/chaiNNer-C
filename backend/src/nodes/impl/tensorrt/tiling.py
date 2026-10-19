@@ -33,7 +33,7 @@ TILE_OVERLAP = 16
 @dataclass(frozen=True)
 class ShapeBounds:
     """The input height/width range of an engine's optimization profile, and the
-    multiple its input sizes must be (a DUAL dynamic engine names it; others 64)."""
+    multiple its input sizes must be (a DUAL or DRFT engine names it; others 64)."""
 
     min_h: int
     min_w: int

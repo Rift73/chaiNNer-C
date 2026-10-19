@@ -44,7 +44,8 @@ METADATA_KEY = "chainner_c.dual_tensorrt.export"
 # DUAL engine's input is named for it (aligned_input_name; a fixed size is a multiple of
 # it too): the name marks the engine as DUAL's, in mixed precision, when it is loaded
 # again, and Upscale Image's tiler pads to it instead of its default 64 px; Build
-# Engine's profile must keep to it.
+# Engine's profile must keep to it. DRFT's engines take the same name for their ONNX's
+# alignment (drft_engine_worker.py).
 ALIGNMENT = 4
 ALIGNED_INPUT = "input_aligned_"
 
@@ -78,8 +79,9 @@ def run_child(
     *,
     cpu_only: bool = False,
 ) -> str:
-    """Run this Python in a child process; its output, or an error with the output's
-    end.
+    """Run this Python in a child process; its output, or an error that starts with
+    `label` (e.g. "DUAL export") and ends with the output's end. DRFT's engine build
+    (drft.py) runs here too.
 
     The child ends with the call on any exit: Stop (context.check_aborted(), polled
     while it runs) or an error kills it, and on Windows it runs in a kill-on-close job,
@@ -130,9 +132,7 @@ def run_child(
         if process is not None:
             process.wait(timeout=20)
     if returncode != 0:
-        raise RuntimeError(
-            f"DUAL {label} failed (exit {returncode}):\n{output[-3000:]}"
-        )
+        raise RuntimeError(f"{label} failed (exit {returncode}):\n{output[-3000:]}")
     return output
 
 
@@ -175,7 +175,7 @@ def export_onnx(
                 "--folded",
                 f"--output={export}",
             ],
-            "export",
+            "DUAL export",
             VENDOR,
             context,
             cpu_only=True,
@@ -276,7 +276,7 @@ def build_engine(
                 *settings,
                 *sizes,
             ],
-            "engine build",
+            "DUAL engine build",
             SOURCE,
             context,
         )

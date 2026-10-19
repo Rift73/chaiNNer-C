@@ -19,6 +19,7 @@ from spandrel import ImageModelDescriptor, ModelDescriptor, ModelLoader
 from spandrel.architectures.Compact import Compact
 from spandrel.architectures.DAT import DAT
 from spandrel.architectures.DAT.__arch.DAT import Adaptive_Spatial_Attention
+from spandrel.architectures.DRFT.__arch import legacy_drft_arch as legacy
 from spandrel.architectures.DUAL.__arch.dual_arch import dual_xs
 from spandrel.architectures.ESRGAN import ESRGAN
 from spandrel.architectures.HAT import HAT
@@ -577,6 +578,49 @@ def test_a_dual_model_loaded_in_fp16_exports_its_fp32_weights(
     assert isinstance(half, ImageModelDescriptor) and half.dtype == torch.float16
     assert isinstance(full, ImageModelDescriptor)
     convert(half)
+    (state,) = states
+    expected = full.model.state_dict()
+    assert state.keys() == expected.keys()
+    assert all(
+        state[k].dtype == v.dtype and torch.equal(state[k], v)
+        for k, v in expected.items()
+    )
+
+
+def tiny_legacy_drft() -> torch.nn.Module:
+    """A small random legacy DRFT x2 with LayerNorm (DRFT's TensorRT route)."""
+    return legacy.DRFT(
+        embed_dim=48,
+        depths=(6, 6),
+        num_heads=(6, 6),
+        window_size=16,
+        overlap_ratio=0.5,
+        upscale=2,
+        num_feat=16,
+        rank=8,
+        drop_path_rate=0.0,
+    )
+
+
+def test_a_legacy_drft_loaded_in_fp16_exports_its_fp32_weights_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    states: list[dict[str, torch.Tensor]] = []
+    onnx_bytes = convert_to_onnx_impl(tiny_model("Compact"), torch.device("cpu"))
+
+    def export(model: ImageModelDescriptor) -> bytes:
+        states.append(model.model.state_dict())
+        return onnx_bytes
+
+    monkeypatch.setattr(convert_to_onnx.drft_export, "export_onnx", export)
+    path = model_file(tmp_path, tiny_legacy_drft)
+    half = load_model(path, FP16)
+    full = load_model(path, FP32)
+    assert isinstance(half, ImageModelDescriptor) and half.dtype == torch.float16
+    assert isinstance(full, ImageModelDescriptor)
+    first = convert(half)
+    assert first[1:] == ("mixed", "opset20")
+    assert convert(half)[0] is first[0]
     (state,) = states
     expected = full.model.state_dict()
     assert state.keys() == expected.keys()

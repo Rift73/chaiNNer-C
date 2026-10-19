@@ -391,6 +391,25 @@ def test_the_shipped_dual_plugin_sources_are_read():
     assert len(build_cache.dual_plugin_identity()) == 64
 
 
+def test_the_drft_plugin_identity_follows_the_library_and_its_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    library, worker = tmp_path / "drft_trt_plugins.dll", tmp_path / "worker.py"
+    library.write_bytes(b"one")
+    worker.write_bytes(b"one")
+    monkeypatch.setattr(build_cache, "_DRFT_PLUGIN_SOURCES", (library, worker))
+    identities: list[str] = []
+    try:
+        for change in (None, library, worker):
+            if change is not None:
+                change.write_bytes(b"two")
+            build_cache.drft_plugin_identity.cache_clear()
+            identities.append(build_cache.drft_plugin_identity())
+    finally:
+        build_cache.drft_plugin_identity.cache_clear()
+    assert len(set(identities)) == 3
+
+
 def test_another_record_format_is_another_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
