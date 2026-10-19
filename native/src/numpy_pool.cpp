@@ -49,9 +49,16 @@
  * with no lock and no atomic. Without profiling every counter stays 0 but the idle
  * bytes, which the cap needs, and the VirtualFree failures.
  *
+ * Engine. cn_numpy_pool_allocate and cn_numpy_pool_free (numpy_pool.hpp) serve the run
+ * engine's image storage from the same pool, without the GIL: at or above the threshold
+ * through pool_allocate once an install has configured the pool (the release-ordered
+ * flag below), else a 64-byte-aligned heap block; a free is routed by the table lookup,
+ * as the handler's is.
+ *
  * Windows only (VirtualAlloc, SRW lock, QueryWorkingSetEx), as parallel.c and scratch.c
  * are. NumPy's headers are included in this unit only, without PY_ARRAY_UNIQUE_SYMBOL,
  * so the C API table stays private to it. */
+#include "numpy_pool.hpp"
 #include <pybind11/pybind11.h>
 #include <pybind11/gil_safe_call_once.h>
 #define NPY_NO_DEPRECATED_API NPY_1_22_API_VERSION
@@ -74,6 +81,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#include <malloc.h>
 #include <psapi.h>
 
 namespace py = pybind11;
@@ -111,6 +119,7 @@ struct Config {
 };
 Config config;
 const PyDataMemAllocator *base = nullptr;  // NumPy's default handler
+std::atomic<bool> configured{false};       // config holds the installed pool's settings
 
 struct Block {
     char *data;
@@ -509,23 +518,24 @@ void *handler_realloc(void *, void *ptr, size_t new_size)
     return data;
 }
 
+/* Retires ptr when it is a live pool block; false when the pool does not own it. */
+bool pool_free(void *ptr)
+{
+    if (!pool_aligned(ptr)) return false;
+    Block *released;
+    {
+        Locked held;
+        Block *block = live_find(ptr);
+        if (!block) return false;
+        released = retire(block);
+    }
+    release(released);
+    return true;
+}
+
 void handler_free(void *, void *ptr, size_t size)
 {
-    if (pool_aligned(ptr)) {
-        Block *released = nullptr;
-        bool pooled;
-        {
-            Locked held;
-            Block *block = live_find(ptr);
-            pooled = block != nullptr;
-            if (pooled) released = retire(block);
-        }
-        if (pooled) {
-            release(released);
-            return;
-        }
-    }
-    base->free(base->ctx, ptr, size);
+    if (!pool_free(ptr)) base->free(base->ctx, ptr, size);
 }
 
 template <bool profiled>
@@ -621,6 +631,7 @@ Setup configure()
     // No Python call from here on: a thread that reads the settings holds the GIL.
     config = Config{cap, profile, system.dwPageSize, system.dwAllocationGranularity};
     base = &defaults->allocator;
+    configured.store(true, std::memory_order_release);
     return {"installed", py::str(), std::move(capsule)};
 }
 
@@ -760,6 +771,20 @@ py::list idle_blocks()
 }
 
 }  // namespace
+
+void *cn_numpy_pool_allocate(size_t size) noexcept
+{
+    if (size >= threshold && configured.load(std::memory_order_acquire)) {
+        if (config.profile) count(size, op_malloc);
+        return pool_allocate(size, op_malloc);
+    }
+    return _aligned_malloc(size ? size : 1, 64);
+}
+
+void cn_numpy_pool_free(void *data) noexcept
+{
+    if (data && !pool_free(data)) _aligned_free(data);
+}
 
 void cn_bind_numpy_pool(py::module_ &module)
 {

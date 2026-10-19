@@ -1,6 +1,7 @@
 /* Channel assembly and image layout kernels. SPDX-License-Identifier: GPL-3.0-only */
 #include "chainner.h"
 #include "parallel.h"
+#include "run_kernels.h"
 
 #include <limits.h>
 #include <stdlib.h>

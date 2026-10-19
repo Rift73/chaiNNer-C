@@ -2,6 +2,7 @@
 #include "convert_shared.h"
 #include "isa.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include <math.h>
 #include <string.h>
 #ifdef _MSC_VER
