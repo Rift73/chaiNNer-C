@@ -277,6 +277,19 @@ def test_colors_round_trip(value):
     assert type(out) is Color and out.value == value
 
 
+def test_colors_keep_their_int_channels():
+    # Color's _norm keeps an int at the bounds: Color.gray(0).value == (0,); the channel types cross unchanged.
+    for color in (Color.gray(0), Color((0, 0.5, 1)), Color((0.25, 1, 0.0))):
+        out = through(color)
+        assert type(out) is Color and out.value == color.value
+        assert [type(c) for c in out.value] == [type(c) for c in color.value]
+
+
+def test_colors_with_other_channel_types_stay_themselves():
+    for color in (Color((True, 0.5)), Color((2**60, 0.5))):
+        assert through(color) is color
+
+
 @pytest.mark.parametrize("value", [0, -1, 42, 2**32, 2**63 - 1, -(2**63)])
 def test_seeds_in_int64_cross_as_seeds(value):
     out = through(Seed(value))

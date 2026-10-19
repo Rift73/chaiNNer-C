@@ -217,6 +217,7 @@ if(CHAINNER_C_PDB)
         "/MAP:${CHAINNER_C_OUTPUT_DIR}/_chainner_graph.map")
 endif()
 include(cmake/run_engine.cmake)
+include(cmake/codecs.cmake)
 
 # chainner_ext.pyd: the drop-in for chainner_ext 0.3.10 (docs/superpowers/specs/
 # 2026-10-06-chainner-ext-c-design.md). Limited API 3.11 against the runtime's python3.lib,

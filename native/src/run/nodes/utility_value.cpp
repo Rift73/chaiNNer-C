@@ -87,10 +87,12 @@ private:
     int64_t start_, count_, next_ = 0;
 };
 
-/* chainner:utility:range (utility/value/range.py, execution_ops.cpp range_node). Python's integers are unbounded;
- * bounds whose arithmetic leaves int64 raise OverflowError here (a range of 2^63 items never completes anyway). */
+/* chainner:utility:range (utility/value/range.py, execution_ops.cpp range_node). Python's integers are unbounded:
+ * a bound, or an item, beyond int64 declines to the body. */
 std::unique_ptr<ItemSource> range(NodeContext &, std::span<const Value> inputs, std::vector<Value> &)
 {
+    // A bound beyond int64 (a Python int): the body's arbitrary-precision range.
+    if (!std::holds_alternative<int64_t>(inputs[0]) || !std::holds_alternative<int64_t>(inputs[2])) throw RunPython{};
     __int128 start = std::get<int64_t>(inputs[0]);
     __int128 end = std::get<int64_t>(inputs[2]);
     if (!std::get<bool>(inputs[1])) start += 1;
@@ -98,8 +100,7 @@ std::unique_ptr<ItemSource> range(NodeContext &, std::span<const Value> inputs, 
     __int128 count = end - start;
     if (count < 0) throw NodeError("AssertionError", "");
     constexpr __int128 low = INT64_MIN, high = INT64_MAX;
-    if (start < low || start > high || count > high || start + count - 1 > high)
-        throw NodeError("OverflowError", "Range bounds exceed the native 64-bit integer range");
+    if (start < low || start > high || count > high || start + count - 1 > high) throw RunPython{};
     return std::make_unique<RangeItems>(int64_t(start), int64_t(count));
 }
 

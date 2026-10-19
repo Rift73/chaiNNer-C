@@ -1,5 +1,6 @@
 /* The run engine's internal interface (native/src/run): image storage, the registry of native entry points and the
- * Python boundary's value conversion. Native node entry points include run_engine.hpp only. */
+ * Python boundary's value conversion. Native node entry points include run_engine.hpp (and nodes/dispatch.hpp, the
+ * one nodes file that calls Python, for the bridges' cached dispatch facts), never this header. */
 #pragma once
 
 #include "run_engine.hpp"
@@ -42,8 +43,11 @@ struct Entry {
 const std::map<std::string, Entry, std::less<>> &entries();
 const Entry *find_entry(std::string_view schema_id);
 
-/* A Python object as a PyRef (a new reference, dropped with the GIL when the last copy dies). */
+/* A Python object as a PyRef (a new reference). The last copy dropped on a thread holding the GIL releases it; on
+ * any other thread it waits for release_deferred. */
 PyRef py_ref(pybind11::handle object);
+/* Releases the references dropped without the GIL (GIL held). */
+void release_deferred();
 
 /* How a NumPy array becomes an Image.
  * - Enforced: a value that has passed the input's enforce (float32): borrowed when it is C-contiguous and aligned,

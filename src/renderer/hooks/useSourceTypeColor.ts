@@ -1,7 +1,7 @@
 import { NeverType } from '@chainner/navi';
 import { useMemo } from 'react';
 import { Node, useReactFlow } from 'reactflow';
-import { useContext } from 'use-context-selector';
+import { useContext, useContextSelector } from 'use-context-selector';
 import { NodeData } from '../../common/common-types';
 import { parseSourceHandle } from '../../common/util';
 import { BackendContext } from '../contexts/BackendContext';
@@ -10,7 +10,8 @@ import { useTypeColor } from './useTypeColor';
 
 export const useSourceTypeColors = (targetHandle: string) => {
     const { functionDefinitions } = useContext(BackendContext);
-    const { edgeChanges, typeState } = useContext(GlobalVolatileContext);
+    const edgeChanges = useContextSelector(GlobalVolatileContext, (c) => c.edgeChanges);
+    const typeState = useContextSelector(GlobalVolatileContext, (c) => c.typeState);
     const { getEdges, getNode } = useReactFlow();
 
     const sourceHandle = useMemo(() => {

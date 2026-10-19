@@ -66,6 +66,12 @@ class VideoFormat(Enum):
         return self.value
 
     @property
+    def muxer(self) -> str:
+        """FFmpeg's muxer for the extension, as FFmpeg picks it from a file name: Save Video
+        writes a temporary file ending in .tmp, so it names the muxer."""
+        return "matroska" if self == VideoFormat.MKV else self.value
+
+    @property
     def encoders(self) -> tuple[VideoEncoder, ...]:
         return graph().video_container_encoders(globals(), self)
 
@@ -196,6 +202,12 @@ def rgb_payload(img: np.ndarray) -> np.ndarray:
     )
 
 
+def atomic_target(path: str) -> Any:
+    """A temporary file in path's folder, renamed onto path by commit()
+    (native/include/atomic_file.hpp): Save Video's FFmpeg output and audio mux."""
+    return graph().AtomicTarget(path)
+
+
 def planar_format(colour: ColourInfo) -> str:
     """The planar pixel format of planes coded as `colour` says (4:4:4, 4:2:2 or 4:2:0
     YUV, or RGB for the identity matrix)."""
@@ -217,6 +229,9 @@ class Writer:
     output_params: dict[str, str | float]
     global_params: list[str]
     ffmpeg_env: FFMpegEnv
+    # The temporary file in save_path's folder that FFmpeg writes (output_params' filename),
+    # renamed onto save_path at a successful close and deleted on Stop or a failure.
+    target: Any
     out: Popen | None = None
     # Save Video's colour settings; None writes RGB as without them (Auto, 8-bit).
     settings: WriteSettings | None = None

@@ -37,7 +37,8 @@ correct and only the speedup is lost.
 
 Prerequisites: LLVM 23.1.2 (`clang-cl`, `lld-link`, `llvm-lib`, `llvm-rc`); Visual Studio 2022 Build Tools with the
 MSVC toolset 14.44.35207 and the Windows SDK 10.0.26100.0 (no Developer environment needed); CMake 3.20 or newer on
-`PATH`; Ninja (by default the Build Tools' copy); Node.js with npm. Optional: a TensorRT 11 SDK and a CUDA 13 toolkit,
+`PATH`; Ninja (by default the Build Tools' copy); NASM 3.01 on `PATH` (libjpeg-turbo's SIMD; or
+`-Define CHAINNER_C_NASM=<nasm.exe>`); Node.js with npm. Optional: a TensorRT 11 SDK and a CUDA 13 toolkit,
 which build VOSR's TensorRT plugin `vosr2_qkv.dll` when step 3 adds
 `-Define CHAINNER_C_TENSORRT_ROOT=<SDK>,CHAINNER_C_CUDA_ROOT=<toolkit>` (README Build); without it VOSR runs on
 PyTorch only. Run every command from the repository root in PowerShell.
@@ -83,7 +84,9 @@ llvm-lib, baseline x86-64 code with per-file AVX2 and AVX-512 targets for the IS
 `/fp:strict`, and `/W4 /WX` for first-party code. Configuration refuses any other clang-cl, MSVC toolset or Windows
 SDK version. The tool locations are CMake cache entries set on a build directory's first configure (for example
 `-Define 'chainner_c_llvm=<LLVM 23.1.2>/bin'`; also `chainner_c_vc_tools`, `chainner_c_sdk`,
-`chainner_c_sdk_version`), and `-Ninja <path to ninja.exe>` selects another Ninja.
+`chainner_c_sdk_version`), and `-Ninja <path to ninja.exe>` selects another Ninja. The image codecs
+(`native/cmake/codecs.cmake`: libjpeg-turbo, zlib, libpng, libwebp, libtiff at today's Pillow and OpenCV versions)
+build from vendored sources in `native/third_party` with the same options; NASM 3.01 assembles libjpeg-turbo's SIMD.
 
 `-Define CHAINNER_C_MARCH=<cpu>` (for example `native` for the building machine's own CPU, or `icelake-server`) adds
 `-march` to every target, for builds that stay on that machine, never for releases. The hot kernels already pick AVX2

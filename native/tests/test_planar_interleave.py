@@ -1,6 +1,8 @@
-"""cn_planar_to_interleaved_f32, the upscaling backends' output conversion: at every
-level this CPU has, (C, H, W) float16 or float32 planes become NumPy's float32
-(H, W, C) image bit for bit, NaN payloads and subnormals included."""
+"""cn_planar_to_interleaved_f32, the upscaling backends' output conversion (with its
+red/blue swap and finiteness report), and cn_planes_to_interleaved_f32, Load Video's
+and Clip Frames': at every level this CPU has, float16 or float32 planes (one
+(C, H, W) buffer, or separate planes in any order) become NumPy's float32 (H, W, C)
+image bit for bit, NaN payloads and subnormals included."""
 
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ from nodes.impl.native_framework_images import (
     _api,
     planar_to_interleaved,
     planar_to_interleaved_checked,
+    planes_to_interleaved,
 )
 
 ROWS, WIDTH, STRIDE = 64, 1027, 1040  # 1027 % 8 == 3: every row has a scalar tail
@@ -139,3 +142,71 @@ def test_finiteness_is_reported_from_every_sample(levels, channels: int, dtype):
                 assert (
                     _bits(image).tobytes() == _bits(_expected(damaged, False)).tobytes()
                 )
+
+
+# Each channel count's plane order: Load Video's G, B and R planes taken as B, G, R.
+ORDERS = {1: (0,), 3: (1, 0, 2), 4: (2, 0, 3, 1)}
+
+
+def _separate_planes(rng: np.random.Generator, channels: int, dtype: type) -> list:
+    """Planes in buffers of their own, each with its own row stride and offset."""
+    bits = np.uint16 if dtype is np.float16 else np.uint32
+    planes = []
+    for k in range(channels):
+        raw = rng.integers(0, np.iinfo(bits).max + 1, (ROWS, WIDTH + 8 * k + 5))
+        planes.append(raw.astype(bits).view(dtype)[:, k : k + WIDTH])
+    return planes
+
+
+@pytest.mark.parametrize("channels", [1, 3, 4])
+@pytest.mark.parametrize("dtype", [np.float16, np.float32], ids=["half", "float"])
+def test_separate_planes_convert_as_numpy_in_their_order(
+    levels, channels: int, dtype: type
+):
+    rng = np.random.default_rng(20 + channels)
+    planes = _separate_planes(rng, channels, dtype)
+    ordered = [planes[k] for k in ORDERS[channels]]
+    expected = _bits(np.stack(ordered, axis=2).astype(np.float32))
+    for level in levels:
+        assert isa_set(level) == level
+        np.testing.assert_array_equal(
+            _bits(planes_to_interleaved(ordered)), expected, err_msg=str(level)
+        )
+
+
+def test_one_buffers_planes_in_another_order(levels):
+    # Clip Frames: vspipe's G, B, R planes of one (3, H, W) buffer as a BGR image.
+    rng = np.random.default_rng(30)
+    raw = rng.integers(0, 2**32, (3, ROWS, WIDTH), dtype=np.uint64)
+    planes = raw.astype(np.uint32).view(np.float32)
+    expected = _bits(np.stack((planes[1], planes[0], planes[2]), axis=2))
+    for level in levels:
+        assert isa_set(level) == level
+        image = planes_to_interleaved((planes[1], planes[0], planes[2]))
+        np.testing.assert_array_equal(_bits(image), expected, err_msg=str(level))
+
+
+def test_separate_planes_refused_as_one_buffer_is():
+    buffer = np.zeros(4096, np.float32)
+    convert = _api().cn_planes_to_interleaved_f32
+    base = buffer.ctypes.data
+
+    def call(pointers, strides, out, width=8):
+        planes = (ct.c_void_p * 3)(*pointers)
+        rows = (ct.c_size_t * 3)(*strides)
+        return convert(planes, rows, 0, 8, width, 3, out)
+
+    planes, strides = [base, base + 256, base + 512], [8, 8, 8]
+    assert call(planes, strides, base + 8192) == 0
+    assert call(planes, strides, base + 512 + 4) != 0  # inside the last plane
+    assert call([base, None, base + 512], strides, base + 8192) != 0
+    assert call([base, base + 258, base + 512], strides, base + 8192) != 0
+    assert call(planes, strides, base + 8192 + 2) != 0
+    assert call(planes, [8, 7, 8], base + 8192) != 0  # width > a row stride
+    assert convert(None, (ct.c_size_t * 3)(8, 8, 8), 0, 8, 8, 3, base + 8192) != 0
+    with pytest.raises(ValueError, match="rows of contiguous samples"):
+        planes_to_interleaved([np.zeros((4, 4), np.float32)[:, ::2]] * 3)
+    with pytest.raises(ValueError, match="one shape and dtype"):
+        planes_to_interleaved(
+            [np.zeros((4, 4), np.float32), np.zeros((4, 5), np.float32)]
+        )

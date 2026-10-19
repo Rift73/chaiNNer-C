@@ -5,6 +5,7 @@
  */
 #include "graph_python.hpp"
 #include "graph_exception.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <numbers>
@@ -108,9 +109,39 @@ bool quarter_turn(const O&stream) {
 bool high_definition(const O&width,const O&height) {
     return cmp(width,py::int_(1280),Py_GE) || cmp(height,py::int_(576),Py_GT);
 }
+// ffmpeg.probe(path, cmd=ffprobe, **options), kept for the file's version: a file is
+// previewed and read many times, and each probe runs ffprobe (25-45 ms). The key is the
+// file's version (resource_cache.py file_identity's fields: absolute path, device, index,
+// size, modification and change times), the ffprobe and the options; the 64 newest are
+// kept. A file that cannot be stat'ed is probed every time and a failed probe is not
+// kept. Each call returns its own copy, which the caller may change.
+O probe_file(const py::dict&g,const O&path,const O&ffprobe,const py::dict&options) {
+    py::dict arguments;
+    arguments["cmd"]=ffprobe;
+    for(auto item:options)arguments[item.first]=item.second;
+    O os=global(g,"os"),key=py::none();
+    try {
+        O info=os.attr("stat")(path);
+        key=py::make_tuple(os.attr("path").attr("abspath")(path),info.attr("st_dev"),info.attr("st_ino"),
+            info.attr("st_size"),info.attr("st_mtime_ns"),info.attr("st_ctime_ns"),ffprobe,
+            builtin("tuple")(builtin("sorted")(options.attr("items")())));
+    } catch(const py::error_already_set&e) {
+        if(!e.matches(PyExc_OSError))throw;
+    }
+    PYBIND11_CONSTINIT static py::gil_safe_call_once_and_store<py::dict> storage;
+    py::dict&probes=storage.call_once_and_store_result([]{return py::dict();}).get_stored();
+    O deepcopy=py::module_::import("copy").attr("deepcopy");
+    if(!key.is_none() && probes.contains(key))return deepcopy(probes[key]);
+    O probe=call(global(g,"ffmpeg").attr("probe"),py::make_tuple(path),arguments);
+    if(!key.is_none()) {
+        if(py::len(probes)>=64)probes.attr("pop")(builtin("next")(builtin("iter")(probes)));
+        probes[key]=deepcopy(probe);
+    }
+    return probe;
+}
 // VideoMetadata from ffprobe; `video` receives the video stream's probe entry.
 O probe_metadata(const py::dict&g,const O&path,const O&env,O&video) {
-    O probe = global(g,"ffmpeg").attr("probe")(path, py::arg("cmd")=env.attr("ffprobe"));
+    O probe=probe_file(g,path,env.attr("ffprobe"),py::dict());
     O format=probe.attr("get")("format",py::none());
     if(format.is_none())fail(PyExc_RuntimeError,"Failed to get video format. Please report.");
     video=py::none();
@@ -370,15 +401,23 @@ struct EncoderLog {
 class WriterResource {
 public:
     O process=py::none();
+    // The writer's temporary file (Writer.target): Stop deletes it, never another file.
+    O target=py::none();
     EncoderLog log;
     bool completed=false;
     bool aborted=false;
     void abort() {
         if(completed || aborted)return;
         aborted=true;
-        if(process.is_none())return;
-        O p=process; process=py::none();
-        abort_writer(p);
+        // The encoder holds the temporary file open, so it ends first.
+        O t=target; target=py::none();
+        try {
+            if(!process.is_none()) {O p=process; process=py::none(); abort_writer(p);}
+        } catch(...) {
+            if(!t.is_none())t.attr("abandon")();
+            throw;
+        }
+        if(!t.is_none())t.attr("abandon")();
     }
     ~WriterResource() {
         if(!Py_IsInitialized())return;
@@ -415,6 +454,7 @@ void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
         stream=call(output,py::tuple(),params).attr("overwrite_output")();
         O global_args=stream.attr("global_args");
         stream=call(global_args,star_arguments(global_args,self.attr("global_params")));
+        resource(self)->target=self.attr("target");
         O process=stream.attr("run_async")(py::arg("pipe_stdin")=true,py::arg("pipe_stdout")=false,
             py::arg("pipe_stderr")=true,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffmpeg"));
         auto state=resource(self);state->process=process;state->completed=false;
@@ -521,7 +561,8 @@ py::list audio_streams(const py::dict&g,const O&self) {
     return streams;
 }
 py::dict audio_options(const py::dict&g,const O&self,const O&settings) {
-    py::dict p=dict({{"vcodec",py::str("copy")},{"acodec",py::str("copy")}});
+    // The mux writes a temporary file too, whose .tmp name picks no muxer.
+    py::dict p=dict({{"vcodec",py::str("copy")},{"acodec",py::str("copy")},{"format",self.attr("container").attr("muxer")}});
     if(eq(self.attr("container"),member(g,"VideoFormat","WEBM"))) {
         if(graphpy::contains(py::make_tuple(member(g,"AudioSettings","TRANSCODE"),member(g,"AudioSettings","AUTO")),settings)) {
             // libopus takes at most 256 kb/s per channel, so min(320k, 256k x channels) for
@@ -538,35 +579,27 @@ py::dict audio_options(const py::dict&g,const O&self,const O&settings) {
     p["loglevel"]="error"; // FFmpeg's stderr is then its error alone, which a failed mux reports.
     return p;
 }
-void mux_audio(const py::dict&g,const O&self) {
+// The target holding the finished video: the writer's own, or the audio mux's.
+O mux_audio(const py::dict&g,const O&self) {
     // chaiNNer's own FFmpeg muxes the audio after the video (upstream chaiNNer v0.25.1).
     // Auto copies the audio and, when the container cannot hold the copy, transcodes it
     // as Transcode does. Audio the mux cannot carry fails the run instead of leaving a
     // silent video (upstream chaiNNer #3331); a source without audio has none to carry.
-    if(self.attr("audio").is_none())return;
+    O target=self.attr("target");
+    if(self.attr("audio").is_none())return target;
     O container=self.attr("container");
     py::dict params=audio_options(g,self,self.attr("audio_settings")); // A WebM Copy raises before the mux.
     bool transcode_on_failure=eq(self.attr("audio_settings"),member(g,"AudioSettings","AUTO")) && eq(params["acodec"],py::str("copy"));
     O path=self.attr("save_path"),os=global(g,"os"),ffmpeg=global(g,"ffmpeg"),logger=global(g,"logger");
-    if(!truth(os.attr("path").attr("exists")(path))) {logger.attr("error")(fmt("Video file not found at {}",path));return;}
-    O parts=os.attr("path").attr("splitext")(path);
-    O av=py::str("{}_av{}").attr("format")(parts[py::int_(0)],parts[py::int_(1)]);
-    auto discard=[&]() {
-        // A failed mux can leave FFmpeg's empty or partial output behind.
-        if(!truth(os.attr("path").attr("exists")(av)))return;
-        try {os.attr("remove")(av);}
-        catch(const py::error_already_set&cleanup) {
-            if(!cleanup.matches(PyExc_Exception))throw;
-            GraphHandledException cleanup_handled(cleanup);
-            logger.attr("warning")(fmt("Failed to cleanup temporary file: {}",builtin("str")(cleanup.value())));
-        }
-    };
+    if(!truth(os.attr("path").attr("exists")(target.attr("temp")))) {logger.attr("error")(fmt("Video file not found at {}",path));return target;}
+    // The mux writes a second temporary file of the same path, which replaces the video at the commit.
+    O av=global(g,"atomic_target")(path);
     try {
         logger.attr("debug")(fmt("Attempting to process audio from: {}",self.attr("audio")));
-        O video=ffmpeg.attr("input")(builtin("str")(path));
+        O video=ffmpeg.attr("input")(target.attr("temp"));
         bool muxed=false;
         for(;;) {
-            O output=call(ffmpeg.attr("output"),py::make_tuple(video,self.attr("audio"),builtin("str")(av)),params).attr("overwrite_output")();
+            O output=call(ffmpeg.attr("output"),py::make_tuple(video,self.attr("audio"),av.attr("temp")),params).attr("overwrite_output")();
             try {ffmpeg.attr("run")(output,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffmpeg"),py::arg("capture_stdout")=true,py::arg("capture_stderr")=true);muxed=true;break;}
             catch(const py::error_already_set&e) {
                 if(!e.matches(ffmpeg.attr("Error").ptr()))throw;
@@ -590,34 +623,44 @@ void mux_audio(const py::dict&g,const O&self) {
             }
             params=audio_options(g,self,member(g,"AudioSettings","TRANSCODE"));transcode_on_failure=false;
         }
-        if(!muxed)discard();
-        else if(truth(os.attr("path").attr("exists")(av)))os.attr("replace")(av,path); // Atomic: the video survives a failure.
-        else graphpy::raise(PyExc_RuntimeError,fmt("Expected output file not created: {}",av));
+        if(!muxed) {av.attr("abandon")();return target;}
+        if(truth(os.attr("path").attr("exists")(av.attr("temp")))) {target.attr("abandon")();return av;}
+        graphpy::raise(PyExc_RuntimeError,fmt("Expected output file not created: {}",av.attr("temp")));
     } catch(const py::error_already_set&e) {
-        if(!e.matches(PyExc_Exception))throw;
         GraphHandledException handled(e);
-        discard();
+        av.attr("abandon")(); // A failed mux can leave FFmpeg's empty or partial output behind.
         throw;
     }
 }
 void writer_close(const py::dict&g,const O&self) {
     auto state=resource(self);
     if(state->completed || state->aborted)return; // Completion/mux occurs once; abort never commits.
-    if(!self.attr("out").is_none()) {
-        if(!self.attr("out").attr("stdin").is_none()) {
-            // Closing flushes the last buffered frames into the pipe.
-            try {self.attr("out").attr("stdin").attr("close")();}
-            catch(const py::error_already_set&e) {raise_if_encoder_stopped(self,e);throw;}
+    O target=self.attr("target");
+    try {
+        if(!self.attr("out").is_none()) {
+            if(!self.attr("out").attr("stdin").is_none()) {
+                // Closing flushes the last buffered frames into the pipe.
+                try {self.attr("out").attr("stdin").attr("close")();}
+                catch(const py::error_already_set&e) {raise_if_encoder_stopped(self,e);throw;}
+            }
+            // A non-zero exit fails the run before the audio mux, where upstream leaves it
+            // unchecked (owner-approved 2026-10-09). After a zero exit, anything FFmpeg
+            // printed is logged.
+            O code=self.attr("out").attr("wait")();
+            if(!eq(code,py::int_(0)))fail(PyExc_RuntimeError,encoder_stopped(self,code).c_str());
+            O message=state->log.text();
+            if(truth(message))global(g,"logger").attr("warning")(fmt("FFmpeg: {}",message));
         }
-        // A non-zero exit fails the run before the audio mux, where upstream leaves it
-        // unchecked (owner-approved 2026-10-09); the file FFmpeg wrote stays. After a
-        // zero exit, anything FFmpeg printed is logged.
-        O code=self.attr("out").attr("wait")();
-        if(!eq(code,py::int_(0)))fail(PyExc_RuntimeError,encoder_stopped(self,code).c_str());
-        O message=state->log.text();
-        if(truth(message))global(g,"logger").attr("warning")(fmt("FFmpeg: {}",message));
+        // The finished video replaces the file at the path at once (a writer given no frame has none).
+        O finished=mux_audio(g,self);
+        if(truth(global(g,"os").attr("path").attr("exists")(finished.attr("temp"))))finished.attr("commit")();
+    } catch(const py::error_already_set&e) {
+        // A failure deletes the temporary file, never the file at the path; one FFmpeg still
+        // holds open goes when the chain's cleanup ends FFmpeg.
+        GraphHandledException handled(e);
+        target.attr("abandon")();
+        throw;
     }
-    mux_audio(g,self);
     state->completed=true;
 }
 
@@ -632,7 +675,10 @@ O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O
     O filename=py::str("{}.{}").attr("format")(name,container.attr("ext"));
     O path=div(directory,filename).attr("resolve")();
     path.attr("parent").attr("mkdir")(py::arg("parents")=true,py::arg("exist_ok")=true);
-    py::dict params=dict({{"filename",builtin("str")(path)},{"pix_fmt",py::str("yuv420p")},{"r",fps},{"movflags",py::str("faststart")}});
+    // FFmpeg writes a temporary file in the folder, renamed onto the path at a successful close;
+    // its .tmp name picks no muxer, so the extension's is named.
+    O target=global(g,"atomic_target")(builtin("str")(path));
+    py::dict params=dict({{"filename",target.attr("temp")},{"format",container.attr("muxer")},{"pix_fmt",py::str("yuv420p")},{"r",fps},{"movflags",py::str("faststart")}});
     if(graphpy::contains(container.attr("encoders"),encoder)) {
         params["vcodec"]=encoder.attr("value");
         O allowed=global(g,"PARAMETERS")[encoder];
@@ -661,7 +707,7 @@ O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O
         py::arg("audio")=audio,py::arg("audio_settings")=audio_settings,py::arg("save_path")=builtin("str")(path),
         py::arg("output_params")=params,py::arg("global_params")=globals,
         py::arg("ffmpeg_env")=global(g,"FFMpegEnv").attr("get_integrated")(context.attr("storage_dir")),
-        py::arg("settings")=settings);
+        py::arg("target")=target,py::arg("settings")=settings);
     auto state=resource(writer);
     context.attr("add_cleanup")(py::cpp_function([state](){state->abort();}));
     O iterate=py::cpp_function([writer](const O&frame){writer.attr("write_frame")(frame);});
@@ -733,11 +779,28 @@ public:
             if(!started_)start();
             // D8 (SP4c): the frame is read into a fresh NumPy buffer, which the NumPy pool
             // serves. BufferedReader.readinto fills it as read(size) did: it reads until
-            // the frame is full or the pipe ends.
+            // the frame is full or the pipe ends. It is read in slices of at most 1 MiB:
+            // a Windows pipe read asked for a whole large frame costs several times more
+            // per byte (a 4K float frame, 100 MB: 454 against 68 ms). Each slice is
+            // filled the same way, so a short slice is the end of the pipe.
             O np=global(globals_,"np");
             O size=format_.is_none()?mul(mul(width_,height_),py::int_(3)):O(format_.attr("frame_bytes"));
             O buffer=np.attr("empty")(size,np.attr("uint8"));
-            O count=process_.attr("stdout").attr("readinto")(buffer);
+            Py_ssize_t read=0;
+            {
+                O readinto=process_.attr("stdout").attr("readinto");
+                O view=own(PyMemoryView_FromObject(buffer.ptr()));
+                const Py_ssize_t total=size.cast<Py_ssize_t>();
+                constexpr Py_ssize_t slice_bytes=Py_ssize_t(1)<<20;
+                Py_ssize_t wanted=0,got=0;
+                do {
+                    wanted=std::min(total-read,slice_bytes);
+                    O count=readinto(view[py::slice(read,read+wanted,1)]);
+                    got=count.is_none()?0:count.cast<Py_ssize_t>();
+                    read+=got;
+                } while(got==wanted && read<total);
+            }
+            O count=py::int_(read);
             if(!truth(count)) {
                 global(globals_,"logger").attr("debug")("Can't receive frame (stream end?). Exiting ...");
                 finish();throw py::stop_iteration();
@@ -850,6 +913,7 @@ void cn_bind_video_io(pybind11::module_&m) {
         .def("__iter__",[](const std::shared_ptr<IndexedFrames>&s){return s;})
         .def("__next__",&IndexedFrames::next).def("close",&IndexedFrames::close);
     m.def("video_metadata",&metadata);m.def("video_loader_init",&loader_init);m.def("video_audio_stream",&audio_stream);
+    m.def("video_probe",[](const py::dict&g,const O&path,const O&ffprobe,const py::kwargs&options){return probe_file(g,path,ffprobe,options);});
     m.def("video_stream_frames",[](const py::dict&g,const O&loader,const O&format){return std::make_shared<FrameIterator>(g,loader,format);},
         py::arg("globals"),py::arg("loader"),py::arg("format")=py::none());
     m.def("video_container_encoders",&container_encoders);m.def("video_encoder_formats",&encoder_formats);

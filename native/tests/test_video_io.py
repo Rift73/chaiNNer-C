@@ -38,7 +38,9 @@ import pytest
 
 from nodes.impl import colour_info
 from nodes.impl.image_utils import to_uint8, to_uint16
+from nodes.impl.native_framework_images import planes_to_interleaved
 from nodes.impl.native_graph import graph
+from nodes.impl.pytorch.resource_cache import file_identity
 from nodes.utils.utils import get_h_w_c, split_file_path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -207,6 +209,7 @@ class FakeFFmpeg:
         self.suppress = False
         # A real owned Popen for run_async to return instead of a FakeProcess.
         self.process_override: subprocess.Popen[bytes] | None = None
+        self.targets = 0
 
     def record(self, name, *args):
         self.events.append((name, *(snap(a) for a in args)))
@@ -228,6 +231,26 @@ class FakeFFmpeg:
 
     def run(self, *args, **kwargs):
         self.record("run", args, kwargs)
+
+
+class FakeTarget:
+    """Save Video's temporary file with the fakes (m): named after its path and a count,
+    its commit and abandon recorded."""
+
+    def __init__(self, env, path):
+        self.env, self.temp = env, f"{path}.{env.targets}.tmp"
+        env.targets += 1
+
+    def commit(self):
+        self.env.record("commit", self.temp)
+        return True
+
+    def abandon(self):
+        self.env.record("abandon", self.temp)
+
+
+def real_target(path):
+    return graph().AtomicTarget(path)
 
 
 def valid_probe() -> dict[str, Any]:
@@ -275,7 +298,9 @@ class Context:
 # after a failure) saves the video without it; (g) os.replace swaps the files
 # atomically, so a failed swap keeps the video; (h) each Opus stream gets min(320k,
 # 256k x channels), libopus's per-channel ceiling, so mono into WebM works
-# (owner-approved).
+# (owner-approved). (m) Atomic writes (instant-exec A4): FFmpeg and the mux each write a
+# temporary file of the path (atomic_target, the muxer named as the extension picks it);
+# a successful close commits the finished one, a failure or Stop abandons them.
 INTENDED_MUX = (
     """        if self.audio is not None:
             video_path = self.save_path
@@ -361,7 +386,11 @@ INTENDED_MUX = (
                 return [s for s in probe["streams"] if s.get("codec_type") == "audio"]
 
             def options(settings):
-                params = {"vcodec": "copy", "acodec": "copy"}
+                params = {
+                    "vcodec": "copy",
+                    "acodec": "copy",
+                    "format": self.container.muxer,  # (m)
+                }
                 if self.container == VideoFormat.WEBM:
                     if settings in (AudioSettings.TRANSCODE, AudioSettings.AUTO):
                         params["acodec"] = "libopus"
@@ -383,29 +412,18 @@ INTENDED_MUX = (
                 and output_params["acodec"] == "copy"
             )
             video_path = self.save_path
-            if not os.path.exists(video_path):
+            if not os.path.exists(self.target.temp):  # (m)
                 logger.error(f"Video file not found at {video_path}")
-                return
+                return self.target
 
-            base, ext = os.path.splitext(video_path)
-            audio_video_path = f"{base}_av{ext}"
-
-            def discard():  # (d)
-                if os.path.exists(audio_video_path):
-                    try:
-                        os.remove(audio_video_path)
-                    except Exception as cleanup_error:
-                        logger.warning(
-                            f"Failed to cleanup temporary file: {cleanup_error!s}"
-                        )
-
+            av = atomic_target(video_path)  # (m)
             try:
                 logger.debug(f"Attempting to process audio from: {self.audio}")
-                video_stream = ffmpeg.input(str(video_path))
+                video_stream = ffmpeg.input(self.target.temp)
                 muxed = False
                 while True:
                     output_video = ffmpeg.output(
-                        video_stream, self.audio, str(audio_video_path), **output_params
+                        video_stream, self.audio, av.temp, **output_params
                     ).overwrite_output()
                     try:
                         ffmpeg.run(
@@ -451,16 +469,16 @@ INTENDED_MUX = (
                     output_params = options(AudioSettings.TRANSCODE)
                     transcode_on_failure = False
                 if not muxed:
-                    discard()
-                elif os.path.exists(audio_video_path):
-                    os.replace(audio_video_path, video_path)  # (g)
-                else:
-                    raise RuntimeError(
-                        f"Expected output file not created: {audio_video_path}"
-                    )
-            except Exception:
-                discard()
+                    av.abandon()  # (d)
+                    return self.target
+                if os.path.exists(av.temp):  # (g), (m)
+                    self.target.abandon()
+                    return av
+                raise RuntimeError(f"Expected output file not created: {av.temp}")
+            except BaseException:
+                av.abandon()  # (d)
                 raise
+        return self.target  # (m)
 """,
 )
 
@@ -674,6 +692,69 @@ class Writer:
 ]
 
 
+# (m) Atomic writes outside the mux: the Writer's target, the node creating it, and close()
+# committing the finished video or abandoning the target on a failure.
+INTENDED_ATOMIC = [
+    (
+        """    def ext(self) -> str:
+        return self.value
+""",
+        """    def ext(self) -> str:
+        return self.value
+
+    @property
+    def muxer(self) -> str:
+        return "matroska" if self == VideoFormat.MKV else self.value
+""",
+    ),
+    (
+        """    ffmpeg_env: FFMpegEnv
+    out: Popen | None = None
+""",
+        """    ffmpeg_env: FFMpegEnv
+    target: Any
+    out: Popen | None = None
+""",
+    ),
+    (
+        """    def close(self):
+""",
+        """    def close(self):
+        try:
+            finished = self._close()
+            if os.path.exists(finished.temp):
+                finished.commit()
+        except BaseException:
+            self.target.abandon()
+            raise
+
+    def _close(self):
+""",
+    ),
+    (
+        """    save_path.parent.mkdir(parents=True, exist_ok=True)
+""",
+        """    save_path.parent.mkdir(parents=True, exist_ok=True)
+    target = atomic_target(str(save_path))
+""",
+    ),
+    (
+        """        "filename": str(save_path),
+""",
+        """        "filename": target.temp,
+        "format": container.muxer,
+""",
+    ),
+    (
+        """        ffmpeg_env=FFMpegEnv.get_integrated(node_context.storage_dir),
+""",
+        """        ffmpeg_env=FFMpegEnv.get_integrated(node_context.storage_dir),
+        target=target,
+""",
+    ),
+]
+
+
 COLOUR_NAMES = (
     "MATRIX_LABELS SWSCALE_CHROMA_POSITION VIDEO_MODE_LABELS ChromaLocation ColourInfo"
     " Matrix PixelLayout Primaries Range Transfer VideoMode code_to_float"
@@ -773,8 +854,11 @@ def load(kind, component, env=None):
         }
     )
     if kind.startswith("native"):
-        # The names this repository's video modules import from colour_info.py.
+        # The names this repository's video modules import from colour_info.py, and
+        # video.py's file_identity and planes_to_interleaved.
         g.update({name: getattr(colour_info, name) for name in COLOUR_NAMES})
+        g["file_identity"] = file_identity
+        g["planes_to_interleaved"] = planes_to_interleaved
     text = path.read_text(encoding="utf-8")
     if kind == "intended" and component == "save_video":
         for frozen, corrected in [
@@ -782,6 +866,7 @@ def load(kind, component, env=None):
             *INTENDED_COLOURS,
             *INTENDED_ENCODER_ERRORS,
             *INTENDED_RGB16,
+            *INTENDED_ATOMIC,
         ]:
             assert text.count(frozen) == 1
             text = text.replace(frozen, corrected)
@@ -812,6 +897,8 @@ def load(kind, component, env=None):
         ),
         g,
     )
+    # The fakes write no file, so Save Video's temporary files are fakes too (m).
+    g["atomic_target"] = lambda path: FakeTarget(env, path)
     return g
 
 
@@ -824,19 +911,27 @@ def writer(
     audio_settings="AUTO",
     out=None,
 ):
+    save_path = "owned/video." + container.lower()
+    # The temporary file of the installed writer's own output file (m).
+    target = (
+        {"target": g["atomic_target"](save_path)}
+        if "target" in g["Writer"].__dataclass_fields__
+        else {}
+    )
     return g["Writer"](
         container=g["VideoFormat"][container],
         encoder=None if encoder is None else g["VideoEncoder"][encoder],
         fps=30,
         audio=audio,
         audio_settings=g["AudioSettings"][audio_settings],
-        save_path="owned/video." + container.lower(),
+        save_path=save_path,
         output_params={"filename": "owned/video.mkv", "vcodec": "ffv1"},
         global_params=["-nostdin"],
         ffmpeg_env=types.SimpleNamespace(
             ffmpeg="integrated-ffmpeg", ffprobe="integrated-ffprobe"
         ),
         out=out,
+        **target,
     )
 
 
@@ -1106,6 +1201,53 @@ def test_frame_is_a_read_only_view_with_todays_flags():
     assert frame.base.flags.owndata
 
 
+def test_probes_are_kept_per_file_version_ffprobe_and_options(tmp_path):
+    # ffprobe runs once per file version (path, size, times), ffprobe and options: a
+    # file previewed and read again is not probed again until it changes. Each call
+    # gets its own copy; a file that cannot be stat'ed and a failed probe are not kept.
+    path = tmp_path / "clip.mkv"
+    path.write_bytes(b"video")
+    env = FakeFFmpeg()
+    g = load("native", "video", env)
+    ffprobe = str(tmp_path / "ffprobe.exe")
+    tools = types.SimpleNamespace(ffmpeg="f", ffprobe=ffprobe)
+
+    def probes():
+        return sum(e[0] == "probe" for e in env.events)
+
+    first = g["VideoMetadata"].from_file(path, tools)
+    loader = g["VideoLoader"](path, tools)
+    assert probes() == 1 and loader.metadata == first
+    assert env.events[0] == ("probe", (str(path),), (("cmd", ffprobe),))
+    loader.video_stream["width"] = 999  # the caller's own copy
+    assert g["VideoMetadata"].from_file(path, tools) == first and probes() == 1
+    # The first frame's probe (HDR10 metadata) is kept as well, apart.
+    frame = {"select_streams": "v:0", "read_intervals": "%+#1", "show_frames": None}
+    video_probe = graph().video_probe
+    assert video_probe(g, str(path), ffprobe, **frame) == valid_probe()
+    assert video_probe(g, str(path), ffprobe, **frame) == valid_probe()
+    assert probes() == 2
+    assert env.events[-1] == ("probe", (str(path),), snap({"cmd": ffprobe, **frame}))
+    # Another ffprobe, a changed file, a missing file and a failed probe probe again.
+    g["VideoMetadata"].from_file(path, types.SimpleNamespace(ffmpeg="f", ffprobe="p"))
+    assert probes() == 3
+    info = path.stat()
+    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+    g["VideoMetadata"].from_file(path, tools)
+    g["VideoMetadata"].from_file(path, tools)
+    assert probes() == 4
+    for _ in range(2):
+        g["VideoMetadata"].from_file(tmp_path / "missing.mkv", tools)
+    assert probes() == 6
+    path.write_bytes(b"other video")
+    env.failures["probe"] = OSError("ffprobe failed")
+    with pytest.raises(OSError, match="ffprobe failed"):
+        g["VideoMetadata"].from_file(path, tools)
+    env.failures.clear()
+    g["VideoMetadata"].from_file(path, tools)
+    assert probes() == 8
+
+
 @pytest.mark.parametrize("short", [b"1", b"123456", bytes(11)])
 def test_short_read_raises_todays_error(short):
     env = FakeFFmpeg(chunks=[short])
@@ -1140,14 +1282,15 @@ def test_end_of_stream_stops_as_today():
 
 
 class CountingRaw(io.FileIO):
-    """A pipe's raw reader that records what each raw read returned."""
+    """A pipe's raw reader that records what each raw read asked for and returned."""
 
     def __init__(self, fd):
         super().__init__(fd, "rb")
-        self.counts = []
+        self.requests, self.counts = [], []
         self.returned = threading.Event()
 
     def readinto(self, buffer):
+        self.requests.append(memoryview(buffer).nbytes)
         count = super().readinto(buffer)
         self.counts.append(count)
         self.returned.set()
@@ -1212,6 +1355,60 @@ def test_frames_from_a_pipe_written_in_parts_arrive_whole():
     assert reader.closed
 
 
+def test_large_frames_are_read_in_slices_of_at_most_1_mib():
+    # A Windows pipe read asked for a whole large frame is several times slower per
+    # byte, so a frame is read in slices of at most 1 MiB, each filled as the whole
+    # frame was. Frames of 1.6 MiB (two slices) arrive whole, and the pipe ending
+    # inside a third frame's second slice gives today's error for the bytes read.
+    width, height = 1024, 560
+    size = width * height * 3
+    data = np.random.default_rng(1).bytes(2 * size + size * 3 // 4)
+    frames, tail = [data[:size], data[size : 2 * size]], data[2 * size :]
+    read_fd, write_fd = os.pipe()
+    raw = CountingRaw(read_fd)
+    reader = io.BufferedReader(raw)
+
+    def write():
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(write_fd, view[: 1 << 16]) :]
+        finally:
+            os.close(write_fd)
+
+    probe = {
+        "format": {"duration": "1"},
+        "streams": [
+            {
+                "codec_type": "video",
+                "width": width,
+                "height": height,
+                "r_frame_rate": "30/1",
+                "nb_frames": "3",
+            }
+        ],
+    }
+    env = FakeFFmpeg(probe=probe, stdout=reader)
+    g = load("native", "video", env)
+    it = g["VideoLoader"](
+        Path("x"), types.SimpleNamespace(ffmpeg="f", ffprobe="p")
+    ).stream_frames()
+    thread = threading.Thread(target=write)
+    thread.start()
+    try:
+        got = [next(it).tobytes() for _ in frames]
+        short = outcome(lambda: next(it))
+    finally:
+        thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert size > 1 << 20
+    assert max(raw.requests) <= 1 << 20
+    assert got == frames
+    shape = [height, width, 3]
+    assert short == outcome(lambda: np.frombuffer(tail, np.uint8).reshape(shape))
+    assert reader.closed
+
+
 @pytest.mark.parametrize("container", ["MKV", "MP4", "MOV", "WEBM", "AVI", "GIF"])
 @pytest.mark.parametrize("audio_setting", ["AUTO", "COPY", "TRANSCODE"])
 def test_audio_policies_exact(container, audio_setting):
@@ -1243,13 +1440,14 @@ RUN_ERROR = ffmpeg.Error("ffmpeg", b"out", b"error details")
 
 
 @pytest.mark.parametrize(
-    "step", ["input", "output", "overwrite", "run", "probe", "replace", "remove"]
+    "step", ["input", "output", "overwrite", "run", "probe", "commit"]
 )
 @pytest.mark.parametrize("error", [OSError("failure"), RUN_ERROR])
 @pytest.mark.parametrize("setting", ["AUTO", "COPY", "TRANSCODE"])
 def test_audio_errors_exact(step, error, setting):
-    # INTENDED_MUX (#3331): every failure reaches the caller after the temporary
-    # file is removed. The probe runs only after a failed mux, so it fails with one.
+    # INTENDED_MUX (#3331), (m): every failure reaches the caller after the temporary
+    # files are abandoned (the mux's within it), never the path. The probe runs only
+    # after a failed mux, so it fails with one.
     failures = {step: error} if step != "probe" else {"run": RUN_ERROR, step: error}
     results = []
     for kind in ("intended", "native"):
@@ -1259,9 +1457,10 @@ def test_audio_errors_exact(step, error, setting):
         w = writer(g, audio=FakeStream(env, "audio"), audio_settings=setting)
         results.append((outcome(w.close), env.events.copy()))
     assert results[0] == results[1]
-    if step != "remove":
-        assert results[1][0][0] == "error"
-        assert results[1][1][-1] == ("remove", "owned/video_av.mkv")
+    assert results[1][0][0] == "error"
+    assert results[1][1][-1] == ("abandon", "owned/video.mkv.0.tmp")
+    if step != "commit":
+        assert results[1][1][-2] == ("abandon", "owned/video.mkv.1.tmp")
 
 
 class FailFirstMux(FakeFFmpeg):
@@ -1298,15 +1497,15 @@ def test_failed_copy_transcodes_on_auto_and_raises_otherwise(setting, source_aud
         ("audio-source.mkv",),
         (("cmd", "integrated-ffprobe"),),
     )
-    if not source_audio:
+    if not source_audio:  # (m): the video's own temporary file is committed.
         assert result == ("ok", None) and len(options) == 1
-        assert not any(e[0] == "replace" for e in events)
+        assert events[-1] == ("commit", "owned/video.mp4.0.tmp")
         assert any(e[0] == "warning" for e in events)
     elif setting == "AUTO":
         assert result == ("ok", None)
         assert [o["acodec"] for o in options] == ["copy", "aac"]
         assert options[1]["b:a"] == "320k"
-        assert events[-1] == ("replace", "owned/video_av.mp4", "owned/video.mp4")
+        assert events[-1] == ("commit", "owned/video.mp4.1.tmp")
     else:
         assert result[0] == "error" and result[1][0] == "RuntimeError"
         assert "the unknown audio" in result[1][1]
@@ -1440,6 +1639,20 @@ def test_successful_close_mux_once_deliberate_correction():
     assert sum(e[0] == "run" for e in expected) == 1
 
 
+def installed_writer_arguments(kwargs):
+    """Save Video's Writer arguments as the installed node passes them: without the
+    FFmpeg environment and colour settings, and FFmpeg writing the path itself instead of
+    the target's temporary file with the extension's muxer named (m)."""
+    kwargs = {k: v for k, v in kwargs.items() if k not in ("ffmpeg_env", "settings")}
+    target = kwargs.pop("target", None)
+    if target is not None:
+        params = dict(kwargs["output_params"])
+        assert params.pop("filename") == target.temp
+        assert params.pop("format") == kwargs["container"].muxer
+        kwargs["output_params"] = {"filename": kwargs["save_path"], **params}
+    return kwargs
+
+
 def node_args(g, context, directory, **changes):
     kwargs = {
         "node_context": context,
@@ -1506,15 +1719,7 @@ def test_additional_argument_policy(tmp_path, additional):
         original_writer = g["Writer"]
 
         def capture(**kwargs):
-            captured.append(
-                snap(
-                    {
-                        k: v
-                        for k, v in kwargs.items()
-                        if k not in ("ffmpeg_env", "settings")
-                    }
-                )
-            )
+            captured.append(snap(installed_writer_arguments(kwargs)))
             return original_writer(**kwargs)
 
         g["Writer"] = capture
@@ -1719,7 +1924,13 @@ FFPROBE = shutil.which("ffprobe")
 
 def real_module(kind, component):
     g = load(kind, component)
-    g.update(ffmpeg=ffmpeg, os=os, subprocess=subprocess, Popen=subprocess.Popen)
+    g.update(
+        ffmpeg=ffmpeg,
+        os=os,
+        subprocess=subprocess,
+        Popen=subprocess.Popen,
+        atomic_target=real_target,
+    )
     return g
 
 
@@ -1755,6 +1966,9 @@ def test_real_cpu_lossless_decode_encode_and_audio(tmp_path):
                 "r": 3,
                 "threads": 1,
             }
+            if kind == "native":  # (m): FFmpeg writes the target's temporary file.
+                w.target = real_target(str(path))
+                w.output_params.update(filename=w.target.temp, format="matroska")
             w.fps = 3
             for frame in frames:
                 w.write_frame(frame.astype(np.float32) / 255)
@@ -1798,9 +2012,11 @@ def test_real_cpu_lossless_decode_encode_and_audio(tmp_path):
         for kind, video in (("intended", "installed"), ("native", "native")):
             g = real_module(kind, "save_video")
             path = tmp_path / (kind + "-audio.mkv")
-            shutil.copyfile(tmp_path / (video + ".mkv"), path)
             w = writer(g, audio=ffmpeg.input(str(audio_path)).audio)
             w.save_path = str(path)
+            # (m): the video FFmpeg wrote is the target's temporary file.
+            w.target = real_target(str(path))
+            shutil.copyfile(tmp_path / (video + ".mkv"), w.target.temp)
             w.ffmpeg_env = types.SimpleNamespace(ffmpeg=FFMPEG, ffprobe=FFPROBE)
             w.close()
             probe = ffmpeg.probe(str(path), cmd=FFPROBE)
@@ -1822,7 +2038,7 @@ def test_real_cpu_lossless_decode_encode_and_audio(tmp_path):
             muxed.append(
                 (streams, raw_audio, [x.tobytes() for x in decode("native", path)[1]])
             )
-            assert not path.with_name(path.stem + "_av.mkv").exists()
+            assert not list(tmp_path.glob("*.chainner-c-*.tmp"))
         assert muxed[0] == muxed[1]
         assert [x[0] for x in muxed[0][0]] == ["video", "audio"]
     finally:
@@ -2242,15 +2458,7 @@ def test_simple_node_overrides_and_gif_audio_suppression(tmp_path, simple):
         original = g["Writer"]
 
         def capture(**kwargs):
-            captured.append(
-                snap(
-                    {
-                        k: v
-                        for k, v in kwargs.items()
-                        if k not in ("ffmpeg_env", "settings")
-                    }
-                )
-            )
+            captured.append(snap(installed_writer_arguments(kwargs)))
             return original(**kwargs)
 
         g["Writer"] = capture
@@ -2277,7 +2485,7 @@ def test_simple_node_overrides_and_gif_audio_suppression(tmp_path, simple):
 def test_writer_nonzero_exit_code_is_an_error():
     # Owner-approved 2026-10-09: a non-zero exit at a normal close fails the run with
     # FFmpeg's exit code before the audio mux, where upstream leaves it unchecked and
-    # muxes; nothing removes the file FFmpeg wrote.
+    # muxes; (m) the temporary file FFmpeg wrote is abandoned, the path left untouched.
     results = []
     for kind in ("intended", "native"):
         env = FakeFFmpeg()
@@ -2296,9 +2504,11 @@ def test_writer_nonzero_exit_code_is_an_error():
             "FFmpeg stopped while Save Video was writing the video (exit code 23)",
         ),
     )
-    # The same flush and wait, then the error: no mux, no file removed or replaced.
-    assert results[1][1] == results[0][1][: len(results[1][1])]
-    assert not any(e[0] in ("run", "remove", "replace") for e in results[1][1])
+    # The same flush and wait, then the error: no mux, no commit, the target abandoned.
+    *flushed, abandoned = results[1][1]
+    assert flushed == results[0][1][: len(flushed)]
+    assert abandoned == ("abandon", "owned/video.mkv.0.tmp")
+    assert not any(e[0] in ("run", "commit") for e in results[1][1])
 
 
 def test_reader_remaining_frames_metadata_can_differ():
@@ -2525,45 +2735,56 @@ def test_reader_cleanup_reentry_remains_running(indexed, phase, event):
     assert results[0] == results[1]
 
 
-@pytest.mark.skipif(not FFMPEG or not FFPROBE, reason="CPU FFmpeg/ffprobe unavailable")
-def test_abort_preserves_original_buffered_eof_partial_video_without_audio(tmp_path):
-    images = [np.arange(24 * 32 * 3, dtype=np.float32).reshape(24, 32, 3) % 255 / 255]
-    outputs = []
-    for kind in ("installed", "native"):
-        g = real_module(kind, "save_video")
-        path = tmp_path / (kind + ".mkv")
-        w = writer(g, audio=ffmpeg.input("never-open-this-audio-on-abort.wav").audio)
-        w.save_path = str(path)
-        w.ffmpeg_env = types.SimpleNamespace(ffmpeg=FFMPEG)
-        w.output_params = {
-            "filename": str(path),
-            "vcodec": "ffv1",
-            "pix_fmt": "bgr0",
-            "r": 3,
-            "threads": 1,
-        }
-        w.fps = 3
-        try:
-            w.write_frame(images[0])
-            if kind == "installed":
-                # Windows reference writer abandonment releases its buffered
-                # pipe via EOF; do not call Writer.close(), which would mux.
-                w.out.stdin.close()
-                w.out.wait(timeout=10)
-            else:
-                w._native_video_resource.abort()
-                w.close()  # Aborted completion must still never start muxing.
-            assert w.out.poll() == 0
-            assert path.is_file()
-            metadata, frames = decode("installed", path)
-            outputs.append((vars(metadata), [f.tobytes() for f in frames]))
-            assert len(frames) == 1
-            assert not path.with_name(path.stem + "_av.mkv").exists()
-        finally:
-            if w.out is not None and w.out.poll() is None:
-                w.out.kill()
-                w.out.wait(timeout=10)
-    assert outputs[0] == outputs[1]
+@pytest.mark.skipif(not FFMPEG, reason="CPU FFmpeg unavailable")
+def test_abort_ends_the_encoder_and_deletes_only_its_temporary_file(tmp_path):
+    # Stop (the chain's cleanup aborts the writer): FFmpeg still gets the buffered EOF and
+    # exits normally, as the installed writer's abandonment let it, and never muxes; (m)
+    # the video it finished is the temporary file, which is deleted, so the path never
+    # appears. Foreign files, other processes' temporary names included, stay.
+    image = np.arange(24 * 32 * 3, dtype=np.float32).reshape(24, 32, 3) % 255 / 255
+    path = tmp_path / "native.mkv"
+    foreign = {
+        tmp_path / "native.mkv.chainner-c-1-0.tmp": b"a",
+        tmp_path / "x.tmp": b"b",
+    }
+    for name, data in foreign.items():
+        name.write_bytes(data)
+
+    class Spy:
+        """The target, noting whether its file existed when abandoned."""
+
+        def __init__(self, target):
+            self.target, self.temp, self.existed = target, target.temp, None
+
+        def abandon(self):
+            self.existed = Path(self.temp).is_file()
+            self.target.abandon()
+
+    g = real_module("native", "save_video")
+    w = writer(g, audio=ffmpeg.input("never-open-this-audio-on-abort.wav").audio)
+    w.save_path = str(path)
+    w.target = Spy(real_target(str(path)))
+    w.ffmpeg_env = types.SimpleNamespace(ffmpeg=FFMPEG)
+    w.output_params = {
+        "filename": w.target.temp,
+        "format": "matroska",
+        "vcodec": "ffv1",
+        "pix_fmt": "bgr0",
+        "r": 3,
+        "threads": 1,
+    }
+    w.fps = 3
+    try:
+        w.write_frame(image)
+        w._native_video_resource.abort()
+        w.close()  # Aborted completion must still never start muxing.
+        assert w.out.poll() == 0
+        assert w.target.existed is True
+        assert {p: p.read_bytes() for p in tmp_path.iterdir()} == foreign
+    finally:
+        if w.out is not None and w.out.poll() is None:
+            w.out.kill()
+            w.out.wait(timeout=10)
 
 
 @pytest.mark.parametrize("terminate_fails", [False, True])

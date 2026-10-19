@@ -11,6 +11,7 @@ import torch
 from torch.nn import functional
 
 from api import NodeContext
+from nodes.impl.native_graph import graph
 from nodes.impl.pytorch.resource_cache import (
     allow_model_reuse,
     file_identity,
@@ -73,8 +74,9 @@ def download_model(
         except OSError:
             pass
     else:
-        with open(model_path, "wb") as f:
-            f.write(response.content)
+        # Through a temporary file in the folder (native/include/atomic_file.hpp): an
+        # interrupted write never leaves a partial model for the exists() check above.
+        graph().atomic_write(model_path, response.content)
     return model_path
 
 

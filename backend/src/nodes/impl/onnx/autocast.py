@@ -32,7 +32,7 @@ def autocast(onnx_bytes: bytes, low: LowPrecision, calibration: np.ndarray) -> b
         ) from e
 
     name = onnx.load_from_string(onnx_bytes).graph.input[0].name
-    with tempfile.TemporaryDirectory(prefix="chainner-autocast-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="chaiNNer-autocast-") as temporary:
         root = Path(temporary)
         model_path = root / "model.onnx"
         model_path.write_bytes(onnx_bytes)

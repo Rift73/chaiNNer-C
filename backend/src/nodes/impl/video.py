@@ -6,7 +6,7 @@ import math
 import os
 import subprocess as subprocess
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, lru_cache
 from io import BufferedIOBase as BufferedIOBase
 from pathlib import Path
 from types import ModuleType
@@ -35,7 +35,9 @@ from .colour_info import (
     swscale_matrix,
 )
 from .ffmpeg import FFMpegEnv
+from .native_framework_images import planes_to_interleaved
 from .native_graph import graph
+from .pytorch.resource_cache import file_identity
 
 if TYPE_CHECKING:
     from fractions import Fraction
@@ -102,7 +104,7 @@ class FrameFormat:
             return data.reshape(height, width, 3)
         if self.pix_fmt == "gbrpf32le":
             g, b, r = data.view(np.float32).reshape(3, height, width)
-            return np.dstack((b, g, r))
+            return planes_to_interleaved((b, g, r))
         colour = self.colour
         assert colour is not None
         dtype = np.dtype(np.uint8 if colour.bit_depth <= 8 else "<u2")
@@ -199,10 +201,35 @@ def _frame_bytes(frame: VideoFrame, frame_format: FrameFormat) -> np.ndarray:
     return data
 
 
+def _frame_values(frame: VideoFrame, frame_format: FrameFormat) -> object:
+    """A converted frame's values, as unpack gives them for the CLI's bytes. A float
+    RGB frame's G, B and R planes go straight into the BGR image, without the bytes."""
+    if frame_format.pix_fmt != "gbrpf32le":
+        return frame_format.unpack(_frame_bytes(frame, frame_format))
+    width, height = frame_format.size
+    green, blue, red = (
+        np.lib.stride_tricks.as_strided(
+            np.frombuffer(plane, np.float32), (height, width), (plane.line_size, 4)
+        )
+        for plane in frame.planes
+    )
+    return planes_to_interleaved((blue, green, red))
+
+
 def _variable_timestamps(path: Path, rate: Fraction, av: ModuleType) -> bool:
     """Whether the first video track's frames leave the grid of `rate` by half a frame
     or more: its packets' timestamps, demuxed without decoding and sorted (B-frames
-    store them out of order)."""
+    store them out of order). The scan reads the whole file, so its answer is kept for
+    the file's version (file_identity) and `rate`: a file read again is not scanned
+    again until it changes."""
+    return _timestamps_vary(file_identity(path), path, rate, av)
+
+
+@lru_cache(maxsize=64)
+def _timestamps_vary(
+    _identity: tuple, path: Path, rate: Fraction, av: ModuleType
+) -> bool:
+    """_variable_timestamps's scan; `_identity` is the file version it is kept for."""
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
         stamps = sorted(p.pts for p in container.demux(stream) if p.pts is not None)
@@ -271,9 +298,7 @@ def _pyav_frames(
                         if first:
                             raise _UseCliReader(message)
                         raise RuntimeError(f"Video {path} changed size: {message}")
-                    values.append(
-                        frame_format.unpack(_frame_bytes(converted, frame_format))
-                    )
+                    values.append(_frame_values(converted, frame_format))
                 first = False
                 yield values
 
@@ -350,11 +375,13 @@ class VideoLoader:
             if colour.transfer in (Transfer.PQ, Transfer.HLG) and colour.hdr is None:
                 # HEVC and AV1 carry HDR10 metadata in the bitstream, which ffprobe
                 # reports on frames only: the first frame's. Without it, the video is
-                # read with no HDR10 metadata.
+                # read with no HDR10 metadata. The probe is kept for the file's version,
+                # as video_loader_init's is (video_io.cpp probe_file).
                 try:
-                    probe = ffmpeg.probe(
+                    probe = graph().video_probe(
+                        globals(),
                         str(path),
-                        cmd=ffmpeg_env.ffprobe,
+                        ffmpeg_env.ffprobe,
                         select_streams="v:0",
                         read_intervals="%+#1",
                         show_frames=None,

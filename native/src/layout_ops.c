@@ -3,6 +3,7 @@
 #include "chainner.h"
 #include "numeric.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include <math.h>
 #include <string.h>
 

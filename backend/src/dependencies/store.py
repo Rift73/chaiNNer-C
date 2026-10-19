@@ -64,12 +64,20 @@ def distribution_name(package_name: str) -> str:
 def scan_installed_packages() -> None:
     """Fills installed_packages with the distributions this Python has, as `pip list`
     lists them (pip reads the same metadata), in this process: a pip process takes
-    0.3-1 s. The first distribution on sys.path wins a name, as for imports and pip."""
+    0.3-1 s. The first distribution on sys.path wins a name, as for imports and pip.
+
+    Run again after every pip run: importlib's caches of the folders are dropped, so
+    what pip added or removed is found, and the dict is updated in place, as other
+    modules hold it."""
+    importlib.invalidate_caches()
+    found: dict[str, str] = {}
     for distribution in importlib.metadata.distributions():
         metadata = distribution.metadata
         name = metadata["Name"]
         if name:
-            installed_packages.setdefault(distribution_name(name), metadata["Version"])
+            found.setdefault(distribution_name(name), metadata["Version"])
+    installed_packages.clear()
+    installed_packages.update(found)
 
 
 def pin(dependency: DependencyInfo) -> str:
@@ -164,24 +172,23 @@ def install_dependencies_sync(
     if len(dependencies_to_install) == 0:
         return 0
 
-    exit_code = subprocess.check_call(
-        [
-            python_path,
-            "-m",
-            "pip",
-            "install",
-            *[pin(dep_info) for dep_info in dependencies_to_install],
-            "--disable-pip-version-check",
-            "--no-warn-script-location",
-            *extra_index_args(dependencies_to_install),
-        ],
-        env=ENV,
-    )
-    if exit_code != 0:
-        raise ValueError("An error occurred while installing dependencies.")
-
-    for dep_info in dependencies_to_install:
-        installed_packages[dep_info.distribution] = dep_info.version
+    try:
+        subprocess.check_call(
+            [
+                python_path,
+                "-m",
+                "pip",
+                "install",
+                *[pin(dep_info) for dep_info in dependencies_to_install],
+                "--disable-pip-version-check",
+                "--no-warn-script-location",
+                *extra_index_args(dependencies_to_install),
+            ],
+            env=ENV,
+        )
+    finally:
+        # pip changes more than these (their dependencies, a run that failed midway)
+        scan_installed_packages()
 
     return len(dependencies_to_install)
 
@@ -215,99 +222,102 @@ async def install_dependencies(
     # Used to increment by a small amount between collect and download
     dep_small_incr = (DEP_MAX_PROGRESS / deps_count) / 2
 
-    process = subprocess.Popen(
-        [
-            python_path,
-            "-m",
-            # TODO: Change this back to "pip" once pip updates with my changes
-            "chainner_pip",
-            "install",
-            *[pin(dep_info) for dep_info in dependencies_to_install],
-            "--disable-chainner_pip-version-check",
-            "--no-warn-script-location",
-            "--progress-bar=json",
-            "--no-cache-dir",
-            *extra_index_args(dependencies_to_install),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        encoding="utf-8",
-        # A byte that is not UTF-8 (a build tool's message in the console's code
-        # page) is shown escaped instead of ending the read while pip still runs.
-        errors="backslashreplace",
-        env=ENV,
-    )
-    assert process.stdout is not None
-    last_lines: deque[str] = deque(maxlen=PIP_REASON_LINES)
-    installing_name = "Unknown"
-    # Up to the end of the output, which holds pip's error lines when it fails. Read
-    # in a thread: pip can be silent for a long time (a slow index, its retries), and
-    # the event loop must keep serving progress events and requests meanwhile.
-    while nextline := await asyncio.to_thread(process.stdout.readline):
-        line = nextline.strip()
-        if not line:
-            continue
+    try:
+        process = subprocess.Popen(
+            [
+                python_path,
+                "-m",
+                # TODO: Change this back to "pip" once pip updates with my changes
+                "chainner_pip",
+                "install",
+                *[pin(dep_info) for dep_info in dependencies_to_install],
+                "--disable-chainner_pip-version-check",
+                "--no-warn-script-location",
+                "--progress-bar=json",
+                "--no-cache-dir",
+                *extra_index_args(dependencies_to_install),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding="utf-8",
+            # A byte that is not UTF-8 (a build tool's message in the console's code
+            # page) is shown escaped instead of ending the read while pip still runs.
+            errors="backslashreplace",
+            env=ENV,
+        )
+        assert process.stdout is not None
+        last_lines: deque[str] = deque(maxlen=PIP_REASON_LINES)
+        installing_name = "Unknown"
+        # Up to the end of the output, which holds pip's error lines when it fails. Read
+        # in a thread: pip can be silent for a long time (a slow index, its retries), and
+        # the event loop must keep serving progress events and requests meanwhile.
+        while nextline := await asyncio.to_thread(process.stdout.readline):
+            line = nextline.strip()
+            if not line:
+                continue
 
-        if not line.startswith("Progress:"):
-            last_lines.append(line)
-            if logger is not None:
-                logger.info(line)
-
-        # The Collecting step of pip. It tells us what package is being installed.
-        if "Collecting" in line:
-            match = COLLECTING_REGEX.search(line)
-            if match:
-                package_name = match.group(1)
-                installing_name = dependency_name_map.get(
-                    distribution_name(package_name), None
-                )
-                if installing_name is None:
-                    installing_name = package_name
-                    transitive_deps_counter += 1
-                else:
-                    deps_counter += 1
-                await update_progress_cb(
-                    f"Collecting {installing_name}...", get_progress_amount(), None
-                )
-        # The Downloading step of pip. It tells us what package is currently being downloaded.
-        # Later, we can use this to get the progress of the download.
-        # For now, we just tell the user that it's happening.
-        elif "Downloading" in line:
-            await update_progress_cb(
-                f"Downloading {installing_name}...",
-                get_progress_amount() + dep_small_incr,
-                None,
-            )
-        # We can parse this line to get the progress of the download, but only in our pip fork for now
-        elif "Progress:" in line:
-            json_line = line.replace("Progress:", "").strip()
-            try:
-                parsed = json.loads(json_line)
-                current, total = parsed["current"], parsed["total"]
-                if total is not None and total > 0:
-                    percent = current / total
-                    await update_progress_cb(
-                        f"Downloading {installing_name}...",
-                        get_progress_amount() + dep_small_incr,
-                        percent,
-                    )
-            except Exception as e:
+            if not line.startswith("Progress:"):
+                last_lines.append(line)
                 if logger is not None:
-                    logger.error(str(e))
-                # pass
-        # The Installing step of pip. Installs happen for all the collected packages at once.
-        # We can't get the progress of the installation, so we just tell the user that it's happening.
-        elif "Installing collected packages" in line:
-            await update_progress_cb("Installing collected dependencies...", 0.9, None)
+                    logger.info(line)
 
-    exit_code = await asyncio.to_thread(process.wait)
-    if exit_code != 0:
-        raise ValueError(pip_error_message("installing", last_lines))
+            # The Collecting step of pip. It tells us what package is being installed.
+            if "Collecting" in line:
+                match = COLLECTING_REGEX.search(line)
+                if match:
+                    package_name = match.group(1)
+                    installing_name = dependency_name_map.get(
+                        distribution_name(package_name), None
+                    )
+                    if installing_name is None:
+                        installing_name = package_name
+                        transitive_deps_counter += 1
+                    else:
+                        deps_counter += 1
+                    await update_progress_cb(
+                        f"Collecting {installing_name}...", get_progress_amount(), None
+                    )
+            # The Downloading step of pip. It tells us what package is currently being downloaded.
+            # Later, we can use this to get the progress of the download.
+            # For now, we just tell the user that it's happening.
+            elif "Downloading" in line:
+                await update_progress_cb(
+                    f"Downloading {installing_name}...",
+                    get_progress_amount() + dep_small_incr,
+                    None,
+                )
+            # We can parse this line to get the progress of the download, but only in our pip fork for now
+            elif "Progress:" in line:
+                json_line = line.replace("Progress:", "").strip()
+                try:
+                    parsed = json.loads(json_line)
+                    current, total = parsed["current"], parsed["total"]
+                    if total is not None and total > 0:
+                        percent = current / total
+                        await update_progress_cb(
+                            f"Downloading {installing_name}...",
+                            get_progress_amount() + dep_small_incr,
+                            percent,
+                        )
+                except Exception as e:
+                    if logger is not None:
+                        logger.error(str(e))
+                    # pass
+            # The Installing step of pip. Installs happen for all the collected packages at once.
+            # We can't get the progress of the installation, so we just tell the user that it's happening.
+            elif "Installing collected packages" in line:
+                await update_progress_cb(
+                    "Installing collected dependencies...", 0.9, None
+                )
 
-    await update_progress_cb("Finished installing dependencies...", 1, None)
+        exit_code = await asyncio.to_thread(process.wait)
+        if exit_code != 0:
+            raise ValueError(pip_error_message("installing", last_lines))
 
-    for dep_info in dependencies_to_install:
-        installed_packages[dep_info.distribution] = dep_info.version
+        await update_progress_cb("Finished installing dependencies...", 1, None)
+    finally:
+        # pip changes more than these (their dependencies, a run that failed midway)
+        scan_installed_packages()
 
     return len(dependencies_to_install)
 
@@ -318,22 +328,21 @@ def uninstall_dependencies_sync(
     if len(dependencies) == 0:
         return
 
-    exit_code = subprocess.check_call(
-        [
-            python_path,
-            "-m",
-            "pip",
-            "uninstall",
-            *[d.distribution for d in dependencies],
-            "-y",
-        ],
-        env=ENV,
-    )
-    if exit_code != 0:
-        raise ValueError("An error occurred while uninstalling dependencies.")
-
-    for dep_info in dependencies:
-        installed_packages.pop(dep_info.distribution, None)
+    try:
+        subprocess.check_call(
+            [
+                python_path,
+                "-m",
+                "pip",
+                "uninstall",
+                *[d.distribution for d in dependencies],
+                "-y",
+            ],
+            env=ENV,
+        )
+    finally:
+        # pip changes more than these (their dependencies, a run that failed midway)
+        scan_installed_packages()
 
 
 async def uninstall_dependencies(
@@ -364,74 +373,77 @@ async def uninstall_dependencies(
     # Used to increment by a small amount between collect and download
     dep_small_incr = (1 / deps_count) / 2
 
-    process = subprocess.Popen(
-        [
-            python_path,
-            "-m",
-            # TODO: Change this back to "pip" once pip updates with my changes
-            "chainner_pip",
-            "uninstall",
-            *[d.distribution for d in dependencies],
-            "-y",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        encoding="utf-8",
-        # A byte that is not UTF-8 (a build tool's message in the console's code
-        # page) is shown escaped instead of ending the read while pip still runs.
-        errors="backslashreplace",
-        env=ENV,
-    )
-    assert process.stdout is not None
-    last_lines: deque[str] = deque(maxlen=PIP_REASON_LINES)
-    uninstalling_name = "Unknown"
-    # Up to the end of the output, which holds pip's error lines when it fails. Read
-    # in a thread: pip can be silent for a long time (a slow index, its retries), and
-    # the event loop must keep serving progress events and requests meanwhile.
-    while nextline := await asyncio.to_thread(process.stdout.readline):
-        line = nextline.strip()
-        if not line:
-            continue
+    try:
+        process = subprocess.Popen(
+            [
+                python_path,
+                "-m",
+                # TODO: Change this back to "pip" once pip updates with my changes
+                "chainner_pip",
+                "uninstall",
+                *[d.distribution for d in dependencies],
+                "-y",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding="utf-8",
+            # A byte that is not UTF-8 (a build tool's message in the console's code
+            # page) is shown escaped instead of ending the read while pip still runs.
+            errors="backslashreplace",
+            env=ENV,
+        )
+        assert process.stdout is not None
+        last_lines: deque[str] = deque(maxlen=PIP_REASON_LINES)
+        uninstalling_name = "Unknown"
+        # Up to the end of the output, which holds pip's error lines when it fails. Read
+        # in a thread: pip can be silent for a long time (a slow index, its retries), and
+        # the event loop must keep serving progress events and requests meanwhile.
+        while nextline := await asyncio.to_thread(process.stdout.readline):
+            line = nextline.strip()
+            if not line:
+                continue
 
-        if not line.startswith("Progress:"):
-            last_lines.append(line)
-            if logger is not None:
-                logger.info(line)
+            if not line.startswith("Progress:"):
+                last_lines.append(line)
+                if logger is not None:
+                    logger.info(line)
 
-        # The Uninstalling step of pip. It tells us what package is being UNinstalled.
-        if "Uninstalling" in line:
-            match = UNINSTALLING_REGEX.search(line)
-            if match:
-                package_name = match.group(1)
-                uninstalling_name = dependency_name_map.get(
-                    distribution_name(package_name), None
-                )
-                if uninstalling_name is None:
-                    uninstalling_name = package_name
-                    transitive_deps_counter += 1
-                else:
-                    deps_counter += 1
+            # The Uninstalling step of pip. It tells us what package is being UNinstalled.
+            if "Uninstalling" in line:
+                match = UNINSTALLING_REGEX.search(line)
+                if match:
+                    package_name = match.group(1)
+                    uninstalling_name = dependency_name_map.get(
+                        distribution_name(package_name), None
+                    )
+                    if uninstalling_name is None:
+                        uninstalling_name = package_name
+                        transitive_deps_counter += 1
+                    else:
+                        deps_counter += 1
+                    await update_progress_cb(
+                        f"Uninstalling {uninstalling_name}...",
+                        get_progress_amount(),
+                        None,
+                    )
+            # The Downloading step of pip. It tells us what package is currently being downloaded.
+            # Later, we can use this to get the progress of the download.
+            # For now, we just tell the user that it's happening.
+            elif "Successfully uninstalled" in line:
                 await update_progress_cb(
-                    f"Uninstalling {uninstalling_name}...", get_progress_amount(), None
+                    f"Uninstalled {uninstalling_name}.",
+                    get_progress_amount() + dep_small_incr,
+                    None,
                 )
-        # The Downloading step of pip. It tells us what package is currently being downloaded.
-        # Later, we can use this to get the progress of the download.
-        # For now, we just tell the user that it's happening.
-        elif "Successfully uninstalled" in line:
-            await update_progress_cb(
-                f"Uninstalled {uninstalling_name}.",
-                get_progress_amount() + dep_small_incr,
-                None,
-            )
 
-    exit_code = await asyncio.to_thread(process.wait)
-    if exit_code != 0:
-        raise ValueError(pip_error_message("uninstalling", last_lines))
+        exit_code = await asyncio.to_thread(process.wait)
+        if exit_code != 0:
+            raise ValueError(pip_error_message("uninstalling", last_lines))
 
-    await update_progress_cb("Finished uninstalling dependencies...", 1, None)
-
-    for dep_info in dependencies:
-        del installed_packages[dep_info.distribution]
+        await update_progress_cb("Finished uninstalling dependencies...", 1, None)
+    finally:
+        # pip changes more than these (their dependencies, a run that failed midway)
+        scan_installed_packages()
 
 
 __all__ = [

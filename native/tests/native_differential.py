@@ -67,7 +67,8 @@ def comparable(value: object) -> object:
     if isinstance(value, float):
         return ("float", struct.pack("<d", value))
     if isinstance(value, Color):
-        return ("Color", tuple(struct.pack("<d", channel) for channel in value.value))
+        # Channel types too: Color's _norm keeps an int at the bounds (Color.gray(0).value == (0,))
+        return ("Color", tuple((type(channel).__name__, struct.pack("<d", channel)) for channel in value.value))
     return (f"{type(value).__module__}.{type(value).__qualname__}", value)
 
 

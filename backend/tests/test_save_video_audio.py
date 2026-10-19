@@ -149,8 +149,9 @@ def save(tmp_path: Path, src: Path, container: VideoFormat, audio: AudioSettings
 
 
 def saved(tmp_path: Path, container: VideoFormat) -> Path:
-    """The saved video, once no temporary file of the audio step is left behind."""
-    assert not list(tmp_path.glob("out_av.*"))
+    """The saved video, once no temporary file of the video or the audio step is left
+    behind."""
+    assert not list(tmp_path.glob("out.*.chainner-c-*.tmp"))
     return tmp_path / f"out.{container.ext}"
 
 
@@ -193,12 +194,13 @@ def test_auto_copies_pcm_where_the_container_holds_it(tmp_path: Path):
 
 
 def test_copy_the_container_cannot_hold_is_an_error(tmp_path: Path):
-    # Copy never transcodes; the run fails and keeps the video without audio.
+    # Copy never transcodes; the run fails and, as every failed write, leaves no file:
+    # the video goes to its path only at a successful close.
     src = source(tmp_path, "src.mov", "pcm_s16le")
     message = r"copy the pcm_s16le audio into the \.mp4 file\. Set Audio to Auto or"
     with pytest.raises(RuntimeError, match=message):
         save(tmp_path, src, VideoFormat.MP4, AudioSettings.COPY)
-    assert streams(saved(tmp_path, VideoFormat.MP4)) == ["video:h264"]
+    assert not saved(tmp_path, VideoFormat.MP4).exists()
 
 
 @pytest.mark.parametrize("container", [VideoFormat.MP4, VideoFormat.MKV])
@@ -221,6 +223,7 @@ def test_webm_copy_is_an_error(tmp_path: Path):
     src = source(tmp_path, "src.mp4", "aac")
     with pytest.raises(ValueError, match="WebM does not support"):
         save(tmp_path, src, VideoFormat.WEBM, AudioSettings.COPY)
+    assert not saved(tmp_path, VideoFormat.WEBM).exists()
 
 
 @pytest.mark.parametrize("audio", [AudioSettings.AUTO, AudioSettings.TRANSCODE])

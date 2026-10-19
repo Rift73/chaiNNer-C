@@ -3,6 +3,7 @@
 #include "numeric.h"
 #include "numpy_clip_f32.h"
 #include "parallel.h"
+#include "run_kernels.h"
 
 #include <float.h>
 #include <math.h>

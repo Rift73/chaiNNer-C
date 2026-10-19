@@ -1,5 +1,9 @@
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import fsPromises from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { expect, test, vi } from 'vitest';
-import { readClipboardImageAsPng } from '../../src/main/clipboardImage';
+import { readClipboardImageAsPng, storeClipboardPng } from '../../src/main/clipboardImage';
 
 const pngFile = (content: string) =>
     Buffer.concat([
@@ -53,4 +57,35 @@ test("without a PNG from the app, an image with transparency keeps readImage()'s
     // the bitmap, a full copy of the image, is not read when there is no PNG to prefer
     expect(empty.toBitmap).not.toHaveBeenCalled();
     expect(notPng.toBitmap).not.toHaveBeenCalled();
+});
+
+test('a pasted image is stored once, by its content, and complete', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'chaiNNer-clipboard-test-'));
+    try {
+        const first = await storeClipboardPng(dir, appPng);
+        expect(readFileSync(first)).toEqual(appPng);
+
+        // the same image again: the same file, not written again
+        const { mtimeMs } = statSync(first);
+        const rename = vi.spyOn(fsPromises, 'rename');
+        expect(await storeClipboardPng(dir, Buffer.from(appPng))).toBe(first);
+        expect(rename).not.toHaveBeenCalled();
+        expect(statSync(first).mtimeMs).toBe(mtimeMs);
+        rename.mockRestore();
+
+        // another image: another file
+        const second = await storeClipboardPng(dir, readImagePng);
+        expect(second).not.toBe(first);
+        expect(readFileSync(second)).toEqual(readImagePng);
+        expect(readdirSync(dir).sort()).toEqual(
+            [path.basename(first), path.basename(second)].sort()
+        );
+
+        // a cut-off file of an image is replaced whole
+        writeFileSync(first, appPng.subarray(0, 4));
+        expect(await storeClipboardPng(dir, appPng)).toBe(first);
+        expect(readFileSync(first)).toEqual(appPng);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });

@@ -12,6 +12,7 @@
 #include "noise_rng.h"
 #include "numpy_clip_f32.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include <math.h>
 #include <stdint.h>
 

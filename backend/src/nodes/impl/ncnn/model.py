@@ -11,6 +11,7 @@ import numpy as np
 from sanic.log import logger as logger
 
 from .. import native_ncnn_graph
+from ..native_graph import graph
 
 param_schema_file = os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "param_schema.json"
@@ -301,8 +302,11 @@ class NcnnModel:
     def write_param(self, filename: Path | str = "") -> str:
         text = native_ncnn_graph.write_param(self)
         if filename:
-            with open(filename, "w", encoding="utf-8") as file:
-                file.write(text)
+            # The bytes open(filename, "w", encoding="utf-8") wrote, through a temporary
+            # file in the folder (native/include/atomic_file.hpp).
+            graph().atomic_write(
+                filename, text.replace("\n", os.linesep).encode("utf-8")
+            )
             return ""
         return text
 
@@ -310,8 +314,7 @@ class NcnnModel:
         return native_ncnn_graph.serialize_weights(self)
 
     def write_bin(self, filename: Path | str) -> None:
-        with open(filename, "wb") as f:
-            f.write(self.serialize_weights())
+        graph().atomic_write(filename, self.serialize_weights())
 
     def interpolate(self, model_b: NcnnModel, alpha: float) -> NcnnModel:
         return native_ncnn_graph.interpolate(self, model_b, alpha)

@@ -591,10 +591,11 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                     setStatus(ExecutionStatus.KILLING);
                     try {
                         const response = await backend.kill();
+                        // The host's /kill returns once a restarted worker answers, and a
+                        // run waits for the nodes it needs, so the node list is not fetched.
                         if (response.type === 'error') {
                             sendAlert({ type: AlertType.ERROR, message: response.exception });
                         }
-                        await backend.nodes();
                     } catch (err) {
                         reject(err);
                     } finally {

@@ -88,14 +88,6 @@ export const useRunNode = (
     );
 
     useEffect(() => {
-        return () => {
-            if (didEverRun.current) {
-                backend.clearNodeCacheIndividual(id).catch(log.error);
-            }
-        };
-    }, [backend, id]);
-
-    useEffect(() => {
         if (hasIncomingConnections && didEverRun.current) {
             backend.clearNodeCacheIndividual(id).catch(log.error);
         }

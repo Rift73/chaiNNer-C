@@ -129,6 +129,15 @@ def test_range_matches(start, start_inclusive, stop, stop_inclusive):
     assert_native_matches("chainner:utility:range", [start, start_inclusive, stop, stop_inclusive])
 
 
+@pytest.mark.parametrize(
+    "start, start_inclusive, stop, stop_inclusive",
+    [(2**63, True, 2**63 + 2, False), (0, True, 2**64, False), (2**63 - 2, False, 2**63 - 1, True)],
+)
+def test_range_beyond_int64_declines(start, start_inclusive, stop, stop_inclusive):
+    # Python's integers are unbounded: a bound or an item beyond int64 runs the body.
+    assert_native_matches("chainner:utility:range", [start, start_inclusive, stop, stop_inclusive], declines=True)
+
+
 def test_range_error_is_an_assertion_error():
     outcome = assert_native_matches("chainner:utility:range", [5, True, 1, False])
     assert outcome == ("error", ("AssertionError", ""))

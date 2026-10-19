@@ -264,7 +264,12 @@ export const GlobalProvider = memo(
                 setTypeState(types);
                 typeStateRef.current = types;
 
-                const newLineage = new ChainLineage(schemata, getNodes(), getEdges());
+                const newLineage = ChainLineage.create(
+                    schemata,
+                    getNodes(),
+                    getEdges(),
+                    chainLineageRef.current
+                );
                 setChainLineage(newLineage);
                 chainLineageRef.current = newLineage;
             }, 100);
@@ -959,7 +964,7 @@ export const GlobalProvider = memo(
         );
 
         const [inputDataChanges, addInputDataChanges] = useChangeCounter();
-        const inputHashesRef = useInputHashes(schemata, [
+        const [inputHashes, inputHashesRef] = useInputHashes(schemata, [
             nodeChanges,
             edgeChanges,
             inputDataChanges,
@@ -1034,11 +1039,13 @@ export const GlobalProvider = memo(
 
         const [individuallyRunning, setIndividuallyRunning] =
             useState<ReadonlySet<string>>(EMPTY_SET);
+        // the set only changes when a node starts or stops, so the context does not change otherwise
         const addIndividuallyRunning = useCallback((node: string): void => {
-            setIndividuallyRunning((prev) => new Set(prev).add(node));
+            setIndividuallyRunning((prev) => (prev.has(node) ? prev : new Set(prev).add(node)));
         }, []);
         const removeIndividuallyRunning = useCallback((node: string): void => {
             setIndividuallyRunning((prev) => {
+                if (!prev.has(node)) return prev;
                 const newSet = new Set(prev);
                 newSet.delete(node);
                 return newSet;
@@ -1360,7 +1367,7 @@ export const GlobalProvider = memo(
             collidingEdge,
             collidingNode,
             isIndividuallyRunning,
-            inputHashes: inputHashesRef.current,
+            inputHashes,
             outputDataMap,
             useConnectingFrom: useMemoArray([connectingFrom, setConnectingFrom] as const),
         });

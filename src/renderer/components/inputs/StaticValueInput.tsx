@@ -1,6 +1,6 @@
 import { Box, HStack, Text } from '@chakra-ui/react';
 import { memo, useEffect } from 'react';
-import { useContext } from 'use-context-selector';
+import { useContext, useContextSelector } from 'use-context-selector';
 import { assertNever } from '../../../common/util';
 import { ExecutionContext } from '../../contexts/ExecutionContext';
 import { InputContext } from '../../contexts/InputContext';
@@ -10,7 +10,7 @@ import { InputProps } from './props';
 export const StaticValueInput = memo(
     ({ setValue, input }: InputProps<'static', number | string>) => {
         const { value } = input;
-        const { executionNumber } = useContext(ExecutionContext);
+        const executionNumber = useContextSelector(ExecutionContext, (c) => c.executionNumber);
         const { conditionallyInactive } = useContext(InputContext);
 
         useEffect(() => {

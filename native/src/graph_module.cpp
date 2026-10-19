@@ -19,6 +19,8 @@ void cn_bind_video_io(pybind11::module_&);
 void cn_bind_utility_clipboard(pybind11::module_&);
 void cn_bind_numpy_pool(pybind11::module_&);
 void cn_bind_run_engine(pybind11::module_&);
+void cn_bind_run_executor(pybind11::module_&);
+void cn_bind_atomic_file(pybind11::module_&);
 
 PYBIND11_MODULE(_chainner_graph, module) {
     module.doc() = "Native chaiNNer graph algorithms with public object adapters";
@@ -39,4 +41,6 @@ PYBIND11_MODULE(_chainner_graph, module) {
     cn_bind_utility_clipboard(module);
     cn_bind_numpy_pool(module);
     cn_bind_run_engine(module);
+    cn_bind_run_executor(module);
+    cn_bind_atomic_file(module);
 }

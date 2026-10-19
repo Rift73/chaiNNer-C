@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import builtins
 import os
 import struct
 import subprocess
@@ -91,34 +90,57 @@ def test_fpng_exact_pixels_and_unicode(tmp_path, channels, shape, kind):
     assert path.read_bytes() == first
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        np.zeros((3, 5), np.uint8),
-        np.zeros((3, 5, 1), np.uint8),
-        np.zeros((3, 5, 3), np.uint16),
-        np.zeros((3, 5, 4), np.uint16),
-        np.zeros((3, 5, 3), np.float32),
-        np.zeros((0, 5, 3), np.uint8),
-        np.zeros((3, 5, 2), np.uint8),
-    ],
-)
-def test_other_types_keep_opencv_contract(tmp_path, value):
+def save_with_fake_imencode(path, value, params):
     calls = []
 
     def encode(extension, pixels, params):
         calls.append((extension, pixels, params))
         return True, b"original encoder result"
 
-    params = []
     graph().image_io_cv_save(
         {"cv2": SimpleNamespace(imencode=encode), "split_file_path": split_file_path},
-        tmp_path / "x.png",
+        path,
         value,
         params,
     )
+    return calls
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        np.zeros((3, 5, 3), np.float32),
+        np.zeros((0, 5, 3), np.uint8),
+        np.zeros((3, 5, 2), np.uint8),
+    ],
+)
+def test_other_types_keep_opencv_contract(tmp_path, value):
+    params = []
+    calls = save_with_fake_imencode(tmp_path / "x.png", value, params)
     assert len(calls) == 1 and calls[0][1] is value and calls[0][2] is params
     assert (tmp_path / "x.png").read_bytes() == b"original encoder result"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        np.arange(15, dtype=np.uint8).reshape(3, 5),
+        np.arange(15, dtype=np.uint8).reshape(3, 5, 1),
+        np.arange(45, dtype=np.uint16).reshape(3, 5, 3) * 1009,
+        np.arange(60, dtype=np.uint16).reshape(3, 5, 4) * 997,
+    ],
+)
+def test_other_types_encode_as_opencv(tmp_path, monkeypatch, value):
+    # fpng declines these; the vendored libpng writes OpenCV's PngEncoder bytes, and
+    # CHAINNER_C_NATIVE_CODECS=0 hands them to cv2.imencode as before.
+    calls = save_with_fake_imencode(tmp_path / "native.png", value, [])
+    assert not calls
+    expected = cv2.imencode(".png", value)[1].tobytes()
+    assert (tmp_path / "native.png").read_bytes() == expected
+    monkeypatch.setenv("CHAINNER_C_NATIVE_CODECS", "0")
+    params = []
+    calls = save_with_fake_imencode(tmp_path / "x.png", value, params)
+    assert len(calls) == 1 and calls[0][1] is value and calls[0][2] is params
 
 
 @pytest.mark.parametrize(
@@ -156,22 +178,15 @@ def test_file_errors_preserved(tmp_path, as_directory):
     assert failures[0] == failures[1]
 
 
-def test_write_failure_propagates_without_codec_retry(tmp_path, monkeypatch):
-    class FailingFile:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def write(self, _):
-            raise OSError("owned write failure")
-
-    monkeypatch.setattr(builtins, "open", lambda *args: FailingFile())
-    with pytest.raises(OSError, match="owned write failure"):
-        graph().image_io_cv_save(
-            no_opencv(), tmp_path / "x.png", np.zeros((2, 3, 3), np.uint8), []
-        )
+def test_write_failure_propagates_without_codec_retry(tmp_path):
+    # The write is atomic: its failure (here a directory in the way) raises, encodes
+    # nothing again (no cv2 in these globals) and leaves no temporary file behind.
+    target = tmp_path / "x.png"
+    target.mkdir()
+    with pytest.raises(PermissionError):
+        graph().image_io_cv_save(no_opencv(), target, np.zeros((2, 3, 3), np.uint8), [])
+    assert target.is_dir() and not any(target.iterdir())
+    assert [path.name for path in tmp_path.iterdir()] == ["x.png"]
 
 
 def test_concurrent_saves(tmp_path):

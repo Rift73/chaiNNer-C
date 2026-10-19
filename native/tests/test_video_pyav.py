@@ -4,15 +4,26 @@ or files PyAV cannot open."""
 
 from __future__ import annotations
 
+import itertools
+import os
 import shutil
 import subprocess
 import types
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from nodes.impl import video
+from nodes.impl.colour_info import (
+    ChromaLocation,
+    Matrix,
+    Primaries,
+    Range,
+    Transfer,
+    VideoMode,
+)
 from nodes.impl.ffmpeg import FFMpegEnv
 
 FFMPEG = shutil.which("ffmpeg")
@@ -89,6 +100,41 @@ def test_pyav_frames_equal_the_cli_reader(tmp_path, monkeypatch, case):
         np.testing.assert_array_equal(frame, reference)
 
 
+@pytest.mark.parametrize(("size", "padded"), [("639x361", True), ("320x240", False)])
+def test_float_rgb_frames_are_todays_bytes(tmp_path, size, padded):
+    # A float RGB frame goes from PyAV's G, B and R planes (rows padded to line_size)
+    # straight into the BGR image: today's image from the CLI's bytes, bit for bit.
+    av = video._pyav()
+    assert av is not None and FFMPEG is not None and FFPROBE is not None
+    path = _clip(
+        tmp_path / "clip.mkv", *_source(size), "-c:v", "ffv1", "-pix_fmt", "yuv444p10le"
+    )
+    auto = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.AUTO)
+    settings = video.ReadSettings(VideoMode.RGB, True, auto)
+    loader = video.VideoLoader(
+        path, FFMpegEnv(ffmpeg=FFMPEG, ffprobe=FFPROBE), settings
+    )
+    (frame_format,) = loader.formats
+    assert frame_format.pix_fmt == "gbrpf32le"
+    width, height = frame_format.size
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        convert = video._converter(av, stream, [], frame_format)
+        for frame in itertools.islice(container.decode(stream), 3):
+            convert.push(frame)
+            converted = convert.pull()
+            assert (converted.planes[0].line_size > width * 4) == padded
+            image = video._frame_values(converted, frame_format)
+            data = video._frame_bytes(converted, frame_format)
+            g, b, r = data.view(np.float32).reshape(3, height, width)
+            today = np.dstack((b, g, r))
+            assert isinstance(image, np.ndarray)
+            assert (image.shape, image.dtype) == (today.shape, today.dtype)
+            assert image.tobytes() == today.tobytes()
+            flags = ("C_CONTIGUOUS", "OWNDATA", "WRITEABLE", "ALIGNED")
+            assert [image.flags[f] for f in flags] == [today.flags[f] for f in flags]
+
+
 ROTATIONS = {
     "rotate-90": (["-display_rotation", "90"], lambda frame: np.rot90(frame, 1)),
     "rotate-180": (["-display_rotation", "180"], lambda frame: np.rot90(frame, 2)),
@@ -144,3 +190,27 @@ def test_without_pyav_the_cli_reader_is_used(tmp_path, monkeypatch):
     monkeypatch.setattr(video, "_pyav", lambda: None)
     in_process, frames = _read(path, monkeypatch, cli=False)
     assert not in_process and len(frames) == 30
+
+
+def test_a_matroska_file_is_scanned_once_per_version(tmp_path, monkeypatch):
+    # The timestamp scan demuxes the whole file: a file read again is not scanned
+    # again, and one that changed (here its modification time) is.
+    av = video._pyav()
+    assert av is not None
+    path = _clip(tmp_path / "clip.mkv", *CASES["mkv-h264-bframes"])
+    opened: list[str] = []
+    open_container = av.open
+
+    def counting_open(file: str, *args: object, **kwargs: object):
+        opened.append(file)
+        return open_container(file, *args, **kwargs)
+
+    monkeypatch.setattr(av, "open", counting_open)
+    rate = Fraction(30)
+    assert not video._variable_timestamps(path, rate, av)
+    assert not video._variable_timestamps(path, rate, av)
+    assert opened == [str(path)]
+    info = path.stat()
+    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+    assert not video._variable_timestamps(path, rate, av)
+    assert opened == [str(path)] * 2

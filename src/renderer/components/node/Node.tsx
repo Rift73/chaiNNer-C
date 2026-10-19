@@ -170,15 +170,15 @@ const NodeInner = memo(({ data, selected }: NodeProps) => {
 
     const { sendToast } = useContext(AlertBoxContext);
     const { setNodeCollapsed } = useContext(GlobalContext);
-    const { getNodeProgress, getNodeStatus } = useContext(ExecutionContext);
 
     const { id, inputData, isCollapsed = false } = data;
-    const nodeProgress = getNodeProgress(id);
+    // only this node's progress and status: the execution context changes with every event batch
+    const nodeProgress = useContextSelector(ExecutionContext, (c) => c.getNodeProgress(id));
 
     const individuallyRunning = useContextSelector(GlobalVolatileContext, (c) =>
         c.isIndividuallyRunning(id)
     );
-    const executionStatus = getNodeStatus(id);
+    const executionStatus = useContextSelector(ExecutionContext, (c) => c.getNodeStatus(id));
     const animated =
         executionStatus === NodeExecutionStatus.RUNNING ||
         executionStatus === NodeExecutionStatus.YET_TO_RUN ||
@@ -214,46 +214,61 @@ const NodeInner = memo(({ data, selected }: NodeProps) => {
 
     const fileInput = useMemo(() => getSingleFileInput(inputs), [inputs]);
 
-    const onDragOver = (event: DragEvent<HTMLDivElement>) => {
-        event.preventDefault();
+    const { isLocked, connectedInputs } = nodeState;
+    const onDragOver = useCallback(
+        (event: DragEvent<HTMLDivElement>) => {
+            event.preventDefault();
 
-        if (fileInput && fileInput.kind === 'file' && event.dataTransfer.types.includes('Files')) {
-            event.stopPropagation();
+            if (
+                fileInput &&
+                fileInput.kind === 'file' &&
+                event.dataTransfer.types.includes('Files')
+            ) {
+                event.stopPropagation();
 
-            // A locked node or a connected file input takes no drop.
-            // eslint-disable-next-line no-param-reassign
-            event.dataTransfer.dropEffect =
-                nodeState.isLocked || nodeState.connectedInputs.has(fileInput.id) ? 'none' : 'copy';
-        }
-    };
-
-    const onDrop = (event: DragEvent<HTMLDivElement>) => {
-        event.preventDefault();
-
-        if (fileInput && fileInput.kind === 'file' && event.dataTransfer.types.includes('Files')) {
-            event.stopPropagation();
-            if (nodeState.isLocked || nodeState.connectedInputs.has(fileInput.id)) return;
-
-            const p = getSingleFileWithExtension(event.dataTransfer, fileInput.filetypes);
-            if (p) {
-                setInputValue(fileInput.id, p);
-                return;
+                // A locked node or a connected file input takes no drop.
+                // eslint-disable-next-line no-param-reassign
+                event.dataTransfer.dropEffect =
+                    isLocked || connectedInputs.has(fileInput.id) ? 'none' : 'copy';
             }
+        },
+        [fileInput, isLocked, connectedInputs]
+    );
 
-            if (event.dataTransfer.files.length !== 1) {
-                sendToast({
-                    status: 'error',
-                    description: `Only one file is accepted by ${fileInput.label}.`,
-                });
-            } else {
-                const ext = path.extname(event.dataTransfer.files[0].path);
-                sendToast({
-                    status: 'error',
-                    description: `${fileInput.label} does not accept ${ext} files.`,
-                });
+    const onDrop = useCallback(
+        (event: DragEvent<HTMLDivElement>) => {
+            event.preventDefault();
+
+            if (
+                fileInput &&
+                fileInput.kind === 'file' &&
+                event.dataTransfer.types.includes('Files')
+            ) {
+                event.stopPropagation();
+                if (isLocked || connectedInputs.has(fileInput.id)) return;
+
+                const p = getSingleFileWithExtension(event.dataTransfer, fileInput.filetypes);
+                if (p) {
+                    setInputValue(fileInput.id, p);
+                    return;
+                }
+
+                if (event.dataTransfer.files.length !== 1) {
+                    sendToast({
+                        status: 'error',
+                        description: `Only one file is accepted by ${fileInput.label}.`,
+                    });
+                } else {
+                    const ext = path.extname(event.dataTransfer.files[0].path);
+                    sendToast({
+                        status: 'error',
+                        description: `${fileInput.label} does not accept ${ext} files.`,
+                    });
+                }
             }
-        }
-    };
+        },
+        [fileInput, isLocked, connectedInputs, setInputValue, sendToast]
+    );
 
     const { reload, isLive } = useRunNode(data, validity.isValid);
     const filesToWatch = useMemo(() => {

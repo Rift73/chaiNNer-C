@@ -29,6 +29,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 | Mirrors' CRT math from the process's `ucrtbase.dll` (Consult 6 D-4; groups in the header) | `native/include/cn_crt_math.h`, `native/src/crt_math.c` |
 | Ownership, cache, events | `backend/src/nodes/impl/native_buffers.py`, `nodes/properties/outputs/numpy_outputs.py`, `chain/cache.py`, `nodes/impl/event_queue.py`, `nodes/impl/numpy_pool.py` (section 6) |
 | Resize and PNG | `backend/src/nodes/impl/native_resample.py`, `native/src/resample_filters.c`, `native/src/image_io.cpp`, `native/third_party/fpng` |
+| Image codecs and atomic writes (instant-exec lane I) | `native/cmake/codecs.cmake`, `native/src/codecs/*.c` (`native/include/image_codecs.h`), `native/src/image_decode.cpp`, `image_encode.cpp`, `image_preview.cpp`, `native/src/atomic_file.cpp`, `native/src/run/nodes/io.cpp`, `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}` |
 | Video | `native/src/video_io.cpp`, `backend/src/nodes/impl/video.py` |
 | Packaging | `native/tools/package_port.py`, `package_files.py`, `package_manifest.py` |
 | UI patches | `native/tools/independent_ui.py`, `native/tools/input-drop.json`, `native/tools/tensorrt-types.json`, `native/tools/tensorrt-clear.json`, `verify_*.cjs` |
@@ -221,7 +222,17 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
   termination; owned children reaped. No unconditional hard-shutdown bound is promised.
 - fpng: used only for default-option 8-bit 3/4-channel PNG within its bounds (each dimension
   <= 65,535; filtered stream below `INT32_MAX - 1 MiB`). Grayscale, 16-bit, explicit codec options
-  or larger images keep the OpenCV encoder. A selected fpng failure is an error, never retried.
+  or larger images keep OpenCV's encoder (its libpng settings, vendored). A selected fpng failure is an error, never
+  retried.
+- Native codecs: the libraries today's Pillow 12.3.0 and OpenCV 5.0.0 decode and encode with (libjpeg-turbo 3.1.4.1
+  JPEG8, libpng 1.6.57 with OpenCV's `pnglibconf.h`, classic zlib 1.3.2, libwebp 1.6.0, libtiff 4.7.1) are vendored and
+  called with their settings, so decoded arrays and saved bytes are today's. A native decoder or encoder takes only
+  what it mirrors exactly (Pillow's JPEG marker walk, imdecode's signature order, OpenCV's chunk walks and type
+  rules); anything else (a warning, an error, a variant not ported, MPO, APNG) declines to today's Python path, which
+  gives the result or the error. `CHAINNER_C_NATIVE_CODECS=0` is the diagnostic switch to today's path (the oracle of
+  `native/tests/test_native_codecs.py` and the git-ignored corpus in `native/local/codec-corpus`).
+- File writers write `<final>.chainner-c-<pid>-<seq>.tmp` in the target folder and rename it (`MoveFileExW`, no
+  fsync); a final file with the same bytes is left untouched; failures raise what `open()` raises for the final path.
 - File traversal order, Unicode paths, overwrite/skip options, error continuation, final UI state
   and completion events are external contracts. So are schemas, names, controls and saved chains.
 
@@ -531,7 +542,9 @@ another project generated.
   math in `ncnn_complex_math.hpp`), PyMatting (MIT), PyTorch TensorIterator stride order, resize crate 0.8.3,
   zhang_hilbert 0.1.1, avx2_mathfun, CPython 3.11.5 `random.py`, pybind11 2.13.6, fpng 1.0.6 (Unlicense).
 - Vendored: `native/third_party/fpng` (`PROVENANCE.md`: hashes, Unlicense, size caps),
-  `native/third_party/pybind11`, `native/third_party/onnxruntime` (C API header, `LICENSE`).
+  `native/third_party/pybind11`, `native/third_party/onnxruntime` (C API header, `LICENSE`), and the image codecs
+  `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}` (unchanged upstream sources, `PROVENANCE.md` with
+  the signed tarball's SHA-256, `chainner/` configuration headers; notices in `chainner_native.LICENSE.txt`).
 - Ported into `chainner_ext.pyd`: `native/third_party/chainner_ext`, `regex` and `regex-syntax` (MIT OR Apache-2.0) and
   `unicode` (the Unicode 15.0.0 tables' licence), each with its licence texts and `PROVENANCE.md`.
 - Vendored model code: `backend/src/vendor/vosr2` (VOSR 2.0's DiT, DINOv2 and Qwen-Image VAE definitions from

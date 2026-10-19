@@ -9,7 +9,7 @@ from __future__ import annotations
 import ctypes as ct
 import sys
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import lru_cache
 from typing import cast
 
@@ -33,6 +33,7 @@ def _api():
         "cn_framework_cloth_labels": [p, p, z, z, i, p],
         "cn_framework_cloth_masks": [p, p, z],
         "cn_planar_to_interleaved_f32": [p, i, z, z, z, z, z, i, p, p],
+        "cn_planes_to_interleaved_f32": [p, p, i, z, z, z, p],
     }
     for name, signature in signatures.items():
         function = getattr(dll, name)
@@ -194,6 +195,45 @@ def _interleave(
         )
     )
     return result, bool(finite.value)
+
+
+def planes_to_interleaved(planes: Sequence[np.ndarray]) -> np.ndarray:
+    """(H, W) float16 or float32 planes, one per channel in the output's order, as a
+    new (H, W, C) float32 image, every value exact (NumPy's cast). The planes share a
+    shape and dtype; each may be anywhere, its rows `strides[0]` apart (positive,
+    contiguous within a row): a decoder's padded planes, or (C, H, W) planes taken in
+    another order."""
+    if not planes or any(
+        plane.ndim != 2
+        or plane.dtype != planes[0].dtype
+        or plane.shape != planes[0].shape
+        for plane in planes
+    ):
+        raise ValueError("Planes conversion needs (H, W) planes of one shape and dtype")
+    if planes[0].dtype not in (np.dtype(np.float16), np.dtype(np.float32)):
+        raise ValueError("Planes conversion needs float16 or float32 planes")
+    item = planes[0].itemsize
+    if any(
+        plane.strides[1] != item or plane.strides[0] % item or plane.strides[0] < 0
+        for plane in planes
+    ):
+        raise ValueError("Planes conversion needs rows of contiguous samples")
+    h, w = planes[0].shape
+    result = np.empty((h, w, len(planes)), np.float32)
+    check(
+        _api().cn_planes_to_interleaved_f32(
+            (ct.c_void_p * len(planes))(*(plane.ctypes.data for plane in planes)),
+            (ct.c_size_t * len(planes))(
+                *(plane.strides[0] // item for plane in planes)
+            ),
+            int(planes[0].dtype == np.float16),
+            h,
+            w,
+            len(planes),
+            result.ctypes.data,
+        )
+    )
+    return result
 
 
 def ncnn_input(image: np.ndarray) -> np.ndarray:

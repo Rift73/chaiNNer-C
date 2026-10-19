@@ -151,7 +151,7 @@ def export_onnx(
     from safetensors.torch import save_file
 
     factory = factory_of(tags)
-    with tempfile.TemporaryDirectory(prefix="chainner-dual-export-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="chaiNNer-dual-export-") as temporary:
         root = Path(temporary)
         checkpoint = root / "folded.safetensors"
         save_file({k: v.contiguous() for k, v in state_dict.items()}, str(checkpoint))
@@ -261,7 +261,7 @@ def build_engine(
         if profile is None
         else [*(f"{h}x{w}" for h, w in profile), str(spec["alignment"])]
     )
-    with tempfile.TemporaryDirectory(prefix="chainner-dual-engine-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="chaiNNer-dual-engine-") as temporary:
         model = Path(temporary) / "model.onnx"
         model.write_bytes(onnx_bytes)
         engine = Path(temporary) / "model.engine"

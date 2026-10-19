@@ -10,6 +10,7 @@ from api import BaseOutput, BroadcastData, InputId, OutputKind
 
 from ...impl.image_utils import normalize, to_uint8
 from ...impl.native_buffers import normalized_readonly, register_normalized_copy
+from ...impl.native_graph import graph
 from ...impl.resize import ResizeFilter, resize
 from ...utils.format import format_image_with_channels
 from ...utils.utils import get_h_w_c, round_half_up
@@ -151,30 +152,37 @@ class LargeImageOutput(ImageOutput):
     def get_broadcast_data(self, value: np.ndarray):
         img = value
         h, w, c = get_h_w_c(img)
-        image_size = max(h, w)
-        preview_sizes = [2048, 1024, 512, 256]
-        preview_size_grace = 1.2
-        start_index = len(preview_sizes) - 1
-        for i, size in enumerate(preview_sizes):
-            if size <= image_size <= size * preview_size_grace:
-                start_index = i
-                break
-            if image_size > size:
-                start_index = max(0, i - 1)
-                break
-        previews = []
-        last_encoded = img
-        for size in preview_sizes[start_index:]:
-            largest_preview = size == preview_sizes[start_index]
-            url, last_encoded = preview_encode(
-                last_encoded,
-                target_size=size,
-                grace=preview_size_grace,
-                lossless=largest_preview,
-            )
-            le_h, le_w, _ = get_h_w_c(last_encoded)
-            previews.append({"width": le_w, "height": le_h, "url": url})
+        # The same previews natively (image_preview.cpp), without the GIL; None when it declines.
+        previews = graph().image_io_previews(img)
+        if previews is None:
+            previews = _previews(img, max(h, w))
         return {"previews": previews, "height": h, "width": w, "channels": c}
+
+
+def _previews(img: np.ndarray, image_size: int) -> list[dict[str, object]]:
+    preview_sizes = [2048, 1024, 512, 256]
+    preview_size_grace = 1.2
+    start_index = len(preview_sizes) - 1
+    for i, size in enumerate(preview_sizes):
+        if size <= image_size <= size * preview_size_grace:
+            start_index = i
+            break
+        if image_size > size:
+            start_index = max(0, i - 1)
+            break
+    previews = []
+    last_encoded = img
+    for size in preview_sizes[start_index:]:
+        largest_preview = size == preview_sizes[start_index]
+        url, last_encoded = preview_encode(
+            last_encoded,
+            target_size=size,
+            grace=preview_size_grace,
+            lossless=largest_preview,
+        )
+        le_h, le_w, _ = get_h_w_c(last_encoded)
+        previews.append({"width": le_w, "height": le_h, "url": url})
+    return previews
 
 
 def VideoOutput():

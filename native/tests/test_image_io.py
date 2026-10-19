@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import ast
-import builtins
-import errno
 import hashlib
 import json
 import logging
 import os
 import platform
 import shutil
+import stat
 import struct
 import subprocess
 import time
@@ -510,6 +509,11 @@ def test_dds_options_and_cleanup_mocked(tmp_path, bits):
                 dxgi, alpha_mode, pixels = raw_dds_pixels(args[-1])
                 assert (dxgi, alpha_mode) == (28, 0)  # R8G8B8A8_UNORM, alpha unknown
                 events.append(("pixels", pixels))
+                # texconv writes into the temporary folder, over the intermediate, which
+                # then goes to the output folder through its temporary file there.
+                at = args.index("-o") + 1
+                assert args[at] == str(scratch)
+                args = [*args[:at], str(tmp_path), *args[at + 1 :]]
             events.append(("run", [*args[:-1], Path(args[-1]).stem], error))
 
         module.__dict__["__run_texconv"] = texconv
@@ -684,6 +688,16 @@ def test_pillow_channel_buffer_permutation(dtype, channels, kind):
     exact(run(True), run(False))
 
 
+def pillow_registry(**functions):
+    """A stand-in for PIL.Image with the plugin registry Save Image reads (preinit, init, EXTENSION)."""
+    return SimpleNamespace(
+        preinit=lambda: None,
+        init=lambda: None,
+        EXTENSION={".gif": "GIF", ".tga": "TGA", ".avif": "AVIF", ".webp": "WEBP"},
+        **functions,
+    )
+
+
 @pytest.mark.parametrize("fmt", ["PNG", "TIFF", "TGA"])
 def test_nonfinite_save_quantization(tmp_path, fmt):
     value = image(3)
@@ -707,7 +721,7 @@ def test_nonfinite_save_quantization(tmp_path, fmt):
                 def save(self, *args, **kwargs):
                     return None
 
-            module.Image = SimpleNamespace(
+            module.Image = pillow_registry(
                 fromarray=lambda arr, captured=captured: (
                     captured.append((arr.dtype.str, arr.tobytes())) or Picture()
                 )
@@ -778,9 +792,12 @@ def test_all_tiff_precision_options(tmp_path, depth, compression):
 )
 @pytest.mark.parametrize("failure", ["none", "save", "exit"])
 def test_pillow_save_context_and_all_avif_options(tmp_path, subsampling, failure):
+    # Today's code saves to the path; the atomic write encodes into a buffer with the
+    # plugin named (as Image.save(path) picks it) and writes those bytes.
     def run(current):
         module = modules(current).save
         events = []
+        targets = []
 
         class Picture:
             def __enter__(self):
@@ -792,16 +809,18 @@ def test_pillow_save_context_and_all_avif_options(tmp_path, subsampling, failure
                 if failure == "exit":
                     raise OSError("exit failed")
 
-            def save(self, path, **kwargs):
-                events.append(("save", path, kwargs))
+            def save(self, target, **kwargs):
+                named = kwargs.pop("format", None)
+                events.append(("save", kwargs))
+                targets.append((type(target).__name__ if named else Path(target).name, named))
                 if failure != "none":
                     raise LookupError("save failed")
 
-        module.Image = SimpleNamespace(fromarray=lambda value: Picture())
+        module.Image = pillow_registry(fromarray=lambda value: Picture())
         args = save_arguments(
             module,
             LazyImage(image(3)),
-            tmp_path,
+            tmp_path / str(current),
             fmt="AVIF",
             avif_chroma_subsampling=("AvifSubsampling", subsampling),
         )
@@ -815,9 +834,11 @@ def test_pillow_save_context_and_all_avif_options(tmp_path, subsampling, failure
                 type(error.__context__),
                 error.__context__.args if error.__context__ else None,
             )
-        return state, events
+        return state, events, targets
 
-    assert run(False) == run(True)
+    old, new = run(False), run(True)
+    assert old[:2] == new[:2]
+    assert old[2] == [("image.avif", None)] and new[2] == [("BytesIO", "AVIF")]
 
 
 @pytest.mark.parametrize("fail_first", [False, True])
@@ -1313,66 +1334,38 @@ def test_prepared_save_encodes_nothing_for_a_skipped_file(tmp_path, fmt):
     assert list(tmp_path.iterdir()) == []
 
 
-class FailingWrite:
-    """A file whose first write stores 4 bytes, then fails as a full disk does."""
-
-    def __init__(self, handle):
-        self.handle = handle
-
-    def write(self, data):
-        self.handle.write(bytes(memoryview(data).cast("B")[:4]))
-        raise OSError(errno.ENOSPC, "No space left on device")
-
-    def __getattr__(self, name):
-        return getattr(self.handle, name)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exception):
-        self.handle.close()
-
-
-def failing_writes(monkeypatch, suffix):
-    """Make every file opened for writing whose name ends with suffix a FailingWrite."""
-    real_open = builtins.open
-
-    def open_failing(file, mode="r", *args, **kwargs):
-        handle = real_open(file, mode, *args, **kwargs)
-        if "w" in mode and str(file).endswith(suffix):
-            return FailingWrite(handle)
-        return handle
-
-    monkeypatch.setattr(builtins, "open", open_failing)
-
-
 @pytest.mark.parametrize("existing", [False, True])
-@pytest.mark.parametrize("fmt", ["GIF", "TGA", "AVIF"])
-def test_prepared_pillow_write_failure_leaves_todays_file(
-    monkeypatch, tmp_path, fmt, existing
-):
-    # Image.save(path)'s file handling, mirrored for prepared Pillow bytes: a write that
-    # fails leaves no file the save created, and a truncated existing one.
+@pytest.mark.parametrize("fmt", ["PNG", "JPG", "GIF", "TGA", "AVIF"])
+def test_save_write_failure_leaves_no_partial_file(tmp_path, fmt, existing):
+    # Writes are atomic (temp in the target folder, then a rename): a write that fails,
+    # here onto a read-only file or a directory in the way, raises what open() raises
+    # for the final path, leaves the target as it was and no temporary file behind.
     value = image(3)
     inputs = save_arguments(NEW.save, value, tmp_path / "unused", fmt=fmt)
     prepared = NEW.save.prepare_save_image(list(inputs.values()))
-    failing_writes(monkeypatch, f"image.{fmt.lower()}")
-    states = []
     for name in ("today", "commit"):
-        target = tmp_path / name / f"image.{fmt.lower()}"
+        target = tmp_path / name / f"image.{NEW.save.ImageFormat[fmt].extension}"
         target.parent.mkdir()
         if existing:
             target.write_bytes(b"existing")
+            os.chmod(target, stat.S_IREAD)
+        else:
+            target.mkdir()
         args = list(
             save_arguments(NEW.save, LazyImage(value), target.parent, fmt=fmt).values()
         )
-        with pytest.raises(OSError, match="No space left on device"):
+        with pytest.raises(PermissionError) as raised:
             if name == "today":
                 NEW.save.save_image_node(*args)
             else:
                 NEW.save.commit_save_image(args, Prepared(prepared))
-        states.append(target.read_bytes() if target.exists() else None)
-    assert states[0] == states[1] == (prepared[:4] if existing else None)
+        assert raised.value.filename == str(target)
+        if existing:
+            os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+            assert target.read_bytes() == b"existing"
+        else:
+            assert target.is_dir() and not any(target.iterdir())
+        assert [path.name for path in target.parent.iterdir()] == [target.name]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="file names ignore case on Windows only")

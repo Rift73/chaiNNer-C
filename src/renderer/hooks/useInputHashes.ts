@@ -1,10 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { MutableRefObject, useEffect, useRef, useState } from 'react';
 import { Edge, Node, useReactFlow } from 'reactflow';
 import { EdgeData, NodeData } from '../../common/common-types';
 import { SchemaMap } from '../../common/SchemaMap';
 import { EMPTY_MAP, deriveUniqueId, stringifyTargetHandle } from '../../common/util';
-
-const EMPTY = '6227edf5-cc54-4d34-b863-f647d3a73509';
 
 /**
  * Given a graph, this will returns a map from node id to the input hash of the node with that id.
@@ -13,8 +11,12 @@ const EMPTY = '6227edf5-cc54-4d34-b863-f647d3a73509';
  * of its inputs changed. At least, that's the idea. Due to the imperfect nature of hashes, input
  * hashes only guarantee that if the input hash doesn't change, that the inputs for a node did not
  * change.
+ *
+ * Each node's hash is one hash of everything its inputs are: its schema, whether it passes its
+ * inputs through, and per input the value (`null` for none) or, for a connected input, the hash of
+ * the connected node in a list (which no value is).
  */
-const computeInputHashes = (
+export const computeInputHashes = (
     nodes: readonly Node<NodeData>[],
     edges: readonly Edge<EdgeData>[],
     schemata: SchemaMap
@@ -30,7 +32,10 @@ const computeInputHashes = (
         if (hash) return hash;
 
         const schema = schemata.get(node.data.schemaId);
-        const inputs: string[] = [node.data.schemaId, String(node.data.isPassthrough ?? false)];
+        const inputs: (string | readonly [string] | null)[] = [
+            node.data.schemaId,
+            String(node.data.isPassthrough ?? false),
+        ];
         for (const input of schema.inputs) {
             const connectedEdge = byTargetHandle.get(
                 stringifyTargetHandle({ nodeId: node.id, inputId: input.id })
@@ -39,7 +44,7 @@ const computeInputHashes = (
                 const source = byId.get(connectedEdge.source);
                 if (source) {
                     // input gets passed by the connected node
-                    inputs.push(getInputHash(source));
+                    inputs.push([getInputHash(source)]);
                     // eslint-disable-next-line no-continue
                     continue;
                 }
@@ -47,14 +52,10 @@ const computeInputHashes = (
 
             const value = node.data.inputData[input.id];
             // eslint-disable-next-line eqeqeq
-            if (value == undefined) {
-                inputs.push(EMPTY);
-            } else {
-                inputs.push(deriveUniqueId(String(value)));
-            }
+            inputs.push(value == undefined ? null : String(value));
         }
 
-        hash = deriveUniqueId(inputs.join(';'));
+        hash = deriveUniqueId(JSON.stringify(inputs));
         hashes.set(node.id, hash);
         return hash;
     };
@@ -66,14 +67,36 @@ const computeInputHashes = (
     return hashes;
 };
 
-export const useInputHashes = (schemata: SchemaMap, deps: readonly unknown[]) => {
+const sameHashes = (a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean => {
+    if (a.size !== b.size) return false;
+    for (const [id, hash] of a) {
+        if (b.get(id) !== hash) return false;
+    }
+    return true;
+};
+
+/**
+ * The input hashes of the chain, as state (a change re-renders, so what shows them is never a
+ * render behind) and as a ref (the newest, for reads outside of rendering). They are computed
+ * after the chain changed, once React Flow has the new nodes and edges; a change that leaves
+ * every hash as it is (e.g. a node moved) keeps both.
+ */
+export const useInputHashes = (
+    schemata: SchemaMap,
+    deps: readonly unknown[]
+): readonly [ReadonlyMap<string, string>, MutableRefObject<ReadonlyMap<string, string>>] => {
     const ref = useRef<ReadonlyMap<string, string>>(EMPTY_MAP);
+    const [hashes, setHashes] = useState<ReadonlyMap<string, string>>(EMPTY_MAP);
 
     const { getNodes, getEdges } = useReactFlow();
     useEffect(() => {
-        ref.current = computeInputHashes(getNodes(), getEdges(), schemata);
+        const newHashes = computeInputHashes(getNodes(), getEdges(), schemata);
+        if (!sameHashes(ref.current, newHashes)) {
+            ref.current = newHashes;
+            setHashes(newHashes);
+        }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, deps);
 
-    return ref;
+    return [hashes, ref];
 };

@@ -166,9 +166,11 @@ def test_outputs_named(monkeypatch: pytest.MonkeyPatch):
     b = clip("b", f"core.std.Invert({a.var})", a)
     script = compile_script([(a, "Source"), (b, "It's ü")], cache_mb=4096)
 
-    # Outside vsview (vspipe): the clips' own set_output, in output order.
+    # Outside vsview (vspipe): the clips' own set_output, in output order, without
+    # importing vstools (vs-jetpack 2.2.6's has no set_output).
     monkeypatch.delitem(sys.modules, "vsview", raising=False)
-    monkeypatch.setitem(sys.modules, "vstools", None)
+    vstools = types.SimpleNamespace(set_output=lambda *_: pytest.fail("vstools used"))
+    monkeypatch.setitem(sys.modules, "vstools", vstools)
     assert run_compiled(script, monkeypatch) == [0, 1]
 
     # Inside vsview: its set_output gets the index and the name.

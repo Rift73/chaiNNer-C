@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import builtins
 import inspect
+import os
 import platform
 import shutil
 import struct
@@ -165,7 +166,10 @@ def test_8_bit_targets_are_the_png_path_bytes(tmp_path, runs, fmt):
             image = synthetic(21, 18, channels)
             written = save(tmp_path / "new", name, image, fmt, dds_mipmap_levels=mips)
             args = runs[-1]
-            assert args[args.index("-o") + 1] == str(tmp_path / "new")
+            # texconv writes into chaiNNer's temporary folder, over the intermediate; the
+            # file then goes to the output folder through its temporary file there.
+            assert Path(args[args.index("-o") + 1]) == Path(args[-1]).parent
+            assert Path(args[-1]).parent.name.startswith("chaiNNer-")
             png = tmp_path / "png" / f"{name}.png"
             cv_save_image(str(png), to_uint8(image, normalized=True), [])
             args[args.index("-o") + 1] = str(tmp_path / "old")
@@ -812,3 +816,87 @@ def test_save_dds_texture_refuses_wrong_faces_and_sizes(tmp_path, runs):
         texture(
             tmp_path, "array", [synthetic(8, 8, 3), synthetic(8, 4, 3)], "BC1_UNORM"
         )
+
+
+OLD = 1_000_000_000  # An mtime (2001) no write of this test can produce.
+
+
+def foreign(folder: Path, name: str) -> dict[Path, bytes]:
+    """Files a writer of `name` must never touch."""
+    folder.mkdir(parents=True, exist_ok=True)
+    files = {
+        folder / f"{name}.chainner-c-1-0.tmp": b"another process",
+        folder / "unrelated.tmp": b"unrelated",
+    }
+    for path, data in files.items():
+        path.write_bytes(data)
+    return files
+
+
+def contents(folder: Path) -> dict[Path, bytes]:
+    return {p: p.read_bytes() for p in folder.iterdir()}
+
+
+def test_an_equal_texture_is_left_untouched_and_a_different_one_replaced(
+    tmp_path, runs
+):
+    # The finished file goes to the target folder's temporary file, then onto the final
+    # name (instant-exec A4): an equal file keeps its modification time.
+    others = foreign(tmp_path, "t.dds")
+    path = save(tmp_path, "t", synthetic(8, 8, 3), "BC1_UNORM")
+    first = path.read_bytes()
+    os.utime(path, (OLD, OLD))
+    save(tmp_path, "t", synthetic(8, 8, 3), "BC1_UNORM")
+    assert path.stat().st_mtime == OLD and path.read_bytes() == first
+    save(tmp_path, "t", synthetic(8, 8, 3, 0.2), "BC1_UNORM")
+    assert path.stat().st_mtime != OLD and path.read_bytes() != first
+    cube = texture(tmp_path, "cubemap", [synthetic(4, 4, 4)] * 6, "R8G8B8A8_UNORM")
+    os.utime(cube, (OLD, OLD))
+    texture(tmp_path, "cubemap", [synthetic(4, 4, 4)] * 6, "R8G8B8A8_UNORM")
+    assert cube.stat().st_mtime == OLD
+    assert set(contents(tmp_path)) == {*others, path, cube}
+
+
+def test_a_failed_texconv_leaves_the_file_before(tmp_path, runs, monkeypatch):
+    others = foreign(tmp_path, "t.dds")
+    path = tmp_path / "t.dds"
+    path.write_bytes(b"the texture before")
+    os.utime(path, (OLD, OLD))
+    folders: list[str] = []
+    original = texconv.mkdtemp
+    monkeypatch.setitem(
+        vars(texconv),
+        "mkdtemp",
+        lambda **kwargs: folders.append(original(**kwargs)) or folders[-1],
+    )
+
+    def fails(args, error):
+        Path(args[-1]).write_bytes(b"partial")  # texconv's output over the intermediate
+        raise ValueError("Unable to write DDS: Code 1: failed")
+
+    monkeypatch.setitem(vars(texconv), "__run_texconv", fails)
+    with pytest.raises(ValueError, match="Unable to write DDS"):
+        save(tmp_path, "t", synthetic(8, 8, 3), "BC1_UNORM")
+    assert contents(tmp_path) == {**others, path: b"the texture before"}
+    assert path.stat().st_mtime == OLD
+    assert folders and not Path(folders[0]).exists()  # chaiNNer's temporary folder
+
+
+def test_skip_existing_dds_is_unchanged(tmp_path, runs):
+    path = tmp_path / "t.dds"
+    path.write_bytes(b"existing")
+    os.utime(path, (OLD, OLD))
+    save(tmp_path, "t", synthetic(8, 8, 3), "BC1_UNORM", skip_existing_files=True)
+    assert not runs and path.read_bytes() == b"existing"
+    assert path.stat().st_mtime == OLD
+
+
+def test_a_dds_write_error_names_the_final_path(tmp_path, runs):
+    folder = tmp_path / "t.dds"
+    folder.mkdir()  # the final name is a folder: the rename fails
+    with pytest.raises(PermissionError) as before:
+        open(folder, "wb")
+    with pytest.raises(PermissionError) as raised:
+        texconv.save_as_dds(folder, synthetic(8, 8, 3), "BC1_UNORM", 1)
+    assert str(raised.value) == str(before.value)  # [Errno 13], as open() raises it
+    assert list(tmp_path.iterdir()) == [folder]

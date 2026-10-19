@@ -3,7 +3,9 @@
 #include "chainner_ext_kernels.h"
 #include "dispatch.hpp"
 #include "image_blur.hpp"
+#include "image_convolve.hpp"
 #include "image_morphology.hpp"
+#include "image_node_support.hpp"
 
 #include <algorithm>
 #include <array>
@@ -27,13 +29,6 @@ void gaussian_blur(NodeContext &, std::span<const Value> inputs, std::vector<Val
         return;
     }
     outputs.push_back(fast_gaussian_blur(std::get<Image>(inputs[0]), sigma_x, sigma_y));
-}
-
-/* The repr of an image's NumPy shape: (h, w) for grey, else (h, w, c). */
-std::string shape_text(const Image &image)
-{
-    std::string text = "(" + std::to_string(image.height) + ", " + std::to_string(image.width);
-    return text + (image.channels == 1 ? ")" : ", " + std::to_string(image.channels) + ")");
 }
 
 /* Dilate (maximum) and Erode (image_filter/miscellaneous/dilate.py, erode.py): the input itself for a zero radius
@@ -88,37 +83,10 @@ const std::vector<std::vector<LensComponent>> lens_parameters = {
 };
 constexpr double lens_scales[] = {1.4, 1.2, 1.2, 1.2, 1.2, 1.2};
 
-/* native_convolution.convolve's fused lanes for Lens Blur's kernels (2 * radius + 1 taps): its spatial path, else
- * the body takes cv2 (DFT from the SSE3 threshold on; cv2.filter2D without the tested OpenCV, under
- * useIPP_NotExact or a "filter" dispatch other than baseline or AVX2), and the entry point declines. */
-size_t lens_lanes(int64_t radius)
-{
-    constexpr std::string_view gate = "nodes.impl.native_convolution";
-    if (!dispatch::cv2_tested(gate)) throw RunPython{};
-    if (2 * radius + 1 >= (dispatch::cv2_sse3() ? 130 : 50)) throw RunPython{};
-    if (dispatch::cv2_use_ipp_not_exact()) throw RunPython{};
-    std::string mode = dispatch::opencv_target("filter");
-    if (mode == "BASELINE") return 0;
-    if (mode != "AVX2") throw RunPython{};
-    return dispatch::opencv_lanes("filter");
-}
-
-/* native_convolution.convolve(plane, kernel, 0) of a one-channel height x width plane, the kernel rows x columns. */
-MutableImage convolve(const float *plane, int32_t height, int32_t width, const float *kernel, size_t rows,
-                      size_t columns, size_t lanes)
-{
-    if (height == 0 || width == 0)
-        throw NodeError("ValueError", "Invalid convolution image shape (" + std::to_string(height) + ", " +
-                                          std::to_string(width) + ")");
-    MutableImage out = MutableImage::allocate(height, width, 1);
-    check(cn_convolution_spatial(plane, out.data(), size_t(height), size_t(width), 1, kernel, rows, columns, 0, lanes));
-    return out;
-}
-
 /* chainner:image:lens_blur (image_filter/blur/lens_blur.py): the input itself for radius 0; else the body's planar
  * pipeline: the power, per component and channel four separable convolutions composed into the planar output, the
  * finishing power and the transpose back to HWC (the output enforce clips it as it clips the body's frozen view).
- * Native on the spatial convolution path only (lens_lanes). */
+ * Native on native_convolution.convolve's spatial path only (image_convolve.hpp declines the others). */
 void lens_blur(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     const Image &image = std::get<Image>(inputs[0]);
@@ -128,7 +96,6 @@ void lens_blur(NodeContext &, std::span<const Value> inputs, std::vector<Value> 
         outputs.push_back(inputs[0]);
         return;
     }
-    size_t lanes = lens_lanes(radius);
     size_t channels = size_t(image.channels), plane = size_t(image.height) * size_t(image.width);
     MutableImage planar = MutableImage::allocate(image.height, image.width, image.channels);
     for (size_t c = 0; c < channels; ++c)
@@ -149,25 +116,27 @@ void lens_blur(NodeContext &, std::span<const Value> inputs, std::vector<Value> 
     }
     check(cn_filter_lens_normalize(kernels.data(), coefficients.data(), normalized.data(), components, length));
 
-    MutableImage powered = MutableImage::allocate(image.height, image.width, image.channels);
-    check(cn_lens_power(planar.data(), powered.data(), image.values(), float(gamma), 0));
+    MutableImage power = MutableImage::allocate(image.height, image.width, image.channels);
+    check(cn_lens_power(planar.data(), power.data(), image.values(), float(gamma), 0));
+    Image powered = std::move(power).publish();
     MutableImage composed = MutableImage::allocate(image.height, image.width, image.channels);
-    std::vector<float> real(length), imaginary(length);
     for (size_t i = 0; i < components; ++i) {
+        Kernel row{1, length, {}}, imaginary_row{1, length, {}};
         for (size_t k = 0; k < length; ++k) {
-            real[k] = normalized[(i * length + k) * 2];
-            imaginary[k] = normalized[(i * length + k) * 2 + 1];
+            row.values.push_back(double(normalized[(i * length + k) * 2]));
+            imaginary_row.values.push_back(double(normalized[(i * length + k) * 2 + 1]));
         }
+        Kernel column{length, 1, row.values}, imaginary_column{length, 1, imaginary_row.values};
         for (size_t c = 0; c < channels; ++c) {
-            const float *source = powered.data() + c * plane;
-            int32_t h = image.height, w = image.width;
-            MutableImage inter_real = convolve(source, h, w, real.data(), 1, length, lanes);
-            MutableImage inter_imaginary = convolve(source, h, w, imaginary.data(), 1, length, lanes);
-            MutableImage f1 = convolve(inter_real.data(), h, w, real.data(), length, 1, lanes);
-            MutableImage f2 = convolve(inter_real.data(), h, w, imaginary.data(), length, 1, lanes);
-            MutableImage f3 = convolve(inter_imaginary.data(), h, w, real.data(), length, 1, lanes);
-            MutableImage f4 = convolve(inter_imaginary.data(), h, w, imaginary.data(), length, 1, lanes);
-            check(cn_lens_compose(f1.data(), f2.data(), f3.data(), f4.data(), composed.data() + c * plane, plane,
+            // Channel c's plane of the planar image, a one-channel image of its own.
+            Image source{powered.storage, powered.data + c * plane, image.height, image.width, 1};
+            Image inter_real = convolve(source, row, 0);
+            Image inter_imaginary = convolve(source, imaginary_row, 0);
+            Image f1 = convolve(inter_real, column, 0);
+            Image f2 = convolve(inter_real, imaginary_column, 0);
+            Image f3 = convolve(inter_imaginary, column, 0);
+            Image f4 = convolve(inter_imaginary, imaginary_column, 0);
+            check(cn_lens_compose(f1.data, f2.data, f3.data, f4.data, composed.data() + c * plane, plane,
                                   float(parameters[i][2]), float(parameters[i][3]), i != 0));
         }
     }

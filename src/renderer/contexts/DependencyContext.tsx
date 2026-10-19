@@ -868,6 +868,9 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
                 });
             })
             .finally(() => {
+                // the node list and the installed versions load at the same time
+                backendDownRef.current = false;
+                refreshNodes();
                 refetchInstalledPyPi()
                     .catch(log.error)
                     .then(() => {
@@ -875,8 +878,6 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
                         setModifyingPackages(EMPTY_ARRAY);
                         setOverallProgress(0);
                         setIndividualProgress(0);
-                        backendDownRef.current = false;
-                        refreshNodes();
                     })
                     .catch(log.error);
             });

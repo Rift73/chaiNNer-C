@@ -15,10 +15,10 @@ export const useStored = <T>(
     const setValue = useCallback(
         (value: SetStateAction<T>) => {
             setSetting('storage', (prev) => {
+                const oldValue = getStored(prev, key, defaultValue);
                 const newValue =
-                    typeof value === 'function'
-                        ? (value as (prev: T) => T)(getStored(prev, key, defaultValue))
-                        : value;
+                    typeof value === 'function' ? (value as (prev: T) => T)(oldValue) : value;
+                if (newValue === oldValue) return prev;
                 return { ...prev, [key]: newValue };
             });
         },

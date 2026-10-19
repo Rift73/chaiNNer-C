@@ -1,10 +1,10 @@
 import { createHash } from 'crypto';
-import { writeFile } from 'fs/promises';
+import { realpath, writeFile } from 'fs/promises';
 import { EdgeData, FileOpenResult, NodeData, Version } from '../common/common-types';
 import { log } from '../common/log';
 import { currentMigration, migrate } from '../common/migrations';
 import { versionGt } from '../common/version';
-import { readTextFile } from './util';
+import { readTextFile, writeFileAtomic } from './util';
 import type { Edge, Node, Viewport } from 'reactflow';
 
 export interface SaveData {
@@ -110,8 +110,23 @@ export class SaveFile {
         return JSON.stringify(data);
     }
 
+    /**
+     * Writes the chain through a temporary file and a rename, so a crash or a full disk leaves the
+     * old chain or the new one, never a partial file. A link keeps pointing to the chain: the file
+     * it points to gets the new content. A file that refuses to be replaced (another program holds
+     * it open without sharing delete access, e.g. a sync client) is written in place instead.
+     */
     static async write(path: string, saveData: SaveData, version: Version): Promise<void> {
-        await writeFile(path, SaveFile.stringify(saveData, version), 'utf-8');
+        const content = SaveFile.stringify(saveData, version);
+        const target = await realpath(path).catch(() => path);
+        try {
+            await writeFileAtomic(target, content);
+        } catch (error) {
+            const { code } = error as NodeJS.ErrnoException;
+            if (code !== 'EPERM' && code !== 'EBUSY') throw error;
+            log.warn(`Unable to replace ${target} (${code}), writing it in place.`);
+            await writeFile(target, content, 'utf-8');
+        }
     }
 }
 

@@ -29,10 +29,10 @@ static __m256 halves(const uint16_t *p)
 }
 
 /* Also marks in *special the lanes whose float32 exponent is all ones (Inf, NaN). */
-static __m256 load8(const planar_job *job, size_t offset, __m256i *special)
+static __m256 load8(const planar_job *job, const void *row, size_t x, __m256i *special)
 {
-    __m256 value = job->half ? halves((const uint16_t *)job->src + offset)
-                             : _mm256_loadu_ps((const float *)job->src + offset);
+    __m256 value = job->half ? halves((const uint16_t *)row + x)
+                             : _mm256_loadu_ps((const float *)row + x);
     const __m256i exponent = _mm256_set1_epi32(0x7f800000);
     __m256i bits = _mm256_and_si256(_mm256_castps_si256(value), exponent);
     *special = _mm256_or_si256(*special, _mm256_cmpeq_epi32(bits, exponent));
@@ -64,20 +64,18 @@ int cn_planar_rows_avx2(const planar_job *job, size_t begin, size_t end)
     size_t channels = job->channels, width = job->width, body = width - width % 8;
     if (channels != 1 && channels != 3) return planar_rows(job, begin, end, 0);
     __m256i special = _mm256_setzero_si256();
-    size_t first = channels == 3 ? source_plane(job, 0) * job->plane_stride : 0;
-    size_t last = channels == 3 ? source_plane(job, 2) * job->plane_stride : 0;
     for (size_t y = begin; y < end; ++y) {
         float *row = job->out + y * width * channels;
-        size_t base = y * job->row_stride;
-        for (size_t x = 0; x < body; x += 8) {
-            if (channels == 1) {
-                _mm256_storeu_ps(row + x, load8(job, base + x, &special));
-                continue;
-            }
-            store3(row + 3 * x, load8(job, first + base + x, &special),
-                load8(job, job->plane_stride + base + x, &special),
-                load8(job, last + base + x, &special));
+        const void *a = planar_row(job, 0, y);
+        if (channels == 1) {
+            for (size_t x = 0; x < body; x += 8)
+                _mm256_storeu_ps(row + x, load8(job, a, x, &special));
+            continue;
         }
+        const void *b = planar_row(job, 1, y), *c = planar_row(job, 2, y);
+        for (size_t x = 0; x < body; x += 8)
+            store3(row + 3 * x, load8(job, a, x, &special), load8(job, b, x, &special),
+                load8(job, c, x, &special));
     }
     int tail = planar_rows(job, begin, end, body);
     return tail | !_mm256_testz_si256(special, special);

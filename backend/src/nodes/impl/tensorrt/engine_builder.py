@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -123,6 +125,32 @@ def timing_cache_name(
     gpu = re.sub(r"[^A-Za-z0-9.]+", "-", gpu_name).strip("-")
     major, minor = compute_capability
     return f"timing_{model}_{gpu}_sm{major}{minor}_trt{tensorrt_version}.cache"
+
+
+def write_timing_cache(data: bytes, path: str) -> bool:
+    """Writes a timing cache through a temporary file and a rename, so a build that
+    ends midway or another build of the same model on the same GPU (same file name)
+    leaves the old cache or the new one, never a cut-off file. A cache equal to the
+    file is not written again. Returns whether the file was written."""
+    try:
+        if os.path.getsize(path) == len(data):
+            with open(path, "rb") as f:
+                if f.read() == data:
+                    return False
+    except FileNotFoundError:
+        pass
+    folder, name = os.path.split(path)
+    handle, temporary = tempfile.mkstemp(
+        dir=folder or None, prefix=f"{name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(handle, "wb") as f:
+            f.write(data)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return True
 
 
 def parse_onnx_model(
@@ -274,10 +302,9 @@ def build_engine_from_onnx(
     if timing_cache_path:
         try:
             timing_cache = builder_config.get_timing_cache()
-            if timing_cache:
-                cache_data = timing_cache.serialize()
-                with open(timing_cache_path, "wb") as f:
-                    f.write(cache_data)
+            if timing_cache and write_timing_cache(
+                bytes(timing_cache.serialize()), timing_cache_path
+            ):
                 logger.info("Saved timing cache to %s", timing_cache_path)
         except Exception as e:
             logger.warning("Failed to save timing cache: %s", e)

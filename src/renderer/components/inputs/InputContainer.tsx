@@ -3,7 +3,7 @@ import { QuestionIcon } from '@chakra-ui/icons';
 import { Box, Center, HStack, Text, Tooltip } from '@chakra-ui/react';
 import React, { memo, useCallback, useMemo } from 'react';
 import { Connection } from 'reactflow';
-import { useContext } from 'use-context-selector';
+import { useContext, useContextSelector } from 'use-context-selector';
 import { InputId, LabelStyle } from '../../../common/common-types';
 import { assertNever, stringifyTargetHandle } from '../../../common/util';
 import { VALID, invalid } from '../../../common/Validity';
@@ -32,8 +32,14 @@ export const InputHandle = memo(
         isIterated,
         isConnected,
     }: React.PropsWithChildren<InputHandleProps>) => {
-        const { isValidConnection, useConnectingFrom } = useContext(GlobalVolatileContext);
-        const [connectingFrom] = useConnectingFrom;
+        const isValidConnection = useContextSelector(
+            GlobalVolatileContext,
+            (c) => c.isValidConnection
+        );
+        const connectingFrom = useContextSelector(
+            GlobalVolatileContext,
+            (c) => c.useConnectingFrom[0]
+        );
 
         const targetHandle = stringifyTargetHandle({ nodeId: id, inputId });
 

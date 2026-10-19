@@ -90,7 +90,8 @@ _FAILURE: list[tuple[int, str]] = []
 
 
 def _fake_tensorrt() -> ModuleType:
-    trt = ModuleType("tensorrt")
+    # stand-ins take attributes ModuleType does not declare
+    trt: Any = ModuleType("tensorrt")
     trt.__version__ = "10.15.1"
     trt.DataType = SimpleNamespace(FLOAT="float", HALF="half", BF16="bf16")
     trt.BuilderFlag = SimpleNamespace(
@@ -111,9 +112,9 @@ def _fake_tensorrt() -> ModuleType:
 
 @pytest.fixture
 def engine_builder(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    cuda = ModuleType("cuda")
-    bindings = ModuleType("cuda.bindings")
-    runtime = ModuleType("cuda.bindings.runtime")
+    cuda: Any = ModuleType("cuda")
+    bindings: Any = ModuleType("cuda.bindings")
+    runtime: Any = ModuleType("cuda.bindings.runtime")
     runtime.cudaSetDevice = lambda _: (0,)
     cuda.bindings = bindings
     bindings.runtime = runtime
@@ -299,3 +300,60 @@ def test_the_cache_file_is_named_by_model_gpu_and_tensorrt_version(
     assert name(onnx, 'Quadro "A/B": 6000', (8, 6), "11.2.1.2").endswith(
         "_Quadro-A-B-6000_sm86_trt11.2.1.2.cache"
     )
+
+
+def test_the_cache_is_replaced_through_a_temporary_file(
+    engine_builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A build that ends midway, or another build of the same model on the same GPU,
+    # must never leave a cut-off cache: the new content arrives by one rename.
+    cache = tmp_path / "timing.cache"
+    cache.write_bytes(b"earlier")
+    replaced: list[tuple[str, str]] = []
+    replace = engine_builder.os.replace
+
+    def recording_replace(source: str, target: str) -> None:
+        assert Path(source).read_bytes() == b"earlier+timings"
+        assert cache.read_bytes() == b"earlier"
+        replaced.append((source, target))
+        replace(source, target)
+
+    monkeypatch.setattr(engine_builder.os, "replace", recording_replace)
+    _build(engine_builder, cache)
+
+    assert [target for _, target in replaced] == [str(cache)]
+    assert cache.read_bytes() == b"earlier+timings"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["timing.cache"]
+
+
+def test_a_failed_cache_write_keeps_the_old_cache(
+    engine_builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cache = tmp_path / "timing.cache"
+    cache.write_bytes(b"earlier")
+
+    def failing_replace(_source: str, _target: str) -> None:
+        raise PermissionError("[WinError 5] Access is denied")
+
+    monkeypatch.setattr(engine_builder.os, "replace", failing_replace)
+    _build(engine_builder, cache)
+
+    assert cache.read_bytes() == b"earlier"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["timing.cache"]
+
+
+def test_an_unchanged_cache_is_not_written_again(
+    engine_builder: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cache = tmp_path / "timing.cache"
+    write = engine_builder.write_timing_cache
+
+    assert write(b"timings", str(cache)) is True
+    assert cache.read_bytes() == b"timings"
+
+    def unexpected_replace(_source: str, _target: str) -> None:
+        raise AssertionError("an equal cache was written again")
+
+    monkeypatch.setattr(engine_builder.os, "replace", unexpected_replace)
+    assert write(b"timings", str(cache)) is False
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["timing.cache"]

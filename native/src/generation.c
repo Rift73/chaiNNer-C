@@ -4,6 +4,7 @@
  */
 #include "cn_crt_math.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include "procedural.h"
 #include <math.h>
 #include <limits.h>

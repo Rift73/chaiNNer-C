@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import save
 from sanic.log import logger
 from spandrel import ModelDescriptor
 
+from nodes.impl.native_graph import graph
 from nodes.properties.inputs import (
     DirectoryInput,
     EnumInput,
@@ -54,9 +56,16 @@ def save_model_node(
     full_path = (directory / f"{name}.{weight_format.value}").resolve()
     logger.debug(f"Writing model to path: {full_path}")
     full_path.parent.mkdir(parents=True, exist_ok=True)
+    # Through a temporary file in the folder (native/include/atomic_file.hpp): no partial
+    # file, and a file that already holds these bytes is left untouched.
     if weight_format == WeightFormat.PTH:
-        torch.save(model.model.state_dict(), full_path)
+        # torch.save names the archive inside after the file, so it writes the final name in
+        # chaiNNer's temporary folder.
+        with TemporaryDirectory(prefix="chaiNNer-") as folder:
+            staged = Path(folder) / full_path.name
+            torch.save(model.model.state_dict(), staged)
+            graph().atomic_move(staged, full_path)
     elif weight_format == WeightFormat.ST:
-        save_file(model.model.state_dict(), full_path)
+        graph().atomic_write(full_path, save(model.model.state_dict()))
     else:
         raise ValueError(f"Unknown weight format: {weight_format}")

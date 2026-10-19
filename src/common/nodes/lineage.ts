@@ -42,8 +42,18 @@ export class Lineage {
     }
 }
 
+/** The connections of the edges, in order: what a lineage depends on of them. */
+const connectionsOf = (edges: readonly Edge<EdgeData>[]): string =>
+    edges
+        .map((e) => `${e.source} ${e.sourceHandle ?? ''} ${e.target} ${e.targetHandle ?? ''}`)
+        .join('\n');
+
 export class ChainLineage {
+    private readonly schemata: SchemaMap;
+
     private readonly nodeSchemata: ReadonlyMap<string, NodeSchema>;
+
+    private readonly connections: string;
 
     private readonly byTargetNode: ReadonlyMap<string, readonly Edge<EdgeData>[]>;
 
@@ -56,13 +66,39 @@ export class ChainLineage {
         nodes: readonly Node<NodeData>[],
         edges: readonly Edge<EdgeData>[]
     ) {
+        this.schemata = schemata;
         this.nodeSchemata = new Map(nodes.map((n) => [n.id, schemata.get(n.data.schemaId)]));
+        this.connections = connectionsOf(edges);
 
         this.byTargetHandle = new Map(edges.map((e) => [e.targetHandle!, e] as const));
         this.byTargetNode = groupBy(edges, (e) => e.target);
     }
 
     static readonly EMPTY: ChainLineage = new ChainLineage(SchemaMap.EMPTY, [], []);
+
+    /**
+     * The lineage of the chain, or `previous` if the chain has the same nodes (IDs and schemas)
+     * and connections as previous's chain (e.g. a node only moved or got another input value):
+     * its lineages are the same, and keeping the object keeps everything that depends on it
+     * (every node's iterated inputs, input conditions and validity) as it is.
+     */
+    static create(
+        schemata: SchemaMap,
+        nodes: readonly Node<NodeData>[],
+        edges: readonly Edge<EdgeData>[],
+        previous?: ChainLineage
+    ): ChainLineage {
+        if (
+            previous &&
+            previous.schemata === schemata &&
+            previous.nodeSchemata.size === nodes.length &&
+            nodes.every((n) => previous.nodeSchemata.get(n.id)?.schemaId === n.data.schemaId) &&
+            previous.connections === connectionsOf(edges)
+        ) {
+            return previous;
+        }
+        return new ChainLineage(schemata, nodes, edges);
+    }
 
     private getEdgeByTarget(handle: ParsedTargetHandle): Edge<EdgeData> | undefined {
         return this.byTargetHandle.get(stringifyTargetHandle(handle));

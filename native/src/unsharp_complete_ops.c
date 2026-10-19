@@ -9,6 +9,7 @@
  */
 #include "chainner.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include <math.h>
 
 static cn_status span(const void *pointer, size_t count, uintptr_t *end)

@@ -40,7 +40,9 @@ from events import EventConsumer, EventQueue, ExecutionErrorData
 from nodes.impl import native, native_profile, numpy_pool
 from nodes.impl.cors import add_cors
 from nodes.impl.tensorrt import cache as tensorrt_cache
+from native_executor import NativeExecutor, executor_kind
 from process import ExecutionId, Executor, NodeExecutionError, NodeOutput
+from process_temp import use_process_temp_folder
 from progress_controller import Aborted
 from response import (
     RESTART_WORKER_HEADER,
@@ -222,13 +224,13 @@ def register_packages() -> tuple[
 class AppContext:
     def __init__(self):
         self.config: Final[ServerConfig] = ServerConfig.parse_argv()
-        self.executor: Executor | None = None
+        self.executor: Executor | NativeExecutor | None = None
         # A /run is in its handler: set before its first await (it waits for previews
         # before its executor exists), so a second /run is refused meanwhile.
         self.run_starting = False
         # Stop arrived while that /run waited for previews: it ends without running.
         self.run_stopped_early = False
-        self.individual_executors: dict[ExecutionId, Executor] = {}
+        self.individual_executors: dict[ExecutionId, Executor | NativeExecutor] = {}
         self.cache: dict[NodeId, NodeOutput] = {}
         # Increased from 4 to 8 workers for better parallelism in batch processing
         self.pool: Final[ThreadPoolExecutor] = ThreadPoolExecutor(
@@ -448,7 +450,9 @@ async def run(request: Request):
                     ctx.cache.pop(node.id)
 
         logger.info("Running new executor...")
-        executor = Executor(
+        # CHAINNER_C_EXECUTOR: the native run engine or process.Executor (native_executor.py).
+        executor_class = NativeExecutor if executor_kind() == "native" else Executor
+        executor = executor_class(
             id=executor_id,
             chain=chain,
             send_broadcast_data=full_data["sendBroadcastData"],
@@ -627,7 +631,8 @@ async def run_individual(request: Request):
         )
 
         execution_id = ExecutionId("individual-executor " + node_id)
-        executor = Executor(
+        executor_class = NativeExecutor if executor_kind() == "native" else Executor
+        executor = executor_class(
             id=execution_id,
             chain=chain,
             send_broadcast_data=True,
@@ -687,7 +692,7 @@ async def run_individual(request: Request):
 individual_releases: set[asyncio.Task[None]] = set()
 
 
-async def release_after_broadcasts(ctx: AppContext, executor: Executor) -> None:
+async def release_after_broadcasts(ctx: AppContext, executor: Executor | NativeExecutor) -> None:
     """Releases the NumPy pool once an individual run's broadcasts are sent.
 
     The broadcasts free their temporaries when they finish; a release before that
@@ -1061,6 +1066,9 @@ def main():
     # The VapourSynth package keeps its function catalog, user functions and overlays
     # there; it reads the variable when its node modules load, in setup.
     os.environ["CHAINNER_VS_DIR"] = str(ctx.storage_dir / "vapoursynth")
+    # Temporary files go to a folder of this worker's own; the folders of workers that
+    # ended without removing theirs are removed.
+    use_process_temp_folder(ctx.storage_dir)
     # Before the event loop exists: its tasks copy this thread's context.
     numpy_pool.install()
     app.run(port=config.port, single_process=True)

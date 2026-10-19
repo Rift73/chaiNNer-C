@@ -1,24 +1,10 @@
 /* Native entry points of image_dimension nodes (the pattern: image_utility.cpp's note). */
+#include "image_node_support.hpp"
 #include "image_resize.hpp"
 
 namespace {
 
 using namespace cn::run;
-
-/* An int input as an Extent; a Python int beyond int64 (a PyRef) declines to the Python body. */
-Extent extent(const Value &value)
-{
-    const int64_t *number = std::get_if<int64_t>(&value);
-    if (!number) throw RunPython{};
-    return Extent::of(*number);
-}
-
-/* max(extent, 1). */
-Extent at_least_one(Extent extent)
-{
-    if (extent.mantissa == 0) extent.mantissa = 1;
-    return extent;
-}
 
 /* chainner:image:resize (image_dimension/resize/resize.py): Percentage (0) scales both sides by scale / 100 with
  * round_half_up and at least 1 pixel, Absolute (1) takes the width and height. */

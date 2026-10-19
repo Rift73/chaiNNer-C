@@ -1,7 +1,7 @@
 /* native_filters.morphology, line by line (image_morphology.hpp). */
 #include "image_morphology.hpp"
 
-#include "../kernel_status.hpp"
+#include "image_node_support.hpp"
 #include "dispatch.hpp"
 
 #include <string>
@@ -16,11 +16,7 @@ constexpr int64_t morph_rect = 0, morph_cross = 1, morph_ellipse = 2;
 
 Image morphology(const Image &image, int64_t shape, int64_t radius, int64_t iterations, bool maximum)
 {
-    if (image.height == 0 || image.width == 0) {
-        std::string text = "(" + std::to_string(image.height) + ", " + std::to_string(image.width);
-        text += image.channels == 1 ? ")" : ", " + std::to_string(image.channels) + ")";
-        throw NodeError("ValueError", "Invalid image shape " + text);
-    }
+    if (image.height == 0 || image.width == 0) throw NodeError("ValueError", "Invalid image shape " + shape_text(image));
     if (radius < 0 || iterations < 0)
         throw NodeError("ValueError", "Morphology radius and iterations must be nonnegative");
     if (radius == 0 || iterations == 0) return image;

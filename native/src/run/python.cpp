@@ -428,14 +428,36 @@ py::list native_schema_ids()
 
 }  // namespace
 
+namespace {
+
+/* References dropped by threads without the GIL, released in a batch by the next thread that takes it (DESIGN.md
+ * amendment A2: no GIL taken only to drop a reference). */
+std::mutex deferred_lock;
+std::vector<PyObject *> deferred;
+
+}  // namespace
+
 PyRef py_ref(py::handle object)
 {
     return PyRef{std::shared_ptr<void>(object.inc_ref().ptr(), [](void *held) {
         if (Py_IsFinalizing()) return;
-        PyGILState_STATE state = PyGILState_Ensure();
-        Py_DECREF(static_cast<PyObject *>(held));
-        PyGILState_Release(state);
+        if (PyGILState_Check()) {
+            Py_DECREF(static_cast<PyObject *>(held));
+            return;
+        }
+        std::lock_guard<std::mutex> locked(deferred_lock);
+        deferred.push_back(static_cast<PyObject *>(held));
     })};
+}
+
+void release_deferred()
+{
+    std::vector<PyObject *> pending;
+    {
+        std::lock_guard<std::mutex> locked(deferred_lock);
+        pending.swap(deferred);
+    }
+    for (PyObject *object : pending) Py_DECREF(object);
 }
 
 Value to_value(py::handle object, ImageMode mode)
@@ -471,8 +493,27 @@ Value to_value(py::handle object, ImageMode mode)
         return path;
     }
     if (is_instance(object, python.color)) {
+        // Channels are floats, or ints where Color's _norm kept one (Color.gray(0)); anything else stays itself.
         Color color;
-        for (py::handle channel : object.attr("value")) color.values.push_back(channel.cast<double>());
+        bool any_integral = false;
+        std::vector<bool> integral;
+        for (py::handle channel : object.attr("value")) {
+            if (PyFloat_CheckExact(channel.ptr())) {
+                color.values.push_back(PyFloat_AS_DOUBLE(channel.ptr()));
+                integral.push_back(false);
+                continue;
+            }
+            if (!PyLong_CheckExact(channel.ptr())) return py_ref(object);
+            int overflow = 0;
+            long long whole = PyLong_AsLongLongAndOverflow(channel.ptr(), &overflow);
+            if (whole == -1 && PyErr_Occurred()) throw py::error_already_set();
+            // Beyond 2**53 a double would not keep the int exactly
+            if (overflow != 0 || whole > (1LL << 53) || whole < -(1LL << 53)) return py_ref(object);
+            color.values.push_back(double(whole));
+            integral.push_back(true);
+            any_integral = true;
+        }
+        if (any_integral) color.integral = std::move(integral);
         return color;
     }
     if (is_instance(object, python.seed)) {
@@ -504,7 +545,12 @@ py::object to_python(const Value &value)
                 return names().path(py::reinterpret_steal<py::object>(text));
             } else if constexpr (std::is_same_v<T, Color>) {
                 py::tuple channels(v.values.size());
-                for (size_t i = 0; i < v.values.size(); ++i) channels[i] = py::float_(v.values[i]);
+                for (size_t i = 0; i < v.values.size(); ++i) {
+                    if (i < v.integral.size() && v.integral[i])
+                        channels[i] = py::int_(static_cast<long long>(v.values[i]));
+                    else
+                        channels[i] = py::float_(v.values[i]);
+                }
                 return names().color(channels);
             } else if constexpr (std::is_same_v<T, Seed>) return names().seed(py::int_(v.value));
             else if constexpr (std::is_same_v<T, Image>) return image_to_python(v);

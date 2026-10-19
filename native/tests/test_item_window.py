@@ -39,7 +39,7 @@ from test_generator_lifecycle import (
     stripped,
     window_summaries,
 )
-from test_image_io import NEW, failing_writes, save_arguments
+from test_image_io import NEW, save_arguments
 from test_video_io import FakeFFmpeg
 from test_video_io import load as video_module
 
@@ -443,7 +443,8 @@ def test_server_passes_its_pool_size_to_every_executor():
         and any(isinstance(t, ast.Name) and t.id == "POOL_SIZE" for t in n.targets)
     ]
     assert len(constants) == 1 and ast.literal_eval(constants[0].value) == 8
-    wiring = {"ThreadPoolExecutor": "max_workers", "Executor": "pool_size"}
+    # executor_class: process.Executor or the native engine's NativeExecutor (CHAINNER_C_EXECUTOR).
+    wiring = {"ThreadPoolExecutor": "max_workers", "executor_class": "pool_size"}
     calls = [
         (n, n.func)
         for n in ast.walk(tree)
@@ -464,9 +465,9 @@ def test_server_passes_its_pool_size_to_every_executor():
         for c, func in calls
     )
     assert passed == [
-        ("Executor", True),
-        ("Executor", True),
         ("ThreadPoolExecutor", True),
+        ("executor_class", True),
+        ("executor_class", True),
     ]
 
 
@@ -3040,10 +3041,11 @@ def ran_ahead(pipeline, name):
 
 
 @pytest.mark.usefixtures("phases_registry")
-def test_failed_prepare_over_an_existing_gif_truncates_as_today(monkeypatch, tmp_path):
+def test_failed_prepare_over_an_existing_gif_leaves_it_as_it_was(monkeypatch, tmp_path):
     # Item 3's GIF encoder fails, in its prepare and in its save. A failed prepare is
-    # nothing prepared, so item 3's save runs whole: Image.save opens the existing file
-    # ("w+b"), the encoder fails, the file stays truncated, as at K = 1.
+    # nothing prepared, so item 3's save runs whole: it encodes in memory before the
+    # atomic write (DESIGN A4), so the encoder's failure leaves the existing file as it
+    # was, as at K = 1.
     Image.init()
     encode = Image.SAVE["GIF"]
     color = round((3 / 8 * 0.5 + 0.25) * 255)  # item 3's pixel value
@@ -3056,29 +3058,24 @@ def test_failed_prepare_over_an_existing_gif_truncates_as_today(monkeypatch, tmp
     monkeypatch.setitem(Image.SAVE, "GIF", failing)
     one, three = save_runs(monkeypatch, tmp_path, existing={3}, fmt="GIF")
     assert one.message == three.message == "encoder failed"
-    assert one.files == three.files and three.files["item-3.gif"] == b""
+    assert one.files == three.files and three.files["item-3.gif"] == b"existing"
     assert "item-3" in [name for name, _ in three.pipeline.prepares]
     assert "item-3" in three.pipeline.wholes and not ran_ahead(three.pipeline, "item-3")
     assert stripped(three.pipeline.events) == stripped(one.pipeline.events)
 
 
 @pytest.mark.usefixtures("phases_registry")
-@pytest.mark.parametrize("existing", [False, True])
-def test_prepared_gif_write_failure_leaves_todays_file(monkeypatch, tmp_path, existing):
-    # Item 3's file write fails after 4 bytes (a full disk). Its prepared bytes are
-    # written with Image.save's file handling: a file the save created is removed, an
-    # existing one stays truncated to the partial write, as at K = 1.
-    failing_writes(monkeypatch, "item-3.gif")
-    one, three = save_runs(
-        monkeypatch, tmp_path, existing={3} if existing else (), fmt="GIF"
-    )
-    assert one.message == three.message == "[Errno 28] No space left on device"
-    assert one.files == three.files
-    assert (
-        (len(three.files["item-3.gif"]) == 4)
-        if existing
-        else ("item-3.gif" not in three.files)
-    )
+def test_prepared_gif_write_failure_leaves_no_partial_file(monkeypatch, tmp_path):
+    # Item 3's write fails after its temporary file is written: the read-only target refuses the rename. Writes are
+    # atomic (DESIGN A4): the target keeps its bytes and no temporary file is left, at K = 3 as at K = 1.
+    try:
+        one, three = save_runs(monkeypatch, tmp_path, setup=read_only_item_3, fmt="GIF")
+    finally:
+        for path in tmp_path.rglob("item-3.gif"):
+            os.chmod(path, stat.S_IWRITE)
+    assert one.message == three.message
+    assert one.files == three.files and three.files["item-3.gif"] == b"existing"
+    assert not [name for name in three.files if name.endswith(".tmp")]
     assert ran_ahead(three.pipeline, "item-3")
     assert stripped(three.pipeline.events) == stripped(one.pipeline.events)
 

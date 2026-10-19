@@ -45,6 +45,7 @@
  * the default 3x3 Sobel aperture and L1 magnitude, with multi-channel maximum. */
 #include "repair_buffers.hpp"
 #include "parallel.h"
+#include "run_kernels.h"
 #include <algorithm>
 #include <cstdlib>
 #include <new>

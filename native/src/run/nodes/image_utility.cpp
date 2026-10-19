@@ -16,7 +16,7 @@
  *   all_nodes.inc.
  * - Test: native/tests/test_run_nodes_<group>.py with native_differential.assert_native_matches over seeded
  *   images (1/3/4 channels, odd sizes, edge values), every dropdown option and the error cases. */
-#include "../kernel_status.hpp"
+#include "image_node_support.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -45,13 +45,6 @@ void flip(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outp
     check(cn_channels_flip(image.data, out.data(), size_t(image.height), size_t(image.width), size_t(image.channels),
                            int(axis)));
     outputs.push_back(std::move(out).publish());
-}
-
-/* The repr of an image's NumPy shape: (h, w) for grey, else (h, w, c). */
-std::string shape_text(const Image &image)
-{
-    std::string text = "(" + std::to_string(image.height) + ", " + std::to_string(image.width);
-    return text + (image.channels == 1 ? ")" : ", " + std::to_string(image.channels) + ")");
 }
 
 /* A Blend Images layer: an image, or a Color (one pixel's channels, repeated over the other layer's size). */

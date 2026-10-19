@@ -60,9 +60,12 @@ struct Path {
     std::filesystem::path value;
 };
 
-/* A colour input (chaiNNer's Color): its channel values in the order the Python object stores them. */
+/* A colour input (chaiNNer's Color): its channel values in the order the Python object stores them. integral[i]
+ * marks a channel that is a Python int (Color's _norm returns int 0 or 1 at the bounds, e.g. Color.gray(0)); an
+ * empty integral means every channel is a float. */
 struct Color {
     std::vector<double> values;
+    std::vector<bool> integral;
 };
 
 /* A seed input (nodes.utils.seed.Seed) whose value fits int64; a larger seed stays a PyRef. */
