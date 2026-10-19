@@ -238,7 +238,7 @@ bool pillow_exif_declines(std::string_view exif) {
 // signature is the first 32 bytes (the WebP decoder's length, the longest); a shorter file pads it with spaces, so
 // it declines. PxM, PAM and PFM test isspace(byte 2), which depends on the CRT locale above ASCII: such a byte is
 // taken as a space, so the file declines whichever way the test goes.
-enum class OpenCvCodec { other, bmp, jpeg, webp, pxm, tiff, png };
+enum class OpenCvCodec { other, bmp, jpeg, webp, pxm, tiff, png, exr };
 OpenCvCodec opencv_codec(std::span<const uint8_t> f) {
     if (f.size() < 32) return OpenCvCodec::other;
     const auto starts = [&](std::string_view prefix) { return std::memcmp(f.data(), prefix.data(), prefix.size()) == 0; };
@@ -254,6 +254,7 @@ OpenCvCodec opencv_codec(std::span<const uint8_t> f) {
     if (starts("II\x2a\0"sv) || starts("MM\0\x2a"sv) || starts("II\x2b\0"sv) || starts("MM\0\x2b"sv))
         return OpenCvCodec::tiff;
     if (starts("\x89PNG\r\n\x1a\n")) return OpenCvCodec::png;
+    if (cn_exr_signature(f.data(), f.size())) return OpenCvCodec::exr; // OpenEXR, registered last
     return OpenCvCodec::other;
 }
 
@@ -322,10 +323,11 @@ bool decode_pillow_jpeg(std::span<const uint8_t> file, uint64_t max_pixels, cons
     return finish(target);
 }
 
-bool decode_opencv(std::span<const uint8_t> file, const Allocator &allocate) {
+bool decode_opencv(std::span<const uint8_t> file, const Allocator &allocate, bool ported) {
     const OpenCvCodec codec = opencv_codec(file);
     uint64_t width = 0, height = 0, pixels = 0;
-    if (codec == OpenCvCodec::other || !opencv_limit(L"OPENCV_IO_MAX_IMAGE_WIDTH", 1 << 20, width) ||
+    if (codec == OpenCvCodec::other || (!ported && codec != OpenCvCodec::exr) ||
+        !opencv_limit(L"OPENCV_IO_MAX_IMAGE_WIDTH", 1 << 20, width) ||
         !opencv_limit(L"OPENCV_IO_MAX_IMAGE_HEIGHT", 1 << 20, height) ||
         !opencv_limit(L"OPENCV_IO_MAX_IMAGE_PIXELS", 1 << 30, pixels) || !width || !height || !pixels)
         return false; // a limit of 0 refuses every image
@@ -341,6 +343,7 @@ bool decode_opencv(std::span<const uint8_t> file, const Allocator &allocate) {
     case OpenCvCodec::pxm: status = cn_pxm_decode(file.data(), file.size(), allocate_target, &target); break;
     case OpenCvCodec::tiff: status = cn_tiff_decode(file.data(), file.size(), allocate_target, &target); break;
     case OpenCvCodec::png: status = cn_png_decode(file.data(), file.size(), allocate_target, &target); break;
+    case OpenCvCodec::exr: status = cn_exr_decode(file.data(), file.size(), allocate_target, &target); break;
     case OpenCvCodec::other: break;
     }
     return status == CN_CODEC_OK && finish(target);

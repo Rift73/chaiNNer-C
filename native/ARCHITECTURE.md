@@ -29,7 +29,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 | Mirrors' CRT math from the process's `ucrtbase.dll` (Consult 6 D-4; groups in the header) | `native/include/cn_crt_math.h`, `native/src/crt_math.c` |
 | Ownership, cache, events | `backend/src/nodes/impl/native_buffers.py`, `nodes/properties/outputs/numpy_outputs.py`, `chain/cache.py`, `nodes/impl/event_queue.py`, `nodes/impl/numpy_pool.py` (section 6) |
 | Resize and PNG | `backend/src/nodes/impl/native_resample.py`, `native/src/resample_filters.c`, `native/src/image_io.cpp`, `native/third_party/fpng` |
-| Image codecs and atomic writes (instant-exec lane I) | `native/cmake/codecs.cmake`, `native/src/codecs/*.c` (`native/include/image_codecs.h`), `native/src/image_decode.cpp`, `image_encode.cpp`, `image_preview.cpp`, `native/src/atomic_file.cpp`, `native/src/run/nodes/io.cpp`, `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}` |
+| Image codecs and atomic writes (instant-exec lane I) | `native/cmake/codecs.cmake`, `native/src/codecs/*.c` (`native/include/image_codecs.h`), `native/src/image_decode.cpp`, `image_encode.cpp`, `image_preview.cpp`, `native/src/atomic_file.cpp`, `native/src/run/nodes/io.cpp`, `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}`; OpenEXR: `native/src/codecs/exr_codec.c`, `native/third_party/{openexr,imath,libdeflate,zstd,openjph}` |
 | Video | `native/src/video_io.cpp`, `backend/src/nodes/impl/video.py` |
 | Packaging | `native/tools/package_port.py`, `package_files.py`, `package_manifest.py` |
 | UI patches | `native/tools/independent_ui.py`, `native/tools/input-drop.json`, `native/tools/tensorrt-types.json`, `native/tools/tensorrt-clear.json`, `verify_*.cjs` |
@@ -279,6 +279,12 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
   rules); anything else (a warning, an error, a variant not ported, MPO, APNG) declines to today's Python path, which
   gives the result or the error. `CHAINNER_C_NATIVE_CODECS=0` is the diagnostic switch to today's path (the oracle of
   `native/tests/test_native_codecs.py` and the git-ignored corpus in `native/local/codec-corpus`).
+- OpenEXR: the runtime's OpenCV is built without OpenEXR, so `.exr` (by signature, in the `cv` decoder and the engine's
+  Load Image) decodes through OpenEXRCore 3.5.2 (`exr_codec.c`; ZIP, PIZ, B44, DWA, HTJ2K, ZSTD and the rest; tiled,
+  multipart), even under `CHAINNER_C_NATIVE_CODECS=0`. It gives what OpenCV's ExrDecoder gives under IMREAD_UNCHANGED:
+  float32 (no clipping), BGR(A), the data window, part 0, level 0; two choices differ, Y with A loads as BGRA (OpenCV
+  gives two channels) and luminance/chroma uses OpenEXR's luminance weights (OpenCV uses the primaries' y). Chunks
+  decode in parallel on the native pool; a file it declines raises Load Image's error, as before.
 - File writers write `<final>.chainner-c-<pid>-<seq>.tmp` in the target folder and rename it (`MoveFileExW`, no
   fsync); a final file with the same bytes is left untouched; failures raise what `open()` raises for the final path.
 - File traversal order, Unicode paths, overwrite/skip options, error continuation, final UI state
@@ -591,8 +597,9 @@ another project generated.
   zhang_hilbert 0.1.1, avx2_mathfun, CPython 3.11.5 `random.py`, pybind11 2.13.6, fpng 1.0.6 (Unlicense).
 - Vendored: `native/third_party/fpng` (`PROVENANCE.md`: hashes, Unlicense, size caps),
   `native/third_party/pybind11`, `native/third_party/onnxruntime` (C API header, `LICENSE`), and the image codecs
-  `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}` (unchanged upstream sources, `PROVENANCE.md` with
-  the signed tarball's SHA-256, `chainner/` configuration headers; notices in `chainner_native.LICENSE.txt`).
+  `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff,openexr,imath,libdeflate,zstd,openjph}` (upstream
+  sources, unchanged but for OpenEXRCore's one recorded line, `PROVENANCE.md` with the release's SHA-256 and signature,
+  `chainner/` configuration headers; notices in `chainner_native.LICENSE.txt`).
 - Ported into `chainner_ext.pyd`: `native/third_party/chainner_ext`, `regex` and `regex-syntax` (MIT OR Apache-2.0) and
   `unicode` (the Unicode 15.0.0 tables' licence), each with its licence texts and `PROVENANCE.md`.
 - Vendored model code: `backend/src/vendor/vosr2` (VOSR 2.0's DiT, DINOv2 and Qwen-Image VAE definitions from

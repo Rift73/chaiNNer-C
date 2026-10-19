@@ -221,7 +221,10 @@ enum class NativeDecoder {pillow_jpeg,opencv,pillow_tiff_alpha};
 // the array the pixels go into.
 O native_decode(py::dict g,O path,NativeDecoder decoder) {
     const bool pillow=decoder==NativeDecoder::pillow_jpeg;
-    if(!cn::image_decode::enabled())return py::none();
+    // CHAINNER_C_NATIVE_CODECS=0 sends a file to today's decoders, except an OpenEXR file on the OpenCV route: the
+    // runtime's OpenCV has no OpenEXR, so OpenEXRCore decodes it either way (the file is read here to tell).
+    const bool ported=cn::image_decode::enabled();
+    if(!ported && decoder!=NativeDecoder::opencv)return py::none();
     uint64_t max_pixels=0;
     if(decoder!=NativeDecoder::opencv) {
         O limit=name(g,"Image").attr("MAX_IMAGE_PIXELS");
@@ -265,7 +268,7 @@ O native_decode(py::dict g,O path,NativeDecoder decoder) {
             std::vector<uint8_t> data;
             decoded=cn::image_decode::read_file(file,data) &&
                 (pillow?cn::image_decode::decode_pillow_jpeg(data,max_pixels,allocate):
-                 decoder==NativeDecoder::opencv?cn::image_decode::decode_opencv(data,allocate):
+                 decoder==NativeDecoder::opencv?cn::image_decode::decode_opencv(data,allocate,ported):
                  cn::image_decode::decode_pillow_tiff_alpha(data,max_pixels,allocate));
         } catch(const std::bad_alloc&) {decoded=false;} // today's path reports it
     }
@@ -279,8 +282,9 @@ bool extension_in(const O& ext,std::initializer_list<const char*> suffixes) {
 O read_cv(py::dict g,O path) {
     O ext=name(g,"get_ext")(path);
     if(!contains(name(g,"get_opencv_formats")(),ext))return py::none();
-    // JPEG 2000, Sun raster, OpenEXR and Radiance HDR have no native codec: such a file goes to OpenCV, read once.
-    if(!extension_in(ext,{".jp2",".sr",".ras",".exr",".hdr",".pic"}))
+    // JPEG 2000, Sun raster and Radiance HDR have no native codec: such a file goes to OpenCV, read once. OpenEXR
+    // decodes natively (OpenEXRCore); OpenCV, which lacks it, then only reports the failure of a file it declines.
+    if(!extension_in(ext,{".jp2",".sr",".ras",".hdr",".pic"}))
         if(O native=native_decode(g,path,NativeDecoder::opencv);!native.is_none())return native;
     O image=py::none(),cv=name(g,"cv2");
     // IMREAD_UNCHANGED leaves EXIF Orientation to the caller; read it from the file's bytes.

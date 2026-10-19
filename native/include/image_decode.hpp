@@ -46,10 +46,12 @@ bool read_file(const std::filesystem::path &path, std::vector<uint8_t> &data);
 bool decode_pillow_jpeg(std::span<const uint8_t> file, uint64_t max_pixels, const Allocator &allocate);
 
 /* Today's `cv` decoder for the bytes of a file: imdecode's codec by signature, decoded by the ported ones (BMP, JPEG,
- * WebP, PxM, TIFF, PNG), then the file's EXIF orientation as read_cv applies it. Other codecs decline, and so do
- * images above OpenCV's size limits (OPENCV_IO_MAX_IMAGE_WIDTH, _HEIGHT, _PIXELS; a value other than a plain integer
- * declines every file) or above CN_MAX_IMAGE_PIXELS. */
-bool decode_opencv(std::span<const uint8_t> file, const Allocator &allocate);
+ * WebP, PxM, TIFF, PNG) and by OpenEXRCore for OpenEXR (cn_exr_decode: OpenCV's ExrDecoder, which the runtime's
+ * OpenCV lacks), then the file's EXIF orientation as read_cv applies it. Other codecs decline, and so do images above
+ * OpenCV's size limits (OPENCV_IO_MAX_IMAGE_WIDTH, _HEIGHT, _PIXELS; a value other than a plain integer declines
+ * every file) or above CN_MAX_IMAGE_PIXELS. `ported` false (CHAINNER_C_NATIVE_CODECS=0) declines every file but an
+ * OpenEXR one, which has no other decoder. */
+bool decode_opencv(std::span<const uint8_t> file, const Allocator &allocate, bool ported = true);
 
 /* Today's `pil-tiff-alpha` decoder (load_image.py's _read_tiff_straight_alpha) for the plain 8-bit RGBA and
  * grey+alpha TIFFs cn_tiff_decode_pillow_alpha takes: BGRA, turned as its Orientation tag says. max_pixels is

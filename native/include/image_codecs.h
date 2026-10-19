@@ -97,6 +97,19 @@ cn_codec_status cn_tiff_decode(const uint8_t *data, size_t size, cn_codec_alloca
 cn_codec_status cn_tiff_decode_pillow_alpha(const uint8_t *data, size_t size, cn_codec_allocate allocate,
                                             void *context, int *orientation);
 
+/* Decodes an OpenEXR file with OpenEXRCore 3.5.2 as OpenCV 5.0's ExrDecoder does under IMREAD_UNCHANGED on a build
+ * with OpenEXR (the runtime's OpenCV has none): part 0 of a multipart file, level 0 of a tiled one, every
+ * compression OpenEXRCore has; the data window as the image (the display window is not used); float32 samples (half
+ * widened exactly, uint32 converted, no clipping); R/G/B[/A] as BGR(A) with a missing colour channel 0; else channels
+ * "0".."n-1" as they are (n of 1, 3 or 4); else Y (or Z) as grey, with RY/BY converted to BGR(A) after repeating the
+ * subsampled chroma, by OpenEXR's luminance weights for the file's chromaticities; Y with A as BGRA with the grey in B,
+ * G and R (OpenCV gives two channels, which chaiNNer's images do not have). Deep parts, other channel sets, images
+ * above CN_MAX_IMAGE_PIXELS and every file OpenEXRCore reports an error for fall back. */
+cn_codec_status cn_exr_decode(const uint8_t *data, size_t size, cn_codec_allocate allocate, void *context);
+
+/* OpenCV's ExrDecoder::checkSignature: the magic number 76 2F 31 01. */
+int cn_exr_signature(const uint8_t *data, size_t size);
+
 /* Encoders. Each writes today's file bytes for an image into `out`, or returns CN_CODEC_FALLBACK (and leaves `out`
  * to be freed) where today's encoder would fail or warn, so today's path runs instead. */
 

@@ -41,6 +41,11 @@ def written(path: Path, array: np.ndarray, *params: int) -> Path:
     return path
 
 
+def exr_fixture(path: Path, name: str) -> Path:
+    path.write_bytes((Path(__file__).with_name("exr") / name).read_bytes())
+    return path
+
+
 NATIVE = {
     "rgb.jpg": lambda p: jpeg(p),
     "grey.jpeg": lambda p: jpeg(p, "L"),
@@ -71,6 +76,11 @@ NATIVE = {
     "double_tiff.png": lambda p: written(p.with_suffix(".tif"), RGB[:, :, 0].astype(np.float64) / 255).rename(p) or p,
     "straight.tif": lambda p: Image.fromarray(np.dstack([RGB, ALPHA])).save(p, compression="tiff_lzw") or p,
     "straight_raw.tiff": lambda p: Image.fromarray(np.dstack([RGB, ALPHA])).save(p) or p,
+    # OpenEXR (native/tests/exr): float32 above 1, which the output's normalisation clips on both routes.
+    "b44.exr": lambda p: exr_fixture(p, "rgba_half_b44.exr"),
+    "luminance_chroma.exr": lambda p: exr_fixture(p, "yca_half_piz_chroma.exr"),
+    "ripmap.exr": lambda p: exr_fixture(p, "tiled_rip_rgba_dwab.exr"),
+    "exr_named.png": lambda p: exr_fixture(p, "rgb_float_zip.exr"),
 }
 
 

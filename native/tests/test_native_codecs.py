@@ -969,7 +969,7 @@ def test_opencv_size_limit_settings(
             load_image._read_cv(path)
 
 
-@pytest.mark.parametrize("ext", [".exr", ".hdr", ".pic", ".sr", ".ras", ".jp2"])
+@pytest.mark.parametrize("ext", [".hdr", ".pic", ".sr", ".ras", ".jp2"])
 def test_unported_opencv_extension_is_not_read_natively(
     ext: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

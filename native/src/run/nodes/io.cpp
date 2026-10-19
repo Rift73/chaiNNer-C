@@ -134,9 +134,10 @@ void load_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
     // A TIFF goes first to the straight-alpha decoder, whose native half takes only its plainest files; when it
     // declines, the Python decoder may still take the file, so the node's Python body runs.
     const bool tiff = listed(extension, {".tif", ".tiff"});
-    // OpenCV's list without the formats no native codec takes (JPEG 2000, Sun raster, OpenEXR, Radiance HDR), which
-    // the Python body reads once.
-    const bool opencv = listed(extension, {".bmp", ".dib", ".jpe", ".png", ".webp", ".pbm", ".pgm", ".ppm", ".pxm", ".pnm"});
+    // OpenCV's list without the formats no native codec takes (JPEG 2000, Sun raster, Radiance HDR), which the Python
+    // body reads once.
+    const bool opencv = listed(extension, {".bmp", ".dib", ".jpe", ".png", ".webp", ".pbm", ".pgm", ".ppm", ".pxm", ".pnm",
+                                           ".exr"});
     if ((!pillow && !tiff && !opencv) || !cn::image_decode::enabled()) throw RunPython{};
     std::vector<uint8_t> file;
     // Not zeroed: the codecs write every sample, and a file found corrupt after its header touches none of the pages.

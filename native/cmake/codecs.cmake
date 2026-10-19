@@ -166,3 +166,93 @@ if(CHAINNER_C_PDB)
 endif()
 target_sources(chainner_codecs PRIVATE src/codecs/tiff_codec.c)
 target_link_libraries(chainner_codecs PRIVATE chainner_tiff)
+
+# OpenEXR's C library OpenEXRCore 3.5.2 for Load Image's .exr (the runtime's OpenCV has no OpenEXR) with what it
+# builds against in its own release: libdeflate 1.26 (ZIP, ZIPS and the DWA and PXR24 stages), zstd 1.5.7 (ZSTD),
+# OpenJPH 0.32.0 (HTJ2K) and Imath 3.2.3's half.h, each as upstream's CMake builds it for a static Windows x64
+# library; every SIMD path behind its library's own CPUID check. third_party/*/PROVENANCE.md says what is whose.
+set(chainner_c_deflate "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libdeflate")
+add_library(chainner_deflate STATIC "${chainner_c_deflate}/lib/adler32.c" "${chainner_c_deflate}/lib/crc32.c"
+    "${chainner_c_deflate}/lib/deflate_compress.c" "${chainner_c_deflate}/lib/deflate_decompress.c"
+    "${chainner_c_deflate}/lib/gzip_compress.c" "${chainner_c_deflate}/lib/gzip_decompress.c"
+    "${chainner_c_deflate}/lib/utils.c" "${chainner_c_deflate}/lib/x86/cpu_features.c"
+    "${chainner_c_deflate}/lib/zlib_compress.c" "${chainner_c_deflate}/lib/zlib_decompress.c")
+target_include_directories(chainner_deflate SYSTEM PUBLIC "${chainner_c_deflate}")
+
+# zstd's library sources as OpenEXR 3.5.2 compiles them into OpenEXRCore (no legacy formats, no dictionary builder,
+# single-threaded); ZSTD_DISABLE_ASM as on OpenEXR's MSVC path.
+set(chainner_c_zstd "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd/lib")
+set(chainner_c_zstd_sources
+    common/debug.c common/entropy_common.c common/error_private.c common/fse_decompress.c common/pool.c
+    common/threading.c common/xxhash.c common/zstd_common.c compress/fse_compress.c compress/hist.c
+    compress/huf_compress.c compress/zstd_compress.c compress/zstd_compress_literals.c
+    compress/zstd_compress_sequences.c compress/zstd_compress_superblock.c compress/zstd_double_fast.c
+    compress/zstd_fast.c compress/zstd_lazy.c compress/zstd_ldm.c compress/zstd_opt.c compress/zstd_preSplit.c
+    compress/zstdmt_compress.c decompress/huf_decompress.c decompress/zstd_ddict.c decompress/zstd_decompress.c
+    decompress/zstd_decompress_block.c)
+list(TRANSFORM chainner_c_zstd_sources PREPEND "${chainner_c_zstd}/")
+add_library(chainner_zstd STATIC ${chainner_c_zstd_sources})
+target_include_directories(chainner_zstd SYSTEM PUBLIC "${chainner_c_zstd}")
+target_compile_definitions(chainner_zstd PRIVATE ZSTD_DISABLE_ASM)
+
+# OpenJPH 0.32.0's core with its x86-64 kernels, each unit compiled for its level as OpenJPH's CMake does for clang.
+# (unit|flags, flags separated by commas)
+set(chainner_c_ojph "${CMAKE_CURRENT_SOURCE_DIR}/third_party/openjph/src/core")
+set(chainner_c_ojph_sources
+    codestream/ojph_codeblock.cpp codestream/ojph_codeblock_fun.cpp codestream/ojph_codestream.cpp
+    codestream/ojph_codestream_gen.cpp codestream/ojph_codestream_local.cpp codestream/ojph_params.cpp
+    codestream/ojph_precinct.cpp codestream/ojph_resolution.cpp codestream/ojph_subband.cpp codestream/ojph_tile.cpp
+    codestream/ojph_tile_comp.cpp coding/ojph_block_common.cpp coding/ojph_block_decoder32.cpp
+    coding/ojph_block_decoder64.cpp coding/ojph_block_encoder.cpp others/ojph_arch.cpp others/ojph_file.cpp
+    others/ojph_mem.cpp others/ojph_mem_c.c others/ojph_message.cpp transform/ojph_colour.cpp
+    transform/ojph_transform.cpp)
+set(chainner_c_ojph_simd
+    "codestream/ojph_codestream_sse.cpp|-msse" "codestream/ojph_codestream_sse2.cpp|-msse2"
+    "codestream/ojph_codestream_avx.cpp|-mavx" "codestream/ojph_codestream_avx2.cpp|-mavx2"
+    "coding/ojph_block_decoder_ssse3.cpp|-mssse3" "coding/ojph_block_decoder_avx2.cpp|-mavx2"
+    "coding/ojph_block_encoder_avx2.cpp|-mavx2" "coding/ojph_block_encoder_avx512.cpp|-mavx512f,-mavx512cd"
+    "transform/ojph_colour_sse.cpp|-msse" "transform/ojph_colour_sse2.cpp|-msse2" "transform/ojph_colour_avx.cpp|-mavx"
+    "transform/ojph_colour_avx2.cpp|-mavx2" "transform/ojph_transform_sse.cpp|-msse"
+    "transform/ojph_transform_sse2.cpp|-msse2" "transform/ojph_transform_avx.cpp|-mavx"
+    "transform/ojph_transform_avx2.cpp|-mavx2" "transform/ojph_transform_avx512.cpp|-mavx512f,-mavx512cd")
+list(TRANSFORM chainner_c_ojph_sources PREPEND "${chainner_c_ojph}/")
+add_library(chainner_openjph STATIC ${chainner_c_ojph_sources})
+foreach(chainner_c_entry IN LISTS chainner_c_ojph_simd)
+    string(REPLACE "|" ";" chainner_c_entry "${chainner_c_entry}")
+    string(REPLACE "," ";" chainner_c_entry "${chainner_c_entry}")
+    list(POP_FRONT chainner_c_entry chainner_c_unit)
+    list(TRANSFORM chainner_c_entry PREPEND "/clang:")
+    target_sources(chainner_openjph PRIVATE "${chainner_c_ojph}/${chainner_c_unit}")
+    set_source_files_properties("${chainner_c_ojph}/${chainner_c_unit}" PROPERTIES COMPILE_OPTIONS "${chainner_c_entry}")
+endforeach()
+target_include_directories(chainner_openjph SYSTEM PUBLIC "${chainner_c_ojph}" PRIVATE "${chainner_c_ojph}/openjph")
+target_compile_definitions(chainner_openjph PRIVATE _CRT_SECURE_NO_WARNINGS)
+
+# OpenEXRCore 3.5.2, static and not embedded (OpenEXR's default), threading on; third_party/openexr/chainner holds
+# the OpenEXRConfig.h and IlmThreadConfig.h its CMake writes, third_party/imath/chainner Imath's ImathConfig.h
+# (IMATH_HALF_USE_LOOKUP_TABLE off: half.h converts without Imath's library).
+set(chainner_c_exr "${CMAKE_CURRENT_SOURCE_DIR}/third_party/openexr")
+set(chainner_c_exr_sources
+    internal_rle.c internal_zip.c internal_pxr24.c internal_b44.c internal_b44_table.c internal_b44_table_init.c
+    internal_piz.c internal_ht.cpp internal_ht_common.cpp internal_dwa.c internal_dwa_table.c
+    internal_dwa_table_init.c internal_huf.c internal_zstd.c internal_zstd_delta.c internal_zstd_shuffle.c
+    attributes.c string.c string_vector.c float_vector.c channel_list.c opaque.c bytes.c preview.c base.c context.c
+    memory.c internal_structs.c part.c part_attr.c std_attr.c color_metadata.c parse_header.c write_header.c chunk.c
+    coding.c compression.c decoding.c encoding.c pack.c unpack.c validation.c debug.c)
+list(TRANSFORM chainner_c_exr_sources PREPEND "${chainner_c_exr}/OpenEXRCore/")
+add_library(chainner_openexr STATIC ${chainner_c_exr_sources})
+target_include_directories(chainner_openexr SYSTEM PUBLIC "${chainner_c_exr}/OpenEXRCore" "${chainner_c_exr}/chainner"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imath/chainner" "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imath/chainner/Imath"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imath/Imath")
+target_link_libraries(chainner_openexr PRIVATE chainner_deflate chainner_zstd chainner_openjph)
+
+foreach(chainner_c_target chainner_deflate chainner_zstd chainner_openjph chainner_openexr)
+    set_target_properties(${chainner_c_target} PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED YES CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED YES)
+    target_compile_options(${chainner_c_target} PRIVATE /W3 $<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
+    if(CHAINNER_C_PDB)
+        target_compile_options(${chainner_c_target} PRIVATE /Zi)
+    endif()
+endforeach()
+target_sources(chainner_codecs PRIVATE src/codecs/exr_codec.c)
+target_link_libraries(chainner_codecs PRIVATE chainner_openexr chainner_native)
