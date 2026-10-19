@@ -46,6 +46,13 @@ def plugin_model() -> ImageModelDescriptor:
     return legacy_drft(32, 0.5)
 
 
+@pytest.fixture(scope="module")
+def plugin_onnx(plugin_model: ImageModelDescriptor) -> bytes:
+    """The plugin model's export, once: an FP16 trace on the CPU takes about half a
+    minute even for this small model (PyTorch's CPU convolutions in FP16 are slow)."""
+    return drft_export.export_onnx(plugin_model)
+
+
 def test_the_loaded_model_is_legacy_drft(plugin_model: ImageModelDescriptor):
     assert drft_export.is_legacy_drft(plugin_model)
 
@@ -75,8 +82,8 @@ def plugin_counts(proto: onnx.ModelProto) -> Counter[str]:
     return Counter(node.op_type for node in proto.graph.node)
 
 
-def test_the_onnx_holds_the_plugins_and_no_einsum(plugin_model: ImageModelDescriptor):
-    proto = onnx.load_from_string(drft_export.export_onnx(plugin_model))
+def test_the_onnx_holds_the_plugins_and_no_einsum(plugin_onnx: bytes):
+    proto = onnx.load_from_string(plugin_onnx)
     counts = plugin_counts(proto)
     assert "Einsum" not in counts
     groups, blocks = 2, 6
@@ -133,19 +140,19 @@ def test_the_onnx_holds_the_plugins_and_no_einsum(plugin_model: ImageModelDescri
     assert types["FLOAT16"] and not types["BFLOAT16"]
 
 
-def test_the_attention_logits_are_not_clamped(plugin_model: ImageModelDescriptor):
+def test_the_attention_logits_are_not_clamped(plugin_onnx: bytes):
     """spandrel's export-safe maths clamp the logits to +-50 (a Clip), which changes
     the softmax wherever one passes 50; the export's attention does not."""
-    proto = onnx.load_from_string(drft_export.export_onnx(plugin_model))
+    proto = onnx.load_from_string(plugin_onnx)
     assert "Clip" not in plugin_counts(proto)
 
 
 def test_the_dense_skip_exports_one_matmul_per_block(
-    plugin_model: ImageModelDescriptor,
+    plugin_onnx: bytes,
 ):
     """TensorRT 11 computes Concat(block outputs) @ W wrongly in this graph, so no
     MatMul takes a Concat; each group sums one MatMul per block instead."""
-    proto = onnx.load_from_string(drft_export.export_onnx(plugin_model))
+    proto = onnx.load_from_string(plugin_onnx)
     producers = {out: node for node in proto.graph.node for out in node.output}
     matmuls = [node for node in proto.graph.node if node.op_type == "MatMul"]
     assert not any(
@@ -166,8 +173,8 @@ def test_other_windows_keep_the_dense_bias_as_maths():
     assert "Einsum" not in counts
 
 
-def test_the_manifest_round_trips(plugin_model: ImageModelDescriptor):
-    manifest = drft.export_manifest(drft_export.export_onnx(plugin_model))
+def test_the_manifest_round_trips(plugin_onnx: bytes):
+    manifest = drft.export_manifest(plugin_onnx)
     assert manifest == {
         "format": 1,
         "plugins": "legacy-v1",
@@ -190,7 +197,7 @@ def test_other_models_are_refused():
         drft_export.export_onnx(descriptor)
 
 
-def test_chainner_loads_the_onnx(plugin_model: ImageModelDescriptor):
+def test_chainner_loads_the_onnx(plugin_onnx: bytes):
     from nodes.impl.onnx.load import load_onnx_model
 
-    assert load_onnx_model(drft_export.export_onnx(plugin_model)).sub_type == "Generic"
+    assert load_onnx_model(plugin_onnx).sub_type == "Generic"

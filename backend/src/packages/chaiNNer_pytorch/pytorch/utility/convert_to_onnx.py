@@ -314,7 +314,9 @@ def convert_to_onnx_node(
         if kept is not None:
             return kept.result
         onnx_model = load_onnx_model(
-            drft_export.export_onnx(full_precision_source(model, "Convert To ONNX"))
+            drft_export.export_onnx(
+                full_precision_source(model, "Convert To ONNX"), model.device
+            )
         )
         assert onnx_model.sub_type == "Generic"
         result = onnx_model, MIXED, "opset20"

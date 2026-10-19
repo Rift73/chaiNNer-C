@@ -564,17 +564,25 @@ def deployment(
     model: legacy.DRFT,
     body: torch.dtype = torch.float32,
     tail: torch.dtype = torch.float32,
+    device: torch.device | None = None,
 ) -> Deployment:
-    """A deep copy of a legacy DRFT, folded, in FP32 on the CPU, swapped for export."""
-    model = copy.deepcopy(model).to(device="cpu", dtype=torch.float32).eval()
+    """A deep copy of a legacy DRFT, folded, in FP32 on `device` (the CPU by
+    default), swapped for export."""
+    device = device or torch.device("cpu")
+    model = copy.deepcopy(model).to(device=device, dtype=torch.float32).eval()
     with torch.no_grad():
         model.fold_reparam_conv()
-    return Deployment(model, body, tail).eval()
+    return Deployment(model, body, tail).to(device).eval()
 
 
-def export_onnx(model: ImageModelDescriptor) -> bytes:
+def export_onnx(
+    model: ImageModelDescriptor, device: torch.device | None = None
+) -> bytes:
     """The TensorRT-only ONNX of a legacy DRFT (is_legacy_drft), with the plugin
-    nodes and the exporter's manifest (drft.METADATA_KEY) in its metadata."""
+    nodes and the exporter's manifest (drft.METADATA_KEY) in its metadata, traced on
+    `device` (the CPU by default). Convert To ONNX traces where Load Model put the
+    model: PyTorch's CPU convolutions in FP16 are about 3,000 times slower than in
+    BF16 (a DRFT-L x4 export took 605 s on the CPU, 37 s in BF16)."""
     import onnx
 
     network = model.model
@@ -586,9 +594,9 @@ def export_onnx(model: ImageModelDescriptor) -> bytes:
     for module in network.modules():
         if isinstance(module, legacy.ACTBlock) and module.window_size != window:
             raise ValueError("This DRFT's blocks do not all use its window size.")
-    wrapper = deployment(network, torch.float16, torch.float16)
+    wrapper = deployment(network, torch.float16, torch.float16, device)
     side = 3 * window
-    sample = torch.rand(1, model.input_channels, side, side)
+    sample = torch.rand(1, model.input_channels, side, side, device=device)
     with tempfile.TemporaryDirectory(prefix="chainner-drft-export-") as temporary:
         path = Path(temporary) / "model.onnx"
         with torch.inference_mode():

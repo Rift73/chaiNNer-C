@@ -606,10 +606,12 @@ def test_a_legacy_drft_loaded_in_fp16_exports_its_fp32_weights_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     states: list[dict[str, torch.Tensor]] = []
+    devices: list[torch.device | None] = []
     onnx_bytes = convert_to_onnx_impl(tiny_model("Compact"), torch.device("cpu"))
 
-    def export(model: ImageModelDescriptor) -> bytes:
+    def export(model: ImageModelDescriptor, device: torch.device | None) -> bytes:
         states.append(model.model.state_dict())
+        devices.append(device)
         return onnx_bytes
 
     monkeypatch.setattr(convert_to_onnx.drft_export, "export_onnx", export)
@@ -628,6 +630,8 @@ def test_a_legacy_drft_loaded_in_fp16_exports_its_fp32_weights_once(
         state[k].dtype == v.dtype and torch.equal(state[k], v)
         for k, v in expected.items()
     )
+    # traced where Load Model put the model (FP16 is slow on the CPU)
+    assert devices == [half.device]
 
 
 def to_ncnn(
