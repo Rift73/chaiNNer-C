@@ -248,6 +248,67 @@ def test_closed_executors_are_freed(tmp_path):
     assert [ref() for ref in alive] == [None] * len(alive)
 
 
+def test_closed_executors_are_freed_without_a_collection(tmp_path):
+    # server.py never collects after a successful run or preview, so a closed executor and the output an individual
+    # run returned must go with their last reference, as process.Executor's do: a reference cycle through the
+    # executor kept a preview's output alive after the server's cache dropped it (numpy_pool_growth.py's release
+    # check: the first 64 MiB preview stayed after the second, and both after their cache clear).
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from events import EventConsumer
+    from native_executor import NativeExecutor
+    from process import ExecutionId
+
+    class Output:
+        """An output object whose life the test follows."""
+
+    class Sink(EventConsumer):
+        def put(self, event) -> None:
+            pass
+
+    alive: list[weakref.ref[object]] = []
+
+    def made(_: object) -> Output:
+        output = Output()
+        alive.append(weakref.ref(output))
+        return output
+
+    def chain(side_effects: bool) -> Chain:
+        b = Builder()
+        b.node("single", made, side_effects=side_effects)
+        b.value("single", 0, 1)
+        return b.chain
+
+    async def drive(individual: bool) -> None:
+        pool = ThreadPoolExecutor(2)
+        executor = NativeExecutor(
+            id=ExecutionId("individual-executor single" if individual else "main-executor"),
+            chain=chain(side_effects=not individual), send_broadcast_data=True,
+            options=api.ExecutionOptions.parse({}), loop=asyncio.get_running_loop(), queue=Sink(),
+            storage_dir=tmp_path, pool=pool, pool_size=8,
+        )
+        alive.append(weakref.ref(executor))
+        if individual:
+            node = executor.chain.nodes[NodeId("single")]
+            assert isinstance(node, FunctionNode)
+            await executor.process_regular_node(node)
+            await executor.flush_broadcasts()
+        else:
+            await executor.run()
+        pool.shutdown()
+
+    gc.collect()
+    gc.disable()
+    try:
+        for individual in (True, True, False):
+            asyncio.run(drive(individual))
+        assert len(alive) == 3 * 2
+        assert [ref() for ref in alive] == [None] * len(alive)
+    finally:
+        gc.enable()
+
+
 @pytest.fixture(scope="module")
 def registry():
     main = sys.modules["__main__"]

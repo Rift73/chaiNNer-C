@@ -220,6 +220,15 @@ def test_refuses_to_start_with_either_variable_set(variable, monkeypatch, capsys
     assert variable in capsys.readouterr().err
 
 
+def test_the_release_check_runs_with_the_memo_off():
+    # The native engine's memo cache keeps Create Color's outputs live across requests
+    # (DESIGN.md amendment A3), so they would never be idle at the release points; the
+    # growth checks keep the shipped default.
+    assert growth.CHECK_ENV["release"][growth.MEMO_VARIABLE] == "0"
+    for check in ("video", "video-cap16", "images"):
+        assert growth.MEMO_VARIABLE not in growth.CHECK_ENV[check]
+
+
 def test_a_level_is_the_first_sample_inside_the_band():
     base = 2700 * MIB
     values = iter([base + 40 * MIB, base + 17 * MIB, base + 16 * MIB, base])

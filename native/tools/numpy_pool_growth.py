@@ -20,7 +20,11 @@ is installed.
                --images-dir (default F:\\Download\\New folder\\DiverSeg-IP\\HR\\0),
                which is only read
   release      the release points (spec 4.3) on one worker with
-               CHAINNER_C_NUMPY_POOL=256, in order:
+               CHAINNER_C_NUMPY_POOL=256 and the native engine's memo cache off
+               (CHAINNER_C_MEMO_BUDGET_MIB=0): the memo keeps a deterministic node's
+               outputs live across requests by design (instant-exec DESIGN.md amendment
+               A3), so with it on Create Color's blocks below stay in it, never idle at
+               a release point, in order:
                (0) a /run of Create Color 256x256 (below the threshold) -> Save Image,
                    the warm-up; then the baseline: the private bytes at rest
                (a) a /run of a 64 MiB Create Color -> Save Image: the baseline again,
@@ -104,13 +108,18 @@ GROWTH = PROJECT / "native" / "build" / "numpy-pool-growth" / "growth"
 DATASET = Path(r"F:\Download\New folder\DiverSeg-IP\HR\0")
 POOL_VARIABLE = "CHAINNER_C_NUMPY_POOL"  # nodes.impl.numpy_pool.VARIABLE
 PROFILE_VARIABLE = "CHAINNER_C_PROFILE"  # nodes.impl.native_profile.VARIABLE
+MEMO_VARIABLE = "CHAINNER_C_MEMO_BUDGET_MIB"  # native/src/run/executor.cpp's Memo
 NATIVE_PROFILE = re.compile(r"native profile: (\{.*\})$")  # bench.NATIVE_PROFILE
 CHECKS = ("video", "video-cap16", "images", "release")
 CHECK_ENV = {
     "video": {PROFILE_VARIABLE: "1"},
     "video-cap16": {PROFILE_VARIABLE: "1", POOL_VARIABLE: "16"},
     "images": {PROFILE_VARIABLE: "1"},
-    "release": {PROFILE_VARIABLE: "1", POOL_VARIABLE: "256"},
+    # The memo off: with it on (up to min(2 GiB, 10 % of the RAM)), (a)'s /run leaves
+    # its 64 MiB Create Color output live in the memo (released_bytes 0, the level
+    # + 64 MiB), (b) keeps both outputs (+ 160 MiB, not + 96 MiB) and (c)'s cache clear
+    # drops only the server cache's reference (+ 160 MiB, not the baseline).
+    "release": {PROFILE_VARIABLE: "1", POOL_VARIABLE: "256", MEMO_VARIABLE: "0"},
 }
 MIB = 1 << 20
 PLATEAU_SLACK = 64 * MIB

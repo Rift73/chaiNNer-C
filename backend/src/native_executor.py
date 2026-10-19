@@ -1145,25 +1145,33 @@ class NativeExecutor:
         self.id = id
         self.chain = chain
         self.loop = loop
-        self.progress = self
+        # The contexts read the engine from this list, not through this executor: nothing this executor holds may
+        # refer back to it. server.py never collects after a successful run or preview, so a cycle would keep the
+        # executor, and the output an individual run returned (its done future's), alive after the server drops them.
+        # The engine's own cycle (it holds the hooks, which hold it) ends at its close.
+        engine: list[_Engine] = []
         plan, nodes, contexts, inputs = build_plan(
             chain,
             options,
             storage_dir,
             send_broadcast_data,
             parent_cache,
-            self.__engine,
+            lambda: engine[0],
         )
         self.__nodes = nodes
         self.__hooks = _Hooks(id, nodes, contexts, queue, loop, inputs, chain)
         self.__run_engine: _Engine = graph().RunEngine(plan, self.__hooks)
+        engine.append(self.__run_engine)
         self.__hooks.engine = self.__run_engine
         self.__closed = False
         # Set by kill(), on any thread.
         self.__stopped: asyncio.Future[None] = loop.create_future()
 
-    def __engine(self) -> _Engine:
-        return self.__run_engine
+    @property
+    def progress(self) -> NativeExecutor:
+        """process.Executor's progress controller, whose aborted and paused server.py reads: this executor (a
+        property, not an attribute, which would be a cycle)."""
+        return self
 
     @property
     def aborted(self) -> bool:
