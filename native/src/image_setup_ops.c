@@ -3,6 +3,7 @@
 #include "exceptional.h"
 #include "exceptional_shared.h"
 #include "isa.h"
+#include "run_kernels.h"
 #include <fenv.h>
 #include <stdlib.h>
 #include <string.h>

@@ -7,14 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* A null source denotes a constant channel. The Python boundary owns every
- * source buffer until the synchronous parallel call returns. */
-typedef struct cn_channel_source {
-    const float *data;
-    size_t channels, channel;
-    float constant;
-} cn_channel_source;
-
 static cn_status image_size(size_t height, size_t width, size_t channels)
 {
     if (height == 0 || width == 0 || channels == 0) return CN_INVALID_ARGUMENT;

@@ -6,6 +6,7 @@
  * tasks only write independent distance/label rows; reductions retain order.
  */
 #include "parallel.h"
+#include "run_kernels.h"
 #include <float.h>
 #include <limits.h>
 #include <math.h>

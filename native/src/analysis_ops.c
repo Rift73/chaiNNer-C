@@ -2,6 +2,7 @@
 #include "parallel.h"
 #include "numeric.h"
 #include "cn_crt_math.h"
+#include "run_kernels.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>

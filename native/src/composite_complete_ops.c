@@ -6,17 +6,12 @@
  * keeps B3's bits: every value is copied from a layer, or is 0.0f, 1.0f or a blend. */
 #include "chainner.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include "scratch.h"
 #include <stdint.h>
 #include <string.h>
 
 cn_status cn_blend_images(const float *, const float *, float *, size_t, int, int, int);
-typedef struct { const float *data; size_t height, width, channels; int constant; } canvas_layer;
-typedef struct {
-    size_t height, width, channels, base_top, base_left, paste_top, paste_left;
-    size_t overlay_top, overlay_left, region_height, region_width;
-    int padded;
-} canvas_geometry;
 typedef struct {
     const canvas_layer *base, *overlay;
     const canvas_geometry *g;

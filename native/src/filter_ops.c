@@ -4,6 +4,7 @@
 #include "merge_shared.h"
 #include "morph_entry.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include "scratch.h"
 #include <float.h>
 #include <limits.h>
