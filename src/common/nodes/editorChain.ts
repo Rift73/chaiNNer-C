@@ -57,6 +57,15 @@ export const toEditorChain = (
 };
 
 /**
+ * The schema IDs of a chain's nodes that the node list lacks, each once: opened with this list,
+ * the chain would lose those nodes.
+ */
+export const missingSchemata = (
+    schemata: SchemaMap,
+    nodes: readonly Node<NodeData>[]
+): SchemaId[] => [...new Set(nodes.map((n) => n.data.schemaId))].filter((id) => !schemata.has(id));
+
+/**
  * Lists the dropped nodes for an alert: one line per schema ID, with the number of nodes.
  */
 export const formatDroppedNodes = (droppedNodes: readonly SchemaId[]): string => {

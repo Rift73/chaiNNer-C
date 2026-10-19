@@ -5,9 +5,8 @@ import path from 'path';
 import { BackendData } from '../common/Backend';
 import { PythonInfo } from '../common/common-types';
 import { log } from '../common/log';
-import { lazy } from '../common/util';
-import { chainnerCVersion, isDevelopmentBuild } from '../common/version';
-import { buildInfo } from './buildInfo';
+import { lazy, noop } from '../common/util';
+import { chainnerCVersion } from '../common/version';
 import { readTextFile, writeFileAtomic } from './util';
 
 /**
@@ -51,22 +50,39 @@ const fingerprintBackend = async (backendDir: string): Promise<string> => {
 };
 
 /**
- * The installed distributions of the integrated Python, by their metadata folder names, which
- * hold each distribution's name and version.
+ * The folders that may hold the Python's installed distributions: beside python.exe (an
+ * integrated Python), or beside its Scripts folder (a venv's); on other systems in lib.
  */
-const listDistributions = async ({ python, version }: PythonInfo): Promise<string[]> => {
+const sitePackagesFolders = ({ python, version }: PythonInfo): string[] => {
     const [major, minor] = version.split('.');
-    const sitePackages =
-        process.platform === 'win32'
-            ? path.join(path.dirname(python), 'Lib', 'site-packages')
-            : path.join(
-                  path.dirname(path.dirname(python)),
-                  'lib',
-                  `python${major}.${minor}`,
-                  'site-packages'
-              );
-    const names = await fs.readdir(sitePackages).catch((): string[] => []);
-    return names.filter((name) => /\.(?:dist|egg)-info$/.test(name)).sort();
+    if (process.platform === 'win32') {
+        return [
+            path.join(path.dirname(python), 'Lib', 'site-packages'),
+            path.join(path.dirname(path.dirname(python)), 'Lib', 'site-packages'),
+        ];
+    }
+    return [
+        path.join(
+            path.dirname(path.dirname(python)),
+            'lib',
+            `python${major}.${minor}`,
+            'site-packages'
+        ),
+    ];
+};
+
+/**
+ * The installed distributions of the Python, by their metadata folder names, which hold each
+ * distribution's name and version.
+ */
+const listDistributions = async (python: PythonInfo): Promise<string[]> => {
+    const folders = await Promise.all(
+        sitePackagesFolders(python).map((folder) => fs.readdir(folder).catch((): string[] => []))
+    );
+    return folders
+        .flat()
+        .filter((name) => /\.(?:dist|egg)-info$/.test(name))
+        .sort();
 };
 
 /** How long the GPUs may take to list before the key goes without them. */
@@ -105,15 +121,24 @@ const listGpus = async (): Promise<string[]> => {
  * The editor's copy of the backend's node list (`BackendData`), kept in `file` between starts so
  * the editor can show the nodes at once while the backend starts.
  *
- * The copy belongs to what decides the node list: the app and backend build, the Python and its
- * installed distributions, the GPUs and their drivers, and `CUDA_VISIBLE_DEVICES`. A copy made
- * with any of them different is not used. The editor checks the copy against the live list
- * anyway, so a factor this misses costs a moment of a stale list, not a wrong one.
+ * The copy belongs to what decides the node list: the app version, the backend's files (an
+ * install can get new backend files without a new app build), the Python and its installed
+ * distributions, the GPUs and their drivers, and `CUDA_VISIBLE_DEVICES`. A copy made with any of
+ * them different is not used. The editor checks the copy against the live list anyway, so a
+ * factor this misses costs a moment of a stale list, not a wrong one.
  */
 export class UiCache {
     private readonly file: string;
 
     private readonly getPython: () => Promise<PythonInfo>;
+
+    private readonly backendDir: string;
+
+    /**
+     * The backend's fingerprint, started with the cache so the first key (which the editor waits
+     * for) does not wait for it (10-80 ms for 520 files); later keys read the files again.
+     */
+    private startFingerprint: Promise<string> | undefined;
 
     /** The key parts that cannot change while the app runs. */
     private readonly fixedKey: () => Promise<string>;
@@ -127,16 +152,15 @@ export class UiCache {
     constructor(file: string, getPython: () => Promise<PythonInfo>, backendDir: string) {
         this.file = file;
         this.getPython = getPython;
+        this.backendDir = backendDir;
+        this.startFingerprint = fingerprintBackend(backendDir);
+        // a failure surfaces in the first key; this only keeps it from going unhandled meanwhile
+        this.startFingerprint.catch(noop);
         this.fixedKey = lazy(async () => {
-            const [pythonInfo, build, gpus] = await Promise.all([
-                getPython(),
-                isDevelopmentBuild(buildInfo) ? fingerprintBackend(backendDir) : buildInfo.tree,
-                listGpus(),
-            ]);
+            const [pythonInfo, gpus] = await Promise.all([getPython(), listGpus()]);
             return JSON.stringify({
                 app: app.getVersion(),
                 chainnerC: chainnerCVersion,
-                build,
                 python: pythonInfo,
                 gpus,
                 cudaVisibleDevices: process.env.CUDA_VISIBLE_DEVICES ?? null,
@@ -146,12 +170,16 @@ export class UiCache {
     }
 
     private async getKey(): Promise<string> {
-        // the distributions change when the dependency manager installs or removes a package
-        const [fixedKey, distributions] = await Promise.all([
+        // the backend's files and the distributions change while the app runs (a developer's
+        // edit, the dependency manager)
+        const fingerprint = this.startFingerprint ?? fingerprintBackend(this.backendDir);
+        this.startFingerprint = undefined;
+        const [fixedKey, build, distributions] = await Promise.all([
             this.fixedKey(),
+            fingerprint,
             this.getPython().then(listDistributions),
         ]);
-        return sha256(JSON.stringify([fixedKey, distributions]));
+        return sha256(JSON.stringify([fixedKey, build, distributions]));
     }
 
     /** The cached node list, if there is one and it belongs to this app, Python and system. */

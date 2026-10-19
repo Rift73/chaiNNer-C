@@ -10,7 +10,11 @@ import {
     NumberInput,
     SchemaId,
 } from '../../src/common/common-types';
-import { formatDroppedNodes, toEditorChain } from '../../src/common/nodes/editorChain';
+import {
+    formatDroppedNodes,
+    missingSchemata,
+    toEditorChain,
+} from '../../src/common/nodes/editorChain';
 import { SchemaMap } from '../../src/common/SchemaMap';
 
 const DESCALE = 'chainner:image:descale' as SchemaId;
@@ -118,4 +122,10 @@ test('The alert lists every dropped schema with its count', () => {
             IS_GRAYSCALE,
         ])
     ).toBe('- chainner:image:is_grayscale (2 nodes)\n- chainner:utility:math_expression (1 node)');
+});
+
+test('A chain that the node list lacks a node of names each missing schema once', () => {
+    // opened with the node list of the last start, it waits for the backend's list
+    expect(missingSchemata(schemata, pastedNodes)).toEqual([IS_GRAYSCALE]);
+    expect(missingSchemata(schemata, [pastedNodes[0], pastedNodes[3]])).toEqual([]);
 });

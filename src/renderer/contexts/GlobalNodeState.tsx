@@ -14,7 +14,6 @@ import {
 import { createContext, useContext } from 'use-context-selector';
 import {
     EdgeData,
-    FileOpenResult,
     InputData,
     InputId,
     InputKind,
@@ -29,7 +28,7 @@ import { IdSet } from '../../common/IdSet';
 import { log } from '../../common/log';
 import { chainSnapshot } from '../../common/nodes/chainSnapshot';
 import { getEffectivelyDisabledNodes } from '../../common/nodes/disabled';
-import { formatDroppedNodes, toEditorChain } from '../../common/nodes/editorChain';
+import { formatDroppedNodes, missingSchemata, toEditorChain } from '../../common/nodes/editorChain';
 import { ChainLineage } from '../../common/nodes/lineage';
 import { TypeState } from '../../common/nodes/TypeState';
 
@@ -567,8 +566,20 @@ export const GlobalProvider = memo(
             }, [performSave])
         );
 
+        // A chain to open that has to wait for the backend's node list.
+        const [deferredOpen, setDeferredOpen] = useState<{
+            savedData: ParsedSaveData;
+            path: string;
+            loadPosition: boolean;
+        }>();
         const setStateFromJSON = useCallback(
             async (savedData: ParsedSaveData, path: string, loadPosition = false) => {
+                // A chain with a node that the node list of the last start lacks opens once the
+                // backend's list has arrived, which may have it: opened now, it would lose it.
+                if (nodesFromCache && missingSchemata(schemata, savedData.nodes).length > 0) {
+                    setDeferredOpen({ savedData, path, loadPosition });
+                    return;
+                }
                 if ((await saveUnsavedChanges()) === SaveResult.Canceled) {
                     return;
                 }
@@ -635,6 +646,7 @@ export const GlobalProvider = memo(
                 addChainLoads,
                 changeEdges,
                 changeNodes,
+                nodesFromCache,
                 saveUnsavedChanges,
                 outputDataActions,
                 pushOpenPath,
@@ -646,6 +658,15 @@ export const GlobalProvider = memo(
         );
         const setStateFromJSONRef = useRef(setStateFromJSON);
         setStateFromJSONRef.current = setStateFromJSON;
+        useEffect(() => {
+            if (deferredOpen === undefined || nodesFromCache) {
+                return;
+            }
+            setDeferredOpen(undefined);
+            setStateFromJSONRef
+                .current(deferredOpen.savedData, deferredOpen.path, deferredOpen.loadPosition)
+                .catch(log.error);
+        }, [deferredOpen, nodesFromCache]);
 
         const clearState = useCallback(async () => {
             if ((await saveUnsavedChanges()) === SaveResult.Canceled) {
@@ -675,40 +696,23 @@ export const GlobalProvider = memo(
             }, [clearState])
         );
 
-        // The chain to open at the start: a file given to chaiNNer, or the startup template.
-        const [autoOpen, setAutoOpen] = useState<FileOpenResult<ParsedSaveData>>();
         useAsyncEffect(
-            () => ({
-                supplier: () => ipcRenderer.invoke('get-auto-open'),
-                successEffect: setAutoOpen,
-            }),
-            []
-        );
-        useEffect(() => {
-            if (autoOpen === undefined) {
-                return;
-            }
-            if (autoOpen.kind === 'Success') {
-                // A chain with a node that the node list of the last start lacks waits for the
-                // backend's list: opened now, it would lose that node.
-                if (
-                    nodesFromCache &&
-                    autoOpen.saveData.nodes.some((n) => !schemata.has(n.data.schemaId))
-                ) {
-                    return;
+            () => async () => {
+                const result = await ipcRenderer.invoke('get-auto-open');
+                if (result) {
+                    if (result.kind === 'Success') {
+                        await setStateFromJSONRef.current(result.saveData, result.path, true);
+                    } else {
+                        removeRecentPath(result.path);
+                        sendAlert({
+                            type: AlertType.ERROR,
+                            message: `Unable to open file ${result.path}`,
+                        });
+                    }
                 }
-                setStateFromJSONRef
-                    .current(autoOpen.saveData, autoOpen.path, true)
-                    .catch(log.error);
-            } else {
-                removeRecentPath(autoOpen.path);
-                sendAlert({
-                    type: AlertType.ERROR,
-                    message: `Unable to open file ${autoOpen.path}`,
-                });
-            }
-            setAutoOpen(undefined);
-        }, [autoOpen, nodesFromCache, schemata, removeRecentPath, sendAlert]);
+            },
+            [removeRecentPath, sendAlert]
+        );
 
         // A chain opened with the node list of the last start is checked again, as on open,
         // against the backend's list once that replaces it.
@@ -744,7 +748,7 @@ export const GlobalProvider = memo(
                 setSavedSnapshot(null);
             } else if (!hasRelevantUnsavedChangesRef.current) {
                 // the defaults of inputs that the backend's nodes added are no change by the user
-                setSavedSnapshot(undefined);
+                setSavedSnapshot(chainSnapshot(nodes, edges));
             }
             changeNodes(nodes);
             changeEdges(edges);

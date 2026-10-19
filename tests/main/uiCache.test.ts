@@ -15,13 +15,10 @@ vi.mock('electron/main', () => ({
             }),
     },
 }));
-vi.mock('../../src/main/buildInfo', () => ({
-    buildInfo: { tree: 'a1b2c3', date: '2026-10-19T09:00:00+08:00', dirty: false, packaged: true },
-}));
-
 let directory: string;
 let python: PythonInfo;
 let sitePackages: string;
+let backendFile: string;
 let cacheFile: string;
 
 beforeEach(async () => {
@@ -35,6 +32,9 @@ beforeEach(async () => {
         ? path.join(directory, 'python/Lib/site-packages')
         : path.join(directory, 'python/lib/python3.14/site-packages');
     await mkdir(path.join(sitePackages, 'numpy-2.5.3.dist-info'), { recursive: true });
+    backendFile = path.join(directory, 'backend', 'server.py');
+    await mkdir(path.dirname(backendFile));
+    await writeFile(backendFile, 'print("worker")');
     const { getUiCacheFile } = await import('../../src/main/uiCache');
     cacheFile = getUiCacheFile(directory);
 });
@@ -132,6 +132,30 @@ test('the cache is kept outside every folder Chromium manages', async () => {
     expect(chromium).not.toContain(UI_CACHE_FOLDER.toLowerCase());
     expect(path.relative(directory, path.dirname(cacheFile))).toBe(UI_CACHE_FOLDER);
 });
+
+test("a cache of the backend's files as they were is not used", async () => {
+    // e.g. an install whose backend files were replaced without a new app build
+    await (await newCache()).write(data);
+    await writeFile(backendFile, 'print("the worker, updated")');
+    await expect((await newCache()).read()).resolves.toBeUndefined();
+});
+
+test.skipIf(process.platform !== 'win32')(
+    "a venv's Python counts the distributions of its site-packages",
+    async () => {
+        const venv = { ...python, python: path.join(directory, 'venv/Scripts/python.exe') };
+        const venvSitePackages = path.join(directory, 'venv/Lib/site-packages');
+        await mkdir(path.join(venvSitePackages, 'numpy-2.5.3.dist-info'), { recursive: true });
+        const { UiCache } = await import('../../src/main/uiCache');
+        const venvCache = () =>
+            new UiCache(cacheFile, () => Promise.resolve(venv), path.dirname(backendFile));
+        await venvCache().write(data);
+        await expect(venvCache().read()).resolves.toEqual(data);
+
+        await mkdir(path.join(venvSitePackages, 'torch-2.14.1.dist-info'));
+        await expect(venvCache().read()).resolves.toBeUndefined();
+    }
+);
 
 test('an unreadable cache file is no cache', async () => {
     await mkdir(path.dirname(cacheFile), { recursive: true });
