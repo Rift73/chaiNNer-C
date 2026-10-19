@@ -9,13 +9,17 @@ import gpu
 from packages.chaiNNer_tensorrt import _supports_cuda_13
 
 
-def _device(monkeypatch: pytest.MonkeyPatch, cc: tuple[int, int] | None) -> gpu.NvDevice:
+def _device(
+    monkeypatch: pytest.MonkeyPatch, cc: tuple[int, int] | None
+) -> gpu.NvDevice:
     def compute_capability(_handle: object) -> tuple[int, int]:
         if cc is None:
             raise gpu.nv.NVMLError(gpu.nv.NVML_ERROR_NOT_SUPPORTED)
         return cc
 
-    monkeypatch.setattr(gpu.nv, "nvmlDeviceGetCudaComputeCapability", compute_capability)
+    monkeypatch.setattr(
+        gpu.nv, "nvmlDeviceGetCudaComputeCapability", compute_capability
+    )
     return gpu.NvDevice(index=0, handle=gpu.nv.c_nvmlDevice_t(), name="Test GPU")
 
 

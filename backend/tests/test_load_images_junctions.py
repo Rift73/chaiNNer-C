@@ -38,7 +38,11 @@ def test_loop_and_shared_junctions_list_every_image_once(tmp_path: Path):
     (root / "sub" / "deeper").mkdir(parents=True)
     other = tmp_path / "other"
     other.mkdir()
-    for path in (root / "a.png", root / "sub" / "b.png", root / "sub" / "deeper" / "c.png"):
+    for path in (
+        root / "a.png",
+        root / "sub" / "b.png",
+        root / "sub" / "deeper" / "c.png",
+    ):
         Image.fromarray(PIXELS).save(path)
     Image.fromarray(PIXELS).save(other / "d.png")
     links = [
