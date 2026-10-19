@@ -1,5 +1,5 @@
 """Load Models (PyTorch and ONNX) reads the next model on one background thread while
-the current one is used (Generator.from_list_read_ahead), and its items are what
+the current one is used (from_list_read_ahead), and its items are what
 Load Model gives for each file, in order, a failed file failing its own item."""
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ from test_convert_to_onnx import ARCHS, FP16, FP32
 from test_onnx_load_once import gain_model
 
 from api import Generator, NodeContext, SettingsParser
+from nodes.impl import numpy_pool
+from nodes.impl.read_ahead import from_list_read_ahead
 from nodes.utils.utils import list_all_files_sorted
 from packages.chaiNNer_onnx.onnx.batch_processing.load_models import (
     load_models_node as load_onnx_models_node,
@@ -50,7 +52,7 @@ def test_the_next_element_is_read_while_the_current_is_used():
             assert read_ahead.wait(timeout=60)
         return f"{index}{x}{read}"
 
-    assert items(Generator.from_list_read_ahead(["a", "b", "c"], read, mapped)) == [
+    assert items(from_list_read_ahead(["a", "b", "c"], read, mapped)) == [
         "0aA",
         "1bB",
         "2cC",
@@ -71,7 +73,7 @@ def test_a_failed_read_or_map_fails_its_own_item():
             raise RuntimeError("unmappable 3")
         return read * 10
 
-    result = items(Generator.from_list_read_ahead([1, 2, 3, 4], read, mapped))
+    result = items(from_list_read_ahead([1, 2, 3, 4], read, mapped))
     assert result[0] == 10 and result[3] == 40
     assert isinstance(result[1], ValueError) and str(result[1]) == "unreadable 2"
     assert isinstance(result[2], RuntimeError) and str(result[2]) == "unmappable 3"
@@ -89,7 +91,7 @@ def test_a_stopped_iteration_reads_at_most_one_more():
 
     iterator = cast(
         PythonGenerator[int | Exception, None, None],
-        Generator.from_list_read_ahead(
+        from_list_read_ahead(
             [0, 1, 2, 3], read, lambda x, read, index: read
         ).supplier(),
     )
@@ -102,8 +104,19 @@ def test_a_stopped_iteration_reads_at_most_one_more():
     assert reads == [0, 1]
 
 
+def test_the_reader_installs_the_numpy_pool_handler(monkeypatch: pytest.MonkeyPatch):
+    installed: list[int] = []
+    monkeypatch.setattr(
+        numpy_pool, "install", lambda: installed.append(threading.get_ident())
+    )
+    readers = items(
+        from_list_read_ahead([0, 1], lambda x: threading.get_ident(), lambda x, r, i: r)
+    )
+    assert installed and set(readers) == set(installed)
+
+
 def test_an_empty_list_reads_nothing():
-    assert items(Generator.from_list_read_ahead([], str, lambda x, r, i: r)) == []
+    assert items(from_list_read_ahead([], str, lambda x, r, i: r)) == []
 
 
 class Context:

@@ -7,6 +7,7 @@ from sanic.log import logger
 
 from api import Generator, IteratorOutputInfo
 from nodes.impl.onnx.model import OnnxModel
+from nodes.impl.read_ahead import from_list_read_ahead
 from nodes.properties.inputs import BoolInput, DirectoryInput
 from nodes.properties.outputs import (
     DirectoryOutput,
@@ -67,8 +68,8 @@ def load_models_node(
     model_files = list_all_files_sorted(directory, supported_filetypes)
 
     return (
-        Generator.from_list_read_ahead(
-            model_files, load_model_node, load_model
-        ).with_fail_fast(fail_fast),
+        from_list_read_ahead(model_files, load_model_node, load_model).with_fail_fast(
+            fail_fast
+        ),
         directory,
     )

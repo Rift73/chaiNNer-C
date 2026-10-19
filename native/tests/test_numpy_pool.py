@@ -1149,6 +1149,8 @@ def test_every_worker_executor_installs_the_handler():
             "nodes.impl.numpy_pool",
         ),
         "nodes/impl/pytorch/vosr2_texture.py": expected,
+        # Load Models' reader of the next model
+        "nodes/impl/read_ahead.py": expected,
         "packages/chaiNNer_external/web_ui.py": expected,
         "server.py": expected,
     }

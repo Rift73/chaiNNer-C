@@ -8,6 +8,7 @@ from sanic.log import logger
 from spandrel import ModelDescriptor
 
 from api import Generator, IteratorOutputInfo, NodeContext
+from nodes.impl.read_ahead import from_list_read_ahead
 from nodes.properties.inputs import DirectoryInput
 from nodes.properties.inputs.generic_inputs import BoolInput
 from nodes.properties.outputs import DirectoryOutput, NumberOutput, TextOutput
@@ -72,8 +73,6 @@ def load_models_node(
     model_files: list[Path] = list_all_files_sorted(directory, supported_filetypes)
 
     return (
-        Generator.from_list_read_ahead(model_files, read, load_model).with_fail_fast(
-            fail_fast
-        ),
+        from_list_read_ahead(model_files, read, load_model).with_fail_fast(fail_fast),
         directory,
     )
