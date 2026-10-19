@@ -34,6 +34,7 @@ from functools import lru_cache
 import numpy as np
 
 from .native import check, f32, lib
+from .native_buffers import freeze_normalized
 from .native_framework_images import _report
 from .native_numpy_simd import fma3, loop_target
 from .native_tensors import _allocate, _view, cast_numpy
@@ -126,13 +127,18 @@ def copy_into(target: np.ndarray, source: np.ndarray) -> None:
     _report(events.value, "cast")
 
 
-def clip_image(image: np.ndarray) -> np.ndarray:
+def clip_image(image: np.ndarray, *, frozen: bool = False) -> np.ndarray:
+    """np.clip(image, 0, 1). frozen: a float32 result is returned frozen and
+    registered (freeze_normalized), so an output check borrows it: this clip is
+    ImageOutput's normalization bit for bit (cn_numpy_clip_f32 and clamp_unit run
+    the same maxss/minss pair, NaN passes as stored, neither reports an event), and
+    that check borrows only values its clip leaves as they are."""
     if type(image) is not np.ndarray or image.dtype != np.float32 or image.ndim == 0:
         return np.clip(image, 0, 1)
     source = np.require(image.ravel(order="K"), requirements=["C", "A"])
     out = np.empty_like(image)
     _run(source, out.ravel(order="K"), 0)
-    return out
+    return freeze_normalized(out) if frozen else out
 
 
 def blend_curve(image: np.ndarray, *, half: bool = False) -> np.ndarray:

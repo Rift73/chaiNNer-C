@@ -697,6 +697,70 @@ def test_freeze_normalized_clamp_is_the_enforce_conversion(state):
         assert (borrowed is out) == passes(out.view(np.uint32)), count
 
 
+def upscaled_values(kind):
+    """A 2x nearest "model" whose output holds the values kind names."""
+
+    def model(image):
+        out = np.repeat(np.repeat(image, 2, 0), 2, 1)
+        flat = out.reshape(-1).view(np.uint32)  # a view: out is a fresh C array
+        if kind == "exceptional":
+            # NaN, +-inf, -0, 1.5, -0.25 and a signalling NaN
+            words = (0x7FC00000, 0x7F800000, 0xFF800000, 0x80000000, 0x3FC00000)
+            flat[[0, 4, 9, 13, 18, 22, 27]] = (*words, 0xBE800000, 0x7F812345)
+        elif kind == "denormal":
+            flat[[0, 7]] = (0x00000001, 0x807FFFFF)
+        return out
+
+    return model
+
+
+@pytest.mark.parametrize("state", MXCSR_STATES)
+@pytest.mark.parametrize("kind", ["unit", "exceptional", "denormal"])
+@pytest.mark.parametrize(
+    ("channels", "alpha"), [(3, None), (4, "varying"), (4, "separate"), (1, None)]
+)
+def test_upscale_final_clip_is_borrowed_at_output_enforce(
+    state, kind, channels, alpha, levels, monkeypatch
+):
+    # convenient_upscale's final clip returns its fresh result frozen and registered:
+    # the enforced bytes, strides and warnings are those of the clip before (its result
+    # writable and unregistered, so enforce clipped a copy), and a model result returned
+    # as it is is borrowed by enforce exactly when the scan passes.
+    from nodes.impl.native_framework_shared import clip_image
+    from nodes.impl.upscale import convenient_upscale as module
+
+    image = np.random.default_rng(57).random((9, 11, max(channels, 3)), np.float32)
+    image = image[:, :, :channels]
+    model = upscaled_values(kind)
+    model_channels = 1 if channels == 1 else 3
+    args = (image, model_channels, model_channels, model, alpha == "separate")
+    outputs = []
+
+    def upscale():
+        outputs.append(module.convenient_upscale(*args))
+        return outputs[-1]
+
+    for level in levels:
+        assert isa_set(level) == level
+        with mxcsr(state):
+            actual_warnings, actual = warned(upscale)
+            with monkeypatch.context() as patch:
+                patch.setattr(module, "clipped", lambda op: lambda i: clip_image(op(i)))
+                expected_warnings, expected = warned(
+                    lambda: module.convenient_upscale(*args)
+                )
+        assert actual_warnings == expected_warnings
+        assert actual.shape == expected.shape and actual.strides == expected.strides
+        assert actual.tobytes() == expected.tobytes(), (level, state)
+        if channels != 4:
+            out = outputs[-1]
+            assert not out.flags.writeable
+            # A negative denormal clips to +0, or to -0 under DAZ: never borrowed.
+            borrowed = passes(out.view(np.uint32))
+            assert borrowed == (kind == "unit")
+            assert np.shares_memory(actual, out) == borrowed, (level, state)
+
+
 def test_freeze_normalized_registers_only_a_fresh_writable_owner():
     fresh = np.full((4, 5, 3), 0.5, np.float32)
     assert native_buffers.freeze_normalized(fresh) is fresh
