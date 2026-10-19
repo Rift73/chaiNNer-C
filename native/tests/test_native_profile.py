@@ -604,6 +604,8 @@ def test_run_handler_resets_before_and_logs_after_the_executor():
         "numpy_pool.release()",
         "line = native_profile.log_line()",
         "if line is not None:\n    logger.info(line)",
+        "offload = sys.modules.get('nodes.impl.pytorch.offload')",
+        "if offload is not None:\n    offload.release_pinned_memory()",
     ]
 
 

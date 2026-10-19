@@ -62,3 +62,21 @@ def test_the_cap_is_restored(monkeypatch: pytest.MonkeyPatch):
         out = model(x)
     assert torch.cuda.get_per_process_memory_fraction(DEVICE) == before
     assert torch.equal(out, expected)
+
+
+@torch.inference_mode()
+def test_the_pinned_ram_is_released_once_after_moves(monkeypatch: pytest.MonkeyPatch):
+    offload.release_pinned_memory()  # what earlier tests moved
+    released: list[int] = []
+    monkeypatch.setattr(offload, "_host_emptyCache", lambda: released.append(1))
+    model, x = model_and_input()
+    model(x)
+    offload.release_pinned_memory()
+    assert released == []  # nothing moved
+
+    with offload.OffloadMode(DEVICE, cap=0):
+        model(x)
+    torch.cuda.synchronize()
+    offload.release_pinned_memory()
+    offload.release_pinned_memory()
+    assert released == [1]

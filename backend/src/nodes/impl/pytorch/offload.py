@@ -19,6 +19,7 @@ from contextlib import contextmanager
 import torch
 import torch.utils._pytree as pytree
 from sanic.log import logger
+from torch._C import _host_emptyCache
 from torch._ops import OpOverload
 from torch.utils._python_dispatch import TorchDispatchMode
 
@@ -33,6 +34,9 @@ WORKSPACE = 2 * 2**30
 MIN_BYTES = 32 * 2**20
 # Smaller inputs never offload: their forward is short, and the per-op check would show.
 MIN_PIXELS = 2_000_000
+
+# Set once an activation moved to RAM: its pinned RAM stays PyTorch's until released.
+_pinned = False
 
 # Per model, the most PyTorch allocated during a forward per input pixel (learned).
 _bytes_per_pixel: weakref.WeakKeyDictionary[torch.nn.Module, float] = (
@@ -105,6 +109,8 @@ class OffloadMode(TorchDispatchMode):
                 continue
             if self.sharers.get(t.untyped_storage().data_ptr(), 0) != 1:
                 continue
+            global _pinned
+            _pinned = True
             host = torch.empty_like(t, device="cpu", pin_memory=True)
             self.copies.wait_stream(torch.cuda.current_stream(self.device))
             with torch.cuda.stream(self.copies):
@@ -207,3 +213,14 @@ def offloaded(module: torch.nn.Module, x: torch.Tensor) -> Iterator[None]:
                 mode.back_bytes / 2**30,
                 cap / 2**30,
             )
+
+
+def release_pinned_memory() -> None:
+    """Gives the RAM pinned for moved activations back to Windows (owner 2026-10-20: when a
+    run ends, so an idle worker holds no locked RAM; a run's later images reuse it). PyTorch
+    keeps it until the process ends otherwise, and 2.14 frees it only through this internal
+    call (the runtime pins torch)."""
+    global _pinned
+    if _pinned:
+        _pinned = False
+        _host_emptyCache()

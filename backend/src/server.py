@@ -610,6 +610,10 @@ async def run(request: Request):
             line = native_profile.log_line()
             if line is not None:
                 logger.info(line)
+            # The VRAM offload's pinned RAM (owner: given back when a run ends).
+            offload = sys.modules.get("nodes.impl.pytorch.offload")
+            if offload is not None:
+                offload.release_pinned_memory()
 
         return json(success_response(), status=200)
     except Exception as exception:
