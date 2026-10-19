@@ -120,6 +120,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+# Vendored third-party sources keep their own lib/ folders (libdeflate, zstd).
+!/native/third_party/*/lib/
 lib64/
 parts/
 sdist/
