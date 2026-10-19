@@ -112,6 +112,14 @@ def ending_runs() -> list[asyncio.Task[None]]:
     return [task for task in _ENDING_RUNS if not task.done()]
 
 
+def _log_stopped_run_error(done: asyncio.Future[object]) -> None:
+    """Reads a stopped run's result, which its request no longer does: the node's real error is only logged, never
+    dropped, and asyncio does not report it as never retrieved."""
+    error = None if done.cancelled() else done.exception()
+    if error is not None and not isinstance(error, Aborted):
+        logger.error("A stopped run's node failed: %s", error, exc_info=error)
+
+
 # The memo cache's allow-list (DESIGN.md amendment A3): native nodes without side effects or a context, except the
 # random generators below; these Python nodes, audited as deterministic and side-effect free (no file, clock, random,
 # network or GPU reads); and Load Image, keyed by its file's identity. test_engine_memo.py lists the sets.
@@ -1222,7 +1230,9 @@ class NativeExecutor:
                     await asyncio.wait((done,), timeout=STOP_GRACE_SECONDS)
                 except asyncio.CancelledError:
                     pass  # cancelled again: the request ends as cancelled at once
-            if not done.done():
+            if done.done():
+                _log_stopped_run_error(done)
+            else:
                 self.__end_in_background()
             raise
         if not done.done():
@@ -1267,15 +1277,7 @@ class NativeExecutor:
     async def __close_when_ended(self) -> None:
         done = self.__hooks.done
         await asyncio.wait((done,))
-        error = None if done.cancelled() else done.exception()
-        if error is not None and not isinstance(error, Aborted):
-            # The request already ended as stopped: the node's real error is only logged, never dropped.
-            logger.error(
-                "A stopped run's node failed after the run ended: %s",
-                error,
-                exc_info=error,
-            )
-        del error
+        _log_stopped_run_error(done)
         await self.loop.run_in_executor(None, self.__run_engine.close)
 
     async def run(self) -> None:

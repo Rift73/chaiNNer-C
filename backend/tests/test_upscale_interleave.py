@@ -114,6 +114,7 @@ class OverlappingRowsModel:
     dtype = torch.float32
     device = CPU
     architecture = SimpleNamespace(name="Overlapping")
+    model = torch.nn.Identity()
 
     def __init__(self, row_stride: int) -> None:
         self.row_stride = row_stride

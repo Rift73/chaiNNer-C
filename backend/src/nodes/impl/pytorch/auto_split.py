@@ -2,16 +2,67 @@ from __future__ import annotations
 
 import gc
 import math
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import numpy as np
 import torch
 from spandrel import ImageModelDescriptor
 
-from api import Progress
+from api import Aborted, Progress
 
 from ..native_framework_images import planar_to_interleaved_checked
 from ..upscale.auto_split import Split, Tiler, auto_split
 from .utils import safe_cuda_cache_empty
+
+
+class _Stopped(Exception):
+    """Stop, seen between a model's blocks. The forward catches it, so its frames (the
+    activations) are freed before the node raises Aborted."""
+
+
+# The progress of the forward this thread runs (another run may use the same model).
+_forward = threading.local()
+
+
+def _stop_between_blocks(_module: torch.nn.Module, _args: object) -> None:
+    progress: Progress | None = getattr(_forward, "progress", None)
+    if progress is not None and progress.aborted:
+        raise _Stopped
+
+
+@contextmanager
+def _stoppable(module: torch.nn.Module) -> Iterator[None]:
+    """Checks for Stop at each block of `module` (each module with children). Without
+    it a tile's forward runs to its end after Stop, keeping its memory: for minutes
+    when the GPU's memory overflows into shared memory."""
+    handles = [
+        m.register_forward_pre_hook(_stop_between_blocks)
+        for m in module.modules()
+        if next(m.children(), None) is not None
+    ]
+    try:
+        yield
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
+def _forward_or_stopped(
+    model: ImageModelDescriptor[torch.nn.Module],
+    input_tensor: torch.Tensor,
+    progress: Progress,
+) -> torch.Tensor | None:
+    """The model's output, or None when Stop interrupted the forward (whose frames are
+    freed by the time this returns)."""
+    _forward.progress = progress
+    try:
+        return model(input_tensor)
+    except _Stopped:
+        return None
+    finally:
+        _forward.progress = None
 
 
 def _into_standard_image_form(t: torch.Tensor) -> torch.Tensor:
@@ -124,7 +175,14 @@ def pytorch_auto_split(
             input_tensor = _into_batched_form(input_tensor)
 
             # inference
-            output_tensor = model(input_tensor)
+            output_tensor = _forward_or_stopped(model, input_tensor, progress)
+            if output_tensor is None:
+                # The kernels already queued end inside the node, so the memory is
+                # free once the node ends, and the release does not wait for them.
+                input_tensor = None
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                raise Aborted()
 
             # convert back to numpy
             interleaved = _interleaved(output_tensor)
@@ -170,4 +228,5 @@ def pytorch_auto_split(
             raise RuntimeError(message)
         return result
 
-    return auto_split(img, upscale, tiler)
+    with _stoppable(model.model):
+        return auto_split(img, upscale, tiler)

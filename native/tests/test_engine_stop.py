@@ -245,6 +245,7 @@ def test_stop_during_a_long_node(stops, kind, case):
 # (H1); a stopped run's node that fails later is logged with its traceback (M1); a second Stop while a stopped node
 # still runs waits for it, so a node that never returns exceeds the host's /kill timeout and the host restarts the
 # worker, and a run waiting behind it says why (M2); the server's CUDA check and collection wait for that node (M3).
+# Later: a node that stops itself after Stop ends its run as stopped, with nothing logged.
 REVIEW = DRIVER.split("results = {}", maxsplit=1)[0] + """
 import native_executor as ne
 from process import Aborted
@@ -301,7 +302,7 @@ async def unstarted(stop):
     return [ref() is not None for ref in refs]
 
 
-async def through_server(chain, then):
+async def through_server(chain, then, pressed=None):
     ctx = server.app.ctx
     ctx.__dict__["storage_dir"] = Path(os.environ["WORK"]) / "storage"
     ctx.__dict__["queue"] = Recorder()
@@ -313,6 +314,8 @@ async def through_server(chain, then):
         await asyncio.sleep(0.01)
     await asyncio.sleep(0.3)
     run.cancel()
+    if pressed is not None:
+        pressed.set()
     began = clock()
     await server.kill(SimpleNamespace(app=server.app))
     first = clock() - began
@@ -385,12 +388,35 @@ async def gpu_checks():
     return await through_server(one_node(body), then)
 
 
+async def self_stopped(delay):
+    # A node that stops itself (its context's check_aborted raises api.Aborted, as Upscale Image's tile and block
+    # checks do) this long after Stop: within the request's grace or after it, in the background.
+    pressed, unretrieved = threading.Event(), []
+    asyncio.get_running_loop().set_exception_handler(lambda _loop, context: unretrieved.append(context["message"]))
+
+    def body(x):
+        pressed.wait()
+        time.sleep(delay)
+        raise api.Aborted()
+
+    async def then(ctx, request):
+        while ending_runs():
+            await asyncio.sleep(0.05)
+        gc.collect()
+        return {"errors": errors[:], "unretrieved": unretrieved}
+
+    errors.clear()
+    return await through_server(one_node(body), then, pressed)
+
+
 os.environ["CHAINNER_C_EXECUTOR"] = "native"
 results = {"unstarted kill": asyncio.run(unstarted("kill")), "unstarted cancel": asyncio.run(unstarted("cancel"))}
 results["failing"] = asyncio.run(failing())
 gpu.clear()
 results["gpu"] = asyncio.run(gpu_checks())
 results["hung"] = asyncio.run(hung())
+results["self-stopped within the grace"] = asyncio.run(self_stopped(0.1))
+results["self-stopped after the grace"] = asyncio.run(self_stopped(1.0))
 print(json.dumps(results))
 """
 
@@ -427,6 +453,14 @@ def test_a_second_stop_waits_for_a_node_that_never_returns(review):
     assert found["second_kill"] == "waiting", found
     assert found["kill_behind"] == "waiting", found
     assert found["warning"], found
+
+
+@pytest.mark.parametrize("when", ["within the grace", "after the grace"])
+def test_a_node_that_stops_itself_ends_its_run_as_stopped(review, when):
+    # Not a failed node (NodeExecutionError, logged as an error), nor an error asyncio reports as never retrieved.
+    found = review[f"self-stopped {when}"]
+    assert found["first_kill"] < KILL_LIMIT, found
+    assert found["errors"] == [] and found["unretrieved"] == [], found
 
 
 def test_cuda_checks_wait_for_a_stopped_node(review):

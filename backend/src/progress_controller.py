@@ -2,9 +2,10 @@ import asyncio
 import time
 from abc import ABC, abstractmethod
 
-
-class Aborted(Exception):
-    pass
+# Re-exported: the class a node's context.check_aborted raises, so a node that stops itself
+# ends its run as stopped, not as failed (its own class made each such Stop a
+# NodeExecutionError).
+from api import Aborted
 
 
 class ProgressToken(ABC):
