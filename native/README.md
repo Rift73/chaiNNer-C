@@ -104,8 +104,8 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 `native\build\held\` first and check `Get-FileHash` against those copies. The build is reproducible: the same sources
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
 map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` and `_chainner_graph.pyd` of 2026-10-19, after the
-instant-exec work and the .exr decoder, the others of 2026-10-18, with TensorRT 11.4.0.106 and CUDA 13.4.92; `chainner_ext.pyd` unchanged
-since v0.3.2), for reference:
+instant-exec work and the .exr decoder, `drft_trt_plugins.dll` of 2026-10-20, the others of 2026-10-18, with TensorRT 11.4.0.106 and
+CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
@@ -113,7 +113,7 @@ since v0.3.2), for reference:
 | `_chainner_graph.pyd` | `4e0f27b75e495c395dd1163a8f89dba4b30d6e28ba5108b74e7ec0708c073105` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 | `vosr2_qkv.dll` | `5b5cde9c2c037f0ed3d48ce0fe59b3ff01432c610edc358fdb7b0155e5b93497` |
-| `drft_trt_plugins.dll` | `fe92b59b26641856c218cf0e237a418e9f0d66021df9d27f159ab1619e17cae9` |
+| `drft_trt_plugins.dll` | `bcb6651d9189682043ef3ca4f231e54368b7d358fdd329b8e709ac84e1fdd9d9` |
 | `_chainner_trt.pyd` | `7d0f774c3426fb2900f05493ef5650f90aa66a997bb000d12c9c71f3cb05d947` |
 | `chainner_trt_vs.dll` | `f7d12717a7cbd02a09ea34728de92a1421ff0902acb73705107b095741b09a9c` |
 
@@ -138,8 +138,9 @@ in one process); chaiNNer-C registers it once per process before loading engines
 IEEE division and square root), the numerics Codex measured, and host warnings at `/W4` but not fatal, since nvcc's
 generated stubs of kernels in anonymous namespaces raise C4211 and the output-tail plugin, the one on TensorRT's
 deprecated `IPluginV2DynamicExt`, raises EDG's #997. `DrftAliasedIdentityBarrierPlugin.cpp` and the link use clang-cl
-with `/W4 /WX`. The DLL imports only `KERNEL32.dll` and is reproducible like the others;
-`native/tests/test_drft_plugins.py` checks its six creators.
+with `/W4 /WX`. The DLL imports only `KERNEL32.dll`. Unlike the others, its bytes depend on the checkout's path
+(nvcc's output): the same sources, CUDA 13.4.92 and TensorRT 11.4.0.106 gave `fe92b59b…` in a worktree and the hash
+above in the main checkout. `native/tests/test_drft_plugins.py` checks its six creators.
 
 **The TensorRT runner** (`trt_runner`, the C++ engine runner) builds from the same two roots: `_chainner_trt.pyd`
 (the Python module) and, when `CHAINNER_C_VAPOURSYNTH_INCLUDE` names the directory of VapourSynth's `VapourSynth4.h`,

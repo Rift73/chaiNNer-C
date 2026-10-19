@@ -119,9 +119,10 @@ packaging (section 4, item 6; README Build). VOSR's modules, engine caches, host
 
 1. Pins live in `backend/src/packages/chaiNNer_tensorrt/__init__.py` (`tensorrt` 11.4.0.106, `cuda-python` 13.4.1);
    they are GPU-only and not in the lock.
-2. The native binaries (`vosr2_qkv.dll`, the runner's `_chainner_trt.pyd` and `chainner_trt_vs.dll`) are built
-   against the pinned SDK, and TensorRT runs a binary only on the version it was built against or a later one, so an
-   installed TensorRT older than the pin is replaced at startup (auto update, no fallback). A serialized engine loads
+2. The native binaries (`vosr2_qkv.dll`, `drft_trt_plugins.dll`, the runner's `_chainner_trt.pyd` and
+   `chainner_trt_vs.dll`) are built against the pinned SDK, and TensorRT runs a binary only on the version it was
+   built against or a later one, so an installed TensorRT older than the pin is replaced at startup (auto update, no
+   fallback). A serialized engine loads
    only on the TensorRT version and GPU architecture that built it (`nodes/impl/tensorrt/engine_info.py`): after a
    bump, users rebuild engines with Build Engine (VOSR's engines rebuild themselves once).
 3. API changes: update the stubs `stubs/tensorrt/__init__.pyi` and `stubs/cuda/bindings/runtime.pyi` (pyright).
@@ -130,7 +131,8 @@ packaging (section 4, item 6; README Build). VOSR's modules, engine caches, host
 
 ## 8. Package and release
 
-1. Build the native layer, with the TensorRT and CUDA roots so that `vosr2_qkv.dll` ships (nothing checks it);
+1. Build the native layer, with the TensorRT and CUDA roots so that `vosr2_qkv.dll` and `drft_trt_plugins.dll`
+   ship;
    package: `package_port.py --validate-only`, then build or `--refresh`, then a repeat run that must report
    `verified_no_op` (README Package).
 2. Bundle checks (section 5, step 3), `make_oracle.py`, the gates of section 10.
@@ -142,7 +144,9 @@ packaging (section 4, item 6; README Build). VOSR's modules, engine caches, host
 5. VOSR's TensorRT plugin `backend/src/nodes/impl/pytorch/vosr2_qkv.dll` must be built (README Build): without it
    `package_port.py` (all runs, `--validate-only` too) and `npm run make` on Windows (Forge's `prePackage`) refuse to
    package, since such a package has no VOSR TensorRT backends. Only for a package meant to lack them, set
-   `CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1` (exactly `1`) for that run.
+   `CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1` (exactly `1`) for that run. Legacy DRFT's plugin library
+   `drft_trt_plugins.dll` builds from the same roots in the same configure (a failure of its target fails the
+   build), so this check covers it; a package without it has no DRFT TensorRT route.
 
 ## 9. Publish
 
