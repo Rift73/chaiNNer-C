@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import json
 import os
 import re
@@ -58,6 +59,17 @@ def distribution_name(package_name: str) -> str:
     names (PEP 503), since pip lists a package by the spelling in its own metadata:
     "onnx_graphsurgeon" for onnx-graphsurgeon."""
     return re.sub(r"[-_.]+", "-", package_name.split("[", 1)[0]).lower()
+
+
+def scan_installed_packages() -> None:
+    """Fills installed_packages with the distributions this Python has, as `pip list`
+    lists them (pip reads the same metadata), in this process: a pip process takes
+    0.3-1 s. The first distribution on sys.path wins a name, as for imports and pip."""
+    for distribution in importlib.metadata.distributions():
+        metadata = distribution.metadata
+        name = metadata["Name"]
+        if name:
+            installed_packages.setdefault(distribution_name(name), metadata["Version"])
 
 
 def pin(dependency: DependencyInfo) -> str:

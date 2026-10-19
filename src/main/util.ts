@@ -1,5 +1,6 @@
 import { constants } from 'fs';
 import fs from 'fs/promises';
+import path from 'path';
 
 export const checkFileExists = (file: string): Promise<boolean> =>
     fs.access(file, constants.F_OK).then(
@@ -14,4 +15,21 @@ export const checkFileExists = (file: string): Promise<boolean> =>
 export const readTextFile = async (file: string): Promise<string> => {
     const text = await fs.readFile(file, { encoding: 'utf-8' });
     return text.replace(/^\uFEFF/, '');
+};
+
+/**
+ * Writes a file through a temporary file in the same folder and a rename, so a reader finds
+ * either the old content or the new one, never a partial file (a crash or a second instance
+ * writing at the same time).
+ */
+export const writeFileAtomic = async (file: string, content: string): Promise<void> => {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const temp = `${file}.${process.pid}.tmp`;
+    try {
+        await fs.writeFile(temp, content, 'utf-8');
+        await fs.rename(temp, file);
+    } catch (error) {
+        await fs.rm(temp, { force: true });
+        throw error;
+    }
 };

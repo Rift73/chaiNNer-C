@@ -2,19 +2,32 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
-from sanic.log import LOGGING_CONFIG_DEFAULTS
+if TYPE_CHECKING:
+    LOG_CONFIG: dict[str, Any]
 
-# Sanic 24.12 changed its log line format. The host parses the worker's lines, and
-# the UI strips the host's timestamps, by the 23.x form "[time] [pid] [LEVEL] text",
-# which Sanic's legacy formatters keep.
-LOG_CONFIG = {
-    **LOGGING_CONFIG_DEFAULTS,
-    "formatters": {
-        "generic": {"class": "sanic.logging.formatter.LegacyFormatter"},
-        "access": {"class": "sanic.logging.formatter.LegacyAccessFormatter"},
-    },
-}
+
+def __getattr__(name: str) -> object:
+    """LOG_CONFIG, made on first use: Sanic takes 0.2 s to import, and run.py reads the
+    command line with ServerConfig before it starts the worker and imports Sanic.
+
+    Sanic 24.12 changed its log line format. The host parses the worker's lines, and
+    the UI strips the host's timestamps, by the 23.x form "[time] [pid] [LEVEL] text",
+    which Sanic's legacy formatters keep."""
+    if name != "LOG_CONFIG":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from sanic.log import LOGGING_CONFIG_DEFAULTS
+
+    log_config = {
+        **LOGGING_CONFIG_DEFAULTS,
+        "formatters": {
+            "generic": {"class": "sanic.logging.formatter.LegacyFormatter"},
+            "access": {"class": "sanic.logging.formatter.LegacyAccessFormatter"},
+        },
+    }
+    globals()["LOG_CONFIG"] = log_config
+    return log_config
 
 
 @dataclass
@@ -65,6 +78,15 @@ class ServerConfig:
 
     Usage: `--host-pid 1234`
     """
+
+    def worker_flags(self) -> list[str]:
+        """The flags the host passes along to its worker."""
+        flags: list[str] = []
+        if self.storage_dir is not None:
+            flags.extend(["--storage-dir", self.storage_dir])
+        if self.trace:
+            flags.append("--trace")
+        return flags
 
     @staticmethod
     def parse_argv() -> ServerConfig:

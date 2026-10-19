@@ -21,7 +21,7 @@ import { Progress, ProgressController, ProgressToken, SubProgress } from '../../
 import { assertNever } from '../../common/util';
 import { chainnerCVersion } from '../../common/version';
 import { OpenArguments, parseArgs } from '../arguments';
-import { BackendProcess } from '../backend/process';
+import { BackendProcess, getBackendPath } from '../backend/process';
 import { setupBackend } from '../backend/setup';
 import { buildInfo } from '../buildInfo';
 import { readClipboardImageAsPng } from '../clipboardImage';
@@ -31,6 +31,7 @@ import { getLogsFolder, getRootDir, installDir } from '../platform';
 import { BrowserWindowWithSafeIpc, ipcMain } from '../safeIpc';
 import { SaveData, SaveFile, openSaveFile } from '../SaveFile';
 import { writeSettings } from '../setting-storage';
+import { UiCache } from '../uiCache';
 import { MenuData, setMainMenu } from './menu';
 
 const version = app.getVersion() as Version;
@@ -310,14 +311,28 @@ const registerEventHandlerPreSetup = (
     ipcMain.handle('unwatch-files', (event, ps) => removeFiles(ps));
 };
 
+/**
+ * The handlers the renderer calls at its start, registered before it loads: they answer once the
+ * backend process has started, which runs beside the window's loading.
+ */
+const registerEventHandlerBackendInfo = (
+    backendPromise: Promise<BackendProcess>,
+    uiCache: UiCache | undefined
+) => {
+    ipcMain.handle('owns-backend', async () => (await backendPromise).owned);
+    ipcMain.handle('get-backend-url', async () => (await backendPromise).url);
+    ipcMain.handle('get-python', async () => (await backendPromise).python);
+
+    ipcMain.handle('get-ui-cache', async () => uiCache?.read());
+    ipcMain.on('update-ui-cache', (_, data) => {
+        uiCache?.write(data).catch(log.error);
+    });
+};
+
 const registerEventHandlerPostSetup = (
     mainWindow: BrowserWindowWithSafeIpc,
     backend: BackendProcess
 ) => {
-    ipcMain.handle('owns-backend', () => backend.owned);
-    ipcMain.handle('get-backend-url', () => backend.url);
-    ipcMain.handle('get-python', () => backend.python);
-
     if (backend.owned) {
         backend.addErrorListener((error) => {
             dialog.showMessageBoxSync({
@@ -577,7 +592,34 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
 
     try {
         registerEventHandlerPreSetup(mainWindow, args, settings);
-        const backend = await createBackend(SubProgress.slice(progressController, 0, 0.25), args);
+
+        // The backend starts while the window loads. A remote backend's node list is not cached:
+        // its Python and packages are not on this computer.
+        const backendPromise = createBackend(SubProgress.slice(progressController, 0, 0.25), args);
+        const uiCache = args.remoteBackend
+            ? undefined
+            : new UiCache(
+                  path.join(getRootDir(), 'cache', 'backend-ui.json'),
+                  async () => (await backendPromise).python,
+                  path.dirname(getBackendPath())
+              );
+        registerEventHandlerBackendInfo(backendPromise, uiCache);
+
+        mainWindow.once('ready-to-show', () => {
+            mainWindow.show();
+            if (settings.lastWindowSize.maximized) {
+                mainWindow.maximize();
+            }
+        });
+
+        // and load the index.html of the app.
+        const loading = MAIN_WINDOW_VITE_DEV_SERVER_URL
+            ? mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
+            : mainWindow.loadFile(
+                  path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`)
+              );
+
+        const backend = await backendPromise;
         registerEventHandlerPostSetup(mainWindow, backend);
 
         const sse = new EventSource(`${backend.url}/setup-sse`, {
@@ -603,25 +645,7 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
             }
         });
 
-        if (mainWindow.isDestroyed()) {
-            return;
-        }
-
-        mainWindow.once('ready-to-show', () => {
-            mainWindow.show();
-            if (settings.lastWindowSize.maximized) {
-                mainWindow.maximize();
-            }
-        });
-
-        // and load the index.html of the app.
-        if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-            await mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
-        } else {
-            await mainWindow.loadFile(
-                path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`)
-            );
-        }
+        await loading;
     } catch (error) {
         if (error instanceof CriticalError) {
             await progressController.submitInterrupt(error.interrupt);

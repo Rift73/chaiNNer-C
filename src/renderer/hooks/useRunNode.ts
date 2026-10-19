@@ -21,7 +21,7 @@ export const useRunNode = (
 ): { reload: () => void; isLive: boolean } => {
     const { sendToast } = useContext(AlertBoxContext);
     const { addIndividuallyRunning, removeIndividuallyRunning } = useContext(GlobalContext);
-    const { schemata, backend } = useContext(BackendContext);
+    const { schemata, backend, isBackendReady } = useContext(BackendContext);
     const { packageSettings } = useSettings();
 
     const [reloadCounter, setReloadCounter] = useState(0);
@@ -49,7 +49,9 @@ export const useRunNode = (
 
     useAsyncEffect(
         () => async (token) => {
-            if (inputHash === lastInputHash.current) {
+            // A node of the startup chain waits until the backend takes requests; there it
+            // waits for its node to load, if it has not yet.
+            if (!isBackendReady || inputHash === lastInputHash.current) {
                 return;
             }
             // give it some time for other effects to settle in
@@ -82,7 +84,7 @@ export const useRunNode = (
             }
         },
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [shouldRun, inputHash]
+        [shouldRun, inputHash, isBackendReady]
     );
 
     useEffect(() => {

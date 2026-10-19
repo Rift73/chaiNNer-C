@@ -49,4 +49,4 @@ def test_a_host_already_gone_ends_the_worker_at_once():
 
 
 def test_the_host_passes_its_pid_to_the_worker():
-    assert '"--host-pid", str(os.getpid())' in source("server_process_helper.py")
+    assert '"--host-pid", str(os.getpid())' in source("worker_spawn.py")

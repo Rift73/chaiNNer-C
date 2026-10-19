@@ -78,8 +78,13 @@ export const Main = memo(() => {
         });
     }, []);
 
+    // The editor shows as soon as it has a node list: the one cached at the last start, or else
+    // the backend's, which it sends once it is ready.
+    const showEditor = connectionState === 'connected' && ready;
     useEffect(() => {
-        ipcRenderer.send(isBackendReady ? 'enable-menu' : 'disable-menu');
+        ipcRenderer.send(showEditor ? 'enable-menu' : 'disable-menu');
+    }, [showEditor]);
+    useEffect(() => {
         if (isBackendReady) {
             setOverallProgress(1);
             ipcRenderer.send('backend-ready');
@@ -88,7 +93,7 @@ export const Main = memo(() => {
 
     if (connectionState === 'failed') return null;
 
-    if (connectionState === 'connecting' || !ready || !isBackendReady) {
+    if (!showEditor) {
         return (
             <Box
                 h="100vh"

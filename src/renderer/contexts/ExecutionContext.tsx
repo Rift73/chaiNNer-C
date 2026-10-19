@@ -175,6 +175,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         backend,
         ownsBackend,
         backendDownRef,
+        isBackendReady,
         features,
         featureStates,
         categories,
@@ -338,7 +339,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         interval: 100,
     });
 
-    const [eventSource, eventSourceStatus] = useBackendEventSource(url);
+    const [eventSource, eventSourceStatus] = useBackendEventSource(url, isBackendReady);
     useRegisterNodeEvents(eventSource, nodeEventBacklog);
 
     useBackendEventSourceListener(eventSource, 'execution-error', (data) => {
@@ -550,13 +551,17 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     }, [backend, sendAlert]);
 
     const run = useCallback(async () => {
+        if (!isBackendReady) {
+            // the backend does not take requests yet (Run is disabled until it does)
+            return;
+        }
         if (status === ExecutionStatus.PAUSED) {
             await resume();
         } else {
             await runNodes();
             setExecutionNumber((prev) => prev + 1);
         }
-    }, [resume, runNodes, status, setExecutionNumber]);
+    }, [isBackendReady, resume, runNodes, status, setExecutionNumber]);
 
     const pause = useCallback(async () => {
         try {

@@ -73,6 +73,8 @@ export interface BackendNodesResponse {
     categories: Category[];
     categoriesMissingNodes: CategoryId[];
 }
+/** What the editor needs of the backend to show its nodes: the /nodes and /packages replies. */
+export type BackendData = [BackendNodesResponse, Package[]];
 export interface BackendRunRequest {
     data: BackendJsonNode[];
     options: PackageSettings;

@@ -1,33 +1,11 @@
 from __future__ import annotations
 
-import subprocess
-from json import loads as json_parse
-
-from .store import (
-    ENV,
-    DependencyInfo,
-    distribution_name,
-    install_dependencies_sync,
-    installed_packages,
-    python_path,
-)
+from .store import DependencyInfo, install_dependencies_sync, scan_installed_packages
 
 # Get the list of installed packages
 # We can't rely on using the package's __version__ attribute because not all packages actually have it
 try:
-    pip_list = subprocess.check_output(
-        [
-            python_path,
-            "-m",
-            "pip",
-            "list",
-            "--format=json",
-            "--disable-pip-version-check",
-        ],
-        env=ENV,
-    )
-    for p in json_parse(pip_list):
-        installed_packages[distribution_name(p["name"])] = p["version"]
+    scan_installed_packages()
 except Exception as e:
     print(f"Failed to get installed packages: {e}")
 
@@ -93,4 +71,5 @@ deps: list[DependencyInfo] = [
     ),
 ]
 
-install_dependencies_sync(deps)
+# How many were missing or outdated and are now installed: none but on a first start.
+installed = install_dependencies_sync(deps)

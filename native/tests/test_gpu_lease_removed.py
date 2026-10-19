@@ -87,6 +87,19 @@ def test_run_proxies_without_recycling_the_worker():
             )
         assert here == upstream
     here, upstream = here_and_upstream("server_host.py", "AppContext", "__init__")
+    # Instant startup: run.py starts the worker before server_host, with the flags
+    # ServerConfig.worker_flags gives; the setup events go to every listener.
+    upstream = replace_once(
+        upstream,
+        "\n    worker_flags: list[str] = []"
+        "\n    if self.config.storage_dir is not None:"
+        "\n        worker_flags.extend(['--storage-dir', self.config.storage_dir])"
+        "\n    if self.config.trace:"
+        "\n        worker_flags.append('--trace')"
+        "\n    self._worker: Final[WorkerServer] = WorkerServer(worker_flags)",
+        "\n    self._worker: Final[WorkerServer] = WorkerServer(self.config.worker_flags())",
+    )
+    upstream += "\n    self.setup_events: Final = BackendEventBroadcast()"
     assert here == upstream
     trees = [
         ast.parse(text)
@@ -133,6 +146,13 @@ def test_run_proxies_without_recycling_the_worker():
         "from dependencies.store import DependencyInfo, distribution_name, "
         "filter_necessary_to_install, install_dependencies, installed_packages, "
         "uninstall_dependencies"
+    )
+    # Instant startup: main takes the worker run.py started (a subprocess.Popen), and
+    # the setup events go to every listener (BackendEventBroadcast, no setup queue).
+    upstream.insert(upstream.index("import sys"), "import subprocess")
+    upstream.remove("from functools import cached_property")
+    upstream[upstream.index("from events import EventQueue")] = (
+        "from events import BackendEventBroadcast"
     )
     assert imports[0] == upstream
     # No stop/start-around-run path: the host defines upstream's functions only.
@@ -217,6 +237,10 @@ def test_event_stream_sends_without_acknowledgments():
         [getattr(n, "name", "") for n in definition(ast.parse(text), "EventQueue").body]
         for text in (source("events.py"), upstream_source("events.py"))
     ]
+    # Instant startup: the setup events never wait for a listener either
+    # (BackendEventBroadcast), so EventQueue's waiting put went with them.
+    methods[1].remove("wait_until_empty")
+    methods[1].remove("put_and_wait")
     assert methods[0] == methods[1]
 
 
@@ -231,6 +255,10 @@ def test_individual_run_responds_without_awaiting_its_broadcasts():
         [ast.unparse(n.value) for n in ast.walk(h) if isinstance(n, ast.Await)]
         for h in handlers
     ]
+    # Instant startup: the run waits for its own node to load, not for every node.
+    awaited[1][awaited[1].index("nodes_available()")] = (
+        "wait_for_nodes([full_data['schemaId']])"
+    )
     assert awaited[0] == awaited[1]
     (outer,) = (n for n in handlers[0].body if isinstance(n, ast.Try))
     assert outer.finalbody == []

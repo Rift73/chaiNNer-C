@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, Literal, TypedDict, Union
@@ -22,7 +21,7 @@ class BackendStatusEvent(TypedDict):
 
 
 class BackendStateEvent(TypedDict):
-    event: Literal["backend-started"]
+    event: Literal["backend-started", "backend-ready"]
     data: None
 
 
@@ -152,13 +151,36 @@ class EventQueue(EventConsumer):
     def put(self, event: Event) -> None:
         self.queue.put_nowait(event)
 
-    async def wait_until_empty(self, timeout: float) -> None:
-        while timeout > 0:
-            if self.queue.empty():
-                return
-            await asyncio.sleep(0.01)
-            timeout -= 0.01
 
-    async def put_and_wait(self, event: Event, timeout: float = float("inf")) -> None:
-        await self.queue.put(event)
-        await self.wait_until_empty(timeout)
+class BackendEventBroadcast:
+    """The host's setup events (BackendEvent), sent to every /setup-sse listener; a put
+    never waits for one.
+
+    The app's main process and its window each listen, and either may connect after
+    an event: a new listener first gets the latest backend status and, once the backend
+    is ready, backend-ready.
+    """
+
+    def __init__(self) -> None:
+        self._listeners: set[EventQueue] = set()
+        self._status: BackendEvent | None = None
+        self._ready: BackendEvent | None = None
+
+    def put(self, event: BackendEvent) -> None:
+        if event["event"] == "backend-status":
+            self._status = event
+        elif event["event"] == "backend-ready":
+            self._ready = event
+        for listener in self._listeners:
+            listener.put(event)
+
+    def listen(self) -> EventQueue:
+        listener = EventQueue()
+        for event in (self._status, self._ready):
+            if event is not None:
+                listener.put(event)
+        self._listeners.add(listener)
+        return listener
+
+    def stop_listening(self, listener: EventQueue) -> None:
+        self._listeners.discard(listener)

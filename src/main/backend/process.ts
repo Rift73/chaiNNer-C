@@ -8,7 +8,7 @@ import { log } from '../../common/log';
 import { delay, lazy } from '../../common/util';
 import { sanitizedEnv } from '../env';
 
-const getBackendPath = lazy((): string => {
+export const getBackendPath = lazy((): string => {
     const candidates: string[] = [
         path.join(process.resourcesPath, 'src', 'run.py'),
         path.join(app.getAppPath(), '..', 'src', 'run.py'),

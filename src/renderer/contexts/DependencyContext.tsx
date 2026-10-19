@@ -783,7 +783,7 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
     const { isOpen, onOpen, onClose } = useDisclosure();
 
     const { showAlert, sendToast } = useContext(AlertBoxContext);
-    const { backend, url, pythonInfo, backendDownRef, packages, refreshNodes } =
+    const { backend, url, pythonInfo, backendDownRef, packages, refreshNodes, isBackendReady } =
         useContext(BackendContext);
     const { hasRelevantUnsavedChangesRef } = useContext(GlobalContext);
 
@@ -791,6 +791,7 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
 
     const { data: installedPyPi, refetch: refetchInstalledPyPi } = useQuery({
         queryKey: 'dependencies',
+        enabled: isBackendReady,
         queryFn: async () => {
             try {
                 return await backend.installedDependencies();
@@ -821,7 +822,7 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
 
     const [individualProgress, setIndividualProgress] = useState(0);
     const [overallProgress, setOverallProgress] = useState(0);
-    const [eventSource] = useBackendSetupEventSource(url);
+    const [eventSource] = useBackendSetupEventSource(url, isBackendReady);
     useBackendEventSourceListener(eventSource, 'package-install-status', (f) => {
         if (f) {
             setOverallProgress(f.progress);

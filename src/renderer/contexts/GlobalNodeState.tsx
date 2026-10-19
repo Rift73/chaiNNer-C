@@ -14,6 +14,7 @@ import {
 import { createContext, useContext } from 'use-context-selector';
 import {
     EdgeData,
+    FileOpenResult,
     InputData,
     InputId,
     InputKind,
@@ -26,6 +27,7 @@ import {
 } from '../../common/common-types';
 import { IdSet } from '../../common/IdSet';
 import { log } from '../../common/log';
+import { chainSnapshot } from '../../common/nodes/chainSnapshot';
 import { getEffectivelyDisabledNodes } from '../../common/nodes/disabled';
 import { formatDroppedNodes, toEditorChain } from '../../common/nodes/editorChain';
 import { ChainLineage } from '../../common/nodes/lineage';
@@ -67,12 +69,7 @@ import {
 } from '../helpers/reactFlowUtil';
 import { GetSetState, SetState } from '../helpers/types';
 import { useAsyncEffect } from '../hooks/useAsyncEffect';
-import {
-    ChangeCounter,
-    nextChangeCount,
-    useChangeCounter,
-    wrapRefChanges,
-} from '../hooks/useChangeCounter';
+import { ChangeCounter, useChangeCounter, wrapRefChanges } from '../hooks/useChangeCounter';
 import { useHotkeys } from '../hooks/useHotkeys';
 import { useInputHashes } from '../hooks/useInputHashes';
 import { useIpcRendererListener } from '../hooks/useIpcRendererListener';
@@ -92,6 +89,13 @@ import { BackendContext } from './BackendContext';
 import type { ParsedSaveData, SaveData } from '../../main/SaveFile';
 
 const EMPTY_CONNECTED: readonly [IdSet<InputId>, IdSet<OutputId>] = [IdSet.empty, IdSet.empty];
+
+const EMPTY_CHAIN_SNAPSHOT = chainSnapshot([], []);
+/**
+ * How long after its last change a complete load is taken as saved: past the type pass (100 ms
+ * after a change) and the inputs it reveals.
+ */
+const LOAD_SETTLE_MS = 250;
 
 interface GlobalVolatile {
     nodeChanges: ChangeCounter;
@@ -179,12 +183,12 @@ interface GlobalProviderProps {
 export const GlobalProvider = memo(
     ({ children, reactFlowWrapper }: React.PropsWithChildren<GlobalProviderProps>) => {
         const { sendAlert, sendToast, showAlert } = useContext(AlertBoxContext);
-        const { schemata, functionDefinitions, passthrough, scope, backend } =
+        const { schemata, functionDefinitions, passthrough, scope, backend, nodesFromCache } =
             useContext(BackendContext);
         const { viewportExportPadding } = useSettings();
 
-        const [nodeChanges, addNodeChanges, nodeChangesRef] = useChangeCounter();
-        const [edgeChanges, addEdgeChanges, edgeChangesRef] = useChangeCounter();
+        const [nodeChanges, addNodeChanges] = useChangeCounter();
+        const [edgeChanges, addEdgeChanges] = useChangeCounter();
         const [chainLoads, addChainLoads] = useChangeCounter();
         const {
             setViewport,
@@ -358,9 +362,26 @@ export const GlobalProvider = memo(
         const [collidingEdge, setCollidingEdge] = useState<string | undefined>();
         const [collidingNode, setCollidingNode] = useState<string | undefined>();
 
-        const [lastSavedChanges, setLastSavedChanges] = useState<
-            readonly [nodeChanges: number, edgeChanges: number]
-        >([0, 0]);
+        /**
+         * The `chainSnapshot` of the chain as its file has it: taken on save, and once a complete
+         * load has settled (`undefined` until then). `null` after a load that dropped nodes: the
+         * chain then differs from its file until it is saved.
+         */
+        const [savedSnapshot, setSavedSnapshot] = useState<string | null | undefined>(
+            EMPTY_CHAIN_SNAPSHOT
+        );
+        // A loaded chain settles before its snapshot is taken: its nodes fill in the values and
+        // sizes they lack when they mount, and so do inputs that the types reveal (computed
+        // 100 ms after a change). None of this is a change by the user.
+        useEffect(() => {
+            if (savedSnapshot !== undefined) {
+                return undefined;
+            }
+            const timerId = setTimeout(() => {
+                setSavedSnapshot(chainSnapshot(getNodes(), getEdges()));
+            }, LOAD_SETTLE_MS);
+            return () => clearTimeout(timerId);
+        }, [savedSnapshot, nodeChanges, edgeChanges, getNodes, getEdges]);
         /**
          * Whether the current chain as *relevant* unsaved changes.
          *
@@ -375,16 +396,18 @@ export const GlobalProvider = memo(
         }, []);
         useEffect(() => {
             const hasUnsavedChanges =
-                lastSavedChanges[0] !== nodeChanges || lastSavedChanges[1] !== edgeChanges;
+                savedSnapshot !== undefined &&
+                savedSnapshot !== chainSnapshot(getNodes(), getEdges());
             const value = hasUnsavedChanges && (getNodes().length > 0 || !!savePath);
             setHasRelevantUnsavedChanges(value);
             ipcRenderer.send('update-has-unsaved-changes', value);
         }, [
-            lastSavedChanges,
+            savedSnapshot,
             savePath,
             nodeChanges,
             edgeChanges,
             getNodes,
+            getEdges,
             setHasRelevantUnsavedChanges,
         ]);
 
@@ -440,7 +463,7 @@ export const GlobalProvider = memo(
                         }
                         setSavePath(result.path);
                     }
-                    setLastSavedChanges([nodeChangesRef.current, edgeChangesRef.current]);
+                    setSavedSnapshot(chainSnapshot(saveData.nodes, saveData.edges));
                     return SaveResult.Saved;
                 } catch (error) {
                     log.error(error);
@@ -454,15 +477,7 @@ export const GlobalProvider = memo(
                     return SaveResult.Canceled;
                 }
             },
-            [
-                dumpState,
-                edgeChangesRef,
-                nodeChangesRef,
-                openRecent,
-                savePath,
-                sendToast,
-                setSavePath,
-            ]
+            [dumpState, openRecent, savePath, sendToast, setSavePath]
         );
         const exportTemplate = useCallback(async () => {
             try {
@@ -600,17 +615,9 @@ export const GlobalProvider = memo(
                 // React Flow reuses the nodes that keep their id, so they have to run again to
                 // get back the output data that was just cleared
                 addChainLoads();
-                // The loaded chain matches its file only if no node was dropped. Otherwise the
-                // counts before the load are kept, which the changes below leave behind, so the
-                // chain is unsaved.
-                setLastSavedChanges(
-                    complete
-                        ? [
-                              nextChangeCount(nodeChangesRef.current),
-                              nextChangeCount(edgeChangesRef.current),
-                          ]
-                        : [nodeChangesRef.current, edgeChangesRef.current]
-                );
+                // The loaded chain matches its file only if no node was dropped: its snapshot is
+                // taken once it has settled. Otherwise it is unsaved.
+                setSavedSnapshot(complete ? undefined : null);
                 changeNodes(validNodes);
                 changeEdges(validEdges);
                 if (loadPosition) {
@@ -623,9 +630,7 @@ export const GlobalProvider = memo(
                 addChainLoads,
                 changeEdges,
                 changeNodes,
-                edgeChangesRef,
                 saveUnsavedChanges,
-                nodeChangesRef,
                 outputDataActions,
                 pushOpenPath,
                 schemata,
@@ -644,6 +649,7 @@ export const GlobalProvider = memo(
 
             changeNodes([]);
             changeEdges([]);
+            setSavedSnapshot(EMPTY_CHAIN_SNAPSHOT);
             setSavePath(undefined);
             setViewport({ x: 0, y: 0, zoom: 1 });
             outputDataActions.clear();
@@ -664,23 +670,80 @@ export const GlobalProvider = memo(
             }, [clearState])
         );
 
+        // The chain to open at the start: a file given to chaiNNer, or the startup template.
+        const [autoOpen, setAutoOpen] = useState<FileOpenResult<ParsedSaveData>>();
         useAsyncEffect(
-            () => async () => {
-                const result = await ipcRenderer.invoke('get-auto-open');
-                if (result) {
-                    if (result.kind === 'Success') {
-                        await setStateFromJSONRef.current(result.saveData, result.path, true);
-                    } else {
-                        removeRecentPath(result.path);
-                        sendAlert({
-                            type: AlertType.ERROR,
-                            message: `Unable to open file ${result.path}`,
-                        });
-                    }
-                }
-            },
-            [removeRecentPath, sendAlert]
+            () => ({
+                supplier: () => ipcRenderer.invoke('get-auto-open'),
+                successEffect: setAutoOpen,
+            }),
+            []
         );
+        useEffect(() => {
+            if (autoOpen === undefined) {
+                return;
+            }
+            if (autoOpen.kind === 'Success') {
+                // A chain with a node that the node list of the last start lacks waits for the
+                // backend's list: opened now, it would lose that node.
+                if (
+                    nodesFromCache &&
+                    autoOpen.saveData.nodes.some((n) => !schemata.has(n.data.schemaId))
+                ) {
+                    return;
+                }
+                setStateFromJSONRef
+                    .current(autoOpen.saveData, autoOpen.path, true)
+                    .catch(log.error);
+            } else {
+                removeRecentPath(autoOpen.path);
+                sendAlert({
+                    type: AlertType.ERROR,
+                    message: `Unable to open file ${autoOpen.path}`,
+                });
+            }
+            setAutoOpen(undefined);
+        }, [autoOpen, nodesFromCache, schemata, removeRecentPath, sendAlert]);
+
+        // A chain opened with the node list of the last start is checked again, as on open,
+        // against the backend's list once that replaces it.
+        const cachedSchemataRef = useRef(nodesFromCache ? schemata : undefined);
+        useEffect(() => {
+            const cachedSchemata = cachedSchemataRef.current;
+            if (nodesFromCache || cachedSchemata === undefined) {
+                return;
+            }
+            cachedSchemataRef.current = undefined;
+            if (cachedSchemata === schemata) {
+                return;
+            }
+
+            const { nodes, edges, droppedNodes, complete } = toEditorChain(
+                schemata,
+                getNodes(),
+                getEdges()
+            );
+            if (chainSnapshot(nodes, edges) === chainSnapshot(getNodes(), getEdges())) {
+                return;
+            }
+            if (!complete) {
+                sendAlert({
+                    type: AlertType.WARN,
+                    title: 'Chain contains unavailable nodes',
+                    message: `The chain contains ${
+                        droppedNodes.length
+                    } node(s) that are unavailable on your system now:\n\n${formatDroppedNodes(
+                        droppedNodes
+                    )}\n\nCheck the dependency manager to see if you are missing any dependencies. The chain is now without these nodes and is marked as unsaved, so saving it removes them from the file.`,
+                });
+                setSavedSnapshot(null);
+            } else if (!hasRelevantUnsavedChangesRef.current) {
+                // the defaults of inputs that the backend's nodes added are no change by the user
+                setSavedSnapshot(undefined);
+            }
+            changeNodes(nodes);
+            changeEdges(edges);
+        }, [nodesFromCache, schemata, getNodes, getEdges, sendAlert, changeNodes, changeEdges]);
 
         // Register Open File event handler
         useIpcRendererListener(

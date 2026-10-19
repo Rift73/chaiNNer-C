@@ -198,11 +198,12 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
   alive through native calls and asynchronous writes. Keep no-op identities where required.
 - C ABI version and status checks stay; DLL/ABI failure is visible.
 - C++ runtime order: the first `msvcp140.dll` a process loads serves every module, and Pillow's
-  bundled 14.29 breaks newer Torch and ONNX Runtime builds (WinError 1114). The worker is safe by
-  one step: `packages/chaiNNer_pytorch/__init__.py` imports torch, which loads the system copy by
-  name, after `chaiNNer_standard` (no Pillow, no runtime yet) and before `load_nodes` imports any
-  node module. `test_runtime_dlls.py` pins both halves. The pytest process preloads the system copy
-  (`conftest.py`); child interpreters must not import Pillow before a framework.
+  bundled 14.29 breaks newer Torch and ONNX Runtime builds (WinError 1114). The worker loads the
+  system copy by its full path (`system.load_system_cpp_runtime`) before any node module: nothing up
+  to `import server` loads Pillow or a runtime, and its light node modules (Pillow's users) load
+  before the frameworks, in the background. `test_runtime_dlls.py` pins both halves. The pytest
+  process preloads the system copy (`conftest.py`); child interpreters must not import Pillow before
+  a framework or the preload.
 - Preserve arithmetic order for exact reductions and per-pixel work. Tolerances and corrections are
   only those in section 7; no blanket image tolerances.
 - Seeded generation and repeated identical pure operations stay reproducible. Execution Number,

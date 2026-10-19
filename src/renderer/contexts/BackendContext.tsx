@@ -12,12 +12,7 @@ import React, {
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from 'react-query';
 import { createContext, useContext } from 'use-context-selector';
-import {
-    Backend,
-    BackendNodesResponse,
-    BackendStatusResponse,
-    getBackend,
-} from '../../common/Backend';
+import { Backend, BackendData, getBackend } from '../../common/Backend';
 import { CategoryMap } from '../../common/CategoryMap';
 import {
     CategoryId,
@@ -61,7 +56,16 @@ interface BackendContextState {
     backendDownRef: React.MutableRefObject<boolean>;
     restart: () => Promise<void>;
     connectionState: 'connecting' | 'connected' | 'failed';
+    /**
+     * Whether the backend accepts requests. Runs it cannot serve yet (their nodes are still
+     * loading) wait there.
+     */
     isBackendReady: boolean;
+    /**
+     * Whether the node list is the copy cached at the last start, which the backend's own list
+     * replaces once it arrives (if it differs).
+     */
+    nodesFromCache: boolean;
     refreshNodes: () => void;
 }
 
@@ -72,9 +76,10 @@ export const BackendContext = createContext<Readonly<BackendContextState>>(
 interface BackendProviderProps {
     url: string;
     pythonInfo: PythonInfo;
+    /** The node list cached at the last start, if there is a current one. */
+    cachedData: BackendData | undefined;
 }
 
-type BackendData = [BackendNodesResponse, Package[]];
 interface NodesInfo {
     rawResponse: BackendData;
     schemata: SchemaMap;
@@ -83,9 +88,11 @@ interface NodesInfo {
     functionDefinitions: ReadonlyMap<SchemaId, FunctionDefinition>;
     categoriesMissingNodes: CategoryId[];
     packages: Package[];
+    /** Whether this is the list cached at the last start, not yet confirmed by the backend. */
+    fromCache: boolean;
 }
 
-const processBackendResponse = (rawResponse: BackendData): NodesInfo => {
+const processBackendResponse = (rawResponse: BackendData, fromCache = false): NodesInfo => {
     const { categories, categoriesMissingNodes, nodes } = rawResponse[0];
     const categoryMap = new CategoryMap(categories);
     const schemata = new SchemaMap(sortNodes(nodes, categoryMap));
@@ -101,20 +108,35 @@ const processBackendResponse = (rawResponse: BackendData): NodesInfo => {
         functionDefinitions,
         categoriesMissingNodes,
         packages: rawResponse[1],
+        fromCache,
     };
+};
+
+const processCachedData = (cachedData: BackendData | undefined): NodesInfo | undefined => {
+    if (cachedData === undefined) {
+        return undefined;
+    }
+    try {
+        return processBackendResponse(cachedData, true);
+    } catch (error) {
+        log.error('Unable to process the cached node list; waiting for the backend.', error);
+        return undefined;
+    }
 };
 
 const useNodes = (
     backend: Backend,
     backendDownRef: Readonly<MutableRefObject<boolean>>,
-    backendReadyRef: Readonly<MutableRefObject<boolean>>
+    backendReadyRef: Readonly<MutableRefObject<boolean>>,
+    cachedData: BackendData | undefined
 ) => {
     const isBackendIntentionallyDown = backendDownRef.current;
 
     const { t } = useTranslation();
     const { sendAlert, forgetAlert } = useContext(AlertBoxContext);
 
-    const [nodesInfo, setNodesInfo] = useState<NodesInfo>();
+    // Until the backend's list arrives, the editor works with the list of the last start.
+    const [nodesInfo, setNodesInfo] = useState(() => processCachedData(cachedData));
 
     const queryClient = useQueryClient();
     const refreshNodes = useCallback(() => {
@@ -175,9 +197,10 @@ const useNodes = (
         if (nodesQuery.status === 'success') {
             forgetLastErrorAlert();
             const rawResponse = nodesQuery.data;
+            ipcRenderer.send('update-ui-cache', rawResponse);
             setNodesInfo((prev) => {
-                if (isDeepEqual(prev?.rawResponse, rawResponse)) {
-                    return prev;
+                if (prev && isDeepEqual(prev.rawResponse, rawResponse)) {
+                    return prev.fromCache ? { ...prev, fromCache: false } : prev;
                 }
 
                 try {
@@ -227,11 +250,12 @@ const useNodes = (
         [nodesInfo?.schemata]
     );
 
+    const nodesFromCache = nodesInfo?.fromCache ?? false;
     let connectionState: 'connecting' | 'connected' | 'failed' = 'connecting';
-    if (nodesQuery.status === 'success' && nodesInfo !== undefined) {
-        connectionState = 'connected';
-    } else if (nodesQuery.status === 'error') {
+    if (nodesQuery.status === 'error') {
         connectionState = 'failed';
+    } else if (nodesInfo !== undefined) {
+        connectionState = 'connected';
     }
 
     return {
@@ -240,14 +264,16 @@ const useNodes = (
         scope,
         refreshNodes,
         connectionState,
+        nodesFromCache,
     };
 };
 
-const useFeatureStates = (backend: Backend) => {
+const useFeatureStates = (backend: Backend, isBackendReady: boolean) => {
     const [featureStates, setFeatureStates] = useState<readonly FeatureState[]>(EMPTY_ARRAY);
 
     const featuresQuery = useQuery({
         queryKey: ['features', backend.url],
+        enabled: isBackendReady,
         queryFn: async () => {
             try {
                 return await backend.features();
@@ -281,8 +307,38 @@ const useFeatureStates = (backend: Backend) => {
     };
 };
 
+/**
+ * Whether the backend at `url` accepts requests, as its setup events say. Until it listens, the
+ * connection is tried again every 100 ms, not after EventSource's own delay of a few seconds.
+ */
+const useIsBackendReady = (url: string): boolean => {
+    const [isBackendReady, setIsBackendReady] = useState(false);
+    useEffect(() => {
+        if (isBackendReady) {
+            return undefined;
+        }
+        let source: EventSource | undefined;
+        let retry: ReturnType<typeof setTimeout> | undefined;
+        const connect = () => {
+            const eventSource = new EventSource(`${url}/setup-sse`, { withCredentials: true });
+            source = eventSource;
+            eventSource.addEventListener('backend-ready', () => setIsBackendReady(true));
+            eventSource.onerror = () => {
+                eventSource.close();
+                retry = setTimeout(connect, 100);
+            };
+        };
+        connect();
+        return () => {
+            clearTimeout(retry);
+            source?.close();
+        };
+    }, [url, isBackendReady]);
+    return isBackendReady;
+};
+
 export const BackendProvider = memo(
-    ({ url, pythonInfo, children }: React.PropsWithChildren<BackendProviderProps>) => {
+    ({ url, pythonInfo, cachedData, children }: React.PropsWithChildren<BackendProviderProps>) => {
         const backend = getBackend(url);
 
         const [ownsBackend, setOwnsBackend] = useState<boolean>(false);
@@ -303,46 +359,14 @@ export const BackendProvider = memo(
         const needsNewRestartRef = useRef(false);
         const backendReadyRef = useRef(false);
 
-        const [isBackendReady, setIsBackendReady] = useState(false);
+        const isBackendReady = useIsBackendReady(url);
         useEffect(() => {
             backendReadyRef.current = isBackendReady;
         }, [isBackendReady]);
-        const statusQuery = useQuery({
-            queryKey: ['status', backend.url],
-            queryFn: async (): Promise<BackendStatusResponse> => {
-                try {
-                    // spin until we're no longer restarting
-                    while (backendDownRef.current) {
-                        // eslint-disable-next-line no-await-in-loop
-                        await delay(100);
-                    }
 
-                    return await backend.status();
-                } catch (error) {
-                    return { ready: false, worker: null };
-                }
-            },
-            cacheTime: 0,
-            retry: 25,
-            refetchOnWindowFocus: true,
-            refetchInterval: isBackendReady ? undefined : 1000,
-        });
-
-        useEffect(() => {
-            if (statusQuery.status === 'success') {
-                const { ready } = statusQuery.data;
-                if (ready) {
-                    setIsBackendReady(true);
-                }
-            }
-        }, [statusQuery.status, statusQuery.data]);
-
-        const { nodesInfo, schemaInputs, scope, refreshNodes, connectionState } = useNodes(
-            backend,
-            backendDownRef,
-            backendReadyRef
-        );
-        const { featureStates, refreshFeatureStates } = useFeatureStates(backend);
+        const { nodesInfo, schemaInputs, scope, refreshNodes, connectionState, nodesFromCache } =
+            useNodes(backend, backendDownRef, backendReadyRef, cachedData);
+        const { featureStates, refreshFeatureStates } = useFeatureStates(backend, isBackendReady);
 
         const featureStatesMaps = useMemo((): ReadonlyMap<FeatureId, FeatureState> => {
             return new Map(
@@ -422,6 +446,7 @@ export const BackendProvider = memo(
             restart,
             connectionState,
             isBackendReady,
+            nodesFromCache,
             refreshNodes,
         });
 

@@ -15,7 +15,8 @@ from types import SimpleNamespace
 import pytest
 
 import server_process_helper
-from server_process_helper import ENV, SANIC_LOG_REGEX
+from server_process_helper import SANIC_LOG_REGEX
+from worker_spawn import ENV
 
 SRC = Path(__file__).parent.parent / "src"
 
@@ -28,9 +29,19 @@ from sanic.log import logger
 from server_config import LOG_CONFIG
 
 
-def main():
+def main(_worker):
     logging.config.dictConfig(LOG_CONFIG)
     logger.info("Loaded C:/images/日本.png")
+"""
+
+# Stands in for worker_spawn: run.py starts no worker here.
+FAKE_WORKER_SPAWN = """
+def find_free_port():
+    return 0
+
+
+def spawn_worker(_args):
+    return None
 """
 
 
@@ -39,8 +50,9 @@ def test_host_log_line_outside_the_code_page_is_written_as_utf8(tmp_path: Path):
     shutil.copy(SRC / "run.py", tmp_path / "run.py")
     (tmp_path / "dependencies").mkdir()
     (tmp_path / "dependencies" / "__init__.py").write_text("")
-    (tmp_path / "dependencies" / "install_server_deps.py").write_text("")
+    (tmp_path / "dependencies" / "install_server_deps.py").write_text("installed = 0")
     (tmp_path / "server_host.py").write_text(FAKE_HOST, encoding="utf-8")
+    (tmp_path / "worker_spawn.py").write_text(FAKE_WORKER_SPAWN)
     env = {k: v for k, v in os.environ.items() if k != "PYTHONUTF8"}
     # The app pipes the host's output; a Western-European Windows gives that pipe
     # cp1252 (Chinese Windows cp936), which cannot encode the line.

@@ -21,12 +21,13 @@ pytestmark = pytest.mark.skipif(
     sys.platform != "win32", reason="msvcp140.dll is the Windows C++ runtime"
 )
 
-# The first steps of server.import_packages. The torch import runs only when
-# nothing loaded Pillow or a C++ runtime before it: after Pillow's copy it would
-# fail, and Windows would log a crash and keep a clone that locks DLLs.
+# The worker's node loading (server.import_packages):
+# it loads the system copy by its path first, then the light node modules (Pillow's
+# users among them), then the frameworks.
 WORKER_IMPORTS = """
-import ctypes, importlib, importlib.util, sys
+import asyncio, ctypes, sys
 import server
+from server_config import ServerConfig
 
 
 def runtime():
@@ -42,14 +43,19 @@ def runtime():
     return buffer.value
 
 
-importlib.import_module("packages.chaiNNer_standard")
-early = "PIL._imaging" in sys.modules or bool(runtime())
-print("early", early)
-if not early and importlib.util.find_spec("torch") is not None:
-    # A Pillow import ahead of torch inside the package fails here as an ImportError.
-    sys.modules["PIL"] = None
-    importlib.import_module("packages.chaiNNer_pytorch")
-    print("runtime", runtime())
+print("early", "PIL._imaging" in sys.modules or bool(runtime()))
+config = ServerConfig(
+    port=0,
+    close_after_start=False,
+    install_builtin_packages=False,
+    error_on_failed_node=False,
+    storage_dir=None,
+    trace=False,
+)
+asyncio.run(server.import_packages(config))
+print("pillow", "PIL._imaging" in sys.modules)
+print("torch", "torch._C" in sys.modules)
+print("runtime", runtime())
 """
 
 
@@ -75,10 +81,9 @@ def test_pillow_runs_on_the_system_cpp_runtime(system_runtime):
 
 
 def test_worker_loads_the_system_cpp_runtime_before_any_node_module(system_runtime):
-    # The worker has no preload. It is safe because nothing up to and including
-    # packages.chaiNNer_standard loads Pillow or a C++ runtime, and the package-level
-    # `import torch` of packages.chaiNNer_pytorch then loads msvcp140.dll by name:
-    # the system copy. Node modules, Pillow's users among them, load afterwards.
+    # Nothing up to `import server` loads Pillow or a C++ runtime, and the node loading
+    # loads the system copy by its path before any node module: the light node modules
+    # import Pillow before the frameworks, which then load against the system copy.
     has_torch = importlib.util.find_spec("torch") is not None
     done = subprocess.run(
         [sys.executable, "-B", "-c", WORKER_IMPORTS],
@@ -91,12 +96,12 @@ def test_worker_loads_the_system_cpp_runtime_before_any_node_module(system_runti
     assert done.returncode == 0, done.stderr
     lines = done.stdout.splitlines()
     assert "early False" in lines
+    assert "pillow True" in lines
     if has_torch:
-        loaded = [
-            line.removeprefix("runtime ")
-            for line in lines
-            if line.startswith("runtime ")
-        ]
-        assert len(loaded) == 1
-        assert loaded[0], "packages.chaiNNer_pytorch loaded no msvcp140.dll"
-        assert Path(loaded[0]).samefile(system_runtime)
+        assert "torch True" in lines, done.stderr
+    loaded = [
+        line.removeprefix("runtime ") for line in lines if line.startswith("runtime ")
+    ]
+    assert len(loaded) == 1
+    assert loaded[0], "the worker loaded no msvcp140.dll"
+    assert Path(loaded[0]).samefile(system_runtime)

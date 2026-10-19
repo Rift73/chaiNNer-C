@@ -425,6 +425,12 @@ def _iter_py_files(directory: str):
                 yield os.path.join(root, file)
 
 
+@dataclass(frozen=True)
+class NodeModule:
+    name: str
+    file: str
+
+
 @dataclass
 class LoadErrorInfo:
     module: str
@@ -449,24 +455,34 @@ class PackageRegistry:
         self.packages[package.where] = package
         return package
 
-    def load_nodes(self, current_file: str) -> list[LoadErrorInfo]:
+    def node_modules(self, current_file: str, package: Package) -> list[NodeModule]:
+        """The node modules of a package, in the order they load: every module of the
+        package's folder whose name does not start with "_". `current_file` is a file
+        in the folder module names are relative to."""
+        modules: list[NodeModule] = []
+        for file_path in _iter_py_files(os.path.dirname(package.where)):
+            _, name = os.path.split(file_path)
+
+            if not name.startswith("_"):
+                module = os.path.relpath(file_path, os.path.dirname(current_file))
+                module = module.replace("/", ".").replace("\\", ".")[: -len(".py")]
+                modules.append(NodeModule(module, file_path))
+        return modules
+
+    def load_modules(self, modules: Iterable[NodeModule]) -> list[LoadErrorInfo]:
+        """Imports node modules, which register their nodes, and adds the new nodes to
+        `nodes`. Returns the modules that failed to import."""
         load_error: list[LoadErrorInfo] = []
         failed_checks: list[CheckFailedError] = []
 
-        for package in list(self.packages.values()):
-            for file_path in _iter_py_files(os.path.dirname(package.where)):
-                _, name = os.path.split(file_path)
-
-                if not name.startswith("_"):
-                    module = os.path.relpath(file_path, os.path.dirname(current_file))
-                    module = module.replace("/", ".").replace("\\", ".")[: -len(".py")]
-                    try:
-                        importlib.import_module(module, package=None)
-                    except CheckFailedError as e:
-                        logger.error(e)
-                        failed_checks.append(e)
-                    except Exception as e:
-                        load_error.append(LoadErrorInfo(module, file_path, e))
+        for module in modules:
+            try:
+                importlib.import_module(module.name, package=None)
+            except CheckFailedError as e:
+                logger.error(e)
+                failed_checks.append(e)
+            except Exception as e:
+                load_error.append(LoadErrorInfo(module.name, module.file, e))
 
         if len(failed_checks) > 0:
             logger.error(
@@ -478,19 +494,31 @@ class PackageRegistry:
 
         return load_error
 
+    def load_nodes(self, current_file: str) -> list[LoadErrorInfo]:
+        return self.load_modules(
+            module
+            for package in list(self.packages.values())
+            for module in self.node_modules(current_file, package)
+        )
+
     def _refresh_nodes(self):
-        self.nodes = {}
-        self.categories = []
+        # Built aside and then swapped in: the worker loads nodes in a thread of its
+        # own while its requests read these.
+        nodes: dict[str, tuple[NodeData, NodeGroup]] = {}
+        categories: list[Category] = []
 
         for package in self.packages.values():
-            self.categories.extend(package.categories)
+            categories.extend(package.categories)
             for category in package.categories:
                 for sub in category.node_groups:
                     for node in sub.nodes:
-                        if node.schema_id in self.nodes:
+                        if node.schema_id in nodes:
                             # print warning
                             pass
-                        self.nodes[node.schema_id] = node, sub
+                        nodes[node.schema_id] = node, sub
+
+        self.nodes = nodes
+        self.categories = categories
 
 
 registry = PackageRegistry()

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -87,13 +88,11 @@ def test_startup_finds_a_package_pip_lists_under_another_spelling(
     # "onnx_graphsurgeon", and ModelOpt's package showed it missing after every
     # restart.
     listed = [
-        {"name": "onnx_graphsurgeon", "version": "0.6.1"},
-        {"name": "Pillow", "version": "12.0.0"},
+        SimpleNamespace(metadata={"Name": "onnx_graphsurgeon", "Version": "0.6.1"}),
+        SimpleNamespace(metadata={"Name": "Pillow", "Version": "12.0.0"}),
     ]
     monkeypatch.setattr(store, "installed_packages", {})
-    monkeypatch.setattr(
-        subprocess, "check_output", lambda *_args, **_kwargs: json.dumps(listed)
-    )
+    monkeypatch.setattr(store.importlib.metadata, "distributions", lambda: listed)
     monkeypatch.setattr(subprocess, "check_call", lambda *_args, **_kwargs: 0)
     monkeypatch.delitem(sys.modules, "dependencies.install_server_deps", raising=False)
     importlib.import_module("dependencies.install_server_deps")
@@ -345,3 +344,20 @@ def test_an_uninstall_without_progress_forgets_the_packages(
     asyncio.run(store.uninstall_dependencies([NCNN]))
     assert [command[3:] for command in commands] == [["uninstall", "ncnn", "-y"]]
     assert store.installed_packages == {}
+
+
+def test_the_installed_packages_are_read_as_pip_lists_them(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(store, "installed_packages", {})
+    store.scan_installed_packages()
+    listed = json.loads(
+        subprocess.check_output(
+            [sys.executable, "-m", "pip", "list", "--format=json"],
+            env=store.ENV,
+            encoding="utf-8",
+        )
+    )
+    assert store.installed_packages == {
+        store.distribution_name(p["name"]): p["version"] for p in listed
+    }

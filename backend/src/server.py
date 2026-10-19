@@ -8,8 +8,10 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import uuid
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
 from json import dumps as stringify
@@ -48,8 +50,173 @@ from response import (
     success_response,
 )
 from server_config import LOG_CONFIG, ServerConfig
+from system import load_system_cpp_runtime
 
 POOL_SIZE = 8  # executor pool workers, each Executor's pool_size; item window P = max(1, POOL_SIZE - 2)
+
+# The packages in the order they register, which orders their categories.
+PACKAGES: Final = (
+    "chaiNNer_standard",
+    "chaiNNer_pytorch",
+    "chaiNNer_ncnn",
+    "chaiNNer_onnx",
+    "chaiNNer_tensorrt",
+    "chaiNNer_modelopt",
+    "chaiNNer_vapoursynth",
+    "chaiNNer_external",
+)
+# The packages whose node modules load first, so their nodes run while the frameworks
+# load: none of their modules imports a framework or another heavy library, except
+# HEAVY_MODULES (test_light_nodes.py checks both).
+LIGHT_PACKAGES: Final = ("chaiNNer_standard", "chaiNNer_external")
+HEAVY_MODULES: Final = frozenset(
+    {
+        "packages.chaiNNer_standard.image.create_images.create_noise",  # SciPy
+        "packages.chaiNNer_standard.image_channel.misc.alpha_matting",  # PyMatting
+    }
+)
+# The order the other node modules load in, a package at a time: PyTorch, the most
+# used framework (Load Model, Upscale Image), first; the standard package's last, as
+# PyMatting compiles its kernels (about 25 s) on a first start.
+HEAVY_ORDER: Final = (
+    "chaiNNer_pytorch",
+    "chaiNNer_ncnn",
+    "chaiNNer_onnx",
+    "chaiNNer_tensorrt",
+    "chaiNNer_modelopt",
+    "chaiNNer_vapoursynth",
+    "chaiNNer_external",
+    "chaiNNer_standard",
+)
+
+
+class NodeLoading:
+    """How far the worker's node loading is. It runs beside serving: the packages and
+    their light node modules first, then the other node modules a package at a time.
+    Set by the loading thread, read by requests."""
+
+    def __init__(self) -> None:
+        # The packages are registered (their dependencies are known).
+        self.packages_registered = threading.Event()
+        # The packages are registered and the light node modules loaded.
+        self.light_loaded = threading.Event()
+        # By package id: every node module of the package has loaded or failed.
+        self.package_loaded: dict[str, threading.Event] = {
+            name: threading.Event() for name in PACKAGES
+        }
+        # By package id: the node modules that failed to load.
+        self.errors: dict[str, list[api.LoadErrorInfo]] = {}
+        # Every package has loaded, or the loading failed.
+        self.done = threading.Event()
+
+    def package_of(self, schema_id: str) -> api.Package | None:
+        """The package a node most likely belongs to, by its schema id, which names one
+        of the package's categories ("chainner:pytorch:upscale_image")."""
+        if not self.light_loaded.is_set():
+            return None
+        parts = schema_id.split(":")
+        if len(parts) != 3:
+            return None
+        for package in api.registry.packages.values():
+            if any(category.id == parts[1] for category in package.categories):
+                return package
+        return None
+
+    def load_error(self, schema_id: str) -> str | None:
+        """Why the package of a node that is not registered failed to load, once it has;
+        None while it loads, or if its modules loaded."""
+        package = self.package_of(schema_id)
+        if package is None or not self.package_loaded[package.id].is_set():
+            return None
+        errors = self.errors.get(package.id)
+        if not errors:
+            return None
+        reasons = "; ".join(sorted({str(e.error) for e in errors})[:3])
+        return f"{schema_id} is not available: the {package.name} nodes failed to load ({reasons})."
+
+    def settled(self, schema_id: str) -> bool:
+        """Whether a node that is not registered is known not to come anymore."""
+        return self.done.is_set() or self.load_error(schema_id) is not None
+
+    def load(self, config: ServerConfig) -> None:
+        """Loads every package's nodes, setting the events as it goes, failures included.
+        Raises if config.error_on_failed_node and a node module failed, or if a node
+        failed its checks."""
+        try:
+            load_errors = self._load()
+            log_load_errors(load_errors)
+            if len(load_errors) > 0 and config.error_on_failed_node:
+                raise ValueError("Error importing nodes")
+        finally:
+            for loaded in self.package_loaded.values():
+                loaded.set()
+            self.packages_registered.set()
+            self.light_loaded.set()
+            self.done.set()
+
+    def _load(self) -> list[api.LoadErrorInfo]:
+        # Before any module that may load a C++ runtime (Pillow's).
+        try:
+            load_system_cpp_runtime()
+        except OSError as error:
+            logger.error(
+                f"Could not load the system C++ runtime (msvcp140.dll): {error}."
+                " PyTorch and ONNX Runtime may fail to load."
+            )
+        light, rest = register_packages()
+        self.packages_registered.set()
+        load_errors: list[api.LoadErrorInfo] = []
+
+        def load(name: str, batch: list[api.NodeModule]) -> None:
+            errors = api.registry.load_modules(batch)
+            self.errors.setdefault(name, []).extend(errors)
+            load_errors.extend(errors)
+
+        start = time.perf_counter()
+        logger.info("Loading Nodes...")
+        for name, batch in light.items():
+            load(name, batch)
+        self.light_loaded.set()
+        for name in PACKAGES:
+            if not rest[name]:
+                self.package_loaded[name].set()
+        logger.info(
+            f"Loaded {len(api.registry.nodes)} nodes in"
+            f" {time.perf_counter() - start:.2f} s; loading the other nodes"
+        )
+
+        for name in HEAVY_ORDER:
+            if rest[name]:
+                try:
+                    load(name, rest[name])
+                finally:
+                    self.package_loaded[name].set()
+                logger.info(
+                    f"Loaded the {name} nodes after {time.perf_counter() - start:.2f} s"
+                )
+        return load_errors
+
+
+def register_packages() -> tuple[
+    dict[str, list[api.NodeModule]], dict[str, list[api.NodeModule]]
+]:
+    """Registers the packages and splits each one's node modules (by package id) into
+    the light ones, which load first, and the others."""
+    for name in PACKAGES:
+        importlib.import_module(f"packages.{name}")
+    packages = {p.id: p for p in api.registry.packages.values()}
+    modules = {
+        name: api.registry.node_modules(__file__, packages[name]) for name in PACKAGES
+    }
+    light = {
+        name: [m for m in modules[name] if m.name not in HEAVY_MODULES]
+        for name in LIGHT_PACKAGES
+    }
+    rest = {
+        name: [m for m in modules[name] if m not in light.get(name, [])]
+        for name in PACKAGES
+    }
+    return light, rest
 
 
 class AppContext:
@@ -134,13 +301,42 @@ class ZeroCounter:
 
 run_individual_counter = ZeroCounter()
 
+node_loading = NodeLoading()
 setup_task = None
 close_task = None
 
 
 async def nodes_available():
+    """Waits until every node has loaded (or failed to): the node and package lists are
+    complete then."""
     if setup_task is not None:
         await setup_task
+
+
+async def wait_for_nodes(
+    schema_ids: Iterable[str], stopped: Callable[[], bool] = lambda: False
+) -> None:
+    """Waits until the nodes of `schema_ids` are registered, or known not to come: a run
+    issued while the worker starts waits for its nodes to load. A node whose package
+    failed to load raises ValueError with the package's error; a node no package has is
+    left to the caller. Returns early once `stopped()`."""
+    while True:
+        pending = [
+            schema_id
+            for schema_id in schema_ids
+            if schema_id not in api.registry.nodes
+            and not node_loading.settled(schema_id)
+        ]
+        if not pending or stopped():
+            break
+        await asyncio.sleep(0.01)
+    if stopped():
+        return
+    for schema_id in schema_ids:
+        if schema_id not in api.registry.nodes:
+            error = node_loading.load_error(schema_id)
+            if error is not None:
+                raise ValueError(error)
 
 
 access_logger.addFilter(SSEFilter())
@@ -203,7 +399,6 @@ class RunRequest(TypedDict):
 @app.route("/run", methods=["POST"])
 async def run(request: Request):
     """Runs the provided nodes"""
-    await nodes_available()
     ctx = AppContext.get(request.app)
 
     if ctx.executor or ctx.run_starting:
@@ -227,13 +422,17 @@ async def run(request: Request):
             tracer.log_async = True
             tracer.start()
 
-        # wait until all previews are done
+        full_data: RunRequest = dict(request.json)  # type: ignore
+        # wait until the chain's nodes have loaded and all previews are done
+        await wait_for_nodes(
+            {node["schemaId"] for node in full_data["data"]},
+            lambda: ctx.run_stopped_early,
+        )
         await run_individual_counter.wait_zero()
         if ctx.run_stopped_early:
             logger.info("The run was stopped before it started.")
             return json(success_response(), status=200)
 
-        full_data: RunRequest = dict(request.json)  # type: ignore
         logger.debug(full_data)
         chain = parse_json(full_data["data"])
         optimize(chain)
@@ -390,7 +589,6 @@ class RunIndividualRequest(TypedDict):
 @app.route("/run/individual", methods=["POST"])
 async def run_individual(request: Request):
     """Runs a single node"""
-    await nodes_available()
     ctx = AppContext.get(request.app)
     try:
         full_data: RunIndividualRequest = dict(request.json)  # type: ignore
@@ -398,6 +596,7 @@ async def run_individual(request: Request):
 
         node_id = full_data["id"]
         ctx.cache.pop(node_id, None)
+        await wait_for_nodes([full_data["schemaId"]])
 
         schema_data = api.registry.nodes.get(full_data["schemaId"])
 
@@ -546,7 +745,6 @@ def return_device_memory_after_burst(ctx: AppContext) -> None:
 
 @app.route("/clear-cache/individual", methods=["POST"])
 async def clear_cache_individual(request: Request):
-    await nodes_available()
     ctx = AppContext.get(request.app)
     try:
         full_data = dict(request.json)  # type: ignore
@@ -567,7 +765,6 @@ async def clear_cache_individual(request: Request):
 @app.route("/pause", methods=["POST"])
 async def pause(request: Request):
     """Pauses the current execution"""
-    await nodes_available()
     ctx = AppContext.get(request.app)
 
     logger.info("Attempting to pause executor...")
@@ -588,7 +785,6 @@ async def pause(request: Request):
 @app.route("/resume", methods=["POST"])
 async def resume(request: Request):
     """Pauses the current execution"""
-    await nodes_available()
     ctx = AppContext.get(request.app)
 
     logger.info("Attempting to resume executor...")
@@ -609,7 +805,6 @@ async def resume(request: Request):
 @app.route("/kill", methods=["POST"])
 async def kill(request: Request):
     """Kills the current execution"""
-    await nodes_available()
     ctx = AppContext.get(request.app)
 
     logger.info("Attempting to kill executor...")
@@ -636,8 +831,6 @@ async def kill(request: Request):
 
 @app.route("/status")
 async def status(_request: Request):
-    await nodes_available()
-
     ctx = AppContext.get(app)
 
     executor_status: str
@@ -657,7 +850,13 @@ async def status(_request: Request):
 
 @app.route("/packages", methods=["GET"])
 async def get_packages(request: Request):
-    await nodes_available()
+    # The host reads only the dependencies, which the packages register before their
+    # nodes load; some node modules add settings.
+    if request.args.get("waitForNodes", "true") == "true":
+        await nodes_available()
+    else:
+        while not node_loading.packages_registered.is_set():
+            await asyncio.sleep(0.01)
 
     hide_internal = request.args.get("hideInternal", "true") == "true"
 
@@ -740,21 +939,7 @@ async def sse(request: Request):
         )
 
 
-async def import_packages(
-    config: ServerConfig,
-):
-    importlib.import_module("packages.chaiNNer_standard")
-    importlib.import_module("packages.chaiNNer_pytorch")
-    importlib.import_module("packages.chaiNNer_ncnn")
-    importlib.import_module("packages.chaiNNer_onnx")
-    importlib.import_module("packages.chaiNNer_tensorrt")
-    importlib.import_module("packages.chaiNNer_modelopt")
-    importlib.import_module("packages.chaiNNer_vapoursynth")
-    importlib.import_module("packages.chaiNNer_external")
-
-    logger.info("Loading Nodes...")
-
-    load_errors = api.registry.load_nodes(__file__)
+def log_load_errors(load_errors: list[api.LoadErrorInfo]) -> None:
     if len(load_errors) > 0:
         import_errors: list[api.LoadErrorInfo] = []
         for e in load_errors:
@@ -786,8 +971,12 @@ async def import_packages(
                     l = "\n".join("  ->  " + m for m in modules)
                     logger.warning(f"{error}  ->  {count} modules ...\n{l}")
 
-        if config.error_on_failed_node:
-            raise ValueError("Error importing nodes")
+
+async def import_packages(config: ServerConfig):
+    """Loads every package's nodes in a thread of its own, so the worker serves from its
+    start: runs of the nodes that have loaded go ahead, the others wait for theirs
+    (wait_for_nodes)."""
+    await asyncio.to_thread(node_loading.load, config)
 
 
 async def setup(sanic_app: Sanic):
@@ -809,8 +998,7 @@ async def close_server(sanic_app: Sanic):
         exit_code = 1
 
     # Sanic 25 serves only after the after_server_start listeners return, and loses
-    # a stop requested before that. Setup's imports never yield, so it can finish
-    # first.
+    # a stop requested before that. Setup can finish first.
     while not sanic_app.state.is_running:
         await asyncio.sleep(0.01)
 
@@ -861,7 +1049,7 @@ def main():
         ).start()
     # numba (PyMatting's cache=True kernels) otherwise writes its cache beside the
     # runtime's site-packages. numba reads the variable when it is first imported, and
-    # the node modules that import it load in setup, after this.
+    # the node modules that import it load in setup's thread, after this.
     os.environ["NUMBA_CACHE_DIR"] = str(ctx.storage_dir / "numba-cache")
     # The VapourSynth package keeps its function catalog, user functions and overlays
     # there; it reads the variable when its node modules load, in setup.

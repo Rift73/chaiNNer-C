@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
-from functools import cached_property
 from json import dumps as stringify
 from json import loads as json_parse
 from typing import Any, Coroutine, Final
@@ -26,7 +26,7 @@ from dependencies.store import (
     installed_packages,
     uninstall_dependencies,
 )
-from events import EventQueue
+from events import BackendEventBroadcast
 from gpu import nvidia
 from nodes.impl.cors import add_cors
 from response import (
@@ -43,16 +43,10 @@ class AppContext:
     def __init__(self):
         self.config: Final[ServerConfig] = ServerConfig.parse_argv()
 
-        # flags to pass along to the worker
-        worker_flags: list[str] = []
-        if self.config.storage_dir is not None:
-            worker_flags.extend(["--storage-dir", self.config.storage_dir])
-        if self.config.trace:
-            worker_flags.append("--trace")
-
-        self._worker: Final[WorkerServer] = WorkerServer(worker_flags)
+        self._worker: Final[WorkerServer] = WorkerServer(self.config.worker_flags())
         self.pool: Final[ThreadPoolExecutor] = ThreadPoolExecutor(max_workers=4)
         self.is_ready = False
+        self.setup_events: Final = BackendEventBroadcast()
 
     def get_worker_unmanaged(self) -> WorkerServer:
         """
@@ -67,10 +61,6 @@ class AppContext:
         while not self.is_ready:
             await asyncio.sleep(0.1)
         return self._worker
-
-    @cached_property
-    def setup_queue(self) -> EventQueue:
-        return EventQueue()
 
     @staticmethod
     def get(app_instance: Sanic) -> AppContext:
@@ -258,13 +248,13 @@ def deps_to_dep_info(deps: list[api.Dependency]) -> list[DependencyInfo]:
 
 
 def create_update_progress(ctx: AppContext) -> UpdateProgressFn:
-    def update_progress(
+    async def update_progress(
         message: str,
         progress: float,
         status_progress: float | None = None,
     ):
         logger.info(f"Progress: {message} {progress} {status_progress}")
-        return ctx.setup_queue.put_and_wait(
+        ctx.setup_events.put(
             {
                 "event": "package-install-status",
                 "data": {
@@ -272,8 +262,7 @@ def create_update_progress(ctx: AppContext) -> UpdateProgressFn:
                     "progress": progress,
                     "statusProgress": status_progress,
                 },
-            },
-            timeout=0.01,
+            }
         )
 
     return update_progress
@@ -393,14 +382,17 @@ async def setup_sse(request: Request):
     if response is None:
         return
 
-    while True:
-        try:
-            message = await ctx.setup_queue.get()
+    listener = ctx.setup_events.listen()
+    try:
+        while True:
+            message = await listener.get()
             await response.send(
                 f"event: {message['event']}\ndata: {stringify(message['data'])}\n\n"
             )
-        except Exception:
-            break
+    except Exception:
+        pass
+    finally:
+        ctx.setup_events.stop_listening(listener)
 
 
 @app.post("/shutdown")
@@ -492,12 +484,11 @@ async def import_packages(
 async def setup(sanic_app: Sanic, loop: asyncio.AbstractEventLoop):
     ctx = AppContext.get(sanic_app)
     worker = ctx.get_worker_unmanaged()
-    setup_queue = ctx.setup_queue
 
     async def update_progress(
         message: str, progress: float, status_progress: float | None = None
     ):
-        await setup_queue.put_and_wait(
+        ctx.setup_events.put(
             {
                 "event": "backend-status",
                 "data": {
@@ -505,19 +496,12 @@ async def setup(sanic_app: Sanic, loop: asyncio.AbstractEventLoop):
                     "progress": progress,
                     "statusProgress": status_progress,
                 },
-            },
-            timeout=1,
+            }
         )
 
     logger.info("Starting setup...")
 
-    await setup_queue.put_and_wait(
-        {
-            "event": "backend-started",
-            "data": None,
-        },
-        timeout=1,
-    )
+    ctx.setup_events.put({"event": "backend-started", "data": None})
 
     await update_progress("Importing nodes...", 0.0, None)
 
@@ -533,6 +517,7 @@ async def setup(sanic_app: Sanic, loop: asyncio.AbstractEventLoop):
     # Wait to set backend-ready until nodes are loaded
     await worker.wait_for_ready()
     ctx.is_ready = True
+    ctx.setup_events.put({"event": "backend-ready", "data": None})
 
     logger.info("Done.")
 
@@ -587,9 +572,12 @@ async def after_server_start(sanic_app: Sanic):
         close_task = loop.create_task(close_server(sanic_app))
 
 
-def main():
-    config = AppContext.get(app).config
-    app.run(port=config.port, single_process=True)
+def main(worker: tuple[int, subprocess.Popen[str]] | None = None):
+    """Runs the host; `worker` (its port and process) is a worker started already."""
+    ctx = AppContext.get(app)
+    if worker is not None:
+        ctx.get_worker_unmanaged().adopt(*worker)
+    app.run(port=ctx.config.port, single_process=True)
 
 
 if __name__ == "__main__":

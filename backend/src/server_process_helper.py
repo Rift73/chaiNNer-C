@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import os
 import re
 import socket
 import subprocess
-import sys
 import threading
 import time
 from typing import Any, Coroutine, Iterable
@@ -16,12 +14,7 @@ from sanic import HTTPResponse, Request
 from sanic.log import logger
 
 from api import Package
-
-
-def _find_free_port():
-    with socket.socket() as s:
-        s.bind(("", 0))  # Bind to a free port provided by the host.
-        return s.getsockname()[1]  # Return the port number assigned.
+from worker_spawn import find_free_port, spawn_worker
 
 
 def _port_in_use(port: int):
@@ -31,29 +24,12 @@ def _port_in_use(port: int):
 
 SANIC_LOG_REGEX = re.compile(r"^\s*\[[^\[\]]*\] \[\d*\] \[(\w*)\] (.*)")
 
-# backslashreplace: a log line with a lone surrogate (an undecodable Windows file
-# name) is written escaped instead of being dropped.
-ENV = {**os.environ, "PYTHONIOENCODING": "utf-8:backslashreplace"}
-
 
 class _WorkerProcess:
-    def __init__(self, flags: list[str]):
-        server_file = os.path.join(os.path.dirname(__file__), "server.py")
-        python_location = sys.executable
-
-        self._process = subprocess.Popen(
-            # A host that is killed or crashes stops nothing: the worker watches it.
-            [python_location, server_file, *flags, "--host-pid", str(os.getpid())],
-            shell=False,
-            stdin=None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding="utf-8",
-            # A byte that is not UTF-8 (native code, a tool the worker runs) is shown
-            # escaped instead of ending the reader threads.
-            errors="backslashreplace",
-            env=ENV,
-        )
+    def __init__(self, flags: list[str], process: subprocess.Popen[str] | None = None):
+        """Starts a worker with `flags` (its port first), or takes `process`, a worker
+        started already (spawn_worker)."""
+        self._process = process if process is not None else spawn_worker(flags)
         self._stop_event = threading.Event()
 
         # Create a separate thread to read and print the output of the subprocess
@@ -166,8 +142,10 @@ def _log_pip_outcome(job: asyncio.Task[object]) -> None:
 class WorkerServer:
     def __init__(self, flags: Iterable[str] = []):
         self._process = None
+        # A worker started before this server (adopt), which the first start takes.
+        self._adopted: subprocess.Popen[str] | None = None
 
-        self._port = _find_free_port()
+        self._port = find_free_port()
         self._base_url = f"http://127.0.0.1:{self._port}"
         self._flags = list(flags)
         self._session = None
@@ -176,6 +154,13 @@ class WorkerServer:
         self._manually_close: set[aiohttp.ClientResponse] = set()
         # The pip runs that change the worker's packages (run_pip_job).
         self._pip_jobs: set[asyncio.Task[object]] = set()
+
+    def adopt(self, port: int, process: subprocess.Popen[str]) -> None:
+        """Takes a worker that run.py started on `port` before this server existed: the
+        next start uses it instead of starting one."""
+        self._port = port
+        self._base_url = f"http://127.0.0.1:{port}"
+        self._adopted = process
 
     async def run_pip_job(self, job: Coroutine[Any, Any, object]) -> None:
         """Runs a pip install or uninstall as a task of its own. A cancelled caller
@@ -201,8 +186,15 @@ class WorkerServer:
         # No await between this check and the assignments below.
         while self._process is not None or self._session is not None:
             await self.stop()
-        logger.info(f"Starting worker process on port {self._port}...")
-        self._process = _WorkerProcess([str(self._port), *self._flags, *extra_flags])
+        adopted, self._adopted = self._adopted, None
+        if adopted is not None:
+            logger.info(f"Taking the worker process started on port {self._port}...")
+            self._process = _WorkerProcess([], adopted)
+        else:
+            logger.info(f"Starting worker process on port {self._port}...")
+            self._process = _WorkerProcess(
+                [str(self._port), *self._flags, *extra_flags]
+            )
         self._session = aiohttp.ClientSession(base_url=self._base_url)
         self._is_ready = False
         self._is_checking_ready = False
@@ -210,6 +202,9 @@ class WorkerServer:
         logger.info("Worker process started")
 
     async def stop(self):
+        adopted, self._adopted = self._adopted, None
+        if adopted:
+            adopted.kill()
         process, self._process = self._process, None
         if process:
             process.close()
@@ -308,11 +303,13 @@ class WorkerServer:
                 self._manually_close.remove(resp)
 
     async def get_packages(self):
+        """The packages with their dependencies. The worker answers once its packages
+        have registered, before their nodes have loaded."""
         await self.wait_for_ready()
         assert self._session is not None
         logger.debug("Fetching packages...")
         async with self._session.get(
-            "/packages", params={"hideInternal": "false"}
+            "/packages", params={"hideInternal": "false", "waitForNodes": "false"}
         ) as packages_resp:
             packages_json = await packages_resp.json()
             packages = [Package.from_dict(p) for p in packages_json]
