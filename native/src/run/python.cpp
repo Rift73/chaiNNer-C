@@ -375,8 +375,11 @@ py::object native_generator(const std::shared_ptr<NativeItems> &items)
     return names().generator(supplier, source.expected_length(), source.fail_fast(), py::none(), source_paths);
 }
 
+/* _chainner_graph.NativeDeclined, set when the module is bound. */
+PyObject *native_declined = nullptr;
+
 /* Runs a node's native entry point on enforced inputs. A regular node returns its outputs; a generator returns
- * [api.Generator over its items, *static outputs]. */
+ * [api.Generator over its items, *static outputs]. An entry point that declines to Python raises NativeDeclined. */
 py::list run_native(const std::string &schema_id, const py::list &inputs, const py::object &settings,
                     const std::string &node_id, const py::object &storage_dir)
 {
@@ -395,15 +398,18 @@ py::list run_native(const std::string &schema_id, const py::list &inputs, const 
     auto context = std::make_shared<RunContext>(std::move(parsed), node_id, std::move(directory));
     std::vector<Value> outputs;
     py::list result;
-    if (entry->run) {
+    std::unique_ptr<ItemSource> source;
+    try {
         py::gil_scoped_release unlocked;
-        entry->run(*context, values, outputs);
-    } else {
-        std::unique_ptr<ItemSource> source;
-        {
-            py::gil_scoped_release unlocked;
+        if (entry->run)
+            entry->run(*context, values, outputs);
+        else
             source = entry->generator(*context, values, outputs);
-        }
+    } catch (const RunPython &) {
+        PyErr_SetString(native_declined, schema_id.c_str());
+        throw py::error_already_set();
+    }
+    if (!entry->run) {
         if (!source) throw py::value_error(schema_id + " returned no item source");
         result.append(native_generator(std::make_shared<NativeItems>(context, std::move(values), std::move(source))));
     }
@@ -512,6 +518,13 @@ void rethrow_python_error(py::error_already_set &error)
 void cn_bind_run_engine(py::module_ &module)
 {
     py::register_local_exception_translator(cn::run::translate);
+    cn::run::native_declined = PyErr_NewExceptionWithDoc(
+        "_chainner_graph.NativeDeclined",
+        "A native entry point declined to its node's Python body (run_engine.hpp RunPython); the message is the "
+        "schema id.",
+        nullptr, nullptr);
+    if (!cn::run::native_declined) throw py::error_already_set();
+    module.add_object("NativeDeclined", py::reinterpret_borrow<py::object>(cn::run::native_declined));
     py::class_<cn::run::NativeItems, std::shared_ptr<cn::run::NativeItems>>(module, "_NativeItems")
         .def("__iter__", [](py::object self) { return self; })
         .def("__next__", &cn::run::NativeItems::next);

@@ -139,6 +139,8 @@ def _items(node: api.NodeData, output: process.GeneratorOutput, max_items: int) 
 
 
 def _outcome(node: api.NodeData, run: Callable[[], object], max_items: int) -> Outcome:
+    """("outputs", ...), ("generator", ...), ("error", ...), or ("declined", None) when the native entry point
+    declined to the Python body (run_engine.hpp RunPython)."""
     try:
         raw = run()
         if node.kind == "generator":
@@ -153,6 +155,8 @@ def _outcome(node: api.NodeData, run: Callable[[], object], max_items: int) -> O
                 _items(node, output, max_items),
             )
         return "outputs", [comparable(value) for value in process.enforce_output(raw, node).output]
+    except graph().NativeDeclined:
+        return "declined", None
     except Exception as error:
         return _error(error)
 
@@ -177,7 +181,8 @@ def run_both(
     max_items: int = 1000,
 ) -> tuple[Outcome, Outcome]:
     """(python, native) outcomes: ("outputs", comparable enforced outputs), ("generator", (expected length,
-    fail_fast, source paths, static outputs, items)) or ("error", (type name, message))."""
+    fail_fast, source paths, static outputs, items)) or ("error", (type name, message)). When the native entry point
+    declines, native is ("declined", None) and the Python body is not run (python is ("not run", None))."""
     node = node_data(schema_id)
     assert node.kind in ("regularNode", "generator"), f"{schema_id} is a {node.kind}; run_native has no collectors"
     assert schema_id in graph().native_schema_ids(), f"{schema_id} has no native entry point"
@@ -186,7 +191,6 @@ def run_both(
     context = DifferentialContext(dict(settings or {}), node_id, directory)
     enforced = process.enforce_inputs(list(inputs), node, node_id, [])
     arguments = [context, *enforced] if node.node_context else enforced
-    python = _outcome(node, lambda: node.run(*arguments), max_items)
     native = _outcome(
         node,
         lambda: _shaped(
@@ -197,6 +201,9 @@ def run_both(
         ),
         max_items,
     )
+    if native[0] == "declined":
+        return ("not run", None), native
+    python = _outcome(node, lambda: node.run(*arguments), max_items)
     return python, native
 
 
@@ -207,9 +214,15 @@ def assert_native_matches(
     settings: dict[str, object] | None = None,
     storage_dir: Path | None = None,
     max_items: int = 1000,
+    declines: bool = False,
 ) -> Outcome:
-    """Asserts that schema_id's native entry point matches its Python body on inputs; returns the native outcome."""
+    """Asserts that schema_id's native entry point matches its Python body on inputs; returns the native outcome.
+    With declines=True it asserts instead that the entry point declines these inputs to the Python body."""
     python, native = run_both(schema_id, inputs, settings=settings, storage_dir=storage_dir, max_items=max_items)
+    if declines:
+        assert native[0] == "declined", f"{schema_id}: expected a decline to Python, native gave {native!r:.300}"
+        return native
+    assert native[0] != "declined", f"{schema_id}: the native entry point declined these inputs to Python"
     assert python[0] == native[0], f"{schema_id}: Python gave {python!r:.300}, native gave {native!r:.300}"
     if python[0] == "outputs":
         python_outputs, native_outputs = python[1], native[1]

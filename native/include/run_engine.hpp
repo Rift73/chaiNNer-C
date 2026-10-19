@@ -89,6 +89,12 @@ struct NodeError : std::runtime_error {
 /* Raised by NodeContext::check_aborted after Stop. */
 struct Aborted {};
 
+/* Thrown by an entry point, before it produces any output, when its Python body would take a path the entry point
+ * does not mirror (an OpenCV/IPP or NumPy primitive, an integer beyond int64, an output size beyond int32). The
+ * engine then runs the node's Python body on the same enforced inputs and counts the decline per schema;
+ * run_native raises _chainner_graph.NativeDeclined. */
+struct RunPython {};
+
 class NodeContext {
 public:
     virtual ~NodeContext() = default;
