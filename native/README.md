@@ -1,8 +1,8 @@
 # chaiNNer-C: build, test, package, bench
 
-chaiNNer-C v0.3.6, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
+chaiNNer-C v0.3.7, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
 installed nightly `0.25.1-nightly.2025-10-21` UI with pinned bundle patches, the single backend in `backend/src`, and a
-native C17/C++20 layer. The UI shows v0.3.6 (header, About, startup log, system information with `app.upstream`), while
+native C17/C++20 layer. The UI shows v0.3.7 (header, About, startup log, system information with `app.upstream`), while
 `app.getVersion()` stays upstream's, so saved chains keep the upstream version stamp and upstream's migrations read
 them correctly. Design: `ARCHITECTURE.md`. State and
 decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md` (user guide) and
@@ -19,7 +19,7 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
 | `native/tools/` | Packager, UI patches, runtime verifiers, benchmark harness, code generators, `isa_check.py text` (compares two binaries' code sections), `golden_kernels.py` (golden manifests of the SP4 kernels; usage in each docstring) |
 | `native/reports/`, `out/chaiNNer-C/` | Ignored: local evidence (never needed to build or package), and the portable package |
 | `out/chaiNNer-C-py311/` | Ignored: the last CPython 3.11 package, kept read-only as the old-stack bench side and the undo; deleting it is owner-only |
-| `src/`, `tests/` | Upstream frontend at `d56e507f` with the package's two UI patches ported, CPython 3.14.8 as its integrated Python and `%APPDATA%\chaiNNer-C` as its root; the run-from-source UI (`npm start`), never shipped. It alone has VOSR's iterated input condition (no package patch carries them) |
+| `src/`, `tests/` | Upstream frontend at `d56e507f` with the package's two UI patches ported, CPython 3.14.8 as its integrated Python and `%APPDATA%\chaiNNer-C` as its root (a `portable` build: its own folder), where `ui-cache\backend-ui.json` keeps the last node list so the editor shows at once while the backend starts; the run-from-source UI (`npm start`), never shipped. It alone has VOSR's iterated input condition (no package patch carries them) |
 
 ## Prerequisites
 
@@ -293,6 +293,7 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
   UI state must be identical in every trial or the run fails. Oracles: PNG files by SHA-256 (default) or, with `--png-compare
   decoded`, by pixels and colour chunks (another encoder's files); ffprobe plus streamed FFmpeg raw BGR24 SHA-256; SSE tail validation.
 - Each trial records B's item-window decision and counts (`item_windows`); `CHAINNER_C_ITEM_WINDOW=k` in the environment forces K (`1` = sequential); `CHAINNER_C_SERIAL_PRODUCER=1` forces the serial producer (any other value is ignored); `CHAINNER_C_ISA=scalar|avx2|avx512` (set per side with `--env-a`/`--env-b`) caps our ISA units, while the C runtime's and the compiler's own dispatched code follow the CPU (logged as `native isa=...`, recorded as `native_isa`); `avx2` also caps the AVX-512 units, for a part that downclocks under them (spec 4.3 residual).
+- The native run engine runs every `/run` and `/run/individual` (ARCHITECTURE section 4); `CHAINNER_C_EXECUTOR=python` selects process.Executor, the diagnostic oracle (never a user setting). `CHAINNER_C_MEMO_BUDGET_MIB` is its memo cache's budget (default min(2 GiB, 10 % of RAM); `0` = off): a backend that runs a case again reuses those outputs, so set it to `0` with `--env-b` unless the memo is what you measure. `CHAINNER_C_ENGINE_THREADS` (workers, default one per CPU of the affinity mask, at least 2), `CHAINNER_C_PYTHON_THREADS` (engine threads in Python at once, default 8) and `CHAINNER_C_ENGINE_IDLE_SECONDS` (a service thread's idle time before it ends, default 30) take a positive count; any other value keeps the default. `CHAINNER_C_NATIVE_CODECS=0` sends every image decode and encode to today's Python path (the codec corpus's oracle).
 - `CHAINNER_C_PROFILE=1` only through `--profile`: a timer table per trial in `native_profile`, plus a `pool` entry (this run's deltas of the native pool's dispatches, wakes and empty wakes); never a gate.
 - `CHAINNER_C_NUMPY_POOL` (the backend's NumPy memory pool: freed blocks of 512 KiB or more stay warm; read once per process; also the A/B switch, set per side with `--env-a`/`--env-b`): unset or empty = on, idle bytes capped at min(2 GiB, 10 % of RAM); `0` = the pool is not installed (NumPy's default handler, as before SP4c); digits = the cap in MiB; an invalid value = one warning, and the pool is not installed. It needs NumPy 1.23 or newer: an older or mismatched NumPy gets one warning and the default handler. `0` does not undo D8: Load Video's frames are read into fresh NumPy buffers either way, D8 has no runtime switch, and its undo is `git revert 14176509 4cceb734`. With `CHAINNER_C_PROFILE=1` its counters are a `numpy_pool` entry of the same profile line.
 - Verdicts compare the median paired ratio with two floors from `native/tools/bench-data/noise-floor.json`, the noise floor and the
