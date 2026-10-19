@@ -137,7 +137,7 @@ test.skipIf(!canSymlink)('Write through a link updates the file it points to', a
 });
 
 for (const code of ['EPERM', 'EBUSY']) {
-    test(`Write falls back to writing in place when the rename fails with ${code}`, async () => {
+    test(`Write retries a rename that fails once with ${code}`, async () => {
         const saveData = await SaveFile.read(path.join(dataDir, 'crop.chn'));
         await withTempDir(async (dir) => {
             const file = path.join(dir, 'chain.chn');
@@ -146,7 +146,21 @@ for (const code of ['EPERM', 'EBUSY']) {
 
             await SaveFile.write(file, saveData, '0.0.0-test');
 
-            expect(rename).toHaveBeenCalledOnce();
+            expect(rename).toHaveBeenCalledTimes(2);
+            expect(savedContent(file)).toEqual(await expectedContent());
+            expect(fs.readdirSync(dir)).toEqual(['chain.chn']);
+        });
+    });
+
+    test(`Write falls back to writing in place when the rename keeps failing with ${code}`, async () => {
+        const saveData = await SaveFile.read(path.join(dataDir, 'crop.chn'));
+        await withTempDir(async (dir) => {
+            const file = path.join(dir, 'chain.chn');
+            fs.writeFileSync(file, 'old chain', 'utf-8');
+            vi.spyOn(fsPromises, 'rename').mockRejectedValue(errnoError(code));
+
+            await SaveFile.write(file, saveData, '0.0.0-test');
+
             expect(savedContent(file)).toEqual(await expectedContent());
             expect(fs.readdirSync(dir)).toEqual(['chain.chn']);
         });
