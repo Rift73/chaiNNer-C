@@ -18,7 +18,12 @@ from nodes.properties.outputs import DirectoryOutput, FileNameOutput, ModelOutpu
 from nodes.utils.utils import file_identity, split_file_path
 
 from ...settings import PyTorchSettings, get_settings
+from ...torch_runtime import configure_torch
 from .. import io_group
+
+# The worker's folder walk has applied them already; VapourSynth's AI Upscale child
+# imports this module alone.
+configure_torch()
 
 # Without duplicates in the worker. vsview's Reload Script imports this module again
 # for a script's AI Upscale, while spandrel keeps the architectures added before.
@@ -106,7 +111,8 @@ def check_model_file(path: Path) -> None:
 def full_precision(model: ModelDescriptor) -> ModelDescriptor | str | None:
     """`model`, which Load Model loaded in half precision, read again from its file on
     the CPU in full precision; or why it cannot be (it has FP16 weights not from Load
-    Model, or the file changed or no longer holds the weights it was loaded with);
+    Model, or the file changed, cannot be read or no longer holds the weights it was
+    loaded with);
     None for a model in full precision."""
     source = _half_sources.get(model)
     if source is None:
@@ -114,10 +120,16 @@ def full_precision(model: ModelDescriptor) -> ModelDescriptor | str | None:
             "it does not come from Load Model" if model.dtype == torch.float16 else None
         )
     path, identity = source
-    if file_identity(path) != identity:
-        return f"{path.name} changed after Load Model loaded it"
-    with skip_random_init():
-        reread = ModelLoader(torch.device("cpu")).load_from_file(path)
+    try:
+        if file_identity(path) != identity:
+            return f"{path.name} changed after Load Model loaded it"
+        with skip_random_init():
+            reread = ModelLoader(torch.device("cpu")).load_from_file(path)
+    except Exception as e:
+        logger.info(
+            f"Reading {path.name} again in full precision failed", exc_info=True
+        )
+        return f"{path.name} could not be read again ({e})"
     reread.model.float()
     if not _rounds_to(reread.model.state_dict(), model.model.state_dict()):
         return f"{path.name} no longer holds the weights Load Model loaded"

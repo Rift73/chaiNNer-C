@@ -8,10 +8,10 @@ of the record a file holds (a record of another version is never read). Up to
 MEMORY_ENGINES engines and `memory_budget()` bytes are kept in memory, the least
 recently used dropped first; an engine above the budget is not kept. With the TensorRT "Engine Cache" setting on, they
 are also kept as files named `<key>.chainner-c.engine` in its folder, written
-atomically, up to DISK_BYTES in total, the least recently used removed first (only
+atomically (the temporary file of a crashed write goes with the key's next build), up to DISK_BYTES in total, the least recently used removed first (only
 files of that name are removed). A file holds the info the build returned (JSON) and
 the SHA-256 of the engine before the engine itself, so a hit returns what the build
-did; a damaged file is removed and the engine built again.
+did; a damaged file is removed and the engine built again, as one that cannot be read.
 
 This module must not import TensorRT (the tests have none).
 """
@@ -110,8 +110,18 @@ def engine_key(
 
 _lock = Lock()
 _memory: OrderedDict[str, TensorRTEngine] = OrderedDict()
-# One lock per key: concurrent builds of one key build it once.
-_building: dict[str, Lock] = {}
+
+
+class _Building:
+    """A key's lock, while a call for the key runs or waits: concurrent builds of one
+    key build it once."""
+
+    def __init__(self) -> None:
+        self.lock = Lock()
+        self.calls = 0
+
+
+_building: dict[str, _Building] = {}
 
 
 def _remember(key: str, engine: TensorRTEngine) -> None:
@@ -142,23 +152,36 @@ def cached_engine(
     """The engine of `key`: kept in memory, read from the Engine Cache `directory`
     (None: off), or built (then kept in both)."""
     with _lock:
-        building = _building.setdefault(key, Lock())
-    with building:
-        engine = _recalled(key)
-        if engine is not None:
-            logger.info("Build Engine: the same build ran before; reusing its engine.")
-            return engine
-        if directory is not None:
-            engine = _read(Path(directory), key)
-            if engine is not None:
-                logger.info("Build Engine: reusing the engine from the Engine Cache.")
-                _remember(key, engine)
-                return engine
-        engine = build()
-        _remember(key, engine)
-        if directory is not None:
-            _store(Path(directory), key, engine)
+        building = _building.setdefault(key, _Building())
+        building.calls += 1
+    try:
+        with building.lock:
+            return _cached_engine(key, build, directory)
+    finally:
+        with _lock:
+            building.calls -= 1
+            if building.calls == 0:
+                del _building[key]
+
+
+def _cached_engine(
+    key: str, build: Callable[[], TensorRTEngine], directory: str | None
+) -> TensorRTEngine:
+    engine = _recalled(key)
+    if engine is not None:
+        logger.info("Build Engine: the same build ran before; reusing its engine.")
         return engine
+    if directory is not None:
+        engine = _read(Path(directory), key)
+        if engine is not None:
+            logger.info("Build Engine: reusing the engine from the Engine Cache.")
+            _remember(key, engine)
+            return engine
+    engine = build()
+    _remember(key, engine)
+    if directory is not None:
+        _store(Path(directory), key, engine)
+    return engine
 
 
 def _magic() -> bytes:
@@ -203,12 +226,28 @@ def _read(directory: Path, key: str) -> TensorRTEngine | None:
         data = path.read_bytes()
     except FileNotFoundError:
         return None
+    except OSError:
+        # Another program may hold it; the engine written after the build replaces it.
+        logger.warning(
+            "Engine Cache: could not read %s; building it again.", path, exc_info=True
+        )
+        return None
     engine = _decode(data)
     if engine is None:
         logger.warning("Engine Cache: %s is damaged; building it again.", path)
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Engine Cache: could not remove %s.", path, exc_info=True)
         return None
-    os.utime(path)  # its last use, for the eviction
+    try:
+        os.utime(path)  # its last use, for the eviction
+    except OSError:
+        logger.warning(
+            "Engine Cache: could not mark %s used; it may be removed first.",
+            path,
+            exc_info=True,
+        )
     return engine
 
 
@@ -216,6 +255,14 @@ def _store(directory: Path, key: str, engine: TensorRTEngine) -> None:
     """Write `engine` atomically, then remove the least recently used files beyond
     DISK_BYTES. A failure is logged: the build itself succeeded."""
     path = directory / f"{key}{SUFFIX}"
+    # A process that crashed while writing this key left its temporary file. One
+    # build of a key runs at a time here; another process's write in progress
+    # then fails to rename, and is logged there.
+    for stray in directory.glob(f"{key}.*.tmp"):
+        try:
+            stray.unlink()
+        except OSError:
+            logger.warning("Engine Cache: could not remove %s.", stray, exc_info=True)
     try:
         with tempfile.NamedTemporaryFile(
             dir=directory, prefix=f"{key}.", suffix=".tmp", delete=False

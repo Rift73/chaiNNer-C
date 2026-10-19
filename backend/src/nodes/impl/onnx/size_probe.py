@@ -7,9 +7,10 @@ reshapes of computed shapes, which run only at a multiple. So the requirement is
 the model runs once on a CPU session at a few small sizes. Shape inference's requirement
 remains the fallback when the model does not run there.
 
-The result depends only on the model's bytes and ONNX Runtime, so it is kept per model
-and per SHA-256 of the bytes with ORT's version (a model loaded again is not probed
-again). One model's probe never waits for another's. The probe runs on the node's own
+The result depends only on the model's bytes and ONNX Runtime, so it is kept per model,
+and a measured one also per SHA-256 of the bytes with ORT's version (a model loaded again
+is not probed again). The fallback is kept per model only: it can come from a transient
+failure, such as no memory for a session. One model's probe never waits for another's. The probe runs on the node's own
 session when that is a CPU one, else on a CPU session of chaiNNer-C's native adapter
 (which, unlike ORT's Python binding, releases the GIL while the model runs), with ORT's
 log of the sizes the model rejects kept quiet.
@@ -40,7 +41,8 @@ _MULTIPLES = (1, 2, 4, 8, 16, 32, 64)
 _lock = Lock()
 _model_locks: WeakKeyDictionary[OnnxGeneric, Lock] = WeakKeyDictionary()
 _cache: WeakKeyDictionary[OnnxGeneric, SizeReq | None] = WeakKeyDictionary()
-_by_content: dict[tuple[bytes, str], SizeReq | None] = {}
+# Measured requirements only
+_by_content: dict[tuple[bytes, str], SizeReq] = {}
 
 
 def get_size_req(
@@ -60,12 +62,23 @@ def get_size_req(
                 return _cache[model]
         key = (hashlib.sha256(model.bytes).digest(), ort.__version__)
         with _lock:
-            known = key in _by_content
             size_req = _by_content.get(key)
-        if not known:
-            size_req = _probe(model, session)
+        if size_req is None:
+            info = model.info
+            # Shape inference's requirement, which applies only when it also gave the
+            # scale.
+            fallback = (
+                info.size_req
+                if info.scale_width is not None and info.scale_height is not None
+                else None
+            )
+            size_req = _probe(model, session, fallback)
+            with _lock:
+                if size_req is not None:
+                    _by_content[key] = size_req
+            if size_req is None:
+                size_req = fallback
         with _lock:
-            _by_content[key] = size_req
             _cache[model] = size_req
         return size_req
 
@@ -82,14 +95,11 @@ def _cpu_session(model: OnnxGeneric) -> OnnxSession:
     )
 
 
-def _probe(model: OnnxGeneric, node_session: OnnxSession | None) -> SizeReq | None:
-    info = model.info
-    # Shape inference's requirement, which applies only when it also gave the scale.
-    fallback = (
-        info.size_req
-        if info.scale_width is not None and info.scale_height is not None
-        else None
-    )
+def _probe(
+    model: OnnxGeneric, node_session: OnnxSession | None, fallback: SizeReq | None
+) -> SizeReq | None:
+    """The measured requirement, or None where the model does not run (`fallback`
+    then applies)."""
     if node_session is not None and list(node_session.get_providers()) == [
         "CPUExecutionProvider"
     ]:
@@ -101,7 +111,7 @@ def _probe(model: OnnxGeneric, node_session: OnnxSession | None) -> SizeReq | No
             f"ONNX size probe: no CPU session ({ort_error_message(e)}); keeping"
             f" {fallback}"
         )
-        return fallback
+        return None
     try:
         return _measure(session, fallback)
     finally:
@@ -110,6 +120,7 @@ def _probe(model: OnnxGeneric, node_session: OnnxSession | None) -> SizeReq | No
 
 
 def _measure(session: OnnxSession, fallback: SizeReq | None) -> SizeReq | None:
+    """The measured requirement, or None (see _probe)."""
     # The probe expects the model to reject some sizes; output_size logs each rejection.
     quiet = ort.RunOptions()
     quiet.log_severity_level = 4
@@ -140,7 +151,7 @@ def _measure(session: OnnxSession, fallback: SizeReq | None) -> SizeReq | None:
         logger.info(
             f"ONNX size probe: no integer scale at {_BASE}px; keeping {fallback}"
         )
-        return fallback
+        return None
     scale_h, scale_w = base[0] // _BASE, base[1] // _BASE
 
     def runs(height: int, width: int) -> bool:
@@ -149,7 +160,7 @@ def _measure(session: OnnxSession, fallback: SizeReq | None) -> SizeReq | None:
     multiple = next((m for m in _MULTIPLES if runs(_BASE + m, _BASE + 3 * m)), None)
     if multiple is None:
         logger.info(f"ONNX size probe: no multiple runs; keeping {fallback}")
-        return fallback
+        return None
     # The minimum stays shape inference's (16 for most models; the 3x3 test image of
     # Interpolate Models and tiny tiles pad up to it), raised to the smallest of 16, 32
     # and 64 that runs when the model fails at it, as a RealCUGAN export does below 20px.

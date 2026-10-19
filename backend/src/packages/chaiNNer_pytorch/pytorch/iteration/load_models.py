@@ -13,7 +13,7 @@ from nodes.properties.inputs import DirectoryInput
 from nodes.properties.inputs.generic_inputs import BoolInput
 from nodes.properties.outputs import DirectoryOutput, NumberOutput, TextOutput
 from nodes.properties.outputs.pytorch_outputs import ModelOutput
-from nodes.utils.utils import list_all_files_sorted, split_file_path
+from nodes.utils.utils import file_identity, list_all_files_sorted, split_file_path
 
 from ...settings import get_settings
 from .. import batch_processing_group
@@ -73,6 +73,8 @@ def load_models_node(
     model_files: list[Path] = list_all_files_sorted(directory, supported_filetypes)
 
     return (
-        from_list_read_ahead(model_files, read, load_model).with_fail_fast(fail_fast),
+        from_list_read_ahead(
+            model_files, read, load_model, identity=file_identity
+        ).with_fail_fast(fail_fast),
         directory,
     )

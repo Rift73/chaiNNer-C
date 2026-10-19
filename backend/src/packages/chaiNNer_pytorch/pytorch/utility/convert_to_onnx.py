@@ -102,9 +102,10 @@ class _Export:
     verified: bool
 
 
-# A model's exports while it lives, by everything an export depends on: a re-run returns
-# the same ONNX model (with the sessions kept for it) without exporting again.
-_exports: WeakKeyDictionary[ImageModelDescriptor, dict[Hashable, _Export]] = (
+# A model's latest export while it lives, with everything it depends on: a re-run
+# returns the same ONNX model (with the sessions kept for it) without exporting again.
+# One per model: a superseded export's sessions would hold GPU memory.
+_exports: WeakKeyDictionary[ImageModelDescriptor, tuple[Hashable, _Export]] = (
     WeakKeyDictionary()
 )
 _exports_lock = Lock()
@@ -112,12 +113,13 @@ _exports_lock = Lock()
 
 def _kept_export(model: ImageModelDescriptor, key: Hashable) -> _Export | None:
     with _exports_lock:
-        return _exports.get(model, {}).get(key)
+        kept = _exports.get(model)
+    return kept[1] if kept is not None and kept[0] == key else None
 
 
 def _keep_export(model: ImageModelDescriptor, key: Hashable, export: _Export) -> None:
     with _exports_lock:
-        _exports.setdefault(model, {})[key] = export
+        _exports[model] = key, export
 
 
 IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" }')

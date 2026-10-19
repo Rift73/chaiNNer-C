@@ -1,16 +1,21 @@
 """PyTorch's process-wide settings for chaiNNer.
 
 The worker imports this module with the package's node modules, all before it reports
-the PyTorch nodes loaded, so every PyTorch node runs with these settings. A torch that
-is not installed, or fails to load (a DLL error), costs only the PyTorch nodes, which
-then fail to import one by one; the package stays registered, so the dependency manager
-can install or repair it.
+the PyTorch nodes loaded, so every PyTorch node runs with these settings. load_model
+calls configure_torch too, for processes that load PyTorch models without the worker's
+folder walk (VapourSynth's AI Upscale child). A torch that is not installed, or fails
+to load (a DLL error), costs only the PyTorch nodes, which then fail to import one by
+one; the package stays registered, so the dependency manager can install or repair it.
 """
+
+from functools import cache
 
 from sanic.log import logger
 
 
-def _configure_torch() -> None:
+@cache
+def configure_torch() -> None:
+    """Applies the settings, once per process."""
     try:
         import torch
     except Exception as error:
@@ -59,4 +64,4 @@ def _configure_torch() -> None:
         )
 
 
-_configure_torch()
+configure_torch()

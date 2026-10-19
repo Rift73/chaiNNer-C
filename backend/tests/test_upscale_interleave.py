@@ -33,7 +33,7 @@ from nodes.impl.onnx.model import SizeReq
 from nodes.impl.pytorch import auto_split as torch_split
 from nodes.impl.upscale.auto_split_tiles import NO_TILING, TileSize
 from nodes.impl.upscale.convenient_upscale import convenient_upscale
-from nodes.impl.upscale.tiler import ExactTileSize, NoTiling, Tiler
+from nodes.impl.upscale.tiler import ExactTileSize, MaxTileSize, NoTiling, Tiler
 from nodes.utils.utils import get_h_w_c
 from packages.chaiNNer_ncnn.ncnn.processing import upscale_image as ncnn_node
 from packages.chaiNNer_ncnn.settings import NcnnSettings
@@ -106,6 +106,71 @@ def test_pytorch_planes_interleaved_as_converted(
         )
     else:
         assert_same(new, old)
+
+
+class OverlappingRowsModel:
+    """The members of a model pytorch_auto_split uses; its output's rows overlap."""
+
+    dtype = torch.float32
+    device = CPU
+    architecture = SimpleNamespace(name="Overlapping")
+
+    def __init__(self, row_stride: int) -> None:
+        self.row_stride = row_stride
+
+    def __call__(self, t: torch.Tensor) -> torch.Tensor:
+        _, c, h, w = t.shape
+        strides = (c * h * w, h * w, self.row_stride, 1)
+        return t.contiguous().as_strided(t.shape, strides)
+
+
+# Row stride 0 (an output expanded along its height), and rows half a row apart
+@pytest.mark.parametrize("row_stride", [0, 16])
+def test_pytorch_output_with_overlapping_rows_takes_the_old_path(
+    monkeypatch: pytest.MonkeyPatch, row_stride: int
+):
+    model = cast(ImageModelDescriptor, OverlappingRowsModel(row_stride))
+    img = image((24, 32, 3), 1, exceptional=False)
+
+    def run() -> np.ndarray:
+        return torch_split.pytorch_auto_split(
+            img, model, CPU, False, NoTiling(), Progress.noop_progress()
+        )
+
+    new = run()
+    with monkeypatch.context() as patch:
+        patch.setattr(torch_split, "_interleaved", lambda _: None)
+        old = run()
+    assert new.shape == old.shape and new.dtype == old.dtype
+    assert new.tobytes() == old.tobytes()
+
+
+def test_pytorch_host_out_of_memory_in_the_conversion_splits(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The host runs out of memory for the converted output: NumPy's MemoryError, where
+    # the CPU cast before raised torch's RuntimeError, which split the tile.
+    model = compact(3)
+    img = image((24, 32, 3), 1, exceptional=False)
+    interleave = torch_split.planar_to_interleaved_checked
+    calls: list[tuple[int, ...]] = []
+
+    def out_of_memory_once(
+        planes: np.ndarray, *, swap_red_blue: bool = False
+    ) -> tuple[np.ndarray, bool]:
+        calls.append(planes.shape)
+        if len(calls) == 1:
+            raise MemoryError
+        return interleave(planes, swap_red_blue=swap_red_blue)
+
+    monkeypatch.setattr(
+        torch_split, "planar_to_interleaved_checked", out_of_memory_once
+    )
+    result = torch_split.pytorch_auto_split(
+        img, model, CPU, False, MaxTileSize(), Progress.noop_progress()
+    )
+    assert result.shape == (48, 64, 3)
+    assert calls[0] == (3, 48, 64) and len(calls) > 2
 
 
 def resize_model(channels: int, fp16: bool) -> bytes:

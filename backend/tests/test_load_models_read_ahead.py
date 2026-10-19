@@ -115,6 +115,28 @@ def test_the_reader_installs_the_numpy_pool_handler(monkeypatch: pytest.MonkeyPa
     assert installed and set(readers) == set(installed)
 
 
+def test_an_element_changed_after_its_read_ahead_is_read_again():
+    # The chain writes the next file while the current item is used: the next item
+    # is read again, as it would be without the read-ahead.
+    versions = {"a": 0, "b": 0}
+    b_read = threading.Event()
+
+    def read(x: str) -> tuple[str, int]:
+        version = versions[x]
+        if x == "b":
+            b_read.set()
+        return x, version
+
+    def use(x: str, value: tuple[str, int], index: int) -> tuple[str, int]:
+        if x == "a":
+            assert b_read.wait(60)
+            versions["b"] += 1
+        return value
+
+    generator = from_list_read_ahead(["a", "b"], read, use, identity=versions.get)
+    assert items(generator) == [("a", 0), ("b", 1)]
+
+
 def test_an_empty_list_reads_nothing():
     assert items(from_list_read_ahead([], str, lambda x, r, i: r)) == []
 

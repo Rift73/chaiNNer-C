@@ -87,6 +87,10 @@ def _interleaved(t: torch.Tensor) -> tuple[np.ndarray, bool] | None:
     if t.ndim != 3 or t.dtype not in (torch.float16, torch.float32) or t.stride(2) != 1:
         return None
     planes = t.detach().cpu().numpy()
+    # Rows that overlap (an output expanded along its height has row stride 0)
+    row_stride = planes.strides[1]
+    if row_stride <= 0 or row_stride < planes.shape[2] * planes.itemsize:
+        return None
     return planar_to_interleaved_checked(
         planes, swap_red_blue=planes.shape[0] in (3, 4)
     )
@@ -132,9 +136,10 @@ def pytorch_auto_split(
                 output_tensor = _rgb_to_bgr(output_tensor)
                 result = output_tensor.detach().cpu().detach().float().numpy()
                 finite = interleaved is None and _is_finite(result)
-        except RuntimeError as e:
-            # Check to see if its actually the CUDA out of memory error
-            if "allocate" in str(e) or "CUDA" in str(e):
+        except (RuntimeError, MemoryError) as e:
+            # Out of memory: the device's or the host's (torch's RuntimeError, or
+            # NumPy's MemoryError for the converted output)
+            if isinstance(e, MemoryError) or "allocate" in str(e) or "CUDA" in str(e):
                 # Collect garbage (clear VRAM)
                 if input_tensor is not None:
                     try:

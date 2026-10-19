@@ -218,6 +218,25 @@ def test_a_model_loaded_again_is_not_probed_again(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.usefixtures("fresh_cache")
+def test_a_fallback_is_not_kept_for_the_model_loaded_again(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # No CPU session for the first probe (no memory for it, say): shape inference's
+    # requirement holds for that model, while the model loaded again is measured.
+    def no_session(model: OnnxGeneric) -> Any:
+        raise MemoryError("no memory for a session")
+
+    first, again = stub(8), load_onnx_model(stub(8).bytes)
+    assert isinstance(again, OnnxGeneric)
+    measured = SizeReq(minimum=16, multiple_of=8)
+    with monkeypatch.context() as patch:
+        patch.setattr(size_probe, "_cpu_session", no_session)
+        assert size_probe.get_size_req(first) == first.info.size_req != measured
+    assert size_probe.get_size_req(again) == measured
+    assert size_probe.get_size_req(first) == first.info.size_req
+
+
+@pytest.mark.usefixtures("fresh_cache")
 def test_a_gpu_session_is_not_used_by_the_probe(monkeypatch: pytest.MonkeyPatch):
     class GpuSession:
         def get_providers(self) -> list[str]:
@@ -238,7 +257,7 @@ def test_models_probe_concurrently_and_each_once(monkeypatch: pytest.MonkeyPatch
     release, started = threading.Event(), threading.Event()
     probes: list[OnnxGeneric] = []
 
-    def probe(model: OnnxGeneric, session: object) -> SizeReq:
+    def probe(model: OnnxGeneric, session: object, fallback: SizeReq | None) -> SizeReq:
         probes.append(model)
         if model is slow:
             started.set()

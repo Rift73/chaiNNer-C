@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import gc
 import os
+import weakref
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -335,8 +337,26 @@ def test_each_export_input_has_its_own_export(monkeypatch: pytest.MonkeyPatch):
     results = [run() for run in runs]
     assert len(exports) == len(runs)
     assert len({id(result[0]) for result in results}) == len(runs)
-    assert [run()[0] for run in runs] == [result[0] for result in results]
+    # Each model keeps its latest export
+    assert runs[-2]()[0] is results[-2][0]
+    assert runs[-1]()[0] is results[-1][0]
     assert len(exports) == len(runs)
+
+
+def test_a_changed_export_input_drops_the_superseded_export(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A kept export holds its ONNX sessions (GPU memory) while the model lives.
+    count_exports(monkeypatch)
+    model = tiny_model("Compact")
+    first = weakref.ref(convert(model)[0])
+    second = weakref.ref(convert(model, opset=Opset.OPSET_17)[0])
+    gc.collect()
+    assert first() is None
+    model.half()
+    convert(model)
+    gc.collect()
+    assert second() is None
 
 
 def test_a_model_changed_in_place_is_exported_again(monkeypatch: pytest.MonkeyPatch):
@@ -396,8 +416,8 @@ def test_a_dual_rerun_returns_the_kept_export(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(convert_to_onnx.dual, "export_onnx", export)
     model = cast(ImageModelDescriptor, DualModel())
     dynamic = convert(model)
-    fixed = convert(model, dual_shape=DualShape.FIXED)
     assert convert(model)[0] is dynamic[0]
+    fixed = convert(model, dual_shape=DualShape.FIXED)
     assert convert(model, dual_shape=DualShape.FIXED)[0] is fixed[0]
     assert exports == [None, (512, 512)]
 
@@ -486,6 +506,16 @@ def rewrite(path: Path) -> None:
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 10**9))
 
 
+class UnreadableLoader:
+    """spandrel's ModelLoader for a file it may not read (another program locked it)."""
+
+    def __init__(self, device: torch.device) -> None:
+        pass
+
+    def load_from_file(self, path: Path) -> ModelDescriptor:
+        raise PermissionError("Permission denied")
+
+
 @pytest.mark.parametrize(
     ("change", "reason"),
     [
@@ -493,6 +523,7 @@ def rewrite(path: Path) -> None:
         ("rewritten", "changed after Load Model loaded it"),
         ("deleted", "changed after Load Model loaded it"),
         ("same identity", "no longer holds the weights Load Model loaded"),
+        ("unreadable", "could not be read again (Permission denied)"),
     ],
 )
 def test_without_its_file_weights_the_fp16_weights_are_exported_and_logged(
@@ -512,6 +543,8 @@ def test_without_its_file_weights_the_fp16_weights_are_exported_and_logged(
         model = loaded
         if change == "deleted":
             path.unlink()
+        elif change == "unreadable":
+            monkeypatch.setattr(load_model_module, "ModelLoader", UnreadableLoader)
         else:
             rewrite(path)
     rounded = convert_to_onnx_impl(model, torch.device("cpu"), opset_version=20)

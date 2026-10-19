@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import stat
 import threading
 import time
 from collections import OrderedDict
@@ -192,6 +193,19 @@ def test_concurrent_builds_of_one_key_build_once():
     assert all(result is results[0] for result in results)
 
 
+def test_no_lock_is_kept_for_a_key_once_its_builds_end(monkeypatch: pytest.MonkeyPatch):
+    building: dict[str, object] = {}
+    monkeypatch.setattr(build_cache, "_building", building)
+
+    def failing() -> TensorRTEngine:
+        raise RuntimeError("TensorRT could not build it")
+
+    cached_engine(key("a"), Builds(), None)
+    with pytest.raises(RuntimeError):
+        cached_engine(key("b"), failing, None)
+    assert building == {}
+
+
 def test_a_failed_build_is_not_kept():
     def failing() -> TensorRTEngine:
         raise RuntimeError("TensorRT could not build it")
@@ -289,6 +303,73 @@ def test_a_folder_that_cannot_be_written_only_logs(
     missing = tmp_path / "missing"
     engine = cached_engine(key(), Builds(), str(missing))
     assert engine.bytes and len(logged) == 1 and "could not keep" in logged[0]
+
+
+def warnings_logged(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    logged: list[str] = []
+    monkeypatch.setattr(
+        build_cache.logger,
+        "warning",
+        lambda message, *args, **kwargs: logged.append(message % args),
+    )
+    return logged
+
+
+def test_a_file_that_cannot_be_read_is_a_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A folder in the file's place: reading it fails (PermissionError on Windows), as
+    # for a file another program locked.
+    logged = warnings_logged(monkeypatch)
+    (tmp_path / f"{key()}{SUFFIX}").mkdir()
+    build = Builds()
+    assert cached_engine(key(), build, str(tmp_path)).bytes
+    assert build.runs == 1
+    assert "could not read" in logged[0] and "could not keep" in logged[1]
+
+
+def test_a_damaged_file_that_cannot_be_removed_is_a_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / f"{key()}{SUFFIX}"
+    path.write_bytes(b"damaged")
+    path.chmod(stat.S_IREAD)  # read-only: Windows refuses to remove or replace it
+    logged = warnings_logged(monkeypatch)
+    build = Builds()
+    try:
+        assert cached_engine(key(), build, str(tmp_path)).bytes
+    finally:
+        path.chmod(stat.S_IREAD | stat.S_IWRITE)
+    assert build.runs == 1 and "damaged" in logged[0]
+
+
+def test_a_hit_that_cannot_be_marked_used_is_still_a_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A read-only file or folder: the engine is read, its last use not recorded.
+    build = Builds()
+    built = cached_engine(key(), build, str(tmp_path))
+    monkeypatch.setattr(build_cache, "_memory", OrderedDict())
+    logged = warnings_logged(monkeypatch)
+
+    def read_only(path: object, *args: object, **kwargs: object) -> None:
+        raise PermissionError("Access is denied")
+
+    monkeypatch.setattr(build_cache.os, "utime", read_only)
+    assert cached_engine(key(), build, str(tmp_path)).bytes == built.bytes
+    assert build.runs == 1 and len(logged) == 1 and "mark" in logged[0]
+
+
+def test_a_crash_s_temporary_file_is_removed_by_the_next_build_of_its_key(
+    tmp_path: Path,
+):
+    stray = tmp_path / f"{key()}.k3x9q.tmp"  # written, not yet renamed
+    others = [tmp_path / f"{key('b')}.k3x9q.tmp", tmp_path / "notes.tmp"]
+    for path in [stray, *others]:
+        path.write_bytes(b"partial")
+    cached_engine(key(), Builds(), str(tmp_path))
+    assert not stray.exists()
+    assert all(path.exists() for path in others)
 
 
 def test_the_dual_plugin_identity_follows_the_plugin_code(
