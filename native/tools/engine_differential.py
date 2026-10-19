@@ -14,8 +14,8 @@ the execution-error event, after the run's own events). The two runs must agree:
   drop a node's pending preview under load, timing-dependently), so the engine's coalesced broadcasts are judged
   against all of them;
 and the engine's events must keep the order invariants of amendment A6 (order_violations): chain-start first, the
-execution error last, each node's start before its finish, a node fed only through lazy inputs running between its
-reader's start and finish, each item's side-effect nodes finishing before the item's node-progress, and a writer's
+execution error last, each node's start before its finish, a node fed only through lazy inputs running between the
+start and finish of one of its reader's executions (at most once in each), each item's side-effect nodes finishing before the item's node-progress, and a writer's
 file complete before its finish (checked when the event is queued).
 """
 
@@ -256,9 +256,10 @@ def order_violations(events: list[dict[str, Any]], chain: Chain) -> list[str]:
     )
     if failed:
         return violations
-    # A regular node fed only through lazy inputs of one reader runs inside that reader's execution, occurrence by
-    # occurrence; not a side-effect node (e.g. Load Image), which runs as a sink of its own, in sink order, nor a
-    # generator or collector, which its loop runs.
+    # A regular node fed only through lazy inputs of one reader runs inside one of that reader's executions, at most
+    # once in each: a reader that does not read it (Save Image skipping an existing file, a Conditional's untaken
+    # branch, Logic Operation's B) runs without it. Not a side-effect node (e.g. Load Image), which runs as a sink of
+    # its own, in sink order, nor a generator or collector, which its loop runs.
     for upstream_id, upstream in chain.nodes.items():
         edges = chain.edges_from(upstream_id)
         readers = {edge.target.id for edge in edges}
@@ -269,16 +270,26 @@ def order_violations(events: list[dict[str, Any]], chain: Chain) -> list[str]:
         lazy_ids = {i.id for i in reader.data.inputs if i.lazy}
         if not all(edge.target.input_id in lazy_ids for edge in edges):
             continue
+        outer = runs.get(reader_id, [])
+        enclosing: dict[int, int] = {}
         for k, (start, finish) in enumerate(runs.get(upstream_id, [])):
-            outer = runs.get(reader_id, [])
-            if k >= len(outer):
-                violations.append(f"{upstream_id}: execution {k} has no reader execution of {reader_id}")
-                continue
-            outer_start, outer_finish = outer[k]
-            if outer_start is None or start is None or start < outer_start or (
-                outer_finish is not None and finish is not None and finish > outer_finish
-            ):
-                violations.append(f"{upstream_id}: execution {k} is outside {reader_id}'s (lazy input)")
+            j = next(
+                (
+                    j
+                    for j, (outer_start, outer_finish) in enumerate(outer)
+                    if start is not None
+                    and outer_start is not None
+                    and outer_start <= start
+                    and (outer_finish is None or (finish is not None and finish <= outer_finish))
+                ),
+                None,
+            )
+            if j is None:
+                violations.append(f"{upstream_id}: execution {k} is outside every execution of {reader_id} (lazy input)")
+            elif j in enclosing:
+                violations.append(f"{upstream_id}: executions {enclosing[j]} and {k} inside {reader_id}'s execution {j}")
+            else:
+                enclosing[j] = k
     # Each item's side-effect nodes finish before the item's node-progress.
     for generator_id, node in chain.nodes.items():
         if not isinstance(node, GeneratorNode):

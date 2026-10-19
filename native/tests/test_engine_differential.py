@@ -24,7 +24,7 @@ import bench_cases
 from bench_oracle import FFMPEG
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
-from engine_differential import execute, mismatches
+from engine_differential import execute, mismatches, order_violations
 from nodes.impl.native_graph import graph
 from verify_runtime import edge, make_node
 
@@ -169,3 +169,118 @@ def test_video_chain_matches(schemas, assets, tmp_path, case):
     if not (assets / "moving.mkv").exists():
         pytest.skip(f"the pinned FFmpeg ({FFMPEG}) is not installed")
     assert run_case(schemas, assets, tmp_path, case) == []
+
+
+@pytest.fixture(scope="module")
+def lazy_images(tmp_path_factory):
+    """Four PNGs, 83 to 86 pixels wide and 61 to 64 high, that the lazy shapes' comparisons split."""
+    folder = tmp_path_factory.mktemp("lazy") / "images"
+    folder.mkdir()
+    rng = np.random.default_rng(7)
+    for index in range(4):
+        small = (rng.random((9, 11, 3)) * 255).astype(np.uint8)
+        image = cv2.resize(small, (83 + index, 61 + index), interpolation=cv2.INTER_CUBIC)
+        assert cv2.imwrite(str(folder / f"{index:03}.png"), image)
+    return folder
+
+
+def lazy_shape(schemas, shape: str, images: Path, output: Path) -> list[dict]:
+    """Chains whose lazy inputs are read for some executions of their reader only (or that fail in a lazy reader)."""
+
+    def load(fail_fast: int = 1) -> dict:
+        return make_node(schemas, "load", "chainner:image:load_images", {0: str(images), 2: 0, 4: 0, 6: fail_fast})
+
+    def node(node_id: str, schema: str, inputs: dict) -> dict:
+        return make_node(schemas, node_id, f"chainner:{schema}", inputs)
+
+    def save(node_id: str, image: dict, name: object, skip: int = 0, folder: Path = output) -> dict:
+        return node(node_id, "image:save", {0: image, 1: str(folder), 2: None, 3: name, 4: "png", 15: "u8", 1000: skip})
+
+    def blur(node_id: str, image: dict, radius: float) -> dict:
+        return node(node_id, "image:gaussian_blur", {0: image, 1: radius, 2: radius})
+
+    def width_compare(node_id: str, image: dict, width: int) -> list[dict]:
+        return [node("dims", "image:get_dims", {0: image}), node(node_id, "utility:compare", {0: 2, 1: edge("dims", 0), 2: width})]
+
+    unwritable = output / "blocker.txt" / "sub"  # a folder under a file cannot be created
+    shapes = {
+        # Save Image skips the existing 001.png: its lazy image (the blur) is not computed for that item.
+        "skip-existing-loop": lambda: [
+            load(), blur("blur", edge("load"), 2.0), save("save", edge("blur"), edge("load", 3), skip=1),
+        ],
+        "conditional-loop": lambda: [
+            load(), *width_compare("cmp", edge("load"), 84),
+            blur("b1", edge("load"), 1.0), blur("b2", edge("load"), 4.0),
+            node("cond", "utility:conditional", {0: edge("cmp"), 1: edge("b1"), 2: edge("b2")}),
+            save("save", edge("cond"), edge("load", 3)),
+        ],
+        # Logic Operation's B is read only when A does not decide the result.
+        "logic-conditional-loop": lambda: [
+            load(), *width_compare("cmp1", edge("load"), 83),
+            node("cmp2", "utility:compare", {0: 3, 1: edge("dims", 1), 2: 64}),
+            node("logic", "utility:logic_operation", {0: "and", 1: edge("cmp1"), 2: edge("cmp2")}),
+            blur("b1", edge("load"), 1.0),
+            node("cond", "utility:conditional", {0: edge("logic"), 1: edge("b1"), 2: edge("load")}),
+            save("save", edge("cond"), edge("load", 3)),
+        ],
+        # The taken branch's crop fails for some items; the loop goes on (Stop on first error off).
+        "deferred-lazy-errors": lambda: [
+            load(fail_fast=0), *width_compare("cmp", edge("load"), 84),
+            node("crop", "image:crop", {0: edge("load"), 1: 0, 2: 70, 3: 70, 4: 70, 5: 70}),
+            node("cond", "utility:conditional", {0: edge("cmp"), 1: edge("crop"), 2: edge("load")}),
+            save("save", edge("cond"), edge("load", 3)),
+        ],
+        "conditional-skip-existing": lambda: [
+            node("one", "image:load", {0: str(images / "002.png")}), *width_compare("cmp", edge("one"), 84),
+            blur("b1", edge("one"), 1.0), blur("b2", edge("one"), 4.0),
+            node("cond", "utility:conditional", {0: edge("cmp"), 1: edge("b2"), 2: edge("b1")}),
+            save("save", edge("cond"), "single"), save("save2", edge("b2"), "other", skip=1),
+        ],
+        "unwritable-folder": lambda: [
+            node("one", "image:load", {0: str(images / "002.png")}), blur("b1", edge("one"), 1.0),
+            save("save", edge("b1"), "x", folder=unwritable),
+        ],
+        "unwritable-folder-loop": lambda: [
+            load(fail_fast=0), blur("b1", edge("load"), 1.0), save("save", edge("b1"), edge("load", 3), folder=unwritable),
+        ],
+    }
+    return shapes[shape]()
+
+
+# Per shape, lazy-only upstream nodes that the oracle runs for fewer executions than their reader's.
+LAZY_SKIPS = {
+    "skip-existing-loop": {"blur": "save"},
+    "conditional-loop": {"b1": "cond", "b2": "cond"},
+    "logic-conditional-loop": {"cmp2": "logic", "b1": "cond"},
+    "deferred-lazy-errors": {},
+    "conditional-skip-existing": {"b1": "cond"},
+    "unwritable-folder": {"b1": "save"},
+    "unwritable-folder-loop": {"b1": "save"},
+}
+
+
+@pytest.mark.parametrize("shape", LAZY_SKIPS)
+def test_lazy_shapes_match(schemas, lazy_images, tmp_path, shape):
+    # Both executors, the engine twice (its second run from the memo), with the order invariants checked on the
+    # oracle's events too: a lazy input's node runs inside the reader execution that reads it, not the k-th one.
+    output = tmp_path / "out"
+    results = []
+    for kind in ("python", "native", "native"):
+        shutil.rmtree(output, ignore_errors=True)
+        output.mkdir(parents=True)
+        shutil.copyfile(lazy_images / "001.png", output / "001.png")
+        shutil.copyfile(lazy_images / "001.png", output / "other.png")
+        (output / "blocker.txt").write_bytes(b"x")
+        chain = parse_json(cast("list[JsonNode]", lazy_shape(schemas, shape, lazy_images, output)))
+        optimize(chain)
+        results.append((chain, execute(kind, chain, storage=tmp_path / "storage", output=output)))
+    (chain, oracle), *engines = results
+    starts = {}
+    for event in oracle.events:
+        if event["event"] == "node-start":
+            starts[event["data"]["nodeId"]] = starts.get(event["data"]["nodeId"], 0) + 1
+    for upstream, reader in LAZY_SKIPS[shape].items():
+        assert starts.get(upstream, 0) < starts[reader], (upstream, starts)
+    assert order_violations(oracle.events, chain) == []
+    for engine_chain, engine in engines:
+        assert mismatches(shape, engine_chain, oracle, engine, tmp_path) == []

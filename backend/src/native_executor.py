@@ -119,6 +119,22 @@ MEMO_PYTHON_NODES: frozenset[str] = frozenset(
 MEMO_EXCLUDED_NATIVE: frozenset[str] = frozenset(
     {"chainner:image:add_noise", "chainner:image:create_noise"}
 )
+# The generators whose per-run (not iterated) outputs follow from their inputs alone, so their run is keyed by them
+# (the key Load Images' items extend with their files' identities): Load Images' and Load Models' Directory is their
+# input, Clip Frames' FPS and Colour Info are its clip's, and Range, Split Spritesheet and Load DDS Images have none.
+# Load Video is not one: its FPS, Audio Stream, Colour Info and Colour are read from its file.
+MEMO_GENERATORS: frozenset[str] = frozenset(
+    {
+        "chainner:image:load_dds_images",
+        "chainner:image:load_images",
+        "chainner:image:split_spritesheet",
+        "chainner:ncnn:load_models",
+        "chainner:onnx:load_models",
+        "chainner:pytorch:load_models",
+        "chainner:utility:range",
+        "chainner:vapoursynth:clip_frames",
+    }
+)
 LOAD_IMAGE = "chainner:image:load"
 
 
@@ -1035,6 +1051,7 @@ def build_plan(
                 "native": native,
                 "phased": node_phases(data.schema_id) is not None,
                 "memo": memo_eligible(data, data.schema_id in native_ids),
+                "run_keyed": data.schema_id in MEMO_GENERATORS,
                 "identity_input": 0 if data.schema_id == LOAD_IMAGE else -1,
                 "settings_key": json.dumps(
                     options.get_package_settings_json(package_id),

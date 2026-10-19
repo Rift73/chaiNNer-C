@@ -112,7 +112,7 @@ Four pools. Only the native one is budgeted; the engines keep their defaults (se
 | Native `cn_parallel_for(count, grain)` | Windows threadpool; capacity = CPUs in the process affinity mask. `count <= grain` runs inline. A larger call runs `min(1 + (count - 1) / grain, 128)` chunks, a partition that depends on `(count, grain)` alone. The caller works on its own call; generic helpers join the active call with the fewest helpers and re-pick when the set of calls changes; a helper is admitted only while callers plus helpers fit the capacity. Every chunk runs under the caller's MXCSR. The DLL is never unloaded |
 | OpenCV internal pool | OpenCV defaults |
 | BLAS pool | NumPy's OpenBLAS defaults |
-| Native run engine | Workers, one per CPU of the affinity mask (`CHAINNER_C_ENGINE_THREADS`), shared by every run and preview; service threads for each run's driver, event pump, broadcaster and item-window producer, reused and ended after 30 s idle (`CHAINNER_C_ENGINE_IDLE_SECONDS`). At most 8 of them call Python at once (`CHAINNER_C_PYTHON_THREADS`) |
+| Native run engine | Workers, one per CPU of the affinity mask (`CHAINNER_C_ENGINE_THREADS`), shared by every run and preview; service threads for each run's driver, event pump, broadcaster and item-window producer, reused and ended after 30 s idle (`CHAINNER_C_ENGINE_IDLE_SECONDS`). At most 8 of them call Python at once (`CHAINNER_C_PYTHON_THREADS`, at most 1024) |
 
 Graph scheduling (`process.py` input gathering): consecutive eligible inputs are awaited together, up to 4 per
 `owned_gather`. Eligible means an eager, non-lazy edge whose upstream subgraph is pure CPU (`pure_cpu_dependency`:
@@ -201,7 +201,8 @@ Memo cache (amendment A3, in the same file). In-process outputs of allow-listed 
 effects or a context, except Add Noise and Create Noise; 16 audited Python nodes listed in `native_executor.py` and
 `test_engine_memo.py`; Load Image keyed by its file's identity read as it runs, or, precached, the identity its
 individual run recorded; Load Images' items by their file's identity), keyed by schema, constant inputs, package
-settings and upstream keys. Least recently used first out within min(2 GiB, 10 % of RAM) (`CHAINNER_C_MEMO_BUDGET_MIB`,
+settings and upstream keys; a generator's per-run outputs only when they follow from its inputs alone (not Load Video's
+FPS, read from its file). Least recently used first out within min(2 GiB, 10 % of RAM) (`CHAINNER_C_MEMO_BUDGET_MIB`,
 0 = off), apart from the window's budget; an entry counts each storage it keeps alive once and whole (a view keeps its
 parent), and one above a budget's eighth is not kept. A hit sends the events of a computed node. A dependency change
 restarts the worker process, which drops it. Tests: `native/tests/test_engine_{differential,scenarios,robustness,memo,

@@ -91,11 +91,21 @@ struct StopRun {};
 /* A generator's supplier is exhausted (process.Executor's StopIteration). */
 struct ItemsEnd {};
 
-/* At most CHAINNER_C_PYTHON_THREADS engine threads in Python (A2): a slot, then the GIL; per thread, nested sections
- * share the outer slot. */
-std::counting_semaphore<1024> &python_slots()
+constexpr int python_slot_limit = 1024;  // python_slots' hard limit
+
+/* The engine threads allowed in Python at once: CHAINNER_C_PYTHON_THREADS (default 8), a larger value than
+ * python_slot_limit counting as that limit. */
+int python_threads()
 {
-    static std::counting_semaphore<1024> slots(environment_count("CHAINNER_C_PYTHON_THREADS", 8));
+    static const int count = std::min(environment_count("CHAINNER_C_PYTHON_THREADS", 8), python_slot_limit);
+    return count;
+}
+
+/* At most python_threads() engine threads in Python (A2): a slot, then the GIL; per thread, nested sections share
+ * the outer slot. */
+std::counting_semaphore<python_slot_limit> &python_slots()
+{
+    static std::counting_semaphore<python_slot_limit> slots(python_threads());
     return slots;
 }
 thread_local int slot_depth = 0;
@@ -351,6 +361,7 @@ struct NodePlan {
     bool phased = false;  // registered prepare and commit phases (item_window.register_phases)
     bool not_speculated = false;  // Into Directory: never computed ahead of its item (process._NOT_SPECULATED)
     bool memo = false;    // its outputs may be memoized (amendment A3's allow-list)
+    bool run_keyed = false;  // a generator whose per-run outputs follow from its inputs alone (MEMO_GENERATORS)
     int identity_input = -1;  // Load Image: its file input, whose file identity keys it
     Key settings_key;     // its package settings
 };
@@ -963,6 +974,7 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
         plan_node.phased = node["phased"].cast<bool>();
         plan_node.not_speculated = plan_node.schema == "chainner:utility:into_directory";
         plan_node.memo = node["memo"].cast<bool>() && Memo::get().enabled();
+        plan_node.run_keyed = node["run_keyed"].cast<bool>();
         plan_node.identity_input = node["identity_input"].cast<int>();
         plan_node.settings_key = Key().add(node["settings_key"].cast<std::string>());
         py::object precached = node["precached"];
@@ -2840,8 +2852,9 @@ std::vector<Value> Run::native_item(const GeneratorRun &generator, int64_t token
 }
 
 /* A cell's memo key (mutex_ held): from its schema, package settings and inputs (a constant's JSON, a source's key
- * and output index); a generator's item has the key its file identity gave it; a node outside the allow-list (or
- * fed by one) has none. Structural: nothing runs to compute it. */
+ * and output index); a generator's run only when its per-run outputs follow from its inputs alone (not Load Video's
+ * FPS, read from its file); a generator's item has the key its file identity gave it; a node outside the allow-list
+ * (or fed by one) has none. Structural: nothing runs to compute it. */
 std::optional<Key> Run::key_of(const CellRef &ref)
 {
     Cell &c = cell(ref);
@@ -2849,7 +2862,8 @@ std::optional<Key> Run::key_of(const CellRef &ref)
     if (c.key_state == Cell::KeyState::none) return std::nullopt;
     const NodePlan &node = nodes_[size_t(ref.node)];
     c.key_state = Cell::KeyState::none;
-    bool keyed = node.kind == Kind::generator ? ref.slot < 0 || !iterated_[size_t(ref.node)] : node.memo;
+    bool keyed = node.kind == Kind::generator ? node.run_keyed && (ref.slot < 0 || !iterated_[size_t(ref.node)])
+                                              : node.memo;
     if (!keyed || node.identity_input >= 0) return std::nullopt;  // Load Image: identify_file keys it
     Key key = Key().add(node.schema).add(node.settings_key);
     for (size_t i = 0; i < node.inputs.size(); ++i) {
@@ -3426,6 +3440,8 @@ void cn_bind_run_executor(py::module_ &module)
     module.def("memo_stats", [] { return cn::run::Memo::get().stats(); },
                "The memo cache's entries, bytes, budget, hits and misses (amendment A3).");
     module.def("memo_clear", [] { cn::run::Memo::get().clear(); }, "Drops every memo cache entry.");
+    module.def("python_threads", [] { return cn::run::python_threads(); },
+               "The engine threads allowed in Python at once (CHAINNER_C_PYTHON_THREADS, at most 1024).");
     module.def("native_declines", [] {
         py::dict counts;
         std::lock_guard<std::mutex> locked(cn::run::decline_mutex);

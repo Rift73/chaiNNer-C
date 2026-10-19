@@ -20,6 +20,7 @@ import pytest
 
 import api
 import native_executor
+from bench_oracle import FFMPEG
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
 from engine_differential import execute, mismatches
@@ -27,6 +28,7 @@ from nodes.impl.native_graph import graph
 from verify_runtime import edge, make_node
 
 BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
+PACKAGES = sorted(p.parent.name for p in (BACKEND / "packages").glob("*/__init__.py"))
 
 # The audited Python nodes (deterministic, side-effect free, no file, clock, random, network or GPU reads).
 AUDITED = {
@@ -47,14 +49,30 @@ AUDITED = {
     "chainner:utility:derive_seed",
     "chainner:utility:separate_color",
 }
+# Each generator's per-run (not iterated) outputs, audited as following from its inputs alone: its run is keyed
+# (native_executor.MEMO_GENERATORS). A per-run output added to one of them needs a new audit.
+KEYED_GENERATORS = {
+    "chainner:image:load_dds_images": [],
+    "chainner:image:load_images": ["Directory"],
+    "chainner:image:split_spritesheet": [],
+    "chainner:ncnn:load_models": ["Directory"],
+    "chainner:onnx:load_models": ["Directory"],
+    "chainner:pytorch:load_models": ["Directory"],
+    "chainner:utility:range": [],
+    "chainner:vapoursynth:clip_frames": ["FPS", "Colour Info"],
+}
+# Generators whose per-run outputs are read from a file, so their run has no key.
+UNKEYED_GENERATORS = {"chainner:image:load_video"}
 
 
 @pytest.fixture(scope="module")
 def schemas():
+    """Every package's nodes, so a node added to any package is held to the allow-list."""
     main = sys.modules["__main__"]
     previous = getattr(main, "__file__", None)
     main.__file__ = str(BACKEND / "run.py")
-    importlib.import_module("packages.chaiNNer_standard")
+    for name in PACKAGES:
+        importlib.import_module(f"packages.{name}")
     errors = api.registry.load_nodes(str(BACKEND / "server.py"))
     assert not errors, [e.module for e in errors]
     yield {schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind} for schema, (data, _) in api.registry.nodes.items()}
@@ -106,6 +124,12 @@ def run(kind: str, nodes: list[dict], tmp_path: Path, output: Path):
 def test_allow_list_is_the_audited_set(schemas):
     assert native_executor.MEMO_PYTHON_NODES == AUDITED
     assert native_executor.MEMO_EXCLUDED_NATIVE == {"chainner:image:add_noise", "chainner:image:create_noise"}
+    # Every package's nodes (NVIDIA ModelOpt has none) are in the registry checked below.
+    packages = {p.id: p for p in api.registry.packages.values()}
+    assert packages.keys() >= set(PACKAGES)
+    for package in packages.values():
+        loaded = {n.schema_id for c in package.categories for g in c.node_groups for n in g.nodes}
+        assert loaded <= api.registry.nodes.keys(), package.id
     native = set(graph().native_schema_ids())
     for schema, (data, _) in api.registry.nodes.items():
         eligible = native_executor.memo_eligible(data, schema in native)
@@ -117,6 +141,77 @@ def test_allow_list_is_the_audited_set(schemas):
             assert eligible == (schema not in native_executor.MEMO_EXCLUDED_NATIVE), schema
         else:
             assert eligible == (schema in AUDITED), schema
+
+
+def test_generator_runs_keyed_only_by_their_inputs(schemas):
+    # Every generator is decided: keyed with its audited per-run outputs, or not keyed.
+    assert native_executor.MEMO_GENERATORS == KEYED_GENERATORS.keys()
+    generators = {schema: data for schema, (data, _) in api.registry.nodes.items() if data.kind == "generator"}
+    assert generators.keys() == KEYED_GENERATORS.keys() | UNKEYED_GENERATORS
+    for schema in KEYED_GENERATORS:
+        data = generators[schema]
+        per_run = [o.label for o in data.outputs if o.id not in data.single_iterable_output.outputs]
+        assert per_run == KEYED_GENERATORS[schema], schema
+
+
+def video_fps_chain(schemas, video: Path, output: Path) -> list[dict]:
+    """Load Video's FPS (a per-run output read from the file), doubled by Math (memoized), names the saved frame."""
+    return [
+        make_node(schemas, "video", "chainner:image:load_video", {0: str(video), 1: True, 2: 1}),
+        make_node(schemas, "math", "chainner:utility:math", {0: edge("video", 4), 1: "mul", 2: 2}),
+        make_node(
+            schemas, "save", "chainner:image:save",
+            {0: edge("video", 0), 1: str(output), 2: None, 3: edge("math", 0), 4: "png", 15: "u8"},
+        ),
+    ]
+
+
+def test_a_file_read_per_run_output_is_read_again(schemas, tmp_path):
+    # Load Video's run has no key: after the file at its path changes frame rate, Math computes from the new FPS.
+    if not FFMPEG.exists():
+        pytest.skip(f"the pinned FFmpeg ({FFMPEG}) is not installed")
+    video, output = tmp_path / "clip.mkv", tmp_path / "out"
+
+    def write_video(rate: int) -> None:
+        command = [str(FFMPEG), "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc=size=64x48:rate={rate}",
+                   "-frames:v", "2", "-c:v", "ffv1", str(video)]
+        subprocess.run(command, check=True, timeout=120, stdin=subprocess.DEVNULL)
+
+    nodes = video_fps_chain(schemas, video, output)
+    write_video(10)
+    _, first = run("native", nodes, tmp_path, output)
+    assert first.error is None and set(first.files) == {"20.png"}
+    write_video(25)
+    _, oracle = run("python", nodes, tmp_path, output)
+    chain, engine = run("native", nodes, tmp_path, output)
+    assert set(oracle.files) == {"50.png"}
+    assert engine.files == oracle.files
+    assert mismatches("changed frame rate", chain, oracle, engine, tmp_path) == []
+
+
+def test_an_input_keyed_per_run_output_is_memoized(schemas, tmp_path):
+    # Load Images' Directory is its input: its run is keyed, so Text Append on it is a memo hit the second time.
+    images, output = tmp_path / "images", tmp_path / "out"
+    write_images(images, 7, count=2)
+    nodes = [
+        make_node(schemas, "load", "chainner:image:load_images", {0: str(images), 2: 0, 4: 0, 6: 1}),
+        make_node(schemas, "folder", "chainner:utility:text_append", {0: "-", 1: edge("load", 1), 2: "x"}),
+        make_node(schemas, "name", "chainner:utility:text_length", {0: edge("folder")}),
+        make_node(schemas, "label", "chainner:utility:text_append", {0: "_", 1: edge("load", 3), 2: edge("name")}),
+        make_node(
+            schemas, "save", "chainner:image:save",
+            {0: edge("load"), 1: str(output), 2: None, 3: edge("label"), 4: "png", 15: "u8"},
+        ),
+    ]
+    _, oracle = run("python", nodes, tmp_path, output)
+    run("native", nodes, tmp_path, output)
+    before = graph().memo_stats()
+    chain, engine = run("native", nodes, tmp_path, output)
+    after = graph().memo_stats()
+    # Two items' loads and labels, the folder text and its length.
+    assert after["hits"] - before["hits"] >= 2 * 2 + 2
+    assert engine.files == oracle.files
+    assert mismatches("keyed directory", chain, oracle, engine, tmp_path) == []
 
 
 def test_hits_send_the_events_of_computed_nodes(schemas, tmp_path):

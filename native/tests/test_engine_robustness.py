@@ -393,6 +393,27 @@ def test_idle_service_threads_end(tmp_path):
     assert after <= before + 2
 
 
+PYTHON_THREADS = (
+    PRELUDE
+    + """
+from nodes.impl.native_graph import graph
+b = Builder()
+for i in range(16):
+    b.node(f"n{i}", lambda x: x + 1)
+    b.value(f"n{i}", 0, i)
+assert execute("native", b.chain, storage=Path(os.environ["WORK"])).error is None
+print(graph().python_threads())
+"""
+)
+
+
+@pytest.mark.parametrize("value, threads", [("2000", 1024), ("1024", 1024), ("3", 3), ("0", 8)])
+def test_python_threads_are_at_most_the_slot_limit(tmp_path, value, threads):
+    # CHAINNER_C_PYTHON_THREADS above the Python slots' hard limit (1024) counts as that limit; 0 is invalid (the
+    # default, 8). The engine runs Python nodes with it.
+    assert int(run_script(PYTHON_THREADS, 4, tmp_path, CHAINNER_C_PYTHON_THREADS=value)) == threads
+
+
 def test_a_lazy_input_read_after_its_run_fails_cleanly(tmp_path):
     # A node that keeps its lazy input unread and a caller that reads it once the run closed: a Python error, not a
     # read of the closed run's cells.
