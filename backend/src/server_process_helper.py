@@ -302,15 +302,15 @@ class WorkerServer:
             finally:
                 self._manually_close.remove(resp)
 
-    async def wait_for_nodes(self) -> None:
-        """Waits until the worker has loaded every node (or failed to): its full package
-        list, with the settings node modules add, waits for them."""
+    async def registered_nodes(self) -> tuple[list[str], bool]:
+        """The schema ids of the nodes the worker has registered so far, and whether it
+        has loaded every node (or failed to)."""
         await self.wait_for_ready()
         assert self._session is not None
-        async with self._session.get(
-            "/packages", params={"hideInternal": "false"}
-        ) as packages_resp:
-            packages_resp.raise_for_status()
+        async with self._session.get("/nodes/registered") as resp:
+            resp.raise_for_status()
+            registered = await resp.json()
+            return registered["schemaIds"], registered["done"]
 
     async def get_packages(self):
         """The packages with their dependencies. The worker answers once its packages

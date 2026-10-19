@@ -169,6 +169,9 @@ def test_run_proxies_without_recycling_the_worker():
     # after a response that asks for it.
     functions[0].remove("change_dependencies")
     functions[0].remove("restart_if_broken")
+    # Instant startup: the host tells the app which nodes the worker has registered
+    # while it loads them, so previews never wait in the worker for their framework.
+    functions[0].remove("announce_registered_nodes")
     assert functions[0] == functions[1]
 
 

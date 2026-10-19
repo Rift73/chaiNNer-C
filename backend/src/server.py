@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import importlib
+import itertools
 import logging
 import os
 import sys
@@ -22,7 +23,7 @@ import psutil
 from sanic import Sanic
 from sanic.log import access_logger, logger
 from sanic.request import Request
-from sanic.response import json
+from sanic.response import HTTPResponse, json
 
 import api
 from api import (
@@ -92,6 +93,38 @@ HEAVY_ORDER: Final = (
 )
 
 
+class RunTracker:
+    """The runs the worker serves (/run, /run/individual), for NodeLoading's one
+    gc.freeze, which is skipped while a run is in flight or once a run of a node outside
+    the light set has answered (its model may sit in the output cache, and frozen
+    objects are never collected). Updated by the request middleware on the loop thread;
+    the lock keeps a run from starting between the check and the freeze."""
+
+    ROUTES: Final = frozenset({"/run", "/run/individual"})
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.in_flight = 0
+        self.ran_heavy_node = False
+
+    def started(self) -> None:
+        with self.lock:
+            self.in_flight += 1
+
+    def answered(self, heavy: bool) -> None:
+        with self.lock:
+            self.in_flight -= 1
+            self.ran_heavy_node = self.ran_heavy_node or heavy
+
+    def freeze_blocker(self) -> str | None:
+        """Why the freeze must be skipped, or None. Call it holding the lock."""
+        if self.in_flight > 0:
+            return f"{self.in_flight} run(s) in flight"
+        if self.ran_heavy_node:
+            return "a run of a node outside the light set has completed"
+        return None
+
+
 class NodeLoading:
     """How far the worker's node loading is. It runs beside serving: the packages and
     their light node modules first, then the other node modules a package at a time.
@@ -102,6 +135,8 @@ class NodeLoading:
         self.packages_registered = threading.Event()
         # The packages are registered and the light node modules loaded.
         self.light_loaded = threading.Event()
+        # The schema ids of the light nodes, once they have loaded.
+        self.light_schemata: frozenset[str] = frozenset()
         # By package id: every node module of the package has loaded or failed.
         self.package_loaded: dict[str, threading.Event] = {
             name: threading.Event() for name in PACKAGES
@@ -139,6 +174,16 @@ class NodeLoading:
     def settled(self, schema_id: str) -> bool:
         """Whether a node that is not registered is known not to come anymore."""
         return self.done.is_set() or self.load_error(schema_id) is not None
+
+    def complete(self) -> bool:
+        """Whether every node module loaded, but those whose dependency is not
+        installed. A module that failed otherwise may load at the next start (torch
+        under memory pressure: WinError 1455), so the app does not cache this list."""
+        return not any(
+            not isinstance(error.error, ModuleNotFoundError)
+            for errors in self.errors.values()
+            for error in errors
+        )
 
     def load(self, config: ServerConfig) -> None:
         """Loads every package's nodes, setting the events as it goes, failures included.
@@ -178,6 +223,7 @@ class NodeLoading:
         logger.info("Loading Nodes...")
         for name, batch in light.items():
             load(name, batch)
+        self.light_schemata = frozenset(api.registry.nodes)
         self.light_loaded.set()
         for name in PACKAGES:
             if not rest[name]:
@@ -196,7 +242,26 @@ class NodeLoading:
                 logger.info(
                     f"Loaded the {name} nodes after {time.perf_counter() - start:.2f} s"
                 )
+        self.freeze_objects()
         return load_errors
+
+    def freeze_objects(self) -> None:
+        """Moves every object the start made (the modules, the node registry, the
+        frameworks' state) out of the collector's reach, once: each later full
+        collection (collect_failed_run, return_device_memory) then took about 0 ms
+        instead of 136-164 ms. Gate ruling R1 (native/reports/fable-decisions.md,
+        "instant-exec gate R1"): skipped, and never retried, while a run is in flight
+        or once a run of a node outside the light set has completed (RunTracker), as
+        their objects must stay collectable."""
+        with run_tracker.lock:
+            reason = run_tracker.freeze_blocker()
+            if reason is None:
+                gc.collect()
+                gc.freeze()
+        if reason is None:
+            logger.info(f"gc frozen: {gc.get_freeze_count()} objects")
+        else:
+            logger.info(f"freeze skipped: {reason}")
 
 
 def register_packages() -> tuple[
@@ -303,7 +368,37 @@ class ZeroCounter:
 
 run_individual_counter = ZeroCounter()
 
+run_tracker = RunTracker()
 node_loading = NodeLoading()
+
+
+def run_schema_ids(request: Request) -> list[str] | None:
+    """The schema ids a /run or /run/individual request runs, None if unreadable."""
+    try:
+        body = request.json
+        if request.path == "/run":
+            return [node["schemaId"] for node in body["data"]]
+        return [body["schemaId"]]
+    except Exception:
+        return None
+
+
+@app.on_request
+async def track_run_start(request: Request):
+    if request.path in RunTracker.ROUTES:
+        run_tracker.started()
+
+
+@app.on_response
+async def track_run_end(request: Request, _response: HTTPResponse):
+    if request.path in RunTracker.ROUTES:
+        schema_ids = run_schema_ids(request)
+        run_tracker.answered(
+            schema_ids is None
+            or any(s not in node_loading.light_schemata for s in schema_ids)
+        )
+
+
 setup_task = None
 close_task = None
 
@@ -350,6 +445,15 @@ async def health(_request: Request):
     return json({"status": "ok"})
 
 
+@app.route("/nodes/registered")
+async def registered_nodes(_request: Request):
+    """The schema ids of the nodes registered so far, and whether every node has loaded
+    (or failed to). The host reads it while the nodes load (announce_registered_nodes)."""
+    # Done first: once done, the list read after it is complete.
+    done = node_loading.done.is_set()
+    return json({"schemaIds": list(api.registry.nodes), "done": done})
+
+
 @app.route("/nodes")
 async def nodes(_request: Request):
     """Gets a list of all nodes as well as the node information"""
@@ -388,6 +492,7 @@ async def nodes(_request: Request):
             "nodes": node_list,
             "categories": [x.to_dict() for x in api.registry.categories],
             "categoriesMissingNodes": [],
+            "complete": node_loading.complete(),
         }
     )
 
@@ -601,50 +706,60 @@ async def run_individual(request: Request):
 
         node_id = full_data["id"]
         ctx.cache.pop(node_id, None)
-        await wait_for_nodes([full_data["schemaId"]])
-
-        schema_data = api.registry.nodes.get(full_data["schemaId"])
-
-        if schema_data is None:
-            raise ValueError(
-                f"Invalid node {full_data['schemaId']} attempted to run individually"
-            )
-
-        node_data, _ = schema_data
-        if node_data.kind == "generator":
-            node = GeneratorNode(node_id, full_data["schemaId"])
-        elif node_data.kind == "regularNode":
-            node = FunctionNode(node_id, full_data["schemaId"])
-        else:
-            raise ValueError(
-                f"Invalid node kind {node_data.kind} attempted to run individually"
-            )
-        chain = Chain()
-        chain.add_node(node)
-
-        for index, i in enumerate(full_data["inputs"]):
-            chain.inputs.set(node_id, node.data.inputs[index].id, i)
-
-        # only yield certain types of events
-        queue = EventConsumer.filter(
-            ctx.queue, {"node-finish", "node-broadcast", "execution-error"}
-        )
-
-        execution_id = ExecutionId("individual-executor " + node_id)
-        executor_class = NativeExecutor if executor_kind() == "native" else Executor
-        executor = executor_class(
-            id=execution_id,
-            chain=chain,
-            send_broadcast_data=True,
-            options=ExecutionOptions.parse(full_data["options"]),
-            loop=app.loop,
-            queue=queue,
-            storage_dir=ctx.storage_dir,
-            pool=ctx.pool,
-            pool_size=POOL_SIZE,
-        )
-
+        arrival = next(individual_arrivals)
+        latest_individual_arrival[node_id] = arrival
+        # Counted from before the wait for its node: a /run waits for every preview,
+        # also one still waiting for its node to load.
         with run_individual_counter:
+            await wait_for_nodes([full_data["schemaId"]])
+            if latest_individual_arrival[node_id] != arrival:
+                # A newer preview of this node arrived while this one waited for its node
+                # to load (an input changed): the waiters resume in no particular order,
+                # and only the newest may run, else it could be killed by this one and
+                # this one's output cached.
+                return json({"success": True, "data": None})
+
+            schema_data = api.registry.nodes.get(full_data["schemaId"])
+
+            if schema_data is None:
+                raise ValueError(
+                    f"Invalid node {full_data['schemaId']} attempted to run individually"
+                )
+
+            node_data, _ = schema_data
+            if node_data.kind == "generator":
+                node = GeneratorNode(node_id, full_data["schemaId"])
+            elif node_data.kind == "regularNode":
+                node = FunctionNode(node_id, full_data["schemaId"])
+            else:
+                raise ValueError(
+                    f"Invalid node kind {node_data.kind} attempted to run individually"
+                )
+            chain = Chain()
+            chain.add_node(node)
+
+            for index, i in enumerate(full_data["inputs"]):
+                chain.inputs.set(node_id, node.data.inputs[index].id, i)
+
+            # only yield certain types of events
+            queue = EventConsumer.filter(
+                ctx.queue, {"node-finish", "node-broadcast", "execution-error"}
+            )
+
+            execution_id = ExecutionId("individual-executor " + node_id)
+            executor_class = NativeExecutor if executor_kind() == "native" else Executor
+            executor = executor_class(
+                id=execution_id,
+                chain=chain,
+                send_broadcast_data=True,
+                options=ExecutionOptions.parse(full_data["options"]),
+                loop=app.loop,
+                queue=queue,
+                storage_dir=ctx.storage_dir,
+                pool=ctx.pool,
+                pool_size=POOL_SIZE,
+            )
+
             try:
                 if execution_id in ctx.individual_executors:
                     # kill the previous executor (if any)
@@ -690,6 +805,9 @@ async def run_individual(request: Request):
 
 # The deferred NumPy pool releases of /run/individual, held until they finish.
 individual_releases: set[asyncio.Task[None]] = set()
+# /run/individual's arrival numbers, and by node id the newest arrival's.
+individual_arrivals = itertools.count()
+latest_individual_arrival: dict[NodeId, int] = {}
 
 
 async def release_after_broadcasts(

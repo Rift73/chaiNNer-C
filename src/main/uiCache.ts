@@ -175,12 +175,20 @@ export class UiCache {
     }
 
     /**
-     * Keeps the live node list for the next start. Writes only when the file would change; the
-     * promise never rejects (a failure is logged).
+     * Keeps the live node list for the next start. Writes only when the file would change, and
+     * never a list from a start in which a package failed to load (it may load at the next start,
+     * which would then show the list without its nodes); the promise never rejects (a failure is
+     * logged).
      */
     write(data: BackendData): Promise<void> {
         this.writing = this.writing
             .then(async () => {
+                if (!data[0].complete) {
+                    log.warn(
+                        'A package failed to load in this start; its node list is not cached.'
+                    );
+                    return;
+                }
                 const cache: UiCacheFile = {
                     key: await this.getKey(),
                     nodes: data[0],

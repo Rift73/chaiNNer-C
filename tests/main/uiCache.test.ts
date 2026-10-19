@@ -1,3 +1,4 @@
+import { existsSync } from 'fs';
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -47,6 +48,7 @@ const data: BackendData = [
         nodes: [],
         categories: [],
         categoriesMissingNodes: ['pytorch' as CategoryId],
+        complete: true,
     },
     [],
 ];
@@ -76,6 +78,23 @@ test('a cache of another set of installed distributions is not used', async () =
 
     // the live list then rewrites the cache with the new key
     await next.write(data);
+    await expect((await newCache()).read()).resolves.toEqual(data);
+});
+
+test('a node list from a start in which a package failed to load is not cached', async () => {
+    // e.g. torch under memory pressure (WinError 1455): the list lacks its nodes
+    const incomplete: BackendData = [{ ...data[0], complete: false }, data[1]];
+    const first = await newCache();
+    await first.write(incomplete);
+    expect(existsSync(cacheFile)).toBe(false);
+
+    // a later complete list is
+    await first.write(data);
+    await expect((await newCache()).read()).resolves.toEqual(data);
+
+    // and an incomplete one never replaces a cached list
+    const next = await newCache();
+    await next.write(incomplete);
     await expect((await newCache()).read()).resolves.toEqual(data);
 });
 

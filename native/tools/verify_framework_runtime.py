@@ -30,6 +30,7 @@ from typing import Any
 from verify_runtime import (
     METADATA_COMPARISON,
     METADATA_ENDPOINTS,
+    METADATA_TIMEOUT,
     ORACLE,
     PROJECT,
     REPEAT_RULES,
@@ -653,7 +654,8 @@ def run_backend(
         else:
             raise RuntimeError(f"{label} startup timeout; inspect backend.log")
         metadata = {
-            key: request(port, "/" + key, timeout=30) for key in METADATA_ENDPOINTS
+            key: request(port, "/" + key, timeout=METADATA_TIMEOUT)
+            for key in METADATA_ENDPOINTS
         }
         for key, value in metadata.items():
             write_json(directory / (key + ".json"), value)

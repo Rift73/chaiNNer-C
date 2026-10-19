@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -174,6 +174,86 @@ def test_a_run_waits_for_its_node_to_load(
     assert asyncio.run(run_at_startup())
 
 
+def test_of_two_previews_waiting_for_their_node_only_the_newer_runs(
+    server: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    # The user picks another model while PyTorch still loads: the newer preview runs
+    # and its output is cached, whichever waiter resumes first.
+    import api
+
+    loading, pytorch = loading_with(server, monkeypatch)
+    loading.light_loaded.set()
+    ran: list[object] = []
+    killed: list[object] = []
+
+    class Executor:
+        def __init__(self, *, options: api.ExecutionOptions, **_kwargs: object) -> None:
+            self.n = options.get_package_settings_json("request")["n"]
+
+        async def process_regular_node(self, _node: object) -> str:
+            ran.append(self.n)
+            return f"output {self.n}"
+
+        def kill(self) -> None:
+            killed.append(self.n)
+
+        async def flush_broadcasts(self) -> None:
+            pass
+
+    monkeypatch.setattr(server, "executor_kind", lambda: "python")
+    monkeypatch.setattr(server, "Executor", Executor)
+    cache: dict[str, object] = {}
+    monkeypatch.setattr(server.app.ctx, "cache", cache)
+    # the app's loop exists only while it serves
+    app = SimpleNamespace(ctx=server.app.ctx, loop=None)
+    monkeypatch.setattr(server, "app", app)
+
+    def preview(n: int):
+        return server.run_individual(
+            SimpleNamespace(
+                app=app,
+                json={
+                    "id": "node",
+                    "schemaId": UPSCALE,
+                    "inputs": [],
+                    "options": {"request": {"n": n}},
+                },
+            )
+        )
+
+    async def startup() -> list[object]:
+        older = asyncio.create_task(preview(1))
+        await asyncio.sleep(0.05)
+        newer = asyncio.create_task(preview(2))
+        await asyncio.sleep(0.05)
+        assert not older.done() and not newer.done()
+        # a /run waits for both (run_individual_counter.wait_zero)
+        assert server.run_individual_counter.count == 2
+        group = pytorch.categories[0].add_node_group("Processing")
+        group.register(
+            UPSCALE,
+            name="Upscale Image",
+            description="Upscales an image.",
+            inputs=[],
+            outputs=[],
+            generated=True,
+        )(upscale_image_node)
+        api.registry.load_modules([])
+        loading.package_loaded["chaiNNer_pytorch"].set()
+        replies = await asyncio.wait_for(asyncio.gather(older, newer), 2)
+        return [json.loads(reply.body) for reply in replies]
+
+    for _ in range(10):
+        ran.clear()
+        assert asyncio.run(startup()) == [{"success": True, "data": None}] * 2
+        assert ran == [2]
+        assert killed == []
+        assert cache == {"node": "output 2"}
+        monkeypatch.setattr(api.registry, "nodes", {})
+        pytorch.categories[0].node_groups.clear()
+        loading.package_loaded["chaiNNer_pytorch"].clear()
+
+
 def test_a_run_of_a_package_that_failed_to_load_fails_with_its_error(
     server: ModuleType, monkeypatch: pytest.MonkeyPatch
 ):
@@ -192,6 +272,32 @@ def test_a_run_of_a_package_that_failed_to_load_fails_with_its_error(
 
     with pytest.raises(ValueError, match=r"PyTorch nodes failed to load \(No module"):
         asyncio.run(server.wait_for_nodes([UPSCALE]))
+
+
+@pytest.mark.parametrize(
+    ("error", "complete"),
+    [
+        # a dependency that is not installed: the list is as it will stay
+        (ModuleNotFoundError("No module named 'tensorrt'", name="tensorrt"), True),
+        # torch under memory pressure: it may load at the next start
+        (OSError("[WinError 1455] The paging file is too small"), False),
+    ],
+)
+def test_the_node_list_says_whether_a_package_failed_to_load(
+    server: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    complete: bool,
+):
+    import api
+
+    loading, _ = loading_with(server, monkeypatch)
+    loading.errors["chaiNNer_pytorch"] = [
+        api.LoadErrorInfo("packages.chaiNNer_pytorch.settings", "settings.py", error)
+    ]
+    monkeypatch.setattr(server, "setup_task", None)
+    reply = asyncio.run(server.nodes(None))
+    assert json.loads(reply.body)["complete"] is complete
 
 
 def test_a_node_no_package_has_is_left_to_the_run_once_all_loaded(

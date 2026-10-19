@@ -16,7 +16,14 @@ from ctypes import wintypes
 from pathlib import Path
 
 from verify_framework_runtime import source_hashes
-from verify_runtime import Events, OwnedJob, digest, request, write_json
+from verify_runtime import (
+    METADATA_TIMEOUT,
+    Events,
+    OwnedJob,
+    digest,
+    request,
+    write_json,
+)
 from verify_video_runtime import provision_ffmpeg
 
 PROJECT = Path(__file__).resolve().parents[2]
@@ -227,7 +234,7 @@ class Backend:
                         f"Backend {self.label} set {ISA_VARIABLE}={value!r} but logged "
                         f"{found[0][0]}"
                     )
-            metadata = request(self.port, "/nodes", timeout=30)
+            metadata = request(self.port, "/nodes", timeout=METADATA_TIMEOUT)
             write_json(self.directory / "nodes.json", metadata)
             self.schemas = {node["schemaId"]: node for node in metadata["nodes"]}
             self.info["schema_sha256"] = digest(metadata)

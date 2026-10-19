@@ -1595,7 +1595,7 @@ def run_backend(label: str, backend: Path, python: Path, root: Path, timeout: fl
             )
         metadata = {}
         for endpoint in METADATA_ENDPOINTS:
-            metadata[endpoint] = request(port, "/" + endpoint, timeout=30)
+            metadata[endpoint] = request(port, "/" + endpoint, timeout=METADATA_TIMEOUT)
             write_json(directory / (endpoint + ".json"), metadata[endpoint])
         schemas = {x["schemaId"]: x for x in metadata["nodes"]["nodes"]}
         result.update(metadata_record(metadata))
@@ -2154,6 +2154,11 @@ def broadcast_multisets(attempts: list[dict]) -> list[dict[str, dict[str, int]]]
 # The metadata endpoints every runtime verifier reads from both backends, and the
 # two that carry the Dependency declarations; each run records the latter whole.
 METADATA_ENDPOINTS = ("nodes", "packages", "features", "installed-dependencies")
+# Seconds for a metadata request. /nodes, /packages and /features answer once the
+# worker has loaded every node, which the host's readiness (/status) no longer waits
+# for (instant startup): with a cold Numba cache (a new storage folder), PyMatting
+# first compiles its kernels for 25-45 s.
+METADATA_TIMEOUT = 300
 DEPENDENCY_ENDPOINTS = ("packages", "installed-dependencies")
 # The /packages dependency fields the declarations change; every other is exact.
 DECLARED_FIELDS = frozenset({"version", "pypiName", "findLink"})

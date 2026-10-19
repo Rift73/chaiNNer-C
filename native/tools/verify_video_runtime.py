@@ -35,6 +35,7 @@ from verify_framework_runtime import OPTIONS, file_hash, source_hashes
 from verify_runtime import (
     METADATA_COMPARISON,
     METADATA_ENDPOINTS,
+    METADATA_TIMEOUT,
     ORACLE,
     PROJECT,
     REPEAT_RULES,
@@ -568,7 +569,8 @@ def run_backend(
         else:
             raise TimeoutError("Backend startup deadline")
         metadata = {
-            key: request(port, "/" + key, timeout=30) for key in METADATA_ENDPOINTS
+            key: request(port, "/" + key, timeout=METADATA_TIMEOUT)
+            for key in METADATA_ENDPOINTS
         }
         for key, value in metadata.items():
             write_json(directory / (key + ".json"), value)

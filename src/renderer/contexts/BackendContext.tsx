@@ -12,7 +12,7 @@ import React, {
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from 'react-query';
 import { createContext, useContext } from 'use-context-selector';
-import { Backend, BackendData, getBackend } from '../../common/Backend';
+import { Backend, BackendData, BackendEventMap, getBackend } from '../../common/Backend';
 import { CategoryMap } from '../../common/CategoryMap';
 import {
     CategoryId,
@@ -31,7 +31,7 @@ import { SchemaInputsMap } from '../../common/SchemaInputsMap';
 import { SchemaMap } from '../../common/SchemaMap';
 import { getChainnerScope } from '../../common/types/chainner-scope';
 import { FunctionDefinition } from '../../common/types/function';
-import { EMPTY_ARRAY, EMPTY_MAP, delay } from '../../common/util';
+import { EMPTY_ARRAY, EMPTY_MAP, EMPTY_SET, delay } from '../../common/util';
 import { useAsyncEffect } from '../hooks/useAsyncEffect';
 import { BackendEventSource } from '../hooks/useBackendEventSource';
 import { useMemoObject } from '../hooks/useMemo';
@@ -67,6 +67,12 @@ interface BackendContextState {
      * replaces once it arrives (if it differs).
      */
     nodesFromCache: boolean;
+    /**
+     * Whether the backend has loaded the node of this schema. A request that needs a node that
+     * still loads waits for it in the backend, which holds one of the window's 6 connections to
+     * the backend, so previews wait for this instead.
+     */
+    isNodeLoaded: (schemaId: SchemaId) => boolean;
     /** The backend's setup events, e.g. the progress of dependency installs. */
     setupEventSource: BackendEventSource | null;
     refreshNodes: () => void;
@@ -315,13 +321,15 @@ const useFeatureStates = (backend: Backend, areNodesLoaded: boolean) => {
 
 /**
  * The setup events of the backend at `url`, over one connection for the app's life: whether
- * the backend accepts requests (backend-ready) and whether it has loaded all of its nodes
- * (backend-nodes-loaded); the event source also carries the progress of dependency installs.
+ * the backend accepts requests (backend-ready), which nodes it has loaded while it loads them
+ * (backend-nodes-registered), and whether it has loaded all of them (backend-nodes-loaded);
+ * the event source also carries the progress of dependency installs.
  * Until the backend listens, and after it restarts, the connection is tried again every 100 ms,
  * not after EventSource's own delay of a few seconds.
  */
 const useBackendSetupEvents = (url: string) => {
     const [isBackendReady, setIsBackendReady] = useState(false);
+    const [registeredSchemata, setRegisteredSchemata] = useState<ReadonlySet<SchemaId>>(EMPTY_SET);
     const [areNodesLoaded, setAreNodesLoaded] = useState(false);
     const [setupEventSource, setSetupEventSource] = useState<BackendEventSource | null>(null);
     useEffect(() => {
@@ -332,6 +340,12 @@ const useBackendSetupEvents = (url: string) => {
             source = eventSource;
             setSetupEventSource(eventSource);
             eventSource.addEventListener('backend-ready', () => setIsBackendReady(true));
+            eventSource.addEventListener('backend-nodes-registered', (e: MessageEvent<string>) => {
+                const { schemaIds } = JSON.parse(
+                    e.data
+                ) as BackendEventMap['backend-nodes-registered'];
+                setRegisteredSchemata(new Set(schemaIds));
+            });
             eventSource.addEventListener('backend-nodes-loaded', () => setAreNodesLoaded(true));
             eventSource.onerror = () => {
                 eventSource.close();
@@ -344,7 +358,11 @@ const useBackendSetupEvents = (url: string) => {
             source?.close();
         };
     }, [url]);
-    return { isBackendReady, areNodesLoaded, setupEventSource };
+    const isNodeLoaded = useCallback(
+        (schemaId: SchemaId) => areNodesLoaded || registeredSchemata.has(schemaId),
+        [areNodesLoaded, registeredSchemata]
+    );
+    return { isBackendReady, areNodesLoaded, isNodeLoaded, setupEventSource };
 };
 
 export const BackendProvider = memo(
@@ -369,7 +387,8 @@ export const BackendProvider = memo(
         const needsNewRestartRef = useRef(false);
         const nodesLoadedRef = useRef(false);
 
-        const { isBackendReady, areNodesLoaded, setupEventSource } = useBackendSetupEvents(url);
+        const { isBackendReady, areNodesLoaded, isNodeLoaded, setupEventSource } =
+            useBackendSetupEvents(url);
         useEffect(() => {
             nodesLoadedRef.current = areNodesLoaded;
         }, [areNodesLoaded]);
@@ -457,6 +476,7 @@ export const BackendProvider = memo(
             connectionState,
             isBackendReady,
             nodesFromCache,
+            isNodeLoaded,
             setupEventSource,
             refreshNodes,
         });

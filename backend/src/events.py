@@ -25,7 +25,16 @@ class BackendStateEvent(TypedDict):
     data: None
 
 
-BackendEvent = Union[BackendStatusEvent, BackendStateEvent]
+class BackendNodesRegisteredData(TypedDict):
+    schemaIds: list[str]
+
+
+class BackendNodesRegisteredEvent(TypedDict):
+    event: Literal["backend-nodes-registered"]
+    data: BackendNodesRegisteredData
+
+
+BackendEvent = Union[BackendStatusEvent, BackendStateEvent, BackendNodesRegisteredEvent]
 InputsDict = Dict[InputId, ErrorValue]
 
 
@@ -157,14 +166,16 @@ class BackendEventBroadcast:
     never waits for one.
 
     The app's main process and its window each listen, and either may connect after
-    an event: a new listener first gets the latest backend status, then backend-ready
-    and backend-nodes-loaded once they have happened.
+    an event: a new listener first gets the latest backend status, then backend-ready,
+    the latest backend-nodes-registered and backend-nodes-loaded once they have
+    happened.
     """
 
     def __init__(self) -> None:
         self._listeners: set[EventQueue] = set()
         self._status: BackendEvent | None = None
         self._ready: BackendEvent | None = None
+        self._nodes_registered: BackendEvent | None = None
         self._nodes_loaded: BackendEvent | None = None
 
     def put(self, event: BackendEvent) -> None:
@@ -172,6 +183,8 @@ class BackendEventBroadcast:
             self._status = event
         elif event["event"] == "backend-ready":
             self._ready = event
+        elif event["event"] == "backend-nodes-registered":
+            self._nodes_registered = event
         elif event["event"] == "backend-nodes-loaded":
             self._nodes_loaded = event
         for listener in self._listeners:
@@ -179,7 +192,12 @@ class BackendEventBroadcast:
 
     def listen(self) -> EventQueue:
         listener = EventQueue()
-        for event in (self._status, self._ready, self._nodes_loaded):
+        for event in (
+            self._status,
+            self._ready,
+            self._nodes_registered,
+            self._nodes_loaded,
+        ):
             if event is not None:
                 listener.put(event)
         self._listeners.add(listener)

@@ -521,15 +521,31 @@ async def setup(sanic_app: Sanic, loop: asyncio.AbstractEventLoop):
 
     logger.info("Done.")
 
-    # The worker loads its heavy nodes meanwhile. The app fetches the full node list
-    # once they have loaded instead of waiting for it in a request of its own: its
-    # window has 6 connections to this host, and the requests that wait for nodes
-    # would hold up a preview of a node that has loaded.
+    # The worker loads its heavy nodes meanwhile. The app waits for them before it
+    # sends a request that would wait for them in the worker: its window has 6
+    # connections to this host, which the previews of the nodes that have loaded need.
     try:
-        await worker.wait_for_nodes()
+        await announce_registered_nodes(ctx, worker)
     except Exception as error:
-        logger.error(f"Waiting for the worker's nodes failed: {error}")
+        logger.error(f"Following the worker's node loading failed: {error}")
     ctx.setup_events.put({"event": "backend-nodes-loaded", "data": None})
+
+
+async def announce_registered_nodes(ctx: AppContext, worker: WorkerServer) -> None:
+    """Tells the app which nodes the worker has registered (backend-nodes-registered)
+    while it loads them, until it has loaded every node: the app sends a node's preview
+    only once its node is registered, and the full node list once every node is."""
+    announced: list[str] = []
+    while True:
+        schema_ids, done = await worker.registered_nodes()
+        if schema_ids != announced:
+            ctx.setup_events.put(
+                {"event": "backend-nodes-registered", "data": {"schemaIds": schema_ids}}
+            )
+            announced = schema_ids
+        if done:
+            return
+        await asyncio.sleep(0.05)
 
 
 setup_task = None

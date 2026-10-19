@@ -115,23 +115,39 @@ def test_a_failed_run_schedules_one_collection_after_its_error_event():
     assert [ast.unparse(n) for n in calls].count(SCHEDULE) == 1
 
 
-def test_gc_is_used_only_by_collect_failed_run_and_return_device_memory():
-    # One full collection in each and nothing else: no threshold tuning, no gc.freeze,
-    # no generation-targeted collection, anywhere in server.py. return_device_memory
+def test_gc_is_used_only_by_collect_failed_run_return_device_memory_and_the_freeze():
+    # One full collection in each and nothing else: no threshold tuning, no
+    # generation-targeted collection, anywhere in server.py. return_device_memory
     # runs only when a cleared node's GPU memory goes back outside a run, so a
-    # successful run still never collects.
+    # successful run still never collects. The one exception: NodeLoading's
+    # gc.collect(); gc.freeze() once after the node loading, which logs the frozen
+    # count (gate ruling R1, native/reports/fable-decisions.md "instant-exec gate R1").
     tree = ast.parse(source("server.py"))
     names = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "gc"]
-    assert len(names) == 2
+    assert len(names) == 5
     for function in ("collect_failed_run", "return_device_memory"):
         inside = set(ast.walk(definition(tree, function)))
         assert sum(n in inside for n in names) == 1, function
+    freeze = definition(tree, "NodeLoading", "freeze_objects")
+    inside = set(ast.walk(freeze))
+    assert sum(n in inside for n in names) == 3
+    assert [
+        [ast.unparse(s) for s in n.body]
+        for n in ast.walk(freeze)
+        if isinstance(n, ast.If)
+    ].count(["gc.collect()", "gc.freeze()"]) == 1
     uses = [
         ast.unparse(n)
         for n in ast.walk(tree)
         if isinstance(n, ast.Call) and ast.unparse(n.func).startswith("gc.")
     ]
-    assert uses == ["gc.collect()", "gc.collect()"]
+    assert sorted(uses) == [
+        "gc.collect()",
+        "gc.collect()",
+        "gc.collect()",
+        "gc.freeze()",
+        "gc.get_freeze_count()",
+    ]
     imports = [
         ast.unparse(n)
         for n in ast.walk(tree)

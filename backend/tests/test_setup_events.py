@@ -81,17 +81,24 @@ def test_a_late_listener_learns_that_the_nodes_have_loaded():
     assert drain(events.listen()) == [READY, NODES_LOADED]
 
 
-def test_the_host_is_ready_before_the_worker_has_loaded_its_nodes(
+def test_the_host_announces_the_nodes_the_worker_registers_while_it_loads(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    # The app fetches its node list, which waits for every node, after
-    # backend-nodes-loaded: a request that waited would hold one of the window's 6
-    # connections to the host, which the previews of the light nodes need meanwhile.
+    # The app sends a node's preview once its node is registered, and fetches its
+    # node list, which waits for every node, after backend-nodes-loaded: a request that
+    # waited in the worker would hold one of the window's 6 connections to the host,
+    # which the previews of the nodes that have loaded need meanwhile.
     monkeypatch.setattr(sys, "argv", ["server_host.py"])
     server_host = importlib.import_module("server_host")
     events = BackendEventBroadcast()
     listener = events.listen()
-    nodes_loaded = asyncio.Event()
+    # What the worker answers: the light nodes, the same again, then PyTorch's
+    loading = [
+        (["chainner:image:load"], False),
+        (["chainner:image:load"], False),
+        (["chainner:image:load", "chainner:pytorch:load_model"], True),
+    ]
+    ready_while_loading: list[bool] = []
 
     class Worker:
         async def get_packages(self) -> list[object]:
@@ -100,8 +107,9 @@ def test_the_host_is_ready_before_the_worker_has_loaded_its_nodes(
         async def wait_for_ready(self) -> None:
             pass
 
-        async def wait_for_nodes(self) -> None:
-            await nodes_loaded.wait()
+        async def registered_nodes(self) -> tuple[list[str], bool]:
+            ready_while_loading.append(ctx.is_ready)
+            return loading.pop(0)
 
     config = SimpleNamespace(
         install_builtin_packages=False,
@@ -116,24 +124,27 @@ def test_the_host_is_ready_before_the_worker_has_loaded_its_nodes(
     )
     monkeypatch.setattr(server_host.AppContext, "get", lambda _app: ctx)
 
-    async def start() -> list[str]:
-        setup = asyncio.create_task(server_host.setup(None, asyncio.get_running_loop()))
-        await asyncio.sleep(0.05)
-        assert ctx.is_ready
-        before = [event["event"] async for event in pending(listener)]
-        nodes_loaded.set()
-        await asyncio.wait_for(setup, 1)
-        after = [event["event"] async for event in pending(listener)]
-        return [*before, "|", *after]
+    async def start() -> list[tuple[object, object]]:
+        await server_host.setup(None, asyncio.get_running_loop())
+        return [
+            (event["event"], (event.get("data") or {}).get("schemaIds"))
+            async for event in pending(listener)
+        ]
 
     assert asyncio.run(start()) == [
-        "backend-started",
-        "backend-status",
-        "backend-status",
-        "backend-ready",
-        "|",
-        "backend-nodes-loaded",
+        ("backend-started", None),
+        ("backend-status", None),
+        ("backend-status", None),
+        ("backend-ready", None),
+        ("backend-nodes-registered", ["chainner:image:load"]),
+        # an unchanged list is not announced again
+        (
+            "backend-nodes-registered",
+            ["chainner:image:load", "chainner:pytorch:load_model"],
+        ),
+        ("backend-nodes-loaded", None),
     ]
+    assert ready_while_loading == [True, True, True]
 
 
 async def pending(listener: EventQueue) -> AsyncIterator[Event]:
