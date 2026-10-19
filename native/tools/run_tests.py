@@ -88,7 +88,9 @@ def environment(threads: int | None, report: Path) -> dict[str, str]:
     env["CHAINNER_C_SHARD_REPORT"] = str(report)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["CUDA_VISIBLE_DEVICES"] = "-1"
-    env["NUMBA_CACHE_DIR"] = str(Path(tempfile.gettempdir()) / "chainner-c-numba")
+    # Per checkout: worktrees share the junctioned runtime's site-packages, so one cache
+    # folder in %TEMP% raced between suites of different checkouts running at once
+    env["NUMBA_CACHE_DIR"] = str(ROOT / "native" / "build" / "numba-cache")
     # Thread pools sized to the shard's CPUs, not the machine's: the native pool reads
     # the process affinity (parallel.c), these libraries their variables
     if threads is not None:
