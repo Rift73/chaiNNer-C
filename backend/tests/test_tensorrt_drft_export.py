@@ -68,14 +68,15 @@ def test_the_swapped_model_computes_the_original_in_fp32(
     original = original.float().eval()
     with torch.no_grad():
         original.fold_reparam_conv()
-    original.set_export_attention_mode(True)
     swapped = drft_export.deployment(original)
     image = torch.rand(1, 3, height, width)
     with torch.inference_mode():
         expected = original(image)
         actual = swapped(image)
     assert actual.dtype == torch.float32
-    assert torch.equal(actual, expected)
+    # The same maths as spandrel's own forward, summed in another order (its attention
+    # kernel)
+    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
 
 
 def plugin_counts(proto: onnx.ModelProto) -> Counter[str]:

@@ -63,13 +63,20 @@ def _attention(
     bias: torch.Tensor,
     scale: float,
 ) -> torch.Tensor:
-    """spandrel's export-safe attention maths (k given transposed) without its clamp of
-    the logits to +-50: the softmax subtracts their maximum, so there is no overflow to
-    prevent, and the clamp changed the result wherever a logit passed 50 (DRFT-L x4 on
-    photos in FP32: 43-52 dB against PyTorch's own attention)."""
-    attn = torch.matmul(q, k_t) * scale
-    attn = attn + bias.to(dtype=attn.dtype)
-    attn = torch.softmax(attn.float(), dim=-1).to(dtype=v.dtype)
+    """Attention (k given transposed) with the scale, bias and softmax in FP32, and
+    q @ k^T in BF16 for an FP16 body. A trained DRFT's logits pass FP16's range by far
+    (up to 48.6 million on a DRFT-L x4's photos); in FP32 the 512x512 run filled 32 GB,
+    and in FP16 on logits divided by 2^16 TensorRT flushed the small ones to zero
+    (42.0-52.8 dB). BF16 logits with the rest in FP16: 48.8-60.9 dB against PyTorch FP32
+    (in PyTorch).
+    Not spandrel's export-safe maths, which clamp the logits to +-50 (the softmax
+    subtracts their maximum, so there is no overflow to prevent there, and the clamp
+    changed the result wherever a logit passed 50: DRFT-L x4 on photos in FP32, 43-52
+    dB against PyTorch's own attention)."""
+    if q.dtype == torch.float16:
+        q, k_t = q.bfloat16(), k_t.bfloat16()
+    attn = torch.matmul(q, k_t).float() * scale
+    attn = torch.softmax(attn + bias.float(), dim=-1).to(dtype=v.dtype)
     return torch.matmul(attn, v)
 
 
