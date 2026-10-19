@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import torch
 from sanic.log import logger
 from spandrel import ModelDescriptor
 
@@ -11,10 +12,11 @@ from nodes.properties.inputs import DirectoryInput
 from nodes.properties.inputs.generic_inputs import BoolInput
 from nodes.properties.outputs import DirectoryOutput, NumberOutput, TextOutput
 from nodes.properties.outputs.pytorch_outputs import ModelOutput
-from nodes.utils.utils import list_all_files_sorted
+from nodes.utils.utils import list_all_files_sorted, split_file_path
 
+from ...settings import get_settings
 from .. import batch_processing_group
-from ..io.load_model import load_model_node
+from ..io.load_model import ReadModel, check_model_file, finish_model, read_model
 
 
 @batch_processing_group.register(
@@ -53,8 +55,15 @@ def load_models_node(
 ) -> tuple[Generator[tuple[ModelDescriptor, str, str, int]], Path]:
     logger.debug(f"Iterating over models in directory: {directory}")
 
-    def load_model(path: Path, index: int):
-        model, dirname, basename = load_model_node(context, path)
+    def read(path: Path) -> ReadModel:
+        # The next model is read and built on the CPU while the current one is used;
+        # only the current one is moved to the GPU.
+        check_model_file(path)
+        return read_model(path, torch.device("cpu"))
+
+    def load_model(path: Path, read: ReadModel, index: int):
+        model = finish_model(read, get_settings(context))
+        dirname, basename, _ = split_file_path(path)
         # Get relative path from root directory passed by Iterator directory input
         rel_path = os.path.relpath(dirname, directory)
         return model, rel_path, basename, index
@@ -63,6 +72,8 @@ def load_models_node(
     model_files: list[Path] = list_all_files_sorted(directory, supported_filetypes)
 
     return (
-        Generator.from_list(model_files, load_model).with_fail_fast(fail_fast),
+        Generator.from_list_read_ahead(model_files, read, load_model).with_fail_fast(
+            fail_fast
+        ),
         directory,
     )

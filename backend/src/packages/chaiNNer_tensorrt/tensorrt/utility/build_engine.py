@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from enum import Enum
 
 import tensorrt as trt
@@ -7,8 +8,14 @@ from sanic.log import logger
 
 from api import NodeContext
 from nodes.groups import Condition, if_enum_group, if_group
+from nodes.impl.onnx.load import model_facts
 from nodes.impl.onnx.model import OnnxModel
 from nodes.impl.tensorrt import dual
+from nodes.impl.tensorrt.build_cache import (
+    cached_engine,
+    dual_plugin_identity,
+    engine_key,
+)
 from nodes.impl.tensorrt.engine_builder import (
     BuildConfig,
     build_engine_from_onnx,
@@ -259,7 +266,7 @@ if utility_group is not None:
             min_height = opt_height = max_height = static_height
             min_width = opt_width = max_width = static_width
 
-        manifest = dual.export_manifest(onnx_model.bytes)
+        manifest = model_facts(onnx_model).dual_manifest
         if manifest is not None:
             profile = (
                 (min_height, min_width),
@@ -304,26 +311,34 @@ if utility_group is not None:
             tiling_optimization=tiling_optimization.value,
         )
 
-        logger.info(
-            "Building TensorRT engine: precision=%s, dynamic=%s, workspace=%s,"
-            " tf32=%s, sparse=%s, level=%d, tiling=%s",
-            config.precision,
-            use_dynamic,
-            f"{workspace:g}GiB" if workspace > 0 else "automatic",
-            allow_tf32,
-            sparse_weights,
-            optimization_level,
-            tiling_optimization.value,
-        )
+        def build() -> TensorRTEngine:
+            logger.info(
+                "Building TensorRT engine: precision=%s, dynamic=%s, workspace=%s,"
+                " tf32=%s, sparse=%s, level=%d, tiling=%s",
+                config.precision,
+                use_dynamic,
+                f"{workspace:g}GiB" if workspace > 0 else "automatic",
+                allow_tf32,
+                sparse_weights,
+                optimization_level,
+                tiling_optimization.value,
+            )
+            return build_engine_from_onnx(
+                onnx_model.bytes,
+                config,
+                gpu_index=gpu_index,
+                timing_cache_path=timing_cache_path,
+            )
 
-        engine = build_engine_from_onnx(
-            onnx_model.bytes,
-            config,
-            gpu_index=gpu_index,
-            timing_cache_path=timing_cache_path,
+        key = engine_key(
+            onnx_model,
+            ("onnx", *dataclasses.astuple(config)),
+            get_cuda_device_name(gpu_index),
+            get_cuda_compute_capability(gpu_index),
+            trt.__version__,
+            None,
         )
-
-        return engine
+        return cached_engine(key, build, settings.engine_cache_path)
 
 
 def build_dual_engine(
@@ -351,36 +366,7 @@ def build_dual_engine(
         size = (spec["height"], spec["width"])
         profile = (size, size, size)
     low, high = profile[0], profile[2]
-    logger.info(
-        "Building a DUAL engine (%s x%d, %dx%d to %dx%d, plugins %s, SM %d%d):"
-        " workspace=%gGiB, tf32=%s, sparse=%s, level=%d, tiling=%s",
-        spec["factory"],
-        spec["scale"],
-        low[1],
-        low[0],
-        high[1],
-        high[0],
-        spec["plugin_key"],
-        major,
-        minor,
-        workspace_gib,
-        tf32,
-        sparse_weights,
-        optimization_level,
-        tiling_optimization,
-    )
-    engine_bytes = dual.build_engine(
-        onnx_model.bytes,
-        manifest,
-        settings.gpu_index,
-        profile if spec.get("dynamic", False) else None,
-        workspace_gib=workspace_gib,
-        optimization_level=optimization_level,
-        tf32=tf32,
-        sparse_weights=sparse_weights,
-        tiling_optimization=tiling_optimization,
-        context=context,
-    )
+    build_profile = profile if spec.get("dynamic", False) else None
     min_shape, opt_shape, max_shape = ((1, 3, h, w) for h, w in profile)
     info = TensorRTEngineInfo(
         precision="mixed",
@@ -394,4 +380,54 @@ def build_dual_engine(
         opt_shape=opt_shape,
         max_shape=max_shape,
     )
-    return TensorRTEngine(engine_bytes, info)
+
+    def build() -> TensorRTEngine:
+        logger.info(
+            "Building a DUAL engine (%s x%d, %dx%d to %dx%d, plugins %s, SM %d%d):"
+            " workspace=%gGiB, tf32=%s, sparse=%s, level=%d, tiling=%s",
+            spec["factory"],
+            spec["scale"],
+            low[1],
+            low[0],
+            high[1],
+            high[0],
+            spec["plugin_key"],
+            major,
+            minor,
+            workspace_gib,
+            tf32,
+            sparse_weights,
+            optimization_level,
+            tiling_optimization,
+        )
+        engine_bytes = dual.build_engine(
+            onnx_model.bytes,
+            manifest,
+            settings.gpu_index,
+            build_profile,
+            workspace_gib=workspace_gib,
+            optimization_level=optimization_level,
+            tf32=tf32,
+            sparse_weights=sparse_weights,
+            tiling_optimization=tiling_optimization,
+            context=context,
+        )
+        return TensorRTEngine(engine_bytes, info)
+
+    key = engine_key(
+        onnx_model,
+        (
+            "dual",
+            build_profile,
+            workspace_gib,
+            optimization_level,
+            tf32,
+            sparse_weights,
+            tiling_optimization,
+        ),
+        get_cuda_device_name(settings.gpu_index),
+        (major, minor),
+        trt.__version__,
+        dual_plugin_identity(),
+    )
+    return cached_engine(key, build, settings.engine_cache_path)

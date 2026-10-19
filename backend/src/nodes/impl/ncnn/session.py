@@ -57,15 +57,30 @@ def create_ncnn_net(model: NcnnModelWrapper, settings: NcnnSettings) -> ncnn.Net
     return net
 
 
-__session_cache: WeakKeyDictionary[NcnnModelWrapper, ncnn.Net] = WeakKeyDictionary()
+def _net_settings(settings: NcnnSettings) -> tuple[object, ...]:
+    """The settings `create_ncnn_net` builds a net from."""
+    if use_gpu:
+        return (settings.gpu_index,)
+    return (settings.winograd, settings.sgemm, settings.threads, settings.blocktime)
+
+
+# One net per model: a net created from other settings is replaced, which frees its
+# memory before the new one is created.
+__session_cache: WeakKeyDictionary[
+    NcnnModelWrapper, tuple[tuple[object, ...], ncnn.Net]
+] = WeakKeyDictionary()
 
 
 def get_ncnn_net(model: NcnnModelWrapper, settings: NcnnSettings) -> ncnn.Net:
+    key = _net_settings(settings)
     cached = __session_cache.get(model)
+    if cached is not None and cached[0] != key:
+        del __session_cache[model]
+        cached = None
     if cached is None:
-        cached = create_ncnn_net(model, settings=settings)
+        cached = (key, create_ncnn_net(model, settings=settings))
         __session_cache[model] = cached
-    return cached
+    return cached[1]
 
 
 def destroy_gpu_instance() -> None:

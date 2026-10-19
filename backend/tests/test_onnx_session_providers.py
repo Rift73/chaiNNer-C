@@ -5,6 +5,7 @@ a GPU: the GPU sessions are stand-ins that report the providers ORT registered."
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Sequence
 from types import SimpleNamespace
 
@@ -14,11 +15,13 @@ import pytest
 from onnx import TensorProto, helper
 
 from nodes.impl.onnx import session as session_module
+from nodes.impl.onnx.load import ModelFacts
 from nodes.impl.onnx.model import OnnxGeneric, OnnxInfo
-from nodes.impl.onnx.session import get_onnx_session
+from nodes.impl.onnx.session import ProviderDesc, get_onnx_session
 
 TENSORRT = "TensorrtExecutionProvider"
 CUDA = "CUDAExecutionProvider"
+DML = "DmlExecutionProvider"
 CPU = "CPUExecutionProvider"
 
 
@@ -150,3 +153,107 @@ def test_the_cpu_provider_gets_its_session():
     session = get_onnx_session(model, 0, CPU, False)
     image = np.ones((1, 3, 4, 4), np.float32)
     np.testing.assert_array_equal(session.run(None, {"input": image})[0], image)
+
+
+def ort_creates(monkeypatch: pytest.MonkeyPatch) -> list[list[ProviderDesc]]:
+    """Stands in for ORT sessions that start every provider, on the CPU as well (no
+    native session); returns the provider lists the sessions were created with."""
+    created: list[list[ProviderDesc]] = []
+
+    def session(_model: bytes, providers: list[ProviderDesc]) -> RegisteredSession:
+        created.append(providers)
+        return RegisteredSession([p if isinstance(p, str) else p[0] for p in providers])
+
+    monkeypatch.setattr(ort, "InferenceSession", session)
+    monkeypatch.setattr(
+        session_module,
+        "model_facts",
+        lambda _model: ModelFacts(native_session=False, dual_manifest=None),
+    )
+    tensorrt_package(monkeypatch, installed=True)
+    return created
+
+
+# (GPU index, execution provider, TensorRT FP16, TensorRT cache path)
+Settings = tuple[int, str, bool, str | None]
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ((0, TENSORRT, False, None), (1, TENSORRT, False, None)),
+        ((0, TENSORRT, False, None), (0, TENSORRT, True, None)),
+        ((0, TENSORRT, False, None), (0, TENSORRT, False, "cache")),
+        ((0, TENSORRT, False, None), (0, CUDA, False, None)),
+        ((0, CUDA, False, None), (1, CUDA, False, None)),
+        ((0, DML, False, None), (1, DML, False, None)),
+        ((0, CUDA, False, None), (0, CPU, False, None)),
+    ],
+    ids=[
+        "tensorrt-gpu",
+        "tensorrt-fp16",
+        "tensorrt-cache",
+        "provider",
+        "cuda-gpu",
+        "dml-gpu",
+        "cpu",
+    ],
+)
+def test_a_changed_setting_gets_a_session_created_from_it(
+    monkeypatch: pytest.MonkeyPatch, before: Settings, after: Settings
+):
+    created = ort_creates(monkeypatch)
+    model = identity_model()
+    first = get_onnx_session(model, *before)
+    assert get_onnx_session(model, *before) is first
+    second = get_onnx_session(model, *after)
+    assert second is not first
+    assert len(created) == 2 and created[1] != created[0]
+    assert get_onnx_session(model, *after) is second
+    assert len(created) == 2
+
+
+def test_the_tensorrt_fp16_setting_reaches_the_new_session(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    created = ort_creates(monkeypatch)
+    model = identity_model()
+    get_onnx_session(model, 0, TENSORRT, False)
+    get_onnx_session(model, 0, TENSORRT, True)
+    options = [p[1] for p in (created[0][0], created[1][0]) if not isinstance(p, str)]
+    assert [o["trt_fp16_enable"] for o in options] == [False, True]
+
+
+@pytest.mark.parametrize(
+    "after",
+    [(1, CPU, False, None), (0, CPU, True, None), (0, CPU, False, "cache")],
+    ids=["gpu", "tensorrt-fp16", "tensorrt-cache"],
+)
+def test_settings_a_cpu_session_does_not_use_keep_it(
+    monkeypatch: pytest.MonkeyPatch, after: Settings
+):
+    created = ort_creates(monkeypatch)
+    model = identity_model()
+    first = get_onnx_session(model, 0, CPU, False)
+    assert get_onnx_session(model, *after) is first
+    assert len(created) == 1
+
+
+def test_the_replaced_session_is_freed_before_its_successor_is_created(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sessions: list[weakref.ref[RegisteredSession]] = []
+    alive: list[bool] = []
+
+    def session(_model: bytes, providers: list[ProviderDesc]) -> RegisteredSession:
+        alive.append(any(s() is not None for s in sessions))
+        created = RegisteredSession([CUDA, CPU])
+        sessions.append(weakref.ref(created))
+        return created
+
+    monkeypatch.setattr(ort, "InferenceSession", session)
+    model = identity_model()
+    get_onnx_session(model, 0, CUDA, False)
+    get_onnx_session(model, 1, CUDA, False)
+    assert alive == [False, False]
+    assert sessions[0]() is None and sessions[1]() is not None

@@ -173,9 +173,9 @@ def test_weak_cache_semantics_and_cleanup():
     wrapper = OnnxGeneric(model(), OnnxInfo(13, "fp32"))
     first = integration.get_onnx_session(wrapper, 0, "CPUExecutionProvider", False)
     assert isinstance(first, native.NativeSession)
-    # Existing model-only cache ignores subsequent provider/settings changes.
+    # The GPU and TensorRT settings do not change a CPU session, which is kept.
     assert (
-        integration.get_onnx_session(wrapper, 9, "unavailable-provider", True) is first
+        integration.get_onnx_session(wrapper, 9, "CPUExecutionProvider", True) is first
     )
     del wrapper
     gc.collect()

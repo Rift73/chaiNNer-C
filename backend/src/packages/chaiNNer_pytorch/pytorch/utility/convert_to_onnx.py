@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Hashable
+from dataclasses import dataclass
 from enum import Enum
+from threading import Lock
+from weakref import WeakKeyDictionary
 
 import numpy as np
 import torch
+from sanic.log import logger
 from spandrel import ImageModelDescriptor
 
 from api import NodeContext
@@ -13,7 +19,8 @@ from nodes.impl.onnx.autocast import LowPrecision, autocast
 from nodes.impl.onnx.load import load_onnx_model
 from nodes.impl.onnx.model import MIXED, OnnxGeneric
 from nodes.impl.pytorch.convert_to_onnx_impl import (
-    convert_to_onnx_impl,
+    export_copy,
+    export_onnx,
     is_onnx_supported,
 )
 from nodes.impl.tensorrt import dual
@@ -28,6 +35,7 @@ from nodes.properties.outputs import OnnxModelOutput, TextOutput
 
 from ...settings import get_settings
 from .. import utility_group
+from ..io.load_model import full_precision
 
 
 class OnnxDataType(Enum):
@@ -88,6 +96,31 @@ DUAL_SHAPE_LABELS: dict[DualShape, str] = {
     DualShape.FIXED: "Fixed (one size)",
 }
 
+
+@dataclass
+class _Export:
+    result: tuple[OnnxGeneric, str, str]
+    verified: bool
+
+
+# A model's exports while it lives, by everything an export depends on: a re-run returns
+# the same ONNX model (with the sessions kept for it) without exporting again.
+_exports: WeakKeyDictionary[ImageModelDescriptor, dict[Hashable, _Export]] = (
+    WeakKeyDictionary()
+)
+_exports_lock = Lock()
+
+
+def _kept_export(model: ImageModelDescriptor, key: Hashable) -> _Export | None:
+    with _exports_lock:
+        return _exports.get(model, {}).get(key)
+
+
+def _keep_export(model: ImageModelDescriptor, key: Hashable, export: _Export) -> None:
+    with _exports_lock:
+        _exports.setdefault(model, {})[key] = export
+
+
 IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" }')
 # Shown until the model is known to be DUAL
 NOT_DUAL = Condition.type(
@@ -119,6 +152,9 @@ NOT_DUAL = Condition.type(
                 " nodes stay FP32, as do the input and output. TensorRT builds these"
                 " models in their own precision (Build Engine's Precision does not apply)."
                 " Needs the NVIDIA ModelOpt package.",
+                "With PyTorch's FP16 setting on, Load Model keeps a model in FP16; FP32 and"
+                " the mixed types read its file again for its FP32 weights (if the file"
+                " changed since, they export the FP16 weights, and the log says so).",
                 hint=True,
             ),
             EnumInput(
@@ -248,12 +284,22 @@ def convert_to_onnx_node(
                     "DUAL's TensorRT height and width must be multiples of 4."
                 )
             size = (dual_height, dual_width)
+        key = ("DUAL", model.dtype, size)
+        kept = _kept_export(model, key)
+        if kept is not None:
+            return kept.result
         onnx_bytes = dual.export_onnx(
-            model.model.state_dict(), model.tags, model.scale, size, context=context
+            full_precision_source(model).model.state_dict(),
+            model.tags,
+            model.scale,
+            size,
+            context=context,
         )
         onnx_model = load_onnx_model(onnx_bytes)
         assert onnx_model.sub_type == "Generic"
-        return onnx_model, MIXED, "opset20"
+        result = onnx_model, MIXED, "opset20"
+        _keep_export(model, key, _Export(result, verified=False))
+        return result
 
     assert is_onnx_supported(model), (
         f"{model.architecture} is not supported for ONNX conversion at this time."
@@ -272,27 +318,65 @@ def convert_to_onnx_node(
                 f"This {model.architecture.name} model does not support FP16. Please convert as FP32."
             )
 
-    model.eval().to(device)
+    low = LOW_PRECISION.get(data_type)
+    mixed = None if low is None else (low, calibration_input(model, calibration_image))
+    calibration_hash = None
+    if mixed is not None:
+        calibration_hash = mixed[1].shape, hashlib.sha256(mixed[1]).digest()
+    key = (data_type, opset, device, model.dtype, calibration_hash)
+    kept = _kept_export(model, key)
+    if kept is not None and (kept.verified or not verify):
+        return kept.result
 
-    onnx_model_bytes = convert_to_onnx_impl(
-        model,
-        device,
-        use_half=fp16,
-        opset_version=opset.value,
-    )
+    source = model if fp16 else full_precision_source(model)
+    onnx_model_bytes = export_verified(source, device, fp16, opset.value, verify)
     onnx_model = load_onnx_model(onnx_model_bytes)
     assert onnx_model.sub_type == "Generic"
 
-    if verify:
-        verify_models(model, onnx_model_bytes, fp16)
+    if mixed is None:
+        result = onnx_model, "fp16" if fp16 else "fp32", f"opset{opset.value}"
+    else:
+        low, calibration = mixed
+        onnx_model = load_onnx_model(autocast(onnx_model_bytes, low, calibration))
+        assert onnx_model.sub_type == "Generic"
+        result = onnx_model, f"mixed-{low}", f"opset{opset.value}"
+    _keep_export(model, key, _Export(result, verified=verify))
+    return result
 
-    low = LOW_PRECISION.get(data_type)
-    if low is None:
-        return onnx_model, "fp16" if fp16 else "fp32", f"opset{opset.value}"
-    calibration = calibration_input(model, calibration_image)
-    onnx_model = load_onnx_model(autocast(onnx_model_bytes, low, calibration))
-    assert onnx_model.sub_type == "Generic"
-    return onnx_model, f"mixed-{low}", f"opset{opset.value}"
+
+def full_precision_source(model: ImageModelDescriptor) -> ImageModelDescriptor:
+    """What a full-precision export (FP32, mixed, DUAL) of `model` starts from: for a
+    model Load Model loaded in FP16 (PyTorch's FP16 setting), its FP32 weights read
+    again from its file; else `model`."""
+    full = full_precision(model)
+    if full is None:
+        return model
+    if isinstance(full, str):
+        logger.warning(
+            "Convert To ONNX: this %s model has FP16 weights (PyTorch's FP16 setting)"
+            " and %s, so its export carries FP16-rounded weights. Load it with FP16"
+            " off for its FP32 weights.",
+            model.architecture.name,
+            full,
+        )
+        return model
+    assert isinstance(full, ImageModelDescriptor)
+    return full
+
+
+def export_verified(
+    model: ImageModelDescriptor,
+    device: torch.device,
+    fp16: bool,
+    opset: int,
+    verify: bool,
+) -> bytes:
+    """The ONNX export of a copy of `model`; with `verify`, checked against that copy."""
+    export_model = export_copy(model, device, use_half=fp16)
+    onnx_model_bytes = export_onnx(export_model, opset_version=opset)
+    if verify:
+        verify_models(export_model, onnx_model_bytes, fp16)
+    return onnx_model_bytes
 
 
 def calibration_input(

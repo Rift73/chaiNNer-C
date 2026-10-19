@@ -8,7 +8,8 @@ from weakref import WeakKeyDictionary
 
 import onnxruntime as ort
 
-from ..native_onnx_runtime import NativeSession, supports_model
+from ..native_onnx_runtime import NativeSession
+from .load import model_facts
 from .model import OnnxModel
 from .utils import OnnxParsedTensorShape, parse_onnx_shape
 
@@ -61,7 +62,10 @@ def create_inference_session(
     should_tensorrt_fp16: bool = False,
     tensorrt_cache_path: str | None = None,
 ) -> NativeSession | ort.InferenceSession:
-    if execution_provider == "CPUExecutionProvider" and supports_model(model.bytes):
+    if (
+        execution_provider == "CPUExecutionProvider"
+        and model_facts(model).native_session
+    ):
         # The native adapter implements the image-session surface below; model
         # values outside dense numeric tensors and all other providers retain
         # the original framework binding explicitly. Native failures propagate.
@@ -114,7 +118,31 @@ def create_inference_session(
     return session
 
 
-__session_cache: WeakKeyDictionary[OnnxModel, OnnxSession] = WeakKeyDictionary()
+def _session_settings(
+    gpu_index: int,
+    execution_provider: str,
+    should_tensorrt_fp16: bool,
+    tensorrt_cache_path: str | None,
+) -> tuple[object, ...]:
+    """The settings `create_inference_session` builds a session of
+    `execution_provider` from."""
+    if execution_provider == "TensorrtExecutionProvider":
+        return (
+            execution_provider,
+            gpu_index,
+            should_tensorrt_fp16,
+            tensorrt_cache_path,
+        )
+    if execution_provider in ("CUDAExecutionProvider", "DmlExecutionProvider"):
+        return (execution_provider, gpu_index)
+    return (execution_provider,)
+
+
+# One session per model: a session created from other settings is replaced, which
+# frees its memory before the new one is created.
+__session_cache: WeakKeyDictionary[
+    OnnxModel, tuple[tuple[object, ...], OnnxSession]
+] = WeakKeyDictionary()
 
 
 def get_onnx_session(
@@ -124,7 +152,13 @@ def get_onnx_session(
     should_tensorrt_fp16: bool,
     tensorrt_cache_path: str | None = None,
 ) -> OnnxSession:
+    key = _session_settings(
+        gpu_index, execution_provider, should_tensorrt_fp16, tensorrt_cache_path
+    )
     cached = __session_cache.get(model)
+    if cached is not None and cached[0] != key:
+        del __session_cache[model]
+        cached = None
     if cached is None:
         session = create_inference_session(
             model,
@@ -154,9 +188,9 @@ def get_onnx_session(
             else:
                 message += " Choose another execution provider in the ONNX settings."
             raise RuntimeError(message)
-        cached = session
+        cached = (key, session)
         __session_cache[model] = cached
-    return cached
+    return cached[1]
 
 
 def get_input_shape(session: OnnxSession) -> OnnxParsedTensorShape:

@@ -18,6 +18,7 @@ import torch
 from nodes.impl import native_tensors as native
 from nodes.impl.native_analysis import mean as native_mean
 from nodes.impl.native_graph import graph
+from nodes.impl.pytorch.skip_init import skip_random_init
 
 DTYPES = tuple(native._TYPES)
 LAYOUTS = (
@@ -448,6 +449,7 @@ def test_validation_mean_without_model_execution(family, layout):
         "np2tensor": lambda *args, **kwargs: torch.empty(0),
         "tensor2np": lambda *args, **kwargs: image,
         "gc": SimpleNamespace(collect=lambda: None),
+        "skip_random_init": skip_random_init,
     }
     name = "check_can_interp" if family == "pytorch" else "check_will_upscale"
     original = _extract(baseline, name, dict(context))

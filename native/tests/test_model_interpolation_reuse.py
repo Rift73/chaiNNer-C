@@ -9,6 +9,8 @@ import pytest
 import torch
 from test_framework_optimizations import INTERP, REF, SOURCE, functions
 
+from nodes.impl.pytorch.skip_init import skip_random_init
+
 
 @pytest.mark.parametrize("amount", [0, 25, 50, 75, 100])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32, torch.float64])
@@ -67,6 +69,7 @@ def test_exact_weights_and_fresh_final_model(amount, dtype, mutate, budget):
             np2tensor=lambda a, **k: torch.from_numpy(a),
             tensor2np=lambda a, **k: a.numpy(),
             gc=SimpleNamespace(collect=lambda: None),
+            skip_random_init=skip_random_init,
             get_settings=lambda c: SimpleNamespace(
                 device=torch.device("cpu"), budget_limit=budget
             ),
@@ -123,6 +126,7 @@ def test_rejection_contract(keys_match):
             np2tensor=lambda a, **k: torch.from_numpy(a),
             tensor2np=lambda a, **k: a.numpy(),
             gc=SimpleNamespace(collect=lambda: None),
+            skip_random_init=skip_random_init,
             get_settings=lambda c: SimpleNamespace(
                 device=torch.device("cpu"), budget_limit=0
             ),

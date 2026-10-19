@@ -139,6 +139,12 @@ def supports_model(model: bytes) -> bool:
     except DecodeError:
         # Let ORT produce its original InvalidProtobuf error from these bytes.
         return True
+    return supports_graph(graph)
+
+
+def supports_graph(graph: onnx.GraphProto) -> bool:
+    """Whether the native session runs a model of this graph: its inputs and outputs
+    are dense numeric tensors."""
     for value in (*graph.input, *graph.output):
         if (
             not value.type.HasField("tensor_type")
