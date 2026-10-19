@@ -8,7 +8,7 @@ from weakref import WeakKeyDictionary
 
 import torch
 from sanic.log import logger
-from spandrel import MAIN_REGISTRY, ModelDescriptor, ModelLoader
+from spandrel import MAIN_REGISTRY, ImageModelDescriptor, ModelDescriptor, ModelLoader
 from spandrel_extra_arches import EXTRA_REGISTRY
 
 from api import NodeContext
@@ -123,6 +123,29 @@ def full_precision(model: ModelDescriptor) -> ModelDescriptor | str | None:
     if not _rounds_to(reread.model.state_dict(), model.model.state_dict()):
         return f"{path.name} no longer holds the weights Load Model loaded"
     return reread
+
+
+def full_precision_source(
+    model: ImageModelDescriptor, node: str
+) -> ImageModelDescriptor:
+    """What `node`'s full-precision conversion (FP32, mixed, DUAL) of `model` starts
+    from: for a model Load Model loaded in FP16 (PyTorch's FP16 setting), its FP32
+    weights read again from its file; else `model`."""
+    full = full_precision(model)
+    if full is None:
+        return model
+    if isinstance(full, str):
+        logger.warning(
+            "%s: this %s model has FP16 weights (PyTorch's FP16 setting) and %s, so the"
+            " converted model carries FP16-rounded weights. Load it with FP16 off for"
+            " its FP32 weights.",
+            node,
+            model.architecture.name,
+            full,
+        )
+        return model
+    assert isinstance(full, ImageModelDescriptor)
+    return full
 
 
 def _rounds_to(full: dict[str, torch.Tensor], loaded: dict[str, torch.Tensor]) -> bool:

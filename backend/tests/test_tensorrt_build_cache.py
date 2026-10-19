@@ -308,3 +308,24 @@ def test_the_dual_plugin_identity_follows_the_plugin_code(
 def test_the_shipped_dual_plugin_sources_are_read():
     build_cache.dual_plugin_identity.cache_clear()
     assert len(build_cache.dual_plugin_identity()) == 64
+
+
+def test_another_record_format_is_another_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    build = Builds()
+    old = key()
+    cached_engine(old, build, str(tmp_path))
+    monkeypatch.setattr(build_cache, "FORMAT_VERSION", build_cache.FORMAT_VERSION + 1)
+    monkeypatch.setattr(build_cache, "_memory", OrderedDict())
+    new = key()
+    assert new != old
+    # The other version's record is not read: the engine is built and kept anew,
+    # and its file reads back under the new version.
+    cached_engine(new, build, str(tmp_path))
+    assert build.runs == 2
+    names = {p.name for p in tmp_path.glob(f"*{SUFFIX}")}
+    assert names == {f"{old}{SUFFIX}", f"{new}{SUFFIX}"}
+    monkeypatch.setattr(build_cache, "_memory", OrderedDict())
+    assert cached_engine(new, build, str(tmp_path)).info == INFO
+    assert build.runs == 2

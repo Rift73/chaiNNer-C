@@ -3,9 +3,10 @@
 
 An engine is keyed by the SHA-256 of everything its build reads: the ONNX model's
 bytes, every build setting, the GPU's name and compute capability, the TensorRT
-version and, for a DUAL engine, its plugins' code. Up to MEMORY_ENGINES engines and
-`memory_budget()` bytes are kept in memory, the least recently used dropped first; an
-engine above the budget is not kept. With the TensorRT "Engine Cache" setting on, they
+version and, for a DUAL engine, its plugins' code; and by FORMAT_VERSION, the version
+of the record a file holds (a record of another version is never read). Up to
+MEMORY_ENGINES engines and `memory_budget()` bytes are kept in memory, the least
+recently used dropped first; an engine above the budget is not kept. With the TensorRT "Engine Cache" setting on, they
 are also kept as files named `<key>.chainner-c.engine` in its folder, written
 atomically, up to DISK_BYTES in total, the least recently used removed first (only
 files of that name are removed). A file holds the info the build returned (JSON) and
@@ -40,7 +41,8 @@ from .model import TensorRTEngine, TensorRTEngineInfo
 MEMORY_ENGINES = 4
 DISK_BYTES = 16 * 1024**3
 SUFFIX = ".chainner-c.engine"
-_MAGIC = b"chaiNNer-C engine cache 1\n"
+# The record a file holds (_encode): a new layout takes the next version.
+FORMAT_VERSION = 1
 # The code a DUAL engine's plugins are built from (dual.build_engine's worker)
 _DUAL_PLUGIN_SOURCES = (
     Path(__file__).with_name("dual_aot.py"),
@@ -93,7 +95,14 @@ def engine_key(
     digest = hashlib.sha256(_onnx_digest(model))
     digest.update(
         repr(
-            (settings, gpu_name, tuple(compute_capability), tensorrt_version, plugins)
+            (
+                FORMAT_VERSION,
+                settings,
+                gpu_name,
+                tuple(compute_capability),
+                tensorrt_version,
+                plugins,
+            )
         ).encode()
     )
     return digest.hexdigest()
@@ -152,6 +161,10 @@ def cached_engine(
         return engine
 
 
+def _magic() -> bytes:
+    return f"chaiNNer-C engine cache {FORMAT_VERSION}\n".encode()
+
+
 def _encode(engine: TensorRTEngine) -> bytes:
     header = json.dumps(
         {
@@ -159,15 +172,16 @@ def _encode(engine: TensorRTEngine) -> bytes:
             "sha256": hashlib.sha256(engine.bytes).hexdigest(),
         }
     ).encode()
-    return _MAGIC + len(header).to_bytes(8, "little") + header + engine.bytes
+    return _magic() + len(header).to_bytes(8, "little") + header + engine.bytes
 
 
 def _decode(data: bytes) -> TensorRTEngine | None:
     """The engine `_encode` wrote, or None for a damaged file."""
-    if not data.startswith(_MAGIC):
+    magic = _magic()
+    if not data.startswith(magic):
         return None
-    start = len(_MAGIC) + 8
-    end = start + int.from_bytes(data[len(_MAGIC) : start], "little")
+    start = len(magic) + 8
+    end = start + int.from_bytes(data[len(magic) : start], "little")
     try:
         header = json.loads(data[start:end])
         info = dict(header["info"])

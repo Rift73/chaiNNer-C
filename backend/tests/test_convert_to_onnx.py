@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -32,6 +33,9 @@ from nodes.impl.pytorch.convert_to_onnx_impl import convert_to_onnx_impl
 from packages.chaiNNer_pytorch.pytorch.io import load_model as load_model_module
 from packages.chaiNNer_pytorch.pytorch.io.load_model import load_model
 from packages.chaiNNer_pytorch.pytorch.utility import convert_to_onnx
+from packages.chaiNNer_pytorch.pytorch.utility.convert_to_ncnn import (
+    convert_to_ncnn_node,
+)
 from packages.chaiNNer_pytorch.pytorch.utility.convert_to_onnx import (
     DualShape,
     OnnxDataType,
@@ -414,7 +418,7 @@ def model_file(directory: Path, make: Callable[[], torch.nn.Module]) -> Path:
 def warnings_logged(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     logged: list[str] = []
     monkeypatch.setattr(
-        convert_to_onnx.logger,
+        load_model_module.logger,
         "warning",
         lambda message, *args: logged.append(message % args),
     )
@@ -461,7 +465,7 @@ def test_an_fp16_export_does_not_read_the_file_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     reread: list[object] = []
-    monkeypatch.setattr(convert_to_onnx, "full_precision", reread.append)
+    monkeypatch.setattr(load_model_module, "full_precision", reread.append)
     path = model_file(tmp_path, ARCHS["Compact"])
     model = load_model(path, FP16)
     assert isinstance(model, ImageModelDescriptor)
@@ -513,6 +517,7 @@ def test_without_its_file_weights_the_fp16_weights_are_exported_and_logged(
     rounded = convert_to_onnx_impl(model, torch.device("cpu"), opset_version=20)
     assert convert(model)[0].bytes == rounded
     assert len(logged) == 1 and reason in logged[0]
+    assert logged[0].startswith("Convert To ONNX: ")
     assert "FP16-rounded weights" in logged[0]
 
 
@@ -546,3 +551,39 @@ def test_a_dual_model_loaded_in_fp16_exports_its_fp32_weights(
         state[k].dtype == v.dtype and torch.equal(state[k], v)
         for k, v in expected.items()
     )
+
+
+def to_ncnn(
+    model: ImageModelDescriptor, is_fp16: int, directory: Path
+) -> tuple[str, bytes]:
+    """PyTorch's Convert To NCNN of `model`: its param and bin."""
+    converted, _ = convert_to_ncnn_node(
+        cast(NodeContext, Context(FP16_CONTEXT)), model, is_fp16
+    )
+    path = directory / "model.bin"
+    converted.model.write_bin(path)
+    return converted.model.write_param(), path.read_bytes()
+
+
+@pytest.mark.parametrize("is_fp16", [0, 1], ids=["fp32", "fp16"])
+def test_an_ncnn_conversion_of_a_model_loaded_in_fp16_uses_its_fp32_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, is_fp16: int
+):
+    # Runs native code, which GitHub's checks do not build.
+    pytest.importorskip("nodes.impl._chainner_graph")
+    logged = warnings_logged(monkeypatch)
+    path = model_file(tmp_path, ARCHS["Compact"])
+    half = load_model(path, FP16)
+    full = load_model(path, FP32)
+    assert isinstance(half, ImageModelDescriptor) and half.dtype == torch.float16
+    assert isinstance(full, ImageModelDescriptor)
+    converted = to_ncnn(half, is_fp16, tmp_path)
+    assert converted == to_ncnn(full, is_fp16, tmp_path)
+    assert logged == []
+    # The FP16 weights alone (a model Load Model did not load) convert as before. An
+    # FP16 conversion differs as well: the converter rounds FP32 weights to FP16 its
+    # own way, not as PyTorch rounded them at load.
+    rounded = to_ncnn(copy.deepcopy(half), is_fp16, tmp_path)
+    assert rounded != converted
+    assert len(logged) == 1 and logged[0].startswith("Convert To NCNN: ")
+    assert "does not come from Load Model" in logged[0]

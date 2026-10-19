@@ -9,7 +9,6 @@ from weakref import WeakKeyDictionary
 
 import numpy as np
 import torch
-from sanic.log import logger
 from spandrel import ImageModelDescriptor
 
 from api import NodeContext
@@ -35,7 +34,7 @@ from nodes.properties.outputs import OnnxModelOutput, TextOutput
 
 from ...settings import get_settings
 from .. import utility_group
-from ..io.load_model import full_precision
+from ..io.load_model import full_precision_source
 
 
 class OnnxDataType(Enum):
@@ -289,7 +288,7 @@ def convert_to_onnx_node(
         if kept is not None:
             return kept.result
         onnx_bytes = dual.export_onnx(
-            full_precision_source(model).model.state_dict(),
+            full_precision_source(model, "Convert To ONNX").model.state_dict(),
             model.tags,
             model.scale,
             size,
@@ -328,7 +327,7 @@ def convert_to_onnx_node(
     if kept is not None and (kept.verified or not verify):
         return kept.result
 
-    source = model if fp16 else full_precision_source(model)
+    source = model if fp16 else full_precision_source(model, "Convert To ONNX")
     onnx_model_bytes = export_verified(source, device, fp16, opset.value, verify)
     onnx_model = load_onnx_model(onnx_model_bytes)
     assert onnx_model.sub_type == "Generic"
@@ -342,26 +341,6 @@ def convert_to_onnx_node(
         result = onnx_model, f"mixed-{low}", f"opset{opset.value}"
     _keep_export(model, key, _Export(result, verified=verify))
     return result
-
-
-def full_precision_source(model: ImageModelDescriptor) -> ImageModelDescriptor:
-    """What a full-precision export (FP32, mixed, DUAL) of `model` starts from: for a
-    model Load Model loaded in FP16 (PyTorch's FP16 setting), its FP32 weights read
-    again from its file; else `model`."""
-    full = full_precision(model)
-    if full is None:
-        return model
-    if isinstance(full, str):
-        logger.warning(
-            "Convert To ONNX: this %s model has FP16 weights (PyTorch's FP16 setting)"
-            " and %s, so its export carries FP16-rounded weights. Load it with FP16"
-            " off for its FP32 weights.",
-            model.architecture.name,
-            full,
-        )
-        return model
-    assert isinstance(full, ImageModelDescriptor)
-    return full
 
 
 def export_verified(

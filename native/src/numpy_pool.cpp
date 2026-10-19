@@ -3,7 +3,7 @@
  *
  * Switch. numpy_pool_install reads CHAINNER_C_NUMPY_POOL and CHAINNER_C_PROFILE once per
  * process, at its first call. Unset or empty = installed with the default cap,
- * min(512 MiB, 10 % of physical memory); "0" = off: never installed, so NumPy's default
+ * min(2 GiB, 10 % of physical memory); "0" = off: never installed, so NumPy's default
  * handler serves every request exactly as without this unit; other ASCII digits =
  * installed with that cap in MiB; anything else = invalid: not installed, explained in
  * the returned message. Only then is NumPy's C API imported and its feature version
@@ -91,7 +91,7 @@ namespace {
 constexpr const char *capsule_name = "mem_handler";
 constexpr unsigned handler_api = NPY_1_22_API_VERSION;  // PyDataMem_SetHandler and its kin
 constexpr size_t threshold = size_t{1} << 19;
-constexpr size_t default_cap_limit = size_t{512} << 20;
+constexpr size_t default_cap_limit = size_t{2} << 30;  // instant-exec gate R10
 constexpr size_t class_minimum = size_t{64} << 10;  // counted and sampled from here
 constexpr int sample_pages = 8;
 constexpr int max_threads = 64;

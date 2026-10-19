@@ -435,7 +435,7 @@ def test_variable_is_read_as_specified():
         """
     )
     assert physical["statuses"] == [["installed", ""], ["installed", ""]]
-    assert physical["cap"] == min(512 * MIB, physical["total"] // 10)
+    assert physical["cap"] == min(2048 * MIB, physical["total"] // 10)
     assert physical["threshold"] == MIB // 2
     body = 'result = [g.numpy_pool_install(), g.numpy_pool_stats()["cap_bytes"]]'
     assert child(body, pool="") == [["installed", ""], physical["cap"]]
