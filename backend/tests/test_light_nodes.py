@@ -334,3 +334,30 @@ def test_a_stopped_run_stops_waiting(
         await asyncio.wait_for(waiting, 1)
 
     asyncio.run(wait())
+
+
+def test_a_node_list_request_given_up_while_the_nodes_load_leaves_the_loading_alone(
+    server: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    """A client that gives up on /nodes (a timeout, a closed window) while the nodes
+    still load cancels its own request only: the loading goes on, and the next
+    request gets the list. Awaiting the setup task directly cancelled it with the
+    request, so every later /nodes failed at once."""
+
+    async def scenario() -> None:
+        loaded = asyncio.Event()
+
+        async def setup() -> None:
+            await loaded.wait()
+
+        monkeypatch.setattr(server, "setup_task", asyncio.create_task(setup()))
+        request = asyncio.create_task(server.nodes_available())
+        await asyncio.sleep(0.01)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert not server.setup_task.cancelled()
+        loaded.set()
+        await asyncio.wait_for(server.nodes_available(), 1)
+
+    asyncio.run(scenario())
