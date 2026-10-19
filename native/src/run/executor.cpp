@@ -347,6 +347,7 @@ struct NodePlan {
     std::map<std::string, Value, std::less<>> settings;
     bool precached = false;
     std::vector<Value> precached_outputs;
+    std::string precached_identity;  // a precached Load Image's file identity as its individual run loaded it
     bool phased = false;  // registered prepare and commit phases (item_window.register_phases)
     bool not_speculated = false;  // Into Directory: never computed ahead of its item (process._NOT_SPECULATED)
     bool memo = false;    // its outputs may be memoized (amendment A3's allow-list)
@@ -384,6 +385,7 @@ struct Cell {
     std::shared_ptr<NodeContext> items_context;
     std::vector<Value> items_inputs;
     bool demanded = false;  // the commit path needs it (its events are sent as it runs)
+    std::string identity;   // Load Image: its file's identity as it ran (memo keys)
     // A deferred job's events (see Run::defers), sent when the commit path takes it.
     bool deferred = false, deferred_ok = false;
     double deferred_seconds = 0;
@@ -409,7 +411,7 @@ struct Hooks {
         regular_outputs, generator_outputs, collector, node_cleanups, chain_cleanups, output_bytes,
         broadcast, items, describe, materialize, collector_iterate, collector_complete, prepare, begin_loop, iteration,
         end_loop, window, warn_look_ahead_off, native_generator, file_identity, item_identity, regular_output,
-        aborted_type;
+        memo_bytes, loaded, aborted_type;
 };
 
 struct Event {
@@ -469,22 +471,38 @@ private:
     const Run *previous_;
 };
 
-/* Python state for a persistent engine thread, made once: a thread state kept for the thread's life and NumPy's
- * data-memory handler (nodes/impl/numpy_pool.py), which a thread does not inherit. */
-void enter_python_thread()
-{
-    PyGILState_Ensure();
-    try {
-        py::module_::import("nodes.impl.numpy_pool").attr("install")();
-    } catch (py::error_already_set &error) {
-        error.discard_as_unraisable("chaiNNer-C engine thread setup");
+/* Python state for an engine thread, made once for its life: a thread state and NumPy's data-memory handler
+ * (nodes/impl/numpy_pool.py), which a thread does not inherit; released when a service thread ends (not once the
+ * interpreter finalizes, when no thread may take the GIL). */
+class PythonThread {
+public:
+    PythonThread() : state_(PyGILState_Ensure())
+    {
+        try {
+            py::module_::import("nodes.impl.numpy_pool").attr("install")();
+        } catch (py::error_already_set &error) {
+            error.discard_as_unraisable("chaiNNer-C engine thread setup");
+        }
+        thread_ = PyEval_SaveThread();
     }
-    PyEval_SaveThread();
-}
+    ~PythonThread()
+    {
+        if (Py_IsFinalizing()) return;
+        PyEval_RestoreThread(thread_);
+        PyGILState_Release(state_);
+    }
+    PythonThread(const PythonThread &) = delete;
+    PythonThread &operator=(const PythonThread &) = delete;
 
-/* The process's engine threads, persistent across runs (and previews): workers, as many as the CPUs of the
- * affinity mask (cn_parallel_for's capacity: CHAINNER_C_ENGINE_THREADS overrides), that run the queued jobs of
- * every run; and service threads, reused for each run's driver, event pump, broadcaster and window producer.
+private:
+    PyGILState_STATE state_;
+    PyThreadState *thread_ = nullptr;
+};
+
+/* The process's engine threads, shared by every run (and preview): workers, as many as the CPUs of the affinity
+ * mask (cn_parallel_for's capacity: CHAINNER_C_ENGINE_THREADS overrides), that run the queued jobs of every run;
+ * and service threads, reused for each run's driver, event pump, broadcaster and window producer, which end after
+ * a while idle (a burst of previews leaves none behind).
  * A run offers one token per job it queues; a worker takes a token, then a job from that run (none when it was
  * taken, dropped or paused meanwhile). The engine's lock is never held while taking a run's. */
 class Engine {
@@ -507,6 +525,7 @@ private:
     void serve();
 
     int workers_ = 1;
+    std::chrono::seconds idle_time_{30};  // a service thread's idle time before it ends (CHAINNER_C_ENGINE_IDLE_SECONDS)
     std::mutex mutex_;
     std::condition_variable work_, idle_, services_changed_;
     std::deque<Run *> tokens_;
@@ -650,13 +669,15 @@ private:
     int target_ = -1;
     std::future<void> driver_;
     bool started_ = false, closed_ = false;
+    // Cleared at close: a lazy input a Python node kept and reads later no longer reaches the run.
+    std::shared_ptr<std::atomic<bool>> open_ = std::make_shared<std::atomic<bool>>(true);
     std::string fault_;  // an engine thread's fault (under mutex_): the run's error
 
     // Events
     std::mutex events_mutex_;
     std::condition_variable events_changed_;
     std::vector<Event> events_;
-    bool events_stop_ = false, pumping_ = false;
+    bool events_stop_ = false, pumping_ = false, events_failed_ = false;
     std::future<void> pump_;
 
     // Broadcasts (LatestBroadcasts): one pending job per node, sent one at a time in submission order
@@ -668,7 +689,7 @@ private:
     std::condition_variable broadcasts_changed_;
     std::deque<int> broadcast_order_;
     std::unordered_map<int, BroadcastJob> broadcast_jobs_;
-    bool broadcasting_ = false, broadcasts_stop_ = false;
+    bool broadcasting_ = false, broadcasts_stop_ = false, broadcasts_failed_ = false;
     std::future<void> broadcaster_;
 
     Cell &cell(const CellRef &ref);
@@ -706,7 +727,7 @@ private:
     void take(const CellRef &ref);
     void release_slot(int64_t slot);
     void drain_workers();
-    void fault(std::exception_ptr error);
+    void fault(std::exception_ptr error) noexcept;
 
     // Execution
     friend class Engine;
@@ -715,6 +736,7 @@ private:
     void queue(Task task);
     void execute(const CellRef &ref, bool on_driver);
     void execute_cell(const CellRef &ref, bool on_driver);
+    int64_t memo_bytes(const std::vector<Value> &outputs);
     struct Gathered {
         std::vector<Value> values;               // inputs as the node receives them (lazy: an EngineLazy)
         std::vector<std::shared_ptr<EngineLazy>> lazies;
@@ -727,7 +749,8 @@ private:
     NativeOutcome run_native(const CellRef &ref, const Gathered &inputs, Cell &result, double &lazy_seconds);
     std::optional<NodeError> enforce_outputs(int node, std::vector<Value> &outputs, const std::vector<size_t> &which);
     std::optional<Key> key_of(const CellRef &ref);
-    void identify_files();
+    void identify_file(const CellRef &ref);
+    std::optional<Key> file_key(const NodePlan &node, const std::string &identity) const;
     std::optional<Key> item_key(const GeneratorRun &generator, const py::object &token);
     std::vector<Value> fill_item(const GeneratorRun &generator, std::vector<Value> item);
     std::vector<Value> native_item(const GeneratorRun &generator, int64_t token);
@@ -764,7 +787,7 @@ std::mutex decline_mutex;
 class EngineLazy final : public LazyValue {
 public:
     EngineLazy(Run &run, CellRef reader, int input, CellRef source, int output)
-        : run_(run), reader_(reader), input_(input), source_(source), output_(output)
+        : run_(run), open_(run.open_), reader_(reader), input_(input), source_(source), output_(output)
     {
     }
 
@@ -788,6 +811,10 @@ public:
      * error. */
     py::object python_value()
     {
+        if (!*open_ && (!read_ || error_)) {
+            PyErr_SetString(PyExc_RuntimeError, "A lazy input was read after its run ended");
+            throw py::error_already_set();
+        }
         const Value *upstream = nullptr;
         bool stopped = false;
         PyRef failed;
@@ -831,6 +858,7 @@ private:
     }
 
     Run &run_;
+    std::shared_ptr<std::atomic<bool>> open_;
     CellRef reader_;
     int input_;
     CellRef source_;
@@ -873,7 +901,8 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
                    bind("materialize"), bind("collector_iterate"), bind("collector_complete"), bind("prepare"),
                    bind("begin_loop"), bind("iteration"), bind("end_loop"), bind("window"),
                    bind("warn_look_ahead_off"), bind("native_generator"), bind("file_identity"),
-                   bind("item_identity"), bind("regular_output"), bind("aborted_type")};
+                   bind("item_identity"), bind("regular_output"), bind("memo_bytes"), bind("loaded"),
+                   bind("aborted_type")};
     send_broadcast_data_ = plan["send_broadcast_data"].cast<bool>();
     for (py::handle id : plan["chain_start"]) chain_start_.push_back(id.cast<std::string>());
     for (py::handle node_handle : plan["nodes"]) {
@@ -940,6 +969,8 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
         if (!precached.is_none()) {
             plan_node.precached = true;
             for (py::handle value : precached) plan_node.precached_outputs.push_back(py_ref(value));
+            py::object identity = node["precached_identity"];
+            if (!identity.is_none()) plan_node.precached_identity = identity.cast<std::string>();
         }
         nodes_.push_back(std::move(plan_node));
     }
@@ -967,6 +998,11 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
             c.state = State::done;
             c.outputs = nodes_[i].precached_outputs;
             c.hits = -1;
+            if (nodes_[i].memo && !nodes_[i].precached_identity.empty()) {
+                std::optional<Key> key = file_key(nodes_[i], nodes_[i].precached_identity);
+                c.key_state = key ? Cell::KeyState::known : Cell::KeyState::none;
+                if (key) c.key = *key;
+            }
         }
     }
 }
@@ -1012,13 +1048,28 @@ void Run::start(const std::string &mode, int target)
     py::gil_scoped_release unlocked;
     Engine &engine = Engine::get();
     engine.attach(this);
+    // A failed pump or broadcaster stops the run with its fault; their flushes no longer wait for them.
     pump_ = engine.service([this] {
         Serving serving(this);
-        pump();
+        try {
+            pump();
+        } catch (...) {
+            fault(std::current_exception());
+            std::lock_guard<std::mutex> locked(events_mutex_);
+            events_failed_ = true;
+            events_changed_.notify_all();
+        }
     });
     broadcaster_ = engine.service([this] {
         Serving serving(this);
-        broadcaster();
+        try {
+            broadcaster();
+        } catch (...) {
+            fault(std::current_exception());
+            std::lock_guard<std::mutex> locked(broadcasts_mutex_);
+            broadcasts_failed_ = true;
+            broadcasts_changed_.notify_all();
+        }
     });
     driver_ = engine.service([this] {
         Serving serving(this);
@@ -1057,6 +1108,7 @@ void Run::close()
     if (closed_ || !started_) return;
     if (serving_run == this) throw std::logic_error("A run cannot close on one of its own threads");
     closed_ = true;
+    *open_ = false;
     if (driver_.valid()) driver_.wait();
     flush_broadcasts();
     Engine::get().detach(this);
@@ -1093,21 +1145,27 @@ void Run::close()
 
 /* An exception escaping an engine thread's job (an engine fault, an allocation outside any node): the run stops
  * and reports it as its error, never a crash or a hang. */
-void Run::fault(std::exception_ptr error)
+void Run::fault(std::exception_ptr error) noexcept
 {
-    std::string text = "The native run engine failed";
     try {
-        std::rethrow_exception(error);
-    } catch (const std::exception &raised) {
-        text += std::string(": ") + raised.what();
+        std::string text = "The native run engine failed";
+        try {
+            std::rethrow_exception(error);
+        } catch (const std::exception &raised) {
+            text += std::string(": ") + raised.what();
+        } catch (...) {
+            text += " (an exception of an unknown type)";
+        }
+        {
+            std::lock_guard<std::mutex> locked(mutex_);
+            if (fault_.empty()) fault_ = std::move(text);
+        }
+        kill();
     } catch (...) {
-        text += " (an exception of an unknown type)";
+        // Out of memory even for the report: the run still stops (its driver then reports a Stop).
+        aborted_ = true;
+        changed_.notify_all();
     }
-    {
-        std::lock_guard<std::mutex> locked(mutex_);
-        if (fault_.empty()) fault_ = std::move(text);
-    }
-    kill();
 }
 
 /* One job of the run for a worker of the engine: a window task first, else the oldest queued cell. A paused run's
@@ -1496,14 +1554,15 @@ void Run::open_slot(int64_t slot)
     for (int node : loop_->group->iterated) cells[size_t(node)].hits = nodes_[size_t(node)].hits;
 }
 
-/* Whether the producer may start its next slot: within the window (K slots from the committing one), within the
- * memory budget unless a look-ahead waits for it, not paused or stopped (process.Executor's _may_admit). */
+/* Whether the producer may start its next slot: one a look-ahead waits for (process.ItemWindow.peek: up to its
+ * origin + K - 1, beyond the committing slot's window when a node computed ahead looks ahead itself), else within
+ * the window (K slots from the committing one) and the memory budget; not paused or stopped (_may_admit). */
 bool Run::admits(const Loop &loop) const
 {
     if (loop.halted || aborted_ || paused_) return false;
+    if (loop.produced <= loop.demand) return true;
     int64_t commit = commit_slot_;
     if (loop.produced >= commit + loop.k) return false;
-    if (loop.produced <= loop.demand) return true;
     return (loop.produced - commit) * loop.estimate <= loop.budget;
 }
 
@@ -1667,7 +1726,7 @@ void Run::run_task(const Task &task)
                 outcome.kind = Outcome::ready;
                 if (task.key)
                     Memo::get().insert(*task.key,
-                                       Memo::Entry{outputs, PyRef{}, hooks_.output_bytes(values).cast<int64_t>()});
+                                       Memo::Entry{outputs, PyRef{}, hooks_.memo_bytes(values).cast<int64_t>()});
             } catch (py::error_already_set &error) {
                 outcome.kind = Outcome::failed;
                 outcome.error = current_error(error);
@@ -1726,6 +1785,7 @@ void Run::run_task(const Task &task)
 PyRef Run::take_prepared(int node, int64_t slot)
 {
     std::unique_lock<std::mutex> locked(mutex_);
+    if (aborted_) throw StopRun{};  // a stopped run runs no sink (whole or committed)
     if (!loop_ || !loop_->active) return {};
     auto found = loop_->prepares.find({node, slot});
     if (found == loop_->prepares.end()) return {};
@@ -1735,7 +1795,7 @@ PyRef Run::take_prepared(int node, int64_t slot)
     }
     // Stop ends the wait: a paused run's workers take no task (they drop it once stopped).
     changed_.wait(locked, [&] { return found->second.kind == Prepare::done || aborted_; });
-    if (found->second.kind != Prepare::done) throw StopRun{};
+    if (aborted_) throw StopRun{};  // also a prepare its Stop dropped (nothing prepared)
     PyRef value = std::move(found->second.value);
     loop_->prepares.erase(found);
     return value;
@@ -2146,7 +2206,7 @@ void Run::iterate_group(const GroupPlan &group)
                                         for (py::handle value : values) outputs.push_back(py_ref(value));
                                         if (key)
                                             Memo::get().insert(*key, Memo::Entry{outputs, PyRef{},
-                                                                                 hooks_.output_bytes(values).cast<int64_t>()});
+                                                                                 hooks_.memo_bytes(values).cast<int64_t>()});
                                     }
                                     if (slot == 0) {
                                         py::list values;
@@ -2350,17 +2410,17 @@ void Run::drive()
     PyRef error, result;
     bool stopped = false;
     try {
-        if (Memo::get().enabled()) identify_files();
         if (mode_ == "run") {
             emit(Event(Event::chain_start));
             for (const GroupPlan &group : groups_) iterate_group(group);
             for (size_t i = 0; i < tail_.size(); ++i) {
                 {
-                    // The sink's pure upstream and the next sink's, beside the driver's work: not every sink's at
-                    // once, which could hold every branch's outputs (Python runs the sinks one after another).
+                    // The sink's pure upstream, beside the driver's work; a later sink's waits for it (Python runs
+                    // the sinks one after another: a later sink may read a file an earlier one writes, and every
+                    // branch at once could hold every branch's outputs).
                     std::lock_guard<std::mutex> locked(mutex_);
                     std::set<std::pair<int, int64_t>> seen;
-                    for (size_t j = i; j < std::min(tail_.size(), i + 2); ++j) prefetch({tail_[j], -1}, seen);
+                    prefetch({tail_[i], -1}, seen);
                     dispatch();
                 }
                 suspend();
@@ -2368,6 +2428,11 @@ void Run::drive()
             }
         } else if (mode_ == "regular") {
             result = process_regular(target_, -1);
+            std::string identity;
+            {
+                std::lock_guard<std::mutex> locked(mutex_);
+                identity = static_cells_[size_t(target_)].identity;
+            }
             if (!result.handle) {
                 // A memoized Load Image of an individual run: its RegularOutput, as the server caches it.
                 std::vector<Value> outputs;
@@ -2379,6 +2444,10 @@ void Run::drive()
                 py::list values;
                 for (const Value &value : outputs) values.append(to_python(value));
                 result = py_ref(hooks_.regular_output(values));
+            }
+            if (!identity.empty()) {
+                PythonSection python;
+                hooks_.loaded(py::handle(static_cast<PyObject *>(result.handle.get())), identity);
             }
         } else {
             result = process_generator(target_);
@@ -2782,7 +2851,7 @@ std::optional<Key> Run::key_of(const CellRef &ref)
     const NodePlan &node = nodes_[size_t(ref.node)];
     c.key_state = Cell::KeyState::none;
     bool keyed = node.kind == Kind::generator ? ref.slot < 0 || !iterated_[size_t(ref.node)] : node.memo;
-    if (!keyed || node.identity_input >= 0) return std::nullopt;  // Load Image: identify_files keys it
+    if (!keyed || node.identity_input >= 0) return std::nullopt;  // Load Image: identify_file keys it
     Key key = Key().add(node.schema).add(node.settings_key);
     for (size_t i = 0; i < node.inputs.size(); ++i) {
         const InputPlan &input = node.inputs[i];
@@ -2802,36 +2871,36 @@ std::optional<Key> Run::key_of(const CellRef &ref)
     return key;
 }
 
-/* Load Image's key: its schema, settings and file input's constant with that file's identity (path, size, mtime,
- * volume and file id), read once at the start of the run. */
-void Run::identify_files()
+/* Load Image's key: its schema, settings and constant inputs with its file's identity (path, size, mtime, volume and
+ * file id); none when an input is not a keyable constant. */
+std::optional<Key> Run::file_key(const NodePlan &node, const std::string &identity) const
 {
-    std::vector<std::pair<size_t, std::string>> identities;
-    {
+    Key key = Key().add(node.schema).add(node.settings_key).add(identity);
+    for (const InputPlan &input : node.inputs) {
+        if (input.source >= 0 || !input.constant_key) return std::nullopt;
+        key.add(*input.constant_key);
+    }
+    return key;
+}
+
+/* Load Image's key from its file's identity read as it runs, so a file an earlier sink of the run wrote is seen as
+ * it is now. */
+void Run::identify_file(const CellRef &ref)
+{
+    const NodePlan &node = nodes_[size_t(ref.node)];
+    const InputPlan &input = node.inputs[size_t(node.identity_input)];
+    std::string identity;
+    if (input.source < 0) {
         PythonSection python;
-        for (size_t n = 0; n < nodes_.size(); ++n) {
-            const NodePlan &node = nodes_[n];
-            if (node.identity_input < 0 || !node.memo) continue;
-            const InputPlan &input = node.inputs[size_t(node.identity_input)];
-            if (input.source >= 0) continue;
-            py::object identity = hooks_.file_identity(py::handle(static_cast<PyObject *>(input.constant.handle.get())));
-            if (!identity.is_none()) identities.emplace_back(n, identity.cast<std::string>());
-        }
+        py::object found = hooks_.file_identity(py::handle(static_cast<PyObject *>(input.constant.handle.get())));
+        if (!found.is_none()) identity = found.cast<std::string>();
     }
+    std::optional<Key> key = identity.empty() ? std::nullopt : file_key(node, identity);
     std::lock_guard<std::mutex> locked(mutex_);
-    for (const auto &[n, identity] : identities) {
-        const NodePlan &node = nodes_[n];
-        Key key = Key().add(node.schema).add(node.settings_key).add(identity);
-        bool keyed = true;
-        for (const InputPlan &input : node.inputs) {
-            keyed = keyed && input.source < 0 && input.constant_key;
-            if (keyed) key.add(*input.constant_key);
-        }
-        if (!keyed) continue;
-        Cell &c = static_cells_[n];
-        c.key = key;
-        c.key_state = Cell::KeyState::known;
-    }
+    Cell &c = cell(ref);
+    c.identity = key ? identity : std::string();
+    c.key_state = key ? Cell::KeyState::known : Cell::KeyState::none;
+    if (key) c.key = *key;
 }
 
 /* A Python split iterator's item key (GIL held): the generator's key with the identity of the file its token
@@ -2872,6 +2941,7 @@ void Run::execute(const CellRef &ref, bool on_driver)
     std::optional<Key> key;
     std::optional<Memo::Entry> memoized;
     if (node.memo) {
+        if (node.identity_input >= 0) identify_file(ref);
         {
             std::lock_guard<std::mutex> locked(mutex_);
             key = key_of(ref);
@@ -2904,20 +2974,7 @@ void Run::execute(const CellRef &ref, bool on_driver)
     if (ok && key && !memoized) {
         result.key = *key;
         result.key_state = Cell::KeyState::known;
-        int64_t bytes = 0;
-        bool python = false;
-        for (const Value &value : result.outputs) {
-            if (const Image *image = std::get_if<Image>(&value)) bytes += int64_t(image->values() * sizeof(float));
-            python = python || std::holds_alternative<PyRef>(value);
-        }
-        if (python) {
-            PythonSection section;
-            py::list values;
-            for (const Value &value : result.outputs)
-                if (std::holds_alternative<PyRef>(value)) values.append(to_python(value));
-            bytes += hooks_.output_bytes(values).cast<int64_t>();
-        }
-        Memo::get().insert(*key, Memo::Entry{result.outputs, result.object, bytes});
+        Memo::get().insert(*key, Memo::Entry{result.outputs, result.object, memo_bytes(result.outputs)});
     }
     if (node.node_context) {
         PythonSection python;
@@ -2986,6 +3043,31 @@ void Run::execute_cell(const CellRef &ref, bool on_driver)
     }
     result.deferred = deferred;  // its start replayed by the commit path's take
     store(ref, std::move(result));
+}
+
+/* The memory a memo entry keeps alive: each storage its images use once, whole (a view, e.g. a full-width crop,
+ * keeps its parent's block), and its Python values' buffers, a view's whole base (hooks.memo_bytes). */
+int64_t Run::memo_bytes(const std::vector<Value> &outputs)
+{
+    std::set<const ImageStorage *> storages;
+    int64_t bytes = 0;
+    std::vector<PyRef> python;
+    for (const Value &value : outputs) {
+        if (const Image *image = std::get_if<Image>(&value)) {
+            if (!storages.insert(image->storage.get()).second) continue;
+            if (image->storage->owner().handle)
+                python.push_back(image->storage->owner());
+            else
+                bytes += int64_t(image->storage->bytes());
+        } else if (const PyRef *object = std::get_if<PyRef>(&value)) {
+            python.push_back(*object);
+        }
+    }
+    if (python.empty()) return bytes;
+    PythonSection section;
+    py::list values;
+    for (const PyRef &object : python) values.append(py::handle(static_cast<PyObject *>(object.handle.get())));
+    return bytes + hooks_.memo_bytes(values).cast<int64_t>();
 }
 
 void Run::store(const CellRef &ref, Cell &&result)
@@ -3103,7 +3185,7 @@ void Run::pump()
 void Run::flush_events()
 {
     std::unique_lock<std::mutex> locked(events_mutex_);
-    events_changed_.wait(locked, [&] { return events_.empty() && !pumping_; });
+    events_changed_.wait(locked, [&] { return (events_.empty() && !pumping_) || events_failed_; });
 }
 
 void Run::submit_broadcast(int node, const std::vector<Value> &outputs)
@@ -3220,7 +3302,7 @@ void Run::broadcaster()
 void Run::flush_broadcasts()
 {
     std::unique_lock<std::mutex> locked(broadcasts_mutex_);
-    broadcasts_changed_.wait(locked, [&] { return broadcast_order_.empty() && !broadcasting_; });
+    broadcasts_changed_.wait(locked, [&] { return (broadcast_order_.empty() && !broadcasting_) || broadcasts_failed_; });
 }
 
 
@@ -3231,6 +3313,7 @@ Engine::Engine()
     if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask) && process_mask)
         cpus = unsigned(std::popcount(uint64_t(process_mask)));
     workers_ = environment_count("CHAINNER_C_ENGINE_THREADS", int(std::max(2u, cpus)));
+    idle_time_ = std::chrono::seconds(environment_count("CHAINNER_C_ENGINE_IDLE_SECONDS", 30));
     for (int i = 0; i < workers_; ++i) std::thread([this] { work(); }).detach();
 }
 
@@ -3279,7 +3362,7 @@ std::future<void> Engine::service(std::function<void()> task)
 
 void Engine::work()
 {
-    enter_python_thread();
+    PythonThread python;
     for (;;) {
         Run *run;
         {
@@ -3289,7 +3372,11 @@ void Engine::work()
             tokens_.pop_front();
             ++active_[run];
         }
-        run->work_one();
+        try {
+            run->work_one();
+        } catch (...) {
+            run->fault(std::current_exception());  // the job's bookkeeping failed (an engine fault, an allocation)
+        }
         {
             std::lock_guard<std::mutex> locked(mutex_);
             if (--active_[run] == 0) idle_.notify_all();
@@ -3299,12 +3386,15 @@ void Engine::work()
 
 void Engine::serve()
 {
-    enter_python_thread();
+    PythonThread python;
     for (;;) {
         std::packaged_task<void()> job;
         {
             std::unique_lock<std::mutex> locked(mutex_);
-            services_changed_.wait(locked, [&] { return !services_.empty(); });
+            if (!services_changed_.wait_for(locked, idle_time_, [&] { return !services_.empty(); })) {
+                --idle_services_;
+                return;
+            }
             job = std::move(services_.front());
             services_.pop_front();
             --idle_services_;

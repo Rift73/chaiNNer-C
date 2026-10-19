@@ -26,9 +26,12 @@ public:
     float *data() const noexcept { return data_; }
     /* The borrowed Python object; empty for pooled storage. */
     const PyRef &owner() const noexcept { return owner_; }
+    /* A pooled block's size (what every view of it keeps alive); 0 for borrowed storage. */
+    size_t bytes() const noexcept { return bytes_; }
 
 private:
     float *data_ = nullptr;
+    size_t bytes_ = 0;
     bool pooled_ = false;
     PyRef owner_;
 };

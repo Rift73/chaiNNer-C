@@ -464,6 +464,30 @@ def look_ahead_serial_deferred_errors(trace: list[object]) -> Chain:
     return look_ahead_serial_chain(trace, False)
 
 
+def look_ahead_nested(trace: list[object]) -> Chain:
+    # A serial node that looks ahead itself (as VOSR) feeding a node that looks ahead at it (as Temporal Fix): each of
+    # its computations ahead peeks up to its own item + K - 1, past the committing item's window.
+    b = Builder()
+    b.node("frames", lambda: items(list(range(14))), kind="generator", inputs=0)
+
+    def vosr(context, frame):
+        view = context.iteration
+        peeked = [view.peek(0, k) for k in range(1, view.lookahead(0) + 1)]
+        trace.append(("vosr", view.index, frame, peeked))
+        return frame * 100 + sum(p or 0 for p in peeked)
+
+    b.node("vosr", vosr, context=True)
+
+    def temporal(context, frame):
+        view = context.iteration
+        trace.append(("temporal", view.index, frame, [view.peek(0, k) for k in range(1, view.lookahead(0) + 1)]))
+
+    b.node("temporal", temporal, context=True, side_effects=True, outputs=0)
+    b.edge("frames", 0, "vosr", 0)
+    b.edge("vosr", 0, "temporal", 0)
+    return b.chain
+
+
 def failed_prefetched_branch(trace: list[object]) -> Chain:
     # Two independent sinks, the first's branch failing: the second's, computed ahead beside it, sends no events
     # (process.Executor never runs it).
@@ -575,6 +599,24 @@ def test_scenario_matches(scenario, tmp_path):
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=[s.__name__ for s in SCENARIOS])
 def test_scenario_matches_without_broadcasts(scenario, tmp_path):
     assert_same(scenario, tmp_path, send_broadcast_data=False)
+
+
+def test_nested_look_ahead(tmp_path):
+    # A stop after a minute turns a hang into a failure.
+    timers: list[threading.Timer] = []
+
+    def watchdog(executor):
+        timer = threading.Timer(60, executor.kill)
+        timer.daemon = True
+        timer.start()
+        timers.append(timer)
+
+    try:
+        engine = assert_same(look_ahead_nested, tmp_path, during=watchdog)
+    finally:
+        for timer in timers:
+            timer.cancel()
+    assert engine.error is None
 
 
 def test_pause_and_resume(tmp_path):

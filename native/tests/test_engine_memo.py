@@ -206,3 +206,113 @@ def test_budget(tmp_path, budget, size, cached):
     assert stats["budget"] == int(budget) << 20
     # A 256 x 256 RGBA float32 image is 1 MiB, above an eighth of a 1 MiB budget; a 64 x 64 one fits.
     assert (stats["hits"] > 0) == cached, stats
+
+
+def test_memo_bytes_count_a_views_whole_base():
+    # A view keeps its base alive: a memo entry counts the base, once however many views share it.
+    base = np.zeros((100, 10, 3), dtype=np.float32)
+    assert native_executor.memo_bytes([base[:5]]) == base.nbytes
+    assert native_executor.memo_bytes([base[:5], base[5:10][:, :2]]) == base.nbytes
+    assert native_executor.memo_bytes([base[:5], b"1234"]) == base.nbytes + 4
+
+
+VIEWS = """
+import gc, importlib, json, os, sys
+from pathlib import Path
+import cv2, numpy as np, psutil
+sys.path[:0] = [os.environ["TOOLS"]]
+sys.modules["__main__"].__file__ = os.path.abspath("run.py")
+import api
+importlib.import_module("packages.chaiNNer_standard")
+api.registry.load_nodes(os.path.abspath("server.py"))
+from chain.json import parse_json
+from chain.optimize import optimize
+from engine_differential import execute
+from nodes.impl import numpy_pool
+from nodes.impl.native_graph import graph
+from verify_runtime import edge, make_node
+schemas = {s: {"inputs": [i.to_dict() for i in d.inputs], "kind": d.kind} for s, (d, _) in api.registry.nodes.items()}
+work = Path(os.environ["WORK"])
+images, output = work / "in", work / "out"
+images.mkdir()
+output.mkdir()
+rng = np.random.default_rng(1)
+count = 16
+for i in range(count):
+    small = (rng.random((33, 33, 3)) * 255).astype(np.uint8)
+    cv2.imwrite(str(images / f"{i:02}.png"), cv2.resize(small, (1024, 1024), interpolation=cv2.INTER_CUBIC))
+# Crop to 24 full-width rows: a view of the loaded image (native Crop) that would keep it alive in the memo.
+crop = {1: 1, 4: 0, 3: 500, 6: 0, 5: 500}
+if os.environ["SHAPE"] == "single":
+    nodes = []
+    for i in range(count):
+        nodes.append(make_node(schemas, f"load{i}", "chainner:image:load", {0: str(images / f"{i:02}.png")}))
+        nodes.append(make_node(schemas, f"crop{i}", "chainner:image:crop", {0: edge(f"load{i}"), **crop}))
+        nodes.append(make_node(schemas, f"save{i}", "chainner:image:save",
+                               {0: edge(f"crop{i}"), 1: str(output), 2: None, 3: f"o{i}", 4: "png", 15: "u8"}))
+else:
+    nodes = [
+        make_node(schemas, "load", "chainner:image:load_images", {0: str(images), 2: 0, 4: 0, 6: 1}),
+        make_node(schemas, "crop", "chainner:image:crop", {0: edge("load"), **crop}),
+        make_node(schemas, "save", "chainner:image:save",
+                  {0: edge("crop"), 1: str(output), 2: None, 3: edge("load", 3), 4: "png", 15: "u8"}),
+    ]
+chain = parse_json(nodes)
+optimize(chain)
+process = psutil.Process()
+numpy_pool.release()
+gc.collect()
+base = process.memory_info().private
+assert execute("native", chain, storage=work / "storage").error is None
+gc.collect()
+numpy_pool.release()
+gc.collect()
+print(json.dumps({"held": process.memory_info().private - base, **graph().memo_stats()}))
+"""
+
+
+@pytest.mark.parametrize("shape", ["single", "folder"])
+def test_views_keep_the_memo_within_its_budget(tmp_path, shape):
+    # A full-width crop is a view of its loaded image: its memo entry counts that image, so what the memo keeps
+    # alive stays within the budget (16 images of 12 MiB under a 64 MiB budget: none kept here).
+    environment = dict(os.environ, CHAINNER_C_MEMO_BUDGET_MIB="64", WORK=str(tmp_path), SHAPE=shape,
+                       TOOLS=str(BACKEND.parents[1] / "native" / "tools"), CUDA_VISIBLE_DEVICES="-1")
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", textwrap.dedent(VIEWS)], cwd=BACKEND, env=environment, capture_output=True,
+        text=True, timeout=600, check=False,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    stats = __import__("json").loads(result.stdout.strip().splitlines()[-1])
+    assert stats["bytes"] <= stats["budget"] == 64 << 20
+    assert stats["held"] < (64 + 48) << 20, stats
+
+
+def test_a_file_an_earlier_sink_writes_is_loaded_fresh(schemas, tmp_path):
+    # Sink 1 writes x.png, sink 2 loads it: Load Image reads (and keys) the file as it is when it runs, after sink 1,
+    # also on a second run whose sink 1 writes other content (the memo then holds the first run's load).
+    folder, output = tmp_path / "files", tmp_path / "out"
+    folder.mkdir()
+    write_images(tmp_path / "old", 6, count=1)
+    old = tmp_path / "old" / "000.png"
+
+    def chain_nodes(size: int) -> list[dict]:
+        return [
+            make_node(schemas, "board", "chainner:image:create_checkerboard", {0: size, 1: size, 4: 3}),
+            make_node(schemas, "save_x", "chainner:image:save",
+                      {0: edge("board"), 1: str(folder), 2: None, 3: "x", 4: "png", 15: "u8"}),
+            make_node(schemas, "load", "chainner:image:load", {0: str(folder / "x.png")}),
+            make_node(schemas, "save_y", "chainner:image:save",
+                      {0: edge("load"), 1: str(output), 2: None, 3: "y", 4: "png", 15: "u8"}),
+        ]
+
+    loaded = []
+    for size in (64, 96):
+        nodes = chain_nodes(size)
+        shutil.copyfile(old, folder / "x.png")  # each run finds the old x.png, which its sink 1 replaces
+        _, oracle = run("python", nodes, tmp_path, output)
+        shutil.copyfile(old, folder / "x.png")
+        chain, engine = run("native", nodes, tmp_path, output)
+        assert engine.files == oracle.files
+        assert mismatches("write then load", chain, oracle, engine, tmp_path) == []
+        loaded.append(engine.files)
+    assert loaded[0] != loaded[1]

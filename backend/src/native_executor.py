@@ -19,10 +19,12 @@ import json
 import os
 import sys
 import time
+import weakref
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
+import numpy as np
 from sanic.log import logger
 
 import navi
@@ -141,6 +143,22 @@ def memo_constant(value: object) -> str | None:
         return None
 
 
+def memo_bytes(values: list[object]) -> int:
+    """The memory a memo entry of these values keeps alive: each NumPy array's root buffer once (a view keeps its base
+    alive, e.g. a slice of a loaded image) and bytes objects."""
+    roots: dict[int, int] = {}
+    total = 0
+    for value in values:
+        if isinstance(value, np.ndarray):
+            root = value
+            while isinstance(root.base, np.ndarray):
+                root = root.base
+            roots[id(root)] = root.nbytes
+        elif isinstance(value, bytes):
+            total += len(value)
+    return total + sum(roots.values())
+
+
 def file_identity(path: object) -> str | None:
     """A file's identity for memo keys: its path, size, modification time, volume and file id; None when it cannot
     be read."""
@@ -151,6 +169,22 @@ def file_identity(path: object) -> str | None:
     except (OSError, ValueError):
         return None
     return f"{os.fspath(path)}|{stat.st_size}|{stat.st_mtime_ns}|{stat.st_dev}|{stat.st_ino}"
+
+
+# Load Image outputs of individual runs, with their files' identities as they were loaded: a later run that finds one in
+# the server's cache keys it in the memo by that identity, not by the file's identity now (it may have changed since).
+_LOADED: dict[int, tuple[weakref.ref[RegularOutput], str]] = {}
+
+
+def remember_identity(output: RegularOutput, identity: str) -> None:
+    key = id(output)
+    _LOADED[key] = (weakref.ref(output, lambda _: _LOADED.pop(key, None)), identity)
+
+
+def loaded_identity(output: object) -> str | None:
+    """The file identity an individual run of Load Image recorded with this output, if any."""
+    entry = _LOADED.get(id(output))
+    return entry[1] if entry is not None and entry[0]() is output else None
 
 
 def executor_kind() -> str:
@@ -585,6 +619,14 @@ class _Hooks:
         identity = file_identity(described[0])
         return None if identity is None else f"{identity}|{described[1]}"
 
+    def memo_bytes(self, values: list[object]) -> int:
+        return memo_bytes(values)
+
+    def loaded(self, output: object, identity: str) -> None:
+        """An individual run of Load Image: its output (the server caches it) and its file's identity as it loaded."""
+        assert isinstance(output, RegularOutput)
+        remember_identity(output, identity)
+
     def regular_output(self, outputs: list[object]) -> RegularOutput:
         return RegularOutput(outputs)
 
@@ -1009,6 +1051,9 @@ def build_plan(
                     if isinstance(precached, RegularOutput)
                     else precached.partial_output
                 ),
+                "precached_identity": None
+                if precached is None
+                else loaded_identity(precached),
             }
         )
     groups: list[dict[str, object]] = []

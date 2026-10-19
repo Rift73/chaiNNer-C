@@ -255,11 +255,12 @@ def order_violations(events: list[dict[str, Any]], chain: Chain) -> list[str]:
     )
     if failed:
         return violations
-    # A node fed only through lazy inputs of one reader runs inside that reader's execution, occurrence by occurrence.
-    for upstream_id in chain.nodes:
+    # A node fed only through lazy inputs of one reader runs inside that reader's execution, occurrence by occurrence;
+    # not a side-effect node (e.g. Load Image), which runs as a sink of its own, in sink order.
+    for upstream_id, upstream in chain.nodes.items():
         edges = chain.edges_from(upstream_id)
         readers = {edge.target.id for edge in edges}
-        if not edges or len(readers) != 1:
+        if not edges or len(readers) != 1 or upstream.data.side_effects:
             continue
         (reader_id,) = readers
         reader = chain.nodes[reader_id]

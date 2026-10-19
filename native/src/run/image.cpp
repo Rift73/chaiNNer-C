@@ -9,9 +9,9 @@ namespace cn::run {
 
 /* An empty image still gets a block (64 bytes), as NumPy's empty arrays have data: kernels refuse a null pointer
  * even for a zero count. */
-ImageStorage::ImageStorage(size_t bytes) : pooled_(true)
+ImageStorage::ImageStorage(size_t bytes) : bytes_(bytes ? bytes : 64), pooled_(true)
 {
-    data_ = static_cast<float *>(cn_numpy_pool_allocate(bytes ? bytes : 64));
+    data_ = static_cast<float *>(cn_numpy_pool_allocate(bytes_));
     if (!data_) throw NodeError("MemoryError", "Unable to allocate " + std::to_string(bytes) + " bytes for an image");
 }
 

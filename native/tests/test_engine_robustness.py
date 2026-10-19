@@ -159,11 +159,12 @@ PAUSE_THEN_STOP = (
     PRELUDE
     + """
 register_phases("chainner:utility:test_paused", lambda enforced: enforced[0], lambda enforced, prepared: None)
+whole = []  # the sink's body: run whole at item 0 (no window yet), never after Stop
 b = Builder()
 # On one worker, item 1's prepare is queued behind item 2's long materialize: the driver waits for it at item 1.
 items = lambda: Items(12, lambda token: 1.0 if token == 2 else 0.05, -1)
 b.node("numbers", lambda: Generator(items, 12, source_paths=()), kind="generator", inputs=0)
-b.node("paused", lambda x: None, outputs=0, side_effects=True)
+b.node("paused", lambda x: whole.append(x), outputs=0, side_effects=True)
 b.edge("numbers", 0, "paused", 0)
 
 
@@ -176,15 +177,16 @@ def during(executor):
 
 
 result = execute("native", b.chain, storage=Path(os.environ["WORK"]), during=during)
-print(type(result.error).__name__)
+print(type(result.error).__name__, whole)
 """
 )
 
 
 def test_pause_then_stop_ends_the_run(tmp_path):
     # H1: the driver waits for a sink's prepare queued behind a long materialize on a single worker; Pause, then
-    # Stop: the run ends with Aborted (the subprocess's timeout catches a hang).
-    assert run_script(PAUSE_THEN_STOP, 1, tmp_path) == "Aborted"
+    # Stop: the run ends with Aborted (the subprocess's timeout catches a hang), and the sink whose prepare Stop
+    # dropped does not run whole either.
+    assert run_script(PAUSE_THEN_STOP, 1, tmp_path) == "Aborted [0]"
 
 
 def test_closed_executors_are_freed(tmp_path):
@@ -334,3 +336,76 @@ def test_into_directory_is_never_computed_ahead(tmp_path):
     assert execute("native", folders(trace), storage=tmp_path).error is None
     assert trace == [("into", x, x) for x in range(10)]
     assert_same(folders, tmp_path)
+
+
+IDLE_SERVICES = """
+import asyncio, os, sys, time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from types import SimpleNamespace
+import psutil
+sys.path[:0] = [os.environ["TOOLS"], os.environ["TESTS"]]
+import api
+api.registry.get_package = lambda _: SimpleNamespace(id="test")
+from api import ExecutionOptions, NodeId
+from events import EventConsumer
+from native_executor import NativeExecutor
+from process import ExecutionId
+from test_engine_scenarios import Builder
+
+
+class Sink(EventConsumer):
+    def put(self, event):
+        pass
+
+
+async def preview(pool, i):
+    b = Builder()
+    b.node("single", lambda x: x + 1)
+    b.value("single", 0, i)
+    executor = NativeExecutor(id=ExecutionId(f"individual-executor {i}"), chain=b.chain, send_broadcast_data=True,
+                              options=ExecutionOptions.parse({}), loop=asyncio.get_running_loop(), queue=Sink(),
+                              storage_dir=Path(os.environ["WORK"]), pool=pool, pool_size=8)
+    await executor.process_regular_node(b.chain.nodes[NodeId("single")])
+    await executor.flush_broadcasts()
+
+
+async def previews(count):
+    pool = ThreadPoolExecutor(4)
+    await asyncio.gather(*(preview(pool, i) for i in range(count)))
+    pool.shutdown()
+
+
+# Counted outside the event loops, whose default executors (where runs close) end with them.
+asyncio.run(previews(1))
+before = psutil.Process().num_threads()
+asyncio.run(previews(16))
+burst = psutil.Process().num_threads()
+time.sleep(3)
+print(before, burst, psutil.Process().num_threads())
+"""
+
+
+def test_idle_service_threads_end(tmp_path):
+    # A burst of previews takes a driver, event pump and broadcaster thread each; idle, they end (here after 1 s).
+    before, burst, after = map(int, run_script(IDLE_SERVICES, 2, tmp_path, CHAINNER_C_ENGINE_IDLE_SECONDS="1").split())
+    assert burst > before + 8
+    assert after <= before + 2
+
+
+def test_a_lazy_input_read_after_its_run_fails_cleanly(tmp_path):
+    # A node that keeps its lazy input unread and a caller that reads it once the run closed: a Python error, not a
+    # read of the closed run's cells.
+    kept: list[api.Lazy[object]] = []
+
+    def keeping(trace: list[object]) -> Chain:
+        b = Builder()
+        b.node("upstream", lambda x: x + 1)
+        b.value("upstream", 0, 1)
+        b.node("keeper", lambda lazy: kept.append(lazy), outputs=0, side_effects=True, lazy=(0,))
+        b.edge("upstream", 0, "keeper", 0)
+        return b.chain
+
+    assert execute("native", keeping([]), storage=tmp_path).error is None
+    with pytest.raises(RuntimeError, match="after its run ended"):
+        _ = kept[0].value
