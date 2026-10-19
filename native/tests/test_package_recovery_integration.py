@@ -842,7 +842,7 @@ def test_the_excluded_distributions_and_their_reasons():
 
 def server_dependencies(project):
     """install_server_deps.py's DependencyInfo declarations, {package_name:
-    version}. Importing the module would run its install, so it is parsed."""
+    version}. Importing the module would scan the installed packages, so it is parsed."""
     tree = ast.parse(
         (project / "backend/src/dependencies/install_server_deps.py").read_text(
             encoding="utf-8"
