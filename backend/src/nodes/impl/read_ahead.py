@@ -41,7 +41,7 @@ def from_list_read_ahead(
             initializer=numpy_pool.install,
         )
         try:
-            ahead: Future[R] | None = None
+            ahead: Future[tuple[Hashable, R]] | None = None
             for i, x in enumerate(l):
                 current = ahead if ahead is not None else reader.submit(stamped, x)
                 ahead = reader.submit(stamped, l[i + 1]) if i + 1 < len(l) else None

@@ -192,16 +192,19 @@ def test_vertically_flipped_frames_use_the_cli_reader(tmp_path, monkeypatch, cas
     )
     auto = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.AUTO)
     settings = video.ReadSettings(VideoMode.RGB, float_rgb, auto)
+    env = FFMpegEnv(ffmpeg=FFMPEG, ffprobe=FFPROBE)
 
     def frames(path: Path, cli: bool) -> list[np.ndarray]:
         if cli:
             monkeypatch.setenv("CHAINNER_C_VIDEO_READER", "cli")
         else:
             monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
-        loader = video.VideoLoader(
-            path, FFMpegEnv(ffmpeg=FFMPEG, ffprobe=FFPROBE), settings
-        )
-        return [item[0] for item in loader.stream_items()]
+        loader = video.VideoLoader(path, env, settings)
+        rgb_frames: list[np.ndarray] = []
+        for rgb, _y, _u, _v in loader.stream_items():
+            assert rgb is not None  # RGB mode yields every frame
+            rgb_frames.append(rgb)
+        return rgb_frames
 
     read = frames(flipped, cli=False)
     reason = "its display matrix flips the frames vertically"

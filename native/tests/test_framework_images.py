@@ -137,6 +137,9 @@ class InertSession:
     def run(self, output_names, input_feed, run_options=None) -> list[np.ndarray]:
         raise AssertionError("the session was run")
 
+    def get_providers(self) -> list[str]:
+        raise AssertionError("the session's providers were read")
+
 
 def exact(actual: np.ndarray, expected: np.ndarray) -> None:
     assert actual.shape == expected.shape
@@ -568,6 +571,9 @@ def test_rembg_sessions(kind, shape, mode):
         def run(self, output_names, input_feed, run_options=None):
             self.seen = input_feed["input"]
             return [prediction]
+
+        def get_providers(self) -> list[str]:
+            raise AssertionError("the rembg sessions never read the providers")
 
     original_type = SIMPLE.SimpleSession if kind == "simple" else CLOTH.ClothSession
     actual_type = SimpleSession if kind == "simple" else ClothSession

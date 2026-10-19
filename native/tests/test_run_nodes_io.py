@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -14,6 +16,9 @@ import pytest
 from PIL import Image
 
 from native_differential import assert_native_matches
+
+if TYPE_CHECKING:
+    from api import Lazy
 
 RNG = np.random.default_rng(83)
 Y, X = np.mgrid[0:37, 0:53]
@@ -95,7 +100,14 @@ def test_load_image_declines_to_python(tmp_path, name, make):
 SAVE = "chainner:image:save"
 
 
-def save_inputs(img: np.ndarray, directory: Path, filename: str = "image", fmt: str = "PNG", relative=None, **options):
+def save_inputs(
+    img: np.ndarray | Lazy[np.ndarray],
+    directory: Path,
+    filename: str = "image",
+    fmt: str = "PNG",
+    relative=None,
+    **options,
+):
     """Save Image's raw inputs in schema order."""
     from inspect import signature
 
@@ -132,12 +144,12 @@ def save_inputs(img: np.ndarray, directory: Path, filename: str = "image", fmt: 
         values[key] = getattr(module, value[0])[value[1]] if isinstance(value, tuple) else value
     # The UI's raw values: a dropdown sends its option's value.
     return [
-        values[key].value if isinstance(values[key], Enum) else values[key]
+        raw.value if isinstance(raw := values[key], Enum) else raw
         for key in signature(module.save_image_node).parameters
     ]
 
 
-def run_save(inputs: list[object], native: bool) -> None:
+def run_save(inputs: Sequence[object], native: bool) -> None:
     """Save Image's Python body or native entry point on the enforced inputs."""
     import api
     import process

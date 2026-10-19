@@ -84,7 +84,8 @@ def test_sizes_beyond_an_image_decline():
 )
 def test_out_of_memory_is_numpys_memory_error(color, width, height):
     outcome = assert_native_matches("chainner:image:create_color", [color, width, height])
-    assert outcome[0] == "error" and outcome[1][0] == "numpy._core._exceptions._ArrayMemoryError", outcome
+    assert outcome[0] == "error" and isinstance(outcome[1], tuple), outcome
+    assert outcome[1][0] == "numpy._core._exceptions._ArrayMemoryError", outcome
 
 
 # (method, scale, brightness, tile h, tile v, tile spherical, fractal, layers, scale ratio, brightness ratio,

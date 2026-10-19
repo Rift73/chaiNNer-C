@@ -21,7 +21,7 @@ from __future__ import annotations
 import functools
 import importlib
 import struct
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path, PurePath
 from typing import Literal
 
@@ -186,7 +186,7 @@ def _shaped(node: api.NodeData, outputs: list[object]) -> object:
 
 def run_both(
     schema_id: str,
-    inputs: list[object],
+    inputs: Sequence[object],
     *,
     settings: dict[str, object] | None = None,
     storage_dir: Path | None = None,
@@ -221,7 +221,7 @@ def run_both(
 
 def assert_native_matches(
     schema_id: str,
-    inputs: list[object],
+    inputs: Sequence[object],
     *,
     settings: dict[str, object] | None = None,
     storage_dir: Path | None = None,
