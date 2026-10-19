@@ -210,7 +210,10 @@ class BackendEventBroadcast:
 
 class PreviewUrl(str):
     """A LargeImage preview's data URL (base64): JSON leaves it as it is, so /sse splices it into an event's text
-    instead of json.dumps scanning it (5 MB for a 1080p preview)."""
+    instead of json.dumps scanning it (5 MB for a 1080p preview). Only the two preview encoders' URLs are wrapped:
+    the engine's (image_preview.cpp) and numpy_outputs' (graph().image_io_previews, else _previews), which make
+    `data:image/<format>;base64,<base64>` alone (test_preview_cache.py checks it); a quote, a backslash or a
+    non-ASCII character in one would break the spliced JSON."""
 
 
 _PLACEHOLDER = "\x00preview\x00"

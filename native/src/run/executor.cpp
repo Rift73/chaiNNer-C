@@ -3226,8 +3226,8 @@ struct ImageBroadcast {
  * static outputs again, a node passing its input through) is not encoded again. Keyed by the image's view of its
  * storage, pooled storage only (immutable once published), held weakly: an entry never keeps an image alive, and a
  * freed storage's address reused by another never matches. The previews' Python list is kept, so its URLs are not
- * copied again either: an entry goes with its image (when the next one is kept), else least recently used first out
- * within 64 MiB of URLs and 64 entries. */
+ * copied again either. An entry whose image is freed is dropped at the next lookup of it, insert or stats(); else
+ * least recently used first out within 64 MiB of URLs and 64 entries; memo_clear() drops every entry too. */
 class PreviewCache {
 public:
     static PreviewCache &get()
@@ -3237,9 +3237,11 @@ public:
     }
     PyRef find(const Image &image)
     {
+        std::vector<PyRef> dropped;  // released outside the lock
         std::lock_guard<std::mutex> locked(mutex_);
         auto found = entries_.find(key(image));
         if (found == entries_.end() || found->second.storage.lock() != image.storage) {
+            if (found != entries_.end()) drop(found, dropped);  // its image is gone (another at its address)
             ++misses_;
             return {};
         }
@@ -3252,31 +3254,32 @@ public:
         std::vector<PyRef> dropped;  // released outside the lock
         std::lock_guard<std::mutex> locked(mutex_);
         if (bytes > budget_ || entries_.count(key(image))) return;
-        auto drop = [&](std::map<Id, Entry>::iterator victim) {
-            bytes_ -= victim->second.bytes;
-            dropped.push_back(std::move(victim->second.previews));
-            order_.erase(victim->second.position);
-            entries_.erase(victim);
-        };
-        for (auto it = entries_.begin(); it != entries_.end();) {
-            auto current = it++;
-            if (current->second.storage.expired()) drop(current);  // its image is gone
-        }
+        drop_expired(dropped);
         while ((bytes_ + bytes > budget_ || entries_.size() >= capacity_) && !order_.empty())
-            drop(entries_.find(order_.front()));
+            drop(entries_.find(order_.front()), dropped);
         bytes_ += bytes;
         order_.push_back(key(image));
         entries_.emplace(key(image), Entry{image.storage, std::move(previews), bytes, std::prev(order_.end())});
     }
     py::dict stats()
     {
+        std::vector<PyRef> dropped;  // released outside the lock
         std::lock_guard<std::mutex> locked(mutex_);
+        drop_expired(dropped);
         py::dict result;
         result["entries"] = entries_.size();
         result["bytes"] = bytes_;
         result["hits"] = hits_;
         result["misses"] = misses_;
         return result;
+    }
+    void clear()
+    {
+        std::map<Id, Entry> released;  // released outside the lock
+        std::lock_guard<std::mutex> locked(mutex_);
+        released.swap(entries_);
+        order_.clear();
+        bytes_ = 0;
     }
 
 private:
@@ -3291,6 +3294,22 @@ private:
         size_t bytes;
         std::list<Id>::iterator position;
     };
+    /* mutex_ held; the previews released by the caller, outside it. */
+    void drop(std::map<Id, Entry>::iterator victim, std::vector<PyRef> &dropped)
+    {
+        bytes_ -= victim->second.bytes;
+        dropped.push_back(std::move(victim->second.previews));
+        order_.erase(victim->second.position);
+        entries_.erase(victim);
+    }
+    void drop_expired(std::vector<PyRef> &dropped)
+    {
+        for (auto it = entries_.begin(); it != entries_.end();) {
+            auto current = it++;
+            if (current->second.storage.expired()) drop(current, dropped);
+        }
+    }
+
     std::mutex mutex_;
     std::map<Id, Entry> entries_;
     std::list<Id> order_;  // least recently used first
@@ -3309,7 +3328,8 @@ void Run::broadcast_now(int node, const std::vector<Value> &outputs, const PyRef
             if (!plan.outputs[i].image || !image || image->height <= 0 || image->width <= 0) continue;
             ImageBroadcast broadcast{i, *image, {}, plan.outputs[i].large, PyRef{}, false};
             if (broadcast.large) {
-                bool pooled = !image->storage->owner().handle;
+                // Previews the native encoder made, while it is on (CHAINNER_C_NATIVE_CODECS, read per call).
+                bool pooled = !image->storage->owner().handle && cn::image_decode::enabled();
                 if (pooled) broadcast.cached = PreviewCache::get().find(*image);
                 // A preview the native encoder declines stays Python's (numpy_outputs._previews).
                 if (!broadcast.cached.handle &&
@@ -3551,7 +3571,10 @@ void cn_bind_run_executor(py::module_ &module)
         .def("peek", &Run::peek, py::arg("node"), py::arg("input"), py::arg("offset"), py::arg("origin"));
     module.def("memo_stats", [] { return cn::run::Memo::get().stats(); },
                "The memo cache's entries, bytes, budget, hits and misses (amendment A3).");
-    module.def("memo_clear", [] { cn::run::Memo::get().clear(); }, "Drops every memo cache entry.");
+    module.def("memo_clear", [] {
+        cn::run::Memo::get().clear();
+        cn::run::PreviewCache::get().clear();
+    }, "Drops every memo cache entry, and every preview the preview cache keeps.");
     module.def("preview_cache_stats", [] { return cn::run::PreviewCache::get().stats(); },
                "The LargeImage preview cache's entries, bytes (of URLs), hits and misses (hunt-misc 8).");
     module.def("python_threads", [] { return cn::run::python_threads(); },

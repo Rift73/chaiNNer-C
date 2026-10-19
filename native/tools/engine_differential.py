@@ -39,6 +39,7 @@ from typing import Any
 from bench_oracle import FFMPEG
 from verify_runtime import sse_event_mismatches, sse_record
 
+import api
 import native_executor
 import process
 from api import ExecutionOptions, NodeId
@@ -64,14 +65,14 @@ LAYOUT_DIFFERENCES: dict[str, list[str]] = {
         (
             'name: broadcast {"data": {"data": {"0": null}, "nodeId": "name", "sequenceTypes": {}, "types": {"0":'
             ' {"type": "string-literal", "value": "stats_0_255_118.6885"}}}, "event": "node-broadcast"} sent 1 ti'
-            'mes by converted, 0 by baseline'
+            "mes by converted, 0 by baseline"
         ),
         (
             'stats: broadcast {"data": {"data": {"0": null, "1": null, "2": null, "3": null}, "nodeId": "stats", '
             '"sequenceTypes": {}, "types": {"0": {"type": "numeric-literal", "value": 0.0}, "1": {"type": "numeri'
             'c-literal", "value": 255.0}, "2": {"type": "numeric-literal", "value": 118.6885}, "3": {"type": "num'
             'eric-literal", "value": 124.1034}}}, "event": "node-broadcast"} sent 1 times by converted, 0 by base'
-            'line'
+            "line"
         ),
         (
             'name: final state differs ({"data": {"0": null}, "nodeId": "name", "sequenceTypes": {}, "types": {"0'
@@ -95,7 +96,7 @@ LAYOUT_DIFFERENCES: dict[str, list[str]] = {
             '"sequenceTypes": {}, "types": {"0": {"type": "numeric-literal", "value": -0.0}, "1": {"type": "numer'
             'ic-literal", "value": 254.998}, "2": {"type": "numeric-literal", "value": 127.3388}, "3": {"type": "'
             'numeric-literal", "value": 127.1562}}}, "event": "node-broadcast"} sent 1 times by converted, 0 by b'
-            'aseline'
+            "aseline"
         ),
     ],
     "lens-blur-statistics": [],
@@ -226,6 +227,29 @@ def digest(folder: Path | None) -> dict[str, str]:
         for path in sorted(folder.rglob("*"))
         if path.is_file()
     }
+
+
+# Third-party modules a package may lack in the CPU runtime: its nodes stay out, as the worker logs them (e.g. the
+# TensorRT package, registered once another test imported it).
+OPTIONAL_MODULES = frozenset({"tensorrt"})
+
+
+def fatal_load_errors(errors: list[api.LoadErrorInfo]) -> list[api.LoadErrorInfo]:
+    """Load errors but a missing optional third-party module's (OPTIONAL_MODULES): an in-project import that fails
+    (a renamed module under packages/ or nodes/) stays an error."""
+    return [
+        e
+        for e in errors
+        if not (
+            isinstance(e.error, ModuleNotFoundError)
+            and (e.error.name or "").split(".")[0] in OPTIONAL_MODULES
+        )
+    ]
+
+
+def load_registry_errors(server: Path) -> list[api.LoadErrorInfo]:
+    """The worker's node registration (registry.load_nodes) from server.py; its fatal load errors."""
+    return fatal_load_errors(api.registry.load_nodes(str(server)))
 
 
 def execute(

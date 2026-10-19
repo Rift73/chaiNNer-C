@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Any, cast
 import cv2
 import numpy as np
 import pytest
-from engine_differential import execute, mismatches
+from engine_differential import execute, load_registry_errors, mismatches
 from verify_runtime import make_node
 
 import api
@@ -32,13 +33,7 @@ def schemas():
     previous = getattr(main, "__file__", None)
     main.__file__ = str(BACKEND / "run.py")
     importlib.import_module("packages.chaiNNer_standard")
-    # As the worker logs them: a package whose optional dependency is missing (e.g. tensorrt, registered once
-    # another test imported it) leaves its nodes out.
-    errors = [
-        e
-        for e in api.registry.load_nodes(str(BACKEND / "server.py"))
-        if not isinstance(e.error, ModuleNotFoundError)
-    ]
+    errors = load_registry_errors(BACKEND / "server.py")
     assert not errors, [e.module for e in errors]
     yield {
         schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind}
@@ -148,16 +143,69 @@ def test_event_text_splices_preview_urls_as_json_dumps_writes_them(schemas):
 
 
 def test_an_entry_goes_with_its_image(schemas, tmp_path):
-    # An entry holds its image weakly: once the image is freed (here the memo's copy dropped), the next entry kept
-    # removes it.
-    first, second = tmp_path / "a.png", tmp_path / "b.png"
-    write_image(first, 6)
-    write_image(second, 7)
-    graph().memo_clear()
-    load_previews("native", schemas, first, tmp_path)
-    kept = graph().preview_cache_stats()
-    graph().memo_clear()  # the first image's last reference
-    load_previews("native", schemas, second, tmp_path)
+    # An entry holds its image weakly: once the image is freed (Create Noise is never memoized, so it goes with its
+    # run), stats() no longer counts it; memo_clear() drops every entry.
+    nodes = [
+        make_node(schemas, "noise", "chainner:image:create_noise", {}),
+        make_node(
+            schemas,
+            "view",
+            "chainner:image:view",
+            {0: {"type": "edge", "id": "noise", "index": 0}},
+        ),
+    ]
+    before = graph().preview_cache_stats()
+    chain = parse_json(cast("list[JsonNode]", nodes))
+    optimize(chain)
+    result = execute("native", chain, storage=tmp_path / "storage")
+    assert result.error is None
+    assert any(
+        e["event"] == "node-broadcast" and e["data"]["nodeId"] == "view"
+        for e in result.events
+    )
     after = graph().preview_cache_stats()
-    assert after["misses"] == kept["misses"] + 1
-    assert after["entries"] <= kept["entries"]
+    assert after["misses"] == before["misses"] + 1
+    assert after["entries"] <= before["entries"]
+    image = tmp_path / "kept.png"
+    write_image(image, 6)
+    load_previews("native", schemas, image, tmp_path)  # kept: the memo holds its image
+    assert graph().preview_cache_stats()["entries"] >= 1
+    graph().memo_clear()
+    assert graph().preview_cache_stats()["entries"] == 0
+
+
+def test_no_cached_preview_while_native_codecs_are_off(schemas, tmp_path, monkeypatch):
+    # CHAINNER_C_NATIVE_CODECS=0 (read per call) turns the native encoder off: no preview comes from the cache either.
+    image = tmp_path / "picture.png"
+    write_image(image, 8)
+    load_previews("native", schemas, image, tmp_path)
+    monkeypatch.setenv("CHAINNER_C_NATIVE_CODECS", "0")
+    before = graph().preview_cache_stats()
+    _, _, off = load_previews("native", schemas, image, tmp_path)
+    after = graph().preview_cache_stats()
+    assert after["hits"] == before["hits"]
+    _, _, expected = load_previews("python", schemas, image, tmp_path)
+    assert off == expected
+
+
+URL = re.compile(r"^data:image/\w+;base64,[A-Za-z0-9+/=]*$")
+
+
+@pytest.mark.parametrize("channels", [1, 3, 4])
+@pytest.mark.parametrize("size", [(1, 1), (240, 320), (1080, 1920)])
+def test_the_encoders_make_only_base64_data_urls(schemas, channels, size):
+    # events.PreviewUrl's splice relies on it: the two encoders' URLs need no JSON escaping.
+    from nodes.properties.outputs import numpy_outputs
+
+    shape = size if channels == 1 else (*size, channels)
+    image = np.random.default_rng(9).random(shape).astype(np.float32)
+    engine = graph().image_io_previews(image)
+    python = numpy_outputs._previews(image, max(size))
+    for previews in (
+        engine,
+        python,
+        numpy_outputs.LargeImageOutput().get_broadcast_data(image)["previews"],
+    ):
+        assert previews is not None
+        for preview in cast("list[dict[str, Any]]", previews):
+            assert URL.match(preview["url"]), preview["url"][:80]

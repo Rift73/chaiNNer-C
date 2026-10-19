@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 import pytest
 from bench_oracle import FFMPEG
-from engine_differential import execute, mismatches
+from engine_differential import execute, load_registry_errors, mismatches
 from verify_runtime import edge, make_node
 
 import api
@@ -73,13 +73,7 @@ def schemas():
     main.__file__ = str(BACKEND / "run.py")
     for name in PACKAGES:
         importlib.import_module(f"packages.{name}")
-    # As the worker logs them: a package whose optional dependency is missing (e.g. tensorrt, registered once
-    # another test imported it) leaves its nodes out.
-    errors = [
-        e
-        for e in api.registry.load_nodes(str(BACKEND / "server.py"))
-        if not isinstance(e.error, ModuleNotFoundError)
-    ]
+    errors = load_registry_errors(BACKEND / "server.py")
     assert not errors, [e.module for e in errors]
     yield {
         schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind}

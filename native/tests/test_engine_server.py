@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from engine_differential import order_violations
+from engine_differential import load_registry_errors, order_violations
 from verify_runtime import sse_event_mismatches, sse_record
 
 import api
@@ -219,13 +219,7 @@ def registry_loaded():
     previous = getattr(main, "__file__", None)
     main.__file__ = str(BACKEND / "run.py")
     importlib.import_module("packages.chaiNNer_standard")
-    # As the worker logs them: a package whose optional dependency is missing (e.g. tensorrt, registered once
-    # another test imported it) leaves its nodes out.
-    errors = [
-        e
-        for e in api.registry.load_nodes(str(BACKEND / "server.py"))
-        if not isinstance(e.error, ModuleNotFoundError)
-    ]
+    errors = load_registry_errors(BACKEND / "server.py")
     assert not errors, [e.module for e in errors]
     yield
     if previous is None:
