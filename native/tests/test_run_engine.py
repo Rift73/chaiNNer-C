@@ -18,6 +18,7 @@ from nodes.impl.image_utils import FlipAxis, normalize
 from nodes.impl.native_buffers import freeze_normalized
 from nodes.impl.native_graph import graph
 from nodes.properties.outputs import ImageOutput
+from nodes.utils.seed import Seed
 
 BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
 
@@ -274,6 +275,18 @@ def test_enum_members_become_their_values():
 def test_colors_round_trip(value):
     out = through(Color(value))
     assert type(out) is Color and out.value == value
+
+
+@pytest.mark.parametrize("value", [0, -1, 42, 2**32, 2**63 - 1, -(2**63)])
+def test_seeds_in_int64_cross_as_seeds(value):
+    out = through(Seed(value))
+    assert type(out) is Seed and out.value == value and type(out.value) is int
+
+
+@pytest.mark.parametrize("value", [2**63, -(2**63) - 1, 10**40])
+def test_seeds_beyond_int64_cross_as_themselves(value):
+    seed = Seed(value)
+    assert through(seed) is seed
 
 
 def test_lazy_inputs_cross_as_themselves():

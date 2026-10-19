@@ -65,10 +65,15 @@ struct Color {
     std::vector<double> values;
 };
 
+/* A seed input (nodes.utils.seed.Seed) whose value fits int64; a larger seed stays a PyRef. */
+struct Seed {
+    int64_t value;
+};
+
 class LazyValue;
 
 /* One input or output value. Enum (dropdown) inputs arrive as their option value (int64_t or std::string). */
-using Value = std::variant<std::monostate, int64_t, double, bool, std::string, Path, Color, Image, PyRef,
+using Value = std::variant<std::monostate, int64_t, double, bool, std::string, Path, Color, Seed, Image, PyRef,
                            std::shared_ptr<LazyValue>>;
 
 /* A lazy input: value() computes the upstream on first read (blocking without the GIL) and may throw its error. */

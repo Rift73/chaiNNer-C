@@ -19,7 +19,8 @@ constexpr const char *image_capsule = "chainner_c.run.image";
 
 /* The Python names the conversion uses, imported at the first conversion. */
 struct Names {
-    py::object pure_path, path, enumeration, color, lazy, aborted, generator, normalized_readonly, normalize, require;
+    py::object pure_path, path, enumeration, color, seed, lazy, aborted, generator, normalized_readonly, normalize,
+        require;
 };
 
 const Names &names()
@@ -34,6 +35,7 @@ const Names &names()
                          pathlib.attr("Path"),
                          py::module_::import("enum").attr("Enum"),
                          py::module_::import("nodes.impl.color.color").attr("Color"),
+                         py::module_::import("nodes.utils.seed").attr("Seed"),
                          api.attr("Lazy"),
                          api.attr("Aborted"),
                          api.attr("Generator"),
@@ -473,6 +475,13 @@ Value to_value(py::handle object, ImageMode mode)
         for (py::handle channel : object.attr("value")) color.values.push_back(channel.cast<double>());
         return color;
     }
+    if (is_instance(object, python.seed)) {
+        int overflow = 0;
+        long long seed = PyLong_AsLongLongAndOverflow(object.attr("value").ptr(), &overflow);
+        if (seed == -1 && PyErr_Occurred()) throw py::error_already_set();
+        if (overflow == 0) return Seed{seed};
+        return py_ref(object);  // beyond int64: an entry point declines (RunPython)
+    }
     if (py::isinstance<py::array>(object)) return image_from_array(py::reinterpret_borrow<py::array>(object), mode);
     if (is_instance(object, python.lazy)) return std::shared_ptr<LazyValue>(std::make_shared<PythonLazy>(py_ref(object), mode));
     return py_ref(object);
@@ -497,7 +506,8 @@ py::object to_python(const Value &value)
                 py::tuple channels(v.values.size());
                 for (size_t i = 0; i < v.values.size(); ++i) channels[i] = py::float_(v.values[i]);
                 return names().color(channels);
-            } else if constexpr (std::is_same_v<T, Image>) return image_to_python(v);
+            } else if constexpr (std::is_same_v<T, Seed>) return names().seed(py::int_(v.value));
+            else if constexpr (std::is_same_v<T, Image>) return image_to_python(v);
             else if constexpr (std::is_same_v<T, PyRef>) return py::reinterpret_borrow<py::object>(static_cast<PyObject *>(v.handle.get()));
             else return lazy_to_python(v);
         },
