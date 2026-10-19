@@ -263,6 +263,45 @@ def test_a_concat_list_is_probed_again_when_its_part_changes(tmp_path, name):
     assert sizes == [(320, 240), (640, 360)]
 
 
+def test_a_dash_manifest_is_probed_again_when_its_segments_change(tmp_path):
+    # A DASH manifest names segment files, which the manifest's own version does not
+    # show: its probe is not kept either.
+    assert FFMPEG is not None and FFPROBE is not None
+    env = FFMpegEnv(ffmpeg=FFMPEG, ffprobe=FFPROBE)
+    manifest = tmp_path / "stream.mpd"
+    sizes = []
+    for size in ("320x240", "640x360"):
+        other = tmp_path / size
+        other.mkdir()
+        # In the folder: FFmpeg's DASH muxer puts segments of a backslash path in the
+        # working folder.
+        subprocess.run(
+            [
+                FFMPEG,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                *_source(size),
+                "-c:v",
+                "libx264",
+                "-f",
+                "dash",
+                "stream.mpd",
+            ],
+            check=True,
+            stdin=subprocess.DEVNULL,
+            cwd=other,
+        )
+        for segment in other.glob("*.m4s"):
+            segment.replace(tmp_path / segment.name)
+        if not manifest.exists():
+            (other / "stream.mpd").replace(manifest)
+        metadata = video.VideoMetadata.from_file(manifest, env)
+        sizes.append((metadata.width, metadata.height))
+    assert sizes == [(320, 240), (640, 360)]
+
+
 def test_the_filter_graphs_go_when_the_reader_ends(tmp_path, monkeypatch):
     # PyAV's Graph and its FilterContexts refer to each other and a successful run never
     # collects, so the reader frees its graphs itself: before, a 720p read left 31.7 MiB

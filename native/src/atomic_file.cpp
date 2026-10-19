@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <chrono>
 #include <cstring>
+#include <cwchar>
 #include <string>
 #include <vector>
 
@@ -119,13 +120,36 @@ bool same_bytes(const std::filesystem::path &a, const std::filesystem::path &b) 
     return true;
 }
 
+// A handle closed when it goes out of scope.
+struct Handle {
+    HANDLE handle;
+    explicit Handle(HANDLE opened) : handle(opened) {}
+    Handle(const Handle &) = delete;
+    Handle &operator=(const Handle &) = delete;
+    ~Handle() {
+        if (valid()) CloseHandle(handle);
+    }
+    bool valid() const { return handle != INVALID_HANDLE_VALUE; }
+};
+
+// Whether Windows can create a file of this name: 1 to 255 UTF-16 units, no control character and none of
+// <>:"/\|?* (wildcards to a search, so the name must never reach one).
+bool valid_name(const std::wstring &name) {
+    return !name.empty() && name.size() <= 255 && std::none_of(name.begin(), name.end(), [](wchar_t c) {
+               return c < 32 || std::wcschr(L"<>:\"/\\|?*", c) != nullptr;
+           });
+}
+
 // The temporary name for sequence number `seq` (the ruled format, fable-decisions P8):
 // `<final>.chainner-c-<pid>-<seq>.tmp`; `.cnc-<pid>-<seq>.tmp` in final's folder where that name would pass the
 // 255-unit name limit or, with long paths off, MAX_PATH. In the \\?\ form once its full path reaches MAX_PATH.
+// The short name only for a valid final name (valid_name()): an invalid one keeps the ruled name, whose creation then
+// fails as open(final, "wb") fails, before anything is written.
 std::filesystem::path temporary_candidate(const std::filesystem::path &final, uint64_t seq) {
     const std::wstring tail = std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(seq) + L".tmp";
     const std::filesystem::path ruled(final.native() + L".chainner-c-" + tail);
-    if (ruled.filename().native().size() <= 255 && (long_paths() || full(ruled).size() < MAX_PATH))
+    if (!valid_name(final.filename().native()) ||
+        (ruled.filename().native().size() <= 255 && (long_paths() || full(ruled).size() < MAX_PATH)))
         return extended(ruled);
     return extended(final.parent_path() / (L".cnc-" + tail));
 }
@@ -166,6 +190,7 @@ int errno_of(DWORD error) {
         {ERROR_NOT_LOCKED, EACCES},        {ERROR_BAD_PATHNAME, ENOENT},        {ERROR_MAX_THRDS_REACHED, EAGAIN},
         {ERROR_LOCK_FAILED, EACCES},       {ERROR_ALREADY_EXISTS, EEXIST},      {ERROR_FILENAME_EXCED_RANGE, ENOENT},
         {ERROR_NESTING_NOT_ALLOWED, EAGAIN}, {ERROR_NOT_ENOUGH_QUOTA, ENOMEM},
+        {ERROR_INVALID_NAME, EINVAL}, // not in the table: the CRT's EINVAL fallback, as open() reports it
     };
     for (const Entry &entry : table)
         if (entry.error == error) return entry.errno_value;
@@ -185,10 +210,6 @@ FileError os_error(DWORD error, const std::filesystem::path &final) {
 // old bytes), while a holder that does not share delete still keeps the file. Both names in the \\?\ form past
 // MAX_PATH. 0, or the Windows error.
 DWORD rename_by_handle(const std::filesystem::path &from, const std::filesystem::path &to) {
-    const HANDLE handle = CreateFileW(extended(from).c_str(), DELETE | SYNCHRONIZE,
-                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                                      0, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) return GetLastError();
     const std::wstring name = extended(to).native();
     std::vector<uint8_t> buffer(offsetof(FILE_RENAME_INFO, FileName) + (name.size() + 1) * sizeof(wchar_t));
     auto *info = reinterpret_cast<FILE_RENAME_INFO *>(buffer.data());
@@ -196,10 +217,11 @@ DWORD rename_by_handle(const std::filesystem::path &from, const std::filesystem:
     info->RootDirectory = nullptr;
     info->FileNameLength = DWORD(name.size() * sizeof(wchar_t));
     std::memcpy(info->FileName, name.c_str(), name.size() * sizeof(wchar_t));
-    const DWORD error =
-        SetFileInformationByHandle(handle, FileRenameInfoEx, info, DWORD(buffer.size())) ? 0 : GetLastError();
-    CloseHandle(handle);
-    return error;
+    const Handle file(CreateFileW(extended(from).c_str(), DELETE | SYNCHRONIZE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0,
+                                  nullptr));
+    if (!file.valid()) return GetLastError();
+    return SetFileInformationByHandle(file.handle, FileRenameInfoEx, info, DWORD(buffer.size())) ? 0 : GetLastError();
 }
 
 // attempt() (0, or a Windows error) again while it fails with access denied or a sharing violation (a scanner holding a
@@ -236,15 +258,28 @@ void refuse_unwritable(const std::filesystem::path &final) {
     if (attributes != INVALID_FILE_ATTRIBUTES && attributes & refused) throw FileError(EACCES, false, final);
 }
 
-// final with the name its existing file has on disk (another case, or the long name of a short one), which
-// open(final, "wb") keeps; as given when no file has it.
+// final with the case its existing file has on disk, which open(final, "wb") keeps, read from a handle on that very
+// file (never a search, to which ? * < > are wildcards); as given when no file has it, or when the handle's name is
+// not the given one in another case (a file another writer replaced meanwhile lives on under its file id in
+// \$Extend\$Deleted).
 std::filesystem::path on_disk(const std::filesystem::path &final) {
-    WIN32_FIND_DATAW found;
-    const HANDLE search = FindFirstFileW(extended(final).c_str(), &found);
-    if (search == INVALID_HANDLE_VALUE) return final;
-    FindClose(search);
+    std::wstring name(MAX_PATH, L'\0');
+    const Handle file(CreateFileW(extended(final).c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                  nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                                  nullptr));
+    if (!file.valid()) return final;
+    DWORD size = GetFinalPathNameByHandleW(file.handle, name.data(), DWORD(name.size()), FILE_NAME_NORMALIZED);
+    if (size >= name.size()) {
+        name.resize(size);
+        size = GetFinalPathNameByHandleW(file.handle, name.data(), DWORD(name.size()), FILE_NAME_NORMALIZED);
+    }
+    if (!size || size >= name.size()) return final;
+    name.resize(size);
+    const std::wstring given = final.filename().native(), found = std::filesystem::path(name).filename().native();
+    if (CompareStringOrdinal(given.c_str(), int(given.size()), found.c_str(), int(found.size()), TRUE) != CSTR_EQUAL)
+        return final;
     std::filesystem::path spelled = final;
-    spelled.replace_filename(found.cFileName);
+    spelled.replace_filename(found);
     return spelled;
 }
 

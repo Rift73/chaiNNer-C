@@ -110,15 +110,15 @@ bool high_definition(const O&width,const O&height) {
     return cmp(width,py::int_(1280),Py_GE) || cmp(height,py::int_(576),Py_GT);
 }
 // Whether ffprobe's answer for `path` depends on files besides it, which its version does
-// not show: an AviSynth or VapourSynth script, a concat list or an HLS playlist, by the
+// not show: an AviSynth or VapourSynth script, a concat list, an HLS playlist or a DASH manifest, by the
 // format option, the extension, or the header FFmpeg's concat and hls demuxers detect a
 // list by. A file that cannot be read is counted in (ffprobe reports why).
 bool reads_other_files(const py::dict&g,const O&path,const py::dict&options) {
     if(options.contains("f"))
-        for(const char*name: {"avisynth","vapoursynth","concat","hls"})
+        for(const char*name: {"avisynth","vapoursynth","concat","hls","dash"})
             if(eq(options["f"],py::str(name)))return true;
     O extension=global(g,"os").attr("path").attr("splitext")(path)[py::int_(1)].attr("lower")();
-    for(const char*name: {".avs",".vpy",".ffconcat",".m3u8",".m3u",".hls"})
+    for(const char*name: {".avs",".vpy",".ffconcat",".m3u8",".m3u",".hls",".mpd"})
         if(eq(extension,py::str(name)))return true;
     O head;
     try {

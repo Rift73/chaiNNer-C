@@ -45,6 +45,14 @@ O add(const O& a, const O& b) { return own(PyNumber_Add(a.ptr(),b.ptr())); }
 O path_join(const O& a, const O& b) { return own(PyNumber_TrueDivide(a.ptr(),b.ptr())); }
 template<typename... A> O format(const char* text, A&&... args) { return py::str(text).attr("format")(std::forward<A>(args)...); }
 [[noreturn]] void raise(PyObject* type, const O& message) { PyErr_SetObject(type,message.ptr()); throw py::error_already_set(); }
+// str(path) as a filesystem path; a NUL in it raises the ValueError open() raises (the caster's error would be a
+// RuntimeError "Unable to cast").
+std::filesystem::path file_path(const O& path) {
+    const py::str text(path);
+    if(PyUnicode_FindChar(text.ptr(),0,0,PyUnicode_GET_LENGTH(text.ptr()),1)>=0)
+        raise(PyExc_ValueError,py::str("embedded null character"));
+    return text.cast<std::filesystem::path>();
+}
 [[noreturn]] void rethrow_value(const O& error) { PyErr_SetObject(reinterpret_cast<PyObject*>(Py_TYPE(error.ptr())),error.ptr()); throw py::error_already_set(); }
 void finally_do(const std::function<void()>& body, const std::function<void()>& cleanup) {
     try { body(); }
@@ -224,7 +232,7 @@ O native_decode(py::dict g,O path,NativeDecoder decoder) {
             max_pixels=uint64_t(value);
         }
     }
-    const auto file=py::str(path).cast<std::filesystem::path>();
+    const auto file=file_path(path);
     O result=py::none();
     bool decoded=false;
     {
@@ -548,7 +556,7 @@ O encode(py::dict g,O extension,O image,O params) {
 // (cn::files::write_atomic, without the GIL): no partial file is ever left under path, and a file that already holds
 // these bytes is left untouched. A failure raises the OSError open() or write() raises, naming path.
 void write_file(const O& path,const O& data) {
-    const auto final=py::str(path).cast<std::filesystem::path>();
+    const auto final=file_path(path);
     Py_buffer view;
     if(PyObject_GetBuffer(data.ptr(),&view,PyBUF_SIMPLE)!=0)throw py::error_already_set();
     struct Release {Py_buffer& view; ~Release(){PyBuffer_Release(&view);}} release_view{view};
@@ -1034,7 +1042,7 @@ void save_dds(py::dict g,py::tuple values) {
         args.append(raw);name(g,"__run_texconv")(args,"Unable to write DDS");
         // The finished file goes to the target folder's temporary file, then onto the final name; a final file with
         // the same bytes is left untouched.
-        const auto written=py::str(raw).cast<std::filesystem::path>(),final=py::str(path).cast<std::filesystem::path>();
+        const auto written=file_path(raw),final=file_path(path);
         py::gil_scoped_release release;
         cn::files::move_atomic(written,final);
     },[&]{name(g,"shutil").attr("rmtree")(temporary);});

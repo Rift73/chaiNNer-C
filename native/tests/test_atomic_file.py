@@ -136,6 +136,42 @@ def test_a_full_path_past_max_path_goes_through_the_long_form(tmp_path: Path):
     assert raised.value.filename == str(missing)
 
 
+@pytest.mark.parametrize("wildcard", "?*<>")
+def test_a_wildcard_in_a_long_name_fails_as_open_does(tmp_path: Path, wildcard: str):
+    # open() refuses the name with [Errno 22] and writes nothing; so does the writer,
+    # which never takes a sibling the name would match as a search pattern.
+    victim = aged(tmp_path / ("b" * 240 + "X.png"), b"victim")
+    final = tmp_path / ("b" * 240 + wildcard + ".png")
+    with pytest.raises(OSError) as before:
+        open(final, "wb")
+    with pytest.raises(OSError) as after:
+        graph().atomic_write(final, b"new")
+    assert type(after.value) is type(before.value)
+    assert str(after.value) == str(before.value) and after.value.errno == 22
+    with pytest.raises(OSError) as raised:
+        _commit(final, b"new")
+    assert raised.value.errno == 22
+    assert contents(tmp_path) == {victim: b"victim"}
+    assert victim.stat().st_mtime == OLD
+
+
+@pytest.mark.parametrize("name", ["n" * 256 + ".bin", 'a".bin', "c" * 240 + '".bin'])
+def test_an_invalid_name_fails_up_front_as_open_does(tmp_path: Path, name: str):
+    # A name past 255 characters or with a quote: open() raises before writing, and so
+    # do the writer and the check Save Video runs before encoding.
+    final = tmp_path / name
+    with pytest.raises(OSError) as before:
+        open(final, "wb")
+    with pytest.raises(OSError) as after:
+        graph().atomic_write(final, b"payload")
+    assert type(after.value) is type(before.value)
+    assert str(after.value) == str(before.value) and after.value.winerror is None
+    with pytest.raises(OSError) as checked:
+        graph().AtomicTarget(final).check()
+    assert checked.value.errno == before.value.errno and checked.value.winerror is None
+    assert not list(tmp_path.iterdir())
+
+
 def test_errors_name_the_final_path_as_open_does(tmp_path: Path):
     missing = tmp_path / "missing" / "a.bin"
     with pytest.raises(OSError) as before:
