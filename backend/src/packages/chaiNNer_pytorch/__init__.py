@@ -107,13 +107,14 @@ package = add_package(
             # LayerNorm statistics in fp32 and pads exported ONNX graphs per input;
             # c3 runs DUAL in fp16; c4 runs HAT and DAT in fp16; c5 lays out their
             # attention for speed (DAT2 2x in PyTorch) and for ONNX export; c6 runs it
-            # through scaled_dot_product_attention (cuDNN or memory-efficient attention).
-            version="0.4.2+c6",
+            # through scaled_dot_product_attention (cuDNN or memory-efficient attention);
+            # c7 folds DRFT's edge branches without a per-channel Python loop.
+            version="0.4.2+c7",
             size_estimate=530 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c6/"
-                "spandrel-0.4.2%2Bc6-py3-none-any.whl"
-                "#sha256=0f6fd5f93d020111357f16bf2aeecf2d90428a0a704fbaf11a968c3240ca3bdf"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c7/"
+                "spandrel-0.4.2%2Bc7-py3-none-any.whl"
+                "#sha256=030ba1a2458ed40161b6331775374bff8c2bc9ae9ec4048781e28a4476289003"
             ),
         ),
         Dependency(
