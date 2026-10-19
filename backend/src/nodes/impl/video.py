@@ -42,6 +42,7 @@ from .native_graph import graph
 if TYPE_CHECKING:
     from fractions import Fraction
 
+    from av.filter import Graph
     from av.video.frame import VideoFrame
     from av.video.stream import VideoStream
 
@@ -187,7 +188,7 @@ def _converter(
     return graph
 
 
-def _free_converter(converter) -> None:
+def _free_converter(converter: Graph) -> None:
     """Lets a converter's filter graph go with its last reference, not at a later
     collection. PyAV's Graph and its FilterContexts refer to each other (the graph keeps
     its contexts in dicts, each context keeps .graph), and a successful run never

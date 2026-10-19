@@ -13,8 +13,6 @@ import numpy as np
 import pytest
 from PIL import Image
 
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows")
-
 # The node's modules load the native backend, which GitHub's checks do not build.
 pytest.importorskip("nodes.impl._chainner_graph")
 
@@ -23,6 +21,8 @@ from packages.chaiNNer_standard.image.batch_processing.load_images import (
     list_glob,
     load_images_node,
 )
+
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows")
 
 PIXELS = np.zeros((2, 3, 3), np.uint8)
 
