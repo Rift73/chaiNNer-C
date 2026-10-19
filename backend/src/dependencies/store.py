@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import importlib.metadata
 import json
 import os
@@ -9,10 +8,15 @@ import subprocess
 import sys
 from collections import deque
 from dataclasses import dataclass
-from logging import Logger
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from custom_types import UpdateProgressFn
+
+# run.py imports this module before it starts the worker, which asyncio's import
+# (~0.09 s, logging's with it) would delay: the coroutines below import it, as they
+# run in the host's event loop, which has imported it already.
+if TYPE_CHECKING:
+    from logging import Logger
 
 python_path = sys.executable
 dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -198,6 +202,8 @@ async def install_dependencies(
     update_progress_cb: UpdateProgressFn | None = None,
     logger: Logger | None = None,
 ):
+    import asyncio
+
     # If there's no progress callback, just install the dependencies synchronously
     if update_progress_cb is None:
         return install_dependencies_sync(dependencies)
@@ -350,6 +356,8 @@ async def uninstall_dependencies(
     update_progress_cb: UpdateProgressFn | None = None,
     logger: Logger | None = None,
 ):
+    import asyncio
+
     # If there's no progress callback, just uninstall the dependencies synchronously
     if update_progress_cb is None:
         return uninstall_dependencies_sync(dependencies)

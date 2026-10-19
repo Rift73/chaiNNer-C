@@ -110,30 +110,30 @@ test.skipIf(!existsSync(python) || !existsSync(nativeGraph))(
             });
         // Bounded, so a backend that does not start fails the test instead of holding the gate.
         const deadline = Date.now() + 60_000;
-        const waitUntil = async (condition: () => boolean, what: string) => {
-            while (!condition()) {
-                if (Date.now() > deadline) {
-                    throw new Error(`The backend did not send ${what} within 60 s`);
-                }
-                // eslint-disable-next-line no-await-in-loop
-                await delay(10);
-            }
-        };
+        const waitUntil = (condition: () => boolean, what: string) =>
+            new Promise<void>((resolve, reject) => {
+                const check = () => {
+                    if (condition()) {
+                        resolve();
+                    } else if (Date.now() > deadline) {
+                        reject(new Error(`The backend did not send ${what} within 60 s`));
+                    } else {
+                        setTimeout(check, 10);
+                    }
+                };
+                check();
+            });
 
         // as the window does: tried again every 100 ms until the backend listens
-        for (;;) {
-            try {
-                // eslint-disable-next-line no-await-in-loop
-                await stream('/setup-sse');
-                break;
-            } catch (error) {
+        const connect = (route: string): Promise<void> =>
+            stream(route).catch(async (error: unknown) => {
                 if (Date.now() > deadline) {
                     throw error;
                 }
-                // eslint-disable-next-line no-await-in-loop
                 await delay(100);
-            }
-        }
+                return connect(route);
+            });
+        await connect('/setup-sse');
         await waitUntil(() => events.includes('backend-ready'), 'backend-ready');
         stream('/sse').catch(() => {});
 

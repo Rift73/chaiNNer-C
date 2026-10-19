@@ -193,9 +193,9 @@ export class OwnedBackendProcess implements BaseBackendProcess {
 
     /**
      * Kills the current backend process. The process ends even if the backend cannot be asked
-     * to shut down.
+     * to shut down. Without `askFirst`, it ends at once (before this returns its promise).
      */
-    async kill() {
+    async kill({ askFirst = true }: { askFirst?: boolean } = {}) {
         log.info('Attempting to kill backend...');
 
         const backend = this.process;
@@ -215,24 +215,26 @@ export class OwnedBackendProcess implements BaseBackendProcess {
 
         // The backend stops its worker process on /shutdown, so ask first. A backend that cannot
         // answer (e.g. still installing its dependencies) is ended without it.
-        let timeout: NodeJS.Timeout | undefined;
-        try {
-            await Promise.race([
-                getBackend(this.url).shutdown(),
-                new Promise((_, reject) => {
-                    timeout = setTimeout(
-                        () => reject(new Error('The shutdown request timed out.')),
-                        SHUTDOWN_TIMEOUT_MS
-                    );
-                }),
-            ]);
-        } catch (error) {
-            log.warn('The backend did not shut down by itself, so it will be killed.', error);
-        } finally {
-            clearTimeout(timeout);
-            if (backend.kill()) {
-                log.info('Successfully killed backend.');
+        if (askFirst) {
+            let timeout: NodeJS.Timeout | undefined;
+            try {
+                await Promise.race([
+                    getBackend(this.url).shutdown(),
+                    new Promise((_, reject) => {
+                        timeout = setTimeout(
+                            () => reject(new Error('The shutdown request timed out.')),
+                            SHUTDOWN_TIMEOUT_MS
+                        );
+                    }),
+                ]);
+            } catch (error) {
+                log.warn('The backend did not shut down by itself, so it will be killed.', error);
+            } finally {
+                clearTimeout(timeout);
             }
+        }
+        if (backend.kill()) {
+            log.info('Successfully killed backend.');
         }
     }
 
@@ -295,3 +297,33 @@ export class BorrowedBackendProcess implements BaseBackendProcess {
 }
 
 export type BackendProcess = OwnedBackendProcess | BorrowedBackendProcess;
+
+/**
+ * Stops the owned backend when the app quits, however far its start got: the window can be closed
+ * while the backend starts. One that starts after the quit began is ended at once, as it cannot
+ * answer a shutdown request yet and the quitting app does not wait for one.
+ */
+export const stopBackendOnQuit = (backendPromise: Promise<BackendProcess>): void => {
+    let quitting = false;
+    let started: OwnedBackendProcess | undefined;
+    app.on('before-quit', () => {
+        quitting = true;
+        if (started) {
+            started.clearErrorListeners();
+            started.tryKill().catch(log.error);
+        }
+    });
+    backendPromise
+        .then((backend) => {
+            if (!backend.owned) {
+                return;
+            }
+            if (quitting) {
+                backend.clearErrorListeners();
+                backend.kill({ askFirst: false }).catch(log.error);
+            } else {
+                started = backend;
+            }
+        })
+        .catch(log.error);
+};

@@ -4,14 +4,31 @@ import path from 'path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { PythonInfo } from '../../src/common/common-types';
 import { delay } from '../../src/common/util';
-import { SHUTDOWN_TIMEOUT_MS } from '../../src/main/backend/process';
+import { BackendProcess, SHUTDOWN_TIMEOUT_MS } from '../../src/main/backend/process';
 
-const { shutdown, pythonInfo } = vi.hoisted(() => ({
+const { shutdown, pythonInfo, quitListeners } = vi.hoisted(() => ({
     shutdown: vi.fn<[], Promise<void>>(),
     pythonInfo: vi.fn<[], Promise<PythonInfo>>(),
+    quitListeners: [] as (() => void)[],
 }));
 
-vi.mock('electron/main', () => ({ app: { getAppPath: () => '' } }));
+vi.mock('electron/main', () => ({
+    app: {
+        getAppPath: () => '',
+        on: (event: string, listener: () => void) => {
+            if (event === 'before-quit') {
+                quitListeners.push(listener);
+            }
+        },
+    },
+}));
+
+// as app.quit() begins
+const quit = () => {
+    for (const listener of quitListeners) {
+        listener();
+    }
+};
 vi.mock('../../src/common/Backend', () => ({ getBackend: () => ({ shutdown, pythonInfo }) }));
 
 // The backend is started as `<python> <resourcesPath>/src/run.py <port>`. Node stands in for
@@ -40,6 +57,7 @@ afterEach(async () => {
     vi.resetModules();
     shutdown.mockReset();
     pythonInfo.mockReset();
+    quitListeners.splice(0);
     await rm(resourcesPath, { recursive: true, force: true });
 });
 
@@ -146,4 +164,39 @@ test('a borrowed backend asks for its Python only until the backend answers', as
 
     expect(backend.python).toEqual(python);
     expect(pythonInfo).toHaveBeenCalledTimes(2);
+});
+
+test('a backend that started is stopped when the app quits', async () => {
+    shutdown.mockResolvedValue(undefined);
+    const backend = await spawnBackend(runForeverScript);
+    const pid = await readPid();
+    const { stopBackendOnQuit } = await import('../../src/main/backend/process');
+    stopBackendOnQuit(Promise.resolve(backend));
+    await delay(0);
+
+    quit();
+
+    await expectStopped(pid);
+    expect(shutdown).toHaveBeenCalledOnce();
+});
+
+test('a backend that starts after the app began to quit is ended at once', async () => {
+    // The window was closed while the backend started. A backend that is not listening yet does
+    // not answer the shutdown request, and the quitting app would not wait for its timeout.
+    shutdown.mockImplementation(() => new Promise(() => {}));
+    const { stopBackendOnQuit } = await import('../../src/main/backend/process');
+    let started: (backend: BackendProcess) => void = () => {};
+    stopBackendOnQuit(
+        new Promise((resolve) => {
+            started = resolve;
+        })
+    );
+
+    quit();
+    const backend = await spawnBackend(runForeverScript);
+    const pid = await readPid();
+    started(backend);
+
+    await expectStopped(pid);
+    expect(shutdown).not.toHaveBeenCalled();
 });

@@ -41,6 +41,14 @@ test.each([
     expect(readFileSync(path.join(rootDir, files[0]), 'utf-8')).toBe(content);
 });
 
+test('a settings.json with a byte order mark is read', () => {
+    // as Windows PowerShell 5.1 writes it with `-Encoding utf8`
+    writeFileSync(settingsJson, `\uFEFF${fileText(withTheme('default-light'))}`, 'utf-8');
+
+    expect(readSettings(rootDir)).toEqual(withTheme('default-light'));
+    expect(readdirSync(rootDir)).toEqual(['settings.json']);
+});
+
 test('outdated settings are migrated and written through a temporary file', () => {
     const { storage, ...partial } = withTheme('light');
     writeFileSync(settingsJson, JSON.stringify(partial), 'utf-8');

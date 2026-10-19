@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from .store import DependencyInfo, install_dependencies_sync, scan_installed_packages
+from .store import (
+    DependencyInfo,
+    filter_necessary_to_install,
+    install_dependencies_sync,
+    scan_installed_packages,
+)
 
 # Get the list of installed packages
 # We can't rely on using the package's __version__ attribute because not all packages actually have it
@@ -71,5 +76,10 @@ deps: list[DependencyInfo] = [
     ),
 ]
 
-# How many were missing or outdated and are now installed: none but on a first start.
-installed = install_dependencies_sync(deps)
+# The ones missing or outdated: none but on a first start. Found without pip, so run.py
+# knows whether pip must run before it starts the worker.
+missing = filter_necessary_to_install(deps)
+
+
+def install() -> None:
+    install_dependencies_sync(missing)

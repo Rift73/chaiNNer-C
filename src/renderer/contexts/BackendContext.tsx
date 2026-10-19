@@ -32,6 +32,7 @@ import { SchemaMap } from '../../common/SchemaMap';
 import { getChainnerScope } from '../../common/types/chainner-scope';
 import { FunctionDefinition } from '../../common/types/function';
 import { EMPTY_ARRAY, EMPTY_MAP, EMPTY_SET, delay } from '../../common/util';
+import { ConnectionState, getConnectionState } from '../helpers/connectionState';
 import { useAsyncEffect } from '../hooks/useAsyncEffect';
 import { BackendEventSource } from '../hooks/useBackendEventSource';
 import { useMemoObject } from '../hooks/useMemo';
@@ -56,7 +57,7 @@ interface BackendContextState {
     refreshFeatureStates: () => Promise<void>;
     backendDownRef: React.MutableRefObject<boolean>;
     restart: () => Promise<void>;
-    connectionState: 'connecting' | 'connected' | 'failed';
+    connectionState: ConnectionState;
     /**
      * Whether the backend accepts requests. Runs it cannot serve yet (their nodes are still
      * loading) wait there.
@@ -262,19 +263,13 @@ const useNodes = (
     );
 
     const nodesFromCache = nodesInfo?.fromCache ?? false;
-    let connectionState: 'connecting' | 'connected' | 'failed' = 'connecting';
-    if (nodesQuery.status === 'error') {
-        connectionState = 'failed';
-    } else if (nodesInfo !== undefined) {
-        connectionState = 'connected';
-    }
 
     return {
         nodesInfo,
         schemaInputs,
         scope,
         refreshNodes,
-        connectionState,
+        connectionState: getConnectionState(nodesQuery.status === 'error', nodesInfo !== undefined),
         nodesFromCache,
     };
 };

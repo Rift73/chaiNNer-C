@@ -20,7 +20,7 @@ import { Progress, ProgressController, ProgressToken, SubProgress } from '../../
 import { assertNever } from '../../common/util';
 import { chainnerCVersion } from '../../common/version';
 import { OpenArguments, parseArgs } from '../arguments';
-import { BackendProcess, getBackendPath } from '../backend/process';
+import { BackendProcess, getBackendPath, stopBackendOnQuit } from '../backend/process';
 import { setupBackend } from '../backend/setup';
 import { buildInfo } from '../buildInfo';
 import { readClipboardImageAsPng, storeClipboardPng } from '../clipboardImage';
@@ -362,11 +362,6 @@ const registerEventHandlerPostSetup = (
             });
             app.exit(1);
         });
-
-        app.on('before-quit', () => {
-            backend.clearErrorListeners();
-            backend.tryKill().catch(log.error);
-        });
     }
 
     ipcMain.handle('restart-backend', async () => {
@@ -595,6 +590,7 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
         // The backend starts while the window loads. A remote backend's node list is not cached:
         // its Python and packages are not on this computer.
         const backendPromise = createBackend(SubProgress.slice(progressController, 0, 0.25), args);
+        stopBackendOnQuit(backendPromise);
         const uiCache = args.remoteBackend
             ? undefined
             : new UiCache(

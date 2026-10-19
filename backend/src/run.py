@@ -12,17 +12,18 @@ for stream in (sys.stdout, sys.stderr):
     if isinstance(stream, io.TextIOWrapper):
         stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
-# The worker starts first: it loads its nodes while this process checks the server
-# dependencies and imports its own modules.
+# The server dependencies: the host can't start without them (the other packages'
+# come later). Installed before the worker starts, as pip can't replace a module a
+# running worker has loaded (NumPy's, psutil's .pyd); none is missing but on a first
+# start, which the installed packages' metadata tells without pip.
+install_server_deps = importlib.import_module("dependencies.install_server_deps")
+if install_server_deps.missing:
+    install_server_deps.install()
+
+# The worker starts next: it loads its nodes while this process imports its own modules.
 worker_port = find_free_port()
 worker = spawn_worker([str(worker_port), *ServerConfig.parse_argv().worker_flags()])
 
-# Install server dependencies. Can't start the server without them, but we don't want to install the other deps yet.
-install_server_deps = importlib.import_module("dependencies.install_server_deps")
-if install_server_deps.installed > 0:
-    # A first start: the worker started without them. The host starts another.
-    worker.kill()
-
 # Start the host server
 server_host = importlib.import_module("server_host")
-server_host.main(None if install_server_deps.installed > 0 else (worker_port, worker))
+server_host.main((worker_port, worker))

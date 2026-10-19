@@ -50,7 +50,7 @@ def test_host_log_line_outside_the_code_page_is_written_as_utf8(tmp_path: Path):
     shutil.copy(SRC / "run.py", tmp_path / "run.py")
     (tmp_path / "dependencies").mkdir()
     (tmp_path / "dependencies" / "__init__.py").write_text("")
-    (tmp_path / "dependencies" / "install_server_deps.py").write_text("installed = 0")
+    (tmp_path / "dependencies" / "install_server_deps.py").write_text("missing = []")
     (tmp_path / "server_host.py").write_text(FAKE_HOST, encoding="utf-8")
     (tmp_path / "worker_spawn.py").write_text(FAKE_WORKER_SPAWN)
     env = {k: v for k, v in os.environ.items() if k != "PYTHONUTF8"}

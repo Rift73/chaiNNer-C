@@ -15,12 +15,13 @@ const stringifySettings = (settings: ChainnerSettings): string => JSON.stringify
 
 /**
  * The settings object in the content of settings.json, or undefined if it holds none (e.g. a
- * file cut short while an older version wrote it in place).
+ * file cut short while an older version wrote it in place). A byte order mark (a file written by
+ * Windows PowerShell 5.1 with `-Encoding utf8`) is not part of the JSON.
  */
 const parseSettingsJson = (content: string): Partial<ChainnerSettings> | undefined => {
     let value: unknown;
     try {
-        value = JSON.parse(content);
+        value = JSON.parse(content.replace(/^\uFEFF/, ''));
     } catch {
         return undefined;
     }
