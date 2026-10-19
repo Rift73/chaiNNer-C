@@ -15,7 +15,6 @@ import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
-from json import dumps as stringify
 from pathlib import Path
 from typing import Final, TypedDict
 
@@ -37,7 +36,7 @@ from chain.chain import Chain, FunctionNode, GeneratorNode
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
 from dependencies.store import installed_packages
-from events import EventConsumer, EventQueue, ExecutionErrorData
+from events import EventConsumer, EventQueue, ExecutionErrorData, event_text
 from native_executor import NativeExecutor, executor_kind
 from nodes.impl import native, native_profile, numpy_pool
 from nodes.impl.cors import add_cors
@@ -1066,9 +1065,7 @@ async def sse(request: Request):
 
     while True:
         message = await ctx.queue.get()
-        await response.send(
-            f"event: {message['event']}\ndata: {stringify(message['data'])}\n\n"
-        )
+        await response.send(event_text(message))
 
 
 def log_load_errors(load_errors: list[api.LoadErrorInfo]) -> None:

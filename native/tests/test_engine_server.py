@@ -18,18 +18,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from engine_differential import order_violations
+from verify_runtime import sse_event_mismatches, sse_record
 
 import api
 from chain.chain import GeneratorNode
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
-from engine_differential import order_violations
-from verify_runtime import sse_event_mismatches, sse_record
 
 BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
 
 DRIVER = """
-import asyncio, contextlib, hashlib, importlib, json, os, shutil, sys
+import asyncio, hashlib, importlib, json, os, shutil, sys
 from pathlib import Path
 from types import SimpleNamespace
 import cv2, numpy as np
@@ -167,8 +167,9 @@ for name, steps in SCENARIOS.items():
     results[name] = {}
     for kind in ("python", "native"):
         os.environ["CHAINNER_C_EXECUTOR"] = kind
-        # The oracle sends every broadcast: its LatestBroadcasts would drop some, by timing.
-        with every_broadcast() if kind == "python" else contextlib.nullcontext():
+        # The oracle sends every broadcast (its LatestBroadcasts would drop some, by timing), the engine without its
+        # loop preview rate limit.
+        with every_broadcast():
             results[name][kind] = asyncio.run(scenario(steps))
 print(json.dumps({"work": str(work), "scenarios": {n: [s for s in steps] for n, steps in SCENARIOS.items()},
                   "results": results}))
@@ -193,7 +194,11 @@ def server_runs(tmp_path_factory) -> dict[str, Any]:
         timeout=900,
         check=False,
     )
-    assert result.returncode == 0, (result.returncode, result.stdout[-3000:], result.stderr[-6000:])
+    assert result.returncode == 0, (
+        result.returncode,
+        result.stdout[-3000:],
+        result.stderr[-6000:],
+    )
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
@@ -214,7 +219,13 @@ def registry_loaded():
     previous = getattr(main, "__file__", None)
     main.__file__ = str(BACKEND / "run.py")
     importlib.import_module("packages.chaiNNer_standard")
-    errors = api.registry.load_nodes(str(BACKEND / "server.py"))
+    # As the worker logs them: a package whose optional dependency is missing (e.g. tensorrt, registered once
+    # another test imported it) leaves its nodes out.
+    errors = [
+        e
+        for e in api.registry.load_nodes(str(BACKEND / "server.py"))
+        if not isinstance(e.error, ModuleNotFoundError)
+    ]
     assert not errors, [e.module for e in errors]
     yield
     if previous is None:
@@ -227,9 +238,14 @@ def registry_loaded():
 def test_server_runs_match(server_runs, registry_loaded, name):
     work = Path(server_runs["work"])
     steps = server_runs["scenarios"][name]
-    oracle, engine = server_runs["results"][name]["python"], server_runs["results"][name]["native"]
+    oracle, engine = (
+        server_runs["results"][name]["python"],
+        server_runs["results"][name]["native"],
+    )
     assert len(oracle) == len(engine) == len(steps)
-    for index, ((kind, payload), expected, found) in enumerate(zip(steps, oracle, engine, strict=True)):
+    for index, ((kind, payload), expected, found) in enumerate(
+        zip(steps, oracle, engine, strict=True)
+    ):
         where = f"{name} step {index} ({kind})"
         assert found["response"] == expected["response"], where
         assert found["cache"] == expected["cache"], where
@@ -237,24 +253,48 @@ def test_server_runs_match(server_runs, registry_loaded, name):
         nodes: list[JsonNode] = payload if kind == "run" else [payload]
         chain = parse_json(nodes)
         optimize(chain)
-        generators = sorted(n.id for n in chain.nodes.values() if isinstance(n, GeneratorNode))
+        generators = sorted(
+            n.id for n in chain.nodes.values() if isinstance(n, GeneratorNode)
+        )
 
-        def record(events: list[dict[str, Any]]) -> dict[str, Any]:
-            return {"name": where, "generator_node_ids": generators, **sse_record(events, work)}
-
-        assert sse_event_mismatches(record(expected["events"]), record(found["events"])) == [], where
+        records = [
+            {
+                "name": where,
+                "generator_node_ids": generators,
+                **sse_record(events, work),
+            }
+            for events in (expected["events"], found["events"])
+        ]
+        assert sse_event_mismatches(*records) == [], where
         if kind == "run":
             assert order_violations(found["events"], chain) == [], where
     # The steps did what the UI expects: every request succeeded (the errors scenario's as listed), and a regular
     # node's preview left its output in the cache.
-    outcomes = [(step["response"][0], step["response"][1].get("type", step["response"][1].get("success"))) for step in engine]
+    outcomes = [
+        (
+            step["response"][0],
+            step["response"][1].get("type", step["response"][1].get("success")),
+        )
+        for step in engine
+    ]
     if name == "errors":
         assert outcomes == [(200, False), (200, True), (500, "error")], outcomes
         source = engine[2]["response"][1]["source"]
-        assert source is not None and source["nodeId"] == "crop" and source["inputs"], source
+        assert source is not None and source["nodeId"] == "crop" and source["inputs"], (
+            source
+        )
     else:
-        assert all(outcome in ((200, True), (200, "success")) for outcome in outcomes), outcomes
+        assert all(
+            outcome in ((200, True), (200, "success")) for outcome in outcomes
+        ), outcomes
     for (kind, payload), step in zip(steps, engine, strict=True):
-        if kind == "individual" and payload["nodeType"] == "regularNode" and step["response"][1].get("success"):
+        if (
+            kind == "individual"
+            and payload["nodeType"] == "regularNode"
+            and step["response"][1].get("success")
+        ):
             data, _ = api.registry.nodes[payload["schemaId"]]
-            assert len(step["cache"][payload["id"]]) == len(data.outputs), (name, step["cache"])
+            assert len(step["cache"][payload["id"]]) == len(data.outputs), (
+                name,
+                step["cache"],
+            )

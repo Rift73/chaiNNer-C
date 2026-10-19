@@ -15,22 +15,31 @@ import sys
 from pathlib import Path
 from typing import cast
 
+import bench_cases
 import cv2
 import numpy as np
 import pytest
-
-import api
-import bench_cases
-import process
 from bench_oracle import FFMPEG
-from chain.json import JsonNode, parse_json
-from chain.optimize import optimize
-from engine_differential import LAYOUT_DIFFERENCES, execute, mismatches, order_violations
-from nodes.impl.native_graph import graph
+from engine_differential import (
+    LAYOUT_DIFFERENCES,
+    execute,
+    mismatches,
+    order_violations,
+)
 from verify_runtime import edge, make_node
 
+import api
+import process
+from chain.json import JsonNode, parse_json
+from chain.optimize import optimize
+from nodes.impl.native_graph import graph
+
 BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
-IMAGE_CASES = [case for case in bench_cases.CASES if not case.startswith("video-") and case != "resize-real-256"]
+IMAGE_CASES = [
+    case
+    for case in bench_cases.CASES
+    if not case.startswith("video-") and case != "resize-real-256"
+]
 VIDEO_CASES = [case for case in bench_cases.CASES if case.startswith("video-")]
 
 
@@ -42,9 +51,18 @@ def schemas():
     # Caption loads its font from beside __main__'s file, the app's run.py.
     main.__file__ = str(BACKEND / "run.py")
     importlib.import_module("packages.chaiNNer_standard")
-    errors = api.registry.load_nodes(str(BACKEND / "server.py"))
+    # As the worker logs them: a package whose optional dependency is missing (e.g. tensorrt, registered once
+    # another test imported it) leaves its nodes out.
+    errors = [
+        e
+        for e in api.registry.load_nodes(str(BACKEND / "server.py"))
+        if not isinstance(e.error, ModuleNotFoundError)
+    ]
     assert not errors, [e.module for e in errors]
-    yield {schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind} for schema, (data, _) in api.registry.nodes.items()}
+    yield {
+        schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind}
+        for schema, (data, _) in api.registry.nodes.items()
+    }
     if previous is None:
         del main.__file__
     else:
@@ -62,12 +80,32 @@ def assets(tmp_path_factory):
     rng = np.random.default_rng(73)
     for index in range(12):
         height, width = 61 + 7 * index, 83 + 5 * index
-        small = (rng.random((height // 8 + 2, width // 8 + 2, 3)) * 255).astype(np.uint8)
+        small = (rng.random((height // 8 + 2, width // 8 + 2, 3)) * 255).astype(
+            np.uint8
+        )
         image = cv2.resize(small, (width, height), interpolation=cv2.INTER_CUBIC)
-        assert cv2.imwrite(str(images / f"{index:03}.jpg"), image, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        assert cv2.imwrite(
+            str(images / f"{index:03}.jpg"), image, [cv2.IMWRITE_JPEG_QUALITY, 92]
+        )
     if FFMPEG.exists():
-        command = [str(FFMPEG), "-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30",
-                   "-frames:v", "24", "-an", "-c:v", "ffv1", "-pix_fmt", "bgr0", str(root / "moving.mkv")]
+        command = [
+            str(FFMPEG),
+            "-nostdin",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=30",
+            "-frames:v",
+            "24",
+            "-an",
+            "-c:v",
+            "ffv1",
+            "-pix_fmt",
+            "bgr0",
+            str(root / "moving.mkv"),
+        ]
         subprocess.run(command, check=True, timeout=120, stdin=subprocess.DEVNULL)
         _winapi.CreateJunction(str(FFMPEG.parent), str(root / "storage" / "ffmpeg"))
     yield root
@@ -78,11 +116,30 @@ def assets(tmp_path_factory):
 def resize_chain(schemas, assets: Path, output: Path) -> list[dict]:
     """resize-real-256's chain: Load Images, Resize 50 % (Hermite), Save as PNG."""
     nodes = [
-        make_node(schemas, "load", "chainner:image:load_images", {0: str(assets / "images"), 2: 0, 4: 0, 6: 1}),
-        make_node(schemas, "resize", "chainner:image:resize", {0: edge("load"), 1: 0, 2: 50, 3: 1, 4: 1, 5: 5, 6: 0}),
         make_node(
-            schemas, "save", "chainner:image:save",
-            {0: edge("resize"), 1: str(output), 2: None, 3: edge("load", 3), 4: "png", 15: "u8"},
+            schemas,
+            "load",
+            "chainner:image:load_images",
+            {0: str(assets / "images"), 2: 0, 4: 0, 6: 1},
+        ),
+        make_node(
+            schemas,
+            "resize",
+            "chainner:image:resize",
+            {0: edge("load"), 1: 0, 2: 50, 3: 1, 4: 1, 5: 5, 6: 0},
+        ),
+        make_node(
+            schemas,
+            "save",
+            "chainner:image:save",
+            {
+                0: edge("resize"),
+                1: str(output),
+                2: None,
+                3: edge("load", 3),
+                4: "png",
+                15: "u8",
+            },
         ),
     ]
     return nodes
@@ -92,11 +149,30 @@ def video_frames_chain(schemas, assets: Path, output: Path) -> list[dict]:
     """video-resize-h264's frames as PNGs: what its writer receives, which the lossy encoder's run-dependent output
     cannot pin."""
     return [
-        make_node(schemas, "load", "chainner:image:load_video", {0: str(assets / "moving.mkv"), 1: 0}),
-        make_node(schemas, "resize", "chainner:image:resize", {0: edge("load"), 1: 0, 2: 50, 5: 5, 6: False}),
         make_node(
-            schemas, "save", "chainner:image:save",
-            {0: edge("resize"), 1: str(output), 2: None, 3: edge("load", 1), 4: "png", 15: "u8"},
+            schemas,
+            "load",
+            "chainner:image:load_video",
+            {0: str(assets / "moving.mkv"), 1: 0},
+        ),
+        make_node(
+            schemas,
+            "resize",
+            "chainner:image:resize",
+            {0: edge("load"), 1: 0, 2: 50, 5: 5, 6: False},
+        ),
+        make_node(
+            schemas,
+            "save",
+            "chainner:image:save",
+            {
+                0: edge("resize"),
+                1: str(output),
+                2: None,
+                3: edge("load", 1),
+                4: "png",
+                15: "u8",
+            },
         ),
     ]
 
@@ -104,13 +180,39 @@ def video_frames_chain(schemas, assets: Path, output: Path) -> list[dict]:
 def range_chain(schemas, assets: Path, output: Path) -> list[dict]:
     """A native generator (Range) through native nodes (Math, Create Checkerboard, Text Append) into Save Image."""
     return [
-        make_node(schemas, "range", "chainner:utility:range", {0: 1, 1: True, 2: 6, 3: False}),
-        make_node(schemas, "size", "chainner:utility:math", {1: "mul", 0: edge("range"), 2: 16}),
-        make_node(schemas, "board", "chainner:image:create_checkerboard", {0: edge("size"), 1: edge("size"), 4: 5}),
-        make_node(schemas, "name", "chainner:utility:text_append", {0: "-", 1: "board", 2: edge("range")}),
         make_node(
-            schemas, "save", "chainner:image:save",
-            {0: edge("board"), 1: str(output), 2: None, 3: edge("name"), 4: "png", 15: "u8"},
+            schemas, "range", "chainner:utility:range", {0: 1, 1: True, 2: 6, 3: False}
+        ),
+        make_node(
+            schemas,
+            "size",
+            "chainner:utility:math",
+            {1: "mul", 0: edge("range"), 2: 16},
+        ),
+        make_node(
+            schemas,
+            "board",
+            "chainner:image:create_checkerboard",
+            {0: edge("size"), 1: edge("size"), 4: 5},
+        ),
+        make_node(
+            schemas,
+            "name",
+            "chainner:utility:text_append",
+            {0: "-", 1: "board", 2: edge("range")},
+        ),
+        make_node(
+            schemas,
+            "save",
+            "chainner:image:save",
+            {
+                0: edge("board"),
+                1: str(output),
+                2: None,
+                3: edge("name"),
+                4: "png",
+                15: "u8",
+            },
         ),
     ]
 
@@ -118,17 +220,42 @@ def range_chain(schemas, assets: Path, output: Path) -> list[dict]:
 def spritesheet_chain(schemas, assets: Path, output: Path) -> list[dict]:
     """A native generator over an image (Split Spritesheet) into Save Image, named by its index."""
     return [
-        make_node(schemas, "board", "chainner:image:create_checkerboard", {0: 90, 1: 64, 4: 7}),
-        make_node(schemas, "split", "chainner:image:split_spritesheet", {0: edge("board"), 1: 2, 2: 3}),
-        make_node(schemas, "name", "chainner:utility:text_append", {0: "_", 1: "sprite", 2: edge("split", 1)}),
         make_node(
-            schemas, "save", "chainner:image:save",
-            {0: edge("split"), 1: str(output), 2: None, 3: edge("name"), 4: "png", 15: "u8"},
+            schemas, "board", "chainner:image:create_checkerboard", {0: 90, 1: 64, 4: 7}
+        ),
+        make_node(
+            schemas,
+            "split",
+            "chainner:image:split_spritesheet",
+            {0: edge("board"), 1: 2, 2: 3},
+        ),
+        make_node(
+            schemas,
+            "name",
+            "chainner:utility:text_append",
+            {0: "_", 1: "sprite", 2: edge("split", 1)},
+        ),
+        make_node(
+            schemas,
+            "save",
+            "chainner:image:save",
+            {
+                0: edge("split"),
+                1: str(output),
+                2: None,
+                3: edge("name"),
+                4: "png",
+                15: "u8",
+            },
         ),
     ]
 
 
-CHAINS = {"resize": resize_chain, "range": range_chain, "spritesheet": spritesheet_chain}
+CHAINS = {
+    "resize": resize_chain,
+    "range": range_chain,
+    "spritesheet": spritesheet_chain,
+}
 
 
 def run_case(schemas, assets: Path, tmp_path: Path, case: str) -> list[str]:
@@ -147,13 +274,22 @@ def run_case(schemas, assets: Path, tmp_path: Path, case: str) -> list[str]:
         chain = parse_json(cast("list[JsonNode]", nodes))
         optimize(chain)
         writers = {
-            node.id: (lambda folder=output: sum(1 for p in folder.rglob("*") if p.is_file()))
+            node.id: (
+                lambda folder=output: sum(1 for p in folder.rglob("*") if p.is_file())
+            )
             for node in chain.nodes.values()
             if node.schema_id == "chainner:image:save"
         }
         declines = graph().native_declines()
-        results.append((chain, execute(kind, chain, storage=storage, output=output, writers=writers)))
-        assert graph().native_declines() == declines, f"{kind} run declined: {graph().native_declines()}"
+        results.append(
+            (
+                chain,
+                execute(kind, chain, storage=storage, output=output, writers=writers),
+            )
+        )
+        assert graph().native_declines() == declines, (
+            f"{kind} run declined: {graph().native_declines()}"
+        )
     (_, oracle), (chain, engine) = results
     assert oracle.error is None, f"the oracle failed: {oracle.error!r}"
     assert oracle.files, "the oracle wrote nothing"
@@ -200,7 +336,9 @@ def lazy_images(tmp_path_factory):
     rng = np.random.default_rng(7)
     for index in range(4):
         small = (rng.random((9, 11, 3)) * 255).astype(np.uint8)
-        image = cv2.resize(small, (83 + index, 61 + index), interpolation=cv2.INTER_CUBIC)
+        image = cv2.resize(
+            small, (83 + index, 61 + index), interpolation=cv2.INTER_CUBIC
+        )
         assert cv2.imwrite(str(folder / f"{index:03}.png"), image)
     return folder
 
@@ -209,60 +347,120 @@ def lazy_shape(schemas, shape: str, images: Path, output: Path) -> list[dict]:
     """Chains whose lazy inputs are read for some executions of their reader only (or that fail in a lazy reader)."""
 
     def load(fail_fast: int = 1) -> dict:
-        return make_node(schemas, "load", "chainner:image:load_images", {0: str(images), 2: 0, 4: 0, 6: fail_fast})
+        return make_node(
+            schemas,
+            "load",
+            "chainner:image:load_images",
+            {0: str(images), 2: 0, 4: 0, 6: fail_fast},
+        )
 
     def node(node_id: str, schema: str, inputs: dict) -> dict:
         return make_node(schemas, node_id, f"chainner:{schema}", inputs)
 
-    def save(node_id: str, image: dict, name: object, skip: int = 0, folder: Path = output) -> dict:
-        return node(node_id, "image:save", {0: image, 1: str(folder), 2: None, 3: name, 4: "png", 15: "u8", 1000: skip})
+    def save(
+        node_id: str, image: dict, name: object, skip: int = 0, folder: Path = output
+    ) -> dict:
+        return node(
+            node_id,
+            "image:save",
+            {
+                0: image,
+                1: str(folder),
+                2: None,
+                3: name,
+                4: "png",
+                15: "u8",
+                1000: skip,
+            },
+        )
 
     def blur(node_id: str, image: dict, radius: float) -> dict:
         return node(node_id, "image:gaussian_blur", {0: image, 1: radius, 2: radius})
 
     def width_compare(node_id: str, image: dict, width: int) -> list[dict]:
-        return [node("dims", "image:get_dims", {0: image}), node(node_id, "utility:compare", {0: 2, 1: edge("dims", 0), 2: width})]
+        return [
+            node("dims", "image:get_dims", {0: image}),
+            node(node_id, "utility:compare", {0: 2, 1: edge("dims", 0), 2: width}),
+        ]
 
-    unwritable = output / "blocker.txt" / "sub"  # a folder under a file cannot be created
+    unwritable = (
+        output / "blocker.txt" / "sub"
+    )  # a folder under a file cannot be created
     shapes = {
         # Save Image skips the existing 001.png: its lazy image (the blur) is not computed for that item.
         "skip-existing-loop": lambda: [
-            load(), blur("blur", edge("load"), 2.0), save("save", edge("blur"), edge("load", 3), skip=1),
+            load(),
+            blur("blur", edge("load"), 2.0),
+            save("save", edge("blur"), edge("load", 3), skip=1),
         ],
         "conditional-loop": lambda: [
-            load(), *width_compare("cmp", edge("load"), 84),
-            blur("b1", edge("load"), 1.0), blur("b2", edge("load"), 4.0),
-            node("cond", "utility:conditional", {0: edge("cmp"), 1: edge("b1"), 2: edge("b2")}),
+            load(),
+            *width_compare("cmp", edge("load"), 84),
+            blur("b1", edge("load"), 1.0),
+            blur("b2", edge("load"), 4.0),
+            node(
+                "cond",
+                "utility:conditional",
+                {0: edge("cmp"), 1: edge("b1"), 2: edge("b2")},
+            ),
             save("save", edge("cond"), edge("load", 3)),
         ],
         # Logic Operation's B is read only when A does not decide the result.
         "logic-conditional-loop": lambda: [
-            load(), *width_compare("cmp1", edge("load"), 83),
+            load(),
+            *width_compare("cmp1", edge("load"), 83),
             node("cmp2", "utility:compare", {0: 3, 1: edge("dims", 1), 2: 64}),
-            node("logic", "utility:logic_operation", {0: "and", 1: edge("cmp1"), 2: edge("cmp2")}),
+            node(
+                "logic",
+                "utility:logic_operation",
+                {0: "and", 1: edge("cmp1"), 2: edge("cmp2")},
+            ),
             blur("b1", edge("load"), 1.0),
-            node("cond", "utility:conditional", {0: edge("logic"), 1: edge("b1"), 2: edge("load")}),
+            node(
+                "cond",
+                "utility:conditional",
+                {0: edge("logic"), 1: edge("b1"), 2: edge("load")},
+            ),
             save("save", edge("cond"), edge("load", 3)),
         ],
         # The taken branch's crop fails for some items; the loop goes on (Stop on first error off).
         "deferred-lazy-errors": lambda: [
-            load(fail_fast=0), *width_compare("cmp", edge("load"), 84),
-            node("crop", "image:crop", {0: edge("load"), 1: 0, 2: 70, 3: 70, 4: 70, 5: 70}),
-            node("cond", "utility:conditional", {0: edge("cmp"), 1: edge("crop"), 2: edge("load")}),
+            load(fail_fast=0),
+            *width_compare("cmp", edge("load"), 84),
+            node(
+                "crop",
+                "image:crop",
+                {0: edge("load"), 1: 0, 2: 70, 3: 70, 4: 70, 5: 70},
+            ),
+            node(
+                "cond",
+                "utility:conditional",
+                {0: edge("cmp"), 1: edge("crop"), 2: edge("load")},
+            ),
             save("save", edge("cond"), edge("load", 3)),
         ],
         "conditional-skip-existing": lambda: [
-            node("one", "image:load", {0: str(images / "002.png")}), *width_compare("cmp", edge("one"), 84),
-            blur("b1", edge("one"), 1.0), blur("b2", edge("one"), 4.0),
-            node("cond", "utility:conditional", {0: edge("cmp"), 1: edge("b2"), 2: edge("b1")}),
-            save("save", edge("cond"), "single"), save("save2", edge("b2"), "other", skip=1),
+            node("one", "image:load", {0: str(images / "002.png")}),
+            *width_compare("cmp", edge("one"), 84),
+            blur("b1", edge("one"), 1.0),
+            blur("b2", edge("one"), 4.0),
+            node(
+                "cond",
+                "utility:conditional",
+                {0: edge("cmp"), 1: edge("b2"), 2: edge("b1")},
+            ),
+            save("save", edge("cond"), "single"),
+            save("save2", edge("b2"), "other", skip=1),
         ],
         "unwritable-folder": lambda: [
-            node("one", "image:load", {0: str(images / "002.png")}), blur("b1", edge("one"), 1.0),
+            node("one", "image:load", {0: str(images / "002.png")}),
+            blur("b1", edge("one"), 1.0),
             save("save", edge("b1"), "x", folder=unwritable),
         ],
         "unwritable-folder-loop": lambda: [
-            load(fail_fast=0), blur("b1", edge("load"), 1.0), save("save", edge("b1"), edge("load", 3), folder=unwritable),
+            load(fail_fast=0),
+            blur("b1", edge("load"), 1.0),
+            save("save", edge("b1"), edge("load", 3), folder=unwritable),
         ],
     }
     return shapes[shape]()
@@ -292,9 +490,13 @@ def test_lazy_shapes_match(schemas, lazy_images, tmp_path, shape):
         shutil.copyfile(lazy_images / "001.png", output / "001.png")
         shutil.copyfile(lazy_images / "001.png", output / "other.png")
         (output / "blocker.txt").write_bytes(b"x")
-        chain = parse_json(cast("list[JsonNode]", lazy_shape(schemas, shape, lazy_images, output)))
+        chain = parse_json(
+            cast("list[JsonNode]", lazy_shape(schemas, shape, lazy_images, output))
+        )
         optimize(chain)
-        results.append((chain, execute(kind, chain, storage=tmp_path / "storage", output=output)))
+        results.append(
+            (chain, execute(kind, chain, storage=tmp_path / "storage", output=output))
+        )
     (chain, oracle), *engines = results
     starts = {}
     for event in oracle.events:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import gc
 import importlib
+import math
 import os
 import subprocess
 import sys
@@ -20,12 +21,13 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-
-import api
-from api import NodeId
-from chain.chain import Chain, Edge, EdgeSource, EdgeTarget, FunctionNode
 from engine_differential import execute, mismatches
 from test_engine_scenarios import Builder, assert_same, items, run_both
+
+import api
+import native_executor
+from api import NodeId
+from chain.chain import Chain, Edge, EdgeSource, EdgeTarget, FunctionNode
 
 BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
 TESTS = Path(__file__).resolve().parent
@@ -35,7 +37,9 @@ TOOLS = BACKEND.parents[1] / "native" / "tools"
 @pytest.fixture(autouse=True)
 def test_package(monkeypatch):
     # Test nodes belong to no package: both executors read their settings from a stand-in.
-    monkeypatch.setattr(api.registry, "get_package", lambda _: SimpleNamespace(id="test"))
+    monkeypatch.setattr(
+        api.registry, "get_package", lambda _: SimpleNamespace(id="test")
+    )
 
 
 def run_script(script: str, threads: int, tmp_path: Path, **environment: str) -> str:
@@ -58,7 +62,11 @@ def run_script(script: str, threads: int, tmp_path: Path, **environment: str) ->
         timeout=600,
         check=False,
     )
-    assert result.returncode == 0, (result.returncode, result.stdout[-2000:], result.stderr[-4000:])
+    assert result.returncode == 0, (
+        result.returncode,
+        result.stdout[-2000:],
+        result.stderr[-4000:],
+    )
     return result.stdout.strip().splitlines()[-1]
 
 
@@ -220,8 +228,14 @@ def test_closed_executors_are_freed(tmp_path):
         loop = asyncio.get_running_loop()
         pool = ThreadPoolExecutor(2)
         executor = NativeExecutor(
-            id=ExecutionId("individual-executor single"), chain=b.chain, send_broadcast_data=True,
-            options=api.ExecutionOptions.parse({}), loop=loop, queue=Sink(), storage_dir=storage, pool=pool,
+            id=ExecutionId("individual-executor single"),
+            chain=b.chain,
+            send_broadcast_data=True,
+            options=api.ExecutionOptions.parse({}),
+            loop=loop,
+            queue=Sink(),
+            storage_dir=storage,
+            pool=pool,
             pool_size=8,
         )
         alive.append(weakref.ref(executor))
@@ -238,7 +252,12 @@ def test_closed_executors_are_freed(tmp_path):
         b = Builder()
         b.node("make", made)
         b.value("make", 0, 1)
-        b.node("sink", lambda x: trace.append(type(x).__name__), outputs=0, side_effects=True)
+        b.node(
+            "sink",
+            lambda x: trace.append(type(x).__name__),
+            outputs=0,
+            side_effects=True,
+        )
         b.edge("make", 0, "sink", 0)
         return b.chain
 
@@ -283,10 +302,17 @@ def test_closed_executors_are_freed_without_a_collection(tmp_path):
     async def drive(individual: bool) -> None:
         pool = ThreadPoolExecutor(2)
         executor = NativeExecutor(
-            id=ExecutionId("individual-executor single" if individual else "main-executor"),
-            chain=chain(side_effects=not individual), send_broadcast_data=True,
-            options=api.ExecutionOptions.parse({}), loop=asyncio.get_running_loop(), queue=Sink(),
-            storage_dir=tmp_path, pool=pool, pool_size=8,
+            id=ExecutionId(
+                "individual-executor single" if individual else "main-executor"
+            ),
+            chain=chain(side_effects=not individual),
+            send_broadcast_data=True,
+            options=api.ExecutionOptions.parse({}),
+            loop=asyncio.get_running_loop(),
+            queue=Sink(),
+            storage_dir=tmp_path,
+            pool=pool,
+            pool_size=8,
         )
         alive.append(weakref.ref(executor))
         if individual:
@@ -315,7 +341,13 @@ def registry():
     previous = getattr(main, "__file__", None)
     main.__file__ = str(BACKEND / "run.py")
     importlib.import_module("packages.chaiNNer_standard")
-    errors = api.registry.load_nodes(str(BACKEND / "server.py"))
+    # As the worker logs them: a package whose optional dependency is missing (e.g. tensorrt, registered once
+    # another test imported it) leaves its nodes out.
+    errors = [
+        e
+        for e in api.registry.load_nodes(str(BACKEND / "server.py"))
+        if not isinstance(e.error, ModuleNotFoundError)
+    ]
     assert not errors, [e.module for e in errors]
     yield
     if previous is None:
@@ -334,10 +366,23 @@ def test_a_value_a_native_node_cannot_take_runs_its_python_body(registry, tmp_pa
         flip = FunctionNode(NodeId("flip"), "chainner:image:flip")
         b.chain.add_node(flip)
         b.chain.inputs.set(flip.id, flip.data.inputs[1].id, 0)
-        b.chain.add_edge(Edge(EdgeSource(NodeId("two"), api.OutputId(0)), EdgeTarget(flip.id, flip.data.inputs[0].id)))
-        b.node("sink", lambda image: trace.append(image.shape), outputs=0, side_effects=True)
         b.chain.add_edge(
-            Edge(EdgeSource(flip.id, flip.data.outputs[0].id), EdgeTarget(NodeId("sink"), api.InputId(0)))
+            Edge(
+                EdgeSource(NodeId("two"), api.OutputId(0)),
+                EdgeTarget(flip.id, flip.data.inputs[0].id),
+            )
+        )
+        b.node(
+            "sink",
+            lambda image: trace.append(image.shape),
+            outputs=0,
+            side_effects=True,
+        )
+        b.chain.add_edge(
+            Edge(
+                EdgeSource(flip.id, flip.data.outputs[0].id),
+                EdgeTarget(NodeId("sink"), api.InputId(0)),
+            )
         )
         return b.chain
 
@@ -385,10 +430,14 @@ def test_into_directory_is_never_computed_ahead(tmp_path):
         b = Builder()
         b.node("numbers", lambda: items(list(range(10))), kind="generator", inputs=0)
         committed: list[int] = []
-        into = b.node("into", lambda x: (trace.append(("into", x, len(committed))), x)[1])
-        into.data = dataclasses.replace(into.data, schema_id="chainner:utility:into_directory")
+        into = b.node(
+            "into", lambda x: (trace.append(("into", x, len(committed))), x)[1]
+        )
+        into.data = dataclasses.replace(
+            into.data, schema_id="chainner:utility:into_directory"
+        )
         into.schema_id = into.data.schema_id
-        b.node("sink", lambda x: committed.append(x), outputs=0, side_effects=True)
+        b.node("sink", committed.append, outputs=0, side_effects=True)
         b.edge("numbers", 0, "into", 0)
         b.edge("into", 0, "sink", 0)
         return b.chain
@@ -449,7 +498,12 @@ print(before, burst, psutil.Process().num_threads())
 
 def test_idle_service_threads_end(tmp_path):
     # A burst of previews takes a driver, event pump and broadcaster thread each; idle, they end (here after 1 s).
-    before, burst, after = map(int, run_script(IDLE_SERVICES, 2, tmp_path, CHAINNER_C_ENGINE_IDLE_SECONDS="1").split())
+    before, burst, after = map(
+        int,
+        run_script(
+            IDLE_SERVICES, 2, tmp_path, CHAINNER_C_ENGINE_IDLE_SECONDS="1"
+        ).split(),
+    )
     assert burst > before + 8
     assert after <= before + 2
 
@@ -468,11 +522,16 @@ print(graph().python_threads())
 )
 
 
-@pytest.mark.parametrize("value, threads", [("2000", 1024), ("1024", 1024), ("3", 3), ("0", 8)])
+@pytest.mark.parametrize(
+    "value, threads", [("2000", 1024), ("1024", 1024), ("3", 3), ("0", 8)]
+)
 def test_python_threads_are_at_most_the_slot_limit(tmp_path, value, threads):
     # CHAINNER_C_PYTHON_THREADS above the Python slots' hard limit (1024) counts as that limit; 0 is invalid (the
     # default, 8). The engine runs Python nodes with it.
-    assert int(run_script(PYTHON_THREADS, 4, tmp_path, CHAINNER_C_PYTHON_THREADS=value)) == threads
+    assert (
+        int(run_script(PYTHON_THREADS, 4, tmp_path, CHAINNER_C_PYTHON_THREADS=value))
+        == threads
+    )
 
 
 def test_a_lazy_input_read_after_its_run_fails_cleanly(tmp_path):
@@ -484,10 +543,58 @@ def test_a_lazy_input_read_after_its_run_fails_cleanly(tmp_path):
         b = Builder()
         b.node("upstream", lambda x: x + 1)
         b.value("upstream", 0, 1)
-        b.node("keeper", lambda lazy: kept.append(lazy), outputs=0, side_effects=True, lazy=(0,))
+        b.node(
+            "keeper",
+            kept.append,
+            outputs=0,
+            side_effects=True,
+            lazy=(0,),
+        )
         b.edge("upstream", 0, "keeper", 0)
         return b.chain
 
     assert execute("native", keeping([]), storage=tmp_path).error is None
     with pytest.raises(RuntimeError, match="after its run ended"):
         _ = kept[0].value
+
+
+def test_loop_previews_are_rate_limited(registry, tmp_path):
+    # Fable R4: a loop's LargeImage previews (View Image of a 1080p image per item, an item every 80 ms) start at most
+    # once per 250 ms per node, the first at once, the newest kept; the loop's end sends the last item's.
+    def paced(trace: list[object]) -> Chain:
+        b = Builder()
+        frames: list[object] = [
+            np.full((1080, 1920, 3), i / 20, dtype=np.float32) for i in range(20)
+        ]
+        b.node("frames", lambda: items(frames), kind="generator", inputs=0)
+        b.node(
+            "pace", lambda context, x: (time.sleep(0.08), x)[1], context=True
+        )  # on the driver, item by item
+        view = FunctionNode(NodeId("view"), "chainner:image:view")
+        b.chain.add_node(view)
+        b.edge("frames", 0, "pace", 0)
+        b.chain.add_edge(
+            Edge(
+                EdgeSource(NodeId("pace"), api.OutputId(0)),
+                EdgeTarget(view.id, view.data.inputs[0].id),
+            )
+        )
+        return b.chain
+
+    def run(limit: bool) -> tuple[float, list[object]]:
+        result = execute("native", paced([]), storage=tmp_path, preview_limit=limit)
+        assert result.error is None
+        views = [
+            e["data"]
+            for e in result.events
+            if e["event"] == "node-broadcast" and e["data"]["nodeId"] == "view"
+        ]
+        return result.seconds, views
+
+    seconds, limited = run(True)
+    _, unlimited = run(False)
+    assert (
+        1 <= len(limited) <= math.ceil(seconds / native_executor.PREVIEW_INTERVAL) + 1
+    ), (len(limited), seconds)
+    assert len(limited) < len(unlimited), (len(limited), len(unlimited))
+    assert limited[-1] == unlimited[-1]

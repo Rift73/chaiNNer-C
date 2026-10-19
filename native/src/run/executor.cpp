@@ -421,7 +421,7 @@ struct Hooks {
         regular_outputs, generator_outputs, collector, node_cleanups, chain_cleanups, output_bytes,
         broadcast, items, describe, materialize, collector_iterate, collector_complete, prepare, begin_loop, iteration,
         end_loop, window, warn_look_ahead_off, native_generator, file_identity, item_identity, regular_output,
-        memo_bytes, loaded, aborted_type;
+        memo_bytes, loaded, preview_url, aborted_type;
 };
 
 struct Event {
@@ -690,15 +690,20 @@ private:
     bool events_stop_ = false, pumping_ = false, events_failed_ = false;
     std::future<void> pump_;
 
-    // Broadcasts (LatestBroadcasts): one pending job per node, sent one at a time in submission order
+    // Broadcasts (LatestBroadcasts): one pending job per node, sent one at a time in submission order; a loop's
+    // LargeImage previews (limited) at most one start per preview_interval_ and node, the newest kept meanwhile
     struct BroadcastJob {
         int node;
         std::vector<Value> outputs;
+        bool limited = false;
     };
     std::mutex broadcasts_mutex_;
     std::condition_variable broadcasts_changed_;
     std::deque<int> broadcast_order_;
     std::unordered_map<int, BroadcastJob> broadcast_jobs_;
+    std::unordered_map<int, Clock::time_point> preview_started_;
+    Clock::duration preview_interval_{};  // 0: no limit
+    int flushing_ = 0;  // a flush sends the limited previews at once
     bool broadcasting_ = false, broadcasts_stop_ = false, broadcasts_failed_ = false;
     std::future<void> broadcaster_;
 
@@ -911,9 +916,11 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
                    bind("materialize"), bind("collector_iterate"), bind("collector_complete"), bind("prepare"),
                    bind("begin_loop"), bind("iteration"), bind("end_loop"), bind("window"),
                    bind("warn_look_ahead_off"), bind("native_generator"), bind("file_identity"),
-                   bind("item_identity"), bind("regular_output"), bind("memo_bytes"), bind("loaded"),
+                   bind("item_identity"), bind("regular_output"), bind("memo_bytes"), bind("loaded"), bind("preview_url"),
                    bind("aborted_type")};
     send_broadcast_data_ = plan["send_broadcast_data"].cast<bool>();
+    preview_interval_ = std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double>(plan["preview_interval"].cast<double>()));
     for (py::handle id : plan["chain_start"]) chain_start_.push_back(id.cast<std::string>());
     for (py::handle node_handle : plan["nodes"]) {
         py::dict node = py::reinterpret_borrow<py::dict>(node_handle);
@@ -3191,10 +3198,14 @@ void Run::flush_events()
 
 void Run::submit_broadcast(int node, const std::vector<Value> &outputs)
 {
-    if (!send_broadcast_data_ || nodes_[size_t(node)].outputs.empty()) return;
+    const NodePlan &plan = nodes_[size_t(node)];
+    if (!send_broadcast_data_ || plan.outputs.empty()) return;
+    // A /run's LargeImage previews of an item (an iterated node's): rate-limited (hunt-misc 6, Fable R4).
+    bool limited = mode_ == "run" && preview_interval_ > Clock::duration::zero() && iterated_[size_t(node)] &&
+                   std::any_of(plan.outputs.begin(), plan.outputs.end(), [](const OutputPlan &o) { return o.large; });
     {
         std::lock_guard<std::mutex> locked(broadcasts_mutex_);
-        auto [job, inserted] = broadcast_jobs_.insert_or_assign(node, BroadcastJob{node, outputs});
+        auto [job, inserted] = broadcast_jobs_.insert_or_assign(node, BroadcastJob{node, outputs, limited});
         if (inserted) broadcast_order_.push_back(node);
     }
     broadcasts_changed_.notify_all();
@@ -3204,9 +3215,87 @@ void Run::submit_broadcast(int node, const std::vector<Value> &outputs)
  * LargeImageOutput's previews through image_preview.cpp, the same bytes as today's Python path. */
 struct ImageBroadcast {
     size_t position;
-    int32_t height, width, channels;
+    Image image;
     std::vector<cn::image_preview::Preview> previews;
     bool large;
+    PyRef cached;            // its previews' Python list, already encoded (PreviewCache)
+    bool cacheable = false;  // pooled storage: its new previews are kept
+};
+
+/* LargeImage previews already encoded, by image (hunt-misc 8): an unchanged engine image (a memo hit, a generator's
+ * static outputs again, a node passing its input through) is not encoded again. Keyed by the image's view of its
+ * storage, pooled storage only (immutable once published), held weakly: an entry never keeps an image alive, and a
+ * freed storage's address reused by another never matches. The previews' Python list is kept, so its URLs are not
+ * copied again either: an entry goes with its image (when the next one is kept), else least recently used first out
+ * within 64 MiB of URLs and 64 entries. */
+class PreviewCache {
+public:
+    static PreviewCache &get()
+    {
+        static PreviewCache *cache = new PreviewCache();
+        return *cache;
+    }
+    PyRef find(const Image &image)
+    {
+        std::lock_guard<std::mutex> locked(mutex_);
+        auto found = entries_.find(key(image));
+        if (found == entries_.end() || found->second.storage.lock() != image.storage) {
+            ++misses_;
+            return {};
+        }
+        order_.splice(order_.end(), order_, found->second.position);
+        ++hits_;
+        return found->second.previews;
+    }
+    void insert(const Image &image, PyRef previews, size_t bytes)
+    {
+        std::vector<PyRef> dropped;  // released outside the lock
+        std::lock_guard<std::mutex> locked(mutex_);
+        if (bytes > budget_ || entries_.count(key(image))) return;
+        auto drop = [&](std::map<Id, Entry>::iterator victim) {
+            bytes_ -= victim->second.bytes;
+            dropped.push_back(std::move(victim->second.previews));
+            order_.erase(victim->second.position);
+            entries_.erase(victim);
+        };
+        for (auto it = entries_.begin(); it != entries_.end();) {
+            auto current = it++;
+            if (current->second.storage.expired()) drop(current);  // its image is gone
+        }
+        while ((bytes_ + bytes > budget_ || entries_.size() >= capacity_) && !order_.empty())
+            drop(entries_.find(order_.front()));
+        bytes_ += bytes;
+        order_.push_back(key(image));
+        entries_.emplace(key(image), Entry{image.storage, std::move(previews), bytes, std::prev(order_.end())});
+    }
+    py::dict stats()
+    {
+        std::lock_guard<std::mutex> locked(mutex_);
+        py::dict result;
+        result["entries"] = entries_.size();
+        result["bytes"] = bytes_;
+        result["hits"] = hits_;
+        result["misses"] = misses_;
+        return result;
+    }
+
+private:
+    using Id = std::tuple<const ImageStorage *, const float *, int32_t, int32_t, int32_t>;
+    static Id key(const Image &image)
+    {
+        return {image.storage.get(), image.data, image.height, image.width, image.channels};
+    }
+    struct Entry {
+        std::weak_ptr<const ImageStorage> storage;
+        PyRef previews;
+        size_t bytes;
+        std::list<Id>::iterator position;
+    };
+    std::mutex mutex_;
+    std::map<Id, Entry> entries_;
+    std::list<Id> order_;  // least recently used first
+    size_t budget_ = size_t(64) << 20, capacity_ = 64, bytes_ = 0;
+    uint64_t hits_ = 0, misses_ = 0;
 };
 
 void Run::broadcast_now(int node, const std::vector<Value> &outputs, const PyRef &generator)
@@ -3218,13 +3307,18 @@ void Run::broadcast_now(int node, const std::vector<Value> &outputs, const PyRef
         for (size_t i = 0; i < outputs.size() && i < plan.outputs.size(); ++i) {
             const Image *image = std::get_if<Image>(&outputs[i]);
             if (!plan.outputs[i].image || !image || image->height <= 0 || image->width <= 0) continue;
-            ImageBroadcast broadcast{i, image->height, image->width, image->channels, {}, plan.outputs[i].large};
-            // A preview the native encoder declines stays Python's (numpy_outputs._previews).
-            if (broadcast.large &&
-                !(cn::image_decode::enabled() &&
-                  cn::image_preview::previews(image->data, uint32_t(image->height), uint32_t(image->width),
-                                              uint32_t(image->channels), broadcast.previews)))
-                continue;
+            ImageBroadcast broadcast{i, *image, {}, plan.outputs[i].large, PyRef{}, false};
+            if (broadcast.large) {
+                bool pooled = !image->storage->owner().handle;
+                if (pooled) broadcast.cached = PreviewCache::get().find(*image);
+                // A preview the native encoder declines stays Python's (numpy_outputs._previews).
+                if (!broadcast.cached.handle &&
+                    !(cn::image_decode::enabled() &&
+                      cn::image_preview::previews(image->data, uint32_t(image->height), uint32_t(image->width),
+                                                  uint32_t(image->channels), broadcast.previews)))
+                    continue;
+                broadcast.cacheable = pooled && !broadcast.cached.handle;
+            }
             images.push_back(std::move(broadcast));
         }
     } catch (const std::exception &) {
@@ -3239,24 +3333,29 @@ void Run::broadcast_now(int node, const std::vector<Value> &outputs, const PyRef
         for (const ImageBroadcast &image : images) {
             values[image.position] = py::none();
             py::dict data;
-            if (image.large) {
+            if (image.cached.handle) {
+                data["previews"] = py::handle(static_cast<PyObject *>(image.cached.handle.get()));
+            } else if (image.large) {
                 py::list previews;
+                size_t bytes = 0;
                 for (const auto &preview : image.previews) {
                     py::dict entry;
                     entry["width"] = preview.width;
                     entry["height"] = preview.height;
-                    entry["url"] = py::str(preview.url);
+                    entry["url"] = hooks_.preview_url(py::str(preview.url));  // events.PreviewUrl: spliced, not escaped
                     previews.append(entry);
+                    bytes += preview.url.size();
                 }
                 data["previews"] = previews;
+                if (image.cacheable) PreviewCache::get().insert(image.image, py_ref(previews), bytes);
             }
-            data["height"] = image.height;
-            data["width"] = image.width;
-            data["channels"] = image.channels;
+            data["height"] = image.image.height;
+            data["width"] = image.image.width;
+            data["channels"] = image.image.channels;
             py::dict fields;
-            fields["width"] = image.width;
-            fields["height"] = image.height;
-            fields["channels"] = image.channels;
+            fields["width"] = image.image.width;
+            fields["height"] = image.image.height;
+            fields["channels"] = image.image.channels;
             py::dict type;
             type["type"] = "named";
             type["name"] = "Image";
@@ -3276,18 +3375,40 @@ void Run::broadcast_now(int node, const std::vector<Value> &outputs, const PyRef
     }
 }
 
+/* Sends the pending broadcasts in submission order, one at a time. A limited one (a loop's LargeImage previews)
+ * waits until preview_interval_ after its node's previous start, the newest kept meanwhile; the first of a run, a
+ * flush (the loop's or run's end) and the run's close send at once. */
 void Run::broadcaster()
 {
     for (;;) {
         BroadcastJob job;
         {
             std::unique_lock<std::mutex> locked(broadcasts_mutex_);
-            broadcasts_changed_.wait(locked, [&] { return broadcasts_stop_ || !broadcast_order_.empty(); });
-            if (broadcast_order_.empty()) return;
-            int node = broadcast_order_.front();
-            broadcast_order_.pop_front();
-            job = std::move(broadcast_jobs_.at(node));
-            broadcast_jobs_.erase(node);
+            for (;;) {
+                if (broadcasts_stop_ && broadcast_order_.empty()) return;
+                Clock::time_point now = Clock::now();
+                std::optional<Clock::time_point> wake;
+                auto due = std::find_if(broadcast_order_.begin(), broadcast_order_.end(), [&](int node) {
+                    if (!broadcast_jobs_.at(node).limited || flushing_ > 0 || broadcasts_stop_) return true;
+                    auto started = preview_started_.find(node);
+                    if (started == preview_started_.end() || started->second + preview_interval_ <= now) return true;
+                    Clock::time_point ready = started->second + preview_interval_;
+                    wake = wake ? std::min(*wake, ready) : ready;
+                    return false;
+                });
+                if (due != broadcast_order_.end()) {
+                    int node = *due;
+                    broadcast_order_.erase(due);
+                    job = std::move(broadcast_jobs_.at(node));
+                    broadcast_jobs_.erase(node);
+                    if (job.limited) preview_started_[node] = now;
+                    break;
+                }
+                if (wake)
+                    broadcasts_changed_.wait_until(locked, *wake);
+                else
+                    broadcasts_changed_.wait(locked);
+            }
             broadcasting_ = true;
         }
         broadcast_now(job.node, job.outputs, PyRef{});
@@ -3303,7 +3424,10 @@ void Run::broadcaster()
 void Run::flush_broadcasts()
 {
     std::unique_lock<std::mutex> locked(broadcasts_mutex_);
+    ++flushing_;
+    broadcasts_changed_.notify_all();
     broadcasts_changed_.wait(locked, [&] { return (broadcast_order_.empty() && !broadcasting_) || broadcasts_failed_; });
+    --flushing_;
 }
 
 
@@ -3428,6 +3552,8 @@ void cn_bind_run_executor(py::module_ &module)
     module.def("memo_stats", [] { return cn::run::Memo::get().stats(); },
                "The memo cache's entries, bytes, budget, hits and misses (amendment A3).");
     module.def("memo_clear", [] { cn::run::Memo::get().clear(); }, "Drops every memo cache entry.");
+    module.def("preview_cache_stats", [] { return cn::run::PreviewCache::get().stats(); },
+               "The LargeImage preview cache's entries, bytes (of URLs), hits and misses (hunt-misc 8).");
     module.def("python_threads", [] { return cn::run::python_threads(); },
                "The engine threads allowed in Python at once (CHAINNER_C_PYTHON_THREADS, at most 1024).");
     module.def("native_declines", [] {

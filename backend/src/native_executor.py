@@ -45,7 +45,7 @@ from api import (
 from chain.cache import OutputCache, get_cache_strategies
 from chain.chain import Chain, CollectorNode, FunctionNode, GeneratorNode, Node
 from chain.input import EdgeInput, Input, InputMap
-from events import EventConsumer
+from events import EventConsumer, PreviewUrl
 from nodes.impl.execution_cleanup import run_cleanup_functions, run_cleanup_groups
 from nodes.impl.execution_scheduler import pure_cpu_node
 from nodes.impl.item_window import (
@@ -92,6 +92,10 @@ EXECUTOR_VARIABLE = "CHAINNER_C_EXECUTOR"
 EXECUTORS = ("python", "native")
 DEFAULT_EXECUTOR = "native"
 STATIC_HITS = -1  # a static cache entry (StaticCaching) in the plan
+# A /run's LargeImage previews of a loop's items: per node, the first at once, then at most one start per this many
+# seconds, the newest kept meanwhile; a loop's and the run's end send what waits (hunt-misc 6, Fable R4). 0: no limit
+# (engine_differential.every_broadcast, as the oracle sends every broadcast).
+PREVIEW_INTERVAL = 0.25
 # A stopped run's own end (its events and cleanups) is awaited this long; a node still running then (a long Python
 # body or native kernel without an abort check) finishes in the background, well within the host's 3 s for /kill.
 STOP_GRACE_SECONDS = 0.5
@@ -456,6 +460,7 @@ class _Hooks:
         self.inputs = inputs
         self.chain = chain
         self.aborted_type = Aborted
+        self.preview_url = PreviewUrl
         self.done: asyncio.Future[object] = loop.create_future()
         # The run ended for its request while its engine still ran a node: no event of it reaches the queue any more.
         self.ended = False
@@ -1106,6 +1111,7 @@ def build_plan(
         "tail": tail,
         "chain_start": list(chain_start),
         "send_broadcast_data": send_broadcast_data,
+        "preview_interval": PREVIEW_INTERVAL,
         "storage_dir": storage_dir,
     }
     return plan, nodes, contexts, inputs

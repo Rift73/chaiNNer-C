@@ -235,6 +235,12 @@ def test_host_and_worker_close_as_upstream():
 
 def test_event_stream_sends_without_acknowledgments():
     here, upstream = here_and_upstream("server.py", "sse")
+    # The same text, a broadcast's preview URLs spliced in unescaped (events.event_text, hunt-misc 8).
+    upstream = replace_once(
+        upstream,
+        "f\"event: {message['event']}\\ndata: {stringify(message['data'])}\\n\\n\"",
+        "event_text(message)",
+    )
     assert here == upstream
     methods = [
         [getattr(n, "name", "") for n in definition(ast.parse(text), "EventQueue").body]

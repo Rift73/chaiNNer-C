@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Literal, TypedDict, Union
+from typing import Dict, Literal, TypedDict, Union, cast
 
 import navi
 from api import BroadcastData, ErrorValue, InputId, IterOutputId, NodeId, OutputId
@@ -205,3 +206,60 @@ class BackendEventBroadcast:
 
     def stop_listening(self, listener: EventQueue) -> None:
         self._listeners.discard(listener)
+
+
+class PreviewUrl(str):
+    """A LargeImage preview's data URL (base64): JSON leaves it as it is, so /sse splices it into an event's text
+    instead of json.dumps scanning it (5 MB for a 1080p preview)."""
+
+
+_PLACEHOLDER = "\x00preview\x00"
+_PLACEHOLDER_JSON = json.dumps(_PLACEHOLDER)
+
+
+def event_text(message: Event) -> str:
+    """An event as /sse sends it: its name and its data as JSON (json.dumps), a broadcast's PreviewUrl previews
+    spliced in whole."""
+    data: object = message["data"]
+    urls: list[str] = []
+    if message["event"] == "node-broadcast":
+        data = _without_preview_urls(cast("dict[str, object]", data), urls)
+    text = json.dumps(data)
+    if urls:
+        pieces = text.split(_PLACEHOLDER_JSON)
+        if len(pieces) == len(urls) + 1:
+            spliced = [pieces[0]]
+            for url, piece in zip(urls, pieces[1:], strict=True):
+                spliced += ['"', url, '"', piece]
+            text = "".join(spliced)
+        else:  # a string of the event equals the placeholder
+            text = json.dumps(message["data"])
+    return f"event: {message['event']}\ndata: {text}\n\n"
+
+
+def _without_preview_urls(
+    data: dict[str, object], urls: list[str]
+) -> dict[str, object]:
+    """The broadcast's data with its PreviewUrls replaced by the placeholder (copies; the event is not changed), the
+    URLs collected in json.dumps's order."""
+    outputs = data.get("data")
+    if not isinstance(outputs, dict):
+        return data
+    replaced: dict[object, object] = {}
+    for key, value in cast("dict[object, object]", outputs).items():
+        previews = value.get("previews") if isinstance(value, dict) else None
+        if not (isinstance(value, dict) and isinstance(previews, list)):
+            replaced[key] = value
+            continue
+        entries: list[object] = []
+        for preview in cast("list[object]", previews):
+            url = preview.get("url") if isinstance(preview, dict) else None
+            if isinstance(preview, dict) and isinstance(url, PreviewUrl):
+                urls.append(url)
+                entries.append(
+                    {**cast("dict[str, object]", preview), "url": _PLACEHOLDER}
+                )
+            else:
+                entries.append(preview)
+        replaced[key] = {**cast("dict[str, object]", value), "previews": entries}
+    return {**data, "data": replaced}

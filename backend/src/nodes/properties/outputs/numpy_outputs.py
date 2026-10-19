@@ -7,6 +7,7 @@ import numpy as np
 
 import navi
 from api import BaseOutput, BroadcastData, InputId, OutputKind
+from events import PreviewUrl
 
 from ...impl.image_utils import normalize, to_uint8
 from ...impl.native_buffers import normalized_readonly, register_normalized_copy
@@ -156,6 +157,9 @@ class LargeImageOutput(ImageOutput):
         previews = graph().image_io_previews(img)
         if previews is None:
             previews = _previews(img, max(h, w))
+        # /sse splices a PreviewUrl into its text, unescaped.
+        for preview in previews:
+            preview["url"] = PreviewUrl(preview["url"])
         return {"previews": previews, "height": h, "width": w, "channels": c}
 
 

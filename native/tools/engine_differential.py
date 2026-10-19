@@ -36,17 +36,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from api import ExecutionOptions, NodeId
 from bench_oracle import FFMPEG
+from verify_runtime import sse_event_mismatches, sse_record
+
+import native_executor
+import process
+from api import ExecutionOptions, NodeId
 from chain.cache import OutputCache
 from chain.chain import Chain, CollectorNode, FunctionNode, GeneratorNode
 from events import Event, EventConsumer
-import process
 from native_executor import NativeExecutor
 from nodes.impl import numpy_pool
 from nodes.impl.execution_scheduler import LatestBroadcasts
 from process import ExecutionId, Executor, NodeExecutionError, NodeOutput
-from verify_runtime import sse_event_mismatches, sse_record
 
 KINDS = ("python", "native")
 
@@ -137,24 +139,42 @@ class _EveryBroadcast(LatestBroadcasts):
 
 @contextlib.contextmanager
 def every_broadcast():
-    """process.Executor sending every broadcast (the oracle: its LatestBroadcasts would drop some by timing)."""
-    original = process.LatestBroadcasts
+    """process.Executor sending every broadcast (the oracle: its LatestBroadcasts would drop some by timing), and the
+    engine without its loop preview rate limit."""
+    original, interval = process.LatestBroadcasts, native_executor.PREVIEW_INTERVAL
     process.LatestBroadcasts = _EveryBroadcast
+    native_executor.PREVIEW_INTERVAL = 0
     try:
         yield
     finally:
         process.LatestBroadcasts = original
+        native_executor.PREVIEW_INTERVAL = interval
 
 
 def _error_event(error: BaseException) -> dict[str, Any]:
     """server.py's execution-error event of a failed /run."""
     if isinstance(error, NodeExecutionError) and error.__cause__ is not None:
-        trace = "".join(traceback.format_exception(type(error.__cause__), error.__cause__, error.__cause__.__traceback__))
+        trace = "".join(
+            traceback.format_exception(
+                type(error.__cause__), error.__cause__, error.__cause__.__traceback__
+            )
+        )
     else:
-        trace = "".join(traceback.format_exception(type(error), error, error.__traceback__))
-    data: dict[str, Any] = {"message": "Error running nodes!", "source": None, "exception": str(error), "exceptionTrace": trace}
+        trace = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+    data: dict[str, Any] = {
+        "message": "Error running nodes!",
+        "source": None,
+        "exception": str(error),
+        "exceptionTrace": trace,
+    }
     if isinstance(error, NodeExecutionError):
-        data["source"] = {"nodeId": error.node_id, "schemaId": error.node_data.schema_id, "inputs": error.inputs}
+        data["source"] = {
+            "nodeId": error.node_id,
+            "schemaId": error.node_data.schema_id,
+            "inputs": error.inputs,
+        }
     return {"event": "execution-error", "data": data}
 
 
@@ -168,7 +188,19 @@ def _file_digest(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix in LOSSLESS_VIDEO | LOSSY_VIDEO and FFMPEG.exists():
         frames = subprocess.run(
-            [str(FFMPEG), "-nostdin", "-v", "error", "-i", str(path), "-map", "0:v", "-f", "framemd5", "-"],
+            [
+                str(FFMPEG),
+                "-nostdin",
+                "-v",
+                "error",
+                "-i",
+                str(path),
+                "-map",
+                "0:v",
+                "-f",
+                "framemd5",
+                "-",
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -178,7 +210,9 @@ def _file_digest(path: Path) -> str:
         if suffix in LOSSLESS_VIDEO:
             return "frames:" + hashlib.sha256(frames.encode()).hexdigest()
         sizes = [line for line in frames.splitlines() if line.startswith("#dimensions")]
-        count = sum(1 for line in frames.splitlines() if line and not line.startswith("#"))
+        count = sum(
+            1 for line in frames.splitlines() if line and not line.startswith("#")
+        )
         return f"lossy video: {count} frames, {sizes}"
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -187,7 +221,11 @@ def digest(folder: Path | None) -> dict[str, str]:
     """Every file under the folder by relative path, as _file_digest gives it."""
     if folder is None or not folder.exists():
         return {}
-    return {path.relative_to(folder).as_posix(): _file_digest(path) for path in sorted(folder.rglob("*")) if path.is_file()}
+    return {
+        path.relative_to(folder).as_posix(): _file_digest(path)
+        for path in sorted(folder.rglob("*"))
+        if path.is_file()
+    }
 
 
 def execute(
@@ -202,39 +240,52 @@ def execute(
     pool_size: int = 8,
     during: Callable[[object], None] | None = None,
     parent_cache: dict[NodeId, NodeOutput] | None = None,
+    preview_limit: bool = False,
 ) -> Result:
     """Runs the chain on one executor ("python" or "native") as /run does. writers: per writer node, a count of its
     files, checked against its node-finish events as they are queued. during: called with the executor once it
-    runs (e.g. to pause or stop it). parent_cache: individually run outputs, as /run passes the server's cache."""
+    runs (e.g. to pause or stop it). parent_cache: individually run outputs, as /run passes the server's cache.
+    The oracle sends every broadcast, and the engine runs without its loop preview rate limit unless preview_limit."""
     early: list[str] = []
     finishes: defaultdict[str, int] = defaultdict(int)
 
     def check(event: dict[str, Any]) -> None:
         data = event.get("data")
         node_id = data.get("nodeId") if isinstance(data, dict) else None
-        if event["event"] == "node-finish" and writers and isinstance(node_id, str) and NodeId(node_id) in writers:
+        if (
+            event["event"] == "node-finish"
+            and writers
+            and isinstance(node_id, str)
+            and NodeId(node_id) in writers
+        ):
             finishes[node_id] += 1
             if writers[NodeId(node_id)]() < finishes[node_id]:
-                early.append(f"{node_id}: node-finish {finishes[node_id]} before its file")
+                early.append(
+                    f"{node_id}: node-finish {finishes[node_id]} before its file"
+                )
 
     queue = _Queue(check)
 
     async def main() -> tuple[BaseException | None, float]:
         loop = asyncio.get_running_loop()
         pool = ThreadPoolExecutor(pool_size, initializer=numpy_pool.install)
-        arguments: dict[str, Any] = dict(
-            id=ExecutionId(f"differential {kind}"),
-            chain=chain,
-            send_broadcast_data=send_broadcast_data,
-            options=ExecutionOptions.parse(options or {}),
-            loop=loop,
-            queue=queue,
-            storage_dir=storage,
-            pool=pool,
-            pool_size=pool_size,
-            parent_cache=None if parent_cache is None else OutputCache(static_data=parent_cache.copy()),
+        arguments: dict[str, Any] = {
+            "id": ExecutionId(f"differential {kind}"),
+            "chain": chain,
+            "send_broadcast_data": send_broadcast_data,
+            "options": ExecutionOptions.parse(options or {}),
+            "loop": loop,
+            "queue": queue,
+            "storage_dir": storage,
+            "pool": pool,
+            "pool_size": pool_size,
+            "parent_cache": None
+            if parent_cache is None
+            else OutputCache(static_data=parent_cache.copy()),
+        }
+        executor = (
+            Executor(**arguments) if kind == "python" else NativeExecutor(**arguments)
         )
-        executor = Executor(**arguments) if kind == "python" else NativeExecutor(**arguments)
         start = time.perf_counter()
         error: BaseException | None = None
         try:
@@ -251,7 +302,11 @@ def execute(
         pool.shutdown()
         return error, seconds
 
-    with every_broadcast() if kind == "python" else contextlib.nullcontext():
+    with (
+        every_broadcast()
+        if kind == "python" or not preview_limit
+        else contextlib.nullcontext()
+    ):
         error, seconds = asyncio.run(main())
     if error is not None:
         queue.events.append(json.loads(json.dumps(_error_event(error))))
@@ -261,7 +316,11 @@ def execute(
 def _outcome(error: BaseException | None) -> tuple[str, str] | None:
     if error is None:
         return None
-    cause = error.__cause__ if isinstance(error, NodeExecutionError) and error.__cause__ else error
+    cause = (
+        error.__cause__
+        if isinstance(error, NodeExecutionError) and error.__cause__
+        else error
+    )
     return type(error).__name__, f"{type(cause).__name__}: {error}"
 
 
@@ -297,11 +356,15 @@ def order_violations(events: list[dict[str, Any]], chain: Chain) -> list[str]:
     for node_id, executions in runs.items():
         for start, finish in executions:
             if start is None:
-                violations.append(f"{node_id}: node-finish without its node-start (event {finish})")
+                violations.append(
+                    f"{node_id}: node-finish without its node-start (event {finish})"
+                )
             elif finish is not None and finish < start:
                 violations.append(f"{node_id}: node-finish before node-start")
     failed = bool(errors) or any(
-        "Errors occurred during iteration" in str(e["data"].get("exception", "")) for e in events if e["event"] == "execution-error"
+        "Errors occurred during iteration" in str(e["data"].get("exception", ""))
+        for e in events
+        if e["event"] == "execution-error"
     )
     if failed:
         return violations
@@ -312,7 +375,12 @@ def order_violations(events: list[dict[str, Any]], chain: Chain) -> list[str]:
     for upstream_id, upstream in chain.nodes.items():
         edges = chain.edges_from(upstream_id)
         readers = {edge.target.id for edge in edges}
-        if not edges or len(readers) != 1 or upstream.data.side_effects or not isinstance(upstream, FunctionNode):
+        if (
+            not edges
+            or len(readers) != 1
+            or upstream.data.side_effects
+            or not isinstance(upstream, FunctionNode)
+        ):
             continue
         (reader_id,) = readers
         reader = chain.nodes[reader_id]
@@ -329,14 +397,21 @@ def order_violations(events: list[dict[str, Any]], chain: Chain) -> list[str]:
                     if start is not None
                     and outer_start is not None
                     and outer_start <= start
-                    and (outer_finish is None or (finish is not None and finish <= outer_finish))
+                    and (
+                        outer_finish is None
+                        or (finish is not None and finish <= outer_finish)
+                    )
                 ),
                 None,
             )
             if j is None:
-                violations.append(f"{upstream_id}: execution {k} is outside every execution of {reader_id} (lazy input)")
+                violations.append(
+                    f"{upstream_id}: execution {k} is outside every execution of {reader_id} (lazy input)"
+                )
             elif j in enclosing:
-                violations.append(f"{upstream_id}: executions {enclosing[j]} and {k} inside {reader_id}'s execution {j}")
+                violations.append(
+                    f"{upstream_id}: executions {enclosing[j]} and {k} inside {reader_id}'s execution {j}"
+                )
             else:
                 enclosing[j] = k
     # Each item's side-effect nodes finish before the item's node-progress.
@@ -347,14 +422,18 @@ def order_violations(events: list[dict[str, Any]], chain: Chain) -> list[str]:
         progress = [
             index
             for index, e in enumerate(events)
-            if e["event"] == "node-progress" and e["data"]["nodeId"] == generator_id and e["data"]["progress"] != 1
+            if e["event"] == "node-progress"
+            and e["data"]["nodeId"] == generator_id
+            and e["data"]["progress"] != 1
         ]
         for item, position in enumerate(progress[1:]):
             for sink in iterated:
                 sink_runs = runs.get(sink, [])
                 finish = sink_runs[item][1] if item < len(sink_runs) else None
                 if finish is None or finish > position:
-                    violations.append(f"{sink}: item {item} finishes after {generator_id}'s progress for it")
+                    violations.append(
+                        f"{sink}: item {item} finishes after {generator_id}'s progress for it"
+                    )
     return violations
 
 
@@ -379,18 +458,32 @@ def _iterated_side_effects(chain: Chain, generator: GeneratorNode) -> list[str]:
     return found
 
 
-def mismatches(name: str, chain: Chain, oracle: Result, engine: Result, directory: Path) -> list[str]:
+def mismatches(
+    name: str, chain: Chain, oracle: Result, engine: Result, directory: Path
+) -> list[str]:
     """How the engine's run differs from the oracle's, and the engine's order violations."""
     found: list[str] = []
     if _outcome(oracle.error) != _outcome(engine.error):
-        found.append(f"outcome: oracle {_outcome(oracle.error)}, engine {_outcome(engine.error)}")
+        found.append(
+            f"outcome: oracle {_outcome(oracle.error)}, engine {_outcome(engine.error)}"
+        )
     if oracle.files != engine.files:
-        changed = sorted(k for k in oracle.files.keys() | engine.files.keys() if oracle.files.get(k) != engine.files.get(k))
+        changed = sorted(
+            k
+            for k in oracle.files.keys() | engine.files.keys()
+            if oracle.files.get(k) != engine.files.get(k)
+        )
         found.append(f"files differ: {changed[:8]}")
-    generators = sorted(n.id for n in chain.nodes.values() if isinstance(n, GeneratorNode))
+    generators = sorted(
+        n.id for n in chain.nodes.values() if isinstance(n, GeneratorNode)
+    )
 
     def record(result: Result) -> dict[str, Any]:
-        return {"name": name, "generator_node_ids": generators, **sse_record(result.events, directory)}
+        return {
+            "name": name,
+            "generator_node_ids": generators,
+            **sse_record(result.events, directory),
+        }
 
     found.extend(sse_event_mismatches(record(oracle), record(engine)))
     found.extend(f"order: {v}" for v in order_violations(engine.events, chain))

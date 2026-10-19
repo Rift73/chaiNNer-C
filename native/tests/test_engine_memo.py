@@ -17,15 +17,15 @@ from typing import cast
 import cv2
 import numpy as np
 import pytest
+from bench_oracle import FFMPEG
+from engine_differential import execute, mismatches
+from verify_runtime import edge, make_node
 
 import api
 import native_executor
-from bench_oracle import FFMPEG
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
-from engine_differential import execute, mismatches
 from nodes.impl.native_graph import graph
-from verify_runtime import edge, make_node
 
 BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
 PACKAGES = sorted(p.parent.name for p in (BACKEND / "packages").glob("*/__init__.py"))
@@ -73,9 +73,18 @@ def schemas():
     main.__file__ = str(BACKEND / "run.py")
     for name in PACKAGES:
         importlib.import_module(f"packages.{name}")
-    errors = api.registry.load_nodes(str(BACKEND / "server.py"))
+    # As the worker logs them: a package whose optional dependency is missing (e.g. tensorrt, registered once
+    # another test imported it) leaves its nodes out.
+    errors = [
+        e
+        for e in api.registry.load_nodes(str(BACKEND / "server.py"))
+        if not isinstance(e.error, ModuleNotFoundError)
+    ]
     assert not errors, [e.module for e in errors]
-    yield {schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind} for schema, (data, _) in api.registry.nodes.items()}
+    yield {
+        schema: {"inputs": [i.to_dict() for i in data.inputs], "kind": data.kind}
+        for schema, (data, _) in api.registry.nodes.items()
+    }
     if previous is None:
         del main.__file__
     else:
@@ -87,19 +96,42 @@ def write_images(folder: Path, seed: int, count: int = 5) -> None:
     rng = np.random.default_rng(seed)
     for index in range(count):
         small = (rng.random((9, 11, 3)) * 255).astype(np.uint8)
-        image = cv2.resize(small, (83 + index, 61 + index), interpolation=cv2.INTER_CUBIC)
+        image = cv2.resize(
+            small, (83 + index, 61 + index), interpolation=cv2.INTER_CUBIC
+        )
         assert cv2.imwrite(str(folder / f"{index:03}.png"), image)
 
 
 def folder_chain(schemas, images: Path, output: Path) -> list[dict]:
     """Load Images, a native node (Gaussian Blur), an audited Python node (Normal Map Generator), Save Image."""
     return [
-        make_node(schemas, "load", "chainner:image:load_images", {0: str(images), 2: 0, 4: 0, 6: 1}),
-        make_node(schemas, "blur", "chainner:image:gaussian_blur", {0: edge("load"), 1: 2.5, 2: 1.5}),
-        make_node(schemas, "normals", "chainner:image:normal_generator", {0: edge("blur")}),
         make_node(
-            schemas, "save", "chainner:image:save",
-            {0: edge("normals"), 1: str(output), 2: None, 3: edge("load", 3), 4: "png", 15: "u8"},
+            schemas,
+            "load",
+            "chainner:image:load_images",
+            {0: str(images), 2: 0, 4: 0, 6: 1},
+        ),
+        make_node(
+            schemas,
+            "blur",
+            "chainner:image:gaussian_blur",
+            {0: edge("load"), 1: 2.5, 2: 1.5},
+        ),
+        make_node(
+            schemas, "normals", "chainner:image:normal_generator", {0: edge("blur")}
+        ),
+        make_node(
+            schemas,
+            "save",
+            "chainner:image:save",
+            {
+                0: edge("normals"),
+                1: str(output),
+                2: None,
+                3: edge("load", 3),
+                4: "png",
+                15: "u8",
+            },
         ),
     ]
 
@@ -108,8 +140,18 @@ def single_chain(schemas, image: Path, output: Path) -> list[dict]:
     """Load Image (keyed by its file's identity) into a native node and Save Image."""
     return [
         make_node(schemas, "load", "chainner:image:load", {0: str(image)}),
-        make_node(schemas, "blur", "chainner:image:gaussian_blur", {0: edge("load"), 1: 1.5, 2: 1.5}),
-        make_node(schemas, "save", "chainner:image:save", {0: edge("blur"), 1: str(output), 2: None, 3: "single", 4: "png", 15: "u8"}),
+        make_node(
+            schemas,
+            "blur",
+            "chainner:image:gaussian_blur",
+            {0: edge("load"), 1: 1.5, 2: 1.5},
+        ),
+        make_node(
+            schemas,
+            "save",
+            "chainner:image:save",
+            {0: edge("blur"), 1: str(output), 2: None, 3: "single", 4: "png", 15: "u8"},
+        ),
     ]
 
 
@@ -123,12 +165,20 @@ def run(kind: str, nodes: list[dict], tmp_path: Path, output: Path):
 
 def test_allow_list_is_the_audited_set(schemas):
     assert native_executor.MEMO_PYTHON_NODES == AUDITED
-    assert native_executor.MEMO_EXCLUDED_NATIVE == {"chainner:image:add_noise", "chainner:image:create_noise"}
+    assert native_executor.MEMO_EXCLUDED_NATIVE == {
+        "chainner:image:add_noise",
+        "chainner:image:create_noise",
+    }
     # Every package's nodes (NVIDIA ModelOpt has none) are in the registry checked below.
     packages = {p.id: p for p in api.registry.packages.values()}
     assert packages.keys() >= set(PACKAGES)
     for package in packages.values():
-        loaded = {n.schema_id for c in package.categories for g in c.node_groups for n in g.nodes}
+        loaded = {
+            n.schema_id
+            for c in package.categories
+            for g in c.node_groups
+            for n in g.nodes
+        }
         assert loaded <= api.registry.nodes.keys(), package.id
     native = set(graph().native_schema_ids())
     for schema, (data, _) in api.registry.nodes.items():
@@ -138,7 +188,9 @@ def test_allow_list_is_the_audited_set(schemas):
         elif data.kind != "regularNode" or data.side_effects or data.node_context:
             assert not eligible, schema
         elif schema in native:
-            assert eligible == (schema not in native_executor.MEMO_EXCLUDED_NATIVE), schema
+            assert eligible == (schema not in native_executor.MEMO_EXCLUDED_NATIVE), (
+                schema
+            )
         else:
             assert eligible == (schema in AUDITED), schema
 
@@ -146,22 +198,49 @@ def test_allow_list_is_the_audited_set(schemas):
 def test_generator_runs_keyed_only_by_their_inputs(schemas):
     # Every generator is decided: keyed with its audited per-run outputs, or not keyed.
     assert native_executor.MEMO_GENERATORS == KEYED_GENERATORS.keys()
-    generators = {schema: data for schema, (data, _) in api.registry.nodes.items() if data.kind == "generator"}
+    generators = {
+        schema: data
+        for schema, (data, _) in api.registry.nodes.items()
+        if data.kind == "generator"
+    }
     assert generators.keys() == KEYED_GENERATORS.keys() | UNKEYED_GENERATORS
-    for schema in KEYED_GENERATORS:
+    for schema, keyed in KEYED_GENERATORS.items():
         data = generators[schema]
-        per_run = [o.label for o in data.outputs if o.id not in data.single_iterable_output.outputs]
-        assert per_run == KEYED_GENERATORS[schema], schema
+        per_run = [
+            o.label
+            for o in data.outputs
+            if o.id not in data.single_iterable_output.outputs
+        ]
+        assert per_run == keyed, schema
 
 
 def video_fps_chain(schemas, video: Path, output: Path) -> list[dict]:
     """Load Video's FPS (a per-run output read from the file), doubled by Math (memoized), names the saved frame."""
     return [
-        make_node(schemas, "video", "chainner:image:load_video", {0: str(video), 1: True, 2: 1}),
-        make_node(schemas, "math", "chainner:utility:math", {0: edge("video", 4), 1: "mul", 2: 2}),
         make_node(
-            schemas, "save", "chainner:image:save",
-            {0: edge("video", 0), 1: str(output), 2: None, 3: edge("math", 0), 4: "png", 15: "u8"},
+            schemas,
+            "video",
+            "chainner:image:load_video",
+            {0: str(video), 1: True, 2: 1},
+        ),
+        make_node(
+            schemas,
+            "math",
+            "chainner:utility:math",
+            {0: edge("video", 4), 1: "mul", 2: 2},
+        ),
+        make_node(
+            schemas,
+            "save",
+            "chainner:image:save",
+            {
+                0: edge("video", 0),
+                1: str(output),
+                2: None,
+                3: edge("math", 0),
+                4: "png",
+                15: "u8",
+            },
         ),
     ]
 
@@ -173,8 +252,22 @@ def test_a_file_read_per_run_output_is_read_again(schemas, tmp_path):
     video, output = tmp_path / "clip.mkv", tmp_path / "out"
 
     def write_video(rate: int) -> None:
-        command = [str(FFMPEG), "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc=size=64x48:rate={rate}",
-                   "-frames:v", "2", "-c:v", "ffv1", str(video)]
+        command = [
+            str(FFMPEG),
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc=size=64x48:rate={rate}",
+            "-frames:v",
+            "2",
+            "-c:v",
+            "ffv1",
+            str(video),
+        ]
         subprocess.run(command, check=True, timeout=120, stdin=subprocess.DEVNULL)
 
     nodes = video_fps_chain(schemas, video, output)
@@ -194,13 +287,37 @@ def test_an_input_keyed_per_run_output_is_memoized(schemas, tmp_path):
     images, output = tmp_path / "images", tmp_path / "out"
     write_images(images, 7, count=2)
     nodes = [
-        make_node(schemas, "load", "chainner:image:load_images", {0: str(images), 2: 0, 4: 0, 6: 1}),
-        make_node(schemas, "folder", "chainner:utility:text_append", {0: "-", 1: edge("load", 1), 2: "x"}),
-        make_node(schemas, "name", "chainner:utility:text_length", {0: edge("folder")}),
-        make_node(schemas, "label", "chainner:utility:text_append", {0: "_", 1: edge("load", 3), 2: edge("name")}),
         make_node(
-            schemas, "save", "chainner:image:save",
-            {0: edge("load"), 1: str(output), 2: None, 3: edge("label"), 4: "png", 15: "u8"},
+            schemas,
+            "load",
+            "chainner:image:load_images",
+            {0: str(images), 2: 0, 4: 0, 6: 1},
+        ),
+        make_node(
+            schemas,
+            "folder",
+            "chainner:utility:text_append",
+            {0: "-", 1: edge("load", 1), 2: "x"},
+        ),
+        make_node(schemas, "name", "chainner:utility:text_length", {0: edge("folder")}),
+        make_node(
+            schemas,
+            "label",
+            "chainner:utility:text_append",
+            {0: "_", 1: edge("load", 3), 2: edge("name")},
+        ),
+        make_node(
+            schemas,
+            "save",
+            "chainner:image:save",
+            {
+                0: edge("load"),
+                1: str(output),
+                2: None,
+                3: edge("label"),
+                4: "png",
+                15: "u8",
+            },
         ),
     ]
     _, oracle = run("python", nodes, tmp_path, output)
@@ -290,11 +407,21 @@ print(json.dumps(graph().memo_stats()))
 )
 def test_budget(tmp_path, budget, size, cached):
     # A fresh interpreter: the budget is read once per process.
-    environment = dict(os.environ, CHAINNER_C_MEMO_BUDGET_MIB=budget, WORK=str(tmp_path), SIZE=str(size),
-                       TOOLS=str(BACKEND.parents[1] / "native" / "tools"))
+    environment = dict(
+        os.environ,
+        CHAINNER_C_MEMO_BUDGET_MIB=budget,
+        WORK=str(tmp_path),
+        SIZE=str(size),
+        TOOLS=str(BACKEND.parents[1] / "native" / "tools"),
+    )
     result = subprocess.run(
-        [sys.executable, "-B", "-c", textwrap.dedent(BUDGET)], cwd=BACKEND, env=environment, capture_output=True,
-        text=True, timeout=300, check=False,
+        [sys.executable, "-B", "-c", textwrap.dedent(BUDGET)],
+        cwd=BACKEND,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
     )
     assert result.returncode == 0, result.stderr[-2000:]
     stats = __import__("json").loads(result.stdout.strip().splitlines()[-1])
@@ -370,11 +497,22 @@ print(json.dumps({"held": process.memory_info().private - base, **graph().memo_s
 def test_views_keep_the_memo_within_its_budget(tmp_path, shape):
     # A full-width crop is a view of its loaded image: its memo entry counts that image, so what the memo keeps
     # alive stays within the budget (16 images of 12 MiB under a 64 MiB budget: none kept here).
-    environment = dict(os.environ, CHAINNER_C_MEMO_BUDGET_MIB="64", WORK=str(tmp_path), SHAPE=shape,
-                       TOOLS=str(BACKEND.parents[1] / "native" / "tools"), CUDA_VISIBLE_DEVICES="-1")
+    environment = dict(
+        os.environ,
+        CHAINNER_C_MEMO_BUDGET_MIB="64",
+        WORK=str(tmp_path),
+        SHAPE=shape,
+        TOOLS=str(BACKEND.parents[1] / "native" / "tools"),
+        CUDA_VISIBLE_DEVICES="-1",
+    )
     result = subprocess.run(
-        [sys.executable, "-B", "-c", textwrap.dedent(VIEWS)], cwd=BACKEND, env=environment, capture_output=True,
-        text=True, timeout=600, check=False,
+        [sys.executable, "-B", "-c", textwrap.dedent(VIEWS)],
+        cwd=BACKEND,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
     )
     assert result.returncode == 0, result.stderr[-2000:]
     stats = __import__("json").loads(result.stdout.strip().splitlines()[-1])
@@ -392,18 +530,35 @@ def test_a_file_an_earlier_sink_writes_is_loaded_fresh(schemas, tmp_path):
 
     def chain_nodes(size: int) -> list[dict]:
         return [
-            make_node(schemas, "board", "chainner:image:create_checkerboard", {0: size, 1: size, 4: 3}),
-            make_node(schemas, "save_x", "chainner:image:save",
-                      {0: edge("board"), 1: str(folder), 2: None, 3: "x", 4: "png", 15: "u8"}),
-            make_node(schemas, "load", "chainner:image:load", {0: str(folder / "x.png")}),
-            make_node(schemas, "save_y", "chainner:image:save",
-                      {0: edge("load"), 1: str(output), 2: None, 3: "y", 4: "png", 15: "u8"}),
+            make_node(
+                schemas,
+                "board",
+                "chainner:image:create_checkerboard",
+                {0: size, 1: size, 4: 3},
+            ),
+            make_node(
+                schemas,
+                "save_x",
+                "chainner:image:save",
+                {0: edge("board"), 1: str(folder), 2: None, 3: "x", 4: "png", 15: "u8"},
+            ),
+            make_node(
+                schemas, "load", "chainner:image:load", {0: str(folder / "x.png")}
+            ),
+            make_node(
+                schemas,
+                "save_y",
+                "chainner:image:save",
+                {0: edge("load"), 1: str(output), 2: None, 3: "y", 4: "png", 15: "u8"},
+            ),
         ]
 
     loaded = []
     for size in (64, 96):
         nodes = chain_nodes(size)
-        shutil.copyfile(old, folder / "x.png")  # each run finds the old x.png, which its sink 1 replaces
+        shutil.copyfile(
+            old, folder / "x.png"
+        )  # each run finds the old x.png, which its sink 1 replaces
         _, oracle = run("python", nodes, tmp_path, output)
         shutil.copyfile(old, folder / "x.png")
         chain, engine = run("native", nodes, tmp_path, output)
