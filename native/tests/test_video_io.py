@@ -300,7 +300,10 @@ class Context:
 # 256k x channels), libopus's per-channel ceiling, so mono into WebM works
 # (owner-approved). (m) Atomic writes (instant-exec A4): FFmpeg and the mux each write a
 # temporary file of the path (atomic_target, the muxer named as the extension picks it);
-# a successful close commits the finished one, a failure or Stop abandons them.
+# a successful close commits the finished one, a failure or Stop abandons them. (n)
+# instant-exec gate R5a: with audio, an MP4's or MOV's faststart (the node's, not a
+# user's -movflags) goes to the mux, which writes the final file, instead of the encode
+# pass; a source without audio then gets its video alone copied with faststart.
 INTENDED_MUX = (
     """        if self.audio is not None:
             video_path = self.save_path
@@ -403,6 +406,8 @@ INTENDED_MUX = (
                 elif settings == AudioSettings.TRANSCODE:
                     params["acodec"] = "aac"
                     params["b:a"] = "320k"
+                if self.faststart:  # (n)
+                    params["movflags"] = "faststart"
                 params["loglevel"] = "error"  # (b)
                 return params
 
@@ -446,6 +451,22 @@ INTENDED_MUX = (
                                 "The audio source has no audio stream, so the video"
                                 f" is saved without audio: {source}"
                             )
+                            if self.faststart:  # (n)
+                                alone = ffmpeg.output(
+                                    video_stream,
+                                    av.temp,
+                                    vcodec="copy",
+                                    format=self.container.muxer,
+                                    movflags="faststart",
+                                    loglevel="error",
+                                ).overwrite_output()
+                                ffmpeg.run(
+                                    alone,
+                                    cmd=self.ffmpeg_env.ffmpeg,
+                                    capture_stdout=True,
+                                    capture_stderr=True,
+                                )
+                                muxed = True
                             break
                         codec = streams[0].get("codec_name", "unknown")
                         container = self.container.value
@@ -755,6 +776,40 @@ INTENDED_ATOMIC = [
 ]
 
 
+# (n): the encode pass of an MP4 or MOV with audio leaves the node's faststart to the mux.
+INTENDED_FASTSTART = [
+    (
+        """    out: Popen | None = None
+""",
+        """    out: Popen | None = None
+    faststart: bool = False
+""",
+    ),
+    (
+        """    if container == VideoFormat.GIF:
+        audio = None
+""",
+        """    if container == VideoFormat.GIF:
+        audio = None
+    faststart = (
+        audio is not None
+        and output_params["movflags"] == "faststart"
+        and container in (VideoFormat.MP4, VideoFormat.MOV)
+    )
+    if faststart:
+        del output_params["movflags"]
+""",
+    ),
+    (
+        """        target=target,
+""",
+        """        target=target,
+        faststart=faststart,
+""",
+    ),
+]
+
+
 COLOUR_NAMES = (
     "MATRIX_LABELS SWSCALE_CHROMA_POSITION VIDEO_MODE_LABELS ChromaLocation ColourInfo"
     " Matrix PixelLayout Primaries Range Transfer VideoMode code_to_float"
@@ -867,6 +922,7 @@ def load(kind, component, env=None):
             *INTENDED_ENCODER_ERRORS,
             *INTENDED_RGB16,
             *INTENDED_ATOMIC,
+            *INTENDED_FASTSTART,
         ]:
             assert text.count(frozen) == 1
             text = text.replace(frozen, corrected)
@@ -910,6 +966,7 @@ def writer(
     audio=None,
     audio_settings="AUTO",
     out=None,
+    faststart=False,
 ):
     save_path = "owned/video." + container.lower()
     # The temporary file of the installed writer's own output file (m).
@@ -932,6 +989,7 @@ def writer(
         ),
         out=out,
         **target,
+        **({"faststart": True} if faststart else {}),
     )
 
 
@@ -985,6 +1043,13 @@ def unwrapped(item: ast.expr) -> str:
     return ast.dump(item)
 
 
+# Docs that changed with a sanctioned behaviour change: Load Video's limit cuts the audio
+# (instant-exec gate R7).
+SANCTIONED_DOCS = [
+    ("Will not copy audio if limit is used.", "The audio is cut to the limited frames.")
+]
+
+
 def test_reference_hashes_and_registration_contracts():
     for entry in json.loads((REFERENCE / "manifest.json").read_text())["files"]:
         assert (
@@ -1011,7 +1076,10 @@ def test_reference_hashes_and_registration_contracts():
             assert isinstance(old_items, ast.List) and isinstance(new_items, ast.List)
             remaining = iter([unwrapped(x) for x in new_items.elts])
             for item in old_items.elts:
-                assert unwrapped(item) in remaining, (name, key, ast.unparse(item))
+                old_item = unwrapped(item)
+                for old_text, new_text in SANCTIONED_DOCS:
+                    old_item = old_item.replace(old_text, new_text)
+                assert old_item in remaining, (name, key, ast.unparse(item))
         new_arguments = iter([ast.dump(a) for a in new.args.args])
         for argument in old.args.args:
             assert ast.dump(argument) in new_arguments, (name, argument.arg)
@@ -1513,6 +1581,66 @@ def test_failed_copy_transcodes_on_auto_and_raises_otherwise(setting, source_aud
         assert len(options) == 1
 
 
+@pytest.mark.parametrize("source_audio", [True, False])
+def test_faststart_moved_to_the_mux_writes_the_final_file_with_it(source_audio):
+    # (n): the mux writes the final MP4 with the faststart the encode pass left out; a
+    # source without audio gets its video alone copied with it.
+    probe = valid_probe() if source_audio else {"streams": [{"codec_type": "video"}]}
+    results = []
+    for kind in ("intended", "native"):
+        env = FakeFFmpeg(probe=probe) if source_audio else FailFirstMux(probe=probe)
+        g = load(kind, "save_video", env)
+        g["os"] = mock_os(env)
+        w = writer(g, container="MP4", audio=FakeStream(env, "audio"), faststart=True)
+        results.append((outcome(w.close), env.events.copy()))
+    assert results[0] == results[1]
+    result, events = results[1]
+    assert result == ("ok", None)
+    outputs = [e for e in events if e[0] == "output"]
+    assert all(dict(e[2])["movflags"] == "faststart" for e in outputs)
+    assert events[-1] == ("commit", "owned/video.mp4.1.tmp")
+    if not source_audio:
+        assert outputs[-1][1:] == (
+            (("stream", "input"), "owned/video.mp4.1.tmp"),
+            snap(
+                {
+                    "vcodec": "copy",
+                    "format": "mp4",
+                    "movflags": "faststart",
+                    "loglevel": "error",
+                }
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "use_limit,limit,frames",
+    [
+        (False, 2, None),
+        (True, 10, None),
+        (True, 4, None),
+        (True, 3, 3),
+        (True, 1, 1),
+        (True, 0, 1),
+        (True, -1, 1),
+    ],
+)
+def test_a_limit_that_leaves_frames_out_cuts_the_audio(use_limit, limit, frames):
+    # instant-exec gate R7: the mux reads the source's audio only for as long as the
+    # frames read last (the input's -t: frames / fps; at least one frame is read). A
+    # limit that leaves no frame out (4 frames) keeps the whole audio, as before.
+    env = FakeFFmpeg()
+    vg = load("native", "video", env)
+    g = load("native", "load_video", env)
+    link_loader(g, vg)
+    path = Path("folder/test.mkv")
+    call_load_video("native", g, Context(), path, use_limit, limit)
+    expected = {} if frames is None else {"t": frames / (30000 / 1001)}
+    assert [e for e in env.events if e[0] == "input"] == [
+        ("input", snap((path,)), snap(expected))
+    ]
+
+
 @pytest.mark.parametrize("channels", [None, 1, 2, 6])
 @pytest.mark.parametrize("setting", ["AUTO", "TRANSCODE"])
 def test_webm_opus_bitrate_follows_the_channel_count(channels, setting):
@@ -1641,8 +1769,9 @@ def test_successful_close_mux_once_deliberate_correction():
 
 def installed_writer_arguments(kwargs):
     """Save Video's Writer arguments as the installed node passes them: without the
-    FFmpeg environment and colour settings, and FFmpeg writing the path itself instead of
-    the target's temporary file with the extension's muxer named (m)."""
+    FFmpeg environment and colour settings, FFmpeg writing the path itself instead of
+    the target's temporary file with the extension's muxer named (m), and the faststart
+    the mux takes (n) in the encode pass's parameters."""
     kwargs = {k: v for k, v in kwargs.items() if k not in ("ffmpeg_env", "settings")}
     target = kwargs.pop("target", None)
     if target is not None:
@@ -1650,6 +1779,13 @@ def installed_writer_arguments(kwargs):
         assert params.pop("filename") == target.temp
         assert params.pop("format") == kwargs["container"].muxer
         kwargs["output_params"] = {"filename": kwargs["save_path"], **params}
+    if kwargs.pop("faststart", False):
+        params = {}
+        for key, value in kwargs["output_params"].items():
+            params[key] = value
+            if key == "r":
+                params["movflags"] = "faststart"
+        kwargs["output_params"] = params
     return kwargs
 
 

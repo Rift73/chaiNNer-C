@@ -532,8 +532,10 @@ class VideoLoader:
         planes = ((height, width * 3),)
         return FrameFormat("bgr24", scale, True, (width, height), planes)
 
-    def get_audio_stream(self):
-        return graph().video_audio_stream(globals(), self)
+    def get_audio_stream(self, duration: float | None = None):
+        """The file's audio streams, for Save Video's mux; with a `duration` (seconds),
+        only that much of them."""
+        return graph().video_audio_stream(globals(), self, duration)
 
     def _pyav_reader(
         self, path: Path, formats: list[FrameFormat]

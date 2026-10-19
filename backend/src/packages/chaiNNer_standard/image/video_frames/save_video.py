@@ -237,6 +237,9 @@ class Writer:
     settings: WriteSettings | None = None
     # In Planes mode, how the planes are coded (from the first frame).
     coding: ColourInfo | None = None
+    # The audio mux writes the final file with -movflags faststart, which the encode pass
+    # then leaves out (an MP4 or MOV with audio; video_io.cpp save_video).
+    faststart: bool = False
 
     def start(self, width: int, height: int):
         # Create the writer and run process

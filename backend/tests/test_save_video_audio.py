@@ -1,7 +1,9 @@
 """Save Video muxes the source's audio with chaiNNer's own FFmpeg, so a PC without
 FFmpeg on PATH still gets it; "Auto" transcodes the audio to AAC when the container
 cannot hold a copy of it; and audio the mux cannot carry fails the run instead of
-leaving a silent video (upstream chaiNNer #3331)."""
+leaving a silent video (upstream chaiNNer #3331). An MP4 or MOV with audio gets its
+faststart on the mux, which writes the final file (instant-exec gate R5a), and Load
+Video's limit cuts the audio to the frames read (R7)."""
 
 from __future__ import annotations
 
@@ -25,9 +27,14 @@ from nodes.impl.colour_info import (
     Primaries,
     Range,
     Transfer,
+    VideoMode,
 )
 from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
 from nodes.impl.video import VideoLoader
+from packages.chaiNNer_standard.image.video_frames.load_video import (
+    RgbPrecision,
+    load_video_node,
+)
 from packages.chaiNNer_standard.image.video_frames.save_video import (
     AudioSettings,
     BitDepth,
@@ -83,18 +90,22 @@ def ffmpeg(*args: str) -> bytes:
 
 
 def source(
-    tmp_path: Path, name: str, audio_codec: str | None, channels: int = 2
+    tmp_path: Path,
+    name: str,
+    audio_codec: str | None,
+    channels: int = 2,
+    seconds: int = 1,
 ) -> Path:
-    """One second of H.264 video with a tone in `audio_codec`, or no audio for None."""
+    """`seconds` of H.264 video with a tone in `audio_codec`, or no audio for None."""
     path = tmp_path / name
     video = ["-f", "lavfi", "-i", "testsrc2=size=64x48:rate=30"]
     codecs = ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
     if audio_codec is None:
-        ffmpeg(*video, "-t", "1", *codecs, str(path))
+        ffmpeg(*video, "-t", str(seconds), *codecs, str(path))
         return path
     audio = ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"]
     codecs += ["-c:a", audio_codec, "-ac", str(channels)]
-    ffmpeg(*video, *audio, "-t", "1", *codecs, str(path))
+    ffmpeg(*video, *audio, "-t", str(seconds), *codecs, str(path))
     return path
 
 
@@ -117,14 +128,54 @@ def audio_packets(path: Path) -> str:
     ).decode()
 
 
-def save(tmp_path: Path, src: Path, container: VideoFormat, audio: AudioSettings):
+def video_packets(path: Path) -> str:
+    """MD5 of the first video stream's packets."""
+    return ffmpeg(
+        "-i", str(path), "-map", "0:v:0", "-c", "copy", "-f", "md5", "-"
+    ).decode()
+
+
+def top_level_boxes(path: Path) -> list[str]:
+    """The types of an MP4's or MOV's top-level boxes, in file order."""
+    names = []
+    with path.open("rb") as file:
+        while header := file.read(8):
+            size, name = int.from_bytes(header[:4], "big"), header[4:].decode("latin-1")
+            names.append(name)
+            if size == 0:  # the box runs to the end of the file
+                break
+            if size == 1:  # a 64-bit size follows the type
+                size = int.from_bytes(file.read(8), "big") - 8
+            file.seek(size - 8, os.SEEK_CUR)
+    return names
+
+
+def durations(path: Path) -> dict[str, float]:
+    """Each stream's duration in seconds, by codec type."""
+    probe = subprocess.run(
+        [FFPROBE, "-v", "error", "-show_streams", "-of", "json", str(path)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=True,
+    ).stdout
+    return {s["codec_type"]: float(s["duration"]) for s in json.loads(probe)["streams"]}
+
+
+def save(
+    tmp_path: Path,
+    src: Path,
+    container: VideoFormat,
+    audio: AudioSettings,
+    with_audio: bool = True,
+    name: str = "out",
+):
     encoder = VideoEncoder.VP9 if container == VideoFormat.WEBM else VideoEncoder.H264
     loader = VideoLoader(src, FFMpegEnv(ffmpeg=FFMPEG, ffprobe=FFPROBE))
     collector = save_video_node(
         cast(NodeContext, Context()),
         None,
         tmp_path,
-        "out",
+        name,
         VideoInputMode.RGB,
         None,
         None,
@@ -138,7 +189,7 @@ def save(tmp_path: Path, src: Path, container: VideoFormat, audio: AudioSettings
         SimpleVideoFormat.MP4_H264,
         75,
         30.0,
-        loader.get_audio_stream(),
+        loader.get_audio_stream() if with_audio else None,
         audio,
         *RGB_AUTO,
     )
@@ -236,7 +287,84 @@ def test_mono_into_webm_transcodes_to_opus(tmp_path: Path, audio: AudioSettings)
 
 @pytest.mark.parametrize("audio", list(AudioSettings))
 def test_source_without_audio_saves_the_video(tmp_path: Path, audio: AudioSettings):
-    # Nothing is lost when Load Video's file has no audio stream.
+    # Nothing is lost when Load Video's file has no audio stream: also not the faststart
+    # the encode pass left to the mux (R5a).
     src = source(tmp_path, "src.mp4", None)
     save(tmp_path, src, VideoFormat.MP4, audio)
-    assert streams(saved(tmp_path, VideoFormat.MP4)) == ["video:h264"]
+    out = saved(tmp_path, VideoFormat.MP4)
+    assert streams(out) == ["video:h264"]
+    boxes = top_level_boxes(out)
+    assert boxes.index("moov") < boxes.index("mdat")
+
+
+@pytest.mark.parametrize("container", [VideoFormat.MP4, VideoFormat.MOV])
+def test_audio_mux_writes_the_moov_first(tmp_path: Path, container: VideoFormat):
+    # R5a: the mux writes the final file with faststart (the moov box before the media
+    # data), where the encode pass rewrote its own file for it and the mux then wrote
+    # the final file without. Only the box order changes: the video packets are those
+    # of the same frames saved without audio (the encode pass as before), the audio
+    # packets the source's.
+    src = source(tmp_path, "src.mp4", "aac")
+    save(tmp_path, src, container, AudioSettings.AUTO)
+    save(tmp_path, src, container, AudioSettings.AUTO, with_audio=False, name="mute")
+    out = saved(tmp_path, container)
+    boxes = top_level_boxes(out)
+    assert boxes.index("moov") < boxes.index("mdat")
+    assert streams(out) == ["video:h264", "audio:aac"]
+    assert video_packets(out) == video_packets(tmp_path / f"mute.{container.ext}")
+    assert audio_packets(out) == audio_packets(src)
+
+
+@pytest.mark.parametrize("limit", [60, 150, None])
+def test_a_limit_cuts_the_audio_to_the_frames_read(tmp_path: Path, limit: int | None):
+    # R7: Load Video with a limit of 60 frames (2 s of a 5 s source) gives audio that
+    # ends within one AAC frame (1024 samples at 48 kHz) of the video. Without a limit,
+    # or with one that leaves no frame out (150), the whole audio is copied as before.
+    src = source(tmp_path, "src.mp4", "aac", seconds=5)
+    context = Context()
+    auto = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.AUTO)
+    generator, _, _, fps, audio, _, _ = load_video_node(
+        cast(NodeContext, context),
+        src,
+        limit is not None,
+        limit or 0,
+        VideoMode.RGB,
+        RgbPrecision.FLOAT,
+        *auto,
+    )
+    collector = save_video_node(
+        cast(NodeContext, context),
+        None,
+        tmp_path,
+        "out",
+        VideoInputMode.RGB,
+        None,
+        None,
+        None,
+        Simplicity.ADVANCED,
+        VideoFormat.MP4,
+        VideoEncoder.H264,
+        VideoPreset.ULTRA_FAST,
+        23,
+        None,
+        SimpleVideoFormat.MP4_H264,
+        75,
+        fps,
+        audio,
+        AudioSettings.AUTO,
+        *RGB_AUTO,
+    )
+    for item in generator.supplier():
+        assert isinstance(item, tuple)
+        collector.on_iterate((item[0], None, None, None))  # Image Sequence, Y, U, V
+    collector.on_complete()
+    for cleanup in context.cleanups:
+        cleanup()
+    out = saved(tmp_path, VideoFormat.MP4)
+    lengths = durations(out)
+    if limit == 60:
+        assert lengths["video"] == pytest.approx(2.0, abs=0.001)
+        assert abs(lengths["audio"] - lengths["video"]) <= 1024 / 48000
+    else:
+        assert lengths["video"] == pytest.approx(5.0, abs=0.001)
+        assert audio_packets(out) == audio_packets(src)

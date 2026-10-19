@@ -187,7 +187,13 @@ void loader_init(const py::dict&g,const O&self,const O&path,const O&env) {
     const bool untagged=eq(space,py::str("unknown")) || eq(space,py::str("unspecified"));
     self.attr("input_matrix")=untagged && high_definition(builtin("int")(video[py::str("width")]),builtin("int")(video[py::str("height")]))?O(py::str("bt709")):O(py::none());
 }
-O audio_stream(const py::dict&g,const O&self) {return global(g,"ffmpeg").attr("input")(self.attr("path")).attr("audio");}
+// Load Video's audio, the file's audio streams; with a duration, only that much of them
+// (the input's -t), which the audio mux then reads.
+O audio_stream(const py::dict&g,const O&self,const O&duration) {
+    O input=global(g,"ffmpeg").attr("input");
+    if(duration.is_none())return input(self.attr("path")).attr("audio");
+    return input(self.attr("path"),py::arg("t")=duration).attr("audio");
+}
 
 O container_encoders(const py::dict&g,const O&self) {
     for(const auto &entry: {"MKV","MP4","MOV","WEBM","AVI","GIF"}) {
@@ -576,6 +582,7 @@ py::dict audio_options(const py::dict&g,const O&self,const O&settings) {
     } else if(eq(settings,member(g,"AudioSettings","TRANSCODE"))) {
         p["acodec"]="aac";p["b:a"]="320k";
     }
+    if(truth(self.attr("faststart")))p["movflags"]="faststart"; // save_video moved it here.
     p["loglevel"]="error"; // FFmpeg's stderr is then its error alone, which a failed mux reports.
     return p;
 }
@@ -609,6 +616,14 @@ O mux_audio(const py::dict&g,const O&self) {
                 py::list streams=audio_streams(g,self);
                 if(streams.empty()) {
                     logger.attr("warning")(fmt("The audio source has no audio stream, so the video is saved without audio: {}",audio_source(self)));
+                    if(truth(self.attr("faststart"))) {
+                        // The encode pass left faststart to the mux: the video alone gets it.
+                        O alone=ffmpeg.attr("output")(video,av.attr("temp"),py::arg("vcodec")="copy",
+                            py::arg("format")=container.attr("muxer"),py::arg("movflags")="faststart",
+                            py::arg("loglevel")="error").attr("overwrite_output")();
+                        ffmpeg.attr("run")(alone,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffmpeg"),py::arg("capture_stdout")=true,py::arg("capture_stderr")=true);
+                        muxed=true;
+                    }
                     break;
                 }
                 O codec=streams[0].attr("get")("codec_name","unknown");
@@ -703,11 +718,17 @@ O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O
         }
     }
     if(eq(container,member(g,"VideoFormat","GIF")))audio=py::none();
+    // With audio, the mux writes the final file, which had no faststart while the encode
+    // pass rewrote its own file for one: an MP4's or MOV's faststart moves to the mux
+    // (instant-exec gate R5a). A user's own -movflags stays in the encode pass, as before.
+    const bool faststart=!audio.is_none() && eq(params["movflags"],py::str("faststart"))
+        && graphpy::contains(py::make_tuple(member(g,"VideoFormat","MP4"),member(g,"VideoFormat","MOV")),container);
+    if(faststart)params.attr("pop")("movflags");
     O writer=global(g,"Writer")(py::arg("container")=container,py::arg("encoder")=encoder,py::arg("fps")=fps,
         py::arg("audio")=audio,py::arg("audio_settings")=audio_settings,py::arg("save_path")=builtin("str")(path),
         py::arg("output_params")=params,py::arg("global_params")=globals,
         py::arg("ffmpeg_env")=global(g,"FFMpegEnv").attr("get_integrated")(context.attr("storage_dir")),
-        py::arg("target")=target,py::arg("settings")=settings);
+        py::arg("target")=target,py::arg("settings")=settings,py::arg("faststart")=faststart);
     auto state=resource(writer);
     context.attr("add_cleanup")(py::cpp_function([state](){state->abort();}));
     O iterate=py::cpp_function([writer](const O&frame){writer.attr("write_frame")(frame);});
@@ -888,9 +909,13 @@ public:
 O load_video(const py::dict&g,const O&context,const O&path,const O&use_limit,const O&limit,const O&settings) {
     O parts=global(g,"split_file_path")(path);
     O loader=global(g,"VideoLoader")(path,global(g,"FFMpegEnv").attr("get_integrated")(context.attr("storage_dir")),settings);
-    O count=loader.attr("metadata").attr("frame_count");
+    O count=loader.attr("metadata").attr("frame_count"),fps=loader.attr("metadata").attr("fps");
+    // A limit that leaves frames out cuts the audio to the frames read (at least one), so
+    // the mux copies no more of it (instant-exec gate R7); else the audio is whole, as before.
+    O audio=truth(use_limit) && cmp(limit,count,Py_LT) && cmp(fps,py::int_(0),Py_GT)
+        ?O(loader.attr("get_audio_stream")(div(builtin("max")(limit,py::int_(1)),fps)))
+        :O(loader.attr("get_audio_stream")());
     if(truth(use_limit))count=builtin("min")(count,limit);
-    O audio=loader.attr("get_audio_stream")();
     O supplier=py::cpp_function([loader,context,use_limit,limit](){
         auto it=std::make_shared<IndexedFrames>(loader,use_limit,limit);
         context.attr("add_cleanup")(py::cpp_function([it](){it->close();}));
@@ -912,7 +937,7 @@ void cn_bind_video_io(pybind11::module_&m) {
     py::class_<IndexedFrames,std::shared_ptr<IndexedFrames>>(m,"_VideoIndexedFrames")
         .def("__iter__",[](const std::shared_ptr<IndexedFrames>&s){return s;})
         .def("__next__",&IndexedFrames::next).def("close",&IndexedFrames::close);
-    m.def("video_metadata",&metadata);m.def("video_loader_init",&loader_init);m.def("video_audio_stream",&audio_stream);
+    m.def("video_metadata",&metadata);m.def("video_loader_init",&loader_init);m.def("video_audio_stream",&audio_stream,py::arg("globals"),py::arg("loader"),py::arg("duration")=py::none());
     m.def("video_probe",[](const py::dict&g,const O&path,const O&ffprobe,const py::kwargs&options){return probe_file(g,path,ffprobe,options);});
     m.def("video_stream_frames",[](const py::dict&g,const O&loader,const O&format){return std::make_shared<FrameIterator>(g,loader,format);},
         py::arg("globals"),py::arg("loader"),py::arg("format")=py::none());

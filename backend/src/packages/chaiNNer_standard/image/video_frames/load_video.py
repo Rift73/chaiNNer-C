@@ -107,7 +107,7 @@ def plane_output(label: str, output_id: int) -> ImageOutput:
             NumberInput("Limit", default=10, min=1)
             .with_docs(
                 "Limit the number of frames to iterate over. This can be useful for testing the iterator without having to iterate over all frames of the video."
-                " Will not copy audio if limit is used."
+                " The audio is cut to the limited frames."
             )
             .with_id(2)
         ),
