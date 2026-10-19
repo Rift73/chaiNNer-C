@@ -524,3 +524,145 @@ def test_torch_shape_error_contract():
     with pytest.raises(type(expected.value)) as actual:
         native.interpolate_torch(a, b, 0.13, 0.87)
     assert str(actual.value) == str(expected.value)
+
+
+def _layout(base: np.ndarray, layout: str) -> np.ndarray:
+    """A (h, w, c) view of `base`'s values in a layout the caster folds differently."""
+    h, w, c = base.shape
+    if layout == "contiguous":
+        return base.copy()
+    if layout == "tile":  # rows of a wider image, as a tile view
+        wide = np.zeros((h + 9, w + 13, c), base.dtype)
+        wide[5 : 5 + h, 7 : 7 + w] = base
+        return wide[5 : 5 + h, 7 : 7 + w]
+    if layout == "planar":  # (C, H, W) memory viewed as HWC
+        return np.ascontiguousarray(base.transpose(2, 0, 1)).transpose(1, 2, 0)
+    if layout == "reversed":
+        return np.ascontiguousarray(base[::-1, ::-1])[::-1, ::-1]
+    if layout == "fortran":
+        return np.asfortranarray(base)
+    if layout == "broadcast":
+        return np.broadcast_to(base[:1], base.shape)
+    if layout == "channel_gap":  # three of four interleaved channels
+        wide = np.zeros((h, w, c + 1), base.dtype)
+        wide[:, :, :c] = base
+        return wide[:, :, :c]
+    raise AssertionError(layout)
+
+
+def _raw_bits(dtype: np.dtype, shape: tuple[int, ...], seed: int) -> np.ndarray:
+    # Every bit pattern, NaN payloads and subnormals included, for same-type copies.
+    raw = np.random.default_rng(seed).integers(
+        0, 256, (*shape, dtype.itemsize), dtype=np.uint8
+    )
+    return raw.view(dtype).reshape(shape)
+
+
+def _layout_like(copy: np.ndarray, view: np.ndarray, base: np.ndarray) -> np.ndarray:
+    """`view`'s window into `base`, applied to `copy` (a copy of `base`)."""
+    offset = view.ctypes.data - base.ctypes.data
+    return np.ndarray(
+        view.shape, view.dtype, buffer=copy, offset=offset, strides=view.strides
+    )
+
+
+FOLD_LAYOUTS = (
+    "contiguous",
+    "tile",
+    "planar",
+    "reversed",
+    "fortran",
+    "broadcast",
+    "channel_gap",
+)
+
+
+@pytest.mark.parametrize("source_layout", FOLD_LAYOUTS)
+@pytest.mark.parametrize("target_layout", ("contiguous", "tile", "channel_gap"))
+@pytest.mark.parametrize(
+    "dtype", ("uint8", "float16", "float32", "float64", "complex128")
+)
+@pytest.mark.parametrize("shape", ((131, 257, 3), (3, 5, 1), (1, 70001, 1)))
+def test_same_type_copies_fold_runs_across_chunks(
+    source_layout, target_layout, dtype, shape
+):
+    # Counts over the 65536-element grain split runs between pool chunks.
+    dtype = np.dtype(dtype)
+    source = _layout(_raw_bits(dtype, shape, 401), source_layout)
+    target = _layout(np.zeros(shape, dtype), target_layout)
+    backing = target.base if target.base is not None else target
+    sentinel = np.frombuffer(
+        np.random.default_rng(402).bytes(backing.nbytes), np.uint8
+    ).view(backing.dtype)
+    backing[...] = sentinel.reshape(backing.shape)
+    expected_backing = backing.copy()
+    expected_view = _layout_like(expected_backing, target, backing)
+    expected_view[...] = source
+    native.cast_into(source, target)
+    assert backing.tobytes() == expected_backing.tobytes()
+
+
+@pytest.mark.parametrize("source_layout", FOLD_LAYOUTS)
+@pytest.mark.parametrize("target_layout", ("contiguous", "tile"))
+@pytest.mark.parametrize(
+    "pair",
+    (
+        ("float32", "float16"),
+        ("float16", "float32"),
+        ("float64", "float32"),
+        ("float32", "uint8"),
+        ("uint16", "float32"),
+    ),
+)
+def test_casts_fold_runs_across_chunks(source_layout, target_layout, pair):
+    source_type, target_type = map(np.dtype, pair)
+    rng = np.random.default_rng(403)
+    if source_type.kind == "f":
+        base = (rng.normal(size=(131, 257, 3)) * 300).astype(source_type)
+        flat = base.reshape(-1)
+        specials = [np.nan, np.inf, -np.inf, -0.0, 1e-45, 7e4, -7e4, 300.5]
+        if source_type == np.float64:
+            specials += [1e300, -1e300]
+        # Exceptional values in both pool chunks report their events once.
+        with np.errstate(over="ignore"):
+            for index, value in enumerate(specials):
+                flat[17 * index + 3] = value
+                flat[-17 * index - 5] = value
+    else:
+        base = rng.integers(0, 2**16, (131, 257, 3)).astype(source_type)
+    source = _layout(base, source_layout)
+    target = _layout(np.zeros(base.shape, target_type), target_layout)
+
+    def invoke(function):
+        with warnings.catch_warnings(record=True) as recorded, np.errstate(all="warn"):
+            out = function()
+        return out, sorted(str(w.message) for w in recorded)
+
+    _, actual_events = invoke(lambda: native.cast_into(source, target))
+    expected, expected_events = invoke(lambda: source.astype(target_type))
+    assert np.ascontiguousarray(target).tobytes() == expected.tobytes()
+    assert actual_events == expected_events
+
+
+@pytest.mark.parametrize("layout", ("contiguous", "tile", "planar", "broadcast"))
+def test_interpolation_folds_both_operands(layout):
+    rng = np.random.default_rng(404)
+    a = _layout(rng.normal(size=(131, 257, 3)).astype(np.float32), layout)
+    b = _layout(rng.normal(size=(131, 257, 3)).astype(np.float32), "tile")
+    with np.errstate(all="ignore"):
+        actual = native.interpolate_numpy(a, b, 0.29, 0.71)
+        expected = a * 0.29 + b * 0.71
+    exact(actual, expected)
+    assert actual.strides == expected.strides
+
+
+def test_singleton_axes_with_any_stride_fold_away():
+    data = _raw_bits(np.dtype(np.float32), (70001,), 405)
+    source = np.lib.stride_tricks.as_strided(
+        data, (1, 70001, 1), (-123456, 4, 99999), writeable=False
+    )
+    target = np.lib.stride_tricks.as_strided(
+        np.empty(70001, np.float32), (1, 70001, 1), (8, 4, -40)
+    )
+    native.cast_into(source, target)
+    assert target.tobytes() == data.tobytes()
