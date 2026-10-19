@@ -28,10 +28,15 @@ static __m256 halves(const uint16_t *p)
     return _mm256_castsi256_ps(_mm256_or_si256(bits, sign));
 }
 
-static __m256 load8(const planar_job *job, size_t offset)
+/* Also marks in *special the lanes whose float32 exponent is all ones (Inf, NaN). */
+static __m256 load8(const planar_job *job, size_t offset, __m256i *special)
 {
-    if (job->half) return halves((const uint16_t *)job->src + offset);
-    return _mm256_loadu_ps((const float *)job->src + offset);
+    __m256 value = job->half ? halves((const uint16_t *)job->src + offset)
+                             : _mm256_loadu_ps((const float *)job->src + offset);
+    const __m256i exponent = _mm256_set1_epi32(0x7f800000);
+    __m256i bits = _mm256_and_si256(_mm256_castps_si256(value), exponent);
+    *special = _mm256_or_si256(*special, _mm256_cmpeq_epi32(bits, exponent));
+    return value;
 }
 
 /* a, b, c: 8 pixels of output channels 0, 1, 2; stores a0 b0 c0 a1 b1 c1 ... */
@@ -54,26 +59,26 @@ static void store3(float *out, __m256 a, __m256 b, __m256 c)
     _mm256_storeu_ps(out + 16, _mm256_blend_ps(o2, _mm256_permutevar8x32_ps(c, c2), 0x92));
 }
 
-void cn_planar_rows_avx2(const planar_job *job, size_t begin, size_t end)
+int cn_planar_rows_avx2(const planar_job *job, size_t begin, size_t end)
 {
     size_t channels = job->channels, width = job->width, body = width - width % 8;
-    if (channels != 1 && channels != 3) {
-        planar_rows(job, begin, end, 0);
-        return;
-    }
-    size_t first = job->reverse && channels == 3 ? 2 * job->plane_stride : 0;
-    size_t last = job->reverse && channels == 3 ? 0 : 2 * job->plane_stride;
+    if (channels != 1 && channels != 3) return planar_rows(job, begin, end, 0);
+    __m256i special = _mm256_setzero_si256();
+    size_t first = channels == 3 ? source_plane(job, 0) * job->plane_stride : 0;
+    size_t last = channels == 3 ? source_plane(job, 2) * job->plane_stride : 0;
     for (size_t y = begin; y < end; ++y) {
         float *row = job->out + y * width * channels;
         size_t base = y * job->row_stride;
         for (size_t x = 0; x < body; x += 8) {
             if (channels == 1) {
-                _mm256_storeu_ps(row + x, load8(job, base + x));
+                _mm256_storeu_ps(row + x, load8(job, base + x, &special));
                 continue;
             }
-            store3(row + 3 * x, load8(job, first + base + x),
-                load8(job, job->plane_stride + base + x), load8(job, last + base + x));
+            store3(row + 3 * x, load8(job, first + base + x, &special),
+                load8(job, job->plane_stride + base + x, &special),
+                load8(job, last + base + x, &special));
         }
     }
-    planar_rows(job, begin, end, body);
+    int tail = planar_rows(job, begin, end, body);
+    return tail | !_mm256_testz_si256(special, special);
 }

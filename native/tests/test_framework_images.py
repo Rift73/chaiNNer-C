@@ -45,6 +45,11 @@ exec(compile(_pixel_tree, str(_pixel_path), "exec"), PIXELS.__dict__)
 normalize = PIXELS.normalize
 
 
+def c_strides(image: np.ndarray) -> tuple[int, ...]:
+    """The strides of a C-ordered array of image's shape and type."""
+    return np.empty(image.shape, image.dtype).strides
+
+
 def load(path: Path, **bindings) -> types.ModuleType:
     tree = ast.parse(path.read_text("utf-8"))
     tree.body = [
@@ -455,6 +460,7 @@ def test_onnx_host_image_roundtrip(dtype, channels, nhwc, padding):
         reflect_pad=native.reflect_pad,
         swap_red_blue=native.swap_red_blue,
         cast_numpy=cast_numpy,
+        planar_to_interleaved=native.planar_to_interleaved,
     )
     # Pads within reflection's reach (size - 1), where the reference's padding is ours;
     # test_onnx_padding_beyond_reflection covers longer ones.
@@ -499,7 +505,8 @@ def test_onnx_host_image_roundtrip(dtype, channels, nhwc, padding):
     exact(after.seen, before.seen)
     if not grey_bhwc:
         assert after.seen.strides == before.seen.strides
-        assert actual.strides == expected.strides
+        # An NCHW model's planes are interleaved in one pass: a C-ordered image.
+        assert actual.strides == (expected.strides if nhwc else c_strides(actual))
 
 
 @pytest.mark.parametrize("channels", [0, 1, 3, 4])
@@ -513,6 +520,7 @@ def test_onnx_padding_beyond_reflection(channels, shape):
         reflect_pad=native.reflect_pad,
         swap_red_blue=native.swap_red_blue,
         cast_numpy=cast_numpy,
+        planar_to_interleaved=native.planar_to_interleaved,
     )
     h, w = shape
     image = np.random.default_rng(336).random(
@@ -700,7 +708,7 @@ def test_tiny_real_cpu_ncnn_roundtrip(channels, kind):
         to_uint8=to_uint8,
         auto_split=single,
         ncnn_input=native.ncnn_input,
-        cast_numpy=cast_numpy,
+        planar_to_interleaved=native.planar_to_interleaved,
         Tiler=Tiler,
     )
     baseline.__dict__.update(use_gpu=False)
@@ -735,7 +743,7 @@ def test_tiny_real_cpu_ncnn_roundtrip(channels, kind):
         image, network, "input", "output", None, None, None
     )
     exact(actual, expected)
-    assert actual.strides == expected.strides
+    assert actual.strides == c_strides(actual)  # the planes interleaved in one pass
     logical = np.array_equal(image.ravel(order="K"), image.ravel(order="C"))
     assert np.array_equal(raw, expected) == logical
 
@@ -847,6 +855,7 @@ def test_real_cpu_onnx_image_roundtrip(dtype, channels, nhwc):
         reflect_pad=native.reflect_pad,
         swap_red_blue=native.swap_red_blue,
         cast_numpy=cast_numpy,
+        planar_to_interleaved=native.planar_to_interleaved,
         auto_split=single,
     )
     original = load(
@@ -857,7 +866,7 @@ def test_real_cpu_onnx_image_roundtrip(dtype, channels, nhwc):
         expected = original.onnx_auto_split(image, before, nhwc, None, SizeReq(8, 4))
         actual = modified.onnx_auto_split(image, after, nhwc, None, SizeReq(8, 4))
         exact(actual, expected)
-        assert actual.strides == expected.strides
+        assert actual.strides == (expected.strides if nhwc else c_strides(actual))
     finally:
         after.close()
 

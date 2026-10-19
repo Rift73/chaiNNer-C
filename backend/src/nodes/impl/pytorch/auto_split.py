@@ -9,6 +9,7 @@ from spandrel import ImageModelDescriptor
 
 from api import Progress
 
+from ..native_framework_images import planar_to_interleaved_checked
 from ..upscale.auto_split import Split, Tiler, auto_split
 from .utils import safe_cuda_cache_empty
 
@@ -75,6 +76,22 @@ def _is_finite(img: np.ndarray) -> bool:
     return math.isfinite(img.min()) and math.isfinite(img.max())
 
 
+def _interleaved(t: torch.Tensor) -> tuple[np.ndarray, bool] | None:
+    """A (1, C, H, W) or (C, H, W) float16 or float32 output, rows contiguous, as
+    the BGR(A) float32 image the device permute, flip and CPU cast make, interleaved
+    from its planes on the host in one pass, and whether it is finite; else None.
+    A finite image is the cast's bit for bit; NaN can differ (the cast quiets a
+    signalling half), so a caller converts a non-finite output as before."""
+    if t.ndim == 4 and t.shape[0] == 1:
+        t = t[0]
+    if t.ndim != 3 or t.dtype not in (torch.float16, torch.float32) or t.stride(2) != 1:
+        return None
+    planes = t.detach().cpu().numpy()
+    return planar_to_interleaved_checked(
+        planes, swap_red_blue=planes.shape[0] in (3, 4)
+    )
+
+
 @torch.inference_mode()
 def pytorch_auto_split(
     img: np.ndarray,
@@ -106,9 +123,15 @@ def pytorch_auto_split(
             output_tensor = model(input_tensor)
 
             # convert back to numpy
-            output_tensor = _into_standard_image_form(output_tensor)
-            output_tensor = _rgb_to_bgr(output_tensor)
-            result = output_tensor.detach().cpu().detach().float().numpy()
+            interleaved = _interleaved(output_tensor)
+            if interleaved is not None and interleaved[1]:
+                result, finite = interleaved
+            else:
+                # NaN or infinity, or an output the interleave does not read
+                output_tensor = _into_standard_image_form(output_tensor)
+                output_tensor = _rgb_to_bgr(output_tensor)
+                result = output_tensor.detach().cpu().detach().float().numpy()
+                finite = interleaved is None and _is_finite(result)
         except RuntimeError as e:
             # Check to see if its actually the CUDA out of memory error
             if "allocate" in str(e) or "CUDA" in str(e):
@@ -129,7 +152,7 @@ def pytorch_auto_split(
         # Saving turns NaN into black pixels. NaN already in the input passes through;
         # NaN the model made from a finite tile is an error, raised at the first such
         # tile instead of after the whole image.
-        if not _is_finite(result) and _is_finite(img):
+        if not finite and _is_finite(img):
             message = (
                 f"The {model.architecture.name} model returned invalid values (NaN or"
                 " infinity), which would be saved as black pixels."

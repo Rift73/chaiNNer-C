@@ -10,8 +10,7 @@ from sanic.log import logger
 
 from ...utils.utils import Size, get_h_w_c
 from ..image_utils import to_uint8
-from ..native_framework_images import ncnn_input
-from ..native_tensors import cast_numpy
+from ..native_framework_images import ncnn_input, planar_to_interleaved
 from ..upscale.auto_split import Split, Tiler, auto_split
 
 use_gpu = ncnn.get_gpu_count() > 0
@@ -71,11 +70,14 @@ def ncnn_auto_split(
     tiler: Tiler,
     collect_after: bool = True,
     size_multiple: int = 1,
+    swap_red_blue: bool = False,
 ) -> np.ndarray:
     # A model that starts with a Reorg needs a height and width that are a multiple
     # of its stride (NcnnModelWrapper.size_multiple), so the image is padded with
     # its edge pixels, every tile is kept a multiple, and the result is cropped
-    # back. Other models are tiled as before.
+    # back. Other models are tiled as before. swap_red_blue: a result with the
+    # image's 3 or 4 channels comes back with red and blue swapped (RGB(A) <->
+    # BGR(A)), as it is interleaved.
     h, w = img.shape[:2]
     pad_h, pad_w = -h % size_multiple, -w % size_multiple
     if pad_h or pad_w:
@@ -161,8 +163,10 @@ def ncnn_auto_split(
             if use_gpu:
                 message += " You may need to restart chaiNNer in order for NCNN upscaling to start working again."
             raise RuntimeError(message)
-        result = cast_numpy(
-            np.asarray(mat_out).transpose(1, 2, 0), np.dtype(np.float32)
+        planes = np.asarray(mat_out)
+        result = planar_to_interleaved(
+            planes,
+            swap_red_blue=swap_red_blue and lr_c in (3, 4) and planes.shape[0] == lr_c,
         )
         del ex, mat_in, mat_out
         clear_vkallocators()

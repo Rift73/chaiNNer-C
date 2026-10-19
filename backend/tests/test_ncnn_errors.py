@@ -175,7 +175,8 @@ class Extractor:
         out_h, out_w = round(h * self.net.scale_y), round(w * self.net.scale_x)
         rows = np.arange(out_h) * h // out_h
         columns = np.arange(out_w) * w // out_w
-        upscaled = self.image[:, rows][:, :, columns]
+        # A Mat's rows are contiguous (indexing alone would order them otherwise).
+        upscaled = np.ascontiguousarray(self.image[:, rows][:, :, columns])
         return 0, upscaled[:, c : out_h - c, c : out_w - c]
 
 

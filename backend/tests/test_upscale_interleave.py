@@ -1,0 +1,244 @@
+"""Each backend interleaves its model's output planes once, natively
+(planar_to_interleaved), into a C-ordered image whose bytes are those of the steps it
+replaces: PyTorch's device permute and flip and CPU cast, ONNX's transpose, red/blue
+swap, crop and cast, NCNN's cast and the node's cvtColor. Tiny models on the CPU; each
+oracle is the same module with its interleave turned off (today's path)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
+
+import cv2
+import numpy as np
+import pytest
+import torch
+from spandrel import ImageModelDescriptor
+from spandrel.architectures.Compact import Compact, CompactArch
+
+# Tiling runs in the native backend, which GitHub's checks do not build.
+pytest.importorskip("nodes.impl._chainner_graph")
+
+from onnx import TensorProto, helper
+
+from api import NodeContext, Progress
+from nodes.impl.native_onnx_runtime import NativeSession
+from nodes.impl.native_tensors import cast_numpy
+from nodes.impl.ncnn import auto_split as ncnn_split
+from nodes.impl.ncnn.model import NcnnModel, NcnnModelWrapper
+from nodes.impl.ncnn.session import create_ncnn_net
+from nodes.impl.onnx import auto_split as onnx_split
+from nodes.impl.onnx.model import SizeReq
+from nodes.impl.pytorch import auto_split as torch_split
+from nodes.impl.upscale.auto_split_tiles import NO_TILING, TileSize
+from nodes.impl.upscale.convenient_upscale import convenient_upscale
+from nodes.impl.upscale.tiler import ExactTileSize, NoTiling, Tiler
+from nodes.utils.utils import get_h_w_c
+from packages.chaiNNer_ncnn.ncnn.processing import upscale_image as ncnn_node
+from packages.chaiNNer_ncnn.settings import NcnnSettings
+
+CPU = torch.device("cpu")
+
+
+def assert_same(new: np.ndarray, old: np.ndarray) -> None:
+    """The same values bit for bit, NaN payloads included; new is C-ordered."""
+    assert new.shape == old.shape and new.dtype == old.dtype == np.float32
+    assert new.flags.c_contiguous
+    assert new.tobytes() == np.ascontiguousarray(old).tobytes()
+
+
+def image(shape: tuple[int, ...], seed: int, exceptional: bool) -> np.ndarray:
+    img = np.random.default_rng(seed).random(shape, dtype=np.float32)
+    if exceptional:
+        flat = img.reshape(-1).view(np.uint32)
+        # NaN (a payload), +-inf, -0 and an out-of-range value
+        words = (0x7FC12345, 0x7F800000, 0xFF800000, 0x80000000, 0x3FC00000)
+        flat[[3, 17, 29, 41, 53]] = words
+    return img
+
+
+def tiler(tiled: bool) -> Tiler:
+    return ExactTileSize((16, 16)) if tiled else NoTiling()
+
+
+def compact(channels: int) -> ImageModelDescriptor:
+    torch.manual_seed(channels)
+    net = Compact(
+        num_in_ch=channels, num_out_ch=channels, num_feat=8, num_conv=2, upscale=2
+    )
+    model = CompactArch().load(net.state_dict())
+    assert isinstance(model, ImageModelDescriptor)
+    return model
+
+
+@pytest.mark.parametrize("channels", [1, 3, 4])
+@pytest.mark.parametrize("fp16", [False, True])
+@pytest.mark.parametrize("tiled", [False, True])
+@pytest.mark.parametrize("nan_input", [False, True])
+def test_pytorch_planes_interleaved_as_converted(
+    monkeypatch: pytest.MonkeyPatch,
+    channels: int,
+    fp16: bool,
+    tiled: bool,
+    nan_input: bool,
+):
+    # A result with NaN (here from NaN in the input) keeps today's conversion, whose
+    # CPU cast quiets a signalling half; a finite one is interleaved.
+    model = compact(channels)
+    img = image((24, 32, channels), 1, exceptional=False)
+    if nan_input:
+        img[2, 3] = np.nan
+
+    def run() -> np.ndarray:
+        return torch_split.pytorch_auto_split(
+            img, model, CPU, fp16, tiler(tiled), Progress.noop_progress()
+        )
+
+    new = run()
+    with monkeypatch.context() as patch:
+        patch.setattr(torch_split, "_interleaved", lambda _: None)
+        old = run()
+    if nan_input:
+        assert np.isnan(new).any()
+        assert (
+            np.ascontiguousarray(new).tobytes() == np.ascontiguousarray(old).tobytes()
+        )
+    else:
+        assert_same(new, old)
+
+
+def resize_model(channels: int, fp16: bool) -> bytes:
+    """2x nearest Resize, NCHW, float16 or float32."""
+    kind = TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT
+    graph = helper.make_graph(
+        [
+            helper.make_node(
+                "Resize", ["input", "", "scales"], ["output"], mode="nearest"
+            )
+        ],
+        "resize",
+        [helper.make_tensor_value_info("input", kind, [1, channels, "h", "w"])],
+        [helper.make_tensor_value_info("output", kind, [1, channels, "H", "W"])],
+        [helper.make_tensor("scales", TensorProto.FLOAT, [4], [1, 1, 2, 2])],
+    )
+    return helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=10
+    ).SerializeToString()
+
+
+@pytest.mark.parametrize("channels", [1, 3, 4])
+@pytest.mark.parametrize("fp16", [False, True])
+@pytest.mark.parametrize("tiled", [False, True])
+@pytest.mark.parametrize("padded", [False, True])
+def test_onnx_planes_interleaved_as_converted(
+    monkeypatch: pytest.MonkeyPatch,
+    channels: int,
+    fp16: bool,
+    tiled: bool,
+    padded: bool,
+):
+    session = NativeSession(resize_model(channels, fp16))
+    # 23x31 to a multiple of 4: the padding is cropped off the planes.
+    img = image((23, 31, channels), 2, exceptional=True)
+    req = SizeReq(multiple_of=4) if padded else None
+
+    def run() -> np.ndarray:
+        return onnx_split.onnx_auto_split(img, session, False, tiler(tiled), req)
+
+    try:
+        new = run()
+        with monkeypatch.context() as patch:
+            patch.setattr(onnx_split, "_output_planes", lambda *_: None)
+            old = run()
+    finally:
+        session.close()
+    assert_same(new, old)
+
+
+SETTINGS = NcnnSettings(
+    gpu_index=0, winograd=False, sgemm=False, threads=1, blocktime=0, budget_limit=0
+)
+
+
+def ncnn_model(
+    directory: Path, channels_in: int, channels_out: int
+) -> NcnnModelWrapper:
+    """A 1x1 convolution (an identity, the out-of-range channels zero), then a 2x
+    nearest Interp."""
+    weights = np.eye(channels_out, channels_in, dtype=np.float32)
+    param = (
+        "7767517\n3 3\nInput data 0 1 data\n"
+        f"Convolution conv 1 1 data mid 0={channels_out} 1=1 6={weights.size}\n"
+        "Interp up 1 1 mid out 0=1 1=2.000000e+00 2=2.000000e+00\n"
+    )
+    (directory / "tiny.param").write_text(param, encoding="utf-8")
+    (directory / "tiny.bin").write_bytes(b"\x00\x00\x00\x00" + weights.tobytes())
+    return NcnnModelWrapper(
+        NcnnModel.load_from_file(
+            str(directory / "tiny.param"), str(directory / "tiny.bin")
+        )
+    )
+
+
+def old_cast(planes: np.ndarray, **_: object) -> np.ndarray:
+    """ncnn_auto_split's conversion before: the planes' HWC view cast, no swap."""
+    return cast_numpy(planes.transpose(1, 2, 0), np.dtype(np.float32))
+
+
+@pytest.mark.parametrize(
+    ("channels_in", "channels_out"), [(1, 1), (3, 3), (4, 4), (3, 4)]
+)
+@pytest.mark.parametrize("tile_size", [NO_TILING, TileSize(16)])
+@pytest.mark.parametrize("separate_alpha", [False, True])
+def test_ncnn_node_planes_interleaved_as_converted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    channels_in: int,
+    channels_out: int,
+    tile_size: TileSize,
+    separate_alpha: bool,
+):
+    # A 3 -> 4 model keeps the node's cvtColor, which drops the fourth channel.
+    model = ncnn_model(tmp_path, channels_in, channels_out)
+    net = create_ncnn_net(model, SETTINGS)
+    monkeypatch.setattr(ncnn_node, "get_ncnn_net", lambda *_, **__: net)
+    monkeypatch.setattr(ncnn_node, "get_settings", lambda _: SETTINGS)
+    context = cast(NodeContext, SimpleNamespace(add_cleanup=lambda *_, **__: None))
+    rgba = image((20, 28, 4), 3, exceptional=False)
+    rgba[:, :, 3] = np.linspace(0, 1, 28, dtype=np.float32)
+    for img in (rgba[:, :, :1], rgba[:, :, :3], rgba):
+        new = ncnn_node.upscale_image_node(
+            context, img, model, tile_size, 0, separate_alpha
+        )
+
+        def old_upscale(i: np.ndarray) -> np.ndarray:
+            ic = get_h_w_c(i)[2]
+            if ic == 3:
+                i = cv2.cvtColor(i, cv2.COLOR_BGR2RGB)
+            elif ic == 4:
+                i = cv2.cvtColor(i, cv2.COLOR_BGRA2RGBA)
+            i = ncnn_node.upscale_impl(
+                SETTINGS,
+                i,
+                model,
+                model.model.layers[0].outputs[0],
+                model.model.layers[-1].outputs[0],
+                tile_size,
+                collect_after=False,
+            )
+            if ic == 3:
+                i = cv2.cvtColor(i, cv2.COLOR_RGB2BGR)
+            elif ic == 4:
+                i = cv2.cvtColor(i, cv2.COLOR_RGBA2BGRA)
+            return i
+
+        with monkeypatch.context() as patch:
+            patch.setattr(ncnn_split, "planar_to_interleaved", old_cast)
+            old = convenient_upscale(
+                img, model.in_nc, model.out_nc, old_upscale, separate_alpha
+            )
+        assert (
+            new.shape == old.shape
+            and new.tobytes() == np.ascontiguousarray(old).tobytes()
+        ), (get_h_w_c(img), channels_in, channels_out)

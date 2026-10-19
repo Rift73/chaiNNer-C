@@ -362,6 +362,7 @@ def test_collection_scales_with_invocation_not_tiles(backend, count, collect_aft
         to_uint8=lambda i: (i * 255).astype(np.uint8),
         ncnn_input=lambda i: i.transpose(2, 0, 1).astype(np.float32) / 255,
         cast_numpy=lambda i, dtype: i.astype(dtype),
+        planar_to_interleaved=lambda planes, **_: planes.transpose(1, 2, 0).copy(),
         gc=SimpleNamespace(collect=lambda: calls.append("collect")),
         auto_split=split,
         swap_red_blue=lambda i: i[..., ::-1],
@@ -700,6 +701,7 @@ def ncnn_gpu_auto_split(lock, **bindings):
         to_uint8=lambda i: i,
         ncnn_input=lambda i: i,
         cast_numpy=lambda i, dtype: i.astype(dtype),
+        planar_to_interleaved=lambda planes, **_: planes.transpose(1, 2, 0).copy(),
         auto_split=lambda image, callback, tiler, **kwargs: callback(image, None),
         **bindings,
     ).ncnn_auto_split
@@ -923,8 +925,7 @@ def test_ncnn_reads_lens_planar_layout_by_logical_index(channels):
     # Consult 11 D-18: Lens Blur's planar layout and its C copy give the network
     # identical planes. Upstream's Mat.from_pixels read the raw buffer instead.
     from nodes.impl.image_utils import to_uint8
-    from nodes.impl.native_framework_images import ncnn_input
-    from nodes.impl.native_tensors import cast_numpy
+    from nodes.impl.native_framework_images import ncnn_input, planar_to_interleaved
 
     planes = []
 
@@ -944,7 +945,7 @@ def test_ncnn_reads_lens_planar_layout_by_logical_index(channels):
         get_h_w_c=get_h_w_c,
         to_uint8=to_uint8,
         ncnn_input=ncnn_input,
-        cast_numpy=cast_numpy,
+        planar_to_interleaved=planar_to_interleaved,
         auto_split=lambda image, callback, tiler, **kwargs: callback(image, None),
     ).ncnn_auto_split
     net = SimpleNamespace(opt=ncnn.Option(), create_extractor=Planes)

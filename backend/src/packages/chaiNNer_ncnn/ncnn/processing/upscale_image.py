@@ -82,6 +82,7 @@ def upscale_impl(
     output_name: str,
     tile_size: TileSize,
     collect_after: bool = True,
+    swap_red_blue: bool = False,
 ):
     net = get_ncnn_net(model, settings=settings)
     try:
@@ -129,6 +130,7 @@ def upscale_impl(
                     tiler=parse_tile_size_input(tile_size, estimate),
                     collect_after=collect_after,
                     size_multiple=model.size_multiple,
+                    swap_red_blue=swap_red_blue,
                 )
         else:
             result = ncnn_auto_split(
@@ -141,6 +143,7 @@ def upscale_impl(
                 tiler=parse_tile_size_input(tile_size, estimate),
                 collect_after=collect_after,
                 size_multiple=model.size_multiple,
+                swap_red_blue=swap_red_blue,
             )
     except (RuntimeError, ValueError):
         raise
@@ -236,11 +239,15 @@ def upscale_image_node(
             model.model.layers[-1].outputs[0],
             TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
             collect_after=False,
+            swap_red_blue=ic in (3, 4),
         )
-        if ic == 3:
-            i = cv2.cvtColor(i, cv2.COLOR_RGB2BGR)
-        elif ic == 4:
-            i = cv2.cvtColor(i, cv2.COLOR_RGBA2BGRA)
+        # A result with the input's 3 or 4 channels came back BGR(A); any other is
+        # converted as before.
+        if get_h_w_c(i)[2] != ic:
+            if ic == 3:
+                i = cv2.cvtColor(i, cv2.COLOR_RGB2BGR)
+            elif ic == 4:
+                i = cv2.cvtColor(i, cv2.COLOR_RGBA2BGRA)
         return i
 
     return convenient_upscale(img, model.in_nc, model.out_nc, upscale, separate_alpha)

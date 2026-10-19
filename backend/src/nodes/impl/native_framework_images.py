@@ -32,7 +32,7 @@ def _api():
         "cn_framework_trimap": [p, p, z, z, f, f, z],
         "cn_framework_cloth_labels": [p, p, z, z, i, p],
         "cn_framework_cloth_masks": [p, p, z],
-        "cn_planar_to_interleaved_f32": [p, i, z, z, z, z, z, i, p],
+        "cn_planar_to_interleaved_f32": [p, i, z, z, z, z, z, i, p, p],
     }
     for name, signature in signatures.items():
         function = getattr(dll, name)
@@ -143,10 +143,28 @@ def _assemble_four(image: np.ndarray) -> np.ndarray:
     return out
 
 
-def planar_to_interleaved(planes: np.ndarray, reverse: bool) -> np.ndarray:
+def planar_to_interleaved(
+    planes: np.ndarray, reverse: bool = False, *, swap_red_blue: bool = False
+) -> np.ndarray:
     """(C, H, W) float16 or float32 planes as a new (H, W, C) float32 image, every
     value exact (NumPy's cast). Rows may be cropped from a wider buffer (positive
-    strides, contiguous within a row). reverse flips the channel order."""
+    strides, contiguous within a row). reverse flips the channel order;
+    swap_red_blue swaps the first and third of 3 or more channels (RGB(A) <->
+    BGR(A)), as swap_red_blue does for 3 or 4."""
+    return _interleave(planes, reverse, swap_red_blue)[0]
+
+
+def planar_to_interleaved_checked(
+    planes: np.ndarray, *, swap_red_blue: bool = False
+) -> tuple[np.ndarray, bool]:
+    """planar_to_interleaved's image, and whether every value in it is finite (no
+    NaN or infinity), found in the same pass."""
+    return _interleave(planes, False, swap_red_blue)
+
+
+def _interleave(
+    planes: np.ndarray, reverse: bool, swap_red_blue: bool
+) -> tuple[np.ndarray, bool]:
     if planes.ndim != 3 or planes.dtype not in (
         np.dtype(np.float16),
         np.dtype(np.float32),
@@ -157,7 +175,10 @@ def planar_to_interleaved(planes: np.ndarray, reverse: bool) -> np.ndarray:
     if column_stride != item or plane_stride % item or row_stride % item:
         raise ValueError("Planar conversion needs rows of contiguous samples")
     channels, h, w = planes.shape
+    if reverse and swap_red_blue:
+        raise ValueError("Planar conversion either reverses or swaps channels")
     result = np.empty((h, w, channels), np.float32)
+    finite = ct.c_int()
     check(
         _api().cn_planar_to_interleaved_f32(
             planes.ctypes.data,
@@ -167,11 +188,12 @@ def planar_to_interleaved(planes: np.ndarray, reverse: bool) -> np.ndarray:
             h,
             w,
             channels,
-            int(reverse),
+            1 if reverse else 2 if swap_red_blue else 0,
             result.ctypes.data,
+            ct.byref(finite),
         )
     )
-    return result
+    return result, bool(finite.value)
 
 
 def ncnn_input(image: np.ndarray) -> np.ndarray:
