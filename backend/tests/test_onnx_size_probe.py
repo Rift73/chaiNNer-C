@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
-from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, cast
+from weakref import WeakKeyDictionary
 
 import numpy as np
 import onnxruntime as ort
@@ -20,6 +22,7 @@ from spandrel.architectures.SwinIR import SwinIR
 pytest.importorskip("nodes.impl._chainner_graph")
 
 from api import NodeContext, SettingsParser
+from nodes.impl.native_onnx_runtime import NativeSession
 from nodes.impl.onnx import size_probe
 from nodes.impl.onnx.auto_split import onnx_auto_split
 from nodes.impl.onnx.load import load_onnx_model
@@ -171,19 +174,119 @@ def test_a_model_that_does_not_run_at_the_probe_size_keeps_shape_inference():
     assert size_probe.get_size_req(model) is model.info.size_req
 
 
-def test_the_probe_runs_once_per_model(monkeypatch: pytest.MonkeyPatch):
-    # Counts the CPU sessions the probe creates; the node's own session is separate.
-    sessions: list[bytes] = []
+@pytest.fixture
+def fresh_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Probe results of earlier tests (kept by the model's bytes) forgotten."""
+    monkeypatch.setattr(size_probe, "_cache", WeakKeyDictionary())
+    monkeypatch.setattr(size_probe, "_by_content", {})
 
-    def session(model: bytes, *args: Any, **kwargs: Any) -> ort.InferenceSession:
-        sessions.append(model)
-        return ort.InferenceSession(model, *args, **kwargs)
 
-    probe_ort = SimpleNamespace(
-        SessionOptions=ort.SessionOptions, InferenceSession=session
-    )
-    monkeypatch.setattr(size_probe, "ort", probe_ort)
+def counted(monkeypatch: pytest.MonkeyPatch, name: str) -> list[object]:
+    """The first argument of every call of size_probe's function `name`."""
+    calls: list[object] = []
+    original = getattr(size_probe, name)
+
+    def record(first: Any, *args: Any) -> Any:
+        calls.append(first)
+        return original(first, *args)
+
+    monkeypatch.setattr(size_probe, name, record)
+    return calls
+
+
+@pytest.mark.usefixtures("fresh_cache")
+def test_the_probe_runs_once_per_model_on_the_nodes_cpu_session(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The node's CPU session runs the probe: no session is made for it.
+    measured = counted(monkeypatch, "_measure")
+    made = counted(monkeypatch, "_cpu_session")
     model = stub(4)
     for h, w in [(37, 51), (20, 30), (64, 64)]:
         upscale(model, image(h, w))
-    assert sessions == [model.bytes]
+    assert len(measured) == 1 and made == []
+    assert size_probe.get_size_req(model) == SizeReq(minimum=16, multiple_of=4)
+
+
+@pytest.mark.usefixtures("fresh_cache")
+def test_a_model_loaded_again_is_not_probed_again(monkeypatch: pytest.MonkeyPatch):
+    measured = counted(monkeypatch, "_measure")
+    first, again = stub(8), load_onnx_model(stub(8).bytes)
+    assert isinstance(again, OnnxGeneric) and again is not first
+    assert size_probe.get_size_req(first) == size_probe.get_size_req(again)
+    assert len(measured) == 1
+
+
+@pytest.mark.usefixtures("fresh_cache")
+def test_a_gpu_session_is_not_used_by_the_probe(monkeypatch: pytest.MonkeyPatch):
+    class GpuSession:
+        def get_providers(self) -> list[str]:
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    made = counted(monkeypatch, "_cpu_session")
+    model = stub(2)
+    gpu = cast(Any, GpuSession())
+    assert size_probe.get_size_req(model, gpu) == SizeReq(minimum=16, multiple_of=2)
+    assert made == [model]
+
+
+@pytest.mark.usefixtures("fresh_cache")
+def test_models_probe_concurrently_and_each_once(monkeypatch: pytest.MonkeyPatch):
+    # A slow probe of one model holds only that model: another model's probe
+    # finishes meanwhile, and callers of the slow model wait for its one probe.
+    slow, fast = stub(2), stub(4)
+    release, started = threading.Event(), threading.Event()
+    probes: list[OnnxGeneric] = []
+
+    def probe(model: OnnxGeneric, session: object) -> SizeReq:
+        probes.append(model)
+        if model is slow:
+            started.set()
+            assert release.wait(30)
+        return SizeReq(minimum=1, multiple_of=2 if model is slow else 4)
+
+    monkeypatch.setattr(size_probe, "_probe", probe)
+    with ThreadPoolExecutor(4) as pool:
+        waiting = [pool.submit(size_probe.get_size_req, slow) for _ in range(3)]
+        assert started.wait(30)
+        assert size_probe.get_size_req(fast) == SizeReq(minimum=1, multiple_of=4)
+        assert not any(future.done() for future in waiting)
+        release.set()
+        results = [future.result(30) for future in waiting]
+    assert results == [SizeReq(minimum=1, multiple_of=2)] * 3
+    assert probes.count(slow) == 1 and probes.count(fast) == 1
+
+
+@pytest.mark.parametrize("model", ["2", "8", "32", "fixed", "realcugan"])
+def test_native_and_python_sessions_measure_alike(
+    monkeypatch: pytest.MonkeyPatch, model: str
+):
+    # The native adapter (which releases the GIL) and ORT's Python binding, each as
+    # the node's CPU session, find the same requirement.
+    if model == "realcugan":
+        loaded = exported(lambda: UpCunet2x(in_channels=3, out_channels=3))
+    elif model == "fixed":
+        loaded = stub(1, fixed_output=True)
+    else:
+        loaded = stub(int(model))
+    found = []
+    native = NativeSession(loaded.bytes)
+    try:
+        for session in (
+            ort.InferenceSession(loaded.bytes, providers=["CPUExecutionProvider"]),
+            native,
+        ):
+            monkeypatch.setattr(size_probe, "_cache", WeakKeyDictionary())
+            monkeypatch.setattr(size_probe, "_by_content", {})
+            found.append(size_probe.get_size_req(loaded, cast(Any, session)))
+    finally:
+        native.close()
+    assert found[0] == found[1]
+
+
+@pytest.mark.usefixtures("fresh_cache")
+def test_rejected_sizes_are_not_logged_by_onnx_runtime(capfd: pytest.CaptureFixture):
+    model = stub(8)
+    assert size_probe.get_size_req(model) == SizeReq(minimum=16, multiple_of=8)
+    # ONNX Runtime writes its log in UTF-16.
+    assert "onnxruntime" not in capfd.readouterr().err.replace("\0", "")

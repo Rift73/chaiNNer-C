@@ -8,6 +8,8 @@
  * into caller-owned UTF-8 storage. Registry handles reject stale/double release.
  * Run copies numeric inputs into owned storage; outputs remain valid until the
  * result handle is released, independently of the caller's arrays/session.
+ * log_severity: the run's ORT log severity (0-4, RunOptions), or -1 for the
+ * session's own.
  */
 typedef struct cn_ort_input {
     const char *name;
@@ -26,7 +28,7 @@ CN_EXPORT int cn_ort_create(const wchar_t *library_path, const void *model, size
 CN_EXPORT int cn_ort_metadata(uint64_t session, char *json, size_t capacity,
     size_t *required, char *error, size_t error_capacity);
 CN_EXPORT int cn_ort_run(uint64_t session, const cn_ort_input *inputs, size_t input_count,
-    const char *const *outputs, size_t output_count, uint64_t *result,
+    const char *const *outputs, size_t output_count, int log_severity, uint64_t *result,
     char *error, size_t error_capacity);
 CN_EXPORT int cn_ort_result_info(uint64_t result, size_t index, int *type, size_t *rank,
     int64_t *shape, size_t shape_capacity, size_t *bytes, char *error, size_t error_capacity);

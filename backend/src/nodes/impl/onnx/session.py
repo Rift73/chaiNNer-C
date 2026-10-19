@@ -38,6 +38,7 @@ class OnnxSession(Protocol):
         input_feed: dict[str, Any],
         run_options: Any = None,
     ) -> Sequence[object]: ...
+    def get_providers(self) -> Sequence[str]: ...
 
 
 def _tensorrt_package_installed() -> bool:

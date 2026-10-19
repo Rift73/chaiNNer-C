@@ -259,9 +259,10 @@ extern "C" CN_EXPORT int cn_ort_metadata(uint64_t id,char *json,size_t capacity,
     });
 }
 extern "C" CN_EXPORT int cn_ort_run(uint64_t id,const cn_ort_input *inputs,size_t input_count,
-    const char *const *outputs,size_t output_count,uint64_t *result,char *error,size_t capacity) {
+    const char *const *outputs,size_t output_count,int log_severity,uint64_t *result,char *error,size_t capacity) {
     return guarded(error,capacity,[&] {
         ensure(result && (inputs || !input_count) && outputs && output_count,"Invalid native ONNX run buffers");
+        ensure(log_severity>=-1 && log_severity<=4,"Native ONNX run log severity is -1 or 0-4");
         ensure(input_count<=static_cast<size_t>(PTRDIFF_MAX)/sizeof(cn_ort_input) &&
             output_count<=static_cast<size_t>(PTRDIFF_MAX)/sizeof(void *),"Native ONNX binding count overflows");
         ensure(span(inputs,input_count*sizeof(cn_ort_input),alignof(cn_ort_input)) &&
@@ -292,7 +293,12 @@ extern "C" CN_EXPORT int cn_ort_run(uint64_t id,const cn_ort_input *inputs,size_
         }
         for (size_t i=0;i<output_count;++i) ensure(outputs[i]!=nullptr,"Native ONNX output name is null");
         batch->values.resize(output_count,nullptr);
-        ort_check(api,api->Run(batch->session->value,nullptr,names.data(),values.data(),input_count,
+        Owned<OrtRunOptions> options(api->ReleaseRunOptions);
+        if (log_severity>=0) {
+            ort_check(api,api->CreateRunOptions(&options.value));
+            ort_check(api,api->RunOptionsSetRunLogSeverityLevel(options.value,log_severity));
+        }
+        ort_check(api,api->Run(batch->session->value,options.value,names.data(),values.data(),input_count,
             outputs,output_count,batch->values.data()));
         auto &r=registry(); std::lock_guard lock(r.mutex);
         uint64_t key=next_handle(r); r.results.emplace(key,batch); *result=key;
