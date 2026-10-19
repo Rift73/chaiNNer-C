@@ -141,11 +141,23 @@ def test_the_onnx_holds_the_plugins_and_no_einsum(plugin_onnx: bytes):
     assert types["FLOAT16"] and not types["BFLOAT16"]
 
 
-def test_the_attention_logits_are_not_clamped(plugin_onnx: bytes):
-    """spandrel's export-safe maths clamp the logits to +-50 (a Clip), which changes
-    the softmax wherever one passes 50; the export's attention does not."""
+def test_the_attention_runs_in_bf16_unclamped(plugin_onnx: bytes):
+    """Each attention takes q, k, v and its bias in BF16 (a trained DRFT's logits pass
+    FP16's range; TensorRT fuses the BF16 pattern into its MHA kernels), and none
+    clamps its logits as spandrel's export-safe maths do (a Clip to +-50, which
+    changes the softmax wherever a logit passes 50)."""
     proto = onnx.load_from_string(plugin_onnx)
-    assert "Clip" not in plugin_counts(proto)
+    counts = plugin_counts(proto)
+    to_bf16 = [
+        node
+        for node in proto.graph.node
+        if node.op_type == "Cast"
+        and onnx.helper.get_attribute_value(node.attribute[0])
+        == onnx.TensorProto.BFLOAT16
+    ]
+    assert counts["Softmax"] > 0
+    assert len(to_bf16) == 4 * counts["Softmax"]
+    assert "Clip" not in counts
 
 
 def test_the_dense_skip_exports_one_matmul_per_block(

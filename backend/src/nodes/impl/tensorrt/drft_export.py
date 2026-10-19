@@ -2,8 +2,8 @@
 swapped for stand-ins that compute the original maths and export as chaiNNer-C's DRFT
 TensorRT plugins (native/src/drft, Codex's LegacyBarrierV1 set; node attributes and
 layouts as in Codex's prepared graph), for every input size from MIN_SIZE up. FP16
-inside (the plugins take BF16 too: ONNX files exported in BF16 before still build), input
-and output FP32, opset 20. FP16, not Codex's BF16: on photos a DRFT-L x4 in BF16 was
+with the attention in BF16 (_attention; the plugins take BF16 too: ONNX files exported in
+BF16 before still build), input and output FP32, opset 20. FP16, not Codex's BF16: on photos a DRFT-L x4 in BF16 was
 25.9-35.7 dB against PyTorch FP32 (PyTorch's own BF16 alike), in FP16 38.7-58.6 dB."""
 
 from __future__ import annotations
@@ -63,21 +63,19 @@ def _attention(
     bias: torch.Tensor,
     scale: float,
 ) -> torch.Tensor:
-    """Attention (k given transposed) with the scale, bias and softmax in FP32, and
-    q @ k^T in BF16 for an FP16 body. A trained DRFT's logits pass FP16's range by far
-    (up to 48.6 million on a DRFT-L x4's photos); in FP32 the 512x512 run filled 32 GB,
-    and in FP16 on logits divided by 2^16 TensorRT flushed the small ones to zero
-    (42.0-52.8 dB). BF16 logits with the rest in FP16: 48.8-60.9 dB against PyTorch FP32
-    (in PyTorch).
-    Not spandrel's export-safe maths, which clamp the logits to +-50 (the softmax
-    subtracts their maximum, so there is no overflow to prevent there, and the clamp
-    changed the result wherever a logit passed 50: DRFT-L x4 on photos in FP32, 43-52
-    dB against PyTorch's own attention)."""
-    if q.dtype == torch.float16:
-        q, k_t = q.bfloat16(), k_t.bfloat16()
-    attn = torch.matmul(q, k_t).float() * scale
-    attn = torch.softmax(attn + bias.float(), dim=-1).to(dtype=v.dtype)
-    return torch.matmul(attn, v)
+    """Attention (k given transposed), in BF16 for an FP16 body, the pattern TensorRT
+    fuses into its MHA kernels. A trained DRFT's logits pass FP16's range by far (up to
+    48.6 million on a DRFT-L x4's photos): TensorRT's fused FP16 MHA gave NaN, FP32
+    logits filled 32 GB at 512x512, and BF16 logits outside a fused kernel ran 512x512
+    in 1486 ms; fused BF16 MHA in the FP16 body: 48.7 / 51.3 / 59.1 dB against PyTorch
+    FP32 on 100x130 crops of three photos, 679 ms. Not spandrel's export-safe maths,
+    which clamp the logits to +-50 (the softmax subtracts their maximum, so there is no
+    overflow to prevent there, and the clamp changed the result wherever a logit passed
+    50: DRFT-L x4 on photos in FP32, 43-52 dB against PyTorch's own attention)."""
+    dtype = torch.bfloat16 if q.dtype == torch.float16 else q.dtype
+    attn = torch.matmul(q.to(dtype), k_t.to(dtype)) * scale + bias.to(dtype)
+    attn = torch.softmax(attn, dim=-1)
+    return torch.matmul(attn, v.to(dtype)).to(q.dtype)
 
 
 def _plugin(g: Any, op: str, *inputs: Any, **attributes: Any) -> Any:

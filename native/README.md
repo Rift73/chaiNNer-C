@@ -131,7 +131,7 @@ of the VOSR TensorRT engine caches' identity, so a new DLL rebuilds those engine
 
 **Legacy DRFT's TensorRT plugins** `drft_trt_plugins.dll` (`src/drft`, Codex's LegacyBarrierV1 library: OCAB
 attention, relative bias and Q/K/V packing, the window neural bias, the identity barrier and the output tail; the
-plugins the export uses take FP16, its precision since 2026-10-20, as well as Codex's BF16) build from the same two
+plugins the export uses take FP16, its precision with BF16 attention since 2026-10-20, as well as Codex's BF16) build from the same two
 roots into `CHAINNER_C_OUTPUT_DIR\tensorrt` (default `backend/src/nodes/impl/tensorrt`). DRFT
 engines reference its plugins without carrying the DLL (TensorRT refuses a second registration of a carried library
 in one process); chaiNNer-C registers it once per process before loading engines, and users need no compiler. Its four
