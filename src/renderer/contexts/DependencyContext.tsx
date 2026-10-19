@@ -53,10 +53,7 @@ import { log } from '../../common/log';
 import { EMPTY_ARRAY, isNotNullish, joinEnglish, noop } from '../../common/util';
 import { versionGt } from '../../common/version';
 import { Markdown } from '../components/Markdown';
-import {
-    useBackendEventSourceListener,
-    useBackendSetupEventSource,
-} from '../hooks/useBackendEventSource';
+import { useBackendEventSourceListener } from '../hooks/useBackendEventSource';
 import { useMemoObject } from '../hooks/useMemo';
 import { AlertBoxContext, AlertType } from './AlertBoxContext';
 import { BackendContext } from './BackendContext';
@@ -783,8 +780,15 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
     const { isOpen, onOpen, onClose } = useDisclosure();
 
     const { showAlert, sendToast } = useContext(AlertBoxContext);
-    const { backend, url, pythonInfo, backendDownRef, packages, refreshNodes, isBackendReady } =
-        useContext(BackendContext);
+    const {
+        backend,
+        pythonInfo,
+        backendDownRef,
+        packages,
+        refreshNodes,
+        isBackendReady,
+        setupEventSource,
+    } = useContext(BackendContext);
     const { hasRelevantUnsavedChangesRef } = useContext(GlobalContext);
 
     const [installMode, setInstallMode] = useState(InstallMode.NORMAL);
@@ -822,8 +826,7 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
 
     const [individualProgress, setIndividualProgress] = useState(0);
     const [overallProgress, setOverallProgress] = useState(0);
-    const [eventSource] = useBackendSetupEventSource(url, isBackendReady);
-    useBackendEventSourceListener(eventSource, 'package-install-status', (f) => {
+    useBackendEventSourceListener(setupEventSource, 'package-install-status', (f) => {
         if (f) {
             setOverallProgress(f.progress);
             setIndividualProgress(f.statusProgress ?? 0);

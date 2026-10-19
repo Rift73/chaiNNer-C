@@ -21,7 +21,7 @@ class BackendStatusEvent(TypedDict):
 
 
 class BackendStateEvent(TypedDict):
-    event: Literal["backend-started", "backend-ready"]
+    event: Literal["backend-started", "backend-ready", "backend-nodes-loaded"]
     data: None
 
 
@@ -157,26 +157,29 @@ class BackendEventBroadcast:
     never waits for one.
 
     The app's main process and its window each listen, and either may connect after
-    an event: a new listener first gets the latest backend status and, once the backend
-    is ready, backend-ready.
+    an event: a new listener first gets the latest backend status, then backend-ready
+    and backend-nodes-loaded once they have happened.
     """
 
     def __init__(self) -> None:
         self._listeners: set[EventQueue] = set()
         self._status: BackendEvent | None = None
         self._ready: BackendEvent | None = None
+        self._nodes_loaded: BackendEvent | None = None
 
     def put(self, event: BackendEvent) -> None:
         if event["event"] == "backend-status":
             self._status = event
         elif event["event"] == "backend-ready":
             self._ready = event
+        elif event["event"] == "backend-nodes-loaded":
+            self._nodes_loaded = event
         for listener in self._listeners:
             listener.put(event)
 
     def listen(self) -> EventQueue:
         listener = EventQueue()
-        for event in (self._status, self._ready):
+        for event in (self._status, self._ready, self._nodes_loaded):
             if event is not None:
                 listener.put(event)
         self._listeners.add(listener)

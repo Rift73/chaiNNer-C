@@ -521,6 +521,16 @@ async def setup(sanic_app: Sanic, loop: asyncio.AbstractEventLoop):
 
     logger.info("Done.")
 
+    # The worker loads its heavy nodes meanwhile. The app fetches the full node list
+    # once they have loaded instead of waiting for it in a request of its own: its
+    # window has 6 connections to this host, and the requests that wait for nodes
+    # would hold up a preview of a node that has loaded.
+    try:
+        await worker.wait_for_nodes()
+    except Exception as error:
+        logger.error(f"Waiting for the worker's nodes failed: {error}")
+    ctx.setup_events.put({"event": "backend-nodes-loaded", "data": None})
+
 
 setup_task = None
 close_task = None

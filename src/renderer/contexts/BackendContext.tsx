@@ -33,6 +33,7 @@ import { getChainnerScope } from '../../common/types/chainner-scope';
 import { FunctionDefinition } from '../../common/types/function';
 import { EMPTY_ARRAY, EMPTY_MAP, delay } from '../../common/util';
 import { useAsyncEffect } from '../hooks/useAsyncEffect';
+import { BackendEventSource } from '../hooks/useBackendEventSource';
 import { useMemoObject } from '../hooks/useMemo';
 import { ipcRenderer } from '../safeIpc';
 import { AlertBoxContext, AlertId, AlertType } from './AlertBoxContext';
@@ -66,6 +67,8 @@ interface BackendContextState {
      * replaces once it arrives (if it differs).
      */
     nodesFromCache: boolean;
+    /** The backend's setup events, e.g. the progress of dependency installs. */
+    setupEventSource: BackendEventSource | null;
     refreshNodes: () => void;
 }
 
@@ -127,7 +130,7 @@ const processCachedData = (cachedData: BackendData | undefined): NodesInfo | und
 const useNodes = (
     backend: Backend,
     backendDownRef: Readonly<MutableRefObject<boolean>>,
-    backendReadyRef: Readonly<MutableRefObject<boolean>>,
+    nodesLoadedRef: Readonly<MutableRefObject<boolean>>,
     cachedData: BackendData | undefined
 ) => {
     const isBackendIntentionallyDown = backendDownRef.current;
@@ -155,8 +158,10 @@ const useNodes = (
     const nodesQuery = useQuery({
         queryKey: ['nodes', backend.url],
         queryFn: async (): Promise<BackendData> => {
-            // spin until we're no longer restarting
-            while (!backendReadyRef.current || backendDownRef.current) {
+            // Spin until the backend has loaded all of its nodes, and while it restarts. The
+            // replies wait for every node, and while the nodes load, the window's 6
+            // connections to the backend serve the previews of the nodes that have loaded.
+            while (!nodesLoadedRef.current || backendDownRef.current) {
                 // eslint-disable-next-line no-await-in-loop
                 await delay(100);
             }
@@ -268,12 +273,13 @@ const useNodes = (
     };
 };
 
-const useFeatureStates = (backend: Backend, isBackendReady: boolean) => {
+const useFeatureStates = (backend: Backend, areNodesLoaded: boolean) => {
     const [featureStates, setFeatureStates] = useState<readonly FeatureState[]>(EMPTY_ARRAY);
 
+    // The reply waits for every node, as the node list does.
     const featuresQuery = useQuery({
         queryKey: ['features', backend.url],
-        enabled: isBackendReady,
+        enabled: areNodesLoaded,
         queryFn: async () => {
             try {
                 return await backend.features();
@@ -308,21 +314,25 @@ const useFeatureStates = (backend: Backend, isBackendReady: boolean) => {
 };
 
 /**
- * Whether the backend at `url` accepts requests, as its setup events say. Until it listens, the
- * connection is tried again every 100 ms, not after EventSource's own delay of a few seconds.
+ * The setup events of the backend at `url`, over one connection for the app's life: whether
+ * the backend accepts requests (backend-ready) and whether it has loaded all of its nodes
+ * (backend-nodes-loaded); the event source also carries the progress of dependency installs.
+ * Until the backend listens, and after it restarts, the connection is tried again every 100 ms,
+ * not after EventSource's own delay of a few seconds.
  */
-const useIsBackendReady = (url: string): boolean => {
+const useBackendSetupEvents = (url: string) => {
     const [isBackendReady, setIsBackendReady] = useState(false);
+    const [areNodesLoaded, setAreNodesLoaded] = useState(false);
+    const [setupEventSource, setSetupEventSource] = useState<BackendEventSource | null>(null);
     useEffect(() => {
-        if (isBackendReady) {
-            return undefined;
-        }
         let source: EventSource | undefined;
         let retry: ReturnType<typeof setTimeout> | undefined;
         const connect = () => {
             const eventSource = new EventSource(`${url}/setup-sse`, { withCredentials: true });
             source = eventSource;
+            setSetupEventSource(eventSource);
             eventSource.addEventListener('backend-ready', () => setIsBackendReady(true));
+            eventSource.addEventListener('backend-nodes-loaded', () => setAreNodesLoaded(true));
             eventSource.onerror = () => {
                 eventSource.close();
                 retry = setTimeout(connect, 100);
@@ -333,8 +343,8 @@ const useIsBackendReady = (url: string): boolean => {
             clearTimeout(retry);
             source?.close();
         };
-    }, [url, isBackendReady]);
-    return isBackendReady;
+    }, [url]);
+    return { isBackendReady, areNodesLoaded, setupEventSource };
 };
 
 export const BackendProvider = memo(
@@ -357,16 +367,16 @@ export const BackendProvider = memo(
         const backendDownRef = useRef(false);
         const restartPromiseRef = useRef<Promise<void>>();
         const needsNewRestartRef = useRef(false);
-        const backendReadyRef = useRef(false);
+        const nodesLoadedRef = useRef(false);
 
-        const isBackendReady = useIsBackendReady(url);
+        const { isBackendReady, areNodesLoaded, setupEventSource } = useBackendSetupEvents(url);
         useEffect(() => {
-            backendReadyRef.current = isBackendReady;
-        }, [isBackendReady]);
+            nodesLoadedRef.current = areNodesLoaded;
+        }, [areNodesLoaded]);
 
         const { nodesInfo, schemaInputs, scope, refreshNodes, connectionState, nodesFromCache } =
-            useNodes(backend, backendDownRef, backendReadyRef, cachedData);
-        const { featureStates, refreshFeatureStates } = useFeatureStates(backend, isBackendReady);
+            useNodes(backend, backendDownRef, nodesLoadedRef, cachedData);
+        const { featureStates, refreshFeatureStates } = useFeatureStates(backend, areNodesLoaded);
 
         const featureStatesMaps = useMemo((): ReadonlyMap<FeatureId, FeatureState> => {
             return new Map(
@@ -447,6 +457,7 @@ export const BackendProvider = memo(
             connectionState,
             isBackendReady,
             nodesFromCache,
+            setupEventSource,
             refreshNodes,
         });
 
