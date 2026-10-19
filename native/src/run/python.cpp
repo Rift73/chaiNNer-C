@@ -19,7 +19,7 @@ constexpr const char *image_capsule = "chainner_c.run.image";
 
 /* The Python names the conversion uses, imported at the first conversion. */
 struct Names {
-    py::object pure_path, path, enumeration, color, lazy, aborted, normalized_readonly, normalize, require;
+    py::object pure_path, path, enumeration, color, lazy, aborted, generator, normalized_readonly, normalize, require;
 };
 
 const Names &names()
@@ -36,6 +36,7 @@ const Names &names()
                          py::module_::import("nodes.impl.color.color").attr("Color"),
                          api.attr("Lazy"),
                          api.attr("Aborted"),
+                         api.attr("Generator"),
                          buffers.attr("normalized_readonly"),
                          py::module_::import("nodes.impl.image_utils").attr("normalize"),
                          py::module_::import("numpy").attr("require")};
@@ -249,53 +250,163 @@ py::object exception_type(const std::string &name)
     return type;
 }
 
-/* A NodeError as the Python exception it names (RuntimeError "<type>: <message>" when the name is no exception
- * type); Aborted as api's Aborted. */
+/* The exception a NodeError names, with its message (RuntimeError "<type>: <message>" when the name is no
+ * exception type). */
+py::object exception_object(const NodeError &error)
+{
+    try {
+        return exception_type(error.python_type)(py::str(error.what()));
+    } catch (py::error_already_set &) {
+    } catch (const py::type_error &) {
+    }
+    return py::reinterpret_borrow<py::object>(PyExc_RuntimeError)(py::str(error.python_type + ": " + error.what()));
+}
+
+/* A generator item's iterated outputs as its supplier yields them: one value, or a tuple of several. */
+py::object item_to_python(const std::vector<Value> &item)
+{
+    if (item.size() == 1) return to_python(item[0]);
+    py::tuple values(item.size());
+    for (size_t i = 0; i < item.size(); ++i) values[i] = to_python(item[i]);
+    return values;
+}
+
+/* A NodeError as the Python exception it names; Aborted as api's Aborted. */
 void translate(std::exception_ptr pending)
 {
     try {
         std::rethrow_exception(pending);
     } catch (const NodeError &error) {
-        try {
-            PyErr_SetObject(exception_type(error.python_type).ptr(), py::str(error.what()).ptr());
-        } catch (py::error_already_set &) {
-            PyErr_SetString(PyExc_RuntimeError, (error.python_type + ": " + error.what()).c_str());
-        } catch (const py::type_error &) {
-            PyErr_SetString(PyExc_RuntimeError, (error.python_type + ": " + error.what()).c_str());
-        }
+        py::object exception = exception_object(error);
+        PyErr_SetObject(reinterpret_cast<PyObject *>(Py_TYPE(exception.ptr())), exception.ptr());
     } catch (const Aborted &) {
         PyErr_SetNone(names().aborted.ptr());
     }
 }
 
-/* run_native's context: never aborted, no node id, storage directory or settings. */
-class DirectContext final : public NodeContext {
+/* run_native's context: never aborted; the given node id, storage directory and package settings. */
+class RunContext final : public NodeContext {
 public:
+    RunContext(std::map<std::string, Value, std::less<>> settings, std::string node_id, std::filesystem::path storage_dir)
+        : settings_(std::move(settings)), node_id_(std::move(node_id)), storage_dir_(std::move(storage_dir))
+    {
+    }
     bool aborted() const noexcept override { return false; }
     void check_aborted() const override {}
-    std::string_view node_id() const noexcept override { return {}; }
+    std::string_view node_id() const noexcept override { return node_id_; }
     const std::filesystem::path &storage_dir() const noexcept override { return storage_dir_; }
-    const Value *setting(std::string_view) const noexcept override { return nullptr; }
+    const Value *setting(std::string_view key) const noexcept override
+    {
+        auto found = settings_.find(key);
+        return found == settings_.end() ? nullptr : &found->second;
+    }
 
 private:
+    std::map<std::string, Value, std::less<>> settings_;
+    std::string node_id_;
     std::filesystem::path storage_dir_;
 };
 
-py::list run_native(const std::string &schema_id, const py::list &inputs)
+/* A native generator's items, as the iterable its Generator's supplier returns: each next() describes and
+ * materializes one item with the GIL released; an item's NodeError is yielded as its exception (an item error, as
+ * Generator.from_list yields them). It keeps the context and inputs the source was created with. */
+class NativeItems {
+public:
+    NativeItems(std::shared_ptr<RunContext> context, std::vector<Value> inputs, std::unique_ptr<ItemSource> source)
+        : context_(std::move(context)), inputs_(std::move(inputs)), source_(std::move(source))
+    {
+    }
+
+    py::object next()
+    {
+        std::vector<Value> item;
+        std::exception_ptr failure;
+        bool more;
+        {
+            py::gil_scoped_release unlocked;
+            int64_t token = 0;
+            more = source_->describe(token);
+            if (more) {
+                try {
+                    source_->materialize(token, item);
+                } catch (const NodeError &) {
+                    failure = std::current_exception();
+                }
+            }
+        }
+        if (!more) throw py::stop_iteration();
+        if (failure) {
+            try {
+                std::rethrow_exception(failure);
+            } catch (const NodeError &error) {
+                return exception_object(error);
+            }
+        }
+        return item_to_python(item);
+    }
+
+    const ItemSource &source() const noexcept { return *source_; }
+
+private:
+    std::shared_ptr<RunContext> context_;
+    std::vector<Value> inputs_;
+    std::unique_ptr<ItemSource> source_;
+};
+
+/* An api.Generator over a native item source: expected_length, fail_fast and source_paths from the source; its
+ * supplier returns the items once (the executor calls it once per run). */
+py::object native_generator(const std::shared_ptr<NativeItems> &items)
+{
+    const ItemSource &source = items->source();
+    std::vector<std::filesystem::path> paths;
+    py::object source_paths = py::none();
+    if (source.source_paths(paths)) {
+        py::tuple tuple(paths.size());
+        for (size_t i = 0; i < paths.size(); ++i) tuple[i] = to_python(Path{paths[i]});
+        source_paths = tuple;
+    }
+    auto pending = std::make_shared<std::shared_ptr<NativeItems>>(items);
+    py::cpp_function supplier([pending]() -> py::object {
+        if (!*pending) throw py::value_error("A native generator's items can be read once");
+        py::object iterable = py::cast(*pending);
+        pending->reset();
+        return iterable;
+    });
+    return names().generator(supplier, source.expected_length(), source.fail_fast(), py::none(), source_paths);
+}
+
+/* Runs a node's native entry point on enforced inputs. A regular node returns its outputs; a generator returns
+ * [api.Generator over its items, *static outputs]. */
+py::list run_native(const std::string &schema_id, const py::list &inputs, const py::object &settings,
+                    const std::string &node_id, const py::object &storage_dir)
 {
     const Entry *entry = find_entry(schema_id);
     if (!entry) throw py::key_error("No native entry point for " + schema_id);
-    if (!entry->run) throw py::type_error(schema_id + " is a generator; run_native runs regular nodes");
     std::vector<Value> values;
     values.reserve(inputs.size());
     for (py::handle input : inputs) values.push_back(to_value(input, ImageMode::enforced));
-    std::vector<Value> outputs;
-    {
-        py::gil_scoped_release unlocked;
-        DirectContext context;
-        entry->run(context, values, outputs);
+    std::map<std::string, Value, std::less<>> parsed;
+    if (!settings.is_none()) {
+        for (auto [key, value] : py::reinterpret_borrow<py::dict>(settings))
+            parsed.emplace(py::str(key), to_value(value, ImageMode::enforced));
     }
+    std::filesystem::path directory;
+    if (!storage_dir.is_none()) directory = std::get<Path>(to_value(storage_dir, ImageMode::enforced)).value;
+    auto context = std::make_shared<RunContext>(std::move(parsed), node_id, std::move(directory));
+    std::vector<Value> outputs;
     py::list result;
+    if (entry->run) {
+        py::gil_scoped_release unlocked;
+        entry->run(*context, values, outputs);
+    } else {
+        std::unique_ptr<ItemSource> source;
+        {
+            py::gil_scoped_release unlocked;
+            source = entry->generator(*context, values, outputs);
+        }
+        if (!source) throw py::value_error(schema_id + " returned no item source");
+        result.append(native_generator(std::make_shared<NativeItems>(context, std::move(values), std::move(source))));
+    }
     for (const Value &output : outputs) result.append(to_python(output));
     return result;
 }
@@ -401,9 +512,15 @@ void rethrow_python_error(py::error_already_set &error)
 void cn_bind_run_engine(py::module_ &module)
 {
     py::register_local_exception_translator(cn::run::translate);
-    module.def("run_native", &cn::run::run_native, py::arg("schema_id"), py::arg("inputs"),
-               "Run a node's native entry point on its enforced inputs (the values process.enforce_inputs passes); "
-               "returns its outputs before output enforcement, images as read-only float32 arrays.");
+    py::class_<cn::run::NativeItems, std::shared_ptr<cn::run::NativeItems>>(module, "_NativeItems")
+        .def("__iter__", [](py::object self) { return self; })
+        .def("__next__", &cn::run::NativeItems::next);
+    module.def("run_native", &cn::run::run_native, py::arg("schema_id"), py::arg("inputs"), py::kw_only(),
+               py::arg("settings") = py::none(), py::arg("node_id") = "", py::arg("storage_dir") = py::none(),
+               "Run a node's native entry point on its enforced inputs (the values process.enforce_inputs passes) "
+               "with a context of the given package settings (a dict), node id and storage directory (a Path); "
+               "returns its outputs before output enforcement, images as read-only float32 arrays. A generator "
+               "returns [an api.Generator over its native items, *static outputs].");
     module.def("native_schema_ids", &cn::run::native_schema_ids, "The schema ids with a native entry point, sorted.");
     module.def(
         "run_engine_value",

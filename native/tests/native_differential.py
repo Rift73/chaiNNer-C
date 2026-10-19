@@ -10,7 +10,10 @@ by their bits, other values by type and value; errors by Python type name and me
 compared after output enforcement, so a native node may return the values its Python body returns or their
 normalized form.
 
-Nodes with a NodeContext (node_context=True) are not covered yet (the engine's context arrives with E2).
+A node with a NodeContext gets a test context on both sides: the same package settings (a dict), node id and
+storage directory, never aborted. A generator's outcome holds its expected length, fail_fast, source paths, static
+outputs (enforced) and up to max_items items, each enforced as the executor fills an item's outputs, or the item's
+error (a yielded exception, or its enforce error).
 """
 
 from __future__ import annotations
@@ -18,7 +21,9 @@ from __future__ import annotations
 import functools
 import importlib
 import struct
+from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -66,45 +71,152 @@ def comparable(value: object) -> object:
     return (f"{type(value).__module__}.{type(value).__qualname__}", value)
 
 
-def _outcome(node: api.NodeData, run) -> tuple[str, object]:
+class DifferentialContext(api.NodeContext):
+    """The Python body's context in a differential run: never aborted, never paused."""
+
+    def __init__(self, settings: dict[str, object], node_id: api.NodeId, storage_dir: Path) -> None:
+        super().__init__()
+        self.__settings = api.SettingsParser(settings)
+        self.__node_id = node_id
+        self.__storage_dir = storage_dir
+
+    @property
+    def aborted(self) -> bool:
+        return False
+
+    @property
+    def paused(self) -> bool:
+        return False
+
+    def set_progress(self, progress: float) -> None:
+        self.check_aborted()
+
+    @property
+    def settings(self) -> api.SettingsParser:
+        return self.__settings
+
+    @property
+    def node_id(self) -> api.NodeId:
+        return self.__node_id
+
+    @property
+    def storage_dir(self) -> Path:
+        return self.__storage_dir
+
+    def add_cleanup(self, fn: Callable[[], None], after: Literal["node", "chain"] = "chain") -> None:
+        raise NotImplementedError("Differential runs register no cleanups")
+
+
+Outcome = tuple[str, object]
+
+
+def _error(error: Exception) -> Outcome:
+    return "error", (error_name(error), str(error))
+
+
+def _items(node: api.NodeData, output: process.GeneratorOutput, max_items: int) -> list[Outcome]:
+    """The generator's items as process.Executor fills them (__generator_fill_partial_output), or their errors."""
+    iterated = node.single_iterable_output.outputs
+    items: list[Outcome] = []
+    for values in output.generator.supplier():
+        if len(items) == max_items:
+            break
+        if isinstance(values, Exception):
+            items.append(_error(values))
+            continue
+        try:
+            if len(iterated) == 1:
+                listed = [values]
+            else:
+                assert isinstance(values, (tuple, list))
+                listed = list(values)
+            assert len(listed) == len(iterated)
+            filled = [o.enforce_(listed.pop(0)) for o in node.outputs if o.id in iterated]
+            items.append(("item", [comparable(value) for value in filled]))
+        except Exception as error:
+            items.append(_error(error))
+    return items
+
+
+def _outcome(node: api.NodeData, run: Callable[[], object], max_items: int) -> Outcome:
     try:
-        return "outputs", process.enforce_output(run(), node).output
+        raw = run()
+        if node.kind == "generator":
+            output = process.enforce_generator_output(raw, node)
+            generator = output.generator
+            static = [comparable(v) for o, v in zip(node.outputs, output.partial_output) if o.id not in output.info.outputs]
+            return "generator", (
+                generator.expected_length,
+                generator.fail_fast,
+                generator.source_paths,
+                static,
+                _items(node, output, max_items),
+            )
+        return "outputs", [comparable(value) for value in process.enforce_output(raw, node).output]
     except Exception as error:
-        return "error", (error_name(error), str(error))
+        return _error(error)
 
 
-def run_both(schema_id: str, inputs: list[object]) -> tuple[tuple[str, object], tuple[str, object]]:
-    """(python, native) outcomes: ("outputs", enforced outputs) or ("error", (type name, message))."""
-    node = node_data(schema_id)
-    assert not node.node_context, f"{schema_id} takes a NodeContext, which run_native does not provide yet"
-    assert node.kind == "regularNode", f"{schema_id} is a {node.kind}; run_native runs regular nodes"
-    assert schema_id in graph().native_schema_ids(), f"{schema_id} has no native entry point"
-    enforced = process.enforce_inputs(list(inputs), node, api.NodeId("native-differential"), [])
-    python = _outcome(node, lambda: node.run(*enforced))
-    native = _outcome(node, lambda: _single(node, graph().run_native(schema_id, enforced)))
-    return python, native
-
-
-def _single(node: api.NodeData, outputs: list[object]) -> object:
-    """run_native's output list in the shape node.run returns (None, one value, or a tuple)."""
+def _shaped(node: api.NodeData, outputs: list[object]) -> object:
+    """run_native's output list in the shape node.run returns: None, one value, or a tuple (a generator's
+    Generator first, then its static outputs)."""
     if not node.outputs:
         assert outputs == [], f"Expected no outputs, got {len(outputs)}"
         return None
+    if node.kind == "generator":
+        return outputs[0] if len(outputs) == 1 else tuple(outputs)
     return outputs[0] if len(node.outputs) == 1 else tuple(outputs)
 
 
-def assert_native_matches(schema_id: str, inputs: list[object]) -> tuple[str, object]:
+def run_both(
+    schema_id: str,
+    inputs: list[object],
+    *,
+    settings: dict[str, object] | None = None,
+    storage_dir: Path | None = None,
+    max_items: int = 1000,
+) -> tuple[Outcome, Outcome]:
+    """(python, native) outcomes: ("outputs", comparable enforced outputs), ("generator", (expected length,
+    fail_fast, source paths, static outputs, items)) or ("error", (type name, message))."""
+    node = node_data(schema_id)
+    assert node.kind in ("regularNode", "generator"), f"{schema_id} is a {node.kind}; run_native has no collectors"
+    assert schema_id in graph().native_schema_ids(), f"{schema_id} has no native entry point"
+    node_id = api.NodeId("native-differential")
+    directory = storage_dir if storage_dir is not None else Path.cwd()
+    context = DifferentialContext(dict(settings or {}), node_id, directory)
+    enforced = process.enforce_inputs(list(inputs), node, node_id, [])
+    arguments = [context, *enforced] if node.node_context else enforced
+    python = _outcome(node, lambda: node.run(*arguments), max_items)
+    native = _outcome(
+        node,
+        lambda: _shaped(
+            node,
+            graph().run_native(
+                schema_id, enforced, settings=dict(settings or {}), node_id=node_id, storage_dir=directory
+            ),
+        ),
+        max_items,
+    )
+    return python, native
+
+
+def assert_native_matches(
+    schema_id: str,
+    inputs: list[object],
+    *,
+    settings: dict[str, object] | None = None,
+    storage_dir: Path | None = None,
+    max_items: int = 1000,
+) -> Outcome:
     """Asserts that schema_id's native entry point matches its Python body on inputs; returns the native outcome."""
-    python, native = run_both(schema_id, inputs)
-    assert python[0] == native[0], f"{schema_id}: Python gave {python}, native gave {native}"
-    if python[0] == "error":
-        assert python[1] == native[1], f"{schema_id}: errors differ: Python {python[1]}, native {native[1]}"
-        return native
-    python_outputs, native_outputs = python[1], native[1]
-    assert isinstance(python_outputs, list) and isinstance(native_outputs, list)
-    expected = [comparable(value) for value in python_outputs]
-    actual = [comparable(value) for value in native_outputs]
-    assert len(expected) == len(actual), f"{schema_id}: {len(expected)} outputs vs {len(actual)}"
-    for index, (e, a) in enumerate(zip(expected, actual)):
-        assert e == a, f"{schema_id}: output {index} differs: Python {e!r:.200}, native {a!r:.200}"
+    python, native = run_both(schema_id, inputs, settings=settings, storage_dir=storage_dir, max_items=max_items)
+    assert python[0] == native[0], f"{schema_id}: Python gave {python!r:.300}, native gave {native!r:.300}"
+    if python[0] == "outputs":
+        python_outputs, native_outputs = python[1], native[1]
+        assert isinstance(python_outputs, list) and isinstance(native_outputs, list)
+        assert len(python_outputs) == len(native_outputs), f"{schema_id}: output counts differ"
+        for index, (e, a) in enumerate(zip(python_outputs, native_outputs)):
+            assert e == a, f"{schema_id}: output {index} differs: Python {e!r:.200}, native {a!r:.200}"
+    else:
+        assert python[1] == native[1], f"{schema_id}: Python {python[1]!r:.300}, native {native[1]!r:.300}"
     return native
