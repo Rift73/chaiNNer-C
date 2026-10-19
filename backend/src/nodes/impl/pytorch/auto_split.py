@@ -14,6 +14,7 @@ from api import Aborted, Progress
 
 from ..native_framework_images import planar_to_interleaved_checked
 from ..upscale.auto_split import Split, Tiler, auto_split
+from .offload import offloaded
 from .utils import safe_cuda_cache_empty
 
 
@@ -174,8 +175,9 @@ def pytorch_auto_split(
             input_tensor = _rgb_to_bgr(input_tensor)
             input_tensor = _into_batched_form(input_tensor)
 
-            # inference
-            output_tensor = _forward_or_stopped(model, input_tensor, progress)
+            # inference; activations past the GPU's memory go to RAM, not the driver's overflow
+            with offloaded(model.model, input_tensor):
+                output_tensor = _forward_or_stopped(model, input_tensor, progress)
             if output_tensor is None:
                 # The kernels already queued end inside the node, so the memory is
                 # free once the node ends, and the release does not wait for them.
