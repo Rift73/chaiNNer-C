@@ -12,6 +12,9 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   after on 6 real images (pinned, median of 5): 42.3 MB / 174 ms (fpng) -> 33.4 MB / 107 ms (79.0 %, 0.45x fpng
   SLOWER); 1080p 8.0 -> 4.9 ms; 64x64 0.011 -> 0.061 ms. Pixels identical; bytes differ (tests compare decoded
   pixels). ECT evaluated and not adopted (74.7 % at -1, ~60x slower even on all cores). Gate 136,110 passed.
+  RELEASED 2026-10-21 as v0.3.7 re-release 7 (fork branch and tag `v0.3.7` at the replay of main up to `eeb4b27b`,
+  the PNG test's sample folder replayed as its environment variable; asset SHA-256 `9aec18a7…767b`, r6 `8A906053…89C3`
+  kept locally); both local installs updated (5 files each) and serve 196 nodes.
 - video-seek (2026-10-21, v0.3.7 re-release 6; branch `feat/video-seek`; design, plan and lane reports in
   `native/local/video-seek/`, rulings in `native/reports/fable-decisions.md`, "video-seek"): Load Video gains a seek
   bar (kind `video-seek`: slider, first/-1 s/-1/+1/+1 s/last, frame box, timecode, In/Out, Run this frame), a Preview
