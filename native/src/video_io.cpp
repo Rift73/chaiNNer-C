@@ -599,9 +599,9 @@ void writer_frame(const py::dict&g,const O&self,const O&image,const O&prepared) 
 
 // Load Video's audio is ffmpeg.input(path).audio: the file the mux reads it from.
 O audio_source(const O&self) {return self.attr("audio").attr("node").attr("kwargs")[py::str("filename")];}
-// Where a Load Video Range's audio starts (its input's -ss, video.py get_audio_stream),
-// in seconds; 0 for audio read from the file's start.
-O audio_start(const O&self) {return self.attr("audio").attr("node").attr("kwargs").attr("get")("ss",py::int_(0));}
+// Where Load Video's audio stream starts (its input's -ss, video.py get_audio_stream: a
+// Range from In > 0), in seconds; 0 for audio read from the file's start.
+O audio_start(const O&audio) {return audio.attr("node").attr("kwargs").attr("get")("ss",py::int_(0));}
 py::list audio_streams(const py::dict&g,const O&self) {
     // The audio streams of the audio's source file, as ffprobe reports them.
     O probe=global(g,"ffmpeg").attr("probe")(audio_source(self),py::arg("cmd")=self.attr("ffmpeg_env").attr("ffprobe"));
@@ -643,12 +643,12 @@ O mux_audio(const py::dict&g,const O&self) {
     O container=self.attr("container"),settings=self.attr("audio_settings");
     O path=self.attr("save_path"),os=global(g,"os"),ffmpeg=global(g,"ffmpeg"),logger=global(g,"logger");
     O auto_settings=member(g,"AudioSettings","AUTO");
-    O start=audio_start(self);
+    O start=audio_start(self.attr("audio"));
     if(eq(settings,auto_settings) && cmp(start,py::int_(0),Py_GT)) {
         // FFmpeg 5.1 copies audio cut at a Range's In from a packet before In: an MP4's
         // edit list hides the extra audio from players that read one, a Matroska file
         // plays it (1.26 s before the video in test_save_video_audio.py). A transcode
-        // starts at In to the sample. Copy still copies, as asked.
+        // starts at In to the sample. Copy refuses such audio (save_video).
         logger.attr("info")(py::str("Auto transcodes the audio from {} s: a copy would start before the video's first frame").attr("format")(start));
         settings=member(g,"AudioSettings","TRANSCODE");
     }
@@ -776,6 +776,12 @@ O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O
         O settings=global(g,"get_simple_format")(simple,quality);
         container=settings[py::int_(0)];encoder=settings[py::int_(1)];preset=settings[py::int_(2)];crf=settings[py::int_(3)];
     }
+    if(eq(container,member(g,"VideoFormat","GIF")))audio=py::none();
+    // A copy cannot cut the audio at a Range's In > 0 (mux_audio): refused before anything
+    // is written or FFmpeg starts. Audio from the file's start (Frames All, a Range from
+    // frame 0, as old chains' Use limit) copies as before.
+    if(!audio.is_none() && eq(audio_settings,member(g,"AudioSettings","COPY")) && cmp(audio_start(audio),py::int_(0),Py_GT))
+        fail(PyExc_ValueError,"Copy cannot cut the audio exactly at a Range that starts after frame 0; choose Auto (re-encodes it) or Transcode.");
     O filename=py::str("{}.{}").attr("format")(name,container.attr("ext"));
     O path=div(directory,filename).attr("resolve")();
     path.attr("parent").attr("mkdir")(py::arg("parents")=true,py::arg("exist_ok")=true);
@@ -786,7 +792,6 @@ O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O
     py::tuple options=output_options(g,target.attr("temp"),container,encoder,preset,crf,fps,simplicity,additional);
     py::dict params=options[0].cast<py::dict>();
     py::list globals=options[1].cast<py::list>();
-    if(eq(container,member(g,"VideoFormat","GIF")))audio=py::none();
     // With audio, the mux writes the final file, which had no faststart while the encode
     // pass rewrote its own file for one: an MP4's or MOV's faststart moves to the mux
     // (instant-exec gate R5a). A user's own -movflags stays in the encode pass, as before.

@@ -12,7 +12,7 @@ import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -396,12 +396,13 @@ def test_a_range_cuts_the_audio_to_the_frames_read(
 
 
 def audio_packet_hashes(path: Path) -> list[str]:
-    """Each audio packet's MD5, in order (FFmpeg's framemd5 of a stream copy)."""
+    """Each audio packet's MD5, in order (FFmpeg's framemd5 of a stream copy: stream,
+    dts, pts, duration, size, the data's hash, then any side data's)."""
     lines = ffmpeg(
         "-i", str(path), "-map", "0:a:0", "-c", "copy", "-f", "framemd5", "-"
     ).decode()
     return [
-        line.rsplit(",", 1)[1].strip()
+        line.split(",")[5].strip()
         for line in lines.splitlines()
         if line and not line.startswith("#")
     ]
@@ -421,16 +422,9 @@ def found_at(part: np.ndarray, whole: np.ndarray, near: int, reach: int) -> int:
     return near - reach + int(np.argmax(np.correlate(window, head, mode="valid")))
 
 
-@pytest.mark.parametrize("audio", [AudioSettings.AUTO, AudioSettings.COPY])
-@pytest.mark.parametrize("container", [VideoFormat.MP4, VideoFormat.MKV])
-def test_a_range_s_audio_starts_with_its_first_frame(
-    tmp_path: Path, container: VideoFormat, audio: AudioSettings
-):
-    # A Range from In > 0 reads its audio from In / fps (the input's -ss). FFmpeg 5.1
-    # copies such audio from a packet before In: an MP4's edit list hides the extra
-    # audio, a Matroska file plays it (here the audio started 1.26 s before the video).
-    # Auto transcodes it, which FFmpeg cuts at In to the sample. Copy still copies, as
-    # asked. White noise tells where any stretch of it lies.
+def noise_source(tmp_path: Path) -> Path:
+    """5 s of H.264 video with white noise in AAC (48 kHz mono): any stretch of the noise
+    tells where it lies."""
     src = tmp_path / "noise.mp4"
     ffmpeg(
         *("-f", "lavfi", "-i", "testsrc2=size=64x48:rate=30"),
@@ -438,15 +432,23 @@ def test_a_range_s_audio_starts_with_its_first_frame(
         *("-t", "5", "-c:v", "libx264", "-pix_fmt", "yuv420p"),
         *("-c:a", "aac", "-ac", "1", str(src)),
     )
+    return src
+
+
+@pytest.mark.parametrize("audio", [AudioSettings.AUTO, AudioSettings.TRANSCODE])
+@pytest.mark.parametrize("container", [VideoFormat.MP4, VideoFormat.MKV])
+def test_a_range_s_audio_starts_with_its_first_frame(
+    tmp_path: Path, container: VideoFormat, audio: AudioSettings
+):
+    # A Range from In > 0 reads its audio from In / fps (the input's -ss). FFmpeg 5.1
+    # copies such audio from a packet before In: an MP4's edit list hides the extra
+    # audio, a Matroska file plays it (the audio started 1.26 s before the video). Auto
+    # transcodes it, as Transcode does, which FFmpeg cuts at In to the sample.
+    src = noise_source(tmp_path)
     save_frames(tmp_path, src, (37, 96), audio, container)
     out = saved(tmp_path, container)
     packets, source_packets = audio_packet_hashes(out), audio_packet_hashes(src)
-    if audio is AudioSettings.COPY:
-        # Every packet after the first is the source's, in order.
-        first = source_packets.index(packets[1])
-        assert packets[1:] == source_packets[first : first + len(packets) - 1]
-        return
-    assert not set(packets[1:]) & set(source_packets)
+    assert not set(packets) & set(source_packets)
     # The audio that plays with the video's first frame is the source's at frame 37
     # (1.2333 s, sample 59200), and the audio lasts the Range's 2 s, both within what
     # Matroska's millisecond timestamps tell (48 samples), the length within one AAC
@@ -458,3 +460,46 @@ def test_a_range_s_audio_starts_with_its_first_frame(
     start = 37 * 48000 // 30
     assert abs(found_at(part, whole, start, 2048) + lead - start) <= 48
     assert abs(part.size - lead - 2 * 48000) <= 1024
+
+
+@pytest.mark.parametrize("container", list(VideoFormat))
+def test_copy_refuses_a_range_s_audio_after_frame_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, container: VideoFormat
+):
+    # Copy cannot cut the audio at a Range's In > 0 (FFmpeg copies from a packet before
+    # it), so Save Video refuses it when the node runs, before FFmpeg starts and before
+    # anything is written, in every container that carries audio (a GIF has none).
+    src = noise_source(tmp_path)
+    started: list[str] = []
+    popen = subprocess.Popen
+
+    def recording(args: Any, *rest: Any, **kwargs: Any):
+        started.append(Path(args[0]).stem)
+        return popen(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", recording)
+    message = (
+        r"^Copy cannot cut the audio exactly at a Range that starts after frame 0;"
+        r" choose Auto \(re-encodes it\) or Transcode\.$"
+    )
+    if container is VideoFormat.GIF:
+        save_frames(tmp_path, src, (37, 96), AudioSettings.COPY, container)
+        assert streams(saved(tmp_path, container)) == ["video:gif"]
+        return
+    with pytest.raises(ValueError, match=message):
+        save_frames(tmp_path, src, (37, 96), AudioSettings.COPY, container)
+    close_previews()  # the Preview's reader lets the source go
+    assert "ffmpeg" not in started
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["noise.mp4"]
+
+
+@pytest.mark.parametrize("container", [VideoFormat.MP4, VideoFormat.MKV])
+def test_copy_copies_a_range_s_audio_from_frame_0(
+    tmp_path: Path, container: VideoFormat
+):
+    # A Range from frame 0 (an old chain's Use limit among them) cuts only the audio's
+    # end: Copy copies it, every packet the source's, in order.
+    src = noise_source(tmp_path)
+    save_frames(tmp_path, src, (0, 59), AudioSettings.COPY, container)
+    packets = audio_packet_hashes(saved(tmp_path, container))
+    assert packets == audio_packet_hashes(src)[: len(packets)]
