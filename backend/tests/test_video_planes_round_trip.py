@@ -60,7 +60,9 @@ SWS_FLAGS = "lanczos+accurate_rnd+full_chroma_int+full_chroma_inp+bitexact"
 
 
 class Context:
-    """The two NodeContext members the video nodes use."""
+    """The NodeContext members the video nodes use."""
+
+    chosen_item = None  # every item runs, so Save Video writes the video
 
     def __init__(self):
         self.storage_dir = STORAGE

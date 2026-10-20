@@ -80,7 +80,9 @@ BT601 = ("smpte170m", "smpte170m", "smpte170m", "tv")
 
 
 class Context:
-    """The two NodeContext members Save Video uses."""
+    """The NodeContext members Save Video uses."""
+
+    chosen_item = None  # every item runs, so the video is written
 
     def __init__(self):
         self.storage_dir = STORAGE

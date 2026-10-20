@@ -70,7 +70,9 @@ pytestmark = pytest.mark.skipif(
 
 
 class Context:
-    """The two NodeContext members Save Video uses."""
+    """The NodeContext members Save Video uses."""
+
+    chosen_item = None  # every item runs, so the video is written
 
     def __init__(self):
         self.storage_dir = STORAGE

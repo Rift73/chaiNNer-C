@@ -275,6 +275,7 @@ def valid_probe() -> dict[str, Any]:
 
 class Context:
     storage_dir = Path("isolated/storage")
+    chosen_item = None  # every item runs, so Save Video writes the video
 
     def __init__(self):
         self.cleanups = []

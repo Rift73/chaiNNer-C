@@ -79,7 +79,9 @@ ENCODERS = {
 
 
 class Context:
-    """The two NodeContext members Save Video uses; cleanup() is the chain's end (Stop)."""
+    """The NodeContext members Save Video uses; cleanup() is the chain's end (Stop)."""
+
+    chosen_item = None  # every item runs, so the video is written
 
     def __init__(self):
         self.storage_dir = STORAGE
