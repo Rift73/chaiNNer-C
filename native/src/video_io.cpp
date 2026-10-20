@@ -1003,10 +1003,9 @@ O load_video(const py::dict&g,const O&context,const O&path,const O&ranged,const 
     O parts=global(g,"split_file_path")(path);
     O loader=global(g,"VideoLoader")(path,global(g,"FFMpegEnv").attr("get_integrated")(context.attr("storage_dir")),settings);
     O fps=loader.attr("metadata").attr("fps");
-    // Exact where PyAV reads the file, else (None) the probe's estimate counts, which the
-    // CLI's renumbered frames can pass or fall short of (video.py frame_count).
-    O exact=loader.attr("exact_frame_count")();
-    O count=exact.is_none()?O(loader.attr("metadata").attr("frame_count")):exact;
+    // Exact where PyAV reads the file, else the probe's estimate, which the CLI's
+    // renumbered frames can pass or fall short of (video.py frame_count).
+    O count=loader.attr("frame_count")();
     // A Seek past the end (the node's video changed to a shorter one) shows the last frame.
     O shown=builtin("max")(py::int_(0),builtin("min")(seek,sub(count,py::int_(1))));
     O preview=global(g,"load_preview")(context.attr("node_id"),loader,shown);
@@ -1018,9 +1017,13 @@ O load_video(const py::dict&g,const O&context,const O&path,const O&ranged,const 
         O read_last=builtin("min")(last,sub(count,py::int_(1)));
         length=builtin("max")(py::int_(0),sub(add(read_last,py::int_(1)),first));
         // The audio of the frames read, so the mux copies no more of it (instant-exec gate
-        // R7): from In / fps for their count / fps; to Out where the count is an estimate
-        // (audio past the end is not there to copy).
-        O frames=exact.is_none()?builtin("max")(py::int_(0),sub(stop,first)):length;
+        // R7): from In / fps for their count / fps. An Out past an estimated count (no
+        // exact_frame_count) cuts it at Out, as the CLI's frames can pass the estimate
+        // (audio past the end is not there to copy); an Out within the count reads to Out
+        // either way.
+        O frames=length;
+        if(cmp(last,sub(count,py::int_(1)),Py_GT) && loader.attr("exact_frame_count")().is_none())
+            frames=builtin("max")(py::int_(0),sub(stop,first));
         audio=cmp(fps,py::int_(0),Py_GT)
             ?O(loader.attr("get_audio_stream")(div(frames,fps),div(first,fps)))
             :O(loader.attr("get_audio_stream")());
