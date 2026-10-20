@@ -56,9 +56,9 @@ test('Load Image Pairs index migrates to one edge per input', () => {
         ],
         viewport: { x: 0, y: 0, zoom: 1 },
     };
-    // a v0.24 chain: the last migration splits Load Image Pairs into two Load Images
+    // a v0.24 chain: the second to last migration splits Load Image Pairs into two Load Images
     const parsed = SaveFile.parse(
-        JSON.stringify({ version: '0.24.0', content, migration: currentMigration - 1 })
+        JSON.stringify({ version: '0.24.0', content, migration: currentMigration - 2 })
     );
 
     const toMath = parsed.edges.filter((e) => e.target === math);
@@ -67,6 +67,56 @@ test('Load Image Pairs index migrates to one edge per input', () => {
         'Load Images A'
     );
     expect(toMath[0].sourceHandle).toBe(`${toMath[0].source}-4`);
+});
+
+test("Load Video's Use limit migrates to a frame range", () => {
+    const limited = '00000000-0000-0000-0000-000000000001';
+    const unlimited = '00000000-0000-0000-0000-000000000002';
+    const old = '00000000-0000-0000-0000-000000000003';
+    const number = '00000000-0000-0000-0000-000000000004';
+    const loadVideo = (id: string, inputData: Record<number, string | number>) => ({
+        id,
+        type: 'generator',
+        position: { x: 0, y: 0 },
+        data: { id, schemaId: 'chainner:image:load_video', inputData },
+    });
+    const content = {
+        nodes: [
+            loadVideo(limited, { 0: 'a.mp4', 1: 1, 2: 25, 3: 'rgb' }),
+            loadVideo(unlimited, { 0: 'b.mp4', 1: 0, 2: 25, 3: 'rgb' }),
+            // older chains have only the path
+            loadVideo(old, { 0: 'c.mp4' }),
+            {
+                id: number,
+                type: 'regularNode',
+                position: { x: -400, y: 0 },
+                data: { id: number, schemaId: 'chainner:utility:number', inputData: { 0: 25 } },
+            },
+        ],
+        edges: [
+            {
+                id: 'limit-edge',
+                source: number,
+                sourceHandle: `${number}-0`,
+                target: unlimited,
+                targetHandle: `${unlimited}-2`,
+                type: 'main',
+            },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+    };
+    // the last migration replaces Use limit and Limit (inputs 1 and 2) with Frames, In and Out
+    const parsed = SaveFile.parse(
+        JSON.stringify({ version: '0.25.0', content, migration: currentMigration - 1 })
+    );
+
+    const inputsOf = (id: string) => parsed.nodes.find((n) => n.id === id)?.data.inputData;
+    expect(inputsOf(limited)).toEqual({ 0: 'a.mp4', 3: 'rgb', 10: 'range', 11: 0, 12: 24 });
+    expect(inputsOf(unlimited)).toEqual({ 0: 'b.mp4', 3: 'rgb', 10: 'all' });
+    expect(inputsOf(old)).toEqual({ 0: 'c.mp4', 10: 'all' });
+    expect(inputsOf(number)).toEqual({ 0: 25 });
+    // Limit is gone, and the edge into it with it
+    expect(parsed.edges).toEqual([]);
 });
 
 afterEach(() => {

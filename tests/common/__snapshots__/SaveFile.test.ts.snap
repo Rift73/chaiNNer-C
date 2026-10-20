@@ -17112,6 +17112,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "0084afa8-f236-54d7-a9fb-60e3aad8f083",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": false,
         "iteratorSize": {
@@ -17135,6 +17136,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "013a370e-a477-5029-a247-ff141877b700",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17193,6 +17195,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "01dd1aca-58c7-56be-b6f4-195b12f24d77",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17251,6 +17254,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "25347b74-985c-5f22-a049-25f10feb1845",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17309,6 +17313,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "3396041d-6888-5780-af28-887fa6c3bff2",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17367,6 +17372,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "384f0f11-cce9-53a1-9431-deacf0f42357",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17425,6 +17431,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "496d99b7-2521-5840-8617-dcd119c810bf",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17483,6 +17490,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "503c6409-2186-5601-a3b8-9599a23c4341",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17541,6 +17549,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "53d387b7-0535-546c-aae8-33f3f380ec12",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17599,6 +17608,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "5d453d0f-1d93-5a7c-9fd4-66f8e4b6f783",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17657,6 +17667,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "6671153b-786b-527f-bf58-3bb7d9e25a19",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17715,6 +17726,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "78b2c53f-b250-58c1-b9d0-0d1216982e81",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17738,6 +17750,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "82fc9b04-c1e5-579b-843b-6d25cac99e41",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17796,6 +17809,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "95753fb3-8aee-5ca3-9187-b8a39d8f3857",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17854,6 +17868,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "a12b17e6-8b6c-59cd-9d73-722c903deb57",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17912,6 +17927,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "b4e19d23-8b31-543d-aa44-121133e65122",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -17970,6 +17986,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "b606e603-8f45-5a24-93e4-7d1f80442c09",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -18028,6 +18045,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "c496baa6-3144-541c-8a2a-ccb502be1cca",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -18086,6 +18104,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "c7055b72-a55c-5f7d-84f8-cbf44f246336",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": true,
         "iteratorSize": {
@@ -18144,6 +18163,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "cd999493-2070-469a-b918-557a36bcc595",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": false,
         "iteratorSize": {
@@ -18202,6 +18222,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "def9f182-5f4c-5643-ba5e-3828ff93f001",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": false,
         "iteratorSize": {
@@ -18260,6 +18281,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "efe40a14-e8a0-5930-a204-a4888ce4e539",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": false,
         "iteratorSize": {
@@ -18318,6 +18340,7 @@ exports[`Read save file video-frame-iterator.chn 1`] = `
         "id": "fcd566d4-84b8-5166-9bb0-febcd82f70be",
         "inputData": {
           "0": "A:\\tmp\\input\\input.mkv",
+          "10": "all",
         },
         "isDisabled": false,
         "iteratorSize": {
@@ -34631,7 +34654,7 @@ exports[`Write save file utilities.chn 1`] = `
 
 exports[`Write save file video-frame-iterator.chn 1`] = `
 {
-  "checksum": "ddb650764a6b459f82018448b95dea21",
+  "checksum": "88074395221e903c98d3b6b367ef0663",
   "content": {
     "edges": [
       {
@@ -35405,6 +35428,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "0084afa8-f236-54d7-a9fb-60e3aad8f083",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": false,
           "schemaId": "chainner:image:load_video",
@@ -35422,6 +35446,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "013a370e-a477-5029-a247-ff141877b700",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35466,6 +35491,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "01dd1aca-58c7-56be-b6f4-195b12f24d77",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35510,6 +35536,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "25347b74-985c-5f22-a049-25f10feb1845",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35554,6 +35581,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "3396041d-6888-5780-af28-887fa6c3bff2",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35598,6 +35626,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "384f0f11-cce9-53a1-9431-deacf0f42357",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35642,6 +35671,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "496d99b7-2521-5840-8617-dcd119c810bf",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35686,6 +35716,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "503c6409-2186-5601-a3b8-9599a23c4341",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35730,6 +35761,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "53d387b7-0535-546c-aae8-33f3f380ec12",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35774,6 +35806,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "5d453d0f-1d93-5a7c-9fd4-66f8e4b6f783",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35818,6 +35851,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "6671153b-786b-527f-bf58-3bb7d9e25a19",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35862,6 +35896,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "78b2c53f-b250-58c1-b9d0-0d1216982e81",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35879,6 +35914,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "82fc9b04-c1e5-579b-843b-6d25cac99e41",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35923,6 +35959,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "95753fb3-8aee-5ca3-9187-b8a39d8f3857",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -35967,6 +36004,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "a12b17e6-8b6c-59cd-9d73-722c903deb57",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -36011,6 +36049,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "b4e19d23-8b31-543d-aa44-121133e65122",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -36055,6 +36094,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "b606e603-8f45-5a24-93e4-7d1f80442c09",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -36099,6 +36139,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "c496baa6-3144-541c-8a2a-ccb502be1cca",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -36143,6 +36184,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "c7055b72-a55c-5f7d-84f8-cbf44f246336",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": true,
           "schemaId": "chainner:image:load_video",
@@ -36187,6 +36229,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "cd999493-2070-469a-b918-557a36bcc595",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": false,
           "schemaId": "chainner:image:load_video",
@@ -36231,6 +36274,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "def9f182-5f4c-5643-ba5e-3828ff93f001",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": false,
           "schemaId": "chainner:image:load_video",
@@ -36275,6 +36319,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "efe40a14-e8a0-5930-a204-a4888ce4e539",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": false,
           "schemaId": "chainner:image:load_video",
@@ -36319,6 +36364,7 @@ exports[`Write save file video-frame-iterator.chn 1`] = `
           "id": "fcd566d4-84b8-5166-9bb0-febcd82f70be",
           "inputData": {
             "0": "A:\\tmp\\input\\input.mkv",
+            "10": "all",
           },
           "isDisabled": false,
           "schemaId": "chainner:image:load_video",
