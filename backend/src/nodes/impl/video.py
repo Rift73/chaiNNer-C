@@ -42,7 +42,9 @@ from .native_graph import graph
 if TYPE_CHECKING:
     from fractions import Fraction
 
+    from av.container import InputContainer
     from av.filter import Graph
+    from av.rational import AVRational
     from av.video.frame import VideoFrame
     from av.video.stream import VideoStream
 
@@ -142,6 +144,12 @@ def _pyav() -> ModuleType | None:
     return av
 
 
+def _reader_pyav() -> ModuleType | None:
+    """PyAV for Load Video's readers, or None when the FFmpeg CLI reads every file:
+    CHAINNER_C_VIDEO_READER=cli, or PyAV missing."""
+    return None if os.environ.get("CHAINNER_C_VIDEO_READER") == "cli" else _pyav()
+
+
 def _upright_filters(matrix: np.ndarray | None) -> list[tuple[str, str | None]]:
     """The filters the FFmpeg CLI inserts for a frame's display matrix, so frames
     come out upright (fftools/ffmpeg_filter.c configure_input_video_filter, with
@@ -234,7 +242,9 @@ def _frame_values(frame: VideoFrame, frame_format: FrameFormat) -> object:
     return planes_to_interleaved((blue, green, red))
 
 
-def _variable_timestamps(path: Path, rate: Fraction, av: ModuleType) -> bool:
+def _variable_timestamps(
+    path: Path, rate: Fraction | AVRational, av: ModuleType
+) -> bool:
     """Whether the first video track's frames leave the grid of `rate` by half a frame
     or more: its packets' timestamps, demuxed without decoding and sorted (B-frames
     store them out of order). The scan reads the whole file, so its answer is kept for
@@ -245,7 +255,7 @@ def _variable_timestamps(path: Path, rate: Fraction, av: ModuleType) -> bool:
 
 @lru_cache(maxsize=64)
 def _timestamps_vary(
-    _identity: tuple, path: Path, rate: Fraction, av: ModuleType
+    _identity: tuple, path: Path, rate: Fraction | AVRational, av: ModuleType
 ) -> bool:
     """_variable_timestamps's scan; `_identity` is the file version it is kept for."""
     with av.open(str(path)) as container:
@@ -258,81 +268,230 @@ def _timestamps_vary(
     )
 
 
-def _pyav_frames(
-    path: Path, formats: list[FrameFormat], av: ModuleType
-) -> Generator[list[object], None, None]:
-    """Frames decoded in-process, each converted to every one of `formats` and unpacked:
-    the values the CLI reader gives, FFmpeg's decoder and the same libswscale conversion
-    without the pipe. Raises _UseCliReader before its first frame for a file the CLI
-    would treat differently."""
+def _variable_rate(path: Path, container: InputContainer, av: ModuleType) -> bool:
+    """Whether the CLI reader would resample the first video track's frames: it makes a
+    variable frame rate constant (rawvideo output has no timestamps), duplicating or
+    dropping frames, where PyAV yields them as stored. Matroska and WebM report the
+    track's default frame duration as both rates, so their timestamps decide there."""
+    stream = container.streams.video[0]
+    rate = stream.average_rate
+    return (
+        # None (no rate known), which PyAV's stubs leave out.
+        not rate
+        or rate != stream.guessed_rate
+        or (
+            "matroska" in container.format.name.split(",")
+            and _variable_timestamps(path, rate, av)
+        )
+    )
+
+
+@dataclass(frozen=True)
+class FrameIndex:
+    """A video's frames as PyAV's reader numbers them: `pts`, every frame's presentation
+    timestamp (the first video track's time base) in display order, so frame n is the
+    full read's item n; `keyframes`, the numbers of the frames a decoder can start at."""
+
+    pts: tuple[int, ...]
+    keyframes: tuple[int, ...]
+
+
+def frame_index(path: Path) -> FrameIndex:
+    """The first video track's FrameIndex, from its packets demuxed without decoding and
+    sorted (B-frames store them out of order). A packet flagged as discarded (the frames
+    an MP4's edit list hides) is decoded but never shown, so it is left out. The scan
+    reads the whole file, so its index is kept for the file's version (file_identity),
+    as _variable_timestamps keeps its answer."""
+    av = _pyav()
+    if av is None:
+        raise RuntimeError(f"{path} has no frame index: PyAV is unavailable.")
+    return _scan_frames(file_identity(path), path, av)
+
+
+@lru_cache(maxsize=64)
+def _scan_frames(_identity: tuple, path: Path, av: ModuleType) -> FrameIndex:
+    """frame_index's scan; `_identity` is the file version it is kept for."""
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
-        # The CLI resamples a variable frame rate to a constant one (rawvideo output
-        # has no timestamps), duplicating or dropping frames; PyAV yields them as stored.
-        # Matroska and WebM report the track's default frame duration as both rates, so
-        # their timestamps decide there.
-        if (
-            stream.average_rate is None
-            or stream.average_rate != stream.guessed_rate
-            or (
-                "matroska" in container.format.name.split(",")
-                and _variable_timestamps(path, stream.average_rate, av)
-            )
-        ):
+        frames = sorted(
+            (packet.pts, packet.is_keyframe)
+            for packet in container.demux(stream)
+            if packet.pts is not None and not packet.is_discard
+        )
+    return FrameIndex(
+        tuple(pts for pts, _ in frames),
+        tuple(n for n, (_, keyframe) in enumerate(frames) if keyframe),
+    )
+
+
+def _past_the_end(n: int, count: int) -> ValueError:
+    return ValueError(f"frame {n} is past the end (the video has {count} frames)")
+
+
+def _before_the_start(n: int) -> ValueError:
+    return ValueError(f"frame {n} is before the start (the first frame is 0)")
+
+
+def _decode(
+    container: InputContainer, stream: VideoStream, path: Path, av: ModuleType
+) -> Generator[VideoFrame, None, None]:
+    """The track's frames decoded from where the container is (its start or a seek)."""
+    for packet in container.demux(stream):
+        try:
+            frames = packet.decode()
+        except av.error.InvalidDataError as error:
+            # The CLI skips a broken packet too (no -xerror).
+            logger.warning("Skipping undecodable data in %s: %s", path, error)
+            continue
+        yield from frames
+
+
+# The keyframes _seek starts from, nearest first, before it decodes from the file's start.
+_SEEK_TRIES = 3
+
+
+def _from_timestamp(
+    frames: Iterator[VideoFrame], target: int
+) -> Generator[VideoFrame, None, bool]:
+    """`frames` from the one with timestamp `target` on, and True; False, with none
+    yielded, when they pass the timestamp or end first."""
+    for frame in frames:
+        if frame.pts is not None and frame.pts >= target:
+            if frame.pts != target:
+                return False
+            yield frame
+            yield from frames
+            return True
+    return False
+
+
+def _seek(
+    container: InputContainer,
+    stream: VideoStream,
+    path: Path,
+    av: ModuleType,
+    n: int,
+) -> Generator[VideoFrame, None, None]:
+    """The track's frames decoded from frame `n` (frame_index's number) on, as the full
+    read decodes them: a seek to the nearest keyframe at or before it, then decoding up
+    to its timestamp. When the decoded frames pass the timestamp, the seek starts again
+    from the keyframe before (nearest first): a decoder started at an open GOP's
+    keyframe skips the GOP's leading frames, which refer to the GOP before, and a
+    demuxer that seeks by decoding timestamps (MPEG-TS) lands past the keyframe, so the
+    decoder starts at the next one. After _SEEK_TRIES keyframes, or for a frame before
+    the index's first keyframe (an edit list hides the one before it), the file is
+    decoded from its start in a container of its own, as the full read decodes it."""
+    index = frame_index(path)
+    if n >= len(index.pts):
+        raise _past_the_end(n, len(index.pts))
+    target = index.pts[n]
+    starts = [index.pts[k] for k in reversed(index.keyframes) if index.pts[k] <= target]
+    for start in starts[:_SEEK_TRIES]:
+        container.seek(start, stream=stream, backward=True, any_frame=False)
+        frames = _decode(container, stream, path, av)
+        if (yield from _from_timestamp(frames, target)):
+            return
+        frames.close()
+    with av.open(str(path)) as again:
+        stream = again.streams.video[0]
+        stream.thread_type = "AUTO"
+        frames = _decode(again, stream, path, av)
+        try:
+            if (yield from _from_timestamp(frames, target)):
+                return
+        finally:
+            frames.close()
+    raise RuntimeError(f"Frame {n} of {path} (timestamp {target}) was never decoded.")
+
+
+class _Converters:
+    """One decoder's conversions to each of `formats`, configured from its first frame,
+    as the CLI configures its filters (the display matrix's upright filters)."""
+
+    def __init__(
+        self,
+        path: Path,
+        stream: VideoStream,
+        formats: list[FrameFormat],
+        av: ModuleType,
+    ):
+        self.path = path
+        self.stream = stream
+        self.formats = formats
+        self.av = av
+        # The filter graphs (_converter), one per format, once the first frame came.
+        self.graphs = None
+        self.first = True
+
+    def values(self, frame: VideoFrame) -> list[object]:
+        """The frame's values in each format, as the CLI reader unpacks them. Raises
+        _UseCliReader on the first frame of a file the CLI would treat differently."""
+        if self.graphs is None:
+            display = self.av.sidedata.sidedata.Type.DISPLAYMATRIX
+            side = frame.side_data.get(display)
+            rotation = None if side is None else np.frombuffer(bytes(side), "<i4")
+            upright = _upright_filters(rotation)
+            self.graphs = [
+                _converter(self.av, self.stream, upright if f.upright else [], f)
+                for f in self.formats
+            ]
+        values: list[object] = []
+        for frame_format, convert in zip(self.formats, self.graphs):
+            convert.push(frame)
+            converted = convert.pull()
+            size = (converted.width, converted.height)
+            if size != frame_format.size:
+                message = (
+                    f"a {size[0]}x{size[1]} frame where"
+                    f" {frame_format.size[0]}x{frame_format.size[1]} was expected"
+                )
+                if self.first:
+                    raise _UseCliReader(message)
+                raise RuntimeError(f"Video {self.path} changed size: {message}")
+            if any(plane.line_size < 0 for plane in converted.planes):
+                # The vflip filter a vertically flipped display matrix asks for hands a
+                # frame it passes through unconverted (the file's own pixel format)
+                # bottom-up: a negative row stride, whose rows lie outside the plane's
+                # buffer.
+                message = "its display matrix flips the frames vertically"
+                if self.first:
+                    raise _UseCliReader(message)
+                raise RuntimeError(f"Video {self.path}: {message}")
+            values.append(_frame_values(converted, frame_format))
+        self.first = False
+        return values
+
+    def free(self) -> None:
+        """Lets the filter graphs go now (_free_converter)."""
+        for convert in self.graphs or ():
+            _free_converter(convert)
+        self.graphs = None
+
+
+def _pyav_frames(
+    path: Path, formats: list[FrameFormat], av: ModuleType, start: int = 0
+) -> Generator[list[object], None, None]:
+    """Frames decoded in-process from frame `start` (frame_index's number) on, each
+    converted to every one of `formats` and unpacked: the values the CLI reader gives,
+    FFmpeg's decoder and the same libswscale conversion without the pipe. Raises
+    _UseCliReader before its first frame for a file the CLI would treat differently."""
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        if _variable_rate(path, container, av):
             raise _UseCliReader("its frame rate is variable")
         stream.thread_type = "AUTO"
-        display = av.sidedata.sidedata.Type.DISPLAYMATRIX
-        converters = None
-        first = True
+        frames = (
+            _decode(container, stream, path, av)
+            if start == 0
+            else _seek(container, stream, path, av, start)
+        )
+        converters = _Converters(path, stream, formats, av)
         try:
-            for packet in container.demux(stream):
-                try:
-                    frames = packet.decode()
-                except av.error.InvalidDataError as error:
-                    # The CLI skips a broken packet too (no -xerror).
-                    logger.warning("Skipping undecodable data in %s: %s", path, error)
-                    continue
-                for frame in frames:
-                    if converters is None:
-                        # The CLI configures its filters from the first frame too.
-                        side = frame.side_data.get(display)
-                        rotation = (
-                            None if side is None else np.frombuffer(bytes(side), "<i4")
-                        )
-                        upright = _upright_filters(rotation)
-                        converters = [
-                            _converter(av, stream, upright if f.upright else [], f)
-                            for f in formats
-                        ]
-                    values: list[object] = []
-                    for frame_format, convert in zip(formats, converters):
-                        convert.push(frame)
-                        converted = convert.pull()
-                        size = (converted.width, converted.height)
-                        if size != frame_format.size:
-                            message = (
-                                f"a {size[0]}x{size[1]} frame where"
-                                f" {frame_format.size[0]}x{frame_format.size[1]} was"
-                                " expected"
-                            )
-                            if first:
-                                raise _UseCliReader(message)
-                            raise RuntimeError(f"Video {path} changed size: {message}")
-                        if any(plane.line_size < 0 for plane in converted.planes):
-                            # The vflip filter a vertically flipped display matrix asks
-                            # for hands a frame it passes through unconverted (the
-                            # file's own pixel format) bottom-up: a negative row stride,
-                            # whose rows lie outside the plane's buffer.
-                            message = "its display matrix flips the frames vertically"
-                            if first:
-                                raise _UseCliReader(message)
-                            raise RuntimeError(f"Video {path}: {message}")
-                        values.append(_frame_values(converted, frame_format))
-                    first = False
-                    yield values
+            for frame in frames:
+                yield converters.values(frame)
         finally:
-            for convert in converters or ():
-                _free_converter(convert)
+            frames.close()
+            converters.free()
 
 
 def _resume(
@@ -359,6 +518,31 @@ def _zip_readers(readers: list[Iterator[object]]) -> Iterator[list[object]]:
     finally:
         for reader in readers:
             _close(reader)
+
+
+def _discarding(frames: Iterator[list[object]], start: int) -> Iterator[list[object]]:
+    """The CLI readers' frames from frame `start` on. The CLI renumbers the frames to a
+    constant rate, which a seek's timestamp would not match, so the frames before it
+    are decoded and discarded."""
+    try:
+        for read in range(start):
+            if next(frames, None) is None:
+                raise _past_the_end(start, read)
+        first = next(frames, None)
+        if first is None:
+            raise _past_the_end(start, start)
+        yield first
+        yield from frames
+    finally:
+        _close(frames)
+
+
+def _first(frames: Iterator[list[object]], count: int) -> Iterator[list[object]]:
+    """The first `count` frames; the reader closes after them, not at its end."""
+    try:
+        yield from itertools.islice(frames, max(count, 0))
+    finally:
+        _close(frames)
 
 
 def _only(frames: Iterator[list[object]]) -> Iterator[np.ndarray]:
@@ -569,16 +753,34 @@ class VideoLoader:
         only that much of them."""
         return graph().video_audio_stream(globals(), self, duration)
 
+    def frame_count(self) -> int:
+        """The number of frames the readers give: exact where PyAV reads the file (its
+        frame_index's), else the probe's estimate (metadata.frame_count), which the
+        FFmpeg CLI's renumbered frames can pass or fall short of."""
+        path: Path = vars(self)["path"]
+        av = _reader_pyav()
+        if av is not None:
+            try:
+                with av.open(str(path)) as container:
+                    variable = _variable_rate(path, container, av)
+                if not variable:
+                    return len(frame_index(path).pts)
+            except av.error.FFmpegError as reason:
+                # The reader goes to the CLI too (_pyav_reader).
+                logger.warning("Counting %s's frames by its probe: %s", path, reason)
+        metadata: VideoMetadata = vars(self)["metadata"]
+        return metadata.frame_count
+
     def _pyav_reader(
-        self, path: Path, formats: list[FrameFormat]
+        self, path: Path, formats: list[FrameFormat], start: int = 0
     ) -> Iterator[list[object]] | None:
-        """PyAV's in-process decoder, or None when the FFmpeg CLI reads the file:
-        CHAINNER_C_VIDEO_READER=cli, PyAV missing, or a file PyAV would read
-        differently."""
-        av = None if os.environ.get("CHAINNER_C_VIDEO_READER") == "cli" else _pyav()
+        """PyAV's in-process decoder from frame `start` on, or None when the FFmpeg CLI
+        reads the file: CHAINNER_C_VIDEO_READER=cli, PyAV missing, or a file PyAV would
+        read differently."""
+        av = _reader_pyav()
         if av is None:
             return None
-        frames = _pyav_frames(path, formats, av)
+        frames = _pyav_frames(path, formats, av, start)
         try:
             first = next(frames)
         except StopIteration:
@@ -601,23 +803,28 @@ class VideoLoader:
         return _only(frames)
 
     def stream_items(
-        self,
+        self, start: int = 0, stop: int | None = None
     ) -> Iterator[
         tuple[
             np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None
         ]
     ]:
         """Load Video's items by its settings: (RGB frame, Y, U, V), None for what its
-        Mode leaves out, from the readers stream_frames uses. The CLI runs one FFmpeg
-        per format (two in Both mode)."""
+        Mode leaves out, from the readers stream_frames uses: frames `start` to `stop`
+        - 1 (to the end without a `stop`, and as a slice, fewer when the video ends
+        first). Frame n is the full read's item n, bit for bit: PyAV seeks to it, the
+        CLI decodes and discards the frames before it. The CLI runs one FFmpeg per
+        format (two in Both mode)."""
         settings = self.settings
         assert settings is not None
+        if start < 0:
+            raise _before_the_start(start)
         path: Path = vars(self)["path"]
         legacy = self.legacy_format()
-        if self.formats == [legacy]:
+        if self.formats == [legacy] and start == 0:
             frames = _zip_readers([self.stream_frames()])
         else:
-            frames = self._pyav_reader(path, self.formats)
+            frames = self._pyav_reader(path, self.formats, start)
         if frames is None:
             frames = _zip_readers(
                 [
@@ -627,6 +834,10 @@ class VideoLoader:
                     for f in self.formats
                 ]
             )
+            if start > 0:
+                frames = _discarding(frames, start)
+        if stop is not None:
+            frames = _first(frames, stop - start)
         rgb = settings.mode is not VideoMode.PLANES
         planes = settings.mode is not VideoMode.RGB
         return _items(frames, rgb, planes)
