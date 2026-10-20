@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
 import time
 import wave
 from collections.abc import Callable, Iterator
@@ -425,6 +426,55 @@ def test_preview_readers_are_few_and_close_when_idle(
         time.sleep(0.05)
     assert not vars(video)["_previews"]
     assert not locked(paths[0]) and not locked(paths[1])
+
+
+@pytest.mark.usefixtures("previews")
+def test_overlapping_previews_of_a_node_keep_one_reader(
+    folder: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Two previews of one node at once (two threads, both decoding before either is
+    # done): each gets its own reader and its frame; the node keeps one reader open,
+    # the other closes.
+    monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    path = folder / "overlap.mp4"
+    shutil.copyfile(made(folder, H264), path)
+    full = rgb_float_frames(path)
+    readers: list[video.PreviewReader] = []
+    both = threading.Barrier(2)
+    frame = video.PreviewReader.frame
+
+    def overlapping(reader: video.PreviewReader, n: int) -> np.ndarray:
+        readers.append(reader)
+        both.wait(timeout=10)
+        return frame(reader, n)
+
+    monkeypatch.setattr(video.PreviewReader, "frame", overlapping)
+    loader = video.VideoLoader(path, ENV, SETTINGS["rgb-float"])
+    shown: dict[int, np.ndarray] = {}
+    failures: list[BaseException] = []
+
+    def preview(n: int):
+        try:
+            shown[n] = video.preview_frame("node", loader, n)
+        except BaseException as failure:
+            failures.append(failure)
+            raise
+
+    threads = [threading.Thread(target=preview, args=(n,)) for n in (10, 100)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert not failures and not any(thread.is_alive() for thread in threads)
+    for n in (10, 100):
+        np.testing.assert_array_equal(shown[n], full[n])
+    kept = vars(video)["_previews"]
+    assert list(kept) == ["node"] and len(set(map(id, readers))) == 2
+    open_readers = [reader for reader in readers if vars(reader)["_container"]]
+    assert open_readers == [kept["node"]]
+    assert locked(path)
+    video.close_previews()
+    assert not locked(path)
 
 
 def test_closing_readers_logs_every_failure_and_raises_the_first(
