@@ -7,6 +7,7 @@ import http.server
 import logging
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from functools import partial
 from types import SimpleNamespace
 from typing import cast
@@ -14,12 +15,16 @@ from typing import cast
 import numpy as np
 import pytest
 import torch
+from engine_differential import execute
+from test_engine_scenarios import Builder
 from test_generator_lifecycle import make_node
 from test_item_window import Pipeline, set_schema
 from test_iteration_view import Reader
 
-from api import BaseInput, InputId, NodeContext, NodeId
+import api
+from api import BaseInput, Generator, InputId, NodeContext, NodeId
 from chain.chain import Edge, EdgeTarget
+from nodes.impl.item_window import ITEM_WINDOW_VARIABLE
 from nodes.impl.pytorch import temporal_fix
 from nodes.impl.pytorch.temporal_fix import RADIUS, FrameWindow, window
 from nodes.properties.inputs import DirectoryInput, ImageInput
@@ -337,5 +342,72 @@ def test_a_range_gives_the_outputs_of_a_full_run(
         runs[ranged] = (saved, asked)
     (full, _), (saved, asked) = runs[False], runs[True]
     assert asked == [(RADIUS, RADIUS)] and len(full) == 12
+    for got, want in zip(saved, full[base : base + 4], strict=True):
+        np.testing.assert_array_equal(got, want)
+
+
+@pytest.mark.parametrize("base", [4, 1, 8])
+@pytest.mark.parametrize("kind", ["native", "python"])
+def test_a_range_gives_the_outputs_of_a_full_run_on_each_executor(
+    monkeypatch, tmp_path, kind, base
+):
+    # As above, run as /run runs it (engine_differential.execute): the native engine's context frames give the node
+    # the full run's outputs at the range, bit for bit, as the Python executor's do; K = 6, so the frames after the
+    # range are read for the node's look-aheads.
+    monkeypatch.setattr(
+        node,
+        "get_settings",
+        lambda _: SimpleNamespace(
+            device=torch.device("cpu"), budget_limit=0, force_cache_wipe=False
+        ),
+    )
+    monkeypatch.setattr(
+        node, "load_state", lambda _folder, _strength: random_model(SIZE)
+    )
+    monkeypatch.setattr(
+        api.registry, "get_package", lambda _: SimpleNamespace(id="test")
+    )
+    monkeypatch.setenv(ITEM_WINDOW_VARIABLE, "6")
+    rng = np.random.default_rng(4)
+    frames = [rng.random((*SIZE, 3), dtype=np.float32) for _ in range(12)]
+    asked: list[tuple[int, int]] = []
+    read: list[int] = []
+
+    def ranged() -> Generator:
+        def context(before: int, after: int):
+            asked.append((before, after))
+            b, a = min(before, base), min(after, len(frames) - base - 4)
+            items = range(base - b, base + 4 + a)
+            return ((read.append(i), frames[i])[1] for i in items), b, a
+
+        generator = Generator(lambda: iter(frames[base : base + 4]), 4, source_paths=())
+        return generator.with_range(base, None, context)
+
+    def run(generator: Callable[[], Generator]) -> list[np.ndarray]:
+        saved: list[np.ndarray] = []
+        b = Builder()
+        set_schema(
+            b.node("frames", generator, kind="generator", inputs=0),
+            "chainner:image:load_video",
+        )
+        fix = b.node(
+            "fix",
+            lambda context, image: node.temporal_fix_node(context, image, 2.0),
+            context=True,
+            temporal=registered().temporal_context,
+        )
+        object.__setattr__(fix.data, "inputs", [ImageInput(channels=3).with_id(0)])
+        set_schema(fix, "chainner:pytorch:temporal_fix")
+        b.node("save", saved.append, outputs=0, side_effects=True)
+        b.edge("frames", 0, "fix", 0)
+        b.edge("fix", 0, "save", 0)
+        result = execute(kind, b.chain, storage=tmp_path / "storage")
+        assert result.error is None, result.error
+        return saved
+
+    full = run(lambda: Generator(lambda: iter(frames), 12, source_paths=()))
+    saved = run(ranged)
+    assert asked == [(RADIUS, RADIUS)] and len(full) == 12
+    assert read == list(range(max(base - RADIUS, 0), min(base + 4 + RADIUS, 12)))
     for got, want in zip(saved, full[base : base + 4], strict=True):
         np.testing.assert_array_equal(got, want)
