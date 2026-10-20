@@ -317,6 +317,12 @@ class ItemWindow:
     slot, and computes there the node feeding the look-ahead, as it produces the slot
     the commit path waits for; nothing is taken, so the commit path later takes the
     same object.
+
+    Context items (a temporal node's neighbours outside the loop's range, IterationView
+    .context) are the slots before `first` and, with `end`, from `end` on; the commit
+    path never begins the latter. There the engine computes ahead only the candidates in
+    `context_nodes` (the temporal nodes and the nodes they need) and no prepare phase:
+    nothing else runs for a context item. A look-ahead is served there as anywhere.
     """
 
     def __init__(
@@ -332,8 +338,14 @@ class ItemWindow:
         estimate: int,
         planner: ItemPlanner,
         progress: ProgressToken,
+        first: int = 0,
+        end: int | None = None,
+        context_nodes: frozenset[NodeId] = frozenset(),
     ) -> None:
         self._size = size
+        self._first = first
+        self._end = end
+        self._context_nodes = context_nodes
         self._generators = tuple(generators)
         # The two-phase producer's generator (SP3b P3), or None: the serial producer.
         only = self._generators[0] if len(self._generators) == 1 else None
@@ -879,8 +891,9 @@ class ItemWindow:
     def _oldest_ready_job(self) -> tuple[int, NodeId | None] | None:
         """The first job that may start, None while paused or stopped: slots after the
         committing one, ascending; a described slot's materialize first (node None);
-        then candidates in order, serial ones aside (only a look-ahead starts them);
-        not stored (result or error) or running; every
+        then candidates in order, serial ones aside (only a look-ahead starts them),
+        and in a context item only context nodes, no prepare; not stored (result or
+        error) or running; every
         input it depends on stored without error (a failed input's dependents are
         never computed, so the commit path meets the error where K = 1 does); and
         eligible."""
@@ -892,9 +905,16 @@ class ItemWindow:
                 return slot, None
             if item.values is None:
                 continue
+            context = slot < self._first or (
+                self._end is not None and slot >= self._end
+            )
             for candidate in self._planner.candidates:
                 node_id = candidate.node_id
                 if candidate.serial or node_id in item.store or node_id in item.running:
+                    continue
+                if context and (
+                    candidate.prepare or node_id not in self._context_nodes
+                ):
                     continue
                 if all(
                     node in item.store and item.store[node].error is None

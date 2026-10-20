@@ -16,11 +16,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
-from engine_differential import Result, execute, mismatches
+from engine_differential import Result, execute, mismatches, order_violations
 from verify_runtime import canonical
 
 import api
+import process
 from api import (
     BaseInput,
     BaseOutput,
@@ -47,6 +49,11 @@ from chain.chain import (
 )
 from events import EventConsumer
 from native_executor import NativeExecutor
+from nodes.impl.item_window import (
+    ITEM_WINDOW_VARIABLE,
+    SERIAL_PRODUCER_VARIABLE,
+    ItemWindow,
+)
 from process import ExecutionId, Executor, RegularOutput
 
 
@@ -68,6 +75,7 @@ class Builder:
         context: bool = False,
         lazy: tuple[int, ...] = (),
         iterated_outputs: tuple[int, ...] = (0,),
+        temporal: tuple[int, int] | None = None,
     ):
         node_class = {
             "generator": GeneratorNode,
@@ -104,6 +112,7 @@ class Builder:
             node_context=context,
             features=[],
             run=run,
+            temporal_context=temporal,
         )
         node = object.__new__(node_class)
         node.id, node.schema_id, node.data = NodeId(node_id), data.schema_id, data
@@ -915,3 +924,448 @@ def test_individual_runs_match(tmp_path, kind):
         value = asyncio.run(individual(executor_kind, single(trace), events))
         outcomes.append((value, [canonical(e, tmp_path) for e in events], trace))
     assert outcomes[1] == outcomes[0]
+
+
+# Context frames (native/local/video-seek/DESIGN.md): a generator reading a range of its source also reads, for the
+# loop's temporal nodes, the neighbours they need (NodeData.temporal_context, Generator.context). Items before the
+# range run the temporal nodes and the nodes they need alone; items after it only serve look-aheads. Each test runs on
+# the executors in CONTEXT_EXECUTORS; the native engine joins once it implements context frames.
+
+CONTEXT_EXECUTORS = ["python"]
+
+
+class Frames:
+    """A source of `total` items, item i being i * 10 + 1, read whole or as a range with context frames, as Load Video
+    reads a video in All or Range mode. `exists`: the items there are, fewer when `total` is an estimate. `pulled`:
+    the item numbers its reads yielded, in order; `asked`: each context request (before, after)."""
+
+    def __init__(self, total: int, exists: int | None = None) -> None:
+        self.total = total
+        self.exists = total if exists is None else exists
+        self.pulled: list[int] = []
+        self.asked: list[tuple[int, int]] = []
+
+    def read(self, start: int, stop: int):
+        for i in range(start, min(stop, self.exists)):
+            self.pulled.append(i)
+            yield i * 10 + 1
+
+    def whole(self) -> Generator:
+        return Generator(lambda: self.read(0, self.total), self.total, source_paths=())
+
+    def range(self, base: int, length: int, chosen: int | None = None) -> Generator:
+        def context(before: int, after: int):
+            self.asked.append((before, after))
+            b, a = min(before, base), min(after, self.total - base - length)
+            return self.read(base - b, base + length + a), b, a
+
+        generator = Generator(
+            lambda: self.read(base, base + length), length, source_paths=()
+        )
+        return generator.with_range(base, chosen, context)
+
+
+def records(trace: list[object], tag: str) -> list[tuple[Any, ...]]:
+    """The records one node made, its tag left out."""
+    return [r[1:] for r in trace if isinstance(r, tuple) and r[0] == tag]
+
+
+def progress(result: Result, node: str = "frames") -> list[tuple[int, int]]:
+    """The node's progress events as (index, total)."""
+    return [
+        (e["data"]["index"], e["data"]["total"])
+        for e in result.events
+        if e["event"] == "node-progress" and e["data"]["nodeId"] == node
+    ]
+
+
+def per_node(result: Result, event: str) -> Counter[str]:
+    """How many events of this kind each node sent."""
+    return Counter(e["data"]["nodeId"] for e in result.events if e["event"] == event)
+
+
+def context_chain(
+    trace: list[object],
+    generator: Callable[[], Generator],
+    *,
+    temporal: tuple[int, int] | None = (3, 2),
+    serial: bool = False,
+    on_temporal: Callable[[int], None] = lambda _index: None,
+) -> Chain:
+    """frames -> offset -> temporal -> sink, temporal -> collect -> report, and frames -> other -> sink.
+
+    temporal declares the neighbours `temporal` and looks ahead two items. It records per call its index, context
+    flag, input, state (its last three (index, input) pairs, restarted after a gap), lookahead, peeks and chosen
+    item; on_temporal(index) runs first. offset (x + 1000) is pure, or with `serial` a context node (as a GPU
+    upscale) recording its own view; other (x * 2) is pure and feeds the sink alone. Every node records its runs."""
+    b = Builder()
+    b.node("frames", generator, kind="generator", inputs=0)
+    if serial:
+
+        def offset(context, x):
+            view = context.iteration
+            trace.append(("offset", view.index, view.context, x))
+            return x + 1000
+
+        b.node("offset", offset, context=True)
+    else:
+        b.node("offset", lambda x: (trace.append(("offset", x)), x + 1000)[1])
+
+    def temporal_node(context, value):
+        view = context.iteration
+        on_temporal(view.index)
+        state = view.state or ()
+        if state and state[-1][0] != view.index - 1:
+            state = ()
+        peeks = [view.peek(0, k) for k in (1, 2)]
+        trace.append(
+            (
+                "temporal",
+                view.index,
+                view.context,
+                value,
+                state,
+                view.lookahead(0),
+                peeks,
+                context.chosen_item,
+            )
+        )
+        view.state = (*state, (view.index, value))[-3:]
+        return value
+
+    b.node("temporal", temporal_node, context=True, temporal=temporal)
+    b.node("other", lambda x: (trace.append(("other", x)), x * 2)[1])
+
+    def sink(context, value, doubled):
+        view = context.iteration
+        trace.append(
+            ("sink", view.index, view.context, value, doubled, context.chosen_item)
+        )
+
+    b.node("sink", sink, inputs=2, outputs=0, side_effects=True, context=True)
+
+    def gather(context, _):
+        trace.append(("collector", context.chosen_item))
+        collected: list[Any] = []
+
+        def iterate(value):
+            trace.append(("collect", value))
+            collected.append(value)
+
+        return Collector(iterate, lambda: len(collected))
+
+    b.node("collect", gather, kind="collector", context=True)
+    b.node(
+        "report",
+        lambda context, count: trace.append(("report", count, context.chosen_item)),
+        outputs=0,
+        side_effects=True,
+        context=True,
+    )
+    b.edge("frames", 0, "offset", 0)
+    b.edge("offset", 0, "temporal", 0)
+    b.edge("frames", 0, "other", 0)
+    b.edge("temporal", 0, "sink", 0)
+    b.edge("other", 0, "sink", 1)
+    b.edge("temporal", 0, "collect", 0)
+    b.edge("collect", 0, "report", 0)
+    return b.chain
+
+
+def run_context(
+    kind: str,
+    scenario: Scenario,
+    tmp_path: Path,
+    monkeypatch,
+    window: str,
+    during: Callable[[object], None] | None = None,
+) -> tuple[Result, list[object], Chain]:
+    """The scenario run on one executor with the item window K = `window`. A run still going after a minute is
+    stopped, so a hang fails the test."""
+    monkeypatch.setenv(ITEM_WINDOW_VARIABLE, window)
+    trace: list[object] = []
+    chain = scenario(trace)
+    timers: list[threading.Timer] = []
+
+    def watched(executor) -> None:
+        timer = threading.Timer(60, executor.kill)
+        timer.daemon = True
+        timer.start()
+        timers.append(timer)
+        if during is not None:
+            during(executor)
+
+    try:
+        result = execute(kind, chain, storage=tmp_path / "storage", during=watched)
+    finally:
+        for timer in timers:
+            timer.cancel()
+    return result, trace, chain
+
+
+@pytest.mark.parametrize("producer", ["phased", "serial-producer"])
+@pytest.mark.parametrize("serial", [False, True], ids=["pure", "serial"])
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_context_frames_give_a_range_its_neighbours(
+    kind, serial, producer, monkeypatch, tmp_path
+):
+    # Items 8..11 of 20, temporal (3, 2), K = 4: temporal runs for 5..11, 5..7 as context items, and at 8..11 sees
+    # what it sees there in a full run (state, and peeks reaching 12 and 13 after the range). offset, which it needs,
+    # runs for every item read; nothing else runs for a context item, and the sink, the collector, the broadcasts and
+    # the progress see the range alone. Served through offset computed ahead, pure or serial (its own view then
+    # counts the items as temporal's does), with process.Executor's two-phase or serial producer.
+    if producer == "serial-producer":
+        monkeypatch.setenv(SERIAL_PRODUCER_VARIABLE, "1")
+    else:
+        monkeypatch.delenv(SERIAL_PRODUCER_VARIABLE, raising=False)
+    whole = Frames(20)
+    full, full_trace, _ = run_context(
+        kind,
+        lambda t: context_chain(t, whole.whole, serial=serial),
+        tmp_path,
+        monkeypatch,
+        "4",
+    )
+    frames = Frames(20)
+    result, trace, chain = run_context(
+        kind,
+        lambda t: context_chain(t, lambda: frames.range(8, 4), serial=serial),
+        tmp_path,
+        monkeypatch,
+        "4",
+    )
+    assert full.error is None and result.error is None, (full.error, result.error)
+    assert whole.asked == [] and frames.asked == [(3, 2)]
+    seen = records(trace, "temporal")
+    assert [r[:2] for r in seen] == [(i, i < 8) for i in range(5, 12)]
+    assert seen[3:] == records(full_trace, "temporal")[8:12]
+    assert seen[3][3] == ((5, 1051), (6, 1061), (7, 1071))  # the context items
+    assert seen[-1][4:6] == (3, [1121, 1131])  # the items after the range
+    assert records(trace, "sink") == [
+        (i, False, i * 10 + 1001, i * 20 + 2, None) for i in range(8, 12)
+    ]
+    assert sorted(records(trace, "other")) == [(i * 10 + 1,) for i in range(8, 12)]
+    if serial:
+        assert records(trace, "offset") == [
+            (i, i < 8, i * 10 + 1) for i in range(5, 14)
+        ]
+    else:
+        assert sorted(records(trace, "offset")) == [(i * 10 + 1,) for i in range(5, 14)]
+    assert records(trace, "collector") == [(None,)]
+    assert records(trace, "collect") == [(i * 10 + 1001,) for i in range(8, 12)]
+    assert records(trace, "report") == [(4, None)]
+    assert frames.pulled == list(range(5, 14))
+    assert progress(result) == [(0, 4), (1, 4), (2, 4), (3, 4), (4, 4), (4, 4)]
+    broadcasts = per_node(result, "node-broadcast")
+    # frames: its sequence, the range's 4 items, its end
+    assert (broadcasts["frames"], broadcasts["offset"], broadcasts["temporal"]) == (
+        6,
+        4,
+        4,
+    )
+    assert per_node(result, "node-finish")["temporal"] == 7
+    assert order_violations(result.events, chain) == []
+
+
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_context_frames_without_a_window(kind, monkeypatch, tmp_path):
+    # K = 1 serves no look-ahead, so nothing after the range is read and nothing waits for it; the items before it
+    # still give temporal at 8..11 what a full run at K = 1 gives it there.
+    whole, frames = Frames(20), Frames(20)
+    full, full_trace, _ = run_context(
+        kind, lambda t: context_chain(t, whole.whole), tmp_path, monkeypatch, "1"
+    )
+    result, trace, _ = run_context(
+        kind,
+        lambda t: context_chain(t, lambda: frames.range(8, 4)),
+        tmp_path,
+        monkeypatch,
+        "1",
+    )
+    assert full.error is None and result.error is None, (full.error, result.error)
+    assert frames.asked == [(3, 2)] and frames.pulled == list(range(5, 12))
+    seen = records(trace, "temporal")
+    assert [r[:2] for r in seen] == [(i, i < 8) for i in range(5, 12)]
+    assert all(r[4:6] == (0, [None, None]) for r in seen)
+    assert seen[3:] == records(full_trace, "temporal")[8:12]
+    assert [r[0] for r in records(trace, "sink")] == list(range(8, 12))
+    assert progress(result)[-1] == (4, 4)
+
+
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_context_frames_are_clipped_at_the_source_s_start(kind, monkeypatch, tmp_path):
+    # Items 1..4 want 3 before, and only item 0 exists: one context item, where temporal starts as a full run does.
+    whole, frames = Frames(20), Frames(20)
+    full, full_trace, _ = run_context(
+        kind, lambda t: context_chain(t, whole.whole), tmp_path, monkeypatch, "4"
+    )
+    result, trace, _ = run_context(
+        kind,
+        lambda t: context_chain(t, lambda: frames.range(1, 4)),
+        tmp_path,
+        monkeypatch,
+        "4",
+    )
+    assert full.error is None and result.error is None, (full.error, result.error)
+    assert frames.asked == [(3, 2)] and frames.pulled == list(range(7))
+    seen = records(trace, "temporal")
+    assert [r[:2] for r in seen] == [(i, i < 1) for i in range(5)]
+    assert seen[1:] == records(full_trace, "temporal")[1:5]
+    assert [r[0] for r in records(trace, "sink")] == list(range(1, 5))
+
+
+@pytest.mark.parametrize("exists", [13, 12, 10])
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_a_source_ending_inside_the_context_or_the_range(
+    kind, exists, monkeypatch, tmp_path
+):
+    # The source claims 20 items (an estimate) and has `exists`: 13 and 12 end among the items after the range 8..11,
+    # whose last peeks then find nothing; 10 ends inside the range, so the loop ends after item 9. Each run matches a
+    # full read of the same source at those items, and nothing hangs.
+    whole, frames = Frames(20, exists), Frames(20, exists)
+    full, full_trace, _ = run_context(
+        kind, lambda t: context_chain(t, whole.whole), tmp_path, monkeypatch, "4"
+    )
+    result, trace, _ = run_context(
+        kind,
+        lambda t: context_chain(t, lambda: frames.range(8, 4)),
+        tmp_path,
+        monkeypatch,
+        "4",
+    )
+    assert full.error is None and result.error is None, (full.error, result.error)
+    last = min(11, exists - 1)
+    seen = records(trace, "temporal")
+    assert [r[:2] for r in seen] == [(i, i < 8) for i in range(5, last + 1)]
+    assert seen[3:] == records(full_trace, "temporal")[8 : last + 1]
+    assert [r[0] for r in records(trace, "sink")] == list(range(8, last + 1))
+    assert frames.pulled == list(range(5, min(exists, 14)))
+    assert progress(result)[-1] == (last - 7, last - 7)
+
+
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_a_loop_without_temporal_nodes_reads_its_range_alone(
+    kind, monkeypatch, tmp_path
+):
+    # temporal declares no neighbours: the generator's context is never asked for and only the range is read; the
+    # index still counts from the range's start.
+    frames = Frames(20)
+    result, trace, _ = run_context(
+        kind,
+        lambda t: context_chain(t, lambda: frames.range(8, 4), temporal=None),
+        tmp_path,
+        monkeypatch,
+        "4",
+    )
+    assert result.error is None, result.error
+    assert frames.asked == [] and frames.pulled == [8, 9, 10, 11]
+    seen = records(trace, "temporal")
+    assert [r[:2] for r in seen] == [(i, False) for i in range(8, 12)]
+    assert seen[-1][5] == [None, None]
+    assert [r[0] for r in records(trace, "sink")] == list(range(8, 12))
+    assert progress(result)[-1] == (4, 4)
+
+
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_a_one_item_run_shows_its_chosen_item_to_the_loop(kind, monkeypatch, tmp_path):
+    # "Run this frame" on item 8: the loop's nodes, temporal on its context items too, and its collector see
+    # chosen_item 8; report, after the loop, does not. temporal still gets 5..7 before it and 9, 10 after it.
+    frames = Frames(20)
+    result, trace, _ = run_context(
+        kind,
+        lambda t: context_chain(t, lambda: frames.range(8, 1, chosen=8)),
+        tmp_path,
+        monkeypatch,
+        "4",
+    )
+    assert result.error is None, result.error
+    seen = records(trace, "temporal")
+    assert [(r[0], r[1], r[6]) for r in seen] == [(i, i < 8, 8) for i in range(5, 9)]
+    assert seen[-1][5] == [1091, 1101]
+    assert records(trace, "sink") == [(8, False, 1081, 162, 8)]
+    assert records(trace, "collector") == [(8,)]
+    assert records(trace, "report") == [(1, None)]
+    assert progress(result) == [(0, 1), (1, 1), (1, 1)]
+
+
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_stop_during_a_context_item_ends_the_run_cleanly(kind, monkeypatch, tmp_path):
+    # Stop while temporal runs for context item 6: its look-ahead raises Aborted, the run ends with it, and nothing
+    # reached the sink, the collector or the progress.
+    reached, released = threading.Event(), threading.Event()
+
+    def hold(index):
+        if index == 6:
+            reached.set()
+            assert released.wait(10)
+
+    def stop(executor):
+        assert reached.wait(10)
+        executor.kill()
+        released.set()
+
+    frames = Frames(20)
+    result, trace, _ = run_context(
+        kind,
+        lambda t: context_chain(t, lambda: frames.range(8, 4), on_temporal=hold),
+        tmp_path,
+        monkeypatch,
+        "4",
+        during=stop,
+    )
+    assert type(result.error).__name__ == "Aborted", result.error
+    assert [r[0] for r in records(trace, "temporal")] == [5]
+    assert not any(records(trace, tag) for tag in ("sink", "collect", "report"))
+    assert progress(result) == [(0, 4)]
+
+
+def test_python_window_is_decided_after_the_range_s_first_item(monkeypatch, tmp_path):
+    # process.Executor: with no look-ahead before it, the window is decided at the range's second item (slot 4, after
+    # three context items), and its per-item estimate measures the range's first item: big's 4 KiB, which no context
+    # item computes. The window learns the context slots: before 3, from 7 on (items 12 and 13), and the nodes they
+    # run (temporal).
+    opened: list[dict[str, Any]] = []
+    begun: list[int] = []
+    window_class, begin = process.ItemWindow, ItemWindow.begin
+
+    def capture(**options):
+        opened.append(options)
+        return window_class(**options)
+
+    def record_begin(window, slot):
+        begun.append(slot)
+        begin(window, slot)
+
+    monkeypatch.setattr(process, "ItemWindow", capture)
+    monkeypatch.setattr(ItemWindow, "begin", record_begin)
+    frames = Frames(20)
+
+    def scenario(trace: list[object]) -> Chain:
+        b = Builder()
+        b.node("frames", lambda: frames.range(8, 4), kind="generator", inputs=0)
+        b.node("temporal", lambda context, x: x, context=True, temporal=(3, 2))
+        b.node("big", lambda x: np.zeros(4096, np.uint8))
+        b.node(
+            "sink",
+            lambda x, data: trace.append((x, data.nbytes)),
+            inputs=2,
+            outputs=0,
+            side_effects=True,
+        )
+        b.edge("frames", 0, "temporal", 0)
+        b.edge("frames", 0, "big", 0)
+        b.edge("temporal", 0, "sink", 0)
+        b.edge("big", 0, "sink", 1)
+        return b.chain
+
+    result, trace, _ = run_context("python", scenario, tmp_path, monkeypatch, "4")
+    assert result.error is None, result.error
+    assert trace == [(i * 10 + 1, 4096) for i in range(8, 12)]
+    [options] = opened
+    assert options["estimate"] == 4096
+    assert (options["first"], options["end"], options["context_nodes"]) == (
+        3,
+        7,
+        frozenset({"temporal"}),
+    )
+    assert begun[0] == 4

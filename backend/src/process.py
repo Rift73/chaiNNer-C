@@ -454,10 +454,16 @@ class _ExecutorNodeContext(NodeContext):
         self.node_cleanup_fns: set[Callable[[], None]] = set()
         # Set while a generator loop runs this node on its commit path.
         self.iteration_view: _IterationView | None = None
+        # The chosen item of the loop the node belongs to (NodeContext.chosen_item).
+        self.chosen: int | None = None
 
     @property
     def iteration(self) -> IterationView | None:
         return self.iteration_view
+
+    @property
+    def chosen_item(self) -> int | None:
+        return self.chosen
 
     @property
     def aborted(self) -> bool:
@@ -549,7 +555,7 @@ _lazy_waits: weakref.WeakKeyDictionary[ThreadPoolExecutor, _LazyWaits] = (
 
 class _LoopRun:
     """
-    One run of a generator group's loop, as its nodes' iteration views see it: the slot the commit path runs, and the group's item window decision, made at slot 1 or by a look-ahead during slot 0.
+    One run of a generator group's loop, as its nodes' iteration views see it: the slot the commit path runs, the range's first slot (context items before it) and index base, and the group's item window decision, made at the range's second slot or by a look-ahead before it.
     """
 
     def __init__(
@@ -559,11 +565,16 @@ class _LoopRun:
         open_window: Callable[
             [int], typing.Awaitable[tuple[ItemWindow | None, str | None]]
         ],
+        first: int = 0,
+        base: int = 0,
     ) -> None:
         self.slot = 0
         self.generators = generators
         self.iterated = iterated
         self.open_window = open_window  # Executor.__open_window, given the stops
+        # Slots before `first` are context items; the slot `first` is item `base`.
+        self.first = first
+        self.base = base
         self.decided = False
         self.deciding: asyncio.Task[None] | None = None
         # The read-ahead blocker that set K = 1, and the look-ahead nodes warned of it.
@@ -575,7 +586,7 @@ class _LoopRun:
 
 class _IterationView(IterationView):
     """
-    A node's iteration view for one loop run: its index is the run's slot; a look-ahead runs on the event loop while the node's worker thread waits for it.
+    A node's iteration view for one loop run: its index counts the run's slots from the range's first one, numbered by the index base; a look-ahead runs on the event loop while the node's worker thread waits for it.
     """
 
     def __init__(
@@ -621,7 +632,11 @@ class _IterationView(IterationView):
 
     @property
     def index(self) -> int:
-        return self.__run.slot if self.__slot is None else self.__slot
+        return self.__run.base + self.__at() - self.__run.first
+
+    @property
+    def context(self) -> bool:
+        return self.__at() < self.__run.first
 
     @property
     def source(self) -> str:
@@ -651,7 +666,7 @@ class _IterationView(IterationView):
             raise ValueError(f"A look-ahead offset must be at least 1, not {offset}.")
         index = self.__input_index(input_id)
         self.__context.check_aborted()
-        value = self.__wait(self.__peek(self.index, index, offset))
+        value = self.__wait(self.__peek(self.__at(), index, offset))
         self.__context.check_aborted()
         if value is None:
             return None
@@ -667,6 +682,10 @@ class _IterationView(IterationView):
         """
         self.__state = None
         self.__context.iteration_view = None
+
+    def __at(self) -> int:
+        """The slot of the item the node runs for: the committing one, or the later one it is computed ahead at."""
+        return self.__run.slot if self.__slot is None else self.__slot
 
     def __input_index(self, input_id: int) -> int:
         for index, i in enumerate(self.__node.data.inputs):
@@ -985,6 +1004,8 @@ class Executor:
         self.__collector_directories: dict[NodeId, dict[int, object]] = {}
         self.__item_bytes: dict[NodeId, int] | None = None
         self.__budget: int | None = None
+        # The nodes of loops that run one chosen item, and that item (chosen_item).
+        self.__chosen_items: dict[NodeId, int] = {}
 
     async def process(
         self, node_id: NodeId, perform_cache: bool = True
@@ -1170,6 +1191,7 @@ class Executor:
         if context is None:
             context = self.__new_node_context(node)
             self.__context_cache[node.id] = context
+        context.chosen = self.__chosen_items.get(node.id)
         run = self.__run
         if (
             run is not None
@@ -1236,7 +1258,10 @@ class Executor:
         lazy_time_after = get_lazy_evaluation_time()
         execution_time -= lazy_time_after - lazy_time_before
         if isinstance(output, RegularOutput):
-            await self.__send_node_broadcast(node, output.output)
+            run = self.__run
+            if run is None or run.slot >= run.first or node.id not in run.iterated:
+                # A context item's outputs are discarded: the UI never sees them.
+                await self.__send_node_broadcast(node, output.output)
             self.__send_node_finish(node, execution_time)
         elif isinstance(output, GeneratorOutput):
             await self.__send_node_broadcast(
@@ -1454,15 +1479,18 @@ class Executor:
         collectors: list[tuple[Collector, _Timer, CollectorNode]],
         all_iterated_nodes: set[NodeId],
         generator_suppliers: dict[NodeId, typing.Iterator[Output | Exception]],
+        first: int,
+        end: int | None,
+        context_nodes: frozenset[NodeId],
         stops: int,
     ) -> tuple[ItemWindow | None, str | None]:
         """
-        Decides the group's item window K at slot 1 and logs it (spec 4.2, SP3-P1).
+        Decides the group's item window K at the range's second slot (slot 1 without context items) and logs it (spec 4.2, SP3-P1).
 
-        K = 1 builds no window and resolves no path. Returns the window and the read-ahead blocker that set K = 1, if one did.
+        K = 1 builds no window and resolves no path. Returns the window and the read-ahead blocker that set K = 1, if one did. The window learns the context items (before `first`, from `end` on), where it computes ahead only `context_nodes`.
         """
         # The measurement is kept until the decision is made: a decision that raises (a
-        # look-ahead during slot 0 decides early) is made again at slot 1.
+        # look-ahead before the range's second slot decides early) is made again there.
         measured = self.__item_bytes
         k, reason = window_size(affinity_cpus())
         blocker = None
@@ -1578,6 +1606,9 @@ class Executor:
             estimate=estimate,
             planner=planner,
             progress=self.progress,
+            first=first,
+            end=end,
+            context_nodes=context_nodes,
         )
         return window, None
 
@@ -1677,7 +1708,7 @@ class Executor:
 
     async def __look_ahead_window(self, run: _LoopRun) -> ItemWindow | None:
         """
-        The group's item window for a look-ahead. The first look-ahead during slot 0 decides it there, once, and the window starts at that slot; the producer then continues from slot 1. None, deciding nothing, with a pool of one thread: the waiting node holds it, and the decision's path check and the window's reads need another.
+        The group's item window for a look-ahead. The first look-ahead before the range's second slot (during slot 0 without context items) decides it there, once, and the window starts at that slot; the producer then continues from the next one. None, deciding nothing, with a pool of one thread: the waiting node holds it, and the decision's path check and the window's reads need another.
         """
         if self.__run is not run or self.__pool_size is None or self.__pool_size < 2:
             return None
@@ -1688,7 +1719,8 @@ class Executor:
         return self.__window
 
     async def __decide_early(self, run: _LoopRun) -> None:
-        # slot 0 runs: no generator stopped
+        # A slot up to the range's first runs: no generator stopped (context items come
+        # with a group's only generator, whose end would have ended the loop).
         window, run.blocker = await run.open_window(0)
         run.decided = True
         if window is not None:
@@ -1763,6 +1795,43 @@ class Executor:
             return None
         return _output_value(typing.cast(NodeOutput, output), source.index)
 
+    def __temporal_nodes(
+        self, iterated: set[NodeId], sinks: Iterable[Node]
+    ) -> tuple[list[FunctionNode], frozenset[NodeId]]:
+        """
+        The loop's temporal nodes, in topological order: its nodes without side effects that declare a temporal context (NodeData.temporal_context) and feed one of its sinks, so the loop runs them. Also the loop's nodes that run for a context item: those and the nodes they need.
+        """
+        ancestors: set[NodeId] = set()
+        pending = [node.id for node in sinks]
+        while pending:
+            for edge in self.chain.edges_to(pending.pop()):
+                if edge.source.id not in ancestors:
+                    ancestors.add(edge.source.id)
+                    pending.append(edge.source.id)
+        temporal: list[FunctionNode] = []
+        for node_id in self.chain.topological_order():
+            node = self.chain.nodes[node_id]
+            if (
+                node_id in ancestors
+                and node_id in iterated
+                and isinstance(node, FunctionNode)
+                and (not node.has_side_effects())
+                and node.data.temporal_context is not None
+            ):
+                temporal.append(node)
+        needed: set[NodeId] = set()
+        pending = [node.id for node in temporal]
+        while pending:
+            node_id = pending.pop()
+            if (
+                node_id not in needed
+                and node_id in iterated
+                and isinstance(self.chain.nodes[node_id], FunctionNode)
+            ):
+                needed.add(node_id)
+                pending.extend(edge.source.id for edge in self.chain.edges_to(node_id))
+        return temporal, frozenset(needed)
+
     async def __iterate_generator_nodes(self, generator_nodes: list[GeneratorNode]):
         await self.progress.suspend()
         num_generators = len(generator_nodes)
@@ -1773,12 +1842,20 @@ class Executor:
         generator_suppliers: dict[NodeId, typing.Iterator[Output | Exception]] = {}
         generator_outputs: dict[NodeId, GeneratorOutput] = {}
         iter_timers: dict[NodeId, _IterationTimer] = {}
+        # Context items (a group's only generator reads them for its temporal nodes):
+        # `before` items before the range, run through the temporal nodes and the nodes
+        # they need (context_nodes) alone, and `after` items after it, only served to
+        # look-aheads.
+        temporal_nodes: list[FunctionNode] = []
+        context_nodes: frozenset[NodeId] = frozenset()
+        before = after = 0
         for node in generator_nodes:
             generator_output = await self.process_generator_node(node)
             generator_outputs[node.id] = generator_output
-            generator_suppliers[node.id] = (
-                generator_output.generator.supplier().__iter__()
-            )
+            generator = generator_output.generator
+            contextual = num_generators == 1 and generator.context is not None
+            if not contextual:
+                generator_suppliers[node.id] = generator.supplier().__iter__()
             collector_nodes, __output_nodes, __all_iterated_nodes = (
                 self.__get_iterated_nodes(node)
             )
@@ -1788,6 +1865,31 @@ class Executor:
                 output_nodes.add(o_node)
             if len(collector_nodes) == 0 and len(output_nodes) == 0:
                 return
+            if num_generators == 1 and generator.chosen_item is not None:
+                for iterated_node in __all_iterated_nodes:
+                    self.__chosen_items[iterated_node.id] = generator.chosen_item
+            if contextual:
+                assert generator.context is not None
+                temporal_nodes, context_nodes = self.__temporal_nodes(
+                    all_iterated_nodes, [*output_nodes, *collector_nodes]
+                )
+                needs = [
+                    typing.cast(tuple[int, int], n.data.temporal_context)
+                    for n in temporal_nodes
+                ]
+                wanted = (
+                    max((need[0] for need in needs), default=0),
+                    max((need[1] for need in needs), default=0),
+                )
+                if wanted == (0, 0) or generator.expected_length == 0:
+                    generator_suppliers[node.id] = generator.supplier().__iter__()
+                else:
+                    items, before, after = generator.context(*wanted)
+                    assert 0 <= before <= wanted[0] and 0 <= after <= wanted[1], (
+                        f"{node.data.name} read ({before}, {after}) context items"
+                        f" for the {wanted} asked"
+                    )
+                    generator_suppliers[node.id] = items.__iter__()
             for collector_node in collector_nodes:
                 await self.progress.suspend()
                 timer = _Timer()
@@ -1807,6 +1909,12 @@ class Executor:
         total_stopiters = 0
         deferred_errors: list[str] = []
         self.__item_bytes = {}
+        # The range's slots: `before` context items come first; with items after it, the
+        # loop ends after its last one (they only serve look-aheads), else as always, when
+        # the generators are exhausted.
+        first = before
+        end = None if after == 0 else before + expected_lengths[generator_nodes[0].id]
+        bases = {output.generator.index_base for output in generator_outputs.values()}
         run = self.__run = _LoopRun(
             {node.id for node in generator_nodes},
             all_iterated_nodes,
@@ -1818,13 +1926,25 @@ class Executor:
                 collectors,
                 all_iterated_nodes,
                 generator_suppliers,
+                first,
+                end,
+                context_nodes,
             ),
+            first=first,
+            base=bases.pop() if len(bases) == 1 else 0,
         )
         slot = -1
         while True:
             slot += 1
+            if slot == end:
+                break
             run.slot = slot
-            if slot == 1 and (not run.decided):
+            is_context = slot < first
+            if slot == first and (not run.decided):
+                # The window's estimate measures the range's first item: a context item
+                # runs the temporal nodes alone.
+                self.__item_bytes = {}
+            if slot == first + 1 and (not run.decided):
                 run.decided = True
                 self.__window, run.blocker = await run.open_window(total_stopiters)
             window = self.__window
@@ -1873,14 +1993,22 @@ class Executor:
                         )
                     if iter_output is None:
                         raise StopIteration
-                    if slot == 0:
+                    if self.__item_bytes is not None:  # K is not decided yet
                         self.__item_bytes[node.id] = output_nbytes(iter_output.output)
                     await self.progress.suspend()
                     self.node_cache.set(node.id, iter_output, StaticCaching)
-                    await self.__send_node_broadcast(node, iter_output.output)
-                for output_node in output_nodes:
+                    if not is_context:
+                        await self.__send_node_broadcast(node, iter_output.output)
+                if is_context:
+                    # A context item updates the temporal nodes' state: they run, with the
+                    # nodes they need, and nothing else.
+                    for temporal_node in temporal_nodes:
+                        await self.process_regular_node(temporal_node)
+                for output_node in () if is_context else output_nodes:
                     await self.process_regular_node(output_node)
-                for collector, timer, collector_node in collectors:
+                for collector, timer, collector_node in (
+                    () if is_context else collectors
+                ):
                     await self.progress.suspend()
                     iterate_inputs = await self.__gather_collector_inputs(
                         collector_node
@@ -1912,7 +2040,7 @@ class Executor:
                 if window is not None:
                     window.release(slot)
                 await self.progress.suspend()
-                for node in generator_nodes:
+                for node in () if is_context else generator_nodes:
                     iter_times = iter_timers[node.id]
                     iter_times.add()
                     iterations = iter_times.iterations

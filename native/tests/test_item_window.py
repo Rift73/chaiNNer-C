@@ -749,6 +749,25 @@ class Pipeline:
         the lead a later item's speculation needs (PoolCalls.settle)."""
         self.pool_calls.settle(own)
 
+    def read_range(self, frames, base, length):
+        """g0 reads items base .. base + length - 1 of `frames`, as Load Video's Range
+        does (Generator.with_range), and the context frames around them a temporal node
+        asks for. Returns the list of its context requests (before, after)."""
+        asked = []
+
+        def context(before, after):
+            asked.append((before, after))
+            b, a = min(before, base), min(after, len(frames) - base - length)
+            return iter(frames[base - b : base + length + a]), b, a
+
+        def factory(_context):
+            generator = Generator(lambda: iter(frames[base : base + length]), length)
+            generator.source_paths = ()
+            return generator.with_range(base, None, context)
+
+        object.__setattr__(self.chain.nodes[NodeId("g0")].data, "run", factory)
+        return asked
+
     async def execute(self, workers, timeout, given):
         self._loop = asyncio.get_running_loop()
         self.pool_calls.install()
@@ -1783,9 +1802,12 @@ def new_window(
     estimate=0,
     generators=None,
     progress=None,
+    first=0,
+    end=None,
+    context_nodes=frozenset(),
 ):
     """A window over the inline generator g0 yielding values, then exhausted, or over
-    `generators`."""
+    `generators`; its context items are the slots before `first` and from `end` on."""
     if generators is None:
         items = iter(values)
         generators = [
@@ -1804,6 +1826,9 @@ def new_window(
         estimate=estimate,
         planner=planner,
         progress=ProgressController() if progress is None else progress,
+        first=first,
+        end=end,
+        context_nodes=context_nodes,
     )
 
 
@@ -1977,6 +2002,63 @@ def test_results_taken_from_jobs_raise_the_estimate(size, ahead):
         assert window.advanced_ahead == ahead
         pool.hold = False
         pool.finish(1)
+        await window.close()
+
+    drive(body)
+
+
+class ContextPlanner:
+    """Three candidates fed by g0: `up` (a context node: a temporal node's input), `map`
+    (not one) and save's prepare phase. Each job records (node, slot) as it starts and
+    returns g0's value."""
+
+    def __init__(self):
+        self.candidates = (
+            Candidate(NodeId("up"), frozenset()),
+            Candidate(NodeId("map"), frozenset()),
+            Candidate(NodeId("save"), frozenset(), prepare=True),
+        )
+        self.started = []
+
+    def eligible(self, _node_id, _values, _store):
+        return True
+
+    def job(self, node_id, values, _store, slot):
+        self.started.append((node_id, slot))
+        value = values[NodeId("g0")]
+        return lambda: (value, 0.0)
+
+    def nbytes(self, _value):
+        return 0
+
+
+def test_context_slots_compute_only_context_nodes_ahead():
+    # Slot 1 comes before the range 2..3, slots 4 and 5 after it: there the engine
+    # computes `up` alone, never `map` or save's prepare, which run ahead in 2 and 3. A
+    # look-ahead into slot 4 is still served `map`, computed there for it.
+    async def body():
+        pool = ManualPool()
+        pool.hold = False  # every call finishes at once
+        planner = ContextPlanner()
+        window = new_window(
+            pool,
+            planner,
+            [10, 11, 12, 13, 14, 15],
+            size=6,
+            jobs=8,
+            first=2,
+            end=4,
+            context_nodes=frozenset({NodeId("up")}),
+        )
+        window.begin(0)
+        assert await take(window) == 10
+        await spin()
+        assert sorted(planner.started) == sorted(
+            [("up", slot) for slot in range(1, 6)]
+            + [(node, slot) for node in ("map", "save") for slot in (2, 3)]
+        )
+        assert await window.peek(4, NodeId("map")) == 14
+        assert planner.started[-1] == ("map", 4)
         await window.close()
 
     drive(body)
