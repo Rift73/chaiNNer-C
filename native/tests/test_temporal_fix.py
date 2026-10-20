@@ -5,10 +5,13 @@ weight download, and the node in a real executor loop (CPU, random weights)."""
 import hashlib
 import http.server
 import logging
+import os
+import subprocess
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
@@ -23,12 +26,15 @@ from test_iteration_view import Reader
 
 import api
 from api import BaseInput, Generator, InputId, NodeContext, NodeId
-from chain.chain import Edge, EdgeTarget
+from chain.chain import Edge, EdgeTarget, GeneratorNode
+from nodes.impl import video
+from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
 from nodes.impl.item_window import ITEM_WINDOW_VARIABLE
 from nodes.impl.pytorch import temporal_fix
 from nodes.impl.pytorch.temporal_fix import RADIUS, FrameWindow, window
 from nodes.properties.inputs import DirectoryInput, ImageInput
 from packages.chaiNNer_pytorch.pytorch.processing import temporal_fix as node
+from packages.chaiNNer_standard.image.video_frames import load_video
 
 
 def gen_shifts(frames: int) -> list[list[int]]:
@@ -410,4 +416,113 @@ def test_a_range_gives_the_outputs_of_a_full_run_on_each_executor(
     assert asked == [(RADIUS, RADIUS)] and len(full) == 12
     assert read == list(range(max(base - RADIUS, 0), min(base + 4 + RADIUS, 12)))
     for got, want in zip(saved, full[base : base + 4], strict=True):
+        np.testing.assert_array_equal(got, want)
+
+
+STORAGE = Path(os.environ.get("APPDATA", "")) / "chaiNNer" / "backend-storage"
+FFMPEG, FFPROBE = map(str, get_executable_path(STORAGE / "ffmpeg"))
+
+
+@pytest.mark.skipif(
+    not Path(FFMPEG).exists(), reason="the integrated FFmpeg is not downloaded"
+)
+@pytest.mark.parametrize("kind", ["native", "python"])
+def test_a_load_video_range_gives_the_outputs_of_a_full_run(
+    monkeypatch, tmp_path, kind
+):
+    # The real Load Video (Range 6..9 of a 16-frame H.264 clip with B-frames, its
+    # frames decoded and its context frames read as a run reads them) into the real
+    # node, as /run runs it on each executor: Index 6..9 and the node's outputs there
+    # equal an All run's, bit for bit; the Range reads frames 3..12 only.
+    monkeypatch.setattr(
+        node,
+        "get_settings",
+        lambda _: SimpleNamespace(
+            device=torch.device("cpu"), budget_limit=0, force_cache_wipe=False
+        ),
+    )
+    monkeypatch.setattr(
+        node, "load_state", lambda _folder, _strength: random_model(SIZE)
+    )
+    monkeypatch.setattr(
+        api.registry, "get_package", lambda _: SimpleNamespace(id="test")
+    )
+    monkeypatch.setenv(ITEM_WINDOW_VARIABLE, "6")
+    monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    env = FFMpegEnv(ffmpeg=FFMPEG, ffprobe=FFPROBE)
+    monkeypatch.setattr(
+        load_video, "FFMpegEnv", SimpleNamespace(get_integrated=lambda _: env)
+    )
+    clip = tmp_path / "clip.mp4"
+    height, width = SIZE
+    subprocess.run(
+        [
+            FFMPEG,
+            *("-v", "error", "-y", "-f", "lavfi"),
+            *("-i", f"testsrc2=size={width}x{height}:rate=30", "-frames:v", "16"),
+            *("-c:v", "libx264", "-bf", "2", "-g", "8", str(clip)),
+        ],
+        check=True,
+        stdin=subprocess.DEVNULL,
+    )
+    reads: list[tuple[int, int | None]] = []
+    stream_items = video.VideoLoader.stream_items
+
+    def recorded(loader, start=0, stop=None):
+        reads.append((start, stop))
+        return stream_items(loader, start, stop)
+
+    monkeypatch.setattr(video.VideoLoader, "stream_items", recorded)
+    loader_data = next(
+        data
+        for data in load_video.video_frames_group.nodes
+        if data.schema_id == "chainner:image:load_video"
+    )
+
+    def run(frames: str, first: int, last: int) -> list[tuple[int, np.ndarray]]:
+        saved: list[tuple[int, np.ndarray]] = []
+        b = Builder()
+        load = object.__new__(GeneratorNode)
+        load.id, load.schema_id, load.data = (
+            NodeId("frames"),
+            loader_data.schema_id,
+            loader_data,
+        )
+        b.chain.add_node(load)
+        values = {item.id: item.to_dict().get("def") for item in loader_data.inputs}
+        values.update({0: str(clip), 10: frames, 11: first, 12: last})
+        for input_id, value in values.items():
+            b.value("frames", input_id, value)
+        fix = b.node(
+            "fix",
+            lambda context, image: node.temporal_fix_node(context, image, 2.0),
+            context=True,
+            temporal=registered().temporal_context,
+        )
+        object.__setattr__(fix.data, "inputs", [ImageInput(channels=3).with_id(0)])
+        set_schema(fix, "chainner:pytorch:temporal_fix")
+        b.node(
+            "save",
+            lambda image, index: saved.append((index, image)),
+            inputs=2,
+            outputs=0,
+            side_effects=True,
+        )
+        b.edge("frames", 0, "fix", 0)
+        b.edge("fix", 0, "save", 0)
+        b.edge("frames", 1, "save", 1)
+        result = execute(kind, b.chain, storage=tmp_path / "storage")
+        assert result.error is None, result.error
+        return saved
+
+    try:
+        full = run("all", 0, 0)
+        assert reads == [(0, None)] and [index for index, _ in full] == list(range(16))
+        reads.clear()
+        ranged = run("range", 6, 9)
+        assert reads == [(3, 13)]
+    finally:
+        video.close_previews()
+    assert [index for index, _ in ranged] == [6, 7, 8, 9]
+    for (_, got), (_, want) in zip(ranged, full[6:10], strict=True):
         np.testing.assert_array_equal(got, want)
