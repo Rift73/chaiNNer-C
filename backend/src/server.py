@@ -1230,6 +1230,16 @@ async def after_server_start(sanic_app: Sanic):
         close_task = loop.create_task(close_server(sanic_app))
 
 
+@app.after_server_stop
+async def after_server_stop(_sanic_app: Sanic):
+    # Load Video's Preview keeps each node's video open between its runs, so stepping
+    # through frames needs no new seek; the readers close here. Never imports the video
+    # module: without Load Video's node module loaded, no reader was opened.
+    video = sys.modules.get("nodes.impl.video")
+    if video is not None:
+        video.close_previews()
+
+
 def exit_with_host(pid: int) -> None:
     """Ends this worker once its host process has ended.
 
