@@ -1,42 +1,45 @@
 /* Save Image's shared encoding steps (GPL-3.0); see native/include/image_encode.hpp. */
 #include "image_encode.hpp"
 
-#include "fpng.h"
 #include "image_decode.hpp"
+#include "run_kernels.h"
 
-#include <climits>
 #include <cstring>
-#include <mutex>
+#include <new>
+#include <utility>
 
 namespace cn::image_encode {
 
-Fpng fpng_png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
-              ptrdiff_t pixel_stride, ptrdiff_t channel_stride, std::vector<uint8_t> &encoded) {
-    // Vendor 1.0.6 writes only two dimension bytes into IHDR despite accepting larger values. It also uses uint32
-    // offsets and signed row sizes. Keep valid dimensions and worst-case uncompressed framing below those limits.
-    constexpr uint64_t maximum_dimension = 65535;
-    constexpr uint64_t maximum_filtered = INT32_MAX - UINT64_C(1048576);
-    if ((channels != 3 && channels != 4) || height <= 0 || width <= 0 || uint64_t(height) > maximum_dimension ||
-        uint64_t(width) > maximum_dimension ||
-        (uint64_t(width) * uint64_t(channels) + 1) * uint64_t(height) > maximum_filtered)
-        return Fpng::declined;
-    static std::once_flag initialized;
-    std::call_once(initialized, fpng::fpng_init);
-    // fpng takes packed RGB(A); reading through byte pointers also takes readonly, reversed and broadcast views.
-    std::vector<uint8_t> pixels(size_t(height) * size_t(width) * size_t(channels));
-    uint8_t *destination = pixels.data();
-    for (ptrdiff_t y = 0; y < height; ++y)
-        for (ptrdiff_t x = 0; x < width; ++x) {
-            const uint8_t *pixel = source + y * row_stride + x * pixel_stride;
-            *destination++ = pixel[2 * channel_stride];
-            *destination++ = pixel[channel_stride];
-            *destination++ = pixel[0];
-            if (channels == 4) *destination++ = pixel[3 * channel_stride];
-        }
-    return fpng::fpng_encode_image_to_memory(pixels.data(), uint32_t(width), uint32_t(height), uint32_t(channels),
-                                             encoded, 0)
-               ? Fpng::encoded
-               : Fpng::failed;
+Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
+        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, const std::function<uint8_t *(size_t)> &allocate) {
+    if (channels < 1 || channels > 4 || height < 1 || width < 1 || size_t(height) > CN_PNG_MAX_SIDE ||
+        size_t(width) > CN_PNG_MAX_SIDE || size_t(width) > CN_PNG_MAX_ROW_SAMPLES / size_t(channels))
+        return Png::declined;
+    // The encoder reads through the strides (readonly, reversed and broadcast views too) and swaps BGR(A) itself.
+    const cn_png_allocate trampoline = [](void *context, size_t size) {
+        return (*static_cast<const std::function<uint8_t *(size_t)> *>(context))(size);
+    };
+    const cn_status status = cn_png_encode_u8(source, size_t(height), size_t(width), size_t(channels), row_stride,
+                                              pixel_stride, channel_stride, 1, trampoline,
+                                              const_cast<std::function<uint8_t *(size_t)> *>(&allocate));
+    if (status == CN_ALLOCATION_FAILED) return Png::out_of_memory;
+    return status == CN_OK ? Png::encoded : Png::failed;
+}
+
+Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
+        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, std::vector<uint8_t> &encoded) {
+    std::vector<uint8_t> bytes;
+    const Png result = png(source, height, width, channels, row_stride, pixel_stride, channel_stride,
+                           [&](size_t size) -> uint8_t * {
+                               try {
+                                   bytes.resize(size);
+                                   return bytes.data();
+                               } catch (const std::bad_alloc &) {
+                                   return nullptr;
+                               }
+                           });
+    if (result == Png::encoded) encoded = std::move(bytes);
+    return result;
 }
 
 bool tiff_extra_samples(std::span<const uint8_t> file, std::vector<uint8_t> &fixed) {

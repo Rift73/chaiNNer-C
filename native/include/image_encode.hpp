@@ -1,22 +1,29 @@
-/* Save Image's encoding steps shared by the Python glue (image_io.cpp) and the native Save Image entry point
- * (run/nodes/io.cpp): fpng 1.0.6's PNG and chaiNNer's ExtraSamples fix of OpenCV's TIFFs (GPL-3.0). Nothing here
- * touches Python. */
+/* Save Image's encoding steps shared by the Python glue (image_io.cpp), the native Save Image entry point
+ * (run/nodes/io.cpp) and the UI previews (image_preview.cpp): chaiNNer-C's default PNG and chaiNNer's ExtraSamples fix
+ * of OpenCV's TIFFs (GPL-3.0). Nothing here touches Python. */
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
 namespace cn::image_encode {
 
-enum class Fpng { declined, encoded, failed };
+enum class Png { declined, encoded, out_of_memory, failed };
 
-/* fpng's PNG of an 8-bit BGR or BGRA image (strides in bytes, any sign): `declined` beyond the limits this fpng
- * version handles (each side at most 65535, the filtered stream below INT32_MAX - 1 MiB), so OpenCV's encoder runs;
- * `failed` when fpng reports an error, which today's path raises. */
-Fpng fpng_png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
-              ptrdiff_t pixel_stride, ptrdiff_t channel_stride, std::vector<uint8_t> &encoded);
+/* The default PNG (cn_png_encode_u8, png_encode.c) of an 8-bit grey, grey + alpha, BGR or BGRA image (strides in
+ * bytes, any sign), written to the buffer allocate(size) returns once the file's size is known (on the calling
+ * thread; it does not throw, and returns nullptr when it cannot allocate): `declined` (allocate not called) beyond the
+ * encoder's range (each side at most 2^31 - 1, rows of fewer than 2^29 samples), so another encoder runs;
+ * `out_of_memory` when an allocation failed; `failed` for any other error, which none of the encoder's inputs here
+ * gives. */
+Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
+        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, const std::function<uint8_t *(size_t)> &allocate);
+/* The same into `encoded` (untouched unless `encoded`). */
+Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
+        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, std::vector<uint8_t> &encoded);
 
 /* OpenCV writes 4-sample RGB TIFFs without ExtraSamples (tag 338), which TIFF 6.0 requires, so readers may take the
  * fourth sample for an unknown one (upstream chaiNNer #2950). Adds 338 = SHORT 2 (unassociated alpha: chaiNNer's

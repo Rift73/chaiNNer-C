@@ -3349,37 +3349,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-fpng 1.0.6 (native PNG encoder)
-Vendored from the local fpng checkout; see native/third_party/fpng/PROVENANCE.md.
-
-This is free and unencumbered software released into the public domain.
-
-Anyone is free to copy, modify, publish, use, compile, sell, or
-distribute this software, either in source code form or as a compiled
-binary, for any purpose, commercial or non-commercial, and by any
-means.
-
-In jurisdictions that recognize copyright laws, the author or authors
-of this software dedicate any and all copyright interest in the
-software to the public domain. We make this dedication for the benefit
-of the public at large and to the detriment of our heirs and
-successors. We intend this dedication to be an overt act of
-relinquishment in perpetuity of all present and future rights to this
-software under copyright law.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-OTHER DEALINGS IN THE SOFTWARE.
-
-For more information, please refer to <http://unlicense.org/>
-
-Richard Geldreich, Jr.
-12/30/2021
-
 =====================================================================
 
 native/src/descale_ops.c links vapoursynth-descale (Release 12), vendored unchanged in
@@ -3639,6 +3608,10 @@ Copyright notice:
 ========================================================================
 libpng 1.6.57
 ========================================================================
+
+chainner_native.dll's default PNG encoder (native/src/png_encode.c) chooses each row's filter by libpng's
+unweighted heuristic (png_write_find_filter, every filter enabled: the least sum of the filtered bytes'
+signed magnitudes), written anew from that rule.
 
 COPYRIGHT NOTICE, DISCLAIMER, and LICENSE
 =========================================
@@ -4221,6 +4194,10 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 ========================================================================
 libdeflate 1.26
 ========================================================================
+
+chainner_native.dll's default PNG encoder (native/src/png_encode.c) and Load Image's OpenEXR decoder link
+libdeflate 1.26, vendored from its release with chaiNNer-C's patch for band pieces that end without a final
+block (native/third_party/libdeflate/PROVENANCE.md).
 
 Copyright 2016 Eric Biggers
 Copyright 2024 Google LLC

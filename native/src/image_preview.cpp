@@ -3,11 +3,14 @@
 
 #include "chainner_ext_kernels.h"
 #include "image_codecs.h"
+#include "image_encode.hpp"
 #include "run_kernels.h"
 
 #include <algorithm>
 #include <cmath>
+#include <new>
 #include <span>
+#include <stdexcept>
 
 namespace cn::image_preview {
 namespace {
@@ -58,8 +61,9 @@ std::string base64(std::span<const uint8_t> bytes) {
 }
 
 // preview_encode(img, target_size, grace, lossless): a resize when a side exceeds target_size * grace, then
-// cv2.imencode of to_uint8(img) as PNG (more than 3 channels, or lossless) or JPEG with OpenCV's defaults (quality
-// 95, 4:2:0, baseline), as a data URL. `image` becomes the encoded image, held in `owned` when resized.
+// to_uint8(img) as a PNG (more than 3 channels, or lossless; chaiNNer-C's default PNG, cn::image_encode::png) or as
+// cv2.imencode's JPEG with OpenCV's defaults (quality 95, 4:2:0, baseline), as a data URL. `image` becomes the
+// encoded image, held in `owned` when resized.
 bool encode_step(Pixels &image, int target, double grace, bool lossless, std::vector<float> &owned, std::string &url) {
     const double largest = target * grace;
     if (image.width > largest || image.height > largest) {
@@ -79,11 +83,25 @@ bool encode_step(Pixels &image, int target, double grace, bool lossless, std::ve
     if (cn_pixels_convert_checked(image.data, pixels.data(), count, type_float32, output_uint8, 0, &events) != CN_OK ||
         events)
         return false; // NumPy would report the event (warn, raise, print or call): today's path does
+    if (image.channels > 3 || lossless) {
+        const ptrdiff_t c = ptrdiff_t(image.channels);
+        std::vector<uint8_t> png;
+        switch (cn::image_encode::png(pixels.data(), image.height, image.width, c, ptrdiff_t(image.width) * c, c, 1, png)) {
+        case cn::image_encode::Png::encoded:
+            url = "data:image/png;base64," + base64(png);
+            return true;
+        case cn::image_encode::Png::declined:
+            return false; // today's path runs
+        case cn::image_encode::Png::out_of_memory:
+            throw std::bad_alloc();
+        default:
+            throw std::runtime_error("the PNG encoder failed to encode the preview");
+        }
+    }
     const cn_codec_image view{pixels.data(), image.height, image.width, image.channels, 1, size_t(image.width) * image.channels};
-    const bool png = image.channels > 3 || lossless;
     cn_codec_output out{};
-    const cn_codec_status status = png ? cn_png_encode(&view, &out) : cn_jpeg_encode(&view, 95, 0x221111, 0, &out);
-    if (status == CN_CODEC_OK) url = (png ? "data:image/png;base64," : "data:image/jpg;base64,") + base64({out.data, out.size});
+    const cn_codec_status status = cn_jpeg_encode(&view, 95, 0x221111, 0, &out);
+    if (status == CN_CODEC_OK) url = "data:image/jpg;base64," + base64({out.data, out.size});
     cn_codec_output_free(&out);
     return status == CN_CODEC_OK;
 }

@@ -172,8 +172,8 @@ std::vector<uint8_t> quantized(const Image &image, int bits)
 }
 
 /* Save Image's file bytes for the formats whose encoders are native (save_image.py encoding() and image_io.cpp
- * encode()): PNG (fpng for 8-bit colour, else OpenCV's PngEncoder), JPG, WEBP (lossless with alpha as Pillow's exact
- * save), BMP, TIFF (8/16-bit with its compression, or float32 as it is; then the ExtraSamples fix). */
+ * encode()): PNG (chaiNNer-C's encoder for 8 bits, OpenCV's PngEncoder for 16), JPG, WEBP (lossless with alpha as
+ * Pillow's exact save), BMP, TIFF (8/16-bit with its compression, or float32 as it is; then the ExtraSamples fix). */
 std::vector<uint8_t> save_bytes(const Image &image, std::span<const Value> inputs)
 {
     const std::string &format = std::get<std::string>(inputs[4]);
@@ -188,9 +188,10 @@ std::vector<uint8_t> save_bytes(const Image &image, std::span<const Value> input
     std::vector<uint8_t> bytes;
     if (format == "png" && !sixteen) {
         const ptrdiff_t c = ptrdiff_t(channels);
-        const auto result = cn::image_encode::fpng_png(pixels.data(), height, width, c, ptrdiff_t(width) * c, c, 1, bytes);
-        if (result == cn::image_encode::Fpng::encoded) return bytes;
-        if (result == cn::image_encode::Fpng::failed) throw RunPython{}; // today's RuntimeError
+        const auto result = cn::image_encode::png(pixels.data(), height, width, c, ptrdiff_t(width) * c, c, 1, bytes);
+        if (result == cn::image_encode::Png::encoded) return bytes;
+        // The Python body raises the same encoder's error (MemoryError or RuntimeError).
+        if (result != cn::image_encode::Png::declined) throw RunPython{};
     }
     const bool webp_lossless = std::get<bool>(inputs[6]);
     const int64_t quality = std::get<int64_t>(inputs[7]), compression = std::get<int64_t>(inputs[11]);

@@ -1,5 +1,5 @@
 /* chaiNNer image I/O application algorithms (GPL-3.0).
- * Codec engines are fpng/OpenCV/Pillow/DirectXTex. C++ owns decoder ordering,
+ * Codec engines are chaiNNer-C's PNG encoder/OpenCV/Pillow/DirectXTex. C++ owns decoder ordering,
  * buffer/channel preparation, save policy/options, and owned job lifecycles.
  * CPython pathlib and OS APIs preserve the installed host semantics. */
 #include "atomic_file.hpp"
@@ -74,26 +74,37 @@ void with_object(O context, const std::function<void(O)>& body) {
 }
 O get_ext(py::dict g, O path) { return index(name(g,"split_file_path")(path),2).attr("lower")(); }
 
-// fpng (cn::image_encode::fpng_png) for a uint8 BGR(A) array; None when fpng declines. All codec dispatch
-// decisions happen before compression; a failure in the selected encoder is reported, never retried through
-// another codec. Other dtypes/channels/options retain OpenCV semantics.
-O encode_fpng(const O& image) {
+// The default PNG (cn::image_encode::png) of a uint8 grey (2-D, or one channel), grey + alpha, BGR or BGRA array;
+// None when the encoder declines. All codec dispatch decisions happen before compression; a failure in the selected
+// encoder is reported, never retried through another codec. Other dtypes/channels/options retain OpenCV semantics.
+O encode_png(const O& image) {
     if (!py::isinstance<py::array>(image)) return py::none();
     py::array input=py::reinterpret_borrow<py::array>(image);
-    if (input.ndim()!=3 || input.itemsize()!=1 || input.dtype().kind()!='u') return py::none();
-    std::vector<uint8_t> encoded;
-    cn::image_encode::Fpng result;
+    if ((input.ndim()!=2 && input.ndim()!=3) || input.itemsize()!=1 || input.dtype().kind()!='u') return py::none();
+    O encoded;
+    cn::image_encode::Png result;
     {
         // Keep input alive and snapshot every Python-owned field before release.
         const auto* source=static_cast<const uint8_t*>(input.data());
-        const ptrdiff_t height=input.shape(0),width=input.shape(1),channels=input.shape(2);
-        const ptrdiff_t row_stride=input.strides(0),pixel_stride=input.strides(1),channel_stride=input.strides(2);
+        const bool grey=input.ndim()==2;
+        const ptrdiff_t height=input.shape(0),width=input.shape(1),channels=grey?1:input.shape(2);
+        const ptrdiff_t row_stride=input.strides(0),pixel_stride=input.strides(1),channel_stride=grey?1:input.strides(2);
         py::gil_scoped_release release;
-        result=cn::image_encode::fpng_png(source,height,width,channels,row_stride,pixel_stride,channel_stride,encoded);
+        // The file's bytes go straight into a bytes object, made under the GIL once the size is known; nothing else
+        // sees it before it is returned.
+        result=cn::image_encode::png(source,height,width,channels,row_stride,pixel_stride,channel_stride,
+            [&](size_t size)->uint8_t* {
+                py::gil_scoped_acquire acquire;
+                PyObject* bytes=size<=size_t(PY_SSIZE_T_MAX)?PyBytes_FromStringAndSize(nullptr,Py_ssize_t(size)):nullptr;
+                if(!bytes){PyErr_Clear();return nullptr;} // raised below as the MemoryError it is
+                encoded=py::reinterpret_steal<O>(bytes);
+                return reinterpret_cast<uint8_t*>(PyBytes_AS_STRING(bytes));
+            });
     }
-    if(result==cn::image_encode::Fpng::declined)return py::none();
-    if(result==cn::image_encode::Fpng::failed)throw std::runtime_error("fpng failed to encode the PNG image");
-    return py::bytes(reinterpret_cast<const char*>(encoded.data()),encoded.size());
+    if(result==cn::image_encode::Png::declined)return py::none();
+    if(result==cn::image_encode::Png::out_of_memory)throw std::bad_alloc();
+    if(result==cn::image_encode::Png::failed)throw std::runtime_error("the PNG encoder failed to encode the image");
+    return encoded;
 }
 
 // Copy a channel permutation with the codec's native-endian dtype. Reading
@@ -540,16 +551,16 @@ O native_exact_webp(const Encoding& encoded) {
     if(!encoded.exact_webp || !cn::image_decode::enabled() || !codec_image(encoded.image,view))return py::none();
     return run_encoder([&](cn_codec_output& out){return cn_webp_encode_exact(&view,&out);});
 }
-// The codec of cv_save for a file extension: fpng for a default PNG, else the vendored encoder of OpenCV's
-// (native_encode), else OpenCV's imencode; a TIFF then gets add_extra_samples. Returns bytes, or the encoder's buffer
-// array.
+// The codec of cv_save for a file extension: chaiNNer-C's PNG encoder for a default 8-bit PNG, else the vendored
+// encoder of OpenCV's (native_encode), else OpenCV's imencode; a TIFF then gets add_extra_samples. Returns bytes, or
+// the encoder's buffer array.
 O encode(py::dict g,O extension,O image,O params) {
     O buffer=py::none();
     // Explicit codec parameters are a distinct OpenCV contract (compression,
-    // bilevel, strategy). Only default PNG encoding is fpng-compatible.
+    // bilevel, strategy). Only default PNG encoding takes chaiNNer-C's encoder.
     if(equal(extension.attr("lower")(),py::str(".png")) &&
         (PyList_CheckExact(params.ptr()) || PyTuple_CheckExact(params.ptr())) && py::len(params)==0)
-        buffer=encode_fpng(image);
+        buffer=encode_png(image);
     if(buffer.is_none())buffer=native_encode(g,extension,image,params);
     if(buffer.is_none())buffer=index(name(g,"cv2").attr("imencode")(format(".{}",extension),image,params),1);
     O lower=extension.attr("lower")();
@@ -673,7 +684,7 @@ void view_image(py::dict g,O image) {
     O filename=format("{}.png",name(g,"time").attr("time")());
     O path=name(g,"os").attr("path").attr("join")(temporary,filename);
     O pixels=name(g,"to_uint8")(image,py::arg("normalized")=true);
-    O buffer=encode_fpng(pixels);
+    O buffer=encode_png(pixels);
     bool saved=false;
     if(buffer.is_none())saved=truth(name(g,"cv2").attr("imwrite")(path,pixels));
     else {

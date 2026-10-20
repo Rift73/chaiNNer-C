@@ -229,6 +229,20 @@ CN_RUN_KERNEL cn_status cn_palette_median_cut(const float *src, float *out,
     size_t root_block, size_t root_period, size_t child_block, size_t *written);
 CN_RUN_KERNEL cn_status cn_palette_pad_edge(const float *source, float *out,
     size_t colors, size_t channels, size_t capacity);
+/* png_encode.c: chaiNNer-C's default PNG of an 8-bit image of 1 to 4 channels (grey, grey + alpha, RGB, RGBA): rows
+ * filtered by libpng's MinSum rule, compressed by libdeflate level 6 in bands on the native pool (png_encode.c says
+ * how). Sample (y, x, k) is at source + y * row_stride + x * pixel_stride + k * channel_stride (bytes, any sign); with
+ * bgr, channels 0-2 are blue, green and red (OpenCV's order) and are written as red, green and blue. The encoder's
+ * range: each side 1 to CN_PNG_MAX_SIDE pixels (PNG's limit), rows of at most CN_PNG_MAX_ROW_SAMPLES samples. When the
+ * file is ready, allocate(context, size) gives the buffer its size bytes are written to (NULL: CN_ALLOCATION_FAILED);
+ * it runs on the calling thread. CN_INVALID_ARGUMENT outside the range or for a null pointer, CN_SIZE_OVERFLOW when
+ * the strides reach beyond a quarter of the address space. */
+#define CN_PNG_MAX_SIDE ((size_t)0x7FFFFFFF)
+#define CN_PNG_MAX_ROW_SAMPLES (((size_t)1 << 29) - 1)
+typedef uint8_t *(*cn_png_allocate)(void *context, size_t size);
+CN_RUN_KERNEL cn_status cn_png_encode_u8(const uint8_t *source, size_t height, size_t width, size_t channels,
+    ptrdiff_t row_stride, ptrdiff_t pixel_stride, ptrdiff_t channel_stride, int bgr, cn_png_allocate allocate,
+    void *context);
 /* procedural_complete_ops.c */
 CN_RUN_KERNEL cn_status cn_create_procedural(void *out, size_t height, size_t width,
     uint64_t seed, int method, double scale, double brightness,
