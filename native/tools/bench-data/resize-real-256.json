@@ -178,6 +178,10 @@
         {
           "type": "value",
           "value": 0
+        },
+        {
+          "type": "value",
+          "value": 1.0
         }
       ],
       "parent": null,
