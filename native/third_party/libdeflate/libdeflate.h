@@ -88,6 +88,20 @@ libdeflate_deflate_compress(struct libdeflate_compressor *compressor,
 			    void *out, size_t out_nbytes_avail);
 
 /*
+ * chaiNNer-C patch (PROVENANCE.md): like libdeflate_deflate_compress(), but no
+ * block is marked final and the output ends with an empty non-final stored
+ * block, byte-aligned (its header bits, then 00 00 FF FF), as zlib's
+ * Z_SYNC_FLUSH ends its output.  Pieces of data compressed separately this way
+ * concatenate into one DEFLATE stream when the last piece is compressed with
+ * libdeflate_deflate_compress(); each piece starts with an empty history.  The
+ * output takes at most libdeflate_deflate_compress_bound() + 5 bytes.
+ */
+LIBDEFLATEAPI size_t
+libdeflate_deflate_compress_nonfinal(struct libdeflate_compressor *compressor,
+				     const void *in, size_t in_nbytes,
+				     void *out, size_t out_nbytes_avail);
+
+/*
  * libdeflate_deflate_compress_bound() returns a worst-case upper bound on the
  * number of bytes of compressed data that may be produced by compressing any
  * buffer of length less than or equal to 'in_nbytes' using

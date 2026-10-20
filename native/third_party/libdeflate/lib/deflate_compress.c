@@ -707,6 +707,12 @@ struct deflate_output_bitstream {
 
 	/* true if the output buffer ran out of space */
 	bool overflow;
+
+	/*
+	 * chaiNNer-C patch (PROVENANCE.md): true in
+	 * libdeflate_deflate_compress_nonfinal(), whose blocks are never final
+	 */
+	bool nonfinal;
 };
 
 /*
@@ -1744,6 +1750,10 @@ deflate_flush_block(struct libdeflate_compressor *c,
 	ASSERT(out_next <= os->end);
 	ASSERT(!os->overflow);
 
+	/* chaiNNer-C patch (PROVENANCE.md) */
+	if (os->nonfinal)
+		is_final_block = false;
+
 	/* Precompute the precode items and build the precode. */
 	deflate_precompute_huffman_header(c);
 
@@ -2388,10 +2398,12 @@ choose_max_block_end(const u8 *in_block_begin, const u8 *in_end,
 
 /*
  * This is the level 0 "compressor".  It always outputs uncompressed blocks.
+ * chaiNNer-C patch (PROVENANCE.md): without 'final', no block is final and an
+ * empty stored block ends the output.
  */
 static size_t
 deflate_compress_none(const u8 *in, size_t in_nbytes,
-		      u8 *out, size_t out_nbytes_avail)
+		      u8 *out, size_t out_nbytes_avail, bool final)
 {
 	const u8 *in_next = in;
 	const u8 * const in_end = in + in_nbytes;
@@ -2407,7 +2419,7 @@ deflate_compress_none(const u8 *in, size_t in_nbytes,
 		if (out_nbytes_avail < 5)
 			return 0;
 		/* BFINAL and BTYPE */
-		*out_next++ = 1 | (DEFLATE_BLOCKTYPE_UNCOMPRESSED << 1);
+		*out_next++ = final | (DEFLATE_BLOCKTYPE_UNCOMPRESSED << 1);
 		/* LEN and NLEN */
 		put_unaligned_le32(0xFFFF0000, out_next);
 		return 5;
@@ -2418,7 +2430,7 @@ deflate_compress_none(const u8 *in, size_t in_nbytes,
 		size_t len = UINT16_MAX;
 
 		if (in_end - in_next <= UINT16_MAX) {
-			bfinal = 1;
+			bfinal = final;
 			len = in_end - in_next;
 		}
 		if (out_end - out_next < 5 + len)
@@ -2438,6 +2450,15 @@ deflate_compress_none(const u8 *in, size_t in_nbytes,
 		out_next += len;
 		in_next += len;
 	} while (in_next != in_end);
+
+	if (!final) {
+		if (out_end - out_next < 5)
+			return 0;
+		/* An empty non-final stored block */
+		*out_next++ = DEFLATE_BLOCKTYPE_UNCOMPRESSED << 1;
+		put_unaligned_le32(0xFFFF0000, out_next);
+		out_next += 4;
+	}
 
 	return out_next - out;
 }
@@ -4027,10 +4048,14 @@ libdeflate_alloc_compressor(int compression_level)
 	return libdeflate_alloc_compressor_ex(compression_level, &defaults);
 }
 
-LIBDEFLATEAPI size_t
-libdeflate_deflate_compress(struct libdeflate_compressor *c,
-			    const void *in, size_t in_nbytes,
-			    void *out, size_t out_nbytes_avail)
+/*
+ * chaiNNer-C patch (PROVENANCE.md): libdeflate_deflate_compress() as the
+ * shared body of it ('final') and of libdeflate_deflate_compress_nonfinal().
+ */
+static size_t
+deflate_compress_ending(struct libdeflate_compressor *c,
+			const void *in, size_t in_nbytes,
+			void *out, size_t out_nbytes_avail, bool final)
 {
 	struct deflate_output_bitstream os;
 
@@ -4040,7 +4065,7 @@ libdeflate_deflate_compress(struct libdeflate_compressor *c,
 	 */
 	if (unlikely(in_nbytes <= c->max_passthrough_size))
 		return deflate_compress_none(in, in_nbytes,
-					     out, out_nbytes_avail);
+					     out, out_nbytes_avail, final);
 
 	/* Initialize the output bitstream structure. */
 	os.bitbuf = 0;
@@ -4048,6 +4073,7 @@ libdeflate_deflate_compress(struct libdeflate_compressor *c,
 	os.next = out;
 	os.end = os.next + out_nbytes_avail;
 	os.overflow = false;
+	os.nonfinal = !final;
 
 	/* Call the actual compression function. */
 	(*c->impl)(c, in, in_nbytes, &os);
@@ -4056,12 +4082,30 @@ libdeflate_deflate_compress(struct libdeflate_compressor *c,
 	if (os.overflow)
 		return 0;
 
+	ASSERT(os.bitcount <= 7);
+	if (!final) {
+		/*
+		 * An empty non-final stored block: BFINAL 0 and BTYPE 00 (three
+		 * zero bits after the held ones, which may spill into a second
+		 * byte), alignment, then LEN 0 and NLEN 0xFFFF.
+		 */
+		const size_t header_bytes = DIV_ROUND_UP(os.bitcount + 3, 8);
+
+		if ((size_t)(os.end - os.next) < header_bytes + 4)
+			return 0;
+		*os.next++ = (u8)os.bitbuf;
+		if (header_bytes == 2)
+			*os.next++ = 0;
+		put_unaligned_le32(0xFFFF0000, os.next);
+		os.next += 4;
+		return os.next - (u8 *)out;
+	}
+
 	/*
 	 * Write the final byte if needed.  This can't overflow the output
 	 * buffer because deflate_flush_block() would have set the overflow flag
 	 * if there wasn't enough space remaining for the full final block.
 	 */
-	ASSERT(os.bitcount <= 7);
 	if (os.bitcount) {
 		ASSERT(os.next < os.end);
 		*os.next++ = os.bitbuf;
@@ -4069,6 +4113,24 @@ libdeflate_deflate_compress(struct libdeflate_compressor *c,
 
 	/* Return the compressed size in bytes. */
 	return os.next - (u8 *)out;
+}
+
+LIBDEFLATEAPI size_t
+libdeflate_deflate_compress(struct libdeflate_compressor *c,
+			    const void *in, size_t in_nbytes,
+			    void *out, size_t out_nbytes_avail)
+{
+	return deflate_compress_ending(c, in, in_nbytes, out, out_nbytes_avail,
+				       true);
+}
+
+LIBDEFLATEAPI size_t
+libdeflate_deflate_compress_nonfinal(struct libdeflate_compressor *c,
+				     const void *in, size_t in_nbytes,
+				     void *out, size_t out_nbytes_avail)
+{
+	return deflate_compress_ending(c, in, in_nbytes, out, out_nbytes_avail,
+				       false);
 }
 
 LIBDEFLATEAPI void
