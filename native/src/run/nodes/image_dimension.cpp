@@ -7,7 +7,7 @@ namespace {
 using namespace cn::run;
 
 /* chainner:image:resize (image_dimension/resize/resize.py): Percentage (0) scales both sides by scale / 100 with
- * round_half_up and at least 1 pixel, Absolute (1) takes the width and height. */
+ * round_half_up and at least 1 pixel, Absolute (1) takes the width and height; Lambda (7) is DPID's. */
 void resize_node(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     const Image &image = std::get<Image>(inputs[0]);
@@ -20,7 +20,8 @@ void resize_node(NodeContext &, std::span<const Value> inputs, std::vector<Value
         width = extent(inputs[3]);
         height = extent(inputs[4]);
     }
-    outputs.push_back(resize(image, width, height, std::get<int64_t>(inputs[5]), std::get<bool>(inputs[6]), false));
+    outputs.push_back(resize(image, width, height, std::get<int64_t>(inputs[5]), std::get<bool>(inputs[6]), false,
+                             number(inputs[7])));
 }
 
 }  // namespace

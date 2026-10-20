@@ -20,12 +20,18 @@ struct Extent {
 };
 
 /* ResizeFilter values (nodes/impl/resize.py). */
-enum ResizeFilterValue : int64_t { filter_auto = -1, filter_nearest = 0, filter_lanczos = 1, filter_box = 4 };
+enum ResizeFilterValue : int64_t {
+    filter_auto = -1,
+    filter_nearest = 0,
+    filter_lanczos = 1,
+    filter_box = 4,
+    filter_dpid = 12
+};
 
-/* resize(img, (width, height), filter, separate_alpha, gamma_correction): the resized image, or img itself where the
- * body returns img.copy() (a same-size Nearest or Box resize); the body's errors in its order. Throws RunPython
- * before any output when the result would exceed the engine's int32 image dimensions. */
+/* resize(img, (width, height), filter, separate_alpha, gamma_correction, dpid_lambda): the resized image, or img
+ * itself where the body returns img.copy() (a same-size Nearest, Box or DPID resize); the body's errors in its order.
+ * Throws RunPython before any output when the result would exceed the engine's int32 image dimensions. */
 Value resize(const Image &image, Extent width, Extent height, int64_t filter, bool separate_alpha,
-             bool gamma_correction);
+             bool gamma_correction, double dpid_lambda);
 
 }  // namespace cn::run

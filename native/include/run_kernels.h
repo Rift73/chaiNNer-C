@@ -138,6 +138,10 @@ CN_RUN_KERNEL cn_status cn_distance_esdf(const float *source, float *out,
     size_t height, size_t width, float radius);
 CN_RUN_KERNEL cn_status cn_distance_binary(const uint8_t *source, float *out,
     size_t height, size_t width, double spread, int double_division);
+/* dpid_ops.c */
+CN_RUN_KERNEL cn_status cn_resample_dpid(const float *source, float *out,
+    size_t height, size_t width, size_t channels, size_t target_height,
+    size_t target_width, float lambda, int separate_alpha, int gamma);
 /* filter_ops.c */
 CN_RUN_KERNEL cn_status cn_filter_arithmetic(const float *a, const float *b,
     const float *c, const float *d, float *out, size_t n, int operation, float scale,

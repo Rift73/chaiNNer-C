@@ -23,6 +23,7 @@ class ResizeFilter(Enum):
     HANN = 9
     LAGRANGE = 10
     GAUSS = 11
+    DPID = 12
 
 
 def resize(
@@ -31,7 +32,10 @@ def resize(
     filter: ResizeFilter,
     separate_alpha: bool = False,
     gamma_correction: bool = False,
+    dpid_lambda: float = 1.0,
 ) -> np.ndarray:
+    """dpid_lambda is DPID's detail weight (0: an area average); other filters
+    ignore it."""
     h, w, c = get_h_w_c(img)
     new_w, new_h = out_dims
 
@@ -51,7 +55,9 @@ def resize(
         else:
             filter = ResizeFilter.BOX
 
-    if (w, h) == out_dims and (filter in (ResizeFilter.NEAREST, ResizeFilter.BOX)):
+    if (w, h) == out_dims and (
+        filter in (ResizeFilter.NEAREST, ResizeFilter.BOX, ResizeFilter.DPID)
+    ):
         # no resize needed
         return img.copy()
 
@@ -75,7 +81,13 @@ def resize(
             img[:, :, 1] *= img[..., 3]
             img[:, :, 2] *= img[..., 3]
 
-    img = native_resample.filtered(img, out_dims, filter.value, gamma_correction)
+    if filter == ResizeFilter.DPID:
+        # Premultiplied RGBA carries alpha with the colour weights.
+        img = native_resample.dpid(
+            img, out_dims, dpid_lambda, separate_alpha, gamma_correction
+        )
+    else:
+        img = native_resample.filtered(img, out_dims, filter.value, gamma_correction)
 
     if not separate_alpha and c == 4 and img.size:
         # undo pre-multiply alpha

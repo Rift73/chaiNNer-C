@@ -240,8 +240,9 @@ void resize_pixel_art(NodeContext &, std::span<const Value> inputs, std::vector<
 }
 
 /* chainner:image:resize_to_side (resize/resize_to_side.py): resize_to_side_conditional's size (SideSelection and
- * ResizeCondition values), then resize.resize. A scaled side is round_half_up((target / side) * other), at least 1;
- * a target beyond 2**53 (Python's exact int division) declines to the Python body. */
+ * ResizeCondition values), then resize.resize with DPID's Lambda (input 5). A scaled side is
+ * round_half_up((target / side) * other), at least 1; a target beyond 2**53 (Python's exact int division) declines to
+ * the Python body. */
 void resize_to_side(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     const Image &image = std::get<Image>(inputs[0]);
@@ -265,7 +266,7 @@ void resize_to_side(NodeContext &, std::span<const Value> inputs, std::vector<Va
         int64_t reference = side == "shorter side" ? std::min(h, w) : std::max(h, w);
         if (!keep(reference)) width = scaled(reference, w), height = scaled(reference, h);
     }
-    outputs.push_back(resize(image, width, height, std::get<int64_t>(inputs[4]), false, false));
+    outputs.push_back(resize(image, width, height, std::get<int64_t>(inputs[4]), false, false, number(inputs[5])));
 }
 
 /* native_descale._core's factorized one-direction systems, shared like its lru_cache(maxsize=16): the 16 most

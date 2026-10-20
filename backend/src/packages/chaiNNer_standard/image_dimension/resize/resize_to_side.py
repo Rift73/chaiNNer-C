@@ -4,6 +4,7 @@ from enum import Enum
 
 import numpy as np
 
+from nodes.groups import if_enum_group
 from nodes.impl.resize import ResizeFilter, resize
 from nodes.properties.inputs import (
     EnumInput,
@@ -102,6 +103,14 @@ def resize_to_side_conditional(
             },
         ).with_id(4),
         ResizeFilterInput().with_id(3),
+        if_enum_group(3, ResizeFilter.DPID)(
+            NumberInput("Lambda", precision=2, step=0.1, default=1.0, min=0, max=10)
+            .with_docs(
+                "DPID's detail weight. 0 gives an area average, as Area (Box); larger values favour the pixels that differ most from their neighbourhood, which keeps small details and thin lines.",
+                "DPID is a downscaler: a side that grows gets an area sample.",
+            )
+            .with_id(5),
+        ),
     ],
     outputs=[
         ImageOutput(
@@ -167,8 +176,9 @@ def resize_to_side_node(
     side: SideSelection,
     condition: ResizeCondition,
     filter: ResizeFilter,
+    dpid_lambda: float,
 ) -> np.ndarray:
     h, w, _ = get_h_w_c(img)
     out_dims = resize_to_side_conditional(w, h, target, side, condition)
 
-    return resize(img, out_dims, filter)
+    return resize(img, out_dims, filter, dpid_lambda=dpid_lambda)

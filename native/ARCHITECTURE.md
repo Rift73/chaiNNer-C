@@ -28,7 +28,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 | Native CPU pool | `native/src/parallel.c`, `native/include/parallel.h` |
 | Mirrors' CRT math from the process's `ucrtbase.dll` (Consult 6 D-4; groups in the header) | `native/include/cn_crt_math.h`, `native/src/crt_math.c` |
 | Ownership, cache, events | `backend/src/nodes/impl/native_buffers.py`, `nodes/properties/outputs/numpy_outputs.py`, `chain/cache.py`, `nodes/impl/event_queue.py`, `nodes/impl/numpy_pool.py` (section 6) |
-| Resize and PNG | `backend/src/nodes/impl/native_resample.py`, `native/src/resample_filters.c`, `native/src/image_io.cpp`, `native/third_party/fpng` |
+| Resize and PNG | `backend/src/nodes/impl/native_resample.py`, `native/src/resample_filters.c`, `native/src/dpid_ops.c` (DPID), `native/src/image_io.cpp`, `native/third_party/fpng` |
 | Image codecs and atomic writes (instant-exec lane I) | `native/cmake/codecs.cmake`, `native/src/codecs/*.c` (`native/include/image_codecs.h`), `native/src/image_decode.cpp`, `image_encode.cpp`, `image_preview.cpp`, `native/src/atomic_file.cpp`, `native/src/run/nodes/io.cpp`, `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}`; OpenEXR: `native/src/codecs/exr_codec.c`, `native/third_party/{openexr,imath,libdeflate,zstd,openjph}` |
 | Video | `native/src/video_io.cpp`, `backend/src/nodes/impl/video.py` |
 | Packaging | `native/tools/package_port.py`, `package_files.py`, `package_manifest.py` |
@@ -594,7 +594,7 @@ another project generated.
 - `backend/src/nodes/impl/chainner_native.LICENSE.txt` carries every adaptation notice, file by file: chaiNNer-rs (MIT;
   2xSaI credit GPL, HQ tables LGPL), colortrans (MIT), OpenCV 4.8.0, Pillow 9.2.0, NumPy 1.24.4 (FreeBSD msun complex
   math in `ncnn_complex_math.hpp`), PyMatting (MIT), PyTorch TensorIterator stride order, resize crate 0.8.3,
-  zhang_hilbert 0.1.1, avx2_mathfun, CPython 3.11.5 `random.py`, pybind11 2.13.6, fpng 1.0.6 (Unlicense).
+  mergian/dpid (BSD-3-Clause, `dpid_ops.c`), zhang_hilbert 0.1.1, avx2_mathfun, CPython 3.11.5 `random.py`, pybind11 2.13.6, fpng 1.0.6 (Unlicense).
 - Vendored: `native/third_party/fpng` (`PROVENANCE.md`: hashes, Unlicense, size caps),
   `native/third_party/pybind11`, `native/third_party/onnxruntime` (C API header, `LICENSE`), and the image codecs
   `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff,openexr,imath,libdeflate,zstd,openjph}` (upstream

@@ -127,7 +127,8 @@ def test_nearest_fixed_point_ties(source_width, out_width):
     )
 
 
-@pytest.mark.parametrize("filter_value", [f.value for f in current.ResizeFilter])
+# The reference's filters: DPID, which it lacks, is test_dpid.py's.
+@pytest.mark.parametrize("filter_value", [f.value for f in reference.ResizeFilter])
 @pytest.mark.parametrize("layout", LAYOUTS)
 @pytest.mark.parametrize("dimensions", [(3, 5), (13, 19), (11, 7)])
 @pytest.mark.parametrize("gamma", [False, True])
@@ -247,7 +248,7 @@ def test_border_median_boundaries(selection, channels, shape, kind):
 def test_resize_to_side_adapter(side, condition, target):
     source = image()
     actual = side_node.resize_to_side_node(
-        source, target, side, condition, current.ResizeFilter.NEAREST
+        source, target, side, condition, current.ResizeFilter.NEAREST, 1.0
     )
     expected = side_node_ref.resize_to_side_node(
         source,
@@ -271,6 +272,7 @@ def test_resize_adapter(mode, separate):
         3,
         current.ResizeFilter.LINEAR,
         separate,
+        1.0,
     )
     expected = resize_node_ref.resize_node(
         source,
@@ -407,6 +409,24 @@ def test_parallel_calls_and_large_worker_ranges():
         list(executor.map(run, range(24)))
 
 
+# The nodes that gained DPID's Lambda (2026-10-21) as their last input and parameter.
+DPID_NODES = {"resize_node.py", "resize_to_side.py"}
+
+
+def without_dpid(function: ast.FunctionDef) -> None:
+    """Removes the node's Lambda group (its last input) and dpid_lambda (its last
+    parameter), asserting both are there."""
+    parameter = function.args.args.pop()
+    assert parameter.arg == "dpid_lambda"
+    (register,) = function.decorator_list
+    assert isinstance(register, ast.Call)
+    (inputs,) = [k.value for k in register.keywords if k.arg == "inputs"]
+    assert isinstance(inputs, ast.List)
+    group = ast.unparse(inputs.elts.pop())
+    assert group.startswith("if_enum_group(") and "ResizeFilter.DPID)(" in group
+    assert "NumberInput('Lambda'" in group
+
+
 @pytest.mark.parametrize(
     "original,relative",
     [
@@ -425,6 +445,8 @@ def test_installed_metadata_unchanged(original, relative):
                 for node in b.body
                 if isinstance(node, ast.FunctionDef) and node.name == before.name
             )
+            if original in DPID_NODES:
+                without_dpid(after)
             assert ast.dump(before.args) == ast.dump(after.args)
             assert [ast.dump(d) for d in before.decorator_list] == [
                 ast.dump(d) for d in after.decorator_list

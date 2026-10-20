@@ -117,7 +117,7 @@ add_library(chainner_native SHARED
     src/canny_ops.cpp src/inpaint_ops.cpp src/pixel_art_ops.cpp
     src/bilateral_ops.c src/denoise_ops.cpp src/onnx_runtime.cpp src/framework_image_ops.cpp src/framework_shared_ops.cpp
     src/clipboard_ops.c src/image_setup_ops.c src/scratch.c src/planar_ops.c src/descale_ops.c
-    src/yuv_planes_ops.c src/plane_resample_ops.c
+    src/yuv_planes_ops.c src/plane_resample_ops.c src/dpid_ops.c
     # ISA units (SP4 spec 4.3): export-free, one file per kernel family and level, compiled
     # for that level only and reached through a C entry's ISA dispatch, which runs a unit
     # only when the CPU has its level (src/isa.c) or CHAINNER_C_ISA caps it lower.

@@ -4,6 +4,7 @@
 
 #include "../kernel_status.hpp"
 #include "chainner_ext_kernels.h"
+#include "run_kernels.h"
 
 #include <charconv>
 #include <cmath>
@@ -114,6 +115,22 @@ MutableImage filtered(const Image &image, uint64_t width, uint64_t height, int64
     return out;
 }
 
+/* native_resample.dpid (dimensions positive): lambda's check, then filtered's. */
+MutableImage dpid(const Image &image, uint64_t width, uint64_t height, double lambda, bool separate_alpha,
+                  bool gamma_correction)
+{
+    nonempty(image);
+    if (!std::isfinite(lambda) || lambda < 0)
+        throw NodeError("ValueError", "DPID's lambda must be a finite number of at least 0");
+    check_target(width, height);
+    MutableImage out = MutableImage::allocate(int32_t(height), int32_t(width), image.channels);
+    if (width == 0 || height == 0) return out;
+    check(cn_resample_dpid(image.data, out.data(), size_t(image.height), size_t(image.width), size_t(image.channels),
+                           size_t(height), size_t(width), float(lambda), separate_alpha ? 1 : 0,
+                           gamma_correction ? 1 : 0));
+    return out;
+}
+
 }  // namespace
 
 Extent Extent::of(int64_t value)
@@ -133,7 +150,7 @@ Extent Extent::round_half_up(double value)
 }
 
 Value resize(const Image &image, Extent width, Extent height, int64_t filter, bool separate_alpha,
-             bool gamma_correction)
+             bool gamma_correction, double dpid_lambda)
 {
     check_memory(width, height, image.channels);
     /* A dimension beyond 2^63 compares as UINT64_MAX: above every image size and coordinate limit. */
@@ -141,7 +158,8 @@ Value resize(const Image &image, Extent width, Extent height, int64_t filter, bo
     uint64_t new_h = height.exponent ? std::numeric_limits<uint64_t>::max() : height.mantissa;
     uint64_t w = uint64_t(image.width), h = uint64_t(image.height);
     if (filter == filter_auto) filter = new_w > w || new_h > h ? filter_lanczos : filter_box;
-    if (new_w == w && new_h == h && (filter == filter_nearest || filter == filter_box)) return image;
+    if (new_w == w && new_h == h && (filter == filter_nearest || filter == filter_box || filter == filter_dpid))
+        return image;
     if (filter == filter_nearest) {
         /* The original binding returns HWC even for a 2D grayscale input. */
         if (new_w == 0 || new_h == 0) return std::move(filtered(image, new_w, new_h, filter_box, false)).publish();
@@ -155,7 +173,10 @@ Value resize(const Image &image, Extent width, Extent height, int64_t filter, bo
         check(cn_resample_alpha(image.data, alpha.data(), size_t(image.height) * size_t(image.width), 0));
         source = std::move(alpha).publish();
     }
-    MutableImage out = filtered(source, new_w, new_h, filter, gamma_correction);
+    /* Premultiplied RGBA carries alpha with DPID's colour weights. */
+    MutableImage out = filter == filter_dpid
+                           ? dpid(source, new_w, new_h, dpid_lambda, separate_alpha, gamma_correction)
+                           : filtered(source, new_w, new_h, filter, gamma_correction);
     size_t pixels = size_t(out.height()) * size_t(out.width());
     if (premultiplied && pixels) check(cn_resample_alpha(out.data(), out.data(), pixels, 1));
     return std::move(out).publish();

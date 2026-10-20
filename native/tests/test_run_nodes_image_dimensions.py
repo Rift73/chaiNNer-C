@@ -189,7 +189,8 @@ def test_noop_returns_the_input_itself():
 
 SIDES = ["width", "height", "shorter side", "longer side"]
 CONDITIONS = ["both", "upscale", "downscale"]
-FILTERS = [-1, 0, 4, 2, 3, 1, 5, 6, 7, 8, 9, 10, 11]
+FILTERS = [-1, 0, 4, 2, 3, 1, 5, 6, 7, 8, 9, 10, 11, 12]
+DPID = 12
 
 
 @pytest.mark.parametrize(("size", "channels"), [(s, c) for s in SIZES[:3] for c in CHANNELS])
@@ -198,20 +199,31 @@ FILTERS = [-1, 0, 4, 2, 3, 1, 5, 6, 7, 8, 9, 10, 11]
 @pytest.mark.parametrize("side", SIDES)
 def test_resize_to_side_matches(side, condition, target, size, channels):
     img = make(("to side", side, condition, target), size, channels)
-    for resize_filter in FILTERS if target == 17 else [-1, 4]:
-        assert_native_matches("chainner:image:resize_to_side", [img, target, side, condition, resize_filter])
+    for resize_filter in FILTERS if target == 17 else [-1, 4, DPID]:
+        assert_native_matches("chainner:image:resize_to_side", [img, target, side, condition, resize_filter, 1.0])
+
+
+@pytest.mark.parametrize("dpid_lambda", [0.0, 0.35, 2.5, 10.0])
+@pytest.mark.parametrize("channels", CHANNELS)
+def test_resize_to_side_dpid_lambda_matches(channels, dpid_lambda):
+    img = make(("to side dpid", dpid_lambda), (64, 257), channels)
+    for target, side in [(17, "width"), (40, "height"), (100, "longer side")]:
+        outcome = assert_native_matches("chainner:image:resize_to_side", [img, target, side, "both", DPID, dpid_lambda])
+        assert outcome[0] == "outputs"
 
 
 def test_resize_to_side_edge_cases():
     for shape in EMPTY_SHAPES:
         for side in SIDES:
-            assert_native_matches("chainner:image:resize_to_side", [np.zeros(shape, np.float32), 8, side, "both", -1])
+            for resize_filter in (-1, DPID):
+                inputs = [np.zeros(shape, np.float32), 8, side, "both", resize_filter, 1.0]
+                assert_native_matches("chainner:image:resize_to_side", inputs)
     img = image(6, 3, 4, 3)
     # The enforce rounds through a float: 2**53 + 1 arrives as 2**53 (computed), 2**53 + 2 as itself (declined).
-    assert_native_matches("chainner:image:resize_to_side", [img, 2**53 + 1, "width", "both", 0])
-    assert_native_matches("chainner:image:resize_to_side", [img, 2**53 + 2, "width", "both", 0], declines=True)
-    assert_native_matches("chainner:image:resize_to_side", [img, 2**53 + 2, "height", "upscale", 0], declines=True)
-    assert_native_matches("chainner:image:resize_to_side", [img, 2**40, "width", "downscale", 0])
+    assert_native_matches("chainner:image:resize_to_side", [img, 2**53 + 1, "width", "both", 0, 1.0])
+    assert_native_matches("chainner:image:resize_to_side", [img, 2**53 + 2, "width", "both", 0, 1.0], declines=True)
+    assert_native_matches("chainner:image:resize_to_side", [img, 2**53 + 2, "height", "upscale", 0, 1.0], declines=True)
+    assert_native_matches("chainner:image:resize_to_side", [img, 2**40, "width", "downscale", 0, 1.0])
 
 
 # (width, height, b, c, taps, blur, left, top, source width, source height)

@@ -22,10 +22,11 @@ def resize_inputs(
     target: tuple[int, int],
     filter_value: int,
     separate_alpha: bool,
+    dpid_lambda: float = 1.0,
 ) -> list[object]:
     """Resize's inputs; target is (width, height) for Absolute."""
     width, height = target
-    return [img, mode, scale, width, height, filter_value, separate_alpha]
+    return [img, mode, scale, width, height, filter_value, separate_alpha, dpid_lambda]
 
 
 @pytest.mark.parametrize("separate_alpha", [False, True])
@@ -54,9 +55,27 @@ def test_resize_absolute_matches(channels, target, filter_value, separate_alpha)
     assert_native_matches(RESIZE, inputs)
 
 
+@pytest.mark.parametrize("dpid_lambda", [0.0, 0.35, 2.5, 10.0])
+@pytest.mark.parametrize("separate_alpha", [False, True])
+@pytest.mark.parametrize("target", [(5, 3), (31, 17), (2, 40), (13, 9), (64, 64)])
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_resize_dpid_lambda_matches(channels, target, separate_alpha, dpid_lambda):
+    key = ("resize dpid", channels, target, separate_alpha, dpid_lambda)
+    img = image(seed_of(*key), 37, 53, channels)
+    inputs = resize_inputs(
+        img, ABSOLUTE, 100, target, ResizeFilter.DPID.value, separate_alpha, dpid_lambda
+    )
+    assert assert_native_matches(RESIZE, inputs)[0] == "outputs"
+
+
 @pytest.mark.parametrize(
     "filter_value",
-    [ResizeFilter.NEAREST.value, ResizeFilter.BOX.value, ResizeFilter.AUTO.value],
+    [
+        ResizeFilter.NEAREST.value,
+        ResizeFilter.BOX.value,
+        ResizeFilter.AUTO.value,
+        ResizeFilter.DPID.value,
+    ],
 )
 @pytest.mark.parametrize("channels", [1, 3, 4])
 def test_resize_same_size_returns_the_input_itself(channels, filter_value):
