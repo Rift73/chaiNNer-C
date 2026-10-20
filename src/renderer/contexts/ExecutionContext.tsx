@@ -281,14 +281,15 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                 executionStatus = NodeExecutionStatus.FINISHED as const;
                 executionTime = data.executionTime;
             } else if (type === 'node-broadcast') {
-                broadcastData = data.data;
-                types = data.types;
-                // An overridden node's sequence follows from the overriding values (Run this
-                // frame: a range of one frame), which its own inputs do not have. Its sequence
-                // types are left out, so the type of its sequence follows from its own inputs.
-                sequenceTypes = overriddenNodesRef.current.has(nodeId)
-                    ? undefined
-                    : data.sequenceTypes ?? undefined;
+                // An overridden node's broadcast follows from the overriding values (Run this
+                // frame: a range of one frame), which its own inputs do not have, and would be
+                // kept under its own inputs' hash. It is left out: the node keeps the outputs
+                // and types of its own inputs.
+                if (!overriddenNodesRef.current.has(nodeId)) {
+                    broadcastData = data.data;
+                    types = data.types;
+                    sequenceTypes = data.sequenceTypes ?? undefined;
+                }
             } else {
                 progress = data;
             }
@@ -461,7 +462,13 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
 
             // check for static errors
             const invalidNodes = nodes.flatMap((node) => {
-                const functionInstance = typeStateRef.current.functions.get(node.data.id);
+                // The editor's types describe a node's own values, not the overriding ones (a
+                // saved range of In after Out is invalid, the overriding one-frame range is
+                // not): an overridden node is checked without them, and the backend checks the
+                // values it runs.
+                const functionInstance = overrides.has(node.data.id)
+                    ? undefined
+                    : typeStateRef.current.functions.get(node.data.id);
                 const schema = schemata.get(node.data.schemaId);
                 const { name } = schema;
                 const category = categories.get(schema.category)?.name ?? schema.category;
