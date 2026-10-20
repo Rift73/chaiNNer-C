@@ -10,8 +10,9 @@ import {
     BackendWorkerStatusResponse,
     CancelError,
 } from '../../common/Backend';
-import { EdgeData, NodeData, OutputId } from '../../common/common-types';
+import { EdgeData, InputData, NodeData, OutputId } from '../../common/common-types';
 import { formatExecutionErrorMessage } from '../../common/formatExecutionErrorMessage';
+import { withInputOverrides } from '../../common/input-override-common';
 import { log } from '../../common/log';
 import { checkFeatures } from '../../common/nodes/checkFeatures';
 import { checkNodeValidity } from '../../common/nodes/checkNodeValidity';
@@ -83,6 +84,12 @@ export interface NodeProgress {
 
 interface ExecutionContextValue {
     run: () => Promise<void>;
+    /**
+     * Runs the chain as `run` does, with the given input values of the given nodes (by node id)
+     * for this run only: the chain in the editor, which is saved, and the nodes' input hashes
+     * keep their values. Does nothing unless the executor is ready.
+     */
+    runWithOverrides: (overrides: ReadonlyMap<string, InputData>) => Promise<void>;
     pause: () => Promise<void>;
     kill: () => Promise<void>;
     status: ExecutionStatus;
@@ -256,6 +263,8 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     }, [status, clearNodeStatusMap]);
 
     const executingIteratorNodesRef = useRef<ReadonlySet<string>>(EMPTY_SET);
+    // The nodes whose inputs the running chain overrides (runWithOverrides).
+    const overriddenNodesRef = useRef<ReadonlySet<string>>(EMPTY_SET);
 
     const processSingleNode = (nodeId: string, events: NodeEvents[]) => {
         let executionStatus;
@@ -274,7 +283,12 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             } else if (type === 'node-broadcast') {
                 broadcastData = data.data;
                 types = data.types;
-                sequenceTypes = data.sequenceTypes ?? undefined;
+                // An overridden node's sequence follows from the overriding values (Run this
+                // frame: a range of one frame), which its own inputs do not have. Its sequence
+                // types are left out, so the type of its sequence follows from its own inputs.
+                sequenceTypes = overriddenNodesRef.current.has(nodeId)
+                    ? undefined
+                    : data.sequenceTypes ?? undefined;
             } else {
                 progress = data;
             }
@@ -419,120 +433,127 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         }
     }, [status, nodeChanges, edgeChanges, sendToast]);
 
-    const runNodes = useCallback(async () => {
-        const { nodes, edges, report } = optimizeChain(
-            getNodes(),
-            getEdges(),
-            schemata,
-            passthrough
-        );
-
-        // show an error if there are no nodes to run
-        if (nodes.length === 0) {
-            let message;
-            if (report.removedSideEffectFree > 0) {
-                message =
-                    'There are no nodes that have an effect. Try to view or output images/files.';
-            } else if (report.removedDisabled > 0) {
-                message = 'All nodes are disabled. There are no nodes to run.';
-            } else {
-                message = 'There are no nodes to run.';
-            }
-            sendAlert({ type: AlertType.ERROR, message });
-            return;
-        }
-
-        // check for static errors
-        const invalidNodes = nodes.flatMap((node) => {
-            const functionInstance = typeStateRef.current.functions.get(node.data.id);
-            const schema = schemata.get(node.data.schemaId);
-            const { name } = schema;
-            const category = categories.get(schema.category)?.name ?? schema.category;
-
-            const validity = bothValid(
-                checkFeatures(schema.features, features, featureStates),
-                checkNodeValidity({
-                    inputData: node.data.inputData,
-                    connectedInputs: getConnectedInputs(node.id, edges),
-                    schema,
-                    functionInstance,
-                    chainLineage: chainLineageRef.current,
-                    nodeId: node.id,
-                })
+    const runNodes = useCallback(
+        async (overrides: ReadonlyMap<string, InputData>) => {
+            // The overriding values go into copies of the nodes: the editor's nodes and their
+            // input hashes keep theirs.
+            const { nodes, edges, report } = optimizeChain(
+                withInputOverrides(getNodes(), overrides),
+                getEdges(),
+                schemata,
+                passthrough
             );
-            if (validity.isValid) return [];
 
-            return [`• ${category}: ${name}: ${validity.reason}`];
-        });
-        if (invalidNodes.length > 0) {
-            const reasons = invalidNodes.join('\n');
-            sendAlert({
-                type: AlertType.ERROR,
-                message: `There are invalid nodes in the editor. Please fix them before running.\n${reasons}`,
-            });
-            return;
-        }
-
-        // find iterator nodes for later
-        const iteratorNodeIds = new Set(
-            nodes
-                .filter((n) => schemata.get(n.data.schemaId).kind === 'generator')
-                .map((n) => n.data.id)
-        );
-        executingIteratorNodesRef.current = iteratorNodeIds;
-        setChainProgress(getInitialChainProgress(nodes, edges, schemata));
-
-        try {
-            setStatus(ExecutionStatus.RUNNING);
-
-            const data = toBackendJson(nodes, edges, schemata);
-            const response = await backend.run({
-                data,
-                options: packageSettings,
-                sendBroadcastData: true,
-            });
-            if (response.type === 'error') {
-                // no need to alert here, because the error has already been handled by the queue
+            // show an error if there are no nodes to run
+            if (nodes.length === 0) {
+                let message;
+                if (report.removedSideEffectFree > 0) {
+                    message =
+                        'There are no nodes that have an effect. Try to view or output images/files.';
+                } else if (report.removedDisabled > 0) {
+                    message = 'All nodes are disabled. There are no nodes to run.';
+                } else {
+                    message = 'There are no nodes to run.';
+                }
+                sendAlert({ type: AlertType.ERROR, message });
+                return;
             }
-            if (response.type === 'already-running') {
+
+            // check for static errors
+            const invalidNodes = nodes.flatMap((node) => {
+                const functionInstance = typeStateRef.current.functions.get(node.data.id);
+                const schema = schemata.get(node.data.schemaId);
+                const { name } = schema;
+                const category = categories.get(schema.category)?.name ?? schema.category;
+
+                const validity = bothValid(
+                    checkFeatures(schema.features, features, featureStates),
+                    checkNodeValidity({
+                        inputData: node.data.inputData,
+                        connectedInputs: getConnectedInputs(node.id, edges),
+                        schema,
+                        functionInstance,
+                        chainLineage: chainLineageRef.current,
+                        nodeId: node.id,
+                    })
+                );
+                if (validity.isValid) return [];
+
+                return [`• ${category}: ${name}: ${validity.reason}`];
+            });
+            if (invalidNodes.length > 0) {
+                const reasons = invalidNodes.join('\n');
                 sendAlert({
                     type: AlertType.ERROR,
-                    message: `Cannot start because a previous executor is still running.`,
+                    message: `There are invalid nodes in the editor. Please fix them before running.\n${reasons}`,
                 });
+                return;
             }
-        } catch (err: unknown) {
-            if (!(err instanceof CancelError)) {
-                sendAlert({
-                    type: AlertType.ERROR,
-                    message: `An unexpected error occurred: ${String(err)}`,
+
+            // find iterator nodes for later
+            const iteratorNodeIds = new Set(
+                nodes
+                    .filter((n) => schemata.get(n.data.schemaId).kind === 'generator')
+                    .map((n) => n.data.id)
+            );
+            executingIteratorNodesRef.current = iteratorNodeIds;
+            overriddenNodesRef.current = new Set(overrides.keys());
+            setChainProgress(getInitialChainProgress(nodes, edges, schemata));
+
+            try {
+                setStatus(ExecutionStatus.RUNNING);
+
+                const data = toBackendJson(nodes, edges, schemata);
+                const response = await backend.run({
+                    data,
+                    options: packageSettings,
+                    sendBroadcastData: true,
                 });
-                setTimeout(() => {
-                    clearNodeStatusMap();
-                }, 1000);
+                if (response.type === 'error') {
+                    // no need to alert here, because the error has already been handled by the queue
+                }
+                if (response.type === 'already-running') {
+                    sendAlert({
+                        type: AlertType.ERROR,
+                        message: `Cannot start because a previous executor is still running.`,
+                    });
+                }
+            } catch (err: unknown) {
+                if (!(err instanceof CancelError)) {
+                    sendAlert({
+                        type: AlertType.ERROR,
+                        message: `An unexpected error occurred: ${String(err)}`,
+                    });
+                    setTimeout(() => {
+                        clearNodeStatusMap();
+                    }, 1000);
+                }
+            } finally {
+                nodeEventBacklog.processAll();
+                overriddenNodesRef.current = EMPTY_SET;
+                clearNodeStatusMap();
+                setStatus(ExecutionStatus.READY);
+                clearManualTypes(iteratorNodeIds);
             }
-        } finally {
-            nodeEventBacklog.processAll();
-            clearNodeStatusMap();
-            setStatus(ExecutionStatus.READY);
-            clearManualTypes(iteratorNodeIds);
-        }
-    }, [
-        getNodes,
-        getEdges,
-        schemata,
-        categories,
-        sendAlert,
-        typeStateRef,
-        passthrough,
-        chainLineageRef,
-        features,
-        featureStates,
-        backend,
-        packageSettings,
-        clearNodeStatusMap,
-        nodeEventBacklog,
-        clearManualTypes,
-    ]);
+        },
+        [
+            getNodes,
+            getEdges,
+            schemata,
+            categories,
+            sendAlert,
+            typeStateRef,
+            passthrough,
+            chainLineageRef,
+            features,
+            featureStates,
+            backend,
+            packageSettings,
+            clearNodeStatusMap,
+            nodeEventBacklog,
+            clearManualTypes,
+        ]
+    );
 
     const resume = useCallback(async () => {
         try {
@@ -558,10 +579,22 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         if (status === ExecutionStatus.PAUSED) {
             await resume();
         } else {
-            await runNodes();
+            await runNodes(EMPTY_MAP);
             setExecutionNumber((prev) => prev + 1);
         }
     }, [isBackendReady, resume, runNodes, status, setExecutionNumber]);
+
+    const runWithOverrides = useCallback(
+        async (overrides: ReadonlyMap<string, InputData>) => {
+            if (!isBackendReady || status !== ExecutionStatus.READY) {
+                // a paused run is not resumed with other values, and a run is not started twice
+                return;
+            }
+            await runNodes(overrides);
+            setExecutionNumber((prev) => prev + 1);
+        },
+        [isBackendReady, runNodes, status, setExecutionNumber]
+    );
 
     const pause = useCallback(async () => {
         try {
@@ -670,6 +703,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
 
     const value = useMemoObject<ExecutionContextValue>({
         run,
+        runWithOverrides,
         pause,
         kill,
         status,
