@@ -117,11 +117,17 @@ class NodeGroup:
         suggestions: list[SpecialSuggestion] | None = None,
         keywords: list[str] | None = None,
         generated: bool = False,
+        temporal_context: tuple[int, int] | None = None,
     ):
         """Registers a node. `keywords` are more words node search finds it by (a
         generated node's method names). `generated`: the node is made at run time,
         several per file, so the naming check (one node per file named after it) does
-        not apply."""
+        not apply. `temporal_context`: the (before, after) neighbours the node needs in
+        a generator loop (NodeData.temporal_context)."""
+        if temporal_context is not None:
+            assert len(temporal_context) == 2 and all(
+                isinstance(count, int) and count >= 0 for count in temporal_context
+            ), f"{schema_id}: temporal_context is two counts >= 0"
         if not isinstance(description, str):
             description = "\n\n".join(description)
 
@@ -197,6 +203,7 @@ class NodeGroup:
                 node_context=node_context,
                 features=features,
                 run=wrapped_func,
+                temporal_context=temporal_context,
             )
 
             run_check(

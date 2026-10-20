@@ -16,6 +16,19 @@ class Generator(Generic[I]):
     metadata: object | None = None
     # Files the iterator reads per item (read-ahead safety); None = unknown.
     source_paths: tuple[Path, ...] | None = None
+    # The number of the first item in its source (Load Video's Range: In); the loop's
+    # iteration views count from it.
+    index_base: int = 0
+    # The item's number when the generator runs exactly one chosen item (Load Video's
+    # "Run this frame"), else None; nodes of the loop read it as NodeContext.chosen_item.
+    chosen_item: int | None = None
+    # Context frames: given the wanted (before, after), a fresh iterable over the items
+    # index_base - b' .. index_base + expected_length + a' - 1 and the b', a' it yields,
+    # clipped to the source. The loop calls it, instead of the supplier, when one of its
+    # nodes declares a temporal context (NodeData.temporal_context).
+    context: Callable[[int, int], tuple[Iterable[I | Exception], int, int]] | None = (
+        None
+    )
 
     def with_fail_fast(self, fail_fast: bool):
         self.fail_fast = fail_fast
@@ -23,6 +36,21 @@ class Generator(Generic[I]):
 
     def with_metadata(self, metadata: object):
         self.metadata = metadata
+        return self
+
+    def with_range(
+        self,
+        index_base: int,
+        chosen_item: int | None = None,
+        context: Callable[[int, int], tuple[Iterable[I | Exception], int, int]]
+        | None = None,
+    ):
+        """The generator reads items index_base .. index_base + expected_length - 1 of
+        its source: their numbers, the chosen item of a one-item run, and the supplier
+        of context frames around them (see the fields)."""
+        self.index_base = index_base
+        self.chosen_item = chosen_item
+        self.context = context
         return self
 
     @staticmethod

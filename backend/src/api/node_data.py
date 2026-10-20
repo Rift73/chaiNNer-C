@@ -198,6 +198,10 @@ class NodeData:
     # More words node search finds the node by. Last, with a default, so that a node
     # made without any (most nodes) needs none.
     keywords: list[str] = field(default_factory=list)
+    # The neighbours a temporal node needs in a generator loop, (before, after): a loop
+    # whose generator reads only part of its source (Load Video's Range) also reads that
+    # many items around it as context frames. None: no temporal context.
+    temporal_context: tuple[int, int] | None = None
 
     @property
     def single_iterable_input(self) -> IteratorInputInfo:
