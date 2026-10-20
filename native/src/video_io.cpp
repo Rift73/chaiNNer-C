@@ -914,27 +914,24 @@ public:
 };
 
 // Yields (frame, index, Y, U, V) from the loader's stream_items (video.py): frames
-// start..stop - 1 (to the end with stop None), each with its number in the video. In a
-// Range (`last`, its Out, not None) the first item checks In..Out against the frame count
-// (exact where PyAV reads the file, the probe's estimate on the CLI path), and a video
-// that ends before Out raises past the end. `ready`, not None, is a one-frame Range's
-// frame already decoded (the Preview's), yielded without a read.
+// start..stop - 1 (to the end with stop None, and as a slice: Out is an upper bound, as
+// the old Limit was), each with its number in the video. A Range (`last`, its Out, not
+// None) fails at its first item when In is after Out, and when the video ends before In
+// (stream_items' own error where it starts at In; here where context frames come first).
+// `ready`, not None, is a one-frame Range's frame already decoded (the Preview's),
+// yielded without a read.
 class IndexedFrames {
-    O loader_,start_,stop_,first_,last_,count_,ready_,iterator_=py::none(),index_;
+    O loader_,start_,stop_,first_,last_,ready_,iterator_=py::none(),index_;
     bool closed_=false,running_=false;
     void finish() {
         if(closed_)return;
         closed_=true;
         if(!iterator_.is_none() && py::hasattr(iterator_,"close"))iterator_.attr("close")();
     }
-    // video.py's past-the-end error for Out, in a video of `count` frames.
-    [[noreturn]] void past_the_end(const O&count) const {
-        graphpy::raise(PyExc_ValueError,py::str("frame {} is past the end (the video has {} frames)").attr("format")(last_,count));
-    }
 public:
-    IndexedFrames(O loader,O start,O stop,O first,O last,O count,O ready)
+    IndexedFrames(O loader,O start,O stop,O first,O last,O ready)
         :loader_(std::move(loader)),start_(std::move(start)),stop_(std::move(stop)),first_(std::move(first)),
-         last_(std::move(last)),count_(std::move(count)),ready_(std::move(ready)),index_(start_) {}
+         last_(std::move(last)),ready_(std::move(ready)),index_(start_) {}
     void close() {
         if(running_)fail(PyExc_ValueError,"generator already executing");
         // CPython 3.14.8 gen_close: the original supplier is suspended at a yield
@@ -951,11 +948,8 @@ public:
         struct Running {bool&v;explicit Running(bool&b):v(b){v=true;}~Running(){v=false;}} guard(running_);
         try {
             if(iterator_.is_none()) {
-                if(!last_.is_none()) {
-                    if(cmp(first_,last_,Py_GT))
-                        graphpy::raise(PyExc_ValueError,py::str("In (frame {}) is after Out (frame {}).").attr("format")(first_,last_));
-                    if(cmp(last_,count_,Py_GE))past_the_end(count_);
-                }
+                if(!last_.is_none() && cmp(first_,last_,Py_GT))
+                    graphpy::raise(PyExc_ValueError,py::str("In (frame {}) is after Out (frame {}).").attr("format")(first_,last_));
                 iterator_=builtin("iter")(ready_.is_none()
                     ?O(loader_.attr("stream_items")(start_,stop_))
                     :O(py::make_tuple(py::make_tuple(ready_,py::none(),py::none(),py::none()))));
@@ -963,8 +957,10 @@ public:
             O item;
             try {item=builtin("next")(iterator_);}
             catch(const py::error_already_set&e) {
-                // The CLI path checked Out against the probe's estimate.
-                if(e.matches(PyExc_StopIteration) && !last_.is_none() && cmp(index_,last_,Py_LE))past_the_end(index_);
+                // The context frames before In were the video's last: video.py's past-the-end
+                // error for In.
+                if(e.matches(PyExc_StopIteration) && !last_.is_none() && cmp(index_,first_,Py_LE))
+                    graphpy::raise(PyExc_ValueError,py::str("frame {} is past the end (the video has {} frames)").attr("format")(first_,index_));
                 throw;
             }
             O result=py::make_tuple(item[py::int_(0)],index_,item[py::int_(1)],item[py::int_(2)],item[py::int_(3)]);
@@ -985,27 +981,35 @@ public:
 // `settings` (video.py ReadSettings) carries Load Video's Mode, RGB precision and colour
 // choices; the generator's metadata, a LoadedVideo, gives the node's item types and
 // Colour outputs. `ranged`: Frames is Range, the frames `first`..`last` (In..Out, both
-// included), else All; `seek`: the Preview's frame. Returns the generator, the video's
-// directory and name, its FPS and audio stream, the Preview and the Frame Count. A Range
-// the video does not hold fails at its first item, so the node still reports its Preview
-// and Frame Count, by which the seek bar sets the Range again.
+// included; Out past the end reads to the end), else All; `seek`: the Preview's frame.
+// Returns the generator, the video's directory and name, its FPS and audio stream, the
+// Preview and the Frame Count. A Range that fails (In after Out or past the end) fails
+// at its first item, so the node still reports its Preview and Frame Count, by which the
+// seek bar sets the Range again.
 O load_video(const py::dict&g,const O&context,const O&path,const O&ranged,const O&first,const O&last,const O&seek,const O&settings) {
     O parts=global(g,"split_file_path")(path);
     O loader=global(g,"VideoLoader")(path,global(g,"FFMpegEnv").attr("get_integrated")(context.attr("storage_dir")),settings);
     O fps=loader.attr("metadata").attr("fps");
-    // Exact where PyAV reads the file, else the probe's estimate (video.py frame_count).
-    O count=loader.attr("frame_count")();
+    // Exact where PyAV reads the file, else (None) the probe's estimate counts, which the
+    // CLI's renumbered frames can pass or fall short of (video.py frame_count).
+    O exact=loader.attr("exact_frame_count")();
+    O count=exact.is_none()?O(loader.attr("metadata").attr("frame_count")):exact;
     // A Seek past the end (the node's video changed to a shorter one) shows the last frame.
     O shown=builtin("max")(py::int_(0),builtin("min")(seek,sub(count,py::int_(1))));
     O preview=global(g,"load_preview")(context.attr("node_id"),loader,shown);
     O none=py::none(),base=py::int_(0),stop=none,checked=none,chosen=none,ready=none,length=count,audio;
     if(truth(ranged)) {
         base=first;stop=add(last,py::int_(1));checked=last;
-        length=builtin("max")(py::int_(0),sub(stop,first));
+        // The frames In..Out the video holds by its count (on the CLI path, by the estimate:
+        // the loop ends when the stream does).
+        O read_last=builtin("min")(last,sub(count,py::int_(1)));
+        length=builtin("max")(py::int_(0),sub(add(read_last,py::int_(1)),first));
         // The audio of the frames read, so the mux copies no more of it (instant-exec gate
-        // R7): from In / fps for (Out - In + 1) / fps.
+        // R7): from In / fps for their count / fps; to Out where the count is an estimate
+        // (audio past the end is not there to copy).
+        O frames=exact.is_none()?builtin("max")(py::int_(0),sub(stop,first)):length;
         audio=cmp(fps,py::int_(0),Py_GT)
-            ?O(loader.attr("get_audio_stream")(div(length,fps),div(first,fps)))
+            ?O(loader.attr("get_audio_stream")(div(frames,fps),div(first,fps)))
             :O(loader.attr("get_audio_stream")());
         if(eq(first,last)) {
             chosen=first;
@@ -1017,14 +1021,14 @@ O load_video(const py::dict&g,const O&context,const O&path,const O&ranged,const 
             }
         }
     } else audio=loader.attr("get_audio_stream")();
-    O supplier=py::cpp_function([loader,context,base,stop,first,checked,count,ready](){
-        auto it=std::make_shared<IndexedFrames>(loader,base,stop,first,checked,count,ready);
+    O supplier=py::cpp_function([loader,context,base,stop,first,checked,ready](){
+        auto it=std::make_shared<IndexedFrames>(loader,base,stop,first,checked,ready);
         context.attr("add_cleanup")(py::cpp_function([it](){it->close();}));
         return py::cast(it);
     });
     // The context frames around a Range (api/iter.py Generator.context): up to `before`
-    // frames before In and `after` after Out, as many as the video holds by its count.
-    // All reads every frame: none.
+    // frames before In and `after` after Out, as many as the video holds by its count
+    // (none after an Out past the end). All reads every frame: none.
     O around=py::cpp_function([loader,context,ranged,base,stop,first,checked,count](const O&before,const O&after){
         O b=py::int_(0),a=py::int_(0),start=base,end=stop;
         if(truth(ranged)) {
@@ -1032,7 +1036,7 @@ O load_video(const py::dict&g,const O&context,const O&path,const O&ranged,const 
             a=builtin("max")(py::int_(0),builtin("min")(after,sub(sub(count,py::int_(1)),checked)));
             start=sub(first,b);end=add(stop,a);
         }
-        auto it=std::make_shared<IndexedFrames>(loader,start,end,first,checked,count,py::none());
+        auto it=std::make_shared<IndexedFrames>(loader,start,end,first,checked,py::none());
         context.attr("add_cleanup")(py::cpp_function([it](){it->close();}));
         return py::make_tuple(py::cast(it),b,a);
     });

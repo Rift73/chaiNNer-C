@@ -1765,13 +1765,16 @@ def test_faststart_moved_to_the_mux_writes_the_final_file_with_it(source_audio):
         (0, 0, {"t": 1}),
         (1, 2, {"ss": 1, "t": 2}),
         (3, 3, {"ss": 3, "t": 1}),
+        (0, 9, {"t": 10}),
     ],
 )
 def test_a_range_cuts_the_audio(first, last, cut):
     # instant-exec gate R7: the mux reads the source's audio only for as long as the
     # frames read last, from the first one's time: the input's -ss In / fps (from the
-    # start, none) and -t (Out - In + 1) / fps. All keeps the whole audio, as before. (A
-    # limit, which this Range replaces, kept it whole when it left no frame out.)
+    # start, none) and -t (Out - In + 1) / fps. The probe's count (4) is an estimate here
+    # (the fake file has no frame index), so an Out past it cuts at Out: audio past the
+    # end is not there to copy. All keeps the whole audio, as before. (A limit, which
+    # this Range replaces, kept it whole when it left no frame out.)
     env = FakeFFmpeg()
     vg = load("native", "video", env)
     g = load("native", "load_video", env)
@@ -2145,11 +2148,11 @@ def test_writer_context_abort_no_mux_and_reaps_after_pipe_error(tmp_path):
     env.processes[0].stdin.close()
 
 
-# A limit reads as the Range 0..limit - 1 (call_load_video). Limits below 1 (which the
-# UI never allowed) and past the probe's 4 frames are a Range's errors now:
+# A limit reads as the Range 0..limit - 1 (call_load_video), Out an upper bound as the
+# limit was. Limits below 1 (which the UI never allowed) make In after Out, an error now:
 # test_a_range_s_frames_and_errors.
 @pytest.mark.parametrize(
-    "use_limit,limit", [(False, 2), (True, 1), (True, 2), (True, 3)]
+    "use_limit,limit", [(False, 2), (True, 1), (True, 2), (True, 3), (True, 10)]
 )
 def test_loader_node_index_limit_audio_and_supplier_reuse(use_limit, limit):
     results = []
@@ -2185,35 +2188,32 @@ def frames_read(items):
     return [(item[0].tobytes()[0], item[1]) for item in items]
 
 
+def past_the_end(n, count):
+    return (
+        "error",
+        ("ValueError", f"frame {n} is past the end (the video has {count} frames)"),
+    )
+
+
+# The probe counts 4 frames and the pipe gives 3, as the CLI's renumbered frames can.
 @pytest.mark.parametrize(
-    "first,last,expected",
+    "first,last,length,expected",
     [
         # Index counts from In, the item's number in the video.
-        (1, 2, ("ok", ((1, 1), (2, 2)))),
-        (1, 1, ("ok", ((1, 1),))),
+        (1, 2, 2, ("ok", ((1, 1), (2, 2)))),
+        (1, 1, 1, ("ok", ((1, 1),))),
         # Checked at the first item, so the node still reports its Frame Count.
-        (2, 1, ("error", ("ValueError", "In (frame 2) is after Out (frame 1)."))),
-        (
-            0,
-            9,
-            (
-                "error",
-                ("ValueError", "frame 9 is past the end (the video has 4 frames)"),
-            ),
-        ),
-        # The probe counts 4 frames and the pipe gives 3, as the CLI's renumbered
-        # frames can: the video ends before Out.
-        (
-            1,
-            3,
-            (
-                "error",
-                ("ValueError", "frame 3 is past the end (the video has 3 frames)"),
-            ),
-        ),
+        (2, 1, 0, ("error", ("ValueError", "In (frame 2) is after Out (frame 1)."))),
+        # Out is an upper bound, as the limit was: past the probe's count, or past the
+        # pipe's end, the video is read to its end; the length is the probe's.
+        (0, 9, 4, ("ok", ((0, 0), (1, 1), (2, 2)))),
+        (1, 3, 3, ("ok", ((1, 1), (2, 2)))),
+        # In past the end fails, naming the frames there are.
+        (3, 5, 1, past_the_end(3, 3)),
+        (5, 6, 0, past_the_end(5, 3)),
     ],
 )
-def test_a_range_s_frames_and_errors(first, last, expected):
+def test_a_range_s_frames_and_errors(first, last, length, expected):
     env = FakeFFmpeg(chunks=[bytes([i] * 12) for i in range(3)])
     vg = load("native", "video", env)
     g = load("native", "load_video", env)
@@ -2222,7 +2222,7 @@ def test_a_range_s_frames_and_errors(first, last, expected):
     outputs = run_load_video(g, context, Path("folder/test.mkv"), first, last)
     generated = outputs[0]
     assert outputs[-1] == 4  # Frame Count: the probe's
-    assert generated.expected_length == max(0, last - first + 1)
+    assert generated.expected_length == length
     assert generated.index_base == first
     assert generated.chosen_item == (first if first == last else None)
     assert outcome(lambda: frames_read(generated.supplier())) == expected
@@ -2243,6 +2243,11 @@ def test_a_range_s_context_frames_are_clipped_to_the_video():
     items, before, after = generated.context(5, 5)
     assert (before, after) == (1, 1)
     assert frames_read(items) == [(0, 0), (1, 1), (2, 2)]
+    # In past the pipe's end, behind context frames: the In error when they end.
+    generated = run_load_video(g, context, Path("folder/test.mkv"), 3, 5)[0]
+    items, before, after = generated.context(2, 0)
+    assert (before, after) == (2, 0)
+    assert outcome(lambda: frames_read(items)) == past_the_end(3, 3)
     # All reads every frame: no context frames.
     whole = run_load_video(g, context, Path("folder/test.mkv"))[0]
     assert whole.index_base == 0 and whole.chosen_item is None

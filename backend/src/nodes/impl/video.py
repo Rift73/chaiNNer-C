@@ -774,9 +774,19 @@ class VideoLoader:
         return ffmpeg.input(path, **cut).audio
 
     def frame_count(self) -> int:
-        """The number of frames the readers give: exact where PyAV reads the file (its
-        frame_index's), else the probe's estimate (metadata.frame_count), which the
+        """The number of frames the readers give: exact where PyAV reads the file
+        (exact_frame_count), else the probe's estimate (metadata.frame_count), which the
         FFmpeg CLI's renumbered frames can pass or fall short of."""
+        exact = self.exact_frame_count()
+        if exact is not None:
+            return exact
+        metadata: VideoMetadata = vars(self)["metadata"]
+        return metadata.frame_count
+
+    def exact_frame_count(self) -> int | None:
+        """The number of frames where PyAV reads the file (its frame_index's), else None:
+        the FFmpeg CLI reads it (CLI forced, PyAV missing, a variable frame rate, or a
+        file PyAV cannot open, which is logged)."""
         path: Path = vars(self)["path"]
         av = _reader_pyav()
         if av is not None:
@@ -788,8 +798,7 @@ class VideoLoader:
             except av.error.FFmpegError as reason:
                 # The reader goes to the CLI too (_pyav_reader).
                 logger.warning("Counting %s's frames by its probe: %s", path, reason)
-        metadata: VideoMetadata = vars(self)["metadata"]
-        return metadata.frame_count
+        return None
 
     def _pyav_reader(
         self, path: Path, formats: list[FrameFormat], start: int = 0

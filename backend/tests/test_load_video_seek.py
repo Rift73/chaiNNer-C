@@ -13,6 +13,7 @@ import subprocess
 import time
 import wave
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -476,6 +477,8 @@ def test_context_frames_are_clipped_to_the_video_and_closed_by_the_chain(
         ((1, 4), (3, 2), (1, 2), (0, 7)),
         ((145, 148), (3, 5), (3, 1), (142, 150)),
         ((0, 149), (3, 5), (0, 0), (0, 150)),
+        # Out past the end: none after.
+        ((145, 999), (3, 5), (3, 0), (142, 150)),
     ]:
         generator = run_node(context, path, frames=frames)[0]
         assert generator.context is not None
@@ -518,7 +521,7 @@ def test_a_one_frame_range_is_the_chosen_item(
 
 @pytest.mark.usefixtures("previews")
 @pytest.mark.parametrize("cli", [False, True])
-def test_a_range_the_video_does_not_hold_fails_at_its_first_item(
+def test_out_is_an_upper_bound_and_in_past_the_end_fails(
     folder: Path, monkeypatch: pytest.MonkeyPatch, cli: bool
 ):
     if cli:
@@ -528,9 +531,24 @@ def test_a_range_the_video_does_not_hold_fails_at_its_first_item(
     path = made(folder, H264)
     context = Context()
     full = rgb_float_frames(path)
+    # A migrated "Use limit" chain (Range 0..999) on this 150-frame clip reads every
+    # frame, as the limit did; so does any Out past the end. The audio is cut to the
+    # frames read where the count is exact (PyAV), else at Out.
+    for first, last in ((0, 999), (140, 150)):
+        generator, _, _, fps, audio, *_ = run_node(context, path, frames=(first, last))
+        assert generator.expected_length == 150 - first
+        read = items_of(generator.supplier())
+        assert [item[1] for item in read] == list(range(first, 150))
+        np.testing.assert_array_equal(read[-1][0], full[149])
+        cut = {"t": (last - first + 1 if cli else 150 - first) / fps}
+        if first > 0:
+            cut = {"ss": first / fps, **cut}
+        assert audio.node.kwargs == {"filename": path, **cut}
     for frames, message in [
         ((12, 8), r"^In \(frame 12\) is after Out \(frame 8\)\.$"),
-        ((140, 150), r"^frame 150 is past the end \(the video has 150 frames\)$"),
+        ((150, 155), r"^frame 150 is past the end \(the video has 150 frames\)$"),
+        # A one-frame Range past the end: the In error.
+        ((150, 150), r"^frame 150 is past the end \(the video has 150 frames\)$"),
     ]:
         outputs = run_node(context, path, frames=frames, seek=500)
         # The node still reports its Preview (of the last frame, Seek being past it) and
@@ -540,18 +558,23 @@ def test_a_range_the_video_does_not_hold_fails_at_its_first_item(
         with pytest.raises(ValueError, match=message):
             next(iter(outputs[0].supplier()))
     if cli:
-        # The CLI path's count is the probe's estimate: a video that ends before Out
-        # fails when it ends.
-        monkeypatch.setattr(video.VideoLoader, "frame_count", lambda _: 160)
-        generator = run_node(context, path, frames=(145, 155))[0]
-        read: list[int] = []
-        with pytest.raises(
-            ValueError,
-            match=r"^frame 155 is past the end \(the video has 150 frames\)$",
-        ):
-            for item in generator.supplier():
-                read.append(item[1])
-        assert read == list(range(145, 150))
+        # The CLI path counts by the probe's estimate: an Out past a low one still reads
+        # to the stream's end, the length being the estimate's.
+        init = video.VideoLoader.__init__
+
+        def low_estimate(loader: video.VideoLoader, *arguments: Any):
+            init(loader, *arguments)
+            # metadata is set by video_loader_init (native/src/video_io.cpp).
+            attributes = vars(loader)
+            attributes["metadata"] = replace(attributes["metadata"], frame_count=100)
+
+        monkeypatch.setattr(video.VideoLoader, "__init__", low_estimate)
+        for last, end in ((120, 121), (999, 150)):
+            outputs = run_node(context, path, frames=(95, last))
+            assert (outputs[8], outputs[0].expected_length) == (100, 5)
+            read = items_of(outputs[0].supplier())
+            assert [item[1] for item in read] == list(range(95, end))
+            np.testing.assert_array_equal(read[-1][0], full[end - 1])
     context.cleanup()
 
 

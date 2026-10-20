@@ -158,8 +158,19 @@ def plane_output(label: str, output_id: int) -> ImageOutput:
             " audio to them."
         ),
         if_enum_group(10, FramesMode.RANGE)(
-            NumberInput("In", default=0, min=0).with_id(11),
-            NumberInput("Out", default=9, min=0).with_id(12),
+            NumberInput("In", default=0, min=0)
+            .with_id(11)
+            .with_docs(
+                "The first frame read. Past the video's last frame, the run fails.",
+                hint=True,
+            ),
+            NumberInput("Out", default=9, min=0)
+            .with_id(12)
+            .with_docs(
+                "The last frame read. Past the video's last frame, the video is read to"
+                " its end.",
+                hint=True,
+            ),
         ),
         EnumInput(
             VideoMode,
