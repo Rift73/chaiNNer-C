@@ -19,7 +19,11 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   fresh process; 0.016-0.07 s warm); 4K HEVC 10-bit frame 500 6.82 -> 0.34 s; preview +1 frame ~3 ms, -1 ~55 ms.
   DPID (owner request): Resize/Resize To Side filter "DPID (detail-preserving)" with Lambda (0-10, default 1),
   `native/src/dpid_ops.c` (mergian/dpid, BSD-3), float, both executors; oracle 5.1e-07; 4K->1080p 8.4 ms (Lanczos
-  7.8 ms). Gate: see the release line below.
+  7.8 ms). Gate 135,970 passed / 0 failed / 490 skipped (112 s); real use 13/13 checks on both executors over
+  HTTP; the dev UI checked through CDP; GPU check above. RELEASED 2026-10-21 as v0.3.7 re-release 6: fork branch and
+  tag `v0.3.7` at the replay of main up to `dc19bba6`, asset SHA-256 `8a906053…89c3` (r5 `973B2F45…9307` kept
+  locally); both local installs updated (26/25 files, the portable binaries replace the tuned ones) and serve 196
+  nodes.
 - instant-exec (2026-10-19, v0.3.7; branch `instant-exec` from `fffe9cf7`; design, plan, lane reports, the engine review
   and the owner queue in `native/local/instant-exec/`, rulings in `native/reports/fable-decisions.md`, "instant-exec";
   24 h, CPU only): outputs as at `fffe9cf7` except the sanctioned changes at the end. Startup: the window loads at once
