@@ -305,27 +305,54 @@ def frame_index(path: Path) -> FrameIndex:
     sorted (B-frames store them out of order). A packet flagged as discarded (the frames
     an MP4's edit list hides) is decoded but never shown, so it is left out. The scan
     reads the whole file, so its index is kept for the file's version (file_identity),
-    as _variable_timestamps keeps its answer."""
+    as _variable_timestamps keeps its answer. Raises _UseCliReader when the packets
+    cannot number the frames (_scan_frames)."""
     av = _pyav()
     if av is None:
         raise RuntimeError(f"{path} has no frame index: PyAV is unavailable.")
-    return _scan_frames(file_identity(path), path, av)
+    index = _scan_frames(file_identity(path), path, av)
+    if isinstance(index, str):
+        raise _UseCliReader(index)
+    return index
 
 
 @lru_cache(maxsize=64)
-def _scan_frames(_identity: tuple, path: Path, av: ModuleType) -> FrameIndex:
-    """frame_index's scan; `_identity` is the file version it is kept for."""
+def _scan_frames(_identity: tuple, path: Path, av: ModuleType) -> FrameIndex | str:
+    """frame_index's scan, or why the packets cannot number the frames: a shown frame's
+    packet without a timestamp (MPEG-PS times only some), or packets of which none is
+    shown; either would leave frames out of the index. `_identity` is the file version
+    it is kept for."""
+    frames: list[tuple[int, bool]] = []
+    packets = 0
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
-        frames = sorted(
-            (packet.pts, packet.is_keyframe)
-            for packet in container.demux(stream)
-            if packet.pts is not None and not packet.is_discard
-        )
+        for packet in container.demux(stream):
+            # The empty packet that ends the demux flushes the decoder: no frame.
+            if packet.size == 0:
+                continue
+            packets += 1
+            if packet.is_discard:
+                continue
+            if packet.pts is None:
+                return "a frame's packet has no timestamp"
+            frames.append((packet.pts, packet.is_keyframe))
+    if packets and not frames:
+        return "its packets time none of its frames"
+    frames.sort()
     return FrameIndex(
         tuple(pts for pts, _ in frames),
         tuple(n for n, (_, keyframe) in enumerate(frames) if keyframe),
     )
+
+
+def _cli_reason(path: Path, container: InputContainer, av: ModuleType) -> str | None:
+    """Why the FFmpeg CLI reads the file, or None where PyAV does: a variable frame rate
+    (_variable_rate), or packets that cannot number the frames (_scan_frames), where a
+    seek's frame n would not be the full read's."""
+    if _variable_rate(path, container, av):
+        return "its frame rate is variable"
+    index = _scan_frames(file_identity(path), path, av)
+    return index if isinstance(index, str) else None
 
 
 def _past_the_end(n: int, count: int) -> ValueError:
@@ -481,8 +508,9 @@ def _pyav_frames(
     _UseCliReader before its first frame for a file the CLI would treat differently."""
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
-        if _variable_rate(path, container, av):
-            raise _UseCliReader("its frame rate is variable")
+        reason = _cli_reason(path, container, av)
+        if reason is not None:
+            raise _UseCliReader(reason)
         stream.thread_type = "AUTO"
         frames = (
             _decode(container, stream, path, av)
@@ -785,15 +813,15 @@ class VideoLoader:
 
     def exact_frame_count(self) -> int | None:
         """The number of frames where PyAV reads the file (its frame_index's), else None:
-        the FFmpeg CLI reads it (CLI forced, PyAV missing, a variable frame rate, or a
-        file PyAV cannot open, which is logged)."""
+        the FFmpeg CLI reads it (CLI forced, PyAV missing, _cli_reason's files, which the
+        readers log, or a file PyAV cannot open, which is logged)."""
         path: Path = vars(self)["path"]
         av = _reader_pyav()
         if av is not None:
             try:
                 with av.open(str(path)) as container:
-                    variable = _variable_rate(path, container, av)
-                if not variable:
+                    reason = _cli_reason(path, container, av)
+                if reason is None:
                     return len(frame_index(path).pts)
             except av.error.FFmpegError as reason:
                 # The reader goes to the CLI too (_pyav_reader).
@@ -915,8 +943,9 @@ class PreviewReader:
     def _decoded_frame(self, av: ModuleType, n: int) -> np.ndarray:
         if self._container is None:
             self._container = av.open(str(self.path))
-            if _variable_rate(self.path, self._container, av):
-                raise _UseCliReader("its frame rate is variable")
+            reason = _cli_reason(self.path, self._container, av)
+            if reason is not None:
+                raise _UseCliReader(reason)
             stream = self._container.streams.video[0]
             stream.thread_type = "AUTO"
             self._converters = _Converters(self.path, stream, [self.format], av)

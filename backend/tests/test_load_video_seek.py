@@ -15,6 +15,7 @@ import wave
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import ffmpeg
@@ -51,6 +52,7 @@ pytestmark = pytest.mark.skipif(
 AUTO = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.AUTO)
 SOURCE = ("-f", "lavfi", "-i", "testsrc2=size=192x108:rate=30", "-frames:v", "150")
 H264 = "h264-bframes.mp4"
+UNTIMED = "untimed.mpg"
 
 # The files of the exactness matrix: what each is made from (another file of the matrix,
 # or None for SOURCE), FFmpeg's input options for it and its output options.
@@ -106,6 +108,22 @@ FILES: dict[str, tuple[str | None, tuple[str, ...], tuple[str, ...]]] = {
             *("-c:v", "libx264", "-g", "30"),
         ),
     ),
+    # MPEG-PS with big packets: a PES packet holds several frames and times only the
+    # first, so most frames' packets have no timestamp to index them by. Read through
+    # the FFmpeg CLI.
+    UNTIMED: (
+        None,
+        (),
+        (
+            *("-c:v", "libx264", "-bf", "3", "-g", "60", "-keyint_min", "60"),
+            *("-b:v", "50k", "-packetsize", "65000", "-f", "mpeg"),
+        ),
+    ),
+}
+# The files the FFmpeg CLI reads, and why.
+CLI_FILES = {
+    "variable.mkv": "its frame rate is variable",
+    UNTIMED: "a frame's packet has no timestamp",
 }
 SETTINGS = {
     "rgb-float": video.ReadSettings(VideoMode.RGB, True, AUTO),
@@ -162,13 +180,19 @@ def test_seek_equals_full_read(
     loader = video.VideoLoader(path, ENV, SETTINGS[mode])
     full = list(loader.stream_items())
     count = len(full)
-    cli = f"Reading {path} through the FFmpeg CLI: its frame rate is variable"
-    if name == "variable.mkv":
-        # The CLI duplicates frames into the gap: frame n is not the n-th stored one.
-        assert cli in warnings and count > 150
+    cli = f"Reading {path} through the FFmpeg CLI"
+    if name in CLI_FILES:
+        assert f"{cli}: {CLI_FILES[name]}" in warnings
+        # The CLI duplicates frames into a variable-rate file's gap: frame n is not the
+        # n-th stored one.
+        assert count > 150 if name == "variable.mkv" else count == 150
+        # The CLI path counts by the probe's estimate.
+        metadata: video.VideoMetadata = vars(loader)["metadata"]
+        assert loader.exact_frame_count() is None
+        assert loader.frame_count() == metadata.frame_count
         keyframes: tuple[int, ...] = ()
     else:
-        assert cli not in warnings
+        assert not any(warning.startswith(cli) for warning in warnings)
         index = video.frame_index(path)
         assert loader.frame_count() == len(index.pts) == count
         keyframes = index.keyframes
@@ -192,9 +216,12 @@ def test_seek_equals_full_read(
         items = list(loader.stream_items(n, n + 1))
         assert len(items) == 1, n
         assert_items_equal(items[0], full[n])
-    if name.endswith(".ts"):
+    if name in CLI_FILES:
+        # The CLI decodes and discards the frames before n: nothing decodes in-process.
+        assert set(starts) == {0}
+    elif name.endswith(".ts"):
         assert max(starts) > 1
-    elif name != "variable.mkv":
+    else:
         assert set(starts) == {1}
     # A range, a range to the end and one past it (it stops at the end, as a slice).
     for start, stop in ((count // 3, count // 3 + 7), (count - 3, None)):
@@ -208,6 +235,66 @@ def test_seek_equals_full_read(
         match=rf"^frame {count} is past the end \(the video has {count} frames\)$",
     ):
         list(loader.stream_items(count, count + 1))
+
+
+def test_the_index_numbers_only_the_frames_it_can_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # The index numbers the frames by their packets' timestamps. A frame's packet without
+    # one (MPEG-PS times only some), or packets of which none is shown, would give a
+    # short or empty index, so such a file is read through the FFmpeg CLI
+    # (_UseCliReader, the reason its message). A discarded packet (never shown) needs no
+    # timestamp; the empty packet that ends the demux (it flushes the decoder) is none.
+    def packet(
+        pts: int | None, keyframe: bool = False, discard: bool = False, size: int = 100
+    ):
+        return SimpleNamespace(
+            pts=pts, is_keyframe=keyframe, is_discard=discard, size=size
+        )
+
+    class Container:
+        def __init__(self, packets: list[SimpleNamespace]):
+            self.packets = packets
+            self.streams = SimpleNamespace(video=[object()])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_: object):
+            return None
+
+        def demux(self, _stream: object):
+            return iter(self.packets)
+
+    flush = packet(None, size=0)
+    cases: list[tuple[list[SimpleNamespace], video.FrameIndex | str]] = [
+        (
+            [packet(None, discard=True), packet(3, True), packet(1), packet(2), flush],
+            video.FrameIndex((1, 2, 3), (2,)),
+        ),
+        ([flush], video.FrameIndex((), ())),
+        (
+            [packet(0, True), packet(None), packet(2), flush],
+            "a frame's packet has no timestamp",
+        ),
+        (
+            [packet(0, True, discard=True), packet(1, discard=True), flush],
+            "its packets time none of its frames",
+        ),
+    ]
+    for number, (packets, expected) in enumerate(cases):
+        path = tmp_path / f"{number}.mpg"
+        path.write_bytes(b"")
+        # The scan's cache takes PyAV's module as a key: a module, then.
+        fake = ModuleType("av")
+        vars(fake)["open"] = lambda _name, packets=packets: Container(packets)
+        monkeypatch.setattr(video, "_pyav", lambda fake=fake: fake)
+        if isinstance(expected, str):
+            refusal = vars(video)["_UseCliReader"]
+            with pytest.raises(refusal, match=f"^{expected}$"):
+                video.frame_index(path)
+        else:
+            assert video.frame_index(path) == expected
 
 
 def locked(path: Path) -> bool:
@@ -627,4 +714,38 @@ def test_preview_of_planes_rgb_cannot_convert_is_the_y_plane(
         and "cannot convert the BT.2020 constant matrix" in warning
         for warning in warnings
     )
+    context.cleanup()
+
+
+@pytest.mark.usefixtures("previews")
+def test_a_file_without_timestamps_reads_through_the_cli(
+    folder: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Most frames of this MPEG-PS file have no timestamp to index them by: the Preview
+    # and a Range read it through the FFmpeg CLI, which decodes and discards the frames
+    # before the one asked for, as the full read does.
+    monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    path = made(folder, UNTIMED)
+    full = rgb_float_frames(path)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        video.logger, "warning", lambda message, *args: warnings.append(message % args)
+    )
+    loader = video.VideoLoader(path, ENV, SETTINGS["rgb-float"])
+    for n in (40, 41, 10):
+        np.testing.assert_array_equal(
+            video.preview_frame("untimed", loader, n), full[n]
+        )
+    reason = CLI_FILES[UNTIMED]
+    assert f"Previewing {path} through the FFmpeg CLI: {reason}" in warnings
+    context = Context()
+    outputs = run_node(context, path, frames=(40, 45))
+    read = items_of(outputs[0].supplier())
+    assert [item[1] for item in read] == list(range(40, 46))
+    for (frame, *_), expected in zip(read, full[40:46], strict=True):
+        np.testing.assert_array_equal(frame, expected)
+    # The Frame Count is the probe's estimate (short here: ffprobe times the file by
+    # its few timestamps).
+    metadata: video.VideoMetadata = vars(loader)["metadata"]
+    assert outputs[8] == metadata.frame_count < 150
     context.cleanup()
