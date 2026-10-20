@@ -27,7 +27,9 @@ OUT receives results.json (and the files Save nodes write). For each run it hold
 either the error, or:
 - the outputs, with each array's dtype, shape, strides and the SHA-256 of its
   C-ordered bytes;
-- the outputs' broadcast data, as the executor would send it;
+- the outputs' broadcast data, as the executor would send it, but for a PNG preview's
+  URL, which is its decoded pixels (chaiNNer-C writes the oracle's PNG pixels in other
+  bytes);
 - the SHA-256 of each file a Save node wrote.
 With --trace, a run also records whether it entered any of the given source files.
 With --chains, it also runs the UI chain of Lens followed by each of CHAIN_TARGETS,
@@ -40,6 +42,7 @@ channel count, the producer's output as the target's first image (D-16).
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import importlib
 import json
@@ -51,6 +54,7 @@ import zlib
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 
 HEIGHT, WIDTH = 72, 120
@@ -391,7 +395,11 @@ def inputs_for(
 
 def encode(value: object) -> object:
     """A JSON form that keeps every bit: arrays as the SHA-256 of their C-ordered
-    bytes plus dtype, shape and strides, floats as hex."""
+    bytes plus dtype, shape and strides, floats as hex, a PNG preview's data URL as its
+    decoded pixels."""
+    if isinstance(value, str) and value.startswith("data:image/png;base64,"):
+        data = np.frombuffer(base64.b64decode(value.split(",", 1)[1]), np.uint8)
+        return {"png": encode(cv2.imdecode(data, cv2.IMREAD_UNCHANGED))}
     if isinstance(value, np.ndarray):
         return {
             "sha256": hashlib.sha256(np.ascontiguousarray(value).tobytes()).hexdigest(),

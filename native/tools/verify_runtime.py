@@ -15,7 +15,9 @@ created by this helper are shut down.
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
+import functools
 import hashlib
 import http.client
 import json
@@ -35,6 +37,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 import package_files
 import package_manifest
 from packaging.utils import NormalizedName, canonicalize_name
@@ -1815,6 +1819,24 @@ def generator_node_ids(nodes: list[dict], schemas: dict) -> list[str]:
     )
 
 
+# A LargeImage preview's PNG data URL. The port writes its PNG previews with chaiNNer-C's encoder
+# (native/src/png_encode.c): the oracle's pixels in other bytes, so a PNG preview compares as its decoded
+# pixels, as the PNG files the nodes save do (compare_images).
+PNG_PREVIEW = "data:image/png;base64,"
+
+
+@functools.lru_cache(maxsize=256)
+def png_preview_pixels(url: str) -> str:
+    """A PNG preview's URL as its pixels: the dtype, shape and SHA-256 of the C-order bytes of the array
+    cv2.imdecode(IMREAD_UNCHANGED) returns. A URL OpenCV cannot decode raises."""
+    data = np.frombuffer(base64.b64decode(url[len(PNG_PREVIEW) :]), np.uint8)
+    pixels = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+    if pixels is None:
+        raise RuntimeError("OpenCV cannot decode a PNG preview")
+    digest = hashlib.sha256(pixels.tobytes()).hexdigest()
+    return f"data:image/png;pixels={pixels.dtype.name}{list(pixels.shape)}:{digest}"
+
+
 def canonical(value: Any, directory: Path):
     if isinstance(value, dict):
         return {
@@ -1826,6 +1848,8 @@ def canonical(value: Any, directory: Path):
     if isinstance(value, list):
         return [canonical(item, directory) for item in value]
     if isinstance(value, str):
+        if value.startswith(PNG_PREVIEW):
+            return png_preview_pixels(value)
         return value.replace(str(directory), "<run>").replace(
             directory.as_posix(), "<run>"
         )

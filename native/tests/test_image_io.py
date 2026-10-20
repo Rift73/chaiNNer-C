@@ -348,8 +348,9 @@ def test_real_cpu_codec_save_load(tmp_path, fmt, options, channels, kind):
     assert value.tobytes() == before
     if states[0][0][0] != "ok":
         return
-    if fmt == "PNG" and not options and channels in (3, 4):
-        # User-selected fpng changes compression bytes, never decoded pixels.
+    if fmt == "PNG" and not options:
+        # chaiNNer-C's default PNG encoder (8-bit, every channel count) changes
+        # compression bytes, never decoded pixels.
         exact(
             cv2.imdecode(
                 np.frombuffer(paths[0].read_bytes(), np.uint8), cv2.IMREAD_UNCHANGED
@@ -460,7 +461,7 @@ def test_decoder_order_error_identity_and_short_circuit(tmp_path):
 @pytest.mark.parametrize("system", ["Windows", "Darwin", "Linux"])
 @pytest.mark.parametrize("saved", [True, False])
 def test_viewer_decisions_are_mocked(tmp_path, system, saved):
-    def run(current):
+    def run(current, saved=saved):
         module = modules(current).view
         events = []
         module.mkdtemp = lambda **kwargs: str(tmp_path)
@@ -475,12 +476,23 @@ def test_viewer_decisions_are_mocked(tmp_path, system, saved):
                 events.append(("save", path, img.dtype.str, img.tobytes())) or saved
             )
         )
-        # Grayscale deliberately retains OpenCV. Compatible RGB(A) fpng writes
-        # and mocked shell dispatch are covered separately in test_fpng_io.py.
+        # A greyscale image: today's path hands it to OpenCV (the mocked imwrite, whose
+        # result decides the launch); chaiNNer-C writes it with its own PNG encoder
+        # and launches the viewer (test_png_encode.py covers colour images).
         module.view_image_external_node(image(1))
         return events
 
-    assert run(False) == run(True)
+    path = tmp_path / "123.25.png"
+    old = run(False)
+    assert old[0][:2] == ("save", str(path)) and len(old) == (2 if saved else 1)
+    # The launch today's path makes once the file is saved.
+    launch = run(False, saved=True)[1]
+    assert run(True) == [launch]
+    pixels = cv2.imdecode(
+        np.frombuffer(path.read_bytes(), np.uint8), cv2.IMREAD_UNCHANGED
+    )
+    assert pixels is not None
+    assert pixels.dtype.str == old[0][2] and pixels.tobytes() == old[0][3]
 
 
 def raw_dds_pixels(path):
@@ -814,7 +826,9 @@ def test_pillow_save_context_and_all_avif_options(tmp_path, subsampling, failure
             def save(self, target, **kwargs):
                 named = kwargs.pop("format", None)
                 events.append(("save", kwargs))
-                targets.append((type(target).__name__ if named else Path(target).name, named))
+                targets.append(
+                    (type(target).__name__ if named else Path(target).name, named)
+                )
                 if failure != "none":
                     raise LookupError("save failed")
 
@@ -1182,11 +1196,11 @@ def test_concurrent_temp_file_decodes_equal_serial_decodes(tmp_path, named):
     assert recorder.peak == 1 and recorder.calls == 4 * len(paths)
 
 
-# Save Image's prepare phase (SP3-P9) per format family: fpng; OpenCV imencode with
-# today's parameters (grayscale and 16-bit PNG, JPG, WEBP, TIFF, BMP); Pillow into a
-# buffer with the format's own options (GIF, TGA, AVIF).
+# Save Image's prepare phase (SP3-P9) per format family: chaiNNer-C's PNG encoder
+# (8-bit PNG); OpenCV imencode with today's parameters (16-bit PNG, JPG, WEBP, TIFF,
+# BMP); Pillow into a buffer with the format's own options (GIF, TGA, AVIF).
 PREPARED_FORMATS = [
-    pytest.param("PNG", 3, {}, id="png-u8-fpng"),
+    pytest.param("PNG", 3, {}, id="png-u8"),
     pytest.param("PNG", 1, {}, id="png-u8-grayscale"),
     pytest.param("PNG", 4, {"png_color_depth": ("PngColorDepth", "U16")}, id="png-u16"),
     pytest.param(

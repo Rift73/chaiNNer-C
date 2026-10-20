@@ -8,7 +8,7 @@ dependencies. Container bytes are recorded, but exact comparisons use decoded
 pixels/audio and selected stream metadata because muxer identifiers/timestamps
 need not be deterministic.
 PNG bytes are recorded too, and PNGs compare by decoded pixels because the port
-encodes default PNGs with fpng. SSE events compare by
+encodes default PNGs with its own encoder. SSE events compare by
 verify_runtime.sse_event_mismatches (generator-once, coalesced previews).
 """
 
@@ -371,7 +371,7 @@ def close_owned_job(job: OwnedJob, processes: dict):
 def snapshot(path: Path, ffmpeg: Path, ffprobe: Path):
     result: dict = {"sha256": file_hash(path)}
     if path.suffix.lower() == ".png":
-        # The port writes default PNGs with fpng: the same pixels in other bytes.
+        # The port writes default PNGs with its own encoder: the same pixels in other bytes.
         result["semantic"] = decoded_png(path)
         return result
     if path.suffix.lower() not in VIDEO_EXTENSIONS:
@@ -915,7 +915,7 @@ def main():
         "limitations": [
             "FFmpeg/ffprobe remain the existing codec engines; no GPU acceleration is requested.",
             "Container hashes are recorded but exact media parity is decoded pixels/audio plus selected stream metadata, not muxer timestamps/identifiers.",
-            "PNG hashes are recorded but PNG parity is decoded pixels plus colour/orientation chunks (bench_oracle.decoded_png): the port encodes default PNGs with fpng.",
+            "PNG hashes are recorded but PNG parity is decoded pixels plus colour/orientation chunks (bench_oracle.decoded_png): the port encodes default PNGs with its own encoder.",
             SSE_EVENT_COMPARISON,
             METADATA_COMPARISON,
             "Cancellation iteration counts are deliberately not compared; owned children are observed before job cleanup.",

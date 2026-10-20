@@ -14,6 +14,7 @@ The full proof is the codec corpus (native/local/codec-corpus, gen_corpus.py and
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -51,11 +52,10 @@ NATIVE_DECODE = {
     "bmp": "_read_cv",
     "pxm": "_read_cv",
 }
-# Encode rows the native path takes (fpng's PNG was native before lane I).
+# Encode rows the native path takes (chaiNNer-C's 8-bit PNG encoder takes them with or without lane I).
 NATIVE_ENCODE = {
     "jpg",
-    "png-u8-fpng",
-    "png-u8-libpng",
+    "png-u8",
     "png-u16",
     "webp-lossy",
     "webp-lossless-1-3ch",
@@ -627,9 +627,24 @@ def decode_files(tmp_path_factory) -> dict[str, Path]:
     return files
 
 
+def preview_pixels(data: dict) -> dict:
+    """Broadcast data with each PNG preview's URL as its decoded pixels: chaiNNer-C writes today's PNG
+    preview pixels with its own encoder (image_preview.cpp), in other bytes. JPEG previews keep their bytes."""
+    previews = []
+    for preview in data["previews"]:
+        url = str(preview["url"])
+        if url.startswith("data:image/png;base64,"):
+            encoded = np.frombuffer(base64.b64decode(url.split(",", 1)[1]), np.uint8)
+            pixels = cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
+            assert pixels is not None, "a PNG preview that does not decode"
+            url = f"png:{pixels.dtype.str}:{list(pixels.shape)}:{sha(pixels)}"
+        previews.append({**preview, "url": url})
+    return {**data, "previews": previews}
+
+
 def decoded(path: Path) -> dict:
     """Load Image's result for path (raw array, normalised output, previews or the exception) and the
-    warnings it logged."""
+    warnings it logged; PNG previews as their pixels (preview_pixels)."""
     with logged() as warnings:
         try:
             raw = load_image.load_image_node(path)[0]
@@ -638,7 +653,9 @@ def decoded(path: Path) -> dict:
         else:
             output = LargeImageOutput()
             norm = output.enforce(raw)
-            previews = json.dumps(output.get_broadcast_data(norm), sort_keys=True)
+            previews = json.dumps(
+                preview_pixels(output.get_broadcast_data(norm)), sort_keys=True
+            )
             result = {
                 "dtype": raw.dtype.str,
                 "shape": raw.shape,
@@ -698,13 +715,7 @@ class EncodeCase:
     @property
     def row(self) -> str:
         if self.fmt == "png":
-            if self.depth == "u16":
-                return "png-u16"
-            return (
-                "png-u8-fpng"
-                if self.channels in (3, 4) and max(self.size) <= 65535
-                else "png-u8-libpng"
-            )
+            return "png-u16" if self.depth == "u16" else "png-u8"
         if self.fmt == "webp":
             return (
                 "webp-lossy"
