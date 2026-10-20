@@ -3,7 +3,8 @@
  *
  * A run has one driver thread, which follows process.Executor's control flow: the generator groups one after
  * another (each generator run once, its collectors started, then the items in order: the generators' advance, the
- * item's side-effect nodes, its collectors, its progress), then the non-iterated side-effect nodes. A node that may
+ * item's side-effect nodes, its collectors, its progress; a context item before a generator's range runs its loop's
+ * temporal nodes alone), then the non-iterated side-effect nodes. A node that may
  * not run beside others (not pure_cpu_node: side effects, a context, a GPU, a lazy input) runs on the driver, in the
  * order process.Executor's demand-driven recursion runs it (inputs in position order); a lazy input is evaluated on
  * the thread that reads it, nested in its reader (its upstream's events between the reader's start and finish).
@@ -398,6 +399,10 @@ struct GroupPlan {
     std::vector<GeneratorPlan> generators;
     std::vector<int> outputs;
     std::vector<int> iterated;
+    // A group of one generator: its temporal nodes (NodeData.temporal_context), in topological order, and the context
+    // items (before, after) they want, which a generator that reads a range of its source reads around it.
+    std::vector<int> temporal;
+    int64_t before = 0, after = 0;
 };
 
 // released: done, its value dropped after its last counted read (chain/cache.py's hits_to_live)
@@ -411,7 +416,7 @@ struct Cell {
     PyRef inputs;  // a collector's inputs at its construction (the window's writer directories)
     PyRef error;
     int64_t hits = 0;
-    int64_t bytes = 0;  // its outputs' array bytes (the window's per-item estimate at slot 0, a memo entry's size)
+    int64_t bytes = 0;  // its outputs' array bytes (the window's per-item estimate, a memo entry's size)
     enum class KeyState : uint8_t { unknown, none, known } key_state = KeyState::unknown;
     Key key;
     // A native generator's item source, with the context and inputs it was created with.
@@ -616,6 +621,9 @@ struct Loop {
     std::vector<int> sinks;  // the group's side-effect nodes, then its collectors
     bool decided = false, active = false, halted = false, stop = false;
     bool fail_fast = true;  // every generator's errors end the loop (serial nodes may then run ahead)
+    // Context items (process._LoopRun): the slots before `first` and, with items after the range, from `end` on (-1:
+    // none; the commit path never begins them). There only the group's temporal nodes and the nodes they need run.
+    int64_t first = 0, end = -1;
     int k = 1;
     int64_t budget = 0, estimate = 0, committed = 0;
     std::optional<std::string> blocker;
@@ -635,6 +643,7 @@ struct Loop {
             if ((*generators)[g].node == node) return int(g);
         return -1;
     }
+    bool context(int64_t slot) const { return slot < first || (end >= 0 && slot >= end); }
     PyRef collector_of(int node) const
     {
         for (const CollectorRun &collector : *collectors)
@@ -758,7 +767,10 @@ private:
     void want_window(int64_t slot);
     void run_task(const Task &task);
     PyRef take_prepared(int node, int64_t slot);
-    void decide();
+    void decide(int64_t start);
+    int64_t item_bytes(const GeneratorRun &generator, const std::vector<Value> &outputs);
+    bool measured(const CellRef &ref) const;
+    bool discarded(const CellRef &ref) const;
     Outcome take_advance(int64_t slot, size_t generator);
     bool ahead(int node);
     bool servable(int node, int input);
@@ -1027,6 +1039,10 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
         }
         for (py::handle output : group["outputs"]) plan_group.outputs.push_back(output.cast<int>());
         for (py::handle node : group["iterated"]) plan_group.iterated.push_back(node.cast<int>());
+        for (py::handle node : group["temporal"]) plan_group.temporal.push_back(node.cast<int>());
+        py::tuple context = group["context"];
+        plan_group.before = context[0].cast<int64_t>();
+        plan_group.after = context[1].cast<int64_t>();
         groups_.push_back(std::move(plan_group));
     }
     for (py::handle node : plan["tail"]) tail_.push_back(node.cast<int>());
@@ -1719,7 +1735,8 @@ void Run::set_item(int node, int64_t slot, std::vector<Value> outputs, std::opti
 }
 
 /* The pure nodes the slot's sinks need, through lazy inputs too (process.Executor's _ItemPlanner candidates), and
- * the prepare phases of its sinks (mutex_ held). */
+ * the prepare phases of its sinks (mutex_ held). A context item's: the pure nodes its temporal nodes need, and no
+ * prepare (process.ItemWindow's context slots: nothing else runs for it). */
 void Run::want_window(int64_t slot)
 {
     std::set<std::pair<int, int64_t>> seen;
@@ -1736,6 +1753,10 @@ void Run::want_window(int64_t slot)
             if (input.source >= 0 && !(input.ignored && node.kind != Kind::collector)) walk(source_of(ref, int(i)));
         }
     };
+    if (loop_->context(slot)) {
+        for (int node : loop_->group->temporal) walk({node, slot});
+        return;
+    }
     for (int sink : loop_->sinks) {
         walk({sink, slot});
         if (nodes_[size_t(sink)].phased) loop_->prepares.try_emplace({sink, slot});
@@ -1848,8 +1869,9 @@ PyRef Run::take_prepared(int node, int64_t slot)
 }
 
 /* The window's decision (process.Executor.__open_window): K, the read-ahead blocker and the budget, from the
- * hooks; a window of K > 1 starts its producer at slot 1 (slot 0 is the loop's own). */
-void Run::decide()
+ * hooks; a window of K > 1 starts its producer at `start`: the range's second slot (slot 1 without context items) at
+ * the regular decision, the slot after the committing one at a look-ahead's (the commit path advanced that one). */
+void Run::decide(int64_t start)
 {
     Loop &loop = *loop_;
     if (loop.decided) return;
@@ -1894,7 +1916,7 @@ void Run::decide()
     if (loop.k <= 1) return;
     std::lock_guard<std::mutex> locked(mutex_);
     loop.active = true;
-    loop.produced = 1;
+    loop.produced = start;
     loop.producer = Engine::get().service([this] {
         Serving serving(this);
         try {
@@ -1920,6 +1942,37 @@ Outcome Run::take_advance(int64_t slot, size_t generator)
         found->second[generator].kind == Outcome::pending)
         throw StopRun{};
     return found->second[generator];
+}
+
+/* A generator's item's array bytes, for the window's per-item estimate: a native generator's images, a Python
+ * generator's values as hooks.output_bytes counts them. */
+int64_t Run::item_bytes(const GeneratorRun &generator, const std::vector<Value> &outputs)
+{
+    if (generator.native) {
+        int64_t bytes = 0;
+        for (const Value &value : outputs)
+            if (const Image *image = std::get_if<Image>(&value)) bytes += int64_t(image->values() * sizeof(float));
+        return bytes;
+    }
+    PythonSection python;
+    try {
+        py::list values;
+        for (const Value &value : outputs) values.append(to_python(value));
+        return hooks_.output_bytes(values).cast<int64_t>();
+    } catch (py::error_already_set &error) {
+        throw PythonError{current_error(error)};
+    }
+}
+
+/* Whether the cell's outputs count to the window's per-item estimate: a cell of the range's first item. A slot's
+ * cell runs only while its loop is set (its end drains them first). */
+bool Run::measured(const CellRef &ref) const { return ref.slot >= 0 && ref.slot == loop_->first; }
+
+/* Whether the cell's outputs are discarded: an iterated node's at a context item before the range, which is never
+ * broadcast (process.Executor.__process); a static node first needed there broadcasts as always. */
+bool Run::discarded(const CellRef &ref) const
+{
+    return ref.slot >= 0 && iterated_[size_t(ref.node)] && ref.slot < loop_->first;
 }
 
 /* process.Executor's _ItemPlanner.ahead (memoized per loop): a node a look-ahead may wait for at a later item: an
@@ -1967,10 +2020,11 @@ bool Run::servable(int node, int input)
     return ahead(plan.source);
 }
 
-/* A look-ahead during slot 0 decides the window there (process.Executor.__decide_early). */
+/* A look-ahead before the range's second slot (during slot 0 without context items) decides the window there
+ * (process.Executor.__decide_early); the producer continues from the next slot. */
 void Run::decide_early()
 {
-    if (!loop_->decided) decide();
+    if (!loop_->decided) decide(commit_slot_ + 1);
 }
 
 int Run::lookahead(int node, int input)
@@ -2086,7 +2140,7 @@ void Run::take(const CellRef &ref)
     for (const CellRef &input : inputs) take(input);
     emit_start(ref.node);
     if (ok) {
-        submit_broadcast(ref.node, outputs);
+        if (!discarded(ref)) submit_broadcast(ref.node, outputs);
         emit_finish(ref.node, seconds);
     }
 }
@@ -2096,7 +2150,10 @@ void Run::iterate_group(const GroupPlan &group)
     suspend();
     std::vector<GeneratorRun> generators;
     std::vector<CollectorRun> collectors;
-    std::set<int64_t> lengths;
+    std::set<int64_t> lengths, bases;
+    // Context items (process.Executor.__iterate_generator_nodes): a group's only generator reads, for its temporal
+    // nodes, `before` items before its range and `after` items after it.
+    int64_t before = 0, after = 0;
     for (const GeneratorPlan &plan : group.generators) {
         GeneratorRun run;
         run.node = plan.node;
@@ -2106,21 +2163,32 @@ void Run::iterate_group(const GroupPlan &group)
             run.partial = static_cells_[size_t(plan.node)].outputs;
             run.native = static_cells_[size_t(plan.node)].items;
         }
+        int64_t base = 0;  // a native generator reads its source whole
         if (run.native) {
             run.expected = run.native->expected_length();
             run.fail_fast = run.native->fail_fast();
         } else {
             PythonSection python;
             try {
-                py::tuple items = hooks_.items(py::handle(static_cast<PyObject *>(run.output.handle.get())));
+                py::object wanted = group.generators.size() == 1
+                                        ? py::object(py::make_tuple(group.before, group.after))
+                                        : py::object(py::none());
+                py::list iterated;
+                for (int node : group.iterated) iterated.append(node);
+                py::tuple items = hooks_.items(plan.node, py::handle(static_cast<PyObject *>(run.output.handle.get())),
+                                               wanted, iterated);
                 run.iterator = py_ref(items[0]);
                 run.split = items[1].cast<bool>();
                 run.expected = items[2].cast<int64_t>();
                 run.fail_fast = items[3].cast<bool>();
+                before = items[4].cast<int64_t>();
+                after = items[5].cast<int64_t>();
+                base = items[6].cast<int64_t>();
             } catch (py::error_already_set &error) {
                 throw PythonError{current_error(error)};
             }
         }
+        bases.insert(base);
         for (int collector : plan.collectors) {
             suspend();
             Clock::time_point start = Clock::now();
@@ -2153,13 +2221,18 @@ void Run::iterate_group(const GroupPlan &group)
         loop_->sinks = group.outputs;
         for (const CollectorRun &collector : collectors) loop_->sinks.push_back(collector.node);
         for (const GeneratorRun &generator : generators) loop_->fail_fast = loop_->fail_fast && generator.fail_fast;
+        // The range's slots: `before` context items come first; with items after it, the loop ends after its last
+        // one (they only serve look-aheads), else as always, when the generators are exhausted.
+        loop_->first = before;
+        loop_->end = after > 0 ? before + generators[0].expected : -1;
     }
     {
         PythonSection python;
         py::list generator_nodes, iterated;
         for (const GeneratorRun &generator : generators) generator_nodes.append(generator.node);
         for (int node : group.iterated) iterated.append(node);
-        hooks_.begin_loop(generator_nodes, iterated);
+        // The loop's index base: its generators' shared one, else 0.
+        hooks_.begin_loop(generator_nodes, iterated, before, bases.size() == 1 ? *bases.begin() : 0);
     }
     size_t stops = 0;
     std::vector<std::string> deferred;
@@ -2187,15 +2260,20 @@ void Run::iterate_group(const GroupPlan &group)
         loop_.reset();
     };
     try {
-        for (int64_t slot = 0;; ++slot) {
+        for (int64_t slot = 0; slot != loop_->end; ++slot) {
             {
                 std::lock_guard<std::mutex> locked(mutex_);
                 commit_slot_ = slot;
                 if (slot == 0 || !loop_->active) open_slot(slot);
             }
             changed_.notify_all();
-            if (slot == 1) decide();
+            // A context item before the range: it runs the temporal nodes, with the nodes they need, and nothing else.
+            bool context = slot < loop_->first;
+            if (slot == loop_->first + 1) decide(slot);
             const GeneratorRun *current = nullptr;
+            // The window's per-item estimate measures the range's first item (the items before it meanwhile, which
+            // run their generators' part of it).
+            int64_t estimate = 0;
             try {
                 for (size_t g = 0; g < generators.size(); ++g) {
                     GeneratorRun &generator = generators[g];
@@ -2219,10 +2297,6 @@ void Run::iterate_group(const GroupPlan &group)
                         }
                         if (!more) throw ItemsEnd{};
                         outputs = native_item(generator, token);
-                        if (slot == 0)
-                            for (const Value &value : outputs)
-                                if (const Image *image = std::get_if<Image>(&value))
-                                    loop_->estimate += int64_t(image->values() * sizeof(float));
                         suspend();
                         {
                             std::lock_guard<std::mutex> locked(mutex_);
@@ -2254,11 +2328,6 @@ void Run::iterate_group(const GroupPlan &group)
                                             Memo::get().insert(*key, Memo::Entry{outputs, PyRef{},
                                                                                  hooks_.memo_bytes(values).cast<int64_t>()});
                                     }
-                                    if (slot == 0) {
-                                        py::list values;
-                                        for (const Value &value : outputs) values.append(to_python(value));
-                                        loop_->estimate += hooks_.output_bytes(values).cast<int64_t>();
-                                    }
                                     item = key;
                                 }
                             } catch (py::error_already_set &error) {
@@ -2273,68 +2342,85 @@ void Run::iterate_group(const GroupPlan &group)
                         }
                         changed_.notify_all();
                     }
-                    submit_broadcast(generator.node, outputs);
+                    if (slot <= loop_->first) {
+                        estimate += item_bytes(generator, outputs);
+                        std::lock_guard<std::mutex> locked(mutex_);  // the producer reads it (an early decision's)
+                        loop_->estimate = estimate;
+                    }
+                    if (!context) submit_broadcast(generator.node, outputs);
                 }
                 {
                     std::lock_guard<std::mutex> locked(mutex_);
                     std::set<std::pair<int, int64_t>> seen;
-                    for (int output : group.outputs) prefetch({output, slot}, seen);
-                    for (const CollectorRun &collector : collectors) {
-                        const NodePlan &node = nodes_[size_t(collector.node)];
-                        for (size_t i = 0; i < node.inputs.size(); ++i)
-                            if (node.inputs[i].ignored && node.inputs[i].source >= 0)
-                                prefetch(source_of({collector.node, slot}, int(i)), seen);
+                    if (context) {
+                        for (int node : group.temporal) prefetch({node, slot}, seen);
+                    } else {
+                        for (int output : group.outputs) prefetch({output, slot}, seen);
+                        for (const CollectorRun &collector : collectors) {
+                            const NodePlan &node = nodes_[size_t(collector.node)];
+                            for (size_t i = 0; i < node.inputs.size(); ++i)
+                                if (node.inputs[i].ignored && node.inputs[i].source >= 0)
+                                    prefetch(source_of({collector.node, slot}, int(i)), seen);
+                        }
                     }
                     dispatch();
                 }
-                for (int output : group.outputs) process_regular(output, slot);
-                for (CollectorRun &collector : collectors) {
-                    suspend();
-                    const NodePlan &node = nodes_[size_t(collector.node)];
-                    // process.Executor.__gather_collector_inputs: the iterated inputs in order.
-                    std::vector<Value> values;
-                    for (size_t i = 0; i < node.inputs.size(); ++i) {
-                        const InputPlan &input = node.inputs[i];
-                        if (!input.ignored) continue;
-                        if (input.source < 0) {
-                            values.push_back(input.constant);
-                            continue;
+                if (context) {
+                    // A context item updates the temporal nodes' state: they run, in topological order, with the
+                    // nodes they need, and nothing else (process.Executor.__iterate_generator_nodes).
+                    for (int node : group.temporal) process_regular(node, slot);
+                } else {
+                    for (int output : group.outputs) process_regular(output, slot);
+                    for (CollectorRun &collector : collectors) {
+                        suspend();
+                        const NodePlan &node = nodes_[size_t(collector.node)];
+                        // process.Executor.__gather_collector_inputs: the iterated inputs in order.
+                        std::vector<Value> values;
+                        for (size_t i = 0; i < node.inputs.size(); ++i) {
+                            const InputPlan &input = node.inputs[i];
+                            if (!input.ignored) continue;
+                            if (input.source < 0) {
+                                values.push_back(input.constant);
+                                continue;
+                            }
+                            CellRef source = source_of({collector.node, slot}, int(i));
+                            ensure(source);
+                            std::lock_guard<std::mutex> locked(mutex_);
+                            Cell &from = cell(source);
+                            if (from.state == State::failed) throw PythonError{from.error};
+                            values.push_back(output_of(from, input.output));
+                            consume(source);
                         }
-                        CellRef source = source_of({collector.node, slot}, int(i));
-                        ensure(source);
-                        std::lock_guard<std::mutex> locked(mutex_);
-                        Cell &from = cell(source);
-                        if (from.state == State::failed) throw PythonError{from.error};
-                        values.push_back(output_of(from, input.output));
-                        consume(source);
-                    }
-                    suspend();
-                    Clock::time_point start = Clock::now();
-                    PyRef prepared = take_prepared(collector.node, slot);
-                    {
-                        PythonSection python;
-                        try {
-                            py::list inputs;
-                            for (const Value &value : values) inputs.append(to_python(value));
-                            hooks_.collector_iterate(
-                                collector.node, inputs,
-                                py::handle(static_cast<PyObject *>(collector.collector.handle.get())),
-                                prepared.handle ? py::handle(static_cast<PyObject *>(prepared.handle.get())) : py::none());
-                        } catch (py::error_already_set &error) {
-                            collector.seconds += seconds_since(start);
-                            throw PythonError{current_error(error)};
+                        suspend();
+                        Clock::time_point start = Clock::now();
+                        PyRef prepared = take_prepared(collector.node, slot);
+                        {
+                            PythonSection python;
+                            try {
+                                py::list inputs;
+                                for (const Value &value : values) inputs.append(to_python(value));
+                                hooks_.collector_iterate(
+                                    collector.node, inputs,
+                                    py::handle(static_cast<PyObject *>(collector.collector.handle.get())),
+                                    prepared.handle ? py::handle(static_cast<PyObject *>(prepared.handle.get()))
+                                                    : py::none());
+                            } catch (py::error_already_set &error) {
+                                collector.seconds += seconds_since(start);
+                                throw PythonError{current_error(error)};
+                            }
                         }
+                        collector.seconds += seconds_since(start);
                     }
-                    collector.seconds += seconds_since(start);
                 }
-                if (slot == 0) {
+                if (slot == loop_->first) {
                     std::lock_guard<std::mutex> locked(mutex_);
-                    for (int node : group.iterated) loop_->estimate += slot_cells_[0][size_t(node)].bytes;
+                    for (int node : group.iterated) loop_->estimate += slot_cells_[slot][size_t(node)].bytes;
                 }
                 ++loop_->committed;
                 release_slot(slot);
                 suspend();
                 for (GeneratorRun &generator : generators) {
+                    if (context) break;  // no progress for a context item: its time counts to the range's first item
                     Clock::time_point now = Clock::now();
                     double paused = std::max(0.0, time_paused_ - generator.last_paused);
                     generator.times.push_back(std::chrono::duration<double>(now - generator.last).count() - paused);
@@ -2653,7 +2739,7 @@ bool Run::run_python(const CellRef &ref, const Gathered &inputs, Cell &result, d
         if (node.kind == Kind::regular) {
             py::list outputs = hooks_.regular_outputs(output);
             for (py::handle value : outputs) result.outputs.push_back(py_ref(value));
-            if (ref.slot == 0) result.bytes = hooks_.output_bytes(outputs).cast<int64_t>();
+            if (measured(ref)) result.bytes = hooks_.output_bytes(outputs).cast<int64_t>();
         } else if (node.kind == Kind::generator) {
             for (py::handle value : hooks_.generator_outputs(output)) result.outputs.push_back(py_ref(value));
         } else {
@@ -2823,7 +2909,7 @@ NativeOutcome Run::run_native(const CellRef &ref, const Gathered &inputs, Cell &
     std::vector<size_t> all(outputs.size());
     for (size_t i = 0; i < all.size(); ++i) all[i] = i;
     if (auto error = enforce_outputs(ref.node, outputs, all)) return failure(*error);
-    if (ref.slot == 0)
+    if (measured(ref))
         for (const Value &value : outputs)
             if (const Image *image = std::get_if<Image>(&value)) result.bytes += int64_t(image->values() * sizeof(float));
     result.outputs = std::move(outputs);
@@ -3042,7 +3128,7 @@ void Run::execute(const CellRef &ref, bool on_driver)
             flush_broadcasts();
             broadcast_now(ref.node, result.outputs, result.object);
         } else if (node.kind == Kind::regular) {
-            submit_broadcast(ref.node, result.outputs);
+            if (!discarded(ref)) submit_broadcast(ref.node, result.outputs);
             emit_finish(ref.node, seconds);
         }
     }

@@ -22,6 +22,7 @@ from engine_differential import Result, execute, mismatches, order_violations
 from verify_runtime import canonical
 
 import api
+import native_executor
 import process
 from api import (
     BaseInput,
@@ -53,6 +54,7 @@ from nodes.impl.item_window import (
     ITEM_WINDOW_VARIABLE,
     SERIAL_PRODUCER_VARIABLE,
     ItemWindow,
+    register_phases,
 )
 from process import ExecutionId, Executor, RegularOutput
 
@@ -929,9 +931,9 @@ def test_individual_runs_match(tmp_path, kind):
 # Context frames (native/local/video-seek/DESIGN.md): a generator reading a range of its source also reads, for the
 # loop's temporal nodes, the neighbours they need (NodeData.temporal_context, Generator.context). Items before the
 # range run the temporal nodes and the nodes they need alone; items after it only serve look-aheads. Each test runs on
-# the executors in CONTEXT_EXECUTORS; the native engine joins once it implements context frames.
+# both executors (CONTEXT_EXECUTORS), and each must see what it sees in its own full run.
 
-CONTEXT_EXECUTORS = ["python"]
+CONTEXT_EXECUTORS = ["python", "native"]
 
 
 class Frames:
@@ -1126,6 +1128,15 @@ def test_context_frames_give_a_range_its_neighbours(
         monkeypatch,
         "4",
     )
+    # The native engine's broadcasts as it sends them, (node, first output value).
+    sent: list[tuple[str, object]] = []
+    broadcast = native_executor._Hooks.broadcast
+
+    def record_broadcast(hooks: native_executor._Hooks, index, outputs, *rest):
+        sent.append((hooks.nodes[index].id, outputs[0]))
+        return broadcast(hooks, index, outputs, *rest)
+
+    monkeypatch.setattr(native_executor._Hooks, "broadcast", record_broadcast)
     frames = Frames(20)
     result, trace, chain = run_context(
         kind,
@@ -1158,11 +1169,19 @@ def test_context_frames_give_a_range_its_neighbours(
     assert progress(result) == [(0, 4), (1, 4), (2, 4), (3, 4), (4, 4), (4, 4)]
     broadcasts = per_node(result, "node-broadcast")
     # frames: its sequence, the range's 4 items, its end
-    assert (broadcasts["frames"], broadcasts["offset"], broadcasts["temporal"]) == (
-        6,
-        4,
-        4,
-    )
+    counts = (broadcasts["frames"], broadcasts["offset"], broadcasts["temporal"])
+    if kind == "python":
+        assert counts == (6, 4, 4)
+    else:
+        # The engine keeps one pending broadcast per node (LatestBroadcasts; the oracle sends each one), so it may
+        # send fewer: each of the range's items, never a context item's.
+        assert all(0 < count <= most for count, most in zip(counts, (6, 4, 4)))
+        range_values = {i * 10 + 1001 for i in range(8, 12)}
+        assert {value for node, value in sent if node == "frames"} <= {
+            None,
+            *(i * 10 + 1 for i in range(8, 12)),
+        }
+        assert {v for n, v in sent if n in ("offset", "temporal")} <= range_values
     assert per_node(result, "node-finish")["temporal"] == 7
     assert order_violations(result.events, chain) == []
 
@@ -1317,6 +1336,121 @@ def test_stop_during_a_context_item_ends_the_run_cleanly(kind, monkeypatch, tmp_
     assert [r[0] for r in records(trace, "temporal")] == [5]
     assert not any(records(trace, tag) for tag in ("sink", "collect", "report"))
     assert progress(result) == [(0, 4)]
+
+
+@pytest.mark.parametrize("serial", [False, True], ids=["pure", "serial"])
+def test_context_frames_match_across_executors(serial, monkeypatch, tmp_path):
+    # The native engine's range with context frames is the Python executor's: the same events (the engine's in A6's
+    # order) and reads, and per node the same records, in the driver's order for the nodes it runs one at a time.
+    def run(kind: str) -> tuple[Result, list[object], list[int], Chain]:
+        frames = Frames(20)
+        result, trace, chain = run_context(
+            kind,
+            lambda t: context_chain(t, lambda: frames.range(8, 4), serial=serial),
+            tmp_path,
+            monkeypatch,
+            "4",
+        )
+        assert result.error is None, result.error
+        return result, trace, frames.pulled, chain
+
+    oracle, oracle_trace, oracle_pulled, _ = run("python")
+    engine, engine_trace, engine_pulled, chain = run("native")
+    assert mismatches("context frames", chain, oracle, engine, tmp_path) == []
+    assert engine_pulled == oracle_pulled
+    ordered = ["temporal", "sink", "collector", "collect", "report"]
+    for tag in [*ordered, "offset"] if serial else ordered:
+        assert records(engine_trace, tag) == records(oracle_trace, tag), tag
+    for tag in ["other"] if serial else ["other", "offset"]:
+        assert sorted(records(engine_trace, tag)) == sorted(
+            records(oracle_trace, tag)
+        ), tag
+
+
+@pytest.mark.parametrize("kind", CONTEXT_EXECUTORS)
+def test_context_items_start_no_sink_prepare(kind, monkeypatch, tmp_path):
+    # save has prepare and commit phases (as Save Image). The window, decided by temporal's look-ahead during the first
+    # context item, may prepare save ahead for the range's items, never for a context item before or after the range,
+    # where save never runs.
+    monkeypatch.setattr("nodes.impl.item_window._PHASES", {})
+    prepared: list[int] = []
+
+    def prepare(enforced):
+        prepared.append(enforced[0])
+        return enforced[0]
+
+    frames = Frames(20)
+
+    def scenario(trace: list[object]) -> Chain:
+        register_phases(
+            "chainner:utility:test_save",
+            prepare,
+            lambda _enforced, value: trace.append(("save", value.result())),
+        )
+        b = Builder()
+        b.node("frames", lambda: frames.range(8, 4), kind="generator", inputs=0)
+
+        def temporal(context, x):
+            context.iteration.peek(0, 1)
+            return x
+
+        b.node("temporal", temporal, context=True, temporal=(3, 2))
+        b.node(
+            "save", lambda x: trace.append(("save", x)), outputs=0, side_effects=True
+        )
+        b.edge("frames", 0, "temporal", 0)
+        b.edge("temporal", 0, "save", 0)
+        return b.chain
+
+    result, trace, _ = run_context(kind, scenario, tmp_path, monkeypatch, "4")
+    assert result.error is None, result.error
+    assert trace == [("save", i * 10 + 1) for i in range(8, 12)]
+    assert set(prepared) <= {i * 10 + 1 for i in range(8, 12)}
+
+
+def test_native_window_is_decided_after_the_range_s_first_item(monkeypatch, tmp_path):
+    # The native engine: with no look-ahead before it, the window is decided at the range's second item (slot 4, after
+    # three context items), and its per-item estimate measures the range's first item: big's 4 KiB, which no context
+    # item computes. With a budget of one such item, the producer reads one item ahead of the committing one: item 10 at
+    # most while item 9 is saved (K = 4 alone would allow item 12).
+    decided: list[int] = []
+    window = native_executor._Hooks.window
+
+    def record_window(hooks: native_executor._Hooks, *arguments: Any):
+        assert hooks.engine is not None
+        decided.append(hooks.engine.commit_slot)
+        return window(hooks, *arguments)
+
+    monkeypatch.setattr(native_executor._Hooks, "window", record_window)
+    monkeypatch.setattr(native_executor, "memory_budget", lambda: 4096)
+    frames = Frames(20)
+    # Per item saved: its value, big's bytes and the last item read by then.
+    saved: list[tuple[int, int, int]] = []
+
+    def scenario(_trace: list[object]) -> Chain:
+        b = Builder()
+        b.node("frames", lambda: frames.range(8, 4), kind="generator", inputs=0)
+        b.node("temporal", lambda context, x: x, context=True, temporal=(3, 2))
+        b.node("big", lambda x: np.zeros(4096, np.uint8))
+
+        def save(x, data):
+            if x == 91:
+                # The producer reads ahead meanwhile, as far as the budget lets it.
+                time.sleep(0.3)
+            saved.append((x, data.nbytes, max(frames.pulled)))
+
+        b.node("save", save, inputs=2, outputs=0, side_effects=True)
+        b.edge("frames", 0, "temporal", 0)
+        b.edge("frames", 0, "big", 0)
+        b.edge("temporal", 0, "save", 0)
+        b.edge("big", 0, "save", 1)
+        return b.chain
+
+    result, _, _ = run_context("native", scenario, tmp_path, monkeypatch, "4")
+    assert result.error is None, result.error
+    assert [s[:2] for s in saved] == [(i * 10 + 1, 4096) for i in range(8, 12)]
+    assert decided == [4]
+    assert saved[1][2] <= 10
 
 
 def test_python_window_is_decided_after_the_range_s_first_item(monkeypatch, tmp_path):

@@ -317,6 +317,33 @@ def _groups(chain: Chain) -> list[list[GeneratorNode]]:
     return groups
 
 
+def _temporal_nodes(
+    chain: Chain, iterated: set[NodeId], sinks: list[Node]
+) -> list[FunctionNode]:
+    """process.Executor.__temporal_nodes: a loop's nodes without side effects that declare a temporal context
+    (NodeData.temporal_context) and feed one of its sinks, in topological order. The engine runs them for a context
+    item, with the nodes they need."""
+    ancestors: set[NodeId] = set()
+    pending = [node.id for node in sinks]
+    while pending:
+        for edge in chain.edges_to(pending.pop()):
+            if edge.source.id not in ancestors:
+                ancestors.add(edge.source.id)
+                pending.append(edge.source.id)
+    temporal: list[FunctionNode] = []
+    for node_id in chain.topological_order():
+        node = chain.nodes[node_id]
+        if (
+            node_id in ancestors
+            and node_id in iterated
+            and isinstance(node, FunctionNode)
+            and not node.has_side_effects()
+            and node.data.temporal_context is not None
+        ):
+            temporal.append(node)
+    return temporal
+
+
 def _relative_path_input(i: object) -> bool:
     """process._relative_path_input: whether the input is a RelativePathInput (a writer's subdirectory or file name)."""
     module = sys.modules.get("nodes.properties.inputs.file_inputs")
@@ -324,8 +351,9 @@ def _relative_path_input(i: object) -> bool:
 
 
 class _EngineIterationView(IterationView):
-    """A node's iteration view for one loop run: its index is the slot the engine commits (or the later slot a serial
-    node is computed ahead at, see at()); a look-ahead waits in the engine (GIL released) for a later item."""
+    """A node's iteration view for one loop run: its index counts the slots the engine commits (or the later slot a
+    serial node is computed ahead at, see at()) from the range's first one, numbered by the loop's index base
+    (process._IterationView); a look-ahead waits in the engine (GIL released) for a later item."""
 
     def __init__(
         self,
@@ -333,6 +361,8 @@ class _EngineIterationView(IterationView):
         index: int,
         node: Node,
         sources: tuple[str | None, ...],
+        first: int,
+        index_base: int,
         base: _EngineIterationView | None = None,
         slot: int = -1,
     ) -> None:
@@ -340,6 +370,9 @@ class _EngineIterationView(IterationView):
         self.__index = index
         self.__node = node
         self.__sources = sources
+        # Slots before `first` are context items; the slot `first` is item `index_base`.
+        self.__first = first
+        self.__index_base = index_base
         self.__state: object | None = None
         self.__base = base  # the view whose state this one shares
         # The item the node is computed ahead at; -1: the committing one.
@@ -349,12 +382,23 @@ class _EngineIterationView(IterationView):
         """This view as the node computed ahead at a later item sees it (process._IterationView.at): that item's
         index, this view's state, look-aheads from that item."""
         return _EngineIterationView(
-            self.__engine, self.__index, self.__node, self.__sources, self, slot
+            self.__engine,
+            self.__index,
+            self.__node,
+            self.__sources,
+            self.__first,
+            self.__index_base,
+            self,
+            slot,
         )
 
     @property
     def index(self) -> int:
-        return self.__engine.commit_slot if self.__slot < 0 else self.__slot
+        return self.__index_base + self.__at() - self.__first
+
+    @property
+    def context(self) -> bool:
+        return self.__at() < self.__first
 
     @property
     def source(self) -> str:
@@ -390,6 +434,10 @@ class _EngineIterationView(IterationView):
             # The item fails at this input when it comes, with this error (run_node).
             return None
 
+    def __at(self) -> int:
+        """The slot of the item the node runs for: the committing one, or the later one it is computed ahead at."""
+        return self.__engine.commit_slot if self.__slot < 0 else self.__slot
+
     def __input_index(self, input_id: int) -> int:
         for index, i in enumerate(self.__node.data.inputs):
             if i.id == input_id:
@@ -416,10 +464,16 @@ class _EngineContext(NodeContext):
         self.chain_cleanup_fns: set[Callable[[], None]] = set()
         self.node_cleanup_fns: set[Callable[[], None]] = set()
         self.iteration_view: _EngineIterationView | None = None
+        # The chosen item of the loop the node belongs to (NodeContext.chosen_item).
+        self.chosen: int | None = None
 
     @property
     def iteration(self) -> IterationView | None:
         return self.iteration_view
+
+    @property
+    def chosen_item(self) -> int | None:
+        return self.chosen
 
     @property
     def aborted(self) -> bool:
@@ -488,6 +542,9 @@ class _Hooks:
         # The running loop's generators and iterated nodes, and its nodes' lineages (process._LoopRun).
         self.loop_iterated: set[NodeId] = set()
         self.lineages: dict[NodeId, NodeId | None] = {}
+        # The running loop's range: its first slot (context items before it) and that slot's item number.
+        self.loop_first = 0
+        self.loop_base = 0
 
     # Threads and events
 
@@ -632,16 +689,48 @@ class _Hooks:
 
     # Generators
 
-    def items(self, output: object) -> tuple[Iterator[object], bool, int, bool]:
-        """A generator node's items: (iterator, split, expected length, fail_fast). split: the iterator names its
-        items (describe) apart from loading them (materialize), as Load Images' native iterator does."""
+    def items(
+        self,
+        index: int,
+        output: object,
+        wanted: tuple[int, int] | None,
+        iterated: list[int],
+    ) -> tuple[Iterator[object], bool, int, bool, int, int, int]:
+        """A generator node's items: (iterator, split, expected length, fail_fast, before, after, index base). split:
+        the iterator names its items (describe) apart from loading them (materialize), as Load Images' native iterator
+        does. wanted: the context items (before, after) the loop's temporal nodes want when the generator is its
+        group's only one, else None (process.Executor.__iterate_generator_nodes): it then gives its chosen item to
+        the group's nodes (iterated, collectors included, before they are made), and reads the context items through
+        Generator.context, once, when it has one and they want any; before, after: the clipped counts it read."""
         assert isinstance(output, GeneratorOutput)
-        iterator = output.generator.supplier().__iter__()
+        generator = output.generator
+        before = after = 0
+        iterator: Iterator[object] | None = None
+        if wanted is not None:
+            if generator.chosen_item is not None:
+                for node in iterated:
+                    self.contexts[node].chosen = generator.chosen_item
+            if (
+                generator.context is not None
+                and wanted != (0, 0)
+                and generator.expected_length > 0
+            ):
+                items, before, after = generator.context(*wanted)
+                assert 0 <= before <= wanted[0] and 0 <= after <= wanted[1], (
+                    f"{self.nodes[index].data.name} read ({before}, {after}) context items"
+                    f" for the {wanted} asked"
+                )
+                iterator = items.__iter__()
+        if iterator is None:
+            iterator = generator.supplier().__iter__()
         return (
             iterator,
             hasattr(iterator, "describe"),
-            output.generator.expected_length,
-            output.generator.fail_fast,
+            generator.expected_length,
+            generator.fail_fast,
+            before,
+            after,
+            generator.index_base,
         )
 
     def file_identity(self, path: object) -> str | None:
@@ -768,9 +857,14 @@ class _Hooks:
 
     # Iteration views and the item window
 
-    def begin_loop(self, generators: list[int], iterated: list[int]) -> None:
+    def begin_loop(
+        self, generators: list[int], iterated: list[int], first: int, base: int
+    ) -> None:
+        """A loop run begins (process._LoopRun): its slot `first` is item `base`, the context items before it."""
         self.loop_iterated = {self.nodes[index].id for index in iterated}
         self.lineages = {}
+        self.loop_first = first
+        self.loop_base = base
 
     def iteration(self, index: int) -> None:
         """Attaches the node's view for this loop run, made at its first commit (process.Executor.__iteration_view),
@@ -788,7 +882,7 @@ class _Hooks:
                 for lineage in lineages
             )
             view = self.views[index] = _EngineIterationView(
-                self.engine, index, node, sources
+                self.engine, index, node, sources, self.loop_first, self.loop_base
             )
         self.contexts[index].iteration_view = view
 
@@ -824,6 +918,7 @@ class _Hooks:
         self.views.clear()
         self.loop_iterated = set()
         self.lineages = {}
+        self.loop_first = self.loop_base = 0
 
     def window(
         self,
@@ -1106,6 +1201,8 @@ def build_plan(
         entries: list[dict[str, object]] = []
         output_nodes: set[FunctionNode] = set()
         iterated: set[int] = set()
+        # A group's only generator may read context items for its temporal nodes (Generator.context).
+        temporal: list[FunctionNode] = []
         for generator in generators:
             collectors, outputs, seen = _iterated_nodes(chain, generator)
             output_nodes.update(outputs)
@@ -1116,11 +1213,22 @@ def build_plan(
                     "collectors": [positions[c.id] for c in collectors],
                 }
             )
+            if len(generators) == 1:
+                temporal = _temporal_nodes(
+                    chain, {n.id for n in seen}, [*outputs, *collectors]
+                )
+        needs = [cast("tuple[int, int]", n.data.temporal_context) for n in temporal]
         groups.append(
             {
                 "generators": entries,
                 "outputs": [positions[n.id] for n in output_nodes],
                 "iterated": sorted(iterated),
+                "temporal": [positions[n.id] for n in temporal],
+                # The context items (before, after) its temporal nodes want.
+                "context": (
+                    max((need[0] for need in needs), default=0),
+                    max((need[1] for need in needs), default=0),
+                ),
             }
         )
     tail = [
