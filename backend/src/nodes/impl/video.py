@@ -5,10 +5,14 @@ import itertools
 import math
 import os
 import subprocess as subprocess
+import time
+from bisect import bisect_right
+from collections import OrderedDict
 from dataclasses import dataclass
 from functools import cache, lru_cache
 from io import BufferedIOBase as BufferedIOBase
 from pathlib import Path
+from threading import Lock, Timer
 from types import ModuleType
 from typing import TYPE_CHECKING, Generator, Iterator
 
@@ -748,6 +752,17 @@ class VideoLoader:
         planes = ((height, width * 3),)
         return FrameFormat("bgr24", scale, True, (width, height), planes)
 
+    def preview_format(self) -> FrameFormat:
+        """The Preview's format in every Mode: float32 RGB by the loader's colour
+        information, as Mode RGB with float RGB Precision reads it."""
+        settings = self.settings
+        assert settings is not None and self.colour is not None
+        metadata: VideoMetadata = vars(self)["metadata"]
+        stream: dict[str, object] = vars(self)["video_stream"]
+        layout = pixel_layout(str(stream.get("pix_fmt") or ""))
+        rgb = ReadSettings(VideoMode.RGB, True, settings.choices)
+        return self._rgb_format(metadata, layout, self.colour, rgb)
+
     def get_audio_stream(self, duration: float | None = None):
         """The file's audio streams, for Save Video's mux; with a `duration` (seconds),
         only that much of them."""
@@ -841,3 +856,214 @@ class VideoLoader:
         rgb = settings.mode is not VideoMode.PLANES
         planes = settings.mode is not VideoMode.RGB
         return _items(frames, rgb, planes)
+
+
+class PreviewReader:
+    """A node's open reader for its Preview (preview_frame): float32 BGR frames in the
+    loader's preview_format, frame n being the full read's frame n. PyAV keeps the
+    container, the converter and the decoder's place: a frame in the same or the next
+    GOP decodes forward, an earlier or farther one seeks (as stream_items(n, n + 1)
+    does). A file the FFmpeg CLI reads keeps its pipe: a later frame reads forward, an
+    earlier one reads again from the start. `key` is the file version and the format
+    the reader is for."""
+
+    def __init__(self, loader: VideoLoader, key: tuple):
+        self.loader = loader
+        self.key = key
+        self.path: Path = vars(loader)["path"]
+        self.format = loader.preview_format()
+        self.last_used = time.monotonic()
+        self._av = _reader_pyav()
+        # PyAV's open file, the conversion of its video track and the decoded frames
+        # from the decoder's place on; or the CLI's frames. _next is the next's number.
+        self._container = None
+        self._converters: _Converters | None = None
+        self._decoded: Generator[VideoFrame, None, None] | None = None
+        self._piped: Iterator[np.ndarray] | None = None
+        self._next = 0
+
+    def frame(self, n: int) -> np.ndarray:
+        """Frame `n` (n >= 0). PyAV falls back to the CLI before its first frame, as
+        stream_items does."""
+        if self._av is not None:
+            try:
+                return self._decoded_frame(self._av, n)
+            except (_UseCliReader, self._av.error.FFmpegError) as reason:
+                if self._converters is not None and not self._converters.first:
+                    raise
+                logger.warning(
+                    "Previewing %s through the FFmpeg CLI: %s", self.path, reason
+                )
+                self.close()
+                self._av = None
+        return self._piped_frame(n)
+
+    def _decoded_frame(self, av: ModuleType, n: int) -> np.ndarray:
+        if self._container is None:
+            self._container = av.open(str(self.path))
+            if _variable_rate(self.path, self._container, av):
+                raise _UseCliReader("its frame rate is variable")
+            stream = self._container.streams.video[0]
+            stream.thread_type = "AUTO"
+            self._converters = _Converters(self.path, stream, [self.format], av)
+        converters = self._converters
+        assert converters is not None
+        index = frame_index(self.path)
+        if n >= len(index.pts):
+            raise _past_the_end(n, len(index.pts))
+        # The keyframes between the decoder's place and the frame.
+        keyframes = bisect_right(index.keyframes, n) - bisect_right(
+            index.keyframes, self._next
+        )
+        decoded = self._decoded
+        if decoded is None or n < self._next or keyframes > 1:
+            if decoded is not None:
+                decoded.close()
+            decoded = _seek(self._container, converters.stream, self.path, av, n)
+            self._decoded = decoded
+            self._next = n
+        frame = None
+        while self._next <= n:
+            frame = next(decoded, None)
+            if frame is None:
+                raise RuntimeError(f"{self.path} ended before its frame {n}.")
+            self._next += 1
+        assert frame is not None
+        (image,) = converters.values(frame)
+        assert isinstance(image, np.ndarray)
+        return image
+
+    def _piped_frame(self, n: int) -> np.ndarray:
+        piped = self._piped
+        if piped is None or n < self._next:
+            if piped is not None:
+                _close(piped)
+            piped = graph().video_stream_frames(globals(), self.loader, self.format)
+            self._piped = piped
+            self._next = 0
+        image = None
+        while self._next <= n:
+            # The CLI renumbers frames to a constant rate: decoded and discarded.
+            image = next(piped, None)
+            if image is None:
+                raise _past_the_end(n, self._next)
+            self._next += 1
+        assert image is not None
+        return image
+
+    def close(self) -> None:
+        """Closes the decoder and its file, or the pipe."""
+        if self._decoded is not None:
+            self._decoded.close()
+            self._decoded = None
+        if self._converters is not None:
+            self._converters.free()
+            self._converters = None
+        if self._container is not None:
+            self._container.close()
+            self._container = None
+        if self._piped is not None:
+            _close(self._piped)
+            self._piped = None
+
+
+# preview_frame keeps a reader for at most PREVIEW_READERS nodes, and closes one idle for
+# PREVIEW_IDLE_SECONDS: Windows renames or deletes no file a reader holds open.
+PREVIEW_READERS = 4
+PREVIEW_IDLE_SECONDS = 60.0
+_previews_lock = Lock()
+# By node id, the least recently used first.
+_previews: OrderedDict[str, PreviewReader] = OrderedDict()
+_previews_timer: Timer | None = None
+
+
+def preview_frame(node_id: str, loader: VideoLoader, n: int) -> np.ndarray:
+    """Frame `n` of the loader's video for node `node_id`'s Preview: float32 BGR, the
+    frame Mode RGB with float RGB Precision reads (stream_items(n, n + 1)), whatever
+    the loader's Mode. The node's PreviewReader stays open, so the frames after it come
+    without a seek; it opens again when the node's file or settings change."""
+    if n < 0:
+        raise _before_the_start(n)
+    path: Path = vars(loader)["path"]
+    key = (file_identity(path), loader.preview_format())
+    with _previews_lock:
+        # The reader is this call's alone until it is kept again.
+        reader = _previews.pop(node_id, None)
+    if reader is not None and reader.key != key:
+        reader.close()
+        reader = None
+    if reader is None:
+        reader = PreviewReader(loader, key)
+    try:
+        image = reader.frame(n)
+    except BaseException:
+        reader.close()
+        raise
+    _keep_preview(node_id, reader)
+    return image
+
+
+def close_previews() -> None:
+    """Closes every node's preview reader (at a chain's end and at shutdown)."""
+    global _previews_timer
+    with _previews_lock:
+        closing = list(_previews.values())
+        _previews.clear()
+        if _previews_timer is not None:
+            _previews_timer.cancel()
+            _previews_timer = None
+    _close_readers(closing)
+
+
+def _keep_preview(node_id: str, reader: PreviewReader) -> None:
+    """Keeps `reader` as the node's, closing the one it replaces (a concurrent call's)
+    and the least recently used beyond PREVIEW_READERS."""
+    global _previews_timer
+    reader.last_used = time.monotonic()
+    with _previews_lock:
+        replaced = _previews.pop(node_id, None)
+        closing = [] if replaced is None else [replaced]
+        _previews[node_id] = reader
+        while len(_previews) > PREVIEW_READERS:
+            closing.append(_previews.popitem(last=False)[1])
+        if _previews_timer is None:
+            _previews_timer = _idle_timer(PREVIEW_IDLE_SECONDS)
+    _close_readers(closing)
+
+
+def _idle_timer(seconds: float) -> Timer:
+    timer = Timer(max(seconds, 0.0), _close_idle_previews)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def _close_idle_previews() -> None:
+    """The idle timer: closes the readers idle for PREVIEW_IDLE_SECONDS, and waits for
+    the next one to be."""
+    global _previews_timer
+    now = time.monotonic()
+    with _previews_lock:
+        idle = [
+            node_id
+            for node_id, reader in _previews.items()
+            if now - reader.last_used >= PREVIEW_IDLE_SECONDS
+        ]
+        closing = [_previews.pop(node_id) for node_id in idle]
+        _previews_timer = None
+        if _previews:
+            oldest = min(reader.last_used for reader in _previews.values())
+            _previews_timer = _idle_timer(oldest + PREVIEW_IDLE_SECONDS - now)
+    _close_readers(closing)
+
+
+def _close_readers(readers: list[PreviewReader]) -> None:
+    """Closes each reader; the first error is raised once all have closed."""
+    error: Exception | None = None
+    for reader in readers:
+        try:
+            reader.close()
+        except Exception as failure:
+            error = error or failure
+    if error is not None:
+        raise error

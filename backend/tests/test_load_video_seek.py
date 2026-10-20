@@ -1,11 +1,15 @@
 """Load Video's exact reads: frame n read by a seek (stream_items(n, n + 1)) is item n of
 the full read, bit for bit, in RGB float, RGB 8-bit and Planes and in both readers (PyAV
-and the FFmpeg CLI). Runs on chaiNNer's integrated FFmpeg."""
+and the FFmpeg CLI); the Preview's open readers step through the same frames. Runs on
+chaiNNer's integrated FFmpeg."""
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -193,3 +197,122 @@ def test_seek_equals_full_read(
         match=rf"^frame {count} is past the end \(the video has {count} frames\)$",
     ):
         list(loader.stream_items(count, count + 1))
+
+
+def locked(path: Path) -> bool:
+    """Whether a reader holds `path` open: Windows renames no file that is open."""
+    moved = path.with_name(path.name + ".moved")
+    try:
+        os.replace(path, moved)
+    except PermissionError:
+        return True
+    os.replace(moved, path)
+    return False
+
+
+def rgb_float_frames(path: Path, choices: tuple[Any, ...] = AUTO) -> list[np.ndarray]:
+    settings = video.ReadSettings(VideoMode.RGB, True, choices)
+    frames: list[np.ndarray] = []
+    for rgb, *_ in video.VideoLoader(path, ENV, settings).stream_items():
+        assert rgb is not None
+        frames.append(rgb)
+    return frames
+
+
+@pytest.fixture
+def previews() -> Iterator[None]:
+    """Every preview reader closed after the test, as at a chain's end."""
+    yield
+    video.close_previews()
+
+
+@pytest.mark.usefixtures("previews")
+@pytest.mark.parametrize("cli", [False, True])
+def test_preview_reader_steps(folder: Path, monkeypatch: pytest.MonkeyPatch, cli: bool):
+    # The steps' frames equal the RGB float full read's, in every Mode; PyAV decodes a
+    # frame in the same or the next GOP forward and seeks to an earlier or farther one.
+    path = folder / "steps.mp4"
+    shutil.copyfile(made(folder, H264), path)
+    full = rgb_float_frames(path)
+    if cli:
+        monkeypatch.setenv("CHAINNER_C_VIDEO_READER", "cli")
+    else:
+        monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    seeks: list[int] = []
+    seek = vars(video)["_seek"]
+
+    def counting(*arguments: Any):
+        seeks.append(arguments[-1])
+        return seek(*arguments)
+
+    monkeypatch.setattr(video, "_seek", counting)
+    for mode, settings in SETTINGS.items():
+        loader = video.VideoLoader(path, ENV, settings)
+        seeks.clear()
+        for n in (30, 31, 33, 29, 140, 0, 61, 149):
+            frame = video.preview_frame(mode, loader, n)
+            assert frame.dtype == np.float32
+            np.testing.assert_array_equal(frame, full[n])
+        assert seeks == ([] if cli else [30, 29, 140, 0])
+        assert locked(path)
+    with pytest.raises(ValueError, match=r"^frame 150 is past the end"):
+        video.preview_frame("planes", loader, 150)
+    with pytest.raises(ValueError, match=r"^frame -1 is before the start"):
+        video.preview_frame("planes", loader, -1)
+    video.close_previews()
+    assert not locked(path) and not vars(video)["_previews"]
+
+
+@pytest.mark.usefixtures("previews")
+def test_preview_reader_follows_the_file_and_settings(
+    folder: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    first, second = folder / "first.mp4", folder / "second.mkv"
+    shutil.copyfile(made(folder, H264), first)
+    shutil.copyfile(made(folder, "hevc-10-bit.mkv"), second)
+    settings = SETTINGS["rgb-float"]
+    frame = video.preview_frame("node", video.VideoLoader(first, ENV, settings), 5)
+    np.testing.assert_array_equal(frame, rgb_float_frames(first)[5])
+    # Another file: the node's reader opens it, and lets the first go.
+    frame = video.preview_frame("node", video.VideoLoader(second, ENV, settings), 5)
+    np.testing.assert_array_equal(frame, rgb_float_frames(second)[5])
+    assert not locked(first) and locked(second)
+    # Other colour choices: the reader converts by them.
+    full_range = (*AUTO[:3], Range.FULL, AUTO[4])
+    chosen = video.ReadSettings(VideoMode.PLANES, True, full_range)
+    frame = video.preview_frame("node", video.VideoLoader(second, ENV, chosen), 6)
+    expected = rgb_float_frames(second, full_range)[6]
+    np.testing.assert_array_equal(frame, expected)
+    assert not np.array_equal(expected, rgb_float_frames(second)[6])
+    assert len(vars(video)["_previews"]) == 1
+    video.close_previews()
+    assert not locked(second)
+
+
+@pytest.mark.usefixtures("previews")
+def test_preview_readers_are_few_and_close_when_idle(
+    folder: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    paths = [folder / f"node-{n}.mp4" for n in range(5)]
+    for path in paths:
+        shutil.copyfile(made(folder, H264), path)
+    settings = SETTINGS["rgb-float"]
+    for n, path in enumerate(paths):
+        video.preview_frame(f"node-{n}", video.VideoLoader(path, ENV, settings), 3)
+    # At most four nodes keep a reader: the least recently used closes.
+    assert list(vars(video)["_previews"]) == [f"node-{n}" for n in range(1, 5)]
+    assert [locked(path) for path in paths] == [False, True, True, True, True]
+    # A reader idle for PREVIEW_IDLE_SECONDS closes, and so do the others in turn.
+    monkeypatch.setattr(video, "PREVIEW_IDLE_SECONDS", 0.2)
+    video.close_previews()
+    video.preview_frame("idle", video.VideoLoader(paths[0], ENV, settings), 3)
+    assert locked(paths[0])
+    time.sleep(0.1)
+    video.preview_frame("later", video.VideoLoader(paths[1], ENV, settings), 3)
+    deadline = time.monotonic() + 5
+    while vars(video)["_previews"] and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not vars(video)["_previews"]
+    assert not locked(paths[0]) and not locked(paths[1])
