@@ -336,8 +336,10 @@ def previews() -> Iterator[None]:
 @pytest.mark.usefixtures("previews")
 @pytest.mark.parametrize("cli", [False, True])
 def test_preview_reader_steps(folder: Path, monkeypatch: pytest.MonkeyPatch, cli: bool):
-    # The steps' frames equal the RGB float full read's, in every Mode; PyAV decodes a
-    # frame in the same or the next GOP forward and seeks to an earlier or farther one.
+    # The steps' frames equal the RGB float full read's, in every Mode. PyAV decodes
+    # forward when that passes fewer frames than a seek to the frame's keyframe (the
+    # decoder's place is past it: keyframes every 60 frames here) and seeks otherwise:
+    # to an earlier frame, or to a later GOP.
     path = folder / "steps.mp4"
     shutil.copyfile(made(folder, H264), path)
     full = rgb_float_frames(path)
@@ -356,11 +358,11 @@ def test_preview_reader_steps(folder: Path, monkeypatch: pytest.MonkeyPatch, cli
     for mode, settings in SETTINGS.items():
         loader = video.VideoLoader(path, ENV, settings)
         seeks.clear()
-        for n in (30, 31, 33, 29, 140, 0, 61, 149):
+        for n in (30, 31, 33, 29, 140, 0, 61, 63, 149):
             frame = video.preview_frame(mode, loader, n)
             assert frame.dtype == np.float32
             np.testing.assert_array_equal(frame, full[n])
-        assert seeks == ([] if cli else [30, 29, 140, 0])
+        assert seeks == ([] if cli else [30, 29, 140, 0, 61, 149])
         assert locked(path)
     with pytest.raises(ValueError, match=r"^frame 150 is past the end"):
         video.preview_frame("planes", loader, 150)

@@ -416,8 +416,10 @@ def _seek(
     if n >= len(index.pts):
         raise _past_the_end(n, len(index.pts))
     target = index.pts[n]
-    starts = [index.pts[k] for k in reversed(index.keyframes) if index.pts[k] <= target]
-    for start in starts[:_SEEK_TRIES]:
+    # The _SEEK_TRIES keyframes nearest at or before frame n, nearest first.
+    nearest = bisect_right(index.keyframes, n)
+    tries = index.keyframes[max(nearest - _SEEK_TRIES, 0) : nearest]
+    for start in (index.pts[k] for k in reversed(tries)):
         container.seek(start, stream=stream, backward=True, any_frame=False)
         frames = _decode(container, stream, path, av)
         if (yield from _from_timestamp(frames, target)):
@@ -903,11 +905,11 @@ class VideoLoader:
 class PreviewReader:
     """A node's open reader for its Preview (preview_frame): float32 BGR frames in the
     loader's preview_format, frame n being the full read's frame n. PyAV keeps the
-    container, the converter and the decoder's place: a frame in the same or the next
-    GOP decodes forward, an earlier or farther one seeks (as stream_items(n, n + 1)
-    does). A file the FFmpeg CLI reads keeps its pipe: a later frame reads forward, an
-    earlier one reads again from the start. `key` is the file version and the format
-    the reader is for."""
+    container, the converter and the decoder's place: a later frame of the GOP the
+    decoder is in decodes forward; an earlier one, or one of a later GOP, seeks (as
+    stream_items(n, n + 1) does): whichever passes fewer frames. A file the FFmpeg CLI
+    reads keeps its pipe: a later frame reads forward, an earlier one reads again from
+    the start. `key` is the file version and the format the reader is for."""
 
     def __init__(self, loader: VideoLoader, key: tuple):
         self.loader = loader
@@ -954,12 +956,13 @@ class PreviewReader:
         index = frame_index(self.path)
         if n >= len(index.pts):
             raise _past_the_end(n, len(index.pts))
-        # The keyframes between the decoder's place and the frame.
-        keyframes = bisect_right(index.keyframes, n) - bisect_right(
-            index.keyframes, self._next
-        )
+        # Decoding forward passes the frames from the decoder's place to n, a seek those
+        # from n's keyframe (the nearest at or before it; without one, the file's start)
+        # to n: forward only when that passes fewer, the place being past the keyframe.
+        nearest = bisect_right(index.keyframes, n)
+        keyframe = index.keyframes[nearest - 1] if nearest else -1
         decoded = self._decoded
-        if decoded is None or n < self._next or keyframes > 1:
+        if decoded is None or not keyframe < self._next <= n:
             if decoded is not None:
                 decoded.close()
             decoded = _seek(self._container, converters.stream, self.path, av, n)
