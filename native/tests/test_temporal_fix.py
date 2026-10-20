@@ -197,6 +197,20 @@ def test_strength_0_and_outside_a_loop_return_the_image_unchanged(monkeypatch):
 SIZE = (32, 48)
 
 
+def registered():
+    """The node's NodeData as the package registered it."""
+    return next(
+        data
+        for data in node.processing_group.nodes
+        if data.schema_id == "chainner:pytorch:temporal_fix"
+    )
+
+
+def test_the_node_declares_its_neighbours():
+    # The three frames before and after each one: a Load Video Range reads them too.
+    assert registered().temporal_context == (RADIUS, RADIUS) == (3, 3)
+
+
 def random_model(hw):
     torch.manual_seed(1)
     model = temporal_fix.temporalfix_arch(
@@ -245,6 +259,7 @@ def fix_loop(monkeypatch, tmp_path, frames, window_size, source):
     object.__setattr__(fix.data, "inputs", [ImageInput(channels=3).with_id(0)])
     object.__setattr__(fix.data, "side_effects", False)
     object.__setattr__(fix.data, "node_context", True)
+    object.__setattr__(fix.data, "temporal_context", registered().temporal_context)
     set_schema(fix, "chainner:pytorch:temporal_fix")
     pipeline.chain.add_node(fix)
     pipeline.chain.add_edge(Edge(edge.source, EdgeTarget(NodeId("fix"), InputId(0))))
@@ -298,3 +313,29 @@ def test_in_a_loop_the_node_uses_upstream_windows(monkeypatch, tmp_path, caplog)
         assert len(messages) == logs
         for got, want in zip(saved, expected(frames, windows), strict=True):
             np.testing.assert_array_equal(got, want)
+
+
+@pytest.mark.parametrize(
+    ("base", "window_size"), [(4, "6"), (1, "6"), (8, "6"), (4, "1")]
+)
+def test_a_range_gives_the_outputs_of_a_full_run(
+    monkeypatch, tmp_path, base, window_size
+):
+    # Load Video's Range base..base + 3 of 12 frames: the context frames give the node
+    # the windows a full run gives it at those frames, so the outputs are the full
+    # run's, bit for bit, near the clip's start (1) and end (8) too. At K = 1 both use
+    # the past frames alone.
+    rng = np.random.default_rng(3)
+    frames = [rng.random((*SIZE, 3), dtype=np.float32) for _ in range(12)]
+    runs = {}
+    for ranged in (False, True):
+        pipeline, saved, _loads = fix_loop(
+            monkeypatch, tmp_path, frames, window_size, "chainner:image:load_video"
+        )
+        asked = pipeline.read_range(frames, base, 4) if ranged else []
+        assert pipeline.run(workers=4) is None
+        runs[ranged] = (saved, asked)
+    (full, _), (saved, asked) = runs[False], runs[True]
+    assert asked == [(RADIUS, RADIUS)] and len(full) == 12
+    for got, want in zip(saved, full[base : base + 4], strict=True):
+        np.testing.assert_array_equal(got, want)

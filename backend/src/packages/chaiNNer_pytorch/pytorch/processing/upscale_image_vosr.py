@@ -141,6 +141,9 @@ class _VideoState:
     ],
     limited_to_8bpc=True,
     node_context=True,
+    # Three Frames needs the frame before; Persistent Detail starts a scene from up to
+    # five frames ahead.
+    temporal_context=(1, max(frames_ahead(method) for method in TemporalMode)),
 )
 def upscale_image_vosr_node(
     context: NodeContext,

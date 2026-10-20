@@ -579,6 +579,22 @@ def test_a_background_failure_is_raised_by_the_item_that_needs_that_frame():
 # Upscale Image (VOSR) in a real executor loop, over the item window.
 
 
+def registered():
+    """The node's NodeData as the package registered it."""
+    return next(
+        data
+        for data in upscale_image_vosr.processing_group.nodes
+        if data.schema_id == "chainner:pytorch:upscale_image_vosr"
+    )
+
+
+def test_the_node_declares_its_neighbours():
+    # The frame before (Three Frames) and five ahead (Persistent Detail's scene start):
+    # a Load Video Range reads them too.
+    needs = (1, max(map(frames_ahead, METHODS)))
+    assert registered().temporal_context == needs == (1, 5)
+
+
 def vosr_loop(
     monkeypatch, tmp_path, frames, window, method, restore, *, source, texture=True
 ):
@@ -630,6 +646,7 @@ def vosr_loop(
     object.__setattr__(vosr.data, "inputs", [ImageInput(channels=3).with_id(0)])
     object.__setattr__(vosr.data, "side_effects", False)
     object.__setattr__(vosr.data, "node_context", True)
+    object.__setattr__(vosr.data, "temporal_context", registered().temporal_context)
     set_schema(vosr, "chainner:pytorch:upscale_image_vosr")
     pipeline.chain.add_node(vosr)
     pipeline.chain.add_edge(Edge(edge.source, EdgeTarget(NodeId("vosr"), InputId(0))))
@@ -686,6 +703,34 @@ def test_in_a_load_video_loop_vosr_reads_frames_ahead(
         f"VOSR temporal: {needs}, the item window serves 0; using past frames only"
     ]
     assert_equal(saved, past_only(frames, Restorer(frames), STRENGTH, method))
+
+
+@pytest.mark.parametrize("base", [4, 0, 7])
+def test_a_three_frames_range_gives_the_outputs_of_a_full_run(
+    monkeypatch, tmp_path, base
+):
+    # Load Video's Range base..base + 3 of 11 frames, Three Frames: the frame before the
+    # range and those after it give each output what a full run gives it, the grain
+    # included (it numbers frames from the video's start and takes the previous input),
+    # at the video's start (0) and end (7) too.
+    frames = video(11, 7)
+    runs = {}
+    for ranged in (False, True):
+        pipeline, saved = vosr_loop(
+            monkeypatch,
+            tmp_path,
+            frames,
+            "6",
+            TemporalMode.THREE_FRAMES,
+            Restorer(frames),
+            source="chainner:image:load_video",
+        )
+        asked = pipeline.read_range(frames, base, 4) if ranged else []
+        assert pipeline.run(workers=4) is None
+        runs[ranged] = (saved, asked)
+    (full, _), (saved, asked) = runs[False], runs[True]
+    assert asked == [(1, 5)] and len(full) == 11
+    assert_equal(saved, full[base : base + 4])
 
 
 def test_outside_a_load_video_loop_each_image_is_upscaled_alone(monkeypatch, tmp_path):
