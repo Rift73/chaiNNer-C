@@ -422,11 +422,14 @@ class Writer:
         return u, v
 
     def save_frame(self, frame: object, path: Path) -> None:
-        """Saves the frame as the video would hold it to the PNG at path, without starting
-        FFmpeg (a run of one chosen frame): the RGB image, or the planes, their chroma
-        moved by the siting correction, converted to RGB by their coding; in 16 bits when
-        the video would have more than 8, else in 8."""
+        """Saves the frame as the video would hold it to the PNG at path, in the video's
+        folder, without starting FFmpeg (a run of one chosen frame): the RGB image, or the
+        planes, their chroma moved by the siting correction, converted to RGB by their
+        coding; in 16 bits when the video would have more than 8, else in 8. A frame the
+        video's writer would refuse, or settings it could not start with, raise as they
+        would at the video's first frame."""
         width, height = self.first_frame(frame)
+        graph().video_writer_check(globals(), self, width, height)
         params = dict(self.output_params)
         self.colour_options(params, width, height)
         planes, coding = self._planes(frame), self.coding
@@ -444,7 +447,6 @@ class Writer:
                 1,
             )
         deep = pixel_layout(str(params["pix_fmt"])).bit_depth > 8
-        path.parent.mkdir(parents=True, exist_ok=True)
         cv_save_image(
             path,
             to_uint16(img, normalized=True) if deep else to_uint8(img, normalized=True),
@@ -648,6 +650,8 @@ def frame_collector(
     simplicity: Simplicity,
     container: VideoFormat,
     encoder: VideoEncoder,
+    video_preset: VideoPreset,
+    crf: int,
     additional_parameters: str | None,
     simple_video_format: SimpleVideoFormat,
     quality: int,
@@ -659,22 +663,27 @@ def frame_collector(
     """Save Video in a run of the one chosen frame `item` (Load Video's "Run this frame",
     or In = Out; owner-approved 2026-10-21): the frame goes to `<video name>_f000123.png`
     next to where the video would go, as the video would hold it (Writer.save_frame).
-    FFmpeg never starts, the video's file is never touched and the audio is left out. A
-    second frame is an error: the loop runs one item."""
+    FFmpeg never starts, the video's file is never touched and the audio is left out.
+    Settings the video would refuse raise as they would for the video (its folder, the
+    Additional parameters, then its first frame). A second frame is an error: the loop
+    runs one item."""
     if simplicity is Simplicity.SIMPLE:
-        container, encoder, _, _ = get_simple_format(simple_video_format, quality)
-    # The output options the colour options read, as video_io.cpp save_video gives them:
-    # Additional parameters' "-key value" pairs split as it splits them (a lone "-flag"
-    # is a global option).
-    params: dict[str, str | float] = {"pix_fmt": "yuv420p"}
-    if encoder in container.encoders:
-        params["vcodec"] = encoder.value
-    if simplicity is Simplicity.ADVANCED and additional_parameters is not None:
-        joined = " " + " ".join(additional_parameters.split())
-        for parameter in joined.split(" -")[1:]:
-            pieces = parameter.split(" ")
-            if len(pieces) == 2:
-                params[pieces[0]] = pieces[1]
+        container, encoder, video_preset, crf = get_simple_format(
+            simple_video_format, quality
+        )
+    video = (save_dir / f"{video_name}.{container.ext}").resolve()
+    video.parent.mkdir(parents=True, exist_ok=True)
+    params, global_params = graph().video_output_options(
+        globals(),
+        str(video),
+        container,
+        encoder,
+        video_preset,
+        crf,
+        fps,
+        simplicity,
+        additional_parameters,
+    )
     if audio is not None and container is not VideoFormat.GIF:
         logger.info(
             "Save Video saves the one chosen frame %d as a PNG, without the audio.",
@@ -686,10 +695,10 @@ def frame_collector(
         fps=fps,
         audio=None,
         audio_settings=audio_settings,
-        save_path=str((save_dir / f"{video_name}.{container.ext}").resolve()),
+        save_path=str(video),
         output_params=params,
-        global_params=[],
-        # Never started, so FFmpeg's paths are never used.
+        global_params=global_params,
+        # Never started (only its checks run), so FFmpeg's paths are never used.
         ffmpeg_env=FFMpegEnv.from_env(),
         target=None,
         settings=settings,
@@ -945,8 +954,7 @@ def save_video_node(
         bit_depth,
         siting_correction,
     )
-    # NodeContext.chosen_item; a stand-in context without the member runs every item.
-    chosen = getattr(node_context, "chosen_item", None)
+    chosen = node_context.chosen_item
     if chosen is not None:
         return frame_collector(
             chosen,
@@ -955,6 +963,8 @@ def save_video_node(
             simplicity,
             container,
             encoder,
+            video_preset,
+            crf,
             additional_parameters,
             simple_video_format,
             quality,

@@ -2,7 +2,8 @@
 owner-approved 2026-10-21) saves that frame as `<video name>_f000123.png` next to where
 the video would go: in 16 bits when the video would have more than 8, Planes converted
 to RGB by their coding, the audio left out. FFmpeg never starts and the video's file is
-never created or touched."""
+never created or touched, yet settings the video would refuse fail the run as they would
+fail the video's."""
 
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import pytest
 # The node's modules load the native backend, which GitHub's checks do not build.
 pytest.importorskip("nodes.impl._chainner_graph")
 
-from api import NodeContext
+from api import Collector, NodeContext
 from nodes.impl.colour_info import (
     ChromaLocation,
     ColourInfo,
@@ -60,16 +61,19 @@ OLD = 1_000_000_000  # An mtime (2001) no write of this test can produce.
 
 
 class Context:
-    """The NodeContext members Save Video uses, in a run of the one chosen item."""
+    """The NodeContext members Save Video uses; by default a run of the one chosen item."""
 
-    chosen_item = ITEM
-
-    def __init__(self):
+    def __init__(self, chosen_item: int | None = ITEM):
+        self.chosen_item = chosen_item
         self.storage_dir = Path("no-storage")
         self.cleanups: list[Callable[[], None]] = []
 
     def add_cleanup(self, fn: Callable[[], None], after: str = "chain"):
         self.cleanups.append(fn)
+
+    def cleanup(self):
+        for fn in self.cleanups:
+            fn()
 
 
 class Forbidden:
@@ -109,10 +113,10 @@ class Logger:
 
 @pytest.fixture(autouse=True)
 def no_video_writer(monkeypatch: pytest.MonkeyPatch):
-    """FFmpeg, the video's temporary file and the integrated FFmpeg's set-up fail."""
+    """The video's writer, its temporary file, the integrated FFmpeg's set-up and any
+    process fail; FFmpeg's command may be made (ffmpeg-python runs nothing)."""
     graph = GuardedGraph(module.graph())
     monkeypatch.setattr(module, "graph", lambda: graph)
-    monkeypatch.setattr(module, "ffmpeg", Forbidden("ffmpeg"))
     monkeypatch.setattr(module, "atomic_target", Forbidden("atomic_target"))
     monkeypatch.setattr(
         module.FFMpegEnv, "get_integrated", Forbidden("FFMpegEnv.get_integrated")
@@ -120,7 +124,14 @@ def no_video_writer(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(subprocess, "Popen", Forbidden("subprocess.Popen"))
 
 
-def collector(
+def collector(folder: Path, **options: Any) -> FrameCollector:
+    result = node(Context(), folder, **options)
+    assert isinstance(result, FrameCollector)
+    return result
+
+
+def node(
+    context: Context,
     folder: Path,
     *,
     name: str = "out",
@@ -133,9 +144,9 @@ def collector(
     audio: object | None = None,
     colour: ColourInfo | None = None,
     bit_depth: BitDepth = BitDepth.AUTO,
-) -> FrameCollector:
-    result = save_video_node(
-        cast(NodeContext, Context()),
+) -> Collector[tuple[np.ndarray | None, ...], None]:
+    return save_video_node(
+        cast(NodeContext, context),
         None,
         folder,
         name,
@@ -159,8 +170,6 @@ def collector(
         bit_depth,
         SitingCorrection.AUTO,
     )
-    assert isinstance(result, FrameCollector)
-    return result
 
 
 def save(folder: Path, frame: tuple[np.ndarray | None, ...], **options) -> Path:
@@ -312,3 +321,55 @@ def test_a_second_frame_is_an_error(tmp_path: Path):
         c.on_iterate((second, None, None, None))
     png = read(tmp_path / f"out_f{ITEM:06d}.png")
     assert np.array_equal(png, to_uint8(first, normalized=True))
+
+
+def failure(
+    context: Context, folder: Path, frame: tuple[object, ...], **options: Any
+) -> tuple[str, str] | None:
+    """The error (type, message) of Save Video given one frame, None without one."""
+    try:
+        c = node(context, folder, **options)
+        c.on_iterate(frame)
+        c.on_complete()
+    except Exception as error:
+        return type(error).__name__, str(error)
+    finally:
+        context.cleanup()
+    return None
+
+
+@pytest.mark.parametrize(
+    ("options", "frame"),
+    [
+        # Keys Save Video sets itself (refused when the node starts).
+        ({"additional": "-crf 18"}, (image(), None, None, None)),
+        ({"additional": "-c:v libx264"}, (image(), None, None, None)),
+        # A -loglevel beside the writer's own: FFmpeg's command cannot be made.
+        ({"additional": "-loglevel quiet"}, (image(), None, None, None)),
+        # H.264 takes even sizes, and at most 10 bits.
+        ({"encoder": VideoEncoder.H264}, (image(5, 4), None, None, None)),
+        (
+            {"encoder": VideoEncoder.H264, "bit_depth": BitDepth.BITS_12},
+            (image(), None, None, None),
+        ),
+        # Planes mode without the planes.
+        ({"mode": VideoInputMode.PLANES}, (image(), None, None, None)),
+    ],
+)
+def test_a_one_frame_run_fails_as_the_video_would(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    options: dict[str, Any],
+    frame: tuple[object, ...],
+):
+    chosen = failure(Context(), tmp_path / "frame", frame, **options)
+    assert not list((tmp_path / "frame").glob("*.png"))
+    # The video's run fails before FFmpeg would start (a process still fails the test).
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        module.FFMpegEnv, "get_integrated", lambda _: module.FFMpegEnv.from_env()
+    )
+    monkeypatch.setattr(subprocess, "Popen", Forbidden("subprocess.Popen"))
+    video = failure(Context(None), tmp_path / "video", frame, **options)
+    assert chosen is not None
+    assert chosen == video

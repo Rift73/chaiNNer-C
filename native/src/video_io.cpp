@@ -467,8 +467,12 @@ std::shared_ptr<WriterResource> resource(const O&self) {
     auto owned=std::make_shared<WriterResource>();
     self.attr("_native_video_resource")=py::cast(owned); return owned;
 }
-void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
-    if(!self.attr("out").is_none())return;
+// Starts FFmpeg for frames of width x height. With launch false it only makes the
+// command, so a run of one chosen frame (save_video.py Writer.save_frame) fails where the
+// video's first frame would. A command that cannot be made or started is logged and
+// gives false: the frame's write then reports it.
+bool writer_open(const py::dict&g,const O&self,const O&width,const O&height,bool launch) {
+    if(!self.attr("out").is_none())return true;
     if(resource(self)->aborted)fail(PyExc_RuntimeError,"Video writer was aborted");
     if(graphpy::contains(py::make_tuple(member(g,"VideoEncoder","H264"),member(g,"VideoEncoder","H265")),self.attr("encoder")))
         graphpy::require(eq(mod(height,py::int_(2)),py::int_(0)) && eq(mod(width,py::int_(2)),py::int_(0)),
@@ -490,6 +494,7 @@ void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
         stream=call(output,py::tuple(),params).attr("overwrite_output")();
         O global_args=stream.attr("global_args");
         stream=call(global_args,star_arguments(global_args,self.attr("global_params")));
+        if(!launch)return true;
         resource(self)->target=self.attr("target");
         O process=stream.attr("run_async")(py::arg("pipe_stdin")=true,py::arg("pipe_stdout")=false,
             py::arg("pipe_stderr")=true,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffmpeg"));
@@ -498,11 +503,19 @@ void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {
         try {state->log.start(process);}
         catch(...) {state->abort();throw;} // Undrained stderr could block the encoder.
         self.attr("out")=process;
+        return true;
     } catch(const py::error_already_set&e) {
         if(!e.matches(PyExc_Exception))throw;
         GraphHandledException handled(e);
         global(g,"logger").attr("warning")("Failed to open video writer",py::arg("exc_info")=e.value());
+        return false;
     }
+}
+void writer_start(const py::dict&g,const O&self,const O&width,const O&height) {writer_open(g,self,width,height,true);}
+// The start's checks without FFmpeg (a run of one chosen frame): the error the video's
+// first frame would raise.
+void writer_check(const py::dict&g,const O&self,const O&width,const O&height) {
+    if(!writer_open(g,self,width,height,false))fail(PyExc_RuntimeError,"Failed to open video writer");
 }
 O frame_payload(const py::dict&g,const O&frame) {
     // Keep ndarray subclasses and custom quantizers on their original tobytes
@@ -709,22 +722,13 @@ void writer_close(const py::dict&g,const O&self) {
     state->completed=true;
 }
 
-O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O&name,const O&simplicity,
-    O container,O encoder,O preset,O crf,O additional,const O&simple,const O&quality,const O&fps,O audio,const O&audio_settings,
-    const O&settings) {
-    (void)unused;
-    if(eq(simplicity,member(g,"Simplicity","SIMPLE"))) {
-        O settings=global(g,"get_simple_format")(simple,quality);
-        container=settings[py::int_(0)];encoder=settings[py::int_(1)];preset=settings[py::int_(2)];crf=settings[py::int_(3)];
-    }
-    O filename=py::str("{}.{}").attr("format")(name,container.attr("ext"));
-    O path=div(directory,filename).attr("resolve")();
-    path.attr("parent").attr("mkdir")(py::arg("parents")=true,py::arg("exist_ok")=true);
-    // FFmpeg writes a temporary file in the folder, renamed onto the path at a successful close;
-    // its .tmp name picks no muxer, so the extension's is named.
-    O target=global(g,"atomic_target")(builtin("str")(path));
-    target.attr("check")(); // a file the rename cannot replace fails now, not after the encode
-    py::dict params=dict({{"filename",target.attr("temp")},{"format",container.attr("muxer")},{"pix_fmt",py::str("yuv420p")},{"r",fps},{"movflags",py::str("faststart")}});
+// Save Video's FFmpeg output options, writing `filename`, and its global options: the
+// container's and encoder's, then Advanced mode's Additional parameters, "-key value" an
+// option and a lone "-flag" a global option; a key Save Video sets itself raises. A run of
+// one chosen frame reads them too (save_video.py frame_collector).
+py::tuple output_options(const py::dict&g,const O&filename,const O&container,const O&encoder,const O&preset,const O&crf,
+    const O&fps,const O&simplicity,O additional) {
+    py::dict params=dict({{"filename",filename},{"format",container.attr("muxer")},{"pix_fmt",py::str("yuv420p")},{"r",fps},{"movflags",py::str("faststart")}});
     if(graphpy::contains(container.attr("encoders"),encoder)) {
         params["vcodec"]=encoder.attr("value");
         O allowed=global(g,"PARAMETERS")[encoder];
@@ -748,6 +752,27 @@ O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O
             } else globals.append(fmt("-{}",parameter));
         }
     }
+    return py::make_tuple(params,globals);
+}
+
+O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O&name,const O&simplicity,
+    O container,O encoder,O preset,O crf,O additional,const O&simple,const O&quality,const O&fps,O audio,const O&audio_settings,
+    const O&settings) {
+    (void)unused;
+    if(eq(simplicity,member(g,"Simplicity","SIMPLE"))) {
+        O settings=global(g,"get_simple_format")(simple,quality);
+        container=settings[py::int_(0)];encoder=settings[py::int_(1)];preset=settings[py::int_(2)];crf=settings[py::int_(3)];
+    }
+    O filename=py::str("{}.{}").attr("format")(name,container.attr("ext"));
+    O path=div(directory,filename).attr("resolve")();
+    path.attr("parent").attr("mkdir")(py::arg("parents")=true,py::arg("exist_ok")=true);
+    // FFmpeg writes a temporary file in the folder, renamed onto the path at a successful close;
+    // its .tmp name picks no muxer, so the extension's is named.
+    O target=global(g,"atomic_target")(builtin("str")(path));
+    target.attr("check")(); // a file the rename cannot replace fails now, not after the encode
+    py::tuple options=output_options(g,target.attr("temp"),container,encoder,preset,crf,fps,simplicity,additional);
+    py::dict params=options[0].cast<py::dict>();
+    py::list globals=options[1].cast<py::list>();
     if(eq(container,member(g,"VideoFormat","GIF")))audio=py::none();
     // With audio, the mux writes the final file, which had no faststart while the encode
     // pass rewrote its own file for one: an MP4's or MOV's faststart moves to the mux
@@ -975,5 +1000,6 @@ void cn_bind_video_io(pybind11::module_&m) {
     m.def("video_container_encoders",&container_encoders);m.def("video_encoder_formats",&encoder_formats);
     m.def("video_simple_format",&simple_format);m.def("video_writer_start",&writer_start);m.def("video_writer_frame",&writer_frame);
     m.def("video_writer_close",&writer_close);
+    m.def("video_writer_check",&writer_check);m.def("video_output_options",&output_options);
     m.def("video_load",&load_video);m.def("video_save",&save_video);
 }
