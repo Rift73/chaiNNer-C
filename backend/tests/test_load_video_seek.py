@@ -1,7 +1,9 @@
 """Load Video's exact reads: frame n read by a seek (stream_items(n, n + 1)) is item n of
 the full read, bit for bit, in RGB float, RGB 8-bit and Planes and in both readers (PyAV
 and the FFmpeg CLI); the Preview's open readers step through the same frames; the audio
-is cut to a range. Runs on chaiNNer's integrated FFmpeg."""
+is cut to a range. The node: a Range is the slice of a full run (Index, audio, context
+frames, a one-frame run's chosen item), its errors, the Preview and the Frame Count.
+Runs on chaiNNer's integrated FFmpeg."""
 
 from __future__ import annotations
 
@@ -10,9 +12,9 @@ import shutil
 import subprocess
 import time
 import wave
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import ffmpeg
 import numpy as np
@@ -21,6 +23,7 @@ import pytest
 # The video module loads the native backend, which GitHub's checks do not build.
 pytest.importorskip("nodes.impl._chainner_graph")
 
+from api import NodeContext
 from nodes.impl import video
 from nodes.impl.colour_info import (
     ChromaLocation,
@@ -31,6 +34,11 @@ from nodes.impl.colour_info import (
     VideoMode,
 )
 from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
+from packages.chaiNNer_standard.image.video_frames.load_video import (
+    FramesMode,
+    RgbPrecision,
+    load_video_node,
+)
 
 STORAGE = Path(os.environ.get("APPDATA", "")) / "chaiNNer" / "backend-storage"
 FFMPEG, FFPROBE = map(str, get_executable_path(STORAGE / "ffmpeg"))
@@ -349,3 +357,251 @@ def test_audio_range(folder: Path):
     seconds = (2.0 + np.arange(samples.size) / 8000) / 4
     assert samples.size == 1.5 * 8000
     np.testing.assert_allclose(samples / 32768, seconds, atol=1e-3)
+
+
+class Context:
+    """The NodeContext members Load Video uses."""
+
+    node_id = "load-video"
+
+    def __init__(self):
+        self.storage_dir = STORAGE
+        self.cleanups: list[Callable[[], None]] = []
+
+    def add_cleanup(self, fn: Callable[[], None]):
+        self.cleanups.append(fn)
+
+    def cleanup(self):
+        for cleanup in self.cleanups:
+            cleanup()
+        self.cleanups.clear()
+
+
+def run_node(
+    context: Context,
+    path: Path,
+    mode: VideoMode = VideoMode.RGB,
+    precision: RgbPrecision = RgbPrecision.FLOAT,
+    frames: tuple[int, int] | None = None,
+    seek: int = 0,
+) -> tuple[Any, ...]:
+    """Load Video's outputs: the generator, directory, name, FPS, audio, Colour Info,
+    Colour, Preview and Frame Count; Frames All, or the Range `frames` (In, Out)."""
+    first, last = frames or (0, 0)
+    return load_video_node(
+        cast(NodeContext, context),
+        path,
+        seek,
+        FramesMode.ALL if frames is None else FramesMode.RANGE,
+        first,
+        last,
+        mode,
+        precision,
+        *AUTO,
+    )
+
+
+def items_of(iterable: Any) -> list[tuple[Any, ...]]:
+    items: list[tuple[Any, ...]] = []
+    for item in iterable:
+        assert isinstance(item, tuple) and len(item) == 5
+        items.append(item)
+    return items
+
+
+def assert_node_items_equal(
+    items: list[tuple[Any, ...]], expected: list[tuple[Any, ...]]
+):
+    """Load Video's items (frame, Index, Y, U, V) are `expected`'s, Index included."""
+    assert len(items) == len(expected)
+    for (frame, index, y, u, v), (reference, number, *planes) in zip(
+        items, expected, strict=True
+    ):
+        assert index == number
+        assert_items_equal((frame, y, u, v), (reference, *planes))
+
+
+NODE_MODES = [
+    (VideoMode.RGB, RgbPrecision.FLOAT),
+    (VideoMode.RGB, RgbPrecision.EIGHT_BIT),
+    (VideoMode.PLANES, RgbPrecision.FLOAT),
+    (VideoMode.BOTH, RgbPrecision.FLOAT),
+]
+
+
+@pytest.mark.usefixtures("previews")
+@pytest.mark.parametrize(("mode", "precision"), NODE_MODES)
+def test_a_range_is_the_slice_of_a_full_run(
+    folder: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: VideoMode,
+    precision: RgbPrecision,
+):
+    monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    path = made(folder, H264)
+    context = Context()
+    whole = run_node(context, path, mode, precision)
+    full = items_of(whole[0].supplier())
+    # All, as before: every frame, numbered from 0, and the whole audio. Its length is
+    # the Frame Count, exact.
+    assert whole[8] == whole[0].expected_length == len(full) == 150
+    assert (whole[0].index_base, whole[0].chosen_item) == (0, None)
+    assert [item[1] for item in full] == list(range(150))
+    assert whole[4].node.kwargs == {"filename": path}
+    generator, _, _, fps, audio, *_ = run_node(context, path, mode, precision, (8, 11))
+    assert (generator.expected_length, generator.index_base) == (4, 8)
+    assert generator.chosen_item is None
+    assert_node_items_equal(items_of(generator.supplier()), full[8:12])
+    # The audio of frames 8..11: from 8 / fps for 4 / fps.
+    assert fps == 30
+    assert audio.node.kwargs == {"filename": path, "ss": 8 / fps, "t": 4 / fps}
+    # Context frames: 3 before and 2 after the Range, Index counting through them.
+    assert generator.context is not None
+    around, before, after = generator.context(3, 2)
+    assert (before, after) == (3, 2)
+    assert_node_items_equal(items_of(around), full[5:14])
+    context.cleanup()
+
+
+@pytest.mark.usefixtures("previews")
+def test_context_frames_are_clipped_to_the_video_and_closed_by_the_chain(
+    folder: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    path = folder / "context.mp4"
+    shutil.copyfile(made(folder, H264), path)
+    context = Context()
+    full = items_of(run_node(context, path)[0].supplier())
+    for frames, wanted, clipped, (start, stop) in [
+        ((1, 4), (3, 2), (1, 2), (0, 7)),
+        ((145, 148), (3, 5), (3, 1), (142, 150)),
+        ((0, 149), (3, 5), (0, 0), (0, 150)),
+    ]:
+        generator = run_node(context, path, frames=frames)[0]
+        assert generator.context is not None
+        around, before, after = generator.context(*wanted)
+        assert (before, after) == clipped
+        assert_node_items_equal(items_of(around), full[start:stop])
+    # The loop may stop before the context frames end: the chain's cleanup closes them.
+    # The Preview's reader stays open for the next step, until shutdown (close_previews).
+    around, _, _ = run_node(context, path, frames=(60, 70))[0].context(2, 2)
+    next(iter(around))
+    context.cleanup()
+    assert locked(path)
+    video.close_previews()
+    assert not locked(path)
+
+
+@pytest.mark.usefixtures("previews")
+def test_a_one_frame_range_is_the_chosen_item(
+    folder: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    path = made(folder, H264)
+    context = Context()
+    full = rgb_float_frames(path)
+    for seek in (8, 3):
+        outputs = run_node(context, path, frames=(8, 8), seek=seek)
+        generator, preview = outputs[0], outputs[7]
+        assert (generator.expected_length, generator.chosen_item) == (1, 8)
+        ((frame, index, *_),) = items_of(generator.supplier())
+        assert index == 8
+        np.testing.assert_array_equal(frame, full[8])
+        # With Seek on the frame, the run's frame is the Preview's: decoded once.
+        assert (frame is preview) == (seek == 8)
+    # Read another way (Planes), the frame is decoded for the run.
+    generator = run_node(context, path, VideoMode.PLANES, frames=(8, 8), seek=8)[0]
+    ((frame, index, y, _, _),) = items_of(generator.supplier())
+    assert frame is None and y is not None and index == 8
+    context.cleanup()
+
+
+@pytest.mark.usefixtures("previews")
+@pytest.mark.parametrize("cli", [False, True])
+def test_a_range_the_video_does_not_hold_fails_at_its_first_item(
+    folder: Path, monkeypatch: pytest.MonkeyPatch, cli: bool
+):
+    if cli:
+        monkeypatch.setenv("CHAINNER_C_VIDEO_READER", "cli")
+    else:
+        monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    path = made(folder, H264)
+    context = Context()
+    full = rgb_float_frames(path)
+    for frames, message in [
+        ((12, 8), r"^In \(frame 12\) is after Out \(frame 8\)\.$"),
+        ((140, 150), r"^frame 150 is past the end \(the video has 150 frames\)$"),
+    ]:
+        outputs = run_node(context, path, frames=frames, seek=500)
+        # The node still reports its Preview (of the last frame, Seek being past it) and
+        # its Frame Count, by which the seek bar sets the Range again.
+        assert outputs[8] == 150
+        np.testing.assert_array_equal(outputs[7], full[149])
+        with pytest.raises(ValueError, match=message):
+            next(iter(outputs[0].supplier()))
+    if cli:
+        # The CLI path's count is the probe's estimate: a video that ends before Out
+        # fails when it ends.
+        monkeypatch.setattr(video.VideoLoader, "frame_count", lambda _: 160)
+        generator = run_node(context, path, frames=(145, 155))[0]
+        read: list[int] = []
+        with pytest.raises(
+            ValueError,
+            match=r"^frame 155 is past the end \(the video has 150 frames\)$",
+        ):
+            for item in generator.supplier():
+                read.append(item[1])
+        assert read == list(range(145, 150))
+    context.cleanup()
+
+
+@pytest.mark.usefixtures("previews")
+@pytest.mark.parametrize(("mode", "precision"), NODE_MODES)
+def test_preview_is_the_rgb_float_frame_at_seek(
+    folder: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: VideoMode,
+    precision: RgbPrecision,
+):
+    monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    context = Context()
+    for name in (H264, "edit-list.mp4"):
+        path = made(folder, name)
+        full = rgb_float_frames(path)
+        for seek, shown in ((37, 37), (36, 36), (len(full) + 40, len(full) - 1)):
+            outputs = run_node(context, path, mode, precision, seek=seek)
+            assert outputs[8] == len(full)
+            assert outputs[7].dtype == np.float32
+            np.testing.assert_array_equal(outputs[7], full[shown])
+    context.cleanup()
+
+
+@pytest.mark.usefixtures("previews")
+def test_preview_of_planes_rgb_cannot_convert_is_the_y_plane(
+    folder: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # BT.2020 constant luminance: RGB mode refuses it, Planes mode reads it and its
+    # Preview shows the Y plane in gray, with a warning; Frame Count and FPS still come.
+    monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    path = folder / "constant-luminance.mkv"
+    run_ffmpeg(
+        *SOURCE[:-2],
+        *("-frames:v", "12", "-c:v", "ffv1", "-pix_fmt", "yuv420p10le"),
+        *("-colorspace", "bt2020c", str(path)),
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        video.logger, "warning", lambda message, *args: warnings.append(message % args)
+    )
+    context = Context()
+    outputs = run_node(context, path, VideoMode.PLANES, seek=5)
+    full = items_of(outputs[0].supplier())
+    assert (outputs[3], outputs[8]) == (30, 12)
+    y = full[5][2]
+    np.testing.assert_array_equal(outputs[7], np.dstack((y, y, y)))
+    assert any(
+        warning.startswith(f"{path}: the Preview shows the Y plane in gray:")
+        and "cannot convert the BT.2020 constant matrix" in warning
+        for warning in warnings
+    )
+    context.cleanup()
