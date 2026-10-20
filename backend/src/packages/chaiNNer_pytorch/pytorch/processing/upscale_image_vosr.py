@@ -73,6 +73,7 @@ class _VideoState:
         "The first use downloads the official VOSR 2.0 model (about 7 GB) from Hugging Face and OpenCV's YuNet face detector (230 KB, which gives a face split between windows a window of its own) from GitHub into the backend's storage folder; later runs reuse them. The TensorRT backends compile their engines on first use and reuse them afterwards.",
         "Inside a Load Video loop, each frame is also stabilized over time: the restorations of neighbouring frames are aligned with optical flow and combined only where they match reliably, and a detected cut starts afresh.",
         "When the frames ahead cannot be read early (for example, through a node between Load Video and this one that is not computed ahead), only the current and earlier frames are used: Three Frames combines the previous frame alone and Persistent Detail starts each scene from its first frame alone.",
+        "In a Load Video Range, Three Frames also sees the frames just before and after the range, while Persistent Detail's history starts at the range.",
     ],
     icon="PyTorch",
     inputs=[
