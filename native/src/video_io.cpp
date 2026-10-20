@@ -599,6 +599,9 @@ void writer_frame(const py::dict&g,const O&self,const O&image,const O&prepared) 
 
 // Load Video's audio is ffmpeg.input(path).audio: the file the mux reads it from.
 O audio_source(const O&self) {return self.attr("audio").attr("node").attr("kwargs")[py::str("filename")];}
+// Where a Load Video Range's audio starts (its input's -ss, video.py get_audio_stream),
+// in seconds; 0 for audio read from the file's start.
+O audio_start(const O&self) {return self.attr("audio").attr("node").attr("kwargs").attr("get")("ss",py::int_(0));}
 py::list audio_streams(const py::dict&g,const O&self) {
     // The audio streams of the audio's source file, as ffprobe reports them.
     O probe=global(g,"ffmpeg").attr("probe")(audio_source(self),py::arg("cmd")=self.attr("ffmpeg_env").attr("ffprobe"));
@@ -637,10 +640,20 @@ O mux_audio(const py::dict&g,const O&self) {
     // silent video (upstream chaiNNer #3331); a source without audio has none to carry.
     O target=self.attr("target");
     if(self.attr("audio").is_none())return target;
-    O container=self.attr("container");
-    py::dict params=audio_options(g,self,self.attr("audio_settings")); // A WebM Copy raises before the mux.
-    bool transcode_on_failure=eq(self.attr("audio_settings"),member(g,"AudioSettings","AUTO")) && eq(params["acodec"],py::str("copy"));
+    O container=self.attr("container"),settings=self.attr("audio_settings");
     O path=self.attr("save_path"),os=global(g,"os"),ffmpeg=global(g,"ffmpeg"),logger=global(g,"logger");
+    O auto_settings=member(g,"AudioSettings","AUTO");
+    O start=audio_start(self);
+    if(eq(settings,auto_settings) && cmp(start,py::int_(0),Py_GT)) {
+        // FFmpeg 5.1 copies audio cut at a Range's In from a packet before In: an MP4's
+        // edit list hides the extra audio from players that read one, a Matroska file
+        // plays it (1.26 s before the video in test_save_video_audio.py). A transcode
+        // starts at In to the sample. Copy still copies, as asked.
+        logger.attr("info")(py::str("Auto transcodes the audio from {} s: a copy would start before the video's first frame").attr("format")(start));
+        settings=member(g,"AudioSettings","TRANSCODE");
+    }
+    py::dict params=audio_options(g,self,settings); // A WebM Copy raises before the mux.
+    bool transcode_on_failure=eq(settings,auto_settings) && eq(params["acodec"],py::str("copy"));
     if(!truth(os.attr("path").attr("exists")(target.attr("temp")))) {logger.attr("error")(fmt("Video file not found at {}",path));return target;}
     // The mux writes a second temporary file of the same path, which replaces the video at the commit.
     O av=global(g,"atomic_target")(path);

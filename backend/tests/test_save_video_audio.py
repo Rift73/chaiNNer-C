@@ -154,15 +154,16 @@ def top_level_boxes(path: Path) -> list[str]:
     return names
 
 
-def durations(path: Path) -> dict[str, float]:
-    """Each stream's duration in seconds, by codec type."""
+def stream_times(path: Path, entry: str) -> dict[str, float]:
+    """Each stream's time `entry` ("duration" or "start_time") in seconds, by codec
+    type."""
     probe = subprocess.run(
         [FFPROBE, "-v", "error", "-show_streams", "-of", "json", str(path)],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         check=True,
     ).stdout
-    return {s["codec_type"]: float(s["duration"]) for s in json.loads(probe)["streams"]}
+    return {s["codec_type"]: float(s[entry]) for s in json.loads(probe)["streams"]}
 
 
 def save(
@@ -319,19 +320,19 @@ def test_audio_mux_writes_the_moov_first(tmp_path: Path, container: VideoFormat)
     assert audio_packets(out) == audio_packets(src)
 
 
-@pytest.mark.parametrize("frames", [(0, 59), (30, 89), (0, 149), None])
-def test_a_range_cuts_the_audio_to_the_frames_read(
-    tmp_path: Path, frames: tuple[int, int] | None
+def save_frames(
+    tmp_path: Path,
+    src: Path,
+    frames: tuple[int, int] | None,
+    audio: AudioSettings,
+    container: VideoFormat = VideoFormat.MP4,
 ):
-    # R7: Load Video's Range of 60 frames (2 s of a 5 s source, from its start or from
-    # 1 s) gives audio that ends within one AAC frame (1024 samples at 48 kHz) of the
-    # video, and so does the Range of all 150 frames. Frames All copies the whole audio,
-    # as before.
-    src = source(tmp_path, "src.mp4", "aac", seconds=5)
+    """Load Video's frames of `src` (the Range `frames` (In, Out), or All) saved by Save
+    Video as `container` with its audio, as `audio` says."""
     context = Context()
     auto = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.AUTO)
     first, last = frames or (0, 0)
-    generator, _, _, fps, audio, _, _, _, _ = load_video_node(
+    generator, _, _, fps, audio_stream, _, _, _, _ = load_video_node(
         cast(NodeContext, context),
         src,
         0,
@@ -352,7 +353,7 @@ def test_a_range_cuts_the_audio_to_the_frames_read(
         None,
         None,
         Simplicity.ADVANCED,
-        VideoFormat.MP4,
+        container,
         VideoEncoder.H264,
         VideoPreset.ULTRA_FAST,
         23,
@@ -360,8 +361,8 @@ def test_a_range_cuts_the_audio_to_the_frames_read(
         SimpleVideoFormat.MP4_H264,
         75,
         fps,
+        audio_stream,
         audio,
-        AudioSettings.AUTO,
         *RGB_AUTO,
     )
     for item in generator.supplier():
@@ -371,8 +372,20 @@ def test_a_range_cuts_the_audio_to_the_frames_read(
     for cleanup in context.cleanups:
         cleanup()
     close_previews()  # the Preview's reader lets the source go
+
+
+@pytest.mark.parametrize("frames", [(0, 59), (30, 89), (0, 149), None])
+def test_a_range_cuts_the_audio_to_the_frames_read(
+    tmp_path: Path, frames: tuple[int, int] | None
+):
+    # R7: Load Video's Range of 60 frames (2 s of a 5 s source, from its start or from
+    # 1 s) gives audio that ends within one AAC frame (1024 samples at 48 kHz) of the
+    # video, and so does the Range of all 150 frames. Frames All copies the whole audio,
+    # as before.
+    src = source(tmp_path, "src.mp4", "aac", seconds=5)
+    save_frames(tmp_path, src, frames, AudioSettings.AUTO)
     out = saved(tmp_path, VideoFormat.MP4)
-    lengths = durations(out)
+    lengths = stream_times(out, "duration")
     if frames is None:
         assert lengths["video"] == pytest.approx(5.0, abs=0.001)
         assert audio_packets(out) == audio_packets(src)
@@ -380,3 +393,68 @@ def test_a_range_cuts_the_audio_to_the_frames_read(
         seconds = (frames[1] - frames[0] + 1) / 30
         assert lengths["video"] == pytest.approx(seconds, abs=0.001)
         assert abs(lengths["audio"] - lengths["video"]) <= 1024 / 48000
+
+
+def audio_packet_hashes(path: Path) -> list[str]:
+    """Each audio packet's MD5, in order (FFmpeg's framemd5 of a stream copy)."""
+    lines = ffmpeg(
+        "-i", str(path), "-map", "0:a:0", "-c", "copy", "-f", "framemd5", "-"
+    ).decode()
+    return [
+        line.rsplit(",", 1)[1].strip()
+        for line in lines.splitlines()
+        if line and not line.startswith("#")
+    ]
+
+
+def decoded_audio(path: Path) -> np.ndarray:
+    """The first audio stream decoded to mono float32 samples (48 kHz here)."""
+    data = ffmpeg("-i", str(path), "-map", "0:a:0", "-ac", "1", "-f", "f32le", "-")
+    return np.frombuffer(data, np.float32)
+
+
+def found_at(part: np.ndarray, whole: np.ndarray, near: int, reach: int) -> int:
+    """Where in `whole` the first 0.1 s of `part` lies, within `reach` samples of
+    `near`: the best match of the noise."""
+    head = part[:4800]
+    window = whole[near - reach : near + reach + head.size]
+    return near - reach + int(np.argmax(np.correlate(window, head, mode="valid")))
+
+
+@pytest.mark.parametrize("audio", [AudioSettings.AUTO, AudioSettings.COPY])
+@pytest.mark.parametrize("container", [VideoFormat.MP4, VideoFormat.MKV])
+def test_a_range_s_audio_starts_with_its_first_frame(
+    tmp_path: Path, container: VideoFormat, audio: AudioSettings
+):
+    # A Range from In > 0 reads its audio from In / fps (the input's -ss). FFmpeg 5.1
+    # copies such audio from a packet before In: an MP4's edit list hides the extra
+    # audio, a Matroska file plays it (here the audio started 1.26 s before the video).
+    # Auto transcodes it, which FFmpeg cuts at In to the sample. Copy still copies, as
+    # asked. White noise tells where any stretch of it lies.
+    src = tmp_path / "noise.mp4"
+    ffmpeg(
+        *("-f", "lavfi", "-i", "testsrc2=size=64x48:rate=30"),
+        *("-f", "lavfi", "-i", "anoisesrc=color=white:amplitude=0.5:seed=7:r=48000"),
+        *("-t", "5", "-c:v", "libx264", "-pix_fmt", "yuv420p"),
+        *("-c:a", "aac", "-ac", "1", str(src)),
+    )
+    save_frames(tmp_path, src, (37, 96), audio, container)
+    out = saved(tmp_path, container)
+    packets, source_packets = audio_packet_hashes(out), audio_packet_hashes(src)
+    if audio is AudioSettings.COPY:
+        # Every packet after the first is the source's, in order.
+        first = source_packets.index(packets[1])
+        assert packets[1:] == source_packets[first : first + len(packets) - 1]
+        return
+    assert not set(packets[1:]) & set(source_packets)
+    # The audio that plays with the video's first frame is the source's at frame 37
+    # (1.2333 s, sample 59200), and the audio lasts the Range's 2 s, both within what
+    # Matroska's millisecond timestamps tell (48 samples), the length within one AAC
+    # frame (1024 samples). A Matroska file plays the encoder's 1024 priming samples
+    # before the video, which starts 1024 samples later.
+    whole, part = decoded_audio(src), decoded_audio(out)
+    begins = stream_times(out, "start_time")
+    lead = round((begins["video"] - begins["audio"]) * 48000)
+    start = 37 * 48000 // 30
+    assert abs(found_at(part, whole, start, 2048) + lead - start) <= 48
+    assert abs(part.size - lead - 2 * 48000) <= 1024
