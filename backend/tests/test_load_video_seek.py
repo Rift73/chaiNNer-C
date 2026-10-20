@@ -416,6 +416,41 @@ def test_preview_readers_are_few_and_close_when_idle(
     assert not locked(paths[0]) and not locked(paths[1])
 
 
+def test_closing_readers_logs_every_failure_and_raises_the_first(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Every reader closes; each failure is logged with its traceback, and the first is
+    # raised once all have closed.
+    class Reader:
+        def __init__(self, name: str, error: Exception | None = None):
+            self.path = Path(name)
+            self.error = error
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+            if self.error is not None:
+                raise self.error
+
+    logged: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        video.logger,
+        "warning",
+        lambda message, *args, **kwargs: logged.append(
+            (message % args, kwargs.get("exc_info"))
+        ),
+    )
+    first, second = RuntimeError("first"), OSError("second")
+    readers = [Reader("a.mp4", first), Reader("b.mp4"), Reader("c.mp4", second)]
+    with pytest.raises(RuntimeError, match=r"^first$"):
+        vars(video)["_close_readers"](readers)
+    assert all(reader.closed for reader in readers)
+    assert logged == [
+        (f"Closing the Preview's reader of {Path('a.mp4')} failed", first),
+        (f"Closing the Preview's reader of {Path('c.mp4')} failed", second),
+    ]
+
+
 def test_audio_range(folder: Path):
     # Save Video's mux reads the audio from the stream's input (its "filename"): from
     # `start` (-ss, only past 0) for `duration` (-t). A ramp's samples tell the time.

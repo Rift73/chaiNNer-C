@@ -1102,12 +1102,18 @@ def _close_idle_previews() -> None:
 
 
 def _close_readers(readers: list[PreviewReader]) -> None:
-    """Closes each reader; the first error is raised once all have closed."""
+    """Closes each reader, logging every failure; the first is raised once all have
+    closed."""
     error: Exception | None = None
     for reader in readers:
         try:
             reader.close()
         except Exception as failure:
+            logger.warning(
+                "Closing the Preview's reader of %s failed",
+                reader.path,
+                exc_info=failure,
+            )
             error = error or failure
     if error is not None:
         raise error
