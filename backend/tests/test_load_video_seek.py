@@ -53,6 +53,10 @@ AUTO = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.A
 SOURCE = ("-f", "lavfi", "-i", "testsrc2=size=192x108:rate=30", "-frames:v", "150")
 H264 = "h264-bframes.mp4"
 UNTIMED = "untimed.mpg"
+H264_OPEN_GOP = (
+    *("-c:v", "libx264", "-bf", "3", "-x264-params"),
+    "open-gop=1:keyint=24:min-keyint=24:scenecut=0",
+)
 
 # The files of the exactness matrix: what each is made from (another file of the matrix,
 # or None for SOURCE), FFmpeg's input options for it and its output options.
@@ -97,6 +101,11 @@ FILES: dict[str, tuple[str | None, tuple[str, ...], tuple[str, ...]]] = {
             "keyint=48:min-keyint=1:bframes=6:open-gop=1:scenecut=40:log-level=error",
         ),
     ),
+    # H.264 open GOPs: the keyframes after the first are I-frames a decoder can start
+    # at (recovery points), not IDR frames, so the B-frames shown before each refer to
+    # the GOP before.
+    "h264-open-gop.mp4": (None, (), H264_OPEN_GOP),
+    "h264-open-gop.ts": (None, (), H264_OPEN_GOP),
     # A display matrix (90 degrees); the integrated FFmpeg 5.1 has no -display_rotation.
     "rotated.mp4": (H264, (), ("-c", "copy", "-metadata:s:v:0", "rotate=90")),
     # Read through the FFmpeg CLI, which renumbers the frames to a constant rate.
