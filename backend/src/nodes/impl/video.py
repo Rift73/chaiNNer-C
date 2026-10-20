@@ -1009,7 +1009,8 @@ def preview_frame(node_id: str, loader: VideoLoader, n: int) -> np.ndarray:
 
 
 def close_previews() -> None:
-    """Closes every node's preview reader (at a chain's end and at shutdown)."""
+    """Closes every node's preview reader (at the worker's shutdown: a chain's end keeps
+    them, for the next preview's step)."""
     global _previews_timer
     with _previews_lock:
         closing = list(_previews.values())

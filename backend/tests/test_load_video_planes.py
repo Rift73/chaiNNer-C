@@ -31,6 +31,7 @@ from nodes.impl.colour_info import (
 from nodes.impl.ffmpeg import get_executable_path
 from nodes.impl.video import VideoMetadata
 from packages.chaiNNer_standard.image.video_frames.load_video import (
+    FramesMode,
     LoadedVideo,
     RgbPrecision,
     get_item_types,
@@ -47,7 +48,9 @@ AUTO = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.A
 
 
 class Context:
-    """The two NodeContext members Load Video uses."""
+    """The NodeContext members Load Video uses."""
+
+    node_id = "load-video"  # the Preview's reader is the node's
 
     def __init__(self):
         self.storage_dir = STORAGE
@@ -111,7 +114,15 @@ def load(
         monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
     context = Context()
     outputs = load_video_node(
-        cast(NodeContext, context), path, False, 0, mode, precision, *choices
+        cast(NodeContext, context),
+        path,
+        0,
+        FramesMode.ALL,
+        0,
+        0,
+        mode,
+        precision,
+        *choices,
     )
     items: list[tuple[Any, ...]] = []
     for item in outputs[0].supplier():
@@ -119,6 +130,7 @@ def load(
         items.append(item)
     for cleanup in context.cleanups:
         cleanup()
+    video.close_previews()  # the Preview's reader lets the file go
     return items, outputs[5], outputs[6]
 
 

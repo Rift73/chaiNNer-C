@@ -61,7 +61,8 @@ from verify_runtime import (
     write_json,
 )
 
-VIDEO_IDS = {"chainner:image:load_video", "chainner:image:save_video"}
+LOAD_VIDEO = "chainner:image:load_video"
+VIDEO_IDS = {LOAD_VIDEO, "chainner:image:save_video"}
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".mov", ".webm", ".avi", ".gif"}
 ENCODERS = [
     ("mkv", "libx264"),
@@ -187,11 +188,14 @@ def fixture_graphs(schemas: dict, assets: Path, output: Path):
         cancel: bool = False,
     ) -> dict:
         directory = output / name
-        load = node(
-            "load",
-            "chainner:image:load_video",
-            {0: str(assets / source), 1: int(limit is not None), 2: limit or 10},
-        )
+        # The installed node's limit; this repository's frame range (Frames, In, Out)
+        # reads it as the Range 0..limit - 1, as old chains migrate.
+        frames: dict[int, object] = {}
+        if 10 not in {item["id"] for item in schemas[LOAD_VIDEO]["inputs"]}:
+            frames = {1: int(limit is not None), 2: limit or 10}
+        elif limit is not None:
+            frames = {10: "range", 11: 0, 12: limit - 1}
+        load = node("load", LOAD_VIDEO, {0: str(assets / source), **frames})
         nodes = [load]
         image = edge("load")
         if resize:

@@ -36,6 +36,7 @@ import ffmpeg
 import numpy as np
 import pytest
 
+from api import Generator
 from nodes.impl import colour_info
 from nodes.impl.image_utils import to_uint8, to_uint16
 from nodes.impl.native_framework_images import planes_to_interleaved
@@ -276,6 +277,7 @@ def valid_probe() -> dict[str, Any]:
 class Context:
     storage_dir = Path("isolated/storage")
     chosen_item = None  # every item runs, so Save Video writes the video
+    node_id = "load-video"  # Load Video's Preview reader is the node's
 
     def __init__(self):
         self.cleanups = []
@@ -822,19 +824,27 @@ COLOUR_NAMES = (
 ).split()
 
 
+def preview_stub(node_id, loader, n):
+    """video.py's preview_frame keeps each node's reader in module state, which the
+    namespaces here lack: a black frame of the video's size, read from nowhere."""
+    metadata = vars(loader)["metadata"]
+    return np.zeros((metadata.height, metadata.width, 3), np.float32)
+
+
 def link_loader(g, vg):
-    """Load Video's namespace with the video module's names it imports."""
+    """Load Video's namespace with the video module's names it imports; this
+    repository's Preview reads through preview_stub."""
     for name in ("VideoLoader", "VideoMetadata", "ReadSettings"):
         if name in vg:
             g[name] = vg[name]
+    if "load_preview" in g:
+        g["preview_frame"] = preview_stub
 
 
-def call_load_video(kind, g, context, path, use_limit, limit):
-    """Load Video's node as the installed node is called. This repository's node is
-    given Mode RGB, RGB Precision "8-bit (as before)" and every colour choice Auto,
-    which read as the installed node did; its extra Colour Info outputs are dropped."""
-    if kind == "installed":
-        return g["load_video_node"](context, path, use_limit, limit)
+def run_load_video(g, context, path, first=None, last=None):
+    """This repository's Load Video with Frames All, or a Range first..last, Seek 0, Mode
+    RGB, RGB Precision "8-bit (as before)" and every colour choice Auto, which read as the
+    installed node did."""
     auto = (
         colour_info.Matrix.AUTO,
         colour_info.Transfer.AUTO,
@@ -842,16 +852,29 @@ def call_load_video(kind, g, context, path, use_limit, limit):
         colour_info.Range.AUTO,
         colour_info.ChromaLocation.AUTO,
     )
-    outputs = g["load_video_node"](
+    frames = g["FramesMode"]
+    return g["load_video_node"](
         context,
         path,
-        use_limit,
-        limit,
+        0,
+        frames.ALL if first is None else frames.RANGE,
+        first or 0,
+        last or 0,
         colour_info.VideoMode.RGB,
         g["RgbPrecision"].EIGHT_BIT,
         *auto,
     )
-    return outputs[:5]
+
+
+def call_load_video(kind, g, context, path, use_limit, limit):
+    """Load Video's node as the installed node is called. This repository's node reads
+    a limit as the Range 0..limit - 1 that old chains migrate to (src/common/migrations.ts
+    loadVideoFrames); its extra outputs (Colour Info, Preview, Frame Count) are dropped."""
+    if kind == "installed":
+        return g["load_video_node"](context, path, use_limit, limit)
+    if use_limit:
+        return run_load_video(g, context, path, 0, limit - 1)[:5]
+    return run_load_video(g, context, path)[:5]
 
 
 def installed_item(item):
@@ -918,6 +941,9 @@ def load(kind, component, env=None):
         g.update({name: getattr(colour_info, name) for name in COLOUR_NAMES})
         g["file_identity"] = file_identity
         g["planes_to_interleaved"] = planes_to_interleaved
+        # Load Video's generator carries its frame range (with_range), which the
+        # installed api lacks.
+        g["Generator"] = Generator
     text = path.read_text(encoding="utf-8")
     if kind == "intended" and component == "save_video":
         for frozen, corrected in [
@@ -1047,11 +1073,32 @@ def unwrapped(item: ast.expr) -> str:
     return ast.dump(item)
 
 
-# Docs that changed with a sanctioned behaviour change: Load Video's limit cuts the audio
-# (instant-exec gate R7).
-SANCTIONED_DOCS = [
-    ("Will not copy audio if limit is used.", "The audio is cut to the limited frames.")
-]
+def label(item: ast.expr) -> object:
+    """The label an input or output is made with: its class's first argument."""
+    for node in ast.walk(item):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            return node.args[0].value
+    return None
+
+
+# Sanctioned changes of an installed registration, by node: its keywords, inputs and
+# outputs (by label) and parameters. Load Video's frame range (native/local/video-seek):
+# Frames, In and Out replace Use limit and Limit (old chains migrate,
+# src/common/migrations.ts loadVideoFrames), Index is the frame's number in the video,
+# and the description tells of the seek bar, the Range and one-frame runs.
+REPLACED = {
+    "load_video": {
+        "keywords": {"description"},
+        "inputs": {"Use limit", "Limit"},
+        "outputs": {"Index"},
+        "parameters": {"use_limit", "limit"},
+    },
+}
 
 
 def test_reference_hashes_and_registration_contracts():
@@ -1062,9 +1109,10 @@ def test_reference_hashes_and_registration_contracts():
         )
     # Old chains keep working: the installed registration with inputs and outputs
     # added (Load Video's Mode and planes, Save Video's), every installed one kept in
-    # order with its id, and the installed parameters in order.
+    # order with its id, and the installed parameters in order; but for REPLACED.
     appended = {"inputs", "outputs", "iterator_inputs", "iterator_outputs"}
     for name in ("load_video", "save_video"):
+        replaced: dict[str, set[str]] = REPLACED.get(name, {})
         old, old_keywords = registration(
             REFERENCE / "installed" / (NODE + name + ".py"), name
         )
@@ -1072,21 +1120,25 @@ def test_reference_hashes_and_registration_contracts():
             ROOT / "backend/src" / (NODE + name + ".py"), name
         )
         for key in old_keywords.keys() | new_keywords.keys():
-            if key not in appended:
+            if key not in appended and key not in replaced.get("keywords", ()):
                 assert ast.dump(old_keywords[key]) == ast.dump(new_keywords[key]), key
         for key in ("inputs", "outputs"):
             old_items = old_keywords[key]
             new_items = new_keywords[key]
             assert isinstance(old_items, ast.List) and isinstance(new_items, ast.List)
             remaining = iter([unwrapped(x) for x in new_items.elts])
-            for item in old_items.elts:
-                old_item = unwrapped(item)
-                for old_text, new_text in SANCTIONED_DOCS:
-                    old_item = old_item.replace(old_text, new_text)
-                assert old_item in remaining, (name, key, ast.unparse(item))
+            for position, item in enumerate(old_items.elts):
+                if label(item) in replaced.get(key, ()):
+                    # A replaced input is gone; a replaced output keeps its place (id).
+                    assert key == "inputs" or label(new_items.elts[position]) == label(
+                        item
+                    )
+                    continue
+                assert unwrapped(item) in remaining, (name, key, ast.unparse(item))
         new_arguments = iter([ast.dump(a) for a in new.args.args])
         for argument in old.args.args:
-            assert ast.dump(argument) in new_arguments, (name, argument.arg)
+            if argument.arg not in replaced.get("parameters", ()):
+                assert ast.dump(argument) in new_arguments, (name, argument.arg)
 
 
 PROBE_CASES = [
@@ -1705,28 +1757,28 @@ def test_faststart_moved_to_the_mux_writes_the_final_file_with_it(source_audio):
 
 
 @pytest.mark.parametrize(
-    "use_limit,limit,frames",
+    "first,last,cut",
     [
-        (False, 2, None),
-        (True, 10, None),
-        (True, 4, None),
-        (True, 3, 3),
-        (True, 1, 1),
-        (True, 0, 1),
-        (True, -1, 1),
+        (None, None, {}),
+        (0, 3, {"t": 4}),
+        (0, 2, {"t": 3}),
+        (0, 0, {"t": 1}),
+        (1, 2, {"ss": 1, "t": 2}),
+        (3, 3, {"ss": 3, "t": 1}),
     ],
 )
-def test_a_limit_that_leaves_frames_out_cuts_the_audio(use_limit, limit, frames):
+def test_a_range_cuts_the_audio(first, last, cut):
     # instant-exec gate R7: the mux reads the source's audio only for as long as the
-    # frames read last (the input's -t: frames / fps; at least one frame is read). A
-    # limit that leaves no frame out (4 frames) keeps the whole audio, as before.
+    # frames read last, from the first one's time: the input's -ss In / fps (from the
+    # start, none) and -t (Out - In + 1) / fps. All keeps the whole audio, as before. (A
+    # limit, which this Range replaces, kept it whole when it left no frame out.)
     env = FakeFFmpeg()
     vg = load("native", "video", env)
     g = load("native", "load_video", env)
     link_loader(g, vg)
     path = Path("folder/test.mkv")
-    call_load_video("native", g, Context(), path, use_limit, limit)
-    expected = {} if frames is None else {"t": frames / (30000 / 1001)}
+    run_load_video(g, Context(), path, first, last)
+    expected = {key: frames / (30000 / 1001) for key, frames in cut.items()}
     assert [e for e in env.events if e[0] == "input"] == [
         ("input", snap((path,)), snap(expected))
     ]
@@ -2093,9 +2145,11 @@ def test_writer_context_abort_no_mux_and_reaps_after_pipe_error(tmp_path):
     env.processes[0].stdin.close()
 
 
+# A limit reads as the Range 0..limit - 1 (call_load_video). Limits below 1 (which the
+# UI never allowed) and past the probe's 4 frames are a Range's errors now:
+# test_a_range_s_frames_and_errors.
 @pytest.mark.parametrize(
-    "use_limit,limit",
-    [(False, 2), (True, 0), (True, -1), (True, 1), (True, 2), (True, 10)],
+    "use_limit,limit", [(False, 2), (True, 1), (True, 2), (True, 3)]
 )
 def test_loader_node_index_limit_audio_and_supplier_reuse(use_limit, limit):
     results = []
@@ -2125,6 +2179,78 @@ def test_loader_node_index_limit_audio_and_supplier_reuse(use_limit, limit):
         context.cleanup()
         assert all(p.returncode is not None for p in env.processes)
     assert results[0] == results[1]
+
+
+def frames_read(items):
+    return [(item[0].tobytes()[0], item[1]) for item in items]
+
+
+@pytest.mark.parametrize(
+    "first,last,expected",
+    [
+        # Index counts from In, the item's number in the video.
+        (1, 2, ("ok", ((1, 1), (2, 2)))),
+        (1, 1, ("ok", ((1, 1),))),
+        # Checked at the first item, so the node still reports its Frame Count.
+        (2, 1, ("error", ("ValueError", "In (frame 2) is after Out (frame 1)."))),
+        (
+            0,
+            9,
+            (
+                "error",
+                ("ValueError", "frame 9 is past the end (the video has 4 frames)"),
+            ),
+        ),
+        # The probe counts 4 frames and the pipe gives 3, as the CLI's renumbered
+        # frames can: the video ends before Out.
+        (
+            1,
+            3,
+            (
+                "error",
+                ("ValueError", "frame 3 is past the end (the video has 3 frames)"),
+            ),
+        ),
+    ],
+)
+def test_a_range_s_frames_and_errors(first, last, expected):
+    env = FakeFFmpeg(chunks=[bytes([i] * 12) for i in range(3)])
+    vg = load("native", "video", env)
+    g = load("native", "load_video", env)
+    link_loader(g, vg)
+    context = Context()
+    outputs = run_load_video(g, context, Path("folder/test.mkv"), first, last)
+    generated = outputs[0]
+    assert outputs[-1] == 4  # Frame Count: the probe's
+    assert generated.expected_length == max(0, last - first + 1)
+    assert generated.index_base == first
+    assert generated.chosen_item == (first if first == last else None)
+    assert outcome(lambda: frames_read(generated.supplier())) == expected
+    context.cleanup()
+    assert all(p.returncode is not None for p in env.processes)
+
+
+def test_a_range_s_context_frames_are_clipped_to_the_video():
+    # Range 1..2 of a video the probe counts 4 frames: 5 wanted before and 5 after give
+    # 1 and 1. The pipe ends after 3 frames, inside the frames after: no error.
+    env = FakeFFmpeg(chunks=[bytes([i] * 12) for i in range(3)])
+    vg = load("native", "video", env)
+    g = load("native", "load_video", env)
+    link_loader(g, vg)
+    context = Context()
+    generated = run_load_video(g, context, Path("folder/test.mkv"), 1, 2)[0]
+    assert generated.context is not None
+    items, before, after = generated.context(5, 5)
+    assert (before, after) == (1, 1)
+    assert frames_read(items) == [(0, 0), (1, 1), (2, 2)]
+    # All reads every frame: no context frames.
+    whole = run_load_video(g, context, Path("folder/test.mkv"))[0]
+    assert whole.index_base == 0 and whole.chosen_item is None
+    assert whole.context is not None
+    items, before, after = whole.context(5, 5)
+    assert (before, after) == (0, 0)
+    context.cleanup()
+    assert all(p.returncode is not None for p in env.processes)
 
 
 def test_parallel_independent_readers():

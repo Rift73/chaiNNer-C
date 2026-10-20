@@ -127,7 +127,7 @@ CONTRACT = {
     ),
     "packages.chaiNNer_standard.image.video_frames.load_video": (
         VIDEO_IO,
-        "FFMpegEnv Generator LoadedVideo VideoLoader split_file_path",
+        "FFMpegEnv Generator LoadedVideo VideoLoader VideoMode load_preview split_file_path",
         False,
     ),
     "packages.chaiNNer_standard.image.video_frames.save_video": (

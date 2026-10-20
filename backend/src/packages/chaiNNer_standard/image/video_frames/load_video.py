@@ -5,9 +5,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from sanic.log import logger
+
 import navi
 from api import Generator, IteratorOutputInfo, NodeContext, OutputId
-from nodes.groups import Condition, if_enum_group, if_group
+from nodes.groups import if_enum_group
 from nodes.impl.colour_info import (
     VIDEO_MODE_LABELS,
     ChromaLocation,
@@ -22,13 +25,13 @@ from nodes.impl.colour_info import (
 # `x as x` imports: the native mirror reads these names in native/src/video_io.cpp
 from nodes.impl.ffmpeg import FFMpegEnv as FFMpegEnv
 from nodes.impl.native_graph import graph
-from nodes.impl.video import ReadSettings, VideoMetadata
+from nodes.impl.video import ReadSettings, VideoMetadata, preview_frame
 from nodes.impl.video import VideoLoader as VideoLoader
 from nodes.properties.inputs import (
-    BoolInput,
     EnumInput,
     NumberInput,
     VideoFileInput,
+    VideoSeekInput,
     colour_override_inputs,
 )
 from nodes.properties.outputs import (
@@ -37,6 +40,7 @@ from nodes.properties.outputs import (
     DirectoryOutput,
     FileNameOutput,
     ImageOutput,
+    LargeImageOutput,
     NumberOutput,
     TextOutput,
 )
@@ -48,6 +52,11 @@ from .. import video_frames_group
 class RgbPrecision(Enum):
     FLOAT = "float"
     EIGHT_BIT = "8bit"
+
+
+class FramesMode(Enum):
+    ALL = "all"
+    RANGE = "range"
 
 
 @dataclass(frozen=True)
@@ -78,6 +87,25 @@ def get_item_types(loaded: LoadedVideo):
     return types
 
 
+def load_preview(node_id: str, loader: VideoLoader, n: int) -> np.ndarray:
+    """The Preview (native/src/video_io.cpp load_video): frame `n` in RGB from the node's
+    open preview reader (video.py preview_frame), whatever the Mode. A video read in
+    Planes mode whose matrix RGB cannot convert (BT.2020 constant luminance) shows its Y
+    plane in gray instead, so the node still reports its Frame Count and FPS."""
+    try:
+        loader.preview_format()
+    except ValueError as reason:
+        logger.warning(
+            "%s: the Preview shows the Y plane in gray: %s",
+            vars(loader)["path"],
+            reason,
+        )
+        ((_, y, _, _),) = list(loader.stream_items(n, n + 1))
+        assert y is not None
+        return np.dstack((y, y, y))
+    return preview_frame(node_id, loader, n)
+
+
 RGB_MODES = "VideoMode::Rgb | VideoMode::Both"
 PLANE_MODES = "VideoMode::Planes | VideoMode::Both"
 
@@ -95,21 +123,43 @@ def plane_output(label: str, output_id: int) -> ImageOutput:
     schema_id="chainner:image:load_video",
     name="Load Video",
     description=[
-        "Iterate over all frames in a video as images.",
+        "Iterate over the frames in a video as images: all of them, or a Range from In to Out.",
         "Uses FFMPEG to read video files.",
+        "The seek bar picks a frame, which the Preview shows. In and Out set the Range there, and Run this frame runs the chain on that frame alone. A run of one frame (Run this frame, or a Range whose In is its Out) makes Save Video save the frame as a PNG image instead of a video.",
         "This iterator is much slower than just using FFMPEG directly, so if you are doing a simple conversion, just use FFMPEG outside chaiNNer instead.",
     ],
     icon="MdVideoCameraBack",
     inputs=[
         VideoFileInput(primary_input=True),
-        BoolInput("Use limit", default=False).with_id(1),
-        if_group(Condition.bool(1, True))(
-            NumberInput("Limit", default=10, min=1)
-            .with_docs(
-                "Limit the number of frames to iterate over. This can be useful for testing the iterator without having to iterate over all frames of the video."
-                " The audio is cut to the limited frames."
-            )
-            .with_id(2)
+        VideoSeekInput(
+            "Seek",
+            frames_input=10,
+            in_input=11,
+            out_input=12,
+            frame_count_output=12,
+            fps_output=4,
+        )
+        .with_id(13)
+        .with_docs(
+            "The frame the Preview shows, by its number in the video (0 is the first)."
+            " Past the last frame, the last one is shown."
+        ),
+        EnumInput(
+            FramesMode,
+            "Frames",
+            default=FramesMode.ALL,
+            option_labels={FramesMode.ALL: "All", FramesMode.RANGE: "Range"},
+            preferred_style="tabs",
+        )
+        .with_id(10)
+        .with_docs(
+            "All reads every frame. Range reads the frames from In to Out, both"
+            " included, by their numbers in the video (0 is the first), and cuts the"
+            " audio to them."
+        ),
+        if_enum_group(10, FramesMode.RANGE)(
+            NumberInput("In", default=0, min=0).with_id(11),
+            NumberInput("Out", default=9, min=0).with_id(12),
         ),
         EnumInput(
             VideoMode,
@@ -150,8 +200,18 @@ def plane_output(label: str, output_id: int) -> ImageOutput:
         ImageOutput("Frame", channels=3).null_unless(3, RGB_MODES),
         NumberOutput(
             "Index",
-            output_type="min(uint, max(0, IterOutput0.length - 1))",
-        ).with_docs("A counter that starts at 0 and increments by 1 for each frame."),
+            output_type="""
+                match Input10 {
+                    FramesMode::Range => max(int, Input11) & min(int, Input12),
+                    _ => min(uint, max(0, IterOutput0.length - 1)),
+                }
+            """,
+        )
+        .with_docs(
+            "The frame's number in the video: 0 for its first frame, In for the first"
+            " frame of a Range."
+        )
+        .with_never_reason("In is after Out."),
         DirectoryOutput("Video Directory", of_input=0),
         FileNameOutput("Name", of_input=0),
         NumberOutput("FPS", output_type="0.."),
@@ -165,10 +225,24 @@ def plane_output(label: str, output_id: int) -> ImageOutput:
         .with_docs(
             "The colour information: tagged values, and which were guessed or chosen."
         ),
+        LargeImageOutput("Preview", image_type=navi.Image(channels=3), has_handle=False)
+        .with_id(11)
+        .with_docs("The seek bar's frame in RGB, whatever the Mode."),
+        NumberOutput("Frame Count", output_type="uint")
+        .with_id(12)
+        .with_docs(
+            "The number of frames in the video. For a video with a variable frame rate,"
+            " which is read at a constant one, it is the probe's estimate."
+        ),
     ],
     iterator_outputs=IteratorOutputInfo(
         outputs=[0, 1, 6, 7, 8],
-        length_type="if Input1 { min(uint, Input2) } else { uint }",
+        length_type="""
+            match Input10 {
+                FramesMode::Range => max(0, Input12 - Input11 + 1),
+                _ => uint,
+            }
+        """,
     ).with_item_types(LoadedVideo, get_item_types),
     node_context=True,
     side_effects=True,
@@ -177,8 +251,10 @@ def plane_output(label: str, output_id: int) -> ImageOutput:
 def load_video_node(
     node_context: NodeContext,
     path: Path,
-    use_limit: bool,
-    limit: int,
+    seek: int,
+    frames: FramesMode,
+    first: int,
+    last: int,
     mode: VideoMode,
     precision: RgbPrecision,
     matrix: Matrix,
@@ -186,14 +262,31 @@ def load_video_node(
     primaries: Primaries,
     range_: Range,
     chroma_location: ChromaLocation,
-) -> tuple[Generator[tuple[Any, ...]], Path, str, float, Any, ColourInfo, str]:
+) -> tuple[
+    Generator[tuple[Any, ...]],
+    Path,
+    str,
+    float,
+    Any,
+    ColourInfo,
+    str,
+    np.ndarray,
+    int,
+]:
     settings = ReadSettings(
         mode,
         precision is RgbPrecision.FLOAT,
         (matrix, transfer, primaries, range_, chroma_location),
     )
-    generator, directory, name, fps, audio = graph().video_load(
-        globals(), node_context, path, use_limit, limit, settings
+    generator, directory, name, fps, audio, preview, count = graph().video_load(
+        globals(),
+        node_context,
+        path,
+        frames is FramesMode.RANGE,
+        first,
+        last,
+        seek,
+        settings,
     )
     loaded = generator.metadata
     assert isinstance(loaded, LoadedVideo)
@@ -205,4 +298,6 @@ def load_video_node(
         audio,
         loaded.colour,
         loaded.colour.summary(),
+        preview,
+        count,
     )

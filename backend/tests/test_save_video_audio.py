@@ -3,7 +3,7 @@ FFmpeg on PATH still gets it; "Auto" transcodes the audio to AAC when the contai
 cannot hold a copy of it; and audio the mux cannot carry fails the run instead of
 leaving a silent video (upstream chaiNNer #3331). An MP4 or MOV with audio gets its
 faststart on the mux, which writes the final file (instant-exec gate R5a), and Load
-Video's limit cuts the audio to the frames read (R7)."""
+Video's Range cuts the audio to the frames read (R7)."""
 
 from __future__ import annotations
 
@@ -30,8 +30,9 @@ from nodes.impl.colour_info import (
     VideoMode,
 )
 from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
-from nodes.impl.video import VideoLoader
+from nodes.impl.video import VideoLoader, close_previews
 from packages.chaiNNer_standard.image.video_frames.load_video import (
+    FramesMode,
     RgbPrecision,
     load_video_node,
 )
@@ -70,9 +71,10 @@ pytestmark = pytest.mark.skipif(
 
 
 class Context:
-    """The NodeContext members Save Video uses."""
+    """The NodeContext members Load Video and Save Video use."""
 
     chosen_item = None  # every item runs, so the video is written
+    node_id = "load-video"  # Load Video's Preview reader is the node's
 
     def __init__(self):
         self.storage_dir = STORAGE
@@ -317,19 +319,25 @@ def test_audio_mux_writes_the_moov_first(tmp_path: Path, container: VideoFormat)
     assert audio_packets(out) == audio_packets(src)
 
 
-@pytest.mark.parametrize("limit", [60, 150, None])
-def test_a_limit_cuts_the_audio_to_the_frames_read(tmp_path: Path, limit: int | None):
-    # R7: Load Video with a limit of 60 frames (2 s of a 5 s source) gives audio that
-    # ends within one AAC frame (1024 samples at 48 kHz) of the video. Without a limit,
-    # or with one that leaves no frame out (150), the whole audio is copied as before.
+@pytest.mark.parametrize("frames", [(0, 59), (30, 89), (0, 149), None])
+def test_a_range_cuts_the_audio_to_the_frames_read(
+    tmp_path: Path, frames: tuple[int, int] | None
+):
+    # R7: Load Video's Range of 60 frames (2 s of a 5 s source, from its start or from
+    # 1 s) gives audio that ends within one AAC frame (1024 samples at 48 kHz) of the
+    # video, and so does the Range of all 150 frames. Frames All copies the whole audio,
+    # as before.
     src = source(tmp_path, "src.mp4", "aac", seconds=5)
     context = Context()
     auto = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.AUTO)
-    generator, _, _, fps, audio, _, _ = load_video_node(
+    first, last = frames or (0, 0)
+    generator, _, _, fps, audio, _, _, _, _ = load_video_node(
         cast(NodeContext, context),
         src,
-        limit is not None,
-        limit or 0,
+        0,
+        FramesMode.ALL if frames is None else FramesMode.RANGE,
+        first,
+        last,
         VideoMode.RGB,
         RgbPrecision.FLOAT,
         *auto,
@@ -362,11 +370,13 @@ def test_a_limit_cuts_the_audio_to_the_frames_read(tmp_path: Path, limit: int | 
     collector.on_complete()
     for cleanup in context.cleanups:
         cleanup()
+    close_previews()  # the Preview's reader lets the source go
     out = saved(tmp_path, VideoFormat.MP4)
     lengths = durations(out)
-    if limit == 60:
-        assert lengths["video"] == pytest.approx(2.0, abs=0.001)
-        assert abs(lengths["audio"] - lengths["video"]) <= 1024 / 48000
-    else:
+    if frames is None:
         assert lengths["video"] == pytest.approx(5.0, abs=0.001)
         assert audio_packets(out) == audio_packets(src)
+    else:
+        seconds = (frames[1] - frames[0] + 1) / 30
+        assert lengths["video"] == pytest.approx(seconds, abs=0.001)
+        assert abs(lengths["audio"] - lengths["video"]) <= 1024 / 48000

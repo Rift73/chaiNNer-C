@@ -249,13 +249,14 @@ def test_generator_runs_keyed_only_by_their_inputs(schemas):
 
 
 def video_fps_chain(schemas, video: Path, output: Path) -> list[dict]:
-    """Load Video's FPS (a per-run output read from the file), doubled by Math (memoized), names the saved frame."""
+    """Load Video's FPS (a per-run output read from the file), doubled by Math (memoized), names the saved frame: the
+    Range of frame 0 alone."""
     return [
         make_node(
             schemas,
             "video",
             "chainner:image:load_video",
-            {0: str(video), 1: True, 2: 1},
+            {0: str(video), 10: "range", 11: 0, 12: 0},
         ),
         make_node(
             schemas,

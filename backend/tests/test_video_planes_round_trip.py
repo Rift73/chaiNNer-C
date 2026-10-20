@@ -19,6 +19,7 @@ import pytest
 pytest.importorskip("nodes.impl._chainner_graph")
 
 from api import NodeContext
+from nodes.impl import video
 from nodes.impl.colour_info import (
     ChromaLocation,
     ColourInfo,
@@ -33,6 +34,7 @@ from nodes.impl.colour_info import (
 from nodes.impl.ffmpeg import get_executable_path
 from nodes.impl.plane_resample import Kernel, resample_plane
 from packages.chaiNNer_standard.image.video_frames.load_video import (
+    FramesMode,
     RgbPrecision,
     load_video_node,
 )
@@ -63,6 +65,7 @@ class Context:
     """The NodeContext members the video nodes use."""
 
     chosen_item = None  # every item runs, so Save Video writes the video
+    node_id = "load-video"  # Load Video's Preview reader is the node's
 
     def __init__(self):
         self.storage_dir = STORAGE
@@ -90,7 +93,15 @@ def load(
 ) -> tuple[list[tuple[Any, ...]], ColourInfo]:
     context = Context()
     outputs = load_video_node(
-        cast(NodeContext, context), path, False, 0, mode, precision, *choices
+        cast(NodeContext, context),
+        path,
+        0,
+        FramesMode.ALL,
+        0,
+        0,
+        mode,
+        precision,
+        *choices,
     )
     items: list[tuple[Any, ...]] = []
     for item in outputs[0].supplier():
@@ -98,6 +109,7 @@ def load(
         items.append(item)
     for cleanup in context.cleanups:
         cleanup()
+    video.close_previews()  # the Preview's reader lets the file go
     return items, outputs[5]
 
 

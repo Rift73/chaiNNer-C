@@ -150,7 +150,7 @@ def video_frames_chain(schemas, assets: Path, output: Path) -> list[dict]:
             schemas,
             "load",
             "chainner:image:load_video",
-            {0: str(assets / "moving.mkv"), 1: 0},
+            {0: str(assets / "moving.mkv")},
         ),
         make_node(
             schemas,

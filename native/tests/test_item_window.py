@@ -40,7 +40,7 @@ from test_generator_lifecycle import (
     window_summaries,
 )
 from test_image_io import NEW, save_arguments
-from test_video_io import FakeFFmpeg
+from test_video_io import FakeFFmpeg, preview_stub
 from test_video_io import load as video_module
 
 import process
@@ -78,6 +78,7 @@ from nodes.properties.outputs import (
     DirectoryOutput,
     FileNameOutput,
     ImageOutput,
+    LargeImageOutput,
     NumberOutput,
     TextOutput,
 )
@@ -3553,10 +3554,11 @@ def load_video_pipeline(monkeypatch, tmp_path, window, frames):
         VideoMetadata=video["VideoMetadata"],
         ReadSettings=video["ReadSettings"],
         Generator=Generator,  # the executor's own
+        preview_frame=preview_stub,
     )
     chain = pipeline.chain = Chain()
     load = make_node(
-        "g0", "generator", module["load_video_node"], 10, 11, iterator=True
+        "g0", "generator", module["load_video_node"], 12, 13, iterator=True
     )
     planes = [
         ImageOutput(label, channels=1, assume_normalized=True).null_unless(
@@ -3576,11 +3578,14 @@ def load_video_pipeline(monkeypatch, tmp_path, window, frames):
             *planes,
             ColourInfoOutput(),
             TextOutput("Colour"),
+            LargeImageOutput("Preview", has_handle=False),
+            NumberOutput("Frame Count", output_type="uint"),
         ],
         [0, 1, 6, 7, 8],
     )
     chain.add_node(load)
-    # Mode RGB, RGB Precision "8-bit (as before)" and every colour choice Auto.
+    # Seek 0, Frames All, Mode RGB, RGB Precision "8-bit (as before)" and every colour
+    # choice Auto.
     settings = (
         colour_info.VideoMode.RGB,
         module["RgbPrecision"].EIGHT_BIT,
@@ -3590,7 +3595,8 @@ def load_video_pipeline(monkeypatch, tmp_path, window, frames):
         colour_info.Range.AUTO,
         colour_info.ChromaLocation.AUTO,
     )
-    for index, value in enumerate((tmp_path / "video.mkv", False, 0, *settings)):
+    frames = (0, module["FramesMode"].ALL, 0, 0)
+    for index, value in enumerate((tmp_path / "video.mkv", *frames, *settings)):
         chain.inputs.set(NodeId("g0"), InputId(index), value)
 
     def sink(frame, index):
