@@ -300,6 +300,16 @@ class FrameIndex:
     keyframes: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class _Unindexed:
+    """A file the FFmpeg CLI reads, not PyAV: why (`reason`), and the number of frames its
+    video packets hold where they count them (`packets`; an estimate, the CLI renumbering
+    the frames to a constant rate), else None."""
+
+    reason: str
+    packets: int | None = None
+
+
 def frame_index(path: Path) -> FrameIndex:
     """The first video track's FrameIndex, from its packets demuxed without decoding and
     sorted (B-frames store them out of order). A packet flagged as discarded (the frames
@@ -311,19 +321,22 @@ def frame_index(path: Path) -> FrameIndex:
     if av is None:
         raise RuntimeError(f"{path} has no frame index: PyAV is unavailable.")
     index = _scan_frames(file_identity(path), path, av)
-    if isinstance(index, str):
-        raise _UseCliReader(index)
+    if isinstance(index, _Unindexed):
+        raise _UseCliReader(index.reason)
     return index
 
 
 @lru_cache(maxsize=64)
-def _scan_frames(_identity: tuple, path: Path, av: ModuleType) -> FrameIndex | str:
+def _scan_frames(
+    _identity: tuple, path: Path, av: ModuleType
+) -> FrameIndex | _Unindexed:
     """frame_index's scan, or why the packets cannot number the frames: a shown frame's
-    packet without a timestamp (MPEG-PS times only some), or packets of which none is
-    shown; either would leave frames out of the index. `_identity` is the file version
-    it is kept for."""
+    packet without a timestamp (MPEG-PS times only some), with the number of the shown
+    frames' packets, or packets of which none is shown; either would leave frames out of
+    the index. `_identity` is the file version it is kept for."""
     frames: list[tuple[int, bool]] = []
-    packets = 0
+    packets = shown = 0
+    untimed = False
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
         for packet in container.demux(stream):
@@ -333,11 +346,15 @@ def _scan_frames(_identity: tuple, path: Path, av: ModuleType) -> FrameIndex | s
             packets += 1
             if packet.is_discard:
                 continue
+            shown += 1
             if packet.pts is None:
-                return "a frame's packet has no timestamp"
-            frames.append((packet.pts, packet.is_keyframe))
+                untimed = True
+            else:
+                frames.append((packet.pts, packet.is_keyframe))
+    if untimed:
+        return _Unindexed("a frame's packet has no timestamp", shown)
     if packets and not frames:
-        return "its packets time none of its frames"
+        return _Unindexed("its packets time none of its frames")
     frames.sort()
     return FrameIndex(
         tuple(pts for pts, _ in frames),
@@ -345,14 +362,15 @@ def _scan_frames(_identity: tuple, path: Path, av: ModuleType) -> FrameIndex | s
     )
 
 
-def _cli_reason(path: Path, container: InputContainer, av: ModuleType) -> str | None:
-    """Why the FFmpeg CLI reads the file, or None where PyAV does: a variable frame rate
-    (_variable_rate), or packets that cannot number the frames (_scan_frames), where a
-    seek's frame n would not be the full read's."""
+def _pyav_index(
+    path: Path, container: InputContainer, av: ModuleType
+) -> FrameIndex | _Unindexed:
+    """The FrameIndex of a file PyAV reads, or why the FFmpeg CLI reads it: a variable
+    frame rate (_variable_rate), or packets that cannot number the frames
+    (_scan_frames), where a seek's frame n would not be the full read's."""
     if _variable_rate(path, container, av):
-        return "its frame rate is variable"
-    index = _scan_frames(file_identity(path), path, av)
-    return index if isinstance(index, str) else None
+        return _Unindexed("its frame rate is variable")
+    return _scan_frames(file_identity(path), path, av)
 
 
 def _past_the_end(n: int, count: int) -> ValueError:
@@ -510,9 +528,9 @@ def _pyav_frames(
     _UseCliReader before its first frame for a file the CLI would treat differently."""
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
-        reason = _cli_reason(path, container, av)
-        if reason is not None:
-            raise _UseCliReader(reason)
+        index = _pyav_index(path, container, av)
+        if isinstance(index, _Unindexed):
+            raise _UseCliReader(index.reason)
         stream.thread_type = "AUTO"
         frames = (
             _decode(container, stream, path, av)
@@ -805,30 +823,36 @@ class VideoLoader:
 
     def frame_count(self) -> int:
         """The number of frames the readers give: exact where PyAV reads the file
-        (exact_frame_count), else the probe's estimate (metadata.frame_count), which the
-        FFmpeg CLI's renumbered frames can pass or fall short of."""
-        exact = self.exact_frame_count()
-        if exact is not None:
-            return exact
-        metadata: VideoMetadata = vars(self)["metadata"]
-        return metadata.frame_count
+        (exact_frame_count), else an estimate, which the FFmpeg CLI's renumbered frames
+        can pass or fall short of: the number of the video packets of a file whose
+        packets lack timestamps (_scan_frames), else the probe's (metadata.frame_count)."""
+        return self._count()[0]
 
     def exact_frame_count(self) -> int | None:
         """The number of frames where PyAV reads the file (its frame_index's), else None:
-        the FFmpeg CLI reads it (CLI forced, PyAV missing, _cli_reason's files, which the
+        the FFmpeg CLI reads it (CLI forced, PyAV missing, _pyav_index's files, which the
         readers log, or a file PyAV cannot open, which is logged)."""
+        count, exact = self._count()
+        return count if exact else None
+
+    def _count(self) -> tuple[int, bool]:
+        """frame_count's number, and whether it is exact."""
         path: Path = vars(self)["path"]
+        metadata: VideoMetadata = vars(self)["metadata"]
         av = _reader_pyav()
         if av is not None:
             try:
                 with av.open(str(path)) as container:
-                    reason = _cli_reason(path, container, av)
-                if reason is None:
-                    return len(frame_index(path).pts)
+                    index = _pyav_index(path, container, av)
             except av.error.FFmpegError as reason:
                 # The reader goes to the CLI too (_pyav_reader).
                 logger.warning("Counting %s's frames by its probe: %s", path, reason)
-        return None
+            else:
+                if isinstance(index, FrameIndex):
+                    return len(index.pts), True
+                if index.packets is not None:
+                    return index.packets, False
+        return metadata.frame_count, False
 
     def _pyav_reader(
         self, path: Path, formats: list[FrameFormat], start: int = 0
@@ -945,9 +969,9 @@ class PreviewReader:
     def _decoded_frame(self, av: ModuleType, n: int) -> np.ndarray:
         if self._container is None:
             self._container = av.open(str(self.path))
-            reason = _cli_reason(self.path, self._container, av)
-            if reason is not None:
-                raise _UseCliReader(reason)
+            index = _pyav_index(self.path, self._container, av)
+            if isinstance(index, _Unindexed):
+                raise _UseCliReader(index.reason)
             stream = self._container.streams.video[0]
             stream.thread_type = "AUTO"
             self._converters = _Converters(self.path, stream, [self.format], av)

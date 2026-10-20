@@ -196,10 +196,14 @@ def test_seek_equals_full_read(
         # The CLI duplicates frames into a variable-rate file's gap: frame n is not the
         # n-th stored one.
         assert count > 150 if name == "variable.mkv" else count == 150
-        # The CLI path counts by the probe's estimate.
+        # The CLI path counts by an estimate: the probe's, or the number of the video
+        # packets where they lack timestamps.
         metadata: video.VideoMetadata = vars(loader)["metadata"]
         assert loader.exact_frame_count() is None
-        assert loader.frame_count() == metadata.frame_count
+        if name == "variable.mkv":
+            assert loader.frame_count() == metadata.frame_count
+        else:
+            assert loader.frame_count() == 150 != metadata.frame_count
         keyframes: tuple[int, ...] = ()
     else:
         assert not any(warning.startswith(cli) for warning in warnings)
@@ -819,7 +823,9 @@ def test_a_file_without_timestamps_reads_through_the_cli(
 ):
     # Most frames of this MPEG-PS file have no timestamp to index them by: the Preview
     # and a Range read it through the FFmpeg CLI, which decodes and discards the frames
-    # before the one asked for, as the full read does.
+    # before the one asked for, as the full read does. The Frame Count, by which the
+    # seek bar moves, is the number of its video packets: the probe's estimate is short
+    # (ffprobe times the file by its few timestamps).
     monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
     path = made(folder, UNTIMED)
     full = rgb_float_frames(path)
@@ -835,13 +841,15 @@ def test_a_file_without_timestamps_reads_through_the_cli(
     reason = CLI_FILES[UNTIMED]
     assert f"Previewing {path} through the FFmpeg CLI: {reason}" in warnings
     context = Context()
-    outputs = run_node(context, path, frames=(40, 45))
+    outputs = run_node(context, path, frames=(40, 45), seek=77)
+    assert (outputs[8], outputs[0].expected_length) == (150, 6)
+    metadata: video.VideoMetadata = vars(loader)["metadata"]
+    assert metadata.frame_count < 2
+    np.testing.assert_array_equal(outputs[7], full[77])
     read = items_of(outputs[0].supplier())
     assert [item[1] for item in read] == list(range(40, 46))
     for (frame, *_), expected in zip(read, full[40:46], strict=True):
         np.testing.assert_array_equal(frame, expected)
-    # The Frame Count is the probe's estimate (short here: ffprobe times the file by
-    # its few timestamps).
-    metadata: video.VideoMetadata = vars(loader)["metadata"]
-    assert outputs[8] == metadata.frame_count < 150
+    # A Seek past the end shows the last frame, by that count.
+    np.testing.assert_array_equal(run_node(context, path, seek=500)[7], full[149])
     context.cleanup()

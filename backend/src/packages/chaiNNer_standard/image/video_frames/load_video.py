@@ -243,7 +243,8 @@ def plane_output(label: str, output_id: int) -> ImageOutput:
         .with_id(12)
         .with_docs(
             "The number of frames in the video. For a video with a variable frame rate,"
-            " which is read at a constant one, it is the probe's estimate."
+            " which is read at a constant one, it is the probe's estimate; for a video"
+            " whose frames lack timestamps, an estimate by its video packets."
         ),
     ],
     iterator_outputs=IteratorOutputInfo(
