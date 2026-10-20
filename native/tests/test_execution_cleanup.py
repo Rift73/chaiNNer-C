@@ -273,6 +273,7 @@ def test_actual_node_method_cleans_node_scope_without_mutating_iteration(
         monkeypatch.setattr(executor, "_Executor__get_node_context", lambda _node: ctx)
         monkeypatch.setattr(executor, "_Executor__window", None, raising=False)
         monkeypatch.setattr(executor, "_Executor__item_bytes", None, raising=False)
+        monkeypatch.setattr(executor, "_Executor__run", None, raising=False)
         monkeypatch.setattr(executor, "_Executor__send_node_start", lambda _node: None)
 
         async def broadcast(*_):
