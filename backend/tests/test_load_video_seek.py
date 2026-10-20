@@ -1,7 +1,7 @@
 """Load Video's exact reads: frame n read by a seek (stream_items(n, n + 1)) is item n of
 the full read, bit for bit, in RGB float, RGB 8-bit and Planes and in both readers (PyAV
-and the FFmpeg CLI); the Preview's open readers step through the same frames. Runs on
-chaiNNer's integrated FFmpeg."""
+and the FFmpeg CLI); the Preview's open readers step through the same frames; the audio
+is cut to a range. Runs on chaiNNer's integrated FFmpeg."""
 
 from __future__ import annotations
 
@@ -9,10 +9,12 @@ import os
 import shutil
 import subprocess
 import time
+import wave
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import ffmpeg
 import numpy as np
 import pytest
 
@@ -103,7 +105,7 @@ SETTINGS = {
 }
 
 
-def ffmpeg(*arguments: str) -> None:
+def run_ffmpeg(*arguments: str) -> None:
     subprocess.run(
         [FFMPEG, "-v", "error", "-y", *arguments],
         check=True,
@@ -122,7 +124,7 @@ def made(folder: Path, name: str) -> Path:
     if not path.exists():
         source, input_options, options = FILES[name]
         inputs = SOURCE if source is None else ("-i", str(made(folder, source)))
-        ffmpeg(*input_options, *inputs, *options, str(path))
+        run_ffmpeg(*input_options, *inputs, *options, str(path))
     return path
 
 
@@ -316,3 +318,34 @@ def test_preview_readers_are_few_and_close_when_idle(
         time.sleep(0.05)
     assert not vars(video)["_previews"]
     assert not locked(paths[0]) and not locked(paths[1])
+
+
+def test_audio_range(folder: Path):
+    # Save Video's mux reads the audio from the stream's input (its "filename"): from
+    # `start` (-ss, only past 0) for `duration` (-t). A ramp's samples tell the time.
+    path = folder / "ramp.mkv"
+    run_ffmpeg(
+        *("-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10:duration=4"),
+        *("-f", "lavfi", "-i", "aevalsrc=t/4:s=8000:d=4"),
+        *("-c:v", "ffv1", "-c:a", "pcm_s16le", str(path)),
+    )
+    loader = video.VideoLoader(path, ENV, SETTINGS["rgb-float"])
+    assert loader.get_audio_stream().node.kwargs == {"filename": path}
+    assert loader.get_audio_stream(1.5).node.kwargs == {"filename": path, "t": 1.5}
+    assert loader.get_audio_stream(1.5, 0.0).node.kwargs == {
+        "filename": path,
+        "t": 1.5,
+    }
+    assert loader.get_audio_stream(None, 2.0).node.kwargs == {
+        "filename": path,
+        "ss": 2.0,
+    }
+    cut = loader.get_audio_stream(1.5, 2.0)
+    assert cut.node.kwargs == {"filename": path, "ss": 2.0, "t": 1.5}
+    target = folder / "cut.wav"
+    ffmpeg.output(cut, str(target)).overwrite_output().run(cmd=FFMPEG, quiet=True)
+    with wave.open(str(target)) as cut_file:
+        samples = np.frombuffer(cut_file.readframes(cut_file.getnframes()), "<i2")
+    seconds = (2.0 + np.arange(samples.size) / 8000) / 4
+    assert samples.size == 1.5 * 8000
+    np.testing.assert_allclose(samples / 32768, seconds, atol=1e-3)

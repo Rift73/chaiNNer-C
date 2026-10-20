@@ -763,10 +763,15 @@ class VideoLoader:
         rgb = ReadSettings(VideoMode.RGB, True, settings.choices)
         return self._rgb_format(metadata, layout, self.colour, rgb)
 
-    def get_audio_stream(self, duration: float | None = None):
+    def get_audio_stream(self, duration: float | None = None, start: float = 0.0):
         """The file's audio streams, for Save Video's mux; with a `duration` (seconds),
-        only that much of them."""
-        return graph().video_audio_stream(globals(), self, duration)
+        only that much of them, and from `start` (seconds, the input's -ss) when it is
+        past 0. The mux reads the file the stream's input names (its "filename")."""
+        if start <= 0:
+            return graph().video_audio_stream(globals(), self, duration)
+        path: Path = vars(self)["path"]
+        cut = {"ss": start} if duration is None else {"ss": start, "t": duration}
+        return ffmpeg.input(path, **cut).audio
 
     def frame_count(self) -> int:
         """The number of frames the readers give: exact where PyAV reads the file (its
