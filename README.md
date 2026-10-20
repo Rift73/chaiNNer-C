@@ -91,8 +91,9 @@ chaiNNer is by chaiNNer-org and its contributors.
 
 - The native code adapts algorithms from other projects (chaiNNer-rs, OpenCV, Pillow, NumPy, PyMatting and others);
   [`chainner_native.LICENSE.txt`](backend/src/nodes/impl/chainner_native.LICENSE.txt) lists each one with its license.
-- Vendored and ported third-party code (fpng, vapoursynth-descale, pybind11, the ONNX Runtime C header and the
-  sources ported into `chainner_ext`) keeps its license texts under [`native/third_party`](native/third_party).
+- Vendored and ported third-party code (the image codec libraries, vapoursynth-descale, pybind11, the ONNX Runtime C
+  header and the sources ported into `chainner_ext`) keeps its license texts under
+  [`native/third_party`](native/third_party).
 - VOSR 2.0 is by Rongyuan Wu, Lingchen Sun, Zhengqiang Zhang, Xiangtao Kong, Jixin Zhao, Shihao Wang and Lei Zhang
   (Apache-2.0); its model code in `backend/src/vendor/vosr2` is adapted from ComfyUI-VOSR2 and VOSR and keeps their
   notices (`NOTICE.md`). The weights are downloaded separately.

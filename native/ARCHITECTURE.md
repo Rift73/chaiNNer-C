@@ -28,7 +28,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 | Native CPU pool | `native/src/parallel.c`, `native/include/parallel.h` |
 | Mirrors' CRT math from the process's `ucrtbase.dll` (Consult 6 D-4; groups in the header) | `native/include/cn_crt_math.h`, `native/src/crt_math.c` |
 | Ownership, cache, events | `backend/src/nodes/impl/native_buffers.py`, `nodes/properties/outputs/numpy_outputs.py`, `chain/cache.py`, `nodes/impl/event_queue.py`, `nodes/impl/numpy_pool.py` (section 6) |
-| Resize and PNG | `backend/src/nodes/impl/native_resample.py`, `native/src/resample_filters.c`, `native/src/dpid_ops.c` (DPID), `native/src/image_io.cpp`, `native/third_party/fpng` |
+| Resize and PNG | `backend/src/nodes/impl/native_resample.py`, `native/src/resample_filters.c`, `native/src/dpid_ops.c` (DPID), `native/src/image_io.cpp`, `native/src/png_encode.c` (`png_encode_avx2.c`; the default PNG encoder, with `native/third_party/libdeflate`) |
 | Image codecs and atomic writes (instant-exec lane I) | `native/cmake/codecs.cmake`, `native/src/codecs/*.c` (`native/include/image_codecs.h`), `native/src/image_decode.cpp`, `image_encode.cpp`, `image_preview.cpp`, `native/src/atomic_file.cpp`, `native/src/run/nodes/io.cpp`, `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}`; OpenEXR: `native/src/codecs/exr_codec.c`, `native/third_party/{openexr,imath,libdeflate,zstd,openjph}` |
 | Video | `native/src/video_io.cpp`, `backend/src/nodes/impl/video.py` |
 | Packaging | `native/tools/package_port.py`, `package_files.py`, `package_manifest.py` |
@@ -80,7 +80,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
   all); a larger lease grows its slot and frees it on release. A lease never waits: a busy pool gives a temporary
   `malloc`. Resample's coefficients stay in its own slots.
 - `_chainner_graph.pyd`: C++20/pybind11 application logic: ONNX/NCNN graph parsing, optimization, conversion and
-  TensorProto work, model application and tiling control, scalar/random/text utilities, image I/O with fpng, execution
+  TensorProto work, model application and tiling control, scalar/random/text utilities, image I/O, execution
   helpers, file sequences, video I/O, clipboard. C++ exceptions are translated at the Python boundary;
   `native/include/graph_exception.hpp` preserves CPython's handled-exception state inside native catch blocks.
 - `chainner_ext.pyd` (`backend/src/chainner_ext/`) is chaiNNer-C's own C module since 2026-10-06, replacing the Rust
@@ -91,8 +91,8 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
   `pixel_art_tables.inc`, `tiling_control.hpp`.
 - Build (owner directive 2026-10-06; Consult 9): clang-cl, lld-link and llvm-lib of LLVM 23.1.2 only, under Ninja,
   with the Build Tools' MSVC 14.44 libraries and Windows SDK 10.0.26100 (`toolchain.cmake` pins them;
-  `CMakeLists.txt` refuses any other compiler). Every unit is baseline x86-64 code (the ISA units compiled for their level only, fpng for SSE4.1
-  and PCLMUL behind its own CPU check; `CHAINNER_C_MARCH` adds `-march` to local builds only) with ThinLTO, `/fp:strict`
+  `CMakeLists.txt` refuses any other compiler). Every unit is baseline x86-64 code (the ISA units compiled for their level only, the vendored
+  libraries' SIMD behind their own CPU checks; `CHAINNER_C_MARCH` adds `-march` to local builds only) with ThinLTO, `/fp:strict`
   (the kernels' FP-flag windows mirror `np.seterr` and the pool carries MXCSR, so FP operations may not move across
   them), dynamic denormals (kernels run under DAZ/FTZ too), `/Brepro` (no timestamps; no PDB in Release) and
   `-fmacro-prefix-map=<native>=.` (clang's MSVC mangling names an anonymous namespace by a hash of the main file's
@@ -268,10 +268,13 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
 - Video: persistent FFmpeg processes per stream; frame order and shape, partial writes, EOF and
   finalization, audio and codec settings preserved; graceful EOF, then bounded targeted
   termination; owned children reaped. No unconditional hard-shutdown bound is promised.
-- fpng: used only for default-option 8-bit 3/4-channel PNG within its bounds (each dimension
-  <= 65,535; filtered stream below `INT32_MAX - 1 MiB`). Grayscale, 16-bit, explicit codec options
-  or larger images keep OpenCV's encoder (its libpng settings, vendored). A selected fpng failure is an error, never
-  retried.
+- The default PNG encoder (owner decision 2026-10-21; `native/src/png_encode.c`, `cn_png_encode_u8`): every
+  default-option 8-bit PNG (grey, grey + alpha, BGR, BGRA; Save Image, the viewer, the UI previews) is filtered row by
+  row by libpng's MinSum rule (scalar and AVX2 units, the same bytes) and compressed by libdeflate level 6 in up to 32
+  row bands on the native pool (each band at least 16 KiB and 8 rows), each band an IDAT chunk of one zlib stream
+  (the vendored libdeflate's non-final pieces, `PROVENANCE.md`). The bytes depend on the image alone. Sides beyond
+  2^31 - 1, rows of 2^29 samples or more, 16-bit and explicit codec options keep OpenCV's encoder (its libpng settings,
+  vendored). A failure of the selected encoder is an error, never retried.
 - Native codecs: the libraries today's Pillow 12.3.0 and OpenCV 5.0.0 decode and encode with (libjpeg-turbo 3.1.4.1
   JPEG8, libpng 1.6.57 with OpenCV's `pnglibconf.h`, classic zlib 1.3.2, libwebp 1.6.0, libtiff 4.7.1) are vendored and
   called with their settings, so decoded arrays and saved bytes are today's. A native decoder or encoder takes only
@@ -477,8 +480,9 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   2026-10-07 (g0 → {a, b} → join → save, 200 runs of 6 items, CPUs 28–31): upstream 1200 of 1200 items `sa fa sb fb`;
   the port at K = 1: 891 `sa sb fa fb`, 296 `sa sb fb fa`, 13 `sa fa sb fb`.
 - The normalize/enforce clamp follows `np.clip` on the tested stack (NumPy 2.5.3 `clip.cpp`: `x<min→min`, `x>max→max`; −0 and NaN payloads pass; under DAZ a denormal becomes the converted zero of its sign). On the 3.11 stack, NumPy 1.24.4 gave +0 for −0 and Task 3b1 (`602146a5`) mirrored that; U2 lane H restored B3's form when the stack moved.
-- Kept for the owner's record: default PNGs are encoded with fpng, pixel-identical to chaiNNer's but about 19 % larger
-  (7.97 → 9.51 MB for 32 files, VERIFIED 2026-10-04), a deliberate speed-for-size trade the owner may reverse. Composite's
+- Kept for the owner's record: default PNGs are chaiNNer-C's own (MinSum filter, libdeflate level 6 on row bands),
+  pixel-identical to chaiNNer's, 79 % of fpng's size on the owner's six sample frames and faster than fpng's default on
+  large images (2026-10-21; fpng, the encoder before, was about 19 % larger than chaiNNer's). Composite's
   full-overlap shortcut (SP4b Task 6) allocates nothing and succeeds where B3's region mallocs failed under memory exhaustion.
 - Widened annotations, annotation-only (Consult 14 D-31): where upstream annotates `ort.InferenceSession`, the
   backend's session parameters, returns and cache use the `OnnxSession` Protocol (`nodes/impl/onnx/session.py`:
@@ -518,8 +522,8 @@ Test tolerances (saved-image and runtime fixtures stay exact, but for the last r
 | Iterated items' broadcast types and values (runtime verifiers, Consult D-35) | Upstream on 3.14 broadcasts iterated items' types in timing-dependent order (CPython `_chain_future`); the UI may show either last item; the io verifier compares broadcast multisets, not last-wins, for these fields (the port's final value is one the oracle broadcast; `report.json` flags an oracle whose own attempts disagree). A same-side check that the port's final value equals its own last broadcast would be a tautology (the final state is the newest-wins merge of those broadcasts); the port's "latest pending" contract is pinned in the `LatestBroadcasts` unit tests instead (`test_execution_scheduler.py`, `test_execution_cleanup.py`; R3 M-1) |
 
 Not claimed: unchanged global Torch RNG state when alignment/face helpers are reused (reuse skips
-repeated random initialization); identical PNG bytes between fpng and OpenCV (compare decoded
-pixels); video container bytes (compare decoded frames, audio and metadata).
+repeated random initialization); identical PNG bytes between chaiNNer-C's PNG encoder and OpenCV, in files and
+previews (compare decoded pixels); video container bytes (compare decoded frames, audio and metadata).
 
 ## 8. Language policy
 
@@ -594,11 +598,11 @@ another project generated.
 - `backend/src/nodes/impl/chainner_native.LICENSE.txt` carries every adaptation notice, file by file: chaiNNer-rs (MIT;
   2xSaI credit GPL, HQ tables LGPL), colortrans (MIT), OpenCV 4.8.0, Pillow 9.2.0, NumPy 1.24.4 (FreeBSD msun complex
   math in `ncnn_complex_math.hpp`), PyMatting (MIT), PyTorch TensorIterator stride order, resize crate 0.8.3,
-  mergian/dpid (BSD-3-Clause, `dpid_ops.c`), zhang_hilbert 0.1.1, avx2_mathfun, CPython 3.11.5 `random.py`, pybind11 2.13.6, fpng 1.0.6 (Unlicense).
-- Vendored: `native/third_party/fpng` (`PROVENANCE.md`: hashes, Unlicense, size caps),
-  `native/third_party/pybind11`, `native/third_party/onnxruntime` (C API header, `LICENSE`), and the image codecs
-  `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff,openexr,imath,libdeflate,zstd,openjph}` (upstream
-  sources, unchanged but for OpenEXRCore's one recorded line, `PROVENANCE.md` with the release's SHA-256 and signature,
+  mergian/dpid (BSD-3-Clause, `dpid_ops.c`), zhang_hilbert 0.1.1, avx2_mathfun, CPython 3.11.5 `random.py`, pybind11 2.13.6.
+- Vendored: `native/third_party/pybind11`, `native/third_party/onnxruntime` (C API header, `LICENSE`), and the image
+  codecs `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff,openexr,imath,libdeflate,zstd,openjph}`
+  (upstream sources, unchanged but for OpenEXRCore's one recorded line and libdeflate's recorded non-final-piece
+  patch, `PROVENANCE.md` with the release's SHA-256 and signature,
   `chainner/` configuration headers; notices in `chainner_native.LICENSE.txt`).
 - Ported into `chainner_ext.pyd`: `native/third_party/chainner_ext`, `regex` and `regex-syntax` (MIT OR Apache-2.0) and
   `unicode` (the Unicode 15.0.0 tables' licence), each with its licence texts and `PROVENANCE.md`.

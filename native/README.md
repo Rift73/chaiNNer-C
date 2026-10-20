@@ -14,7 +14,7 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
 | Path | Role |
 | --- | --- |
 | `backend/src/` | The only backend; ships byte for byte (stored verbatim as LF, upstream's line ending: `backend/src/** -text`); its `nodes/impl/chainner_native.dll` and `_chainner_graph.pyd` (and `nodes/impl/pytorch/vosr2_qkv.dll` when built) are git-ignored binaries written by the build |
-| `native/src/`, `native/include/`, `native/third_party/` | C17 kernels, C++20 modules; vendored pybind11, fpng 1.0.6, ONNX Runtime C header |
+| `native/src/`, `native/include/`, `native/third_party/` | C17 kernels, C++20 modules; vendored pybind11, the image codec libraries, ONNX Runtime C header |
 | `native/tests/` | pytest suites and frozen `reference_*` oracles (stored verbatim: `native/tests/reference_*/** -text`) |
 | `native/tools/` | Packager, UI patches, runtime verifiers, benchmark harness, code generators, `isa_check.py text` (compares two binaries' code sections), `golden_kernels.py` (golden manifests of the SP4 kernels; usage in each docstring) |
 | `native/reports/`, `out/chaiNNer-C/` | Ignored: local evidence (never needed to build or package), and the portable package |
@@ -84,12 +84,13 @@ Build Tools' copy, which must exist) and `native/toolchain.cmake`, which pins th
 2026-10-06): clang-cl 23.1.2 with lld-link and llvm-lib, MSVC toolset 14.44.35207 and Windows SDK 10.0.26100.0, no
 Developer environment. Configuration refuses any other version of the three (`CMakeLists.txt` for clang-cl,
 `toolchain.cmake` for the toolset directory's version and the SDK version), and the package manifest records them
-(`native_toolchain`). It builds `chainner_native.dll` (C17, C ABI version 2), `_chainner_graph.pyd` (C++20/pybind11, linked
-against the DLL, fpng and the runtime's `python314.lib`) and `chainner_ext.pyd`. Every target: baseline x86-64 code
+(`native_toolchain`). It builds `chainner_native.dll` (C17, C ABI version 2; with the vendored libdeflate for the default
+PNG encoder), `_chainner_graph.pyd` (C++20/pybind11, linked against the DLL, the image codec libraries and the runtime's
+`python314.lib`) and `chainner_ext.pyd`. Every target: baseline x86-64 code
 (the ISA units for their level only, exactly what `src/isa.c` checks: `*_avx2.c` AVX2, FMA, BMI1 and BMI2,
-`*_avx512.c` those plus AVX-512 F/DQ/CD/BW/VL; fpng `-msse4.1 -mpclmul` behind its own CPU check), ThinLTO, `/fp:strict`, dynamic denormals, `/Brepro` (the same sources give the same binaries; no PDB in Release) and
+`*_avx512.c` those plus AVX-512 F/DQ/CD/BW/VL; the vendored libraries' SIMD behind their own CPU checks), ThinLTO, `/fp:strict`, dynamic denormals, `/Brepro` (the same sources give the same binaries; no PDB in Release) and
 the static runtime; first-party targets `/W4 /WX` (the standing strict check; no suppressions), `/EHsc` for C++;
-fpng keeps its vendor `/W3`. `-Define NAME=VALUE` passes CMake entries: the runtime
+vendored libraries keep their vendor `/W3`. `-Define NAME=VALUE` passes CMake entries: the runtime
 (`CHAINNER_C_PYTHON_ROOT=...`, on a directory's first configure), the toolchain's four roots for other install
 locations (`chainner_c_llvm`, `chainner_c_vc_tools`, `chainner_c_sdk`, `chainner_c_sdk_version`; defaults are the
 paths above, in `toolchain.cmake`; also on a directory's first configure), `CHAINNER_C_PDB=ON` (PDBs and linker maps; it must
@@ -103,14 +104,14 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 `CHAINNER_C_EXT_OUTPUT_DIR`, default `backend/src/chainner_ext`), replacing the only known-good copies. Copy them to
 `native\build\held\` first and check `Get-FileHash` against those copies. The build is reproducible: the same sources
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
-map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` and `_chainner_graph.pyd` of 2026-10-21, after the
-Load Video seek bar and DPID, `drft_trt_plugins.dll` of 2026-10-20, the others of 2026-10-18, with TensorRT 11.4.0.106 and
+map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` and `_chainner_graph.pyd` of 2026-10-21, with the
+default PNG encoder, `drft_trt_plugins.dll` of 2026-10-20, the others of 2026-10-18, with TensorRT 11.4.0.106 and
 CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
-| `chainner_native.dll` | `72d0d5a341abc7292b547d08eb4694597f5663e24d6c129c0adc8248c1f7fd30` |
-| `_chainner_graph.pyd` | `d1e561ede7a297cdbd287b6ccfe3587ed60d63361e313a4b575b87b22654f4e0` |
+| `chainner_native.dll` | `bfe03c8994cf84d3971999fcc1268b5909085bcca6f14164ea9f1ef49d333ba5` |
+| `_chainner_graph.pyd` | `4d43334f403e55f4171cacf944a7a96fe611334848e4212ef977101cb241dc2a` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 | `vosr2_qkv.dll` | `5b5cde9c2c037f0ed3d48ce0fe59b3ff01432c610edc358fdb7b0155e5b93497` |
 | `drft_trt_plugins.dll` | `2bc86cb6918a196d9a03b1f0bc3ab7e3a78c6440567eb6e191642f3f1bb89091` |
