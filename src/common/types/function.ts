@@ -329,6 +329,7 @@ const getInputDataAdapters = (
             switch (input.kind) {
                 case 'number':
                 case 'slider':
+                case 'video-seek':
                 case 'text':
                 case 'static': {
                     adapters.set(input.id, (value) => literal(value as never));

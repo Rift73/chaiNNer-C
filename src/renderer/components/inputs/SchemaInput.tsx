@@ -19,6 +19,7 @@ import { InputProps } from './props';
 import { SliderInput } from './SliderInput';
 import { StaticValueInput } from './StaticValueInput';
 import { TextInput } from './TextInput';
+import { VideoSeekInput } from './VideoSeekInput';
 
 const InputComponents: {
     readonly [K in InputKind]: React.MemoExoticComponent<
@@ -32,6 +33,7 @@ const InputComponents: {
     dropdown: DropDownInput,
     number: NumberInput,
     slider: SliderInput,
+    'video-seek': VideoSeekInput,
     color: ColorInput,
     generic: GenericInput,
     static: StaticValueInput,

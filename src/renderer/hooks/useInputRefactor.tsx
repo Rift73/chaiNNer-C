@@ -100,7 +100,8 @@ export const useInputRefactor = (
         specificInput.kind === 'file' ||
         specificInput.kind === 'text' ||
         specificInput.kind === 'number' ||
-        specificInput.kind === 'slider'
+        specificInput.kind === 'slider' ||
+        specificInput.kind === 'video-seek'
     ) {
         refactoringOptions.push(
             'divider',
