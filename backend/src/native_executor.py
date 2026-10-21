@@ -81,7 +81,7 @@ from process import (
     run_node,
 )
 from progress_controller import Aborted
-from util import combine_sets
+from util import combine_sets, waited_seconds
 
 if TYPE_CHECKING:
     from events import Event
@@ -532,6 +532,8 @@ class _Hooks:
         self.chain = chain
         self.aborted_type = Aborted
         self.preview_url = PreviewUrl
+        # Read around a node's body: its waits for other work are not its time.
+        self.waited = waited_seconds
         self.done: asyncio.Future[object] = loop.create_future()
         # The run ended for its request while its engine still ran a node: no event of it reaches the queue any more.
         self.ended = False

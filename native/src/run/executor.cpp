@@ -450,7 +450,7 @@ struct Hooks {
         regular_outputs, generator_outputs, collector, node_cleanups, chain_cleanups, output_bytes,
         broadcast, items, describe, materialize, collector_iterate, collector_complete, prepare, begin_loop, iteration,
         end_loop, window, warn_look_ahead_off, native_generator, file_identity, item_identity, regular_output,
-        memo_bytes, loaded, preview_url, aborted_type;
+        memo_bytes, loaded, preview_url, aborted_type, waited;
 };
 
 struct Event {
@@ -795,9 +795,9 @@ private:
     };
     bool defers(const CellRef &ref, bool on_driver);
     Gathered gather(const CellRef &ref, bool on_driver);
-    bool run_python(const CellRef &ref, const Gathered &inputs, Cell &result, double &lazy_seconds,
+    bool run_python(const CellRef &ref, const Gathered &inputs, Cell &result, double &other_seconds,
                     const PyRef &prepared, bool ahead);
-    NativeOutcome run_native(const CellRef &ref, const Gathered &inputs, Cell &result, double &lazy_seconds);
+    NativeOutcome run_native(const CellRef &ref, const Gathered &inputs, Cell &result, double &other_seconds);
     std::optional<NodeError> enforce_outputs(int node, std::vector<Value> &outputs, const std::vector<size_t> &which);
     std::optional<Key> key_of(const CellRef &ref);
     void identify_file(const CellRef &ref);
@@ -953,7 +953,7 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
                    bind("begin_loop"), bind("iteration"), bind("end_loop"), bind("window"),
                    bind("warn_look_ahead_off"), bind("native_generator"), bind("file_identity"),
                    bind("item_identity"), bind("regular_output"), bind("memo_bytes"), bind("loaded"), bind("preview_url"),
-                   bind("aborted_type")};
+                   bind("aborted_type"), bind("waited")};
     send_broadcast_data_ = plan["send_broadcast_data"].cast<bool>();
     preview_interval_ = std::chrono::duration_cast<Clock::duration>(
         std::chrono::duration<double>(plan["preview_interval"].cast<double>()));
@@ -2724,11 +2724,14 @@ py::list Run::python_inputs(const CellRef &ref, const Gathered &inputs)
     return values;
 }
 
-bool Run::run_python(const CellRef &ref, const Gathered &inputs, Cell &result, double &lazy_seconds,
+bool Run::run_python(const CellRef &ref, const Gathered &inputs, Cell &result, double &other_seconds,
                      const PyRef &prepared, bool ahead)
 {
     const NodePlan &node = nodes_[size_t(ref.node)];
     PythonSection python;
+    // The body's waits for other work (util.waiting: a session an item ahead holds, a look-ahead) are not its time,
+    // as process.Executor's timed_supplier leaves them out.
+    double waited = hooks_.waited().cast<double>();
     try {
         py::list values = python_inputs(ref, inputs);
         py::object output = hooks_.run_node(
@@ -2749,7 +2752,8 @@ bool Run::run_python(const CellRef &ref, const Gathered &inputs, Cell &result, d
     } catch (py::error_already_set &error) {
         result.error = current_error(error);
     }
-    for (const auto &lazy : inputs.lazies) lazy_seconds += lazy->seconds();
+    other_seconds += hooks_.waited().cast<double>() - waited;
+    for (const auto &lazy : inputs.lazies) other_seconds += lazy->seconds();
     return !result.error.handle;
 }
 
@@ -2808,7 +2812,7 @@ std::optional<NodeError> Run::enforce_outputs(int node_index, std::vector<Value>
     return std::nullopt;
 }
 
-NativeOutcome Run::run_native(const CellRef &ref, const Gathered &inputs, Cell &result, double &lazy_seconds)
+NativeOutcome Run::run_native(const CellRef &ref, const Gathered &inputs, Cell &result, double &other_seconds)
 {
     const NodePlan &node = nodes_[size_t(ref.node)];
     std::vector<Value> values = inputs.values;
@@ -2856,7 +2860,7 @@ NativeOutcome Run::run_native(const CellRef &ref, const Gathered &inputs, Cell &
     } catch (const std::exception &error) {
         return failure(escaped(error));
     }
-    for (const auto &lazy : inputs.lazies) lazy_seconds += lazy->seconds();
+    for (const auto &lazy : inputs.lazies) other_seconds += lazy->seconds();
     if (node.kind == Kind::generator) {
         // process.enforce_generator_output: the static outputs, enforced, beside the iterated ones (None).
         size_t statics = node.outputs.size() - node.iterable_outputs.size();
@@ -3056,7 +3060,7 @@ void Run::execute(const CellRef &ref, bool on_driver)
         hooks_.iteration(ref.node);
     }
     Cell result;
-    double lazy_seconds = 0;
+    double other_seconds = 0;
     Clock::time_point start = Clock::now();
     bool ok;
     std::optional<Key> key;
@@ -3072,7 +3076,7 @@ void Run::execute(const CellRef &ref, bool on_driver)
     // A sink whose prepare phase ran ahead commits with it through its Python body (the window's encode ahead);
     // without one it runs natively.
     NativeOutcome outcome = memoized                         ? NativeOutcome::done
-                            : node.native && !prepared.handle ? run_native(ref, inputs, result, lazy_seconds)
+                            : node.native && !prepared.handle ? run_native(ref, inputs, result, other_seconds)
                                                               : NativeOutcome::python;
     if (memoized) {
         // A hit: the node's outputs as computed before, with the events a computed node sends.
@@ -3086,12 +3090,12 @@ void Run::execute(const CellRef &ref, bool on_driver)
     }
     if (outcome == NativeOutcome::declined || outcome == NativeOutcome::python) {
         result = Cell{};
-        lazy_seconds = 0;
-        ok = run_python(ref, inputs, result, lazy_seconds, prepared, ahead);
+        other_seconds = 0;
+        ok = run_python(ref, inputs, result, other_seconds, prepared, ahead);
     } else {
         ok = outcome == NativeOutcome::done;
     }
-    double seconds = seconds_since(start) - lazy_seconds;
+    double seconds = seconds_since(start) - other_seconds;
     // A stopped run's node that still finished (its request ended without it: NativeExecutor's Stop) memoizes nothing.
     if (ok && key && !memoized && !aborted_) {
         result.key = *key;

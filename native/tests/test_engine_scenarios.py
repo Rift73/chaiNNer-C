@@ -24,6 +24,7 @@ from verify_runtime import canonical
 import api
 import native_executor
 import process
+import util
 from api import (
     BaseInput,
     BaseOutput,
@@ -787,6 +788,24 @@ def test_nested_look_ahead(tmp_path):
         for timer in timers:
             timer.cancel()
     assert engine.error is None
+
+
+@pytest.mark.parametrize("kind", ["python", "native"])
+def test_a_node_s_time_leaves_out_its_waits_for_other_work(kind, tmp_path):
+    # TensorRT Upscale Image's items ahead queue for one session (util.held): a node reports its own work, not its
+    # turn in that queue (9-11 s shown for a 1.5 s upscale, 2026-10-14; again in the run engine, 2026-10-21).
+    def upscale() -> int:
+        with util.waiting():
+            time.sleep(0.5)
+        return 1
+
+    b = Builder()
+    b.node("upscale", upscale, inputs=0, side_effects=True)
+    result = execute(kind, b.chain, storage=tmp_path / "storage")
+    assert result.error is None, result.error
+    times = [e["data"]["executionTime"] for e in result.events if e["event"] == "node-finish"]
+    assert len(times) == 1
+    assert times[0] < 0.25
 
 
 def test_pause_and_resume(tmp_path):

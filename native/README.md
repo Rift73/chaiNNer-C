@@ -111,7 +111,7 @@ CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
 | Binary | SHA-256 |
 | --- | --- |
 | `chainner_native.dll` | `bfe03c8994cf84d3971999fcc1268b5909085bcca6f14164ea9f1ef49d333ba5` |
-| `_chainner_graph.pyd` | `4d43334f403e55f4171cacf944a7a96fe611334848e4212ef977101cb241dc2a` |
+| `_chainner_graph.pyd` | `e9d1697fda67dffc04586a61d01c1d8389ae9c76d20e69407fbb4399241e5c35` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 | `vosr2_qkv.dll` | `5b5cde9c2c037f0ed3d48ce0fe59b3ff01432c610edc358fdb7b0155e5b93497` |
 | `drft_trt_plugins.dll` | `2bc86cb6918a196d9a03b1f0bc3ab7e3a78c6440567eb6e191642f3f1bb89091` |
