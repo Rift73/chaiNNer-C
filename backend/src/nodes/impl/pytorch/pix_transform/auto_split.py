@@ -78,9 +78,15 @@ def pix_transform_auto_split(
             pass_op = to_op(passthrough_single_color)(scale, pix_op)
 
             return grayscale_split(tile, pass_op, split_mode)
-        except RuntimeError as e:
-            # Check to see if its actually the CUDA out of memory error
-            if "allocate" in str(e) or "CUDA" in str(e):
+        except (RuntimeError, MemoryError) as e:
+            # Only retry device or host memory failures.
+            if (
+                isinstance(e, torch.OutOfMemoryError)
+                or isinstance(e, MemoryError)
+                or "allocate" in str(e).lower()
+                or "out of memory" in str(e).lower()
+                or "ALLOC_FAILED" in str(e)
+            ):
                 # Collect garbage (clear VRAM)
                 gc.collect()
                 safe_cuda_cache_empty()

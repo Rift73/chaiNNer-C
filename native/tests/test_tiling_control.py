@@ -150,6 +150,9 @@ def test_complete_plans_and_pixels(shape, strategy, overlap, scale, layout):
 @pytest.mark.parametrize("overlap", [0, 1, 4])
 def test_restart_and_completed_row_reuse(shape, split_at, overlap):
     image = np.random.default_rng(18).random(shape, dtype=np.float32)
+    args = (image, "max", (64, 64), overlap, 2, split_at)
+    assert run(NEW, *args) == run(OLD, *args)
+
     calls = 0
 
     def upscale(tile, _region):

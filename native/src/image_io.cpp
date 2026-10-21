@@ -566,7 +566,7 @@ O encode(py::dict g,O extension,O image,O params) {
         O result=name(g,"cv2").attr("imencode")(format(".{}",extension),image,params);
         if(!truth(index(result,0))) {
             O shape=image.attr("shape");
-            raise(PyExc_RuntimeError,format("Failed to encode {} image of size {}x{}",extension.attr("upper")(),index(shape,1),index(shape,0)));
+            raise(PyExc_RuntimeError,format("Failed to encode {} image of size {}x{}",extension.attr("lstrip")(".").attr("upper")(),index(shape,1),index(shape,0)));
         }
         buffer=index(result,1);
     }

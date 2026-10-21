@@ -91,7 +91,6 @@ def remove_bg(
     ):
         height, width = img.shape[:2]
         cutout = np.empty((height * len(masks), width, 4), dtype=np.float32)
-        mask = masks[-1]
         for index, raw_mask in enumerate(masks):
             mask = post_process(raw_mask) if post_process_mask else raw_mask
             assert_gray(mask)

@@ -12,7 +12,7 @@ def test_failed_webp_encode_reports_format_and_size(tmp_path: Path):
     path = tmp_path / "too-wide.webp"
     image = np.zeros((1, 16384, 3), dtype=np.uint8)
 
-    with pytest.raises(RuntimeError, match=r"WEBP.*16384.*1"):
+    with pytest.raises(RuntimeError, match=r"^Failed to encode WEBP image of size 16384x1$"):
         native_image_io.cv_save_image(path, image, [])
 
     assert not path.exists()

@@ -2213,15 +2213,16 @@ def test_loader_node_index_limit_audio_and_supplier_reuse(use_limit, limit):
         generated, directory, name, fps, audio = call_load_video(
             kind, g, context, Path("folder/test.mkv"), use_limit, limit
         )
+        expected_length = 4
+        if use_limit:
+            # The migrated Range is 0..limit - 1, so Out - In + 1 is limit.
+            expected_length = limit if kind == "native" else min(limit, 4)
+        assert generated.expected_length == expected_length
         first = [installed_item(x) for x in generated.supplier()]
         second = [installed_item(x) for x in generated.supplier()]
         assert snap(first) == snap(second)
         results.append(
             (
-                # F14: CLI estimates no longer truncate a requested Range's length.
-                min(generated.expected_length, 4)
-                if use_limit
-                else generated.expected_length,
                 vars(installed_metadata(generated.metadata)),
                 snap(first),
                 directory,
