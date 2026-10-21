@@ -753,6 +753,8 @@ async def run_individual(request: Request):
     """Runs a single node"""
     ctx = AppContext.get(request.app)
     start = time.perf_counter()
+    node_id: NodeId | None = None
+    arrival: int | None = None
     try:
         full_data: RunIndividualRequest = dict(request.json)  # type: ignore
         logger.debug(full_data)
@@ -771,10 +773,6 @@ async def run_individual(request: Request):
                 # and only the newest may run, else it could be killed by this one and
                 # this one's output cached.
                 return json({"success": True, "data": None})
-            # The newest has passed its wait: an older one still waiting finds no entry
-            # and stops, so the entry goes (else one stays per node ever previewed).
-            del latest_individual_arrival[node_id]
-
             schema_data = api.registry.nodes.get(full_data["schemaId"])
 
             if schema_data is None:
@@ -833,7 +831,10 @@ async def run_individual(request: Request):
                     raise ValueError(
                         f"Invalid node kind {node_data.kind} attempted to run individually"
                     )
-                if not isinstance(node, GeneratorNode):
+                if (
+                    not isinstance(node, GeneratorNode)
+                    and latest_individual_arrival.get(node_id) == arrival
+                ):
                     ctx.cache[node_id] = output
             except Aborted:
                 pass
@@ -857,12 +858,15 @@ async def run_individual(request: Request):
     except Exception as exception:
         logger.error(exception, exc_info=True)
         return json({"success": False, "error": str(exception)})
+    finally:
+        if node_id is not None and latest_individual_arrival.get(node_id) == arrival:
+            latest_individual_arrival.pop(node_id, None)
 
 
 # The deferred NumPy pool releases of /run/individual, held until they finish.
 individual_releases: set[asyncio.Task[None]] = set()
-# /run/individual's arrival numbers, and by node id the newest arrival's while it waits
-# for its node.
+# The newest preview owns its node's cache entry until completion; clearing the node
+# revokes that ownership, including while a preview waits for its node to load.
 individual_arrivals = itertools.count()
 latest_individual_arrival: dict[NodeId, int] = {}
 
@@ -941,6 +945,7 @@ async def clear_cache_individual(request: Request):
         full_data = dict(request.json)  # type: ignore
         # TensorRT and VOSR engines, sessions and models outlive runs (every
         # SharedCache); a session in use is freed when its run returns it.
+        latest_individual_arrival.pop(full_data["id"], None)
         tensorrt_cache.release_node(full_data["id"])
         return_device_memory_after_burst(ctx)
         if ctx.cache.get(full_data["id"], None) is not None:

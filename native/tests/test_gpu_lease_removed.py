@@ -270,7 +270,12 @@ def test_individual_run_responds_without_awaiting_its_broadcasts():
     )
     assert awaited[0] == awaited[1]
     (outer,) = (n for n in handlers[0].body if isinstance(n, ast.Try))
-    assert outer.finalbody == []
+    # The preview generation is retired synchronously; cleanup adds no awaited
+    # broadcast or lease to the response path.
+    assert [ast.unparse(s) for s in outer.finalbody] == [
+        "if node_id is not None and latest_individual_arrival.get(node_id) == arrival:\n"
+        "    latest_individual_arrival.pop(node_id, None)"
+    ]
     (inner,) = (
         n
         for n in ast.walk(handlers[0])
