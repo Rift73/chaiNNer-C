@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 
 from ...utils.utils import get_h_w_c
-from ..native_channels import concatenate_channels
+from ..native_channels import _assemble, concatenate_channels
 from ..native_color_complete import cvt_color
 from ..native_filters import morphology
 from ..native_framework_images import matting_trimap, threshold_mask
@@ -83,6 +83,24 @@ def remove_bg(
     cutouts: list[np.ndarray] = []
 
     assert len(masks) > 0, "Model failed to generate masks"
+
+    if (
+        not alpha_matting
+        and img.dtype == np.float32
+        and all(mask.dtype == np.float32 for mask in masks)
+    ):
+        height, width = img.shape[:2]
+        cutout = np.empty((height * len(masks), width, 4), dtype=np.float32)
+        mask = masks[-1]
+        for index, raw_mask in enumerate(masks):
+            mask = post_process(raw_mask) if post_process_mask else raw_mask
+            assert_gray(mask)
+            _assemble(
+                (img, mask),
+                [(0, 2), (0, 1), (0, 0), (1, 0)],
+                out=cutout[index * height : (index + 1) * height],
+            )
+        return cutout, mask
 
     mask = None
     for mask in masks:
