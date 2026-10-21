@@ -4,6 +4,21 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- Claude implementation-review follow-ups (2026-10-22, tested source `3a345dee`; not released): completed F11/F12
+  document-generation protection and ordered saves by canonical target, including file-link/directory-junction aliases.
+  Startup Stop stays Killing; Pause/Resume apply before execution; cleared preview bodies cannot retain cache entries
+  or release their Undo successor's registration. Numeric changes use the common draft-flush path; Guided retries only
+  memory failures; retry-trace/video-range checks and the two reviewed nits are complete. Final concurrency review accepted.
+  Portable native build, TypeScript, scoped lint and focused checks passed. Required final CPU gate on main:
+  **136,190 passed / 0 failed / 0 errors / 491 skipped (109 s, 17 shards)**, superseding the previous phase's partial gate.
+  Authorized GPU functional checks: the owner's frame 4032 YUV/model graph reduced isolated bright-color candidates
+  122 -> 0 (source) and 684 -> 0 (processed), with negative pre-save floats captured and the affected crops inspected;
+  ONNX and NCNN each completed one GPU tile then raised Stop; trained U2NetP Remove Background passed and was visually
+  inspected. Guided performed 1,000 CUDA training updates, then failed grayscale tile assembly (2D tile into 3D buffer):
+  separate pre-existing defect, no complete output, awaiting Claude review and owner approval. Evidence and exact limits:
+  `native/local/implementation-review/IMPLEMENTATION_REVIEW_RESULTS.md`. No benchmark/speed claim, app launch, packaging,
+  D: update, push or release; actual UI/installed checks remain pending. Small segmentation weights were downloaded only
+  into the task folder with explicit permission. The three code commits are `d9027458`, `18e05e25`, `3a345dee`.
 - Claude follow-on decisions (2026-10-22, source implementation; not released): F02-F10, F13-F16,
   F18-F26 and D01 implemented, plus CV3 Guided Upscale bulk patch preparation and CV4 non-matting
   background-removal assembly through the existing C kernel. Integer image exports now saturate extended RGB
@@ -16,7 +31,7 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   Portable native builds, TypeScript check and 10 type-expression cases passed. The one permitted full-gate rerun
   finished 136,162 passed / 21 failed / 0 errors / 491 skipped (181 s). All 21 failures then passed focused checks
   after explicit frozen-reference/schema expectation adapters and correction of the duplicate color quantizer.
-  No third full gate ran: the final tree has focused validation, not a fresh all-green full-suite result. Existing
+  At that phase's close no third full gate ran; its tree had focused validation only (superseded by the review gate above). Existing
   full Pyright issues match unchanged main (30 errors / 44 warnings); the final range-contract files check clean.
   No GPU work, timing claims, app launch, release or D: installation update. Evidence is under
   `native/local/follow-on-implementation/`; the review authority remains
@@ -503,8 +518,9 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 | Item | Plan |
 | --- | --- |
-| Follow-on F01/F11/F12/F17: concurrent Skip Existing writers, overlapping saves/edited in-flight documents, concurrent settings writers | Explicitly deferred by Claude; no implementation in this phase |
-| Follow-on real-device/installed checks: F26 owner's YUV frame 4032 after model inference; ONNX/NCNN Stop; Guided Upscale and background removal; numeric field Ctrl+S and accepted/canceled quit | Deferred until owner permits GPU/app work; source/CPU evidence does not establish installed behavior |
+| Follow-on F01/F17: concurrent Skip Existing writers and concurrent settings writers | Still deferred by Claude. F11/F12 were subsequently approved and implemented in `3a345dee` |
+| Guided Upscale: non-square grayscale inputs fail after training when a 2D tile enters the 3D tile assembler | Reproduced GPU check; `native/local/implementation-review/GUIDED_GRAYSCALE_REVIEW.md`. Awaiting Claude review and owner implementation approval; not fixed |
+| Follow-on installed UI checks: numeric field Ctrl+S, real focus/stepper/wheel events and accepted/canceled quit | No app launch authorized; handler/source tests do not establish installed behavior. The prescribed YUV/model, ONNX/NCNN Stop and trained background-removal GPU checks passed; Guided failed as recorded above |
 | Python type check baseline: 30 errors and 44 warnings; test_video_io.py has an existing RUF005 lint warning | Unchanged baseline verified against d846db15; no unrelated repairs in this phase |
 | Hunt O02: cold CFR Matroska/WebM rate detection and frame indexing read packets twice, then cache the result | Deferred unless a long cold load visibly stalls; preserve their different counting rules |
 | Hunt O03: opt-in `CHAINNER_C_TRT_RUNNER=1` retains both Python and C++ TensorRT engine copies | Parked: the cross-boundary ownership change is riskier than the current saving |
@@ -553,6 +569,11 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 ## Decision log
 
+- 2026-10-22 (implementation review): owner supplied `CLAUDE_IMPLEMENTATION_REVIEW.md` and freed the GPU. Implement
+  A2 F11/F12 and B1-B8, then one final main CPU gate followed by the prescribed sequential GPU functional checks;
+  no benchmarks, large-DUAL/multi-GPU work, app launch, D: update, push or release. Release remains a separate decision.
+  Owner explicitly approved downloading small U2NetP weights into the task folder; no dependency installation.
+  The newly reproduced Guided grayscale assembly defect is recorded for Claude and owner approval, not implemented.
 - 2026-10-22 (owner: implement Claude's follow-on decisions): F26 saturates all shared integer exports, including
   normalized=True and infinities; preserve NaN and floating-point output semantics. Keep normalized parameters for
   caller compatibility. F19's zero-epoch case gets exactly the requested optimizer steps, not a forced full epoch;
