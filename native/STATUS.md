@@ -10,6 +10,9 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   Upscale (DRFT-L x4, fixed 768) -> Resize -> Save PNG, 20 images, RTX 5090; throughput unchanged. Not a DRFT
   regression: per 768^2 tile the chaiNNer-C engine takes 1482 ms at 2512 MHz / 478 W against Codex's TensorRT 11.2
   engine's 1619 ms at 2775 MHz / 548 W (denser math reaches the GPU's power cap at fewer watts).
+  RELEASED 2026-10-21 as v0.3.7 re-release 8 (fork branch and tag `v0.3.7` at the replay of main up to `01042e33`;
+  asset SHA-256 `da475ce1…cd6c`, r7 `9AEC18A7…767B` kept locally; gate 136,111 passed); both local installs updated
+  (3 files each, plus their tuned `_chainner_graph.pyd` rebuilt with the existing profile) and serve 196 nodes.
 - PNG encoder (2026-10-21, owner: "use Fast option as default"; v0.3.7 re-release 7): default 8-bit PNGs (1-4
   channels; Save Image, the Save prepare step, the viewer and UI previews) use `native/src/png_encode.c`: MinSum filter
   per row (scalar + AVX2 kernel, bytes identical at every ISA level; AVX-512 dropped: no encode-level win), libdeflate
