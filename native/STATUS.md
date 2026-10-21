@@ -4,6 +4,23 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- Claude follow-on decisions (2026-10-22, source implementation; not released): F02-F10, F13-F16,
+  F18-F26 and D01 implemented, plus CV3 Guided Upscale bulk patch preparation and CV4 non-matting
+  background-removal assembly through the existing C kernel. Integer image exports now saturate extended RGB
+  before rounding (+Inf white, -Inf black, NaN diagnostics retained); floating-point planes and float32 TIFF
+  remain extended-range. Shared collectors run once per item/group, temporal radii accumulate through serial
+  dependencies, and estimated video counts no longer truncate requested ranges or lookahead. Max-tiler retries
+  retain row position and output scale; ONNX/NCNN Stop reaches tile callbacks; PyTorch only retries memory errors.
+  Active previews stop on cache clear, numeric drafts join the existing flush registry, and backend shutdown waits
+  until window closing is accepted. Type declarations and resource-failure cleanup follow Claude's decisions.
+  Portable native builds, TypeScript check and 10 type-expression cases passed. The one permitted full-gate rerun
+  finished 136,162 passed / 21 failed / 0 errors / 491 skipped (181 s). All 21 failures then passed focused checks
+  after explicit frozen-reference/schema expectation adapters and correction of the duplicate color quantizer.
+  No third full gate ran: the final tree has focused validation, not a fresh all-green full-suite result. Existing
+  full Pyright issues match unchanged main (30 errors / 44 warnings); the final range-contract files check clean.
+  No GPU work, timing claims, app launch, release or D: installation update. Evidence is under
+  `native/local/follow-on-implementation/`; the review authority remains
+  `native/local/hunt-20261021/CLAUDE_FOLLOW_ON_DECISIONS.md`.
 - Reviewed hunt corrections (2026-10-21, source implementation; not released): execution-only video range overrides
   remove incoming connections before serialization; Save Video rejects changed frame/plane geometry before writing;
   the CLI decoder selects the first video track and reports a nonzero exit at natural EOF. Corrupt videos that
@@ -486,6 +503,9 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 | Item | Plan |
 | --- | --- |
+| Follow-on F01/F11/F12/F17: concurrent Skip Existing writers, overlapping saves/edited in-flight documents, concurrent settings writers | Explicitly deferred by Claude; no implementation in this phase |
+| Follow-on real-device/installed checks: F26 owner's YUV frame 4032 after model inference; ONNX/NCNN Stop; Guided Upscale and background removal; numeric field Ctrl+S and accepted/canceled quit | Deferred until owner permits GPU/app work; source/CPU evidence does not establish installed behavior |
+| Python type check baseline: 30 errors and 44 warnings; test_video_io.py has an existing RUF005 lint warning | Unchanged baseline verified against d846db15; no unrelated repairs in this phase |
 | Hunt O02: cold CFR Matroska/WebM rate detection and frame indexing read packets twice, then cache the result | Deferred unless a long cold load visibly stalls; preserve their different counting rules |
 | Hunt O03: opt-in `CHAINNER_C_TRT_RUNNER=1` retains both Python and C++ TensorRT engine copies | Parked: the cross-boundary ownership change is riskier than the current saving |
 | Hunt GPU corrections B16-B18: owning-device reuse/teardown, low-headroom split admission, activation restore recovery | CPU/source checks only; real-device confirmation deferred in `GPU-DEFERRED.md` |
@@ -533,6 +553,13 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 ## Decision log
 
+- 2026-10-22 (owner: implement Claude's follow-on decisions): F26 saturates all shared integer exports, including
+  normalized=True and infinities; preserve NaN and floating-point output semantics. Keep normalized parameters for
+  caller compatibility. F19's zero-epoch case gets exactly the requested optimizer steps, not a forced full epoch;
+  positive epochs are unchanged. D01 keeps small-image SSIM NaN and makes the type/documentation admit it.
+- 2026-10-22 (follow-on validation): no GPU use while owner trains; no app launch, deployment, dependency installation,
+  push or release. Six Sol xhigh implementation lanes, bounded Sol repairs and one Astra max source reviewer; narrow critical discriminators
+  and the existing one-phase CPU gate. F01/F11/F12/F17 and other performance proposals stay deferred.
 - 2026-10-21 (owner/Claude review B13): PSNR changes to decibels from unrounded MSE, infinity only at zero; native/Python together, analytic check and saved-threshold release note.
 - 2026-10-21 (owner/Claude review B15): Pad uses the type-only border-channel correction, including unions for connected values; runtime pixels stay unchanged.
 - 2026-10-21 (owner/Claude review B18): protect all operation inputs and retry failed activation restoration after non-input eviction; one CPU stand-in check only, real DUAL VRAM confirmation deferred.

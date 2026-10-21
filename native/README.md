@@ -104,14 +104,14 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 `CHAINNER_C_EXT_OUTPUT_DIR`, default `backend/src/chainner_ext`), replacing the only known-good copies. Copy them to
 `native\build\held\` first and check `Get-FileHash` against those copies. The build is reproducible: the same sources
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
-map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` and `_chainner_graph.pyd` of 2026-10-21, with the
-default PNG encoder and reviewed hunt corrections, `drft_trt_plugins.dll` of 2026-10-20, the others of 2026-10-18, with TensorRT 11.4.0.106 and
+map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` and `_chainner_graph.pyd` of 2026-10-22, with the
+default PNG encoder and approved follow-on corrections, `drft_trt_plugins.dll` of 2026-10-20, the others of 2026-10-18, with TensorRT 11.4.0.106 and
 CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
-| `chainner_native.dll` | `a44b6359a2293ea92d3a56f32bda1d971f43fde4f96dfdd9fec4d2f4b086206d` |
-| `_chainner_graph.pyd` | `19049cf49b3bcf4d4823860ae184c0e10ae596e07f95219a820da474b4522497` |
+| `chainner_native.dll` | `bbdb17aedecf270daa09d4df8be4d8d89ff1d85b90661657482efb1307309bd2` |
+| `_chainner_graph.pyd` | `1526f3bfb62563fa8068565e2ebfd2a4f9722d7867d5ea68d2045a8d2d3774a9` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 | `vosr2_qkv.dll` | `5b5cde9c2c037f0ed3d48ce0fe59b3ff01432c610edc358fdb7b0155e5b93497` |
 | `drft_trt_plugins.dll` | `2bc86cb6918a196d9a03b1f0bc3ab7e3a78c6440567eb6e191642f3f1bb89091` |
