@@ -49,7 +49,7 @@ from types import ModuleType
 from typing import ParamSpec, TypeVar
 
 VARIABLE = "CHAINNER_C_PROFILE"
-# Python-visible pyd entries; swap_channels and the fpng repack run inside them.
+# Python-visible pyd entries; swap_channels and the PNG encoder run inside them.
 PYD_FUNCTIONS = (
     "image_io_read_pil",
     "image_io_save_prepare",

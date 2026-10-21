@@ -9,12 +9,11 @@ export const useLastWindowSize = () => {
     useEffect(() => {
         const listener = debounce(() => {
             setSize((prev) => {
-                if (prev.maximized) return prev;
-                return {
-                    maximized: false,
-                    width: window.outerWidth,
-                    height: window.outerHeight,
-                };
+                const { outerWidth: width, outerHeight: height } = window;
+                if (prev.maximized || (prev.width === width && prev.height === height)) {
+                    return prev;
+                }
+                return { maximized: false, width, height };
             });
         }, 100);
 
@@ -26,7 +25,7 @@ export const useLastWindowSize = () => {
         'window-maximized-change',
         useCallback(
             (_, maximized) => {
-                setSize((prev) => ({ ...prev, maximized }));
+                setSize((prev) => (prev.maximized === maximized ? prev : { ...prev, maximized }));
             },
             [setSize]
         )

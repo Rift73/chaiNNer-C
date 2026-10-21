@@ -52,6 +52,16 @@ class SettingsParser:
             return value
         raise ValueError(f"Invalid str value for {key}: {value}")
 
+    def get_number(self, key: str, default: float) -> float:
+        """A number setting as its field stores it: an int or a float (whatever was
+        typed, 1500.5 included), or a string from an older settings file."""
+        value = self.__settings.get(key, default)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return float(value)
+        raise ValueError(f"Invalid number value for {key}: {value}")
+
     def get_str(self, key: str, default: str) -> str:
         value = self.__settings.get(key, default)
         if isinstance(value, str):

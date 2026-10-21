@@ -9,7 +9,7 @@ from __future__ import annotations
 import ctypes as ct
 import sys
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import lru_cache
 from typing import cast
 
@@ -32,7 +32,8 @@ def _api():
         "cn_framework_trimap": [p, p, z, z, f, f, z],
         "cn_framework_cloth_labels": [p, p, z, z, i, p],
         "cn_framework_cloth_masks": [p, p, z],
-        "cn_planar_to_interleaved_f32": [p, i, z, z, z, z, z, i, p],
+        "cn_planar_to_interleaved_f32": [p, i, z, z, z, z, z, i, p, p],
+        "cn_planes_to_interleaved_f32": [p, p, i, z, z, z, p],
     }
     for name, signature in signatures.items():
         function = getattr(dll, name)
@@ -143,10 +144,28 @@ def _assemble_four(image: np.ndarray) -> np.ndarray:
     return out
 
 
-def planar_to_interleaved(planes: np.ndarray, reverse: bool) -> np.ndarray:
+def planar_to_interleaved(
+    planes: np.ndarray, reverse: bool = False, *, swap_red_blue: bool = False
+) -> np.ndarray:
     """(C, H, W) float16 or float32 planes as a new (H, W, C) float32 image, every
     value exact (NumPy's cast). Rows may be cropped from a wider buffer (positive
-    strides, contiguous within a row). reverse flips the channel order."""
+    strides, contiguous within a row). reverse flips the channel order;
+    swap_red_blue swaps the first and third of 3 or more channels (RGB(A) <->
+    BGR(A)), as swap_red_blue does for 3 or 4."""
+    return _interleave(planes, reverse, swap_red_blue)[0]
+
+
+def planar_to_interleaved_checked(
+    planes: np.ndarray, *, swap_red_blue: bool = False
+) -> tuple[np.ndarray, bool]:
+    """planar_to_interleaved's image, and whether every value in it is finite (no
+    NaN or infinity), found in the same pass."""
+    return _interleave(planes, False, swap_red_blue)
+
+
+def _interleave(
+    planes: np.ndarray, reverse: bool, swap_red_blue: bool
+) -> tuple[np.ndarray, bool]:
     if planes.ndim != 3 or planes.dtype not in (
         np.dtype(np.float16),
         np.dtype(np.float32),
@@ -157,7 +176,10 @@ def planar_to_interleaved(planes: np.ndarray, reverse: bool) -> np.ndarray:
     if column_stride != item or plane_stride % item or row_stride % item:
         raise ValueError("Planar conversion needs rows of contiguous samples")
     channels, h, w = planes.shape
+    if reverse and swap_red_blue:
+        raise ValueError("Planar conversion either reverses or swaps channels")
     result = np.empty((h, w, channels), np.float32)
+    finite = ct.c_int()
     check(
         _api().cn_planar_to_interleaved_f32(
             planes.ctypes.data,
@@ -167,7 +189,47 @@ def planar_to_interleaved(planes: np.ndarray, reverse: bool) -> np.ndarray:
             h,
             w,
             channels,
-            int(reverse),
+            1 if reverse else 2 if swap_red_blue else 0,
+            result.ctypes.data,
+            ct.byref(finite),
+        )
+    )
+    return result, bool(finite.value)
+
+
+def planes_to_interleaved(planes: Sequence[np.ndarray]) -> np.ndarray:
+    """(H, W) float16 or float32 planes, one per channel in the output's order, as a
+    new (H, W, C) float32 image, every value exact (NumPy's cast). The planes share a
+    shape and dtype; each may be anywhere, its rows `strides[0]` apart (positive,
+    contiguous within a row): a decoder's padded planes, or (C, H, W) planes taken in
+    another order."""
+    if not planes or any(
+        plane.ndim != 2
+        or plane.dtype != planes[0].dtype
+        or plane.shape != planes[0].shape
+        for plane in planes
+    ):
+        raise ValueError("Planes conversion needs (H, W) planes of one shape and dtype")
+    if planes[0].dtype not in (np.dtype(np.float16), np.dtype(np.float32)):
+        raise ValueError("Planes conversion needs float16 or float32 planes")
+    item = planes[0].itemsize
+    if any(
+        plane.strides[1] != item or plane.strides[0] % item or plane.strides[0] < 0
+        for plane in planes
+    ):
+        raise ValueError("Planes conversion needs rows of contiguous samples")
+    h, w = planes[0].shape
+    result = np.empty((h, w, len(planes)), np.float32)
+    check(
+        _api().cn_planes_to_interleaved_f32(
+            (ct.c_void_p * len(planes))(*(plane.ctypes.data for plane in planes)),
+            (ct.c_size_t * len(planes))(
+                *(plane.strides[0] // item for plane in planes)
+            ),
+            int(planes[0].dtype == np.float16),
+            h,
+            w,
+            len(planes),
             result.ctypes.data,
         )
     )

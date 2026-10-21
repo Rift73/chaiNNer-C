@@ -189,13 +189,76 @@ bool same_shape(const View &a, const View &b) noexcept {
     return true;
 }
 bool overlap(Bounds a, Bounds b) noexcept { return a.low < b.high && b.low < a.high; }
-char *at(const View &v, size_t index) noexcept {
-    ptrdiff_t offset = 0;
-    for (size_t d=v.dimensions; d>0; --d) {
-        size_t coordinate = index % v.shape[d-1]; index /= v.shape[d-1];
-        offset += static_cast<ptrdiff_t>(coordinate) * v.strides[d-1];
+/* The operands' common index space in C order with length-1 axes dropped and each
+ * axis folded into the one outside it wherever every operand steps through the pair
+ * as one axis (outer stride = inner stride * inner length). Folding keeps the C-order
+ * element of every flat index, so a range covers the elements it covered unfolded;
+ * a range is walked as runs along the innermost axis, dividing only at its start. */
+struct Walk {
+    size_t dimensions;
+    size_t shape[32];
+    ptrdiff_t strides[3][32]; // a, b, out; b's are zero without a second operand
+    char *base[3];
+};
+bool folds(ptrdiff_t outer, ptrdiff_t inner, size_t length) noexcept {
+    // validate() rejects PTRDIFF_MIN for a length over 1, so the magnitude is exact.
+    size_t magnitude = static_cast<size_t>(inner < 0 ? -inner : inner);
+    if (magnitude && length > static_cast<size_t>(PTRDIFF_MAX) / magnitude) return false;
+    return outer == inner * static_cast<ptrdiff_t>(length);
+}
+void fold(const View *const views[3], Walk &w) noexcept {
+    const View &shape = *views[2];
+    w.dimensions = 0;
+    for (size_t k=0; k<3; ++k) w.base[k] = views[k] ? static_cast<char *>(views[k]->data) : nullptr;
+    for (size_t d=0; d<shape.dimensions; ++d) {
+        size_t length = shape.shape[d];
+        if (length == 1) continue;
+        bool joined = w.dimensions != 0;
+        for (size_t k=0; k<3 && joined; ++k)
+            if (views[k]) joined = folds(w.strides[k][w.dimensions-1], views[k]->strides[d], length);
+        size_t axis = joined ? w.dimensions-1 : w.dimensions++;
+        w.shape[axis] = joined ? w.shape[axis] * length : length;
+        for (size_t k=0; k<3; ++k) w.strides[k][axis] = views[k] ? views[k]->strides[d] : 0;
     }
-    return static_cast<char *>(v.data) + offset;
+    if (!w.dimensions) {
+        w.dimensions = 1; w.shape[0] = 1;
+        for (size_t k=0; k<3; ++k) w.strides[k][0] = 0;
+    }
+}
+/* run(a, b, out, n) for each run of n elements along the innermost axis in
+ * [begin, end); a run's next elements are innermost-stride steps away. */
+template<class Run> void walk(const Walk &w, size_t begin, size_t end, Run &&run) noexcept {
+    size_t coordinate[32];
+    ptrdiff_t offset[3] = {0, 0, 0};
+    size_t index = begin;
+    for (size_t d=w.dimensions; d>0; --d) {
+        coordinate[d-1] = index % w.shape[d-1]; index /= w.shape[d-1];
+        for (size_t k=0; k<3; ++k) offset[k] += static_cast<ptrdiff_t>(coordinate[d-1]) * w.strides[k][d-1];
+    }
+    size_t inner = w.dimensions-1;
+    while (begin < end) {
+        size_t n = w.shape[inner]-coordinate[inner];
+        if (n > end-begin) n = end-begin;
+        run(w.base[0]+offset[0], w.base[1]+offset[1], w.base[2]+offset[2], n);
+        begin += n;
+        if (begin == end) break;
+        // The run ended its row: return to the row's start and carry outward.
+        for (size_t k=0; k<3; ++k) offset[k] -= static_cast<ptrdiff_t>(coordinate[inner]) * w.strides[k][inner];
+        coordinate[inner] = 0;
+        for (size_t d=inner; d>0; --d) {
+            size_t axis = d-1;
+            if (++coordinate[axis] < w.shape[axis]) {
+                for (size_t k=0; k<3; ++k) offset[k] += w.strides[k][axis];
+                break;
+            }
+            coordinate[axis] = 0;
+            for (size_t k=0; k<3; ++k)
+                offset[k] -= static_cast<ptrdiff_t>(w.shape[axis]-1) * w.strides[k][axis];
+        }
+    }
+}
+template<size_t width> void copy_run(const char *a, ptrdiff_t from, char *out, ptrdiff_t to, size_t n) noexcept {
+    for (size_t i=0; i<n; ++i, a+=from, out+=to) std::memcpy(out, a, width);
 }
 uint64_t integer_value(const char *p, int type) noexcept {
     switch (static_cast<Kind>(type)) {
@@ -244,6 +307,7 @@ struct Job {
     const View *a, *b, *out;
     double amount;
     int operation, framework;
+    Walk walk;
     std::atomic<int> events{0};
 };
 template<class T> void arithmetic(Job &j, const char *a, const char *b, char *out) noexcept {
@@ -271,28 +335,45 @@ template<class T> void arithmetic(Job &j, const char *a, const char *b, char *ou
         if (complex_kind(type)) store_real(out+widths[type]/2, type, ai);
     }
 }
+void element(Job &j, const char *a, const char *b, char *out) noexcept {
+    int type = j.out->type;
+    if (j.operation == 2 && integer_kind(type)) {
+        uint64_t value;
+        if (type == 5 && j.a->type==0) value=(read<uint16_t>(a)&0x7fffu)!=0;
+        else if (type == 5) value = real_value<double>(a,j.a->type) != 0 || imag_value<double>(a,j.a->type) != 0;
+        else if (integer_kind(j.a->type)) value = integer_value(a,j.a->type);
+        else value = cast_integer(real_value<double>(a,j.a->type),type);
+        store_integer(out,type,value);
+    } else if (j.operation==2 && type==0 && (j.a->type==1 || j.a->type==3)) {
+        write(out,half_bits(widen_float(read<float>(a))));
+    } else if (type == 2 || type == 4 || (j.operation == 2 && (type == 0 || type == 15))) {
+        arithmetic<double>(j,a,b,out);
+    } else arithmetic<float>(j,a,b,out);
+}
 void run_range(void *opaque, size_t begin, size_t end) noexcept {
     auto &j = *static_cast<Job *>(opaque);
     std::fenv_t environment;
     std::fegetenv(&environment); std::feclearexcept(FE_ALL_EXCEPT);
-    for (size_t i=begin; i<end; ++i) {
-        const char *a = at(*j.a,i), *b = j.b ? at(*j.b,i) : nullptr;
-        char *out = at(*j.out,i);
-        int type = j.out->type;
-        if (j.operation == 2 && type == j.a->type) {
-            std::memcpy(out,a,widths[type]);
-        } else if (j.operation == 2 && integer_kind(type)) {
-            uint64_t value;
-            if (type == 5 && j.a->type==0) value=(read<uint16_t>(a)&0x7fffu)!=0;
-            else if (type == 5) value = real_value<double>(a,j.a->type) != 0 || imag_value<double>(a,j.a->type) != 0;
-            else if (integer_kind(j.a->type)) value = integer_value(a,j.a->type);
-            else value = cast_integer(real_value<double>(a,j.a->type),type);
-            store_integer(out,type,value);
-        } else if (j.operation==2 && type==0 && (j.a->type==1 || j.a->type==3)) {
-            write(out,half_bits(widen_float(read<float>(a))));
-        } else if (type == 2 || type == 4 || (j.operation == 2 && (type == 0 || type == 15))) {
-            arithmetic<double>(j,a,b,out);
-        } else arithmetic<float>(j,a,b,out);
+    size_t inner = j.walk.dimensions-1;
+    ptrdiff_t from = j.walk.strides[0][inner], second = j.walk.strides[1][inner], to = j.walk.strides[2][inner];
+    size_t width = widths[j.out->type];
+    if (j.operation == 2 && j.out->type == j.a->type) {
+        // Same-type copies move bytes: whole runs at once where both are dense.
+        walk(j.walk, begin, end, [&](const char *a, const char *, char *out, size_t n) noexcept {
+            if (from == to && from == static_cast<ptrdiff_t>(width)) std::memcpy(out, a, n*width);
+            else if (width == 1) copy_run<1>(a, from, out, to, n);
+            else if (width == 2) copy_run<2>(a, from, out, to, n);
+            else if (width == 4) copy_run<4>(a, from, out, to, n);
+            else if (width == 8) copy_run<8>(a, from, out, to, n);
+            else copy_run<16>(a, from, out, to, n);
+        });
+    } else {
+        walk(j.walk, begin, end, [&](const char *a, const char *b, char *out, size_t n) noexcept {
+            for (size_t i=0; i<n; ++i, a+=from, out+=to) {
+                element(j, a, b, out);
+                if (b) b += second;
+            }
+        });
     }
     int raised = std::fetestexcept(FE_OVERFLOW|FE_UNDERFLOW|FE_INVALID);
     int flags = ((raised & FE_OVERFLOW) ? 2 : 0) | ((raised & FE_UNDERFLOW) ? 4 : 0) | ((raised & FE_INVALID) ? 8 : 0);
@@ -350,7 +431,8 @@ cn_status execute(const View *a, const View *b, const View *out, double amount,
         span=next*(out->shape[dimension]-1)+span;
         last=next;
     }
-    Job job{a,b,out,amount,operation,framework};
+    Job job{a,b,out,amount,operation,framework,{}};
+    fold(views,job.walk);
     status=cn_parallel_for(out->count,65536,run_range,&job);
     if (events) *events=job.events.load(std::memory_order_relaxed);
     return status;

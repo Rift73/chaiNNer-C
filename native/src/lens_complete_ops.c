@@ -30,6 +30,7 @@
 #include "cn_crt_math.h"
 #include "lens_shared.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include "numpy_exp_f32.h"
 #include "numpy_trig_f32.h"
 #include <math.h>

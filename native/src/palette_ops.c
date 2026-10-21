@@ -3,6 +3,7 @@
 #include "numeric.h"
 #include "isa.h"
 #include "palette_shared.h"
+#include "run_kernels.h"
 #include "scratch.h"
 #include <math.h>
 #include <stdlib.h>

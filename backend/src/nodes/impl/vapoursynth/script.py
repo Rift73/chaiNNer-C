@@ -15,18 +15,16 @@ NODE_TAG = "  # node:"
 # backend/src, put on the script's sys.path for chaiNNer's helpers in the child.
 BACKEND_SRC = Path(__file__).resolve().parents[3]
 
-# vsview names the outputs (it has imported itself when it runs a script); an older
-# vstools has a compatible set_output; else, as in vspipe, the clips' own.
+# vsview names the outputs (it has imported itself when it runs a script); else, as in
+# vspipe, the clips' own. (vs-jetpack 2.2.6's vstools has no set_output: importing it
+# for one cost each vspipe evaluation about 90 ms, only to fail.)
 OUTPUTS = """\
 if "vsview" in sys.modules:
     from vsview import set_output
 else:
-    try:
-        from vstools import set_output
-    except ImportError:
 
-        def set_output(clip, index, name):
-            clip.set_output(index)
+    def set_output(clip, index, name):
+        clip.set_output(index)
 """
 
 

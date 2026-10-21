@@ -30,6 +30,7 @@
  * Full additional OpenCV/SoftFloat notices accompany chainner_native.LICENSE.txt.
  */
 #include "parallel.h"
+#include "run_kernels.h"
 #include <algorithm>
 #include <array>
 #include <bit>

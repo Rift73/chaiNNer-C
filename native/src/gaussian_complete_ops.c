@@ -113,6 +113,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "chainner.h"
 #include "separable.h"
 #include "numeric.h"
+#include "run_kernels.h"
 #include <math.h>
 #include <limits.h>
 #include <stdlib.h>

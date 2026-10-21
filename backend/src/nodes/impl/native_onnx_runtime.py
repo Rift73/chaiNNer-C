@@ -93,6 +93,7 @@ def _api():
             ct.c_size_t,
             ct.POINTER(ct.c_char_p),
             ct.c_size_t,
+            ct.c_int,
             ct.POINTER(ct.c_uint64),
         ],
         "cn_ort_result_info": [
@@ -138,6 +139,12 @@ def supports_model(model: bytes) -> bool:
     except DecodeError:
         # Let ORT produce its original InvalidProtobuf error from these bytes.
         return True
+    return supports_graph(graph)
+
+
+def supports_graph(graph: onnx.GraphProto) -> bool:
+    """Whether the native session runs a model of this graph: its inputs and outputs
+    are dense numeric tensors."""
     for value in (*graph.input, *graph.output):
         if (
             not value.type.HasField("tensor_type")
@@ -152,6 +159,27 @@ class NodeArg:
     name: str
     type: str
     shape: list[int | str | None]
+
+
+def _log_severity(run_options: Any) -> int:
+    """The run log severity of ORT run options that set nothing else (-1 when none
+    is set), the run options native image sessions support."""
+    if run_options is None:
+        return -1
+    default = ort.RunOptions()
+    if not isinstance(run_options, ort.RunOptions) or any(
+        getattr(run_options, name) != getattr(default, name)
+        for name in (
+            "log_verbosity_level",
+            "logid",
+            "terminate",
+            "only_execute_path_to_fetches",
+        )
+    ):
+        raise NotImplementedError(
+            "Native image sessions support default run options and a log severity"
+        )
+    return run_options.log_severity_level
 
 
 def _finalize_session(function: Callable[..., int], handle: int):
@@ -215,10 +243,7 @@ class NativeSession:
         input_feed: dict[str, Any],
         run_options: Any = None,
     ) -> list[np.ndarray]:
-        if run_options is not None:
-            raise NotImplementedError(
-                "Native image sessions support default run options"
-            )
+        severity = _log_severity(run_options)
         missing = [item.name for item in self._inputs if item.name not in input_feed]
         if missing:
             raise ValueError(
@@ -269,6 +294,7 @@ class NativeSession:
             len(inputs),
             output_array,
             len(output_array),
+            severity,
             ct.byref(result),
         )
         try:

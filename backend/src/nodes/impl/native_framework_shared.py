@@ -33,7 +33,9 @@ from functools import lru_cache
 
 import numpy as np
 
-from .native import check, f32, lib
+from .native import check, checked_f32, f32, lib
+from .native_buffers import freeze_normalized
+from .native_channels import _assemble
 from .native_framework_images import _report
 from .native_numpy_simd import fma3, loop_target
 from .native_tensors import _allocate, _view, cast_numpy
@@ -54,6 +56,19 @@ def _api():
         ct.c_void_p,
     ]
     library.cn_framework_shared.restype = ct.c_int
+    library.cn_framework_tile_accumulate.argtypes = [
+        ct.c_void_p,
+        ct.c_size_t,
+        ct.c_void_p,
+        ct.c_size_t,
+        ct.c_void_p,
+        ct.c_void_p,
+        ct.c_size_t,
+        ct.c_size_t,
+        ct.c_size_t,
+        ct.c_void_p,
+    ]
+    library.cn_framework_tile_accumulate.restype = ct.c_int
     return library
 
 
@@ -126,13 +141,73 @@ def copy_into(target: np.ndarray, source: np.ndarray) -> None:
     _report(events.value, "cast")
 
 
-def clip_image(image: np.ndarray) -> np.ndarray:
+def _row_stride(image: np.ndarray) -> int | None:
+    """The element stride between the rows of an aligned float32 (h, w, c) image
+    whose rows each hold w * c contiguous floats; else None."""
+    h, w, c = image.shape
+    if (
+        image.dtype != np.float32
+        or not image.flags.aligned
+        or (w > 1 and image.strides[1] != 4 * c)
+        or (c > 1 and image.strides[2] != 4)
+    ):
+        return None
+    if h == 1:
+        return w * c
+    row = image.strides[0]
+    return row // 4 if row % 4 == 0 and row >= 4 * w * c else None
+
+
+def accumulate_tile(
+    window: np.ndarray, tile: np.ndarray, wy: np.ndarray, wx: np.ndarray
+) -> None:
+    """window += tile * (wy[:, None, None] * wx[None, :, None]) in place, split
+    across the native pool, with NumPy's three float32 roundings, NaN operands and
+    warnings (TensorRT tiling's blend). window: a writable float32 (h, w, c) window of
+    rows of contiguous pixels; tile: float32 of its shape (copied first if its rows
+    are not contiguous); wy, wx: float32 weights of length h and w."""
+    h, w, c = window.shape
+    out_row = _row_stride(window) if window.flags.writeable else None
+    if out_row is None:
+        raise ValueError("Tile blending needs a writable window of contiguous rows")
+    if tile.shape != window.shape or wy.shape != (h,) or wx.shape != (w,):
+        raise ValueError("A tile and its weights must match its window")
+    tile_row = _row_stride(checked_f32(tile))
+    if tile_row is None:
+        tile = f32(tile)
+        tile_row = w * c
+    wy, wx = f32(wy), f32(wx)
+    events = (ct.c_int * 3)()
+    check(
+        _api().cn_framework_tile_accumulate(
+            window.ctypes.data,
+            out_row,
+            tile.ctypes.data,
+            tile_row,
+            wy.ctypes.data,
+            wx.ctypes.data,
+            h,
+            w,
+            c,
+            events,
+        )
+    )
+    for event, operation in zip(events, ("multiply", "multiply", "add"), strict=True):
+        _report(event, operation)
+
+
+def clip_image(image: np.ndarray, *, frozen: bool = False) -> np.ndarray:
+    """np.clip(image, 0, 1). frozen: a float32 result is returned frozen and
+    registered (freeze_normalized), so an output check borrows it: this clip is
+    ImageOutput's normalization bit for bit (cn_numpy_clip_f32 and clamp_unit run
+    the same maxss/minss pair, NaN passes as stored, neither reports an event), and
+    that check borrows only values its clip leaves as they are."""
     if type(image) is not np.ndarray or image.dtype != np.float32 or image.ndim == 0:
         return np.clip(image, 0, 1)
     source = np.require(image.ravel(order="K"), requirements=["C", "A"])
     out = np.empty_like(image)
     _run(source, out.ravel(order="K"), 0)
-    return out
+    return freeze_normalized(out) if frozen else out
 
 
 def blend_curve(image: np.ndarray, *, half: bool = False) -> np.ndarray:
@@ -161,13 +236,27 @@ def recover_alpha(white: np.ndarray, black: np.ndarray) -> np.ndarray:
     out = np.empty_like(intermediate)
     del intermediate
     white, black = np.broadcast_arrays(white, black)
+    if (
+        white.strides == black.strides == out.strides
+        and white.flags.aligned
+        and black.flags.aligned
+    ):
+        # Both have out's gapless layout: the kernel runs over the three buffers in
+        # memory order and writes out directly.
+        _run(white, out, 3, second=black)
+        return out
     result = np.empty(white.shape, np.float32)
     _run(f32(white), result, 3, second=f32(black))
     copy_into(out, result)
     return out
 
 
-def assemble_alpha(rgb: np.ndarray, alpha: np.ndarray | float) -> np.ndarray:
+def assemble_alpha(
+    rgb: np.ndarray, alpha: np.ndarray | float, *, frozen: bool = False
+) -> np.ndarray:
+    """np.dstack((rgb, alpha)), alpha a plane or a scalar. frozen: a float32 RGB
+    image's result is returned frozen and registered (freeze_normalized), so an
+    output check borrows it when its clip would leave every value as it is."""
     if rgb.dtype != np.float32 or (
         isinstance(alpha, np.ndarray) and alpha.dtype != np.float32
     ):
@@ -214,6 +303,7 @@ def assemble_alpha(rgb: np.ndarray, alpha: np.ndarray | float) -> np.ndarray:
         strides[axis] = stride
         stride *= shape[axis]
     out = np.ndarray(shape, np.float32, strides=tuple(strides))
-    copy_into(out[:, :, :3], rgb)
-    copy_into(out[:, :, 3], alpha)
-    return out
+    if out.size:
+        # One pass writes every output pixel's three colours and its alpha.
+        _assemble((rgb, alpha), [(0, 0), (0, 1), (0, 2), (1, 0)], out=out)
+    return freeze_normalized(out) if frozen else out

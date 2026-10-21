@@ -34,8 +34,14 @@ from nodes.impl.ffmpeg import FFMpegEnv
 from nodes.impl.image_utils import to_uint8, to_uint16
 from nodes.impl.item_window import Prepared, register_phases
 from nodes.impl.native_graph import graph
+from nodes.impl.native_image_io import cv_save_image
 from nodes.impl.plane_resample import Kernel, resample_plane
-from nodes.impl.yuv_rgb import guess_colour_info, resolve_colour_info, siting
+from nodes.impl.yuv_rgb import (
+    guess_colour_info,
+    planes_to_rgb,
+    resolve_colour_info,
+    siting,
+)
 from nodes.properties.inputs import (
     ColourInfoInput,
     DirectoryInput,
@@ -64,6 +70,12 @@ class VideoFormat(Enum):
     @property
     def ext(self) -> str:
         return self.value
+
+    @property
+    def muxer(self) -> str:
+        """FFmpeg's muxer for the extension, as FFmpeg picks it from a file name: Save Video
+        writes a temporary file ending in .tmp, so it names the muxer."""
+        return "matroska" if self == VideoFormat.MKV else self.value
 
     @property
     def encoders(self) -> tuple[VideoEncoder, ...]:
@@ -196,6 +208,12 @@ def rgb_payload(img: np.ndarray) -> np.ndarray:
     )
 
 
+def atomic_target(path: str) -> Any:
+    """A temporary file in path's folder, renamed onto path by commit()
+    (native/include/atomic_file.hpp): Save Video's FFmpeg output and audio mux."""
+    return graph().AtomicTarget(path)
+
+
 def planar_format(colour: ColourInfo) -> str:
     """The planar pixel format of planes coded as `colour` says (4:4:4, 4:2:2 or 4:2:0
     YUV, or RGB for the identity matrix)."""
@@ -217,11 +235,17 @@ class Writer:
     output_params: dict[str, str | float]
     global_params: list[str]
     ffmpeg_env: FFMpegEnv
+    # The temporary file in save_path's folder that FFmpeg writes (output_params' filename),
+    # renamed onto save_path at a successful close and deleted on Stop or a failure.
+    target: Any
     out: Popen | None = None
     # Save Video's colour settings; None writes RGB as without them (Auto, 8-bit).
     settings: WriteSettings | None = None
     # In Planes mode, how the planes are coded (from the first frame).
     coding: ColourInfo | None = None
+    # The audio mux writes the final file with -movflags faststart, which the encode pass
+    # then leaves out (an MP4 or MOV with audio; video_io.cpp save_video).
+    faststart: bool = False
 
     def start(self, width: int, height: int):
         # Create the writer and run process
@@ -396,6 +420,38 @@ class Writer:
             for p in (u, v)
         )
         return u, v
+
+    def save_frame(self, frame: object, path: Path) -> None:
+        """Saves the frame as the video would hold it to the PNG at path, in the video's
+        folder, without starting FFmpeg (a run of one chosen frame): the RGB image, or the
+        planes, their chroma moved by the siting correction, converted to RGB by their
+        coding; in 16 bits when the video would have more than 8, else in 8. A frame the
+        video's writer would refuse, or settings it could not start with, raise as they
+        would at the video's first frame."""
+        width, height = self.first_frame(frame)
+        graph().video_writer_check(globals(), self, width, height)
+        params = dict(self.output_params)
+        self.colour_options(params, width, height)
+        planes, coding = self._planes(frame), self.coding
+        if planes is None or coding is None:
+            img = self._image(frame)
+        else:
+            y, u, v = planes
+            u, v = self._sited(u, v)
+            # The matrix leaves values outside 0..1 (planes_to_rgb does not clip).
+            img = np.clip(
+                planes_to_rgb(
+                    y, u, v, coding.matrix, coding.chroma_location, Kernel.SPLINE36
+                ),
+                0,
+                1,
+            )
+        deep = pixel_layout(str(params["pix_fmt"])).bit_depth > 8
+        cv_save_image(
+            path,
+            to_uint16(img, normalized=True) if deep else to_uint8(img, normalized=True),
+            [],
+        )
 
     def colour_options(self, params: dict[str, Any], width: int, height: int) -> None:
         """Save Video's colour options (owner-approved 2026-10-09), in place, before the
@@ -581,6 +637,86 @@ class VideoCollector(Collector[tuple[np.ndarray | None, ...], None]):
     """Save Video's collector; its commit phase writes prepared frames to `writer`."""
 
     writer: Writer
+
+
+class FrameCollector(Collector[tuple[np.ndarray | None, ...], None]):
+    """Save Video's collector in a run of one chosen frame (frame_collector)."""
+
+
+def frame_collector(
+    item: int,
+    save_dir: Path,
+    video_name: str,
+    simplicity: Simplicity,
+    container: VideoFormat,
+    encoder: VideoEncoder,
+    video_preset: VideoPreset,
+    crf: int,
+    additional_parameters: str | None,
+    simple_video_format: SimpleVideoFormat,
+    quality: int,
+    fps: float,
+    audio: object | None,
+    audio_settings: AudioSettings,
+    settings: WriteSettings,
+) -> FrameCollector:
+    """Save Video in a run of the one chosen frame `item` (Load Video's "Run this frame",
+    or In = Out; owner-approved 2026-10-21): the frame goes to `<video name>_f000123.png`
+    next to where the video would go, as the video would hold it (Writer.save_frame).
+    FFmpeg never starts, the video's file is never touched and the audio is left out.
+    Settings the video would refuse raise as they would for the video (its folder, the
+    Additional parameters, then its first frame). A second frame is an error: the loop
+    runs one item."""
+    if simplicity is Simplicity.SIMPLE:
+        container, encoder, video_preset, crf = get_simple_format(
+            simple_video_format, quality
+        )
+    video = (save_dir / f"{video_name}.{container.ext}").resolve()
+    video.parent.mkdir(parents=True, exist_ok=True)
+    params, global_params = graph().video_output_options(
+        globals(),
+        str(video),
+        container,
+        encoder,
+        video_preset,
+        crf,
+        fps,
+        simplicity,
+        additional_parameters,
+    )
+    if audio is not None and container is not VideoFormat.GIF:
+        logger.info(
+            "Save Video saves the one chosen frame %d as a PNG, without the audio.",
+            item,
+        )
+    writer = Writer(
+        container=container,
+        encoder=encoder,
+        fps=fps,
+        audio=None,
+        audio_settings=audio_settings,
+        save_path=str(video),
+        output_params=params,
+        global_params=global_params,
+        # Never started (only its checks run), so FFmpeg's paths are never used.
+        ffmpeg_env=FFMpegEnv.from_env(),
+        target=None,
+        settings=settings,
+    )
+    path = (save_dir / f"{video_name}_f{item:06d}.png").resolve()
+    frames = 0
+
+    def iterate(frame: object) -> None:
+        nonlocal frames
+        frames += 1
+        if frames > 1:
+            raise RuntimeError(
+                f"Save Video got a second frame in a run of the one chosen frame {item}:"
+                " the loop's generator gave more than its one item."
+            )
+        writer.save_frame(frame, path)
+
+    return FrameCollector(on_iterate=iterate, on_complete=lambda: None)
 
 
 @video_frames_group.register(
@@ -818,6 +954,25 @@ def save_video_node(
         bit_depth,
         siting_correction,
     )
+    chosen = node_context.chosen_item
+    if chosen is not None:
+        return frame_collector(
+            chosen,
+            save_dir,
+            video_name,
+            simplicity,
+            container,
+            encoder,
+            video_preset,
+            crf,
+            additional_parameters,
+            simple_video_format,
+            quality,
+            fps,
+            audio,
+            audio_settings,
+            settings,
+        )
     return graph().video_save(
         globals(),
         node_context,
@@ -840,11 +995,14 @@ def save_video_node(
 
 
 def prepare_video_frame(
-    collector: VideoCollector, inputs: list[np.ndarray | None]
+    collector: VideoCollector | FrameCollector, inputs: list[np.ndarray | None]
 ) -> np.ndarray | None:
     """The frame Save Video would pipe for this iteration in RGB mode (SP3-P9), in its
     writer's pipe format (fixed by the container and parameters in RGB mode); in Planes
-    mode, or without an image, None: the node runs whole."""
+    mode, without an image, or in a run of one chosen frame (its PNG), None: the node
+    runs whole."""
+    if isinstance(collector, FrameCollector):
+        return None
     writer = collector.writer
     settings = writer.settings
     if inputs[0] is None or (

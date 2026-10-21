@@ -3,12 +3,11 @@ from __future__ import annotations
 import itertools
 import math
 from enum import Enum
-from pathlib import Path
 
 import cv2
 import numpy as np
 
-from ..utils.utils import Padding, get_h_w_c, split_file_path
+from ..utils.utils import Padding, get_h_w_c
 from .color.color import Color
 from .native_buffers import converted_pixels, freeze_normalized
 from .native_color_complete import cvt_color
@@ -344,21 +343,6 @@ def calculate_ssim(
     )
 
     return float(np.mean(ssim_map))
-
-
-def cv_save_image(path: Path | str, img: np.ndarray, params: list[int]):
-    """
-    A light wrapper around `cv2.imwrite` to support non-ASCII paths.
-    """
-
-    # We can't actually use `cv2.imwrite`, because it:
-    # 1. Doesn't support non-ASCII paths
-    # 2. Silently fails without doing anything if the path is invalid
-
-    _, _, extension = split_file_path(path)
-    _, buf_img = cv2.imencode(f".{extension}", img, params)
-    with open(path, "wb") as outf:
-        outf.write(buf_img)  # type: ignore
 
 
 def cartesian_product(arrays: list[np.ndarray]) -> np.ndarray:

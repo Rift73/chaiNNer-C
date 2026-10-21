@@ -21,7 +21,7 @@ export const useRunNode = (
 ): { reload: () => void; isLive: boolean } => {
     const { sendToast } = useContext(AlertBoxContext);
     const { addIndividuallyRunning, removeIndividuallyRunning } = useContext(GlobalContext);
-    const { schemata, backend } = useContext(BackendContext);
+    const { schemata, backend, isBackendReady, isNodeLoaded } = useContext(BackendContext);
     const { packageSettings } = useSettings();
 
     const [reloadCounter, setReloadCounter] = useState(0);
@@ -46,10 +46,15 @@ export const useRunNode = (
 
     const { isAutomatic, hasIncomingConnections } = useAutomaticFeatures(id, schemaId);
     const shouldRun = isValid && isAutomatic;
+    const nodeLoaded = isNodeLoaded(schemaId);
 
     useAsyncEffect(
         () => async (token) => {
-            if (inputHash === lastInputHash.current) {
+            // A node of the startup chain waits until the backend takes requests and has
+            // loaded the node. In the backend, the preview would wait for its node holding a
+            // connection, and the window has only 6 to the backend, which the previews of the
+            // nodes that have loaded need.
+            if (!isBackendReady || !nodeLoaded || inputHash === lastInputHash.current) {
                 return;
             }
             // give it some time for other effects to settle in
@@ -82,16 +87,8 @@ export const useRunNode = (
             }
         },
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [shouldRun, inputHash]
+        [shouldRun, inputHash, isBackendReady, nodeLoaded]
     );
-
-    useEffect(() => {
-        return () => {
-            if (didEverRun.current) {
-                backend.clearNodeCacheIndividual(id).catch(log.error);
-            }
-        };
-    }, [backend, id]);
 
     useEffect(() => {
         if (hasIncomingConnections && didEverRun.current) {

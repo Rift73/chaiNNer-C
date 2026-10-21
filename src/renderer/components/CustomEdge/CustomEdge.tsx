@@ -81,11 +81,12 @@ export const CustomEdge = memo(
             GlobalVolatileContext,
             (c) => c.effectivelyDisabledNodes
         );
-        const { paused, getNodeStatus } = useContext(ExecutionContext);
+        // only what this edge shows: the execution context changes with every event batch
+        const paused = useContextSelector(ExecutionContext, (c) => c.paused);
+        const sourceStatus = useContextSelector(ExecutionContext, (c) => c.getNodeStatus(source));
+        const targetStatus = useContextSelector(ExecutionContext, (c) => c.getNodeStatus(target));
         const { animateChain } = useSettings();
 
-        const sourceStatus = getNodeStatus(source);
-        const targetStatus = getNodeStatus(target);
         const animated =
             (sourceStatus === NodeExecutionStatus.RUNNING ||
                 sourceStatus === NodeExecutionStatus.YET_TO_RUN) &&

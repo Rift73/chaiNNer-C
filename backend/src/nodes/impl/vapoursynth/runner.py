@@ -23,6 +23,7 @@ import numpy as np
 from api import NodeAttributedError, NodeContext
 
 from ..colour_info import high_definition, pixel_layout
+from ..native_framework_images import planes_to_interleaved
 from .colour_props import PROPS, vs_pix_fmt
 from .script import node_for_line
 
@@ -379,7 +380,7 @@ def _gray_frame(planes: np.ndarray) -> np.ndarray:
 
 def _rgb_frame(planes: np.ndarray) -> np.ndarray:
     # vspipe writes RGB planes as G, B, R (ffmpeg's gbrp order).
-    return np.stack((planes[1], planes[0], planes[2]), axis=2)
+    return planes_to_interleaved((planes[1], planes[0], planes[2]))
 
 
 def _info_fields(info: ClipInfo) -> dict[str, str]:

@@ -43,9 +43,15 @@ def load_model_node(path: Path) -> tuple[OnnxModel, Path, str]:
 
     logger.debug(f"Reading onnx model from path: {path}")
     # A plain model may keep its weights in files beside it, which load_model reads; a
-    # compressed one (Save Model's Compress) is one whole model.
+    # compressed one (Save Model's Compress) is one whole model. A tensor kept outside
+    # names its file under the key "location", so bytes without that word hold the
+    # whole model, which is parsed once and kept as it is.
     data = decompressed(path)
-    model = onnx.load_model(str(path)) if data is None else onnx.load_from_string(data)
+    if data is None:
+        data = path.read_bytes()
+        model = data if b"location" not in data else onnx.load_model(str(path))
+    else:
+        model = data if b"location" not in data else onnx.load_from_string(data)
 
     dirname, basename, _ = split_file_path(path)
     return load_onnx_model(model), dirname, basename

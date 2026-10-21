@@ -3,11 +3,11 @@ import { app, net, session } from 'electron/main';
 import fs from 'fs/promises';
 import path from 'path';
 import semver from 'semver';
-import { PythonInfo } from '../../common/common-types';
+import { PythonInfo, Version } from '../../common/common-types';
 import { log } from '../../common/log';
 import { isArmMac } from '../env';
 import { SupportedPlatform, getPlatform } from '../platform';
-import { checkFileExists } from '../util';
+import { checkFileExists, readTextFile, writeFileAtomic } from '../util';
 import { checkPythonPaths } from './checkPythonPaths';
 
 interface PythonDownload {
@@ -153,6 +153,44 @@ const getIntegratedPythonExecutable = (directory: string): string => {
     return path.resolve(path.join(directory, relativePath));
 };
 
+interface PythonVersionCache {
+    python: string;
+    size: number;
+    mtimeMs: number;
+    version: Version;
+}
+
+/**
+ * Checks the Python executable once per build of it: its `--version` (a process start, about
+ * 45 ms) is kept in `cacheFile` with the executable's size and modification time.
+ */
+const checkPythonCached = async (pythonPath: string, cacheFile: string): Promise<PythonInfo> => {
+    const { size, mtimeMs } = await fs.stat(pythonPath);
+    try {
+        const cache = JSON.parse(await readTextFile(cacheFile)) as Partial<PythonVersionCache>;
+        if (
+            cache.python === pythonPath &&
+            cache.size === size &&
+            cache.mtimeMs === mtimeMs &&
+            typeof cache.version === 'string'
+        ) {
+            return { python: pythonPath, version: cache.version };
+        }
+    } catch {
+        // no cache yet, or one that cannot be read: the executable is checked below
+    }
+
+    const pythonInfo = await checkPythonPaths([pythonPath]);
+    const cache: PythonVersionCache = {
+        python: pythonPath,
+        size,
+        mtimeMs,
+        version: pythonInfo.version,
+    };
+    await writeFileAtomic(cacheFile, JSON.stringify(cache)).catch(log.error);
+    return pythonInfo;
+};
+
 /**
  * Retrieves the path of the python executable of the integrated python installation.
  *
@@ -169,7 +207,10 @@ export const getIntegratedPython = async (
     const pythonBinExists = await checkFileExists(pythonPath);
 
     if (pythonBinExists) {
-        const pythonInfo = await checkPythonPaths([pythonPath]);
+        const pythonInfo = await checkPythonCached(
+            pythonPath,
+            path.join(directory, 'python-version.json')
+        );
         // CPython 3.14: this table's version or a newer one is kept; an older one (upstream's
         // 3.11.5) is removed below and replaced by the download.
         if (semver.gte(pythonInfo.version, version)) {

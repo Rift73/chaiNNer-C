@@ -2,6 +2,7 @@
  * morphology, color transforms, transcendental ufuncs and matting remain in
  * their existing libraries. Inputs are read-only and outputs own their memory. */
 #include "parallel.h"
+#include "run_kernels.h"
 #include <math.h>
 
 /* Images are row-major pixel grids: pixel p's channel c at p * pixel + c * channel

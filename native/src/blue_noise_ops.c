@@ -8,6 +8,7 @@
 #include "cn_crt_math.h"
 #include "fft_native.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>

@@ -7,7 +7,6 @@ from sanic.log import logger
 
 from api import NodeContext
 from nodes.impl.compressed_file import read_file
-from nodes.impl.pytorch.resource_cache import file_identity
 from nodes.impl.tensorrt.cache import engines
 from nodes.impl.tensorrt.engine_info import deserialize_engine, read_engine_info
 from nodes.impl.tensorrt.model import TensorRTEngine
@@ -17,7 +16,7 @@ from nodes.properties.outputs import (
     FileNameOutput,
     TensorRTEngineOutput,
 )
-from nodes.utils.utils import split_file_path
+from nodes.utils.utils import file_identity, split_file_path
 
 from ...settings import get_settings
 from .. import io_group

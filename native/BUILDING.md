@@ -12,7 +12,7 @@ The developer reference that used to live in the root README. The full command r
   Python unchanged. The GPU nodes keep their engines (PyTorch, ONNX Runtime, NCNN, TensorRT); the ONNX CPU session
   adapter, the ONNX-to-NCNN converter, NCNN param handling and tiling control are native. chaiNNer-C adds two PyTorch
   nodes for VOSR 2.0 generative upscaling ([`VOSR2.md`](VOSR2.md)).
-- `src/` and `tests/` are upstream's frontend at `d56e507f` with chaiNNer-C's UI changes (no updates, `v0.3.6`, the
+- `src/` and `tests/` are upstream's frontend at `d56e507f` with chaiNNer-C's UI changes (no updates, `v0.3.7`, the
   drop repairs, the TensorRT types and Clear item, the VOSR model type and the iterated input condition), its
   integrated Python moved to CPython 3.14.8 and its own `%APPDATA%\chaiNNer-C`. The local portable package uses an
   installed upstream nightly's UI with reviewed patches, which do not include the VOSR changes.
@@ -37,7 +37,8 @@ correct and only the speedup is lost.
 
 Prerequisites: LLVM 23.1.2 (`clang-cl`, `lld-link`, `llvm-lib`, `llvm-rc`); Visual Studio 2022 Build Tools with the
 MSVC toolset 14.44.35207 and the Windows SDK 10.0.26100.0 (no Developer environment needed); CMake 3.20 or newer on
-`PATH`; Ninja (by default the Build Tools' copy); Node.js with npm. Optional: a TensorRT 11 SDK and a CUDA 13 toolkit,
+`PATH`; Ninja (by default the Build Tools' copy); NASM 3.01 on `PATH` (libjpeg-turbo's SIMD; or
+`-Define CHAINNER_C_NASM=<nasm.exe>`); Node.js with npm. Optional: a TensorRT 11 SDK and a CUDA 13 toolkit,
 which build VOSR's TensorRT plugin `vosr2_qkv.dll` when step 3 adds
 `-Define CHAINNER_C_TENSORRT_ROOT=<SDK>,CHAINNER_C_CUDA_ROOT=<toolkit>` (README Build); without it VOSR runs on
 PyTorch only. Run every command from the repository root in PowerShell.
@@ -83,7 +84,9 @@ llvm-lib, baseline x86-64 code with per-file AVX2 and AVX-512 targets for the IS
 `/fp:strict`, and `/W4 /WX` for first-party code. Configuration refuses any other clang-cl, MSVC toolset or Windows
 SDK version. The tool locations are CMake cache entries set on a build directory's first configure (for example
 `-Define 'chainner_c_llvm=<LLVM 23.1.2>/bin'`; also `chainner_c_vc_tools`, `chainner_c_sdk`,
-`chainner_c_sdk_version`), and `-Ninja <path to ninja.exe>` selects another Ninja.
+`chainner_c_sdk_version`), and `-Ninja <path to ninja.exe>` selects another Ninja. The image codecs
+(`native/cmake/codecs.cmake`: libjpeg-turbo, zlib, libpng, libwebp, libtiff at today's Pillow and OpenCV versions)
+build from vendored sources in `native/third_party` with the same options; NASM 3.01 assembles libjpeg-turbo's SIMD.
 
 `-Define CHAINNER_C_MARCH=<cpu>` (for example `native` for the building machine's own CPU, or `icelake-server`) adds
 `-march` to every target, for builds that stay on that machine, never for releases. The hot kernels already pick AVX2
@@ -110,7 +113,7 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
 - It copies the installed app's shell and the provisioned runtime, writes `backend/src` byte for byte, and records
   everything in a manifest, `chainner-c-package.json`.
 - It accepts only that nightly, whose UI bundles are pinned by SHA-256 and get reviewed patches (updates removed, the
-  `v0.3.6` label, CPython 3.14 accepted, drop repairs, the TensorRT types and Clear item).
+  `v0.3.7` label, CPython 3.14 accepted, drop repairs, the TensorRT types and Clear item).
   `node native\tools\verify_independent_ui.cjs --package <dir> --installed-app <dir>` checks them.
 - The runtime's `Lib` is precompiled with hash-based bytecode (`unchecked-hash`), so two builds are byte-identical.
 - A `portable` marker keeps the profile inside the package; run `chaiNNer.exe` from its folder.

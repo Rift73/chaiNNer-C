@@ -24,6 +24,7 @@
 #include "descale.h"
 #include "isa.h"
 #include "parallel.h"
+#include "run_kernels.h"
 
 #define DESCALE_ROWS 16
 #define DESCALE_STRIP 32

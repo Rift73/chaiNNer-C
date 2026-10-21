@@ -8,7 +8,7 @@ dependencies. Container bytes are recorded, but exact comparisons use decoded
 pixels/audio and selected stream metadata because muxer identifiers/timestamps
 need not be deterministic.
 PNG bytes are recorded too, and PNGs compare by decoded pixels because the port
-encodes default PNGs with fpng. SSE events compare by
+encodes default PNGs with its own encoder. SSE events compare by
 verify_runtime.sse_event_mismatches (generator-once, coalesced previews).
 """
 
@@ -35,6 +35,7 @@ from verify_framework_runtime import OPTIONS, file_hash, source_hashes
 from verify_runtime import (
     METADATA_COMPARISON,
     METADATA_ENDPOINTS,
+    METADATA_TIMEOUT,
     ORACLE,
     PROJECT,
     REPEAT_RULES,
@@ -60,7 +61,8 @@ from verify_runtime import (
     write_json,
 )
 
-VIDEO_IDS = {"chainner:image:load_video", "chainner:image:save_video"}
+LOAD_VIDEO = "chainner:image:load_video"
+VIDEO_IDS = {LOAD_VIDEO, "chainner:image:save_video"}
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".mov", ".webm", ".avi", ".gif"}
 ENCODERS = [
     ("mkv", "libx264"),
@@ -186,11 +188,14 @@ def fixture_graphs(schemas: dict, assets: Path, output: Path):
         cancel: bool = False,
     ) -> dict:
         directory = output / name
-        load = node(
-            "load",
-            "chainner:image:load_video",
-            {0: str(assets / source), 1: int(limit is not None), 2: limit or 10},
-        )
+        # The installed node's limit; this repository's frame range (Frames, In, Out)
+        # reads it as the Range 0..limit - 1, as old chains migrate.
+        frames: dict[int, object] = {}
+        if 10 not in {item["id"] for item in schemas[LOAD_VIDEO]["inputs"]}:
+            frames = {1: int(limit is not None), 2: limit or 10}
+        elif limit is not None:
+            frames = {10: "range", 11: 0, 12: limit - 1}
+        load = node("load", LOAD_VIDEO, {0: str(assets / source), **frames})
         nodes = [load]
         image = edge("load")
         if resize:
@@ -366,7 +371,7 @@ def close_owned_job(job: OwnedJob, processes: dict):
 def snapshot(path: Path, ffmpeg: Path, ffprobe: Path):
     result: dict = {"sha256": file_hash(path)}
     if path.suffix.lower() == ".png":
-        # The port writes default PNGs with fpng: the same pixels in other bytes.
+        # The port writes default PNGs with its own encoder: the same pixels in other bytes.
         result["semantic"] = decoded_png(path)
         return result
     if path.suffix.lower() not in VIDEO_EXTENSIONS:
@@ -568,7 +573,8 @@ def run_backend(
         else:
             raise TimeoutError("Backend startup deadline")
         metadata = {
-            key: request(port, "/" + key, timeout=30) for key in METADATA_ENDPOINTS
+            key: request(port, "/" + key, timeout=METADATA_TIMEOUT)
+            for key in METADATA_ENDPOINTS
         }
         for key, value in metadata.items():
             write_json(directory / (key + ".json"), value)
@@ -909,7 +915,7 @@ def main():
         "limitations": [
             "FFmpeg/ffprobe remain the existing codec engines; no GPU acceleration is requested.",
             "Container hashes are recorded but exact media parity is decoded pixels/audio plus selected stream metadata, not muxer timestamps/identifiers.",
-            "PNG hashes are recorded but PNG parity is decoded pixels plus colour/orientation chunks (bench_oracle.decoded_png): the port encodes default PNGs with fpng.",
+            "PNG hashes are recorded but PNG parity is decoded pixels plus colour/orientation chunks (bench_oracle.decoded_png): the port encodes default PNGs with its own encoder.",
             SSE_EVENT_COMPARISON,
             METADATA_COMPARISON,
             "Cancellation iteration counts are deliberately not compared; owned children are observed before job cleanup.",

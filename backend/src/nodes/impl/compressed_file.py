@@ -11,6 +11,8 @@ from pathlib import Path
 
 from compression import zstd
 
+from .native_graph import graph
+
 # The saving nodes append it to a compressed file's name.
 COMPRESSED_SUFFIX = "_compressed"
 XZ_HEADER = b"\xfd7zXZ\x00"
@@ -39,11 +41,13 @@ def compressed_name(name: str, compress: bool) -> str:
 
 
 def write_file(path: Path, data: bytes, *, compression: Compression | None) -> None:
+    """Writes the file through a temporary file in its folder (native/include/atomic_file.hpp):
+    no partial file, and a file that already holds these bytes is left untouched."""
     if compression is Compression.LZMA:
         data = lzma.compress(data)
     elif compression is Compression.ZSTD:
         data = zstd.compress(data, ZSTD_LEVEL)
-    path.write_bytes(data)
+    graph().atomic_write(path, data)
 
 
 def decompressed(path: Path | str) -> bytes | None:

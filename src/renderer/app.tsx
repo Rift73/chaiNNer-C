@@ -2,7 +2,9 @@ import { Box, Center, ChakraProvider, ColorModeScript, Spinner } from '@chakra-u
 import TimeAgo from 'javascript-time-ago';
 import en from 'javascript-time-ago/locale/en.json';
 import { memo, useState } from 'react';
+import { BackendData } from '../common/Backend';
 import { PythonInfo } from '../common/common-types';
+import { log } from '../common/log';
 import { ChainnerSettings } from '../common/settings/settings';
 import { AlertBoxProvider } from './contexts/AlertBoxContext';
 import { BackendProvider } from './contexts/BackendContext';
@@ -60,17 +62,33 @@ export const App = memo(() => {
         []
     );
 
+    // The node list of the last start lets the editor show at once, without waiting for the
+    // backend; `null` when there is none.
+    const [cachedData, setCachedData] = useState<BackendData | null>();
+    useAsyncEffect(
+        () => ({
+            supplier: () => ipcRenderer.invoke('get-ui-cache'),
+            successEffect: (data) => setCachedData(data ?? null),
+            catchEffect: (error) => {
+                log.error('Unable to read the node list cache.', error);
+                setCachedData(null);
+            },
+        }),
+        []
+    );
+
     return (
         <ChakraProvider theme={darktheme}>
             <ColorModeScript initialColorMode={darktheme.config.initialColorMode} />
             <HotkeysProvider>
                 <ContextMenuProvider>
                     <AlertBoxProvider>
-                        {!url || !settings || !pythonInfo ? (
+                        {!url || !settings || !pythonInfo || cachedData === undefined ? (
                             <LoadingComponent />
                         ) : (
                             <SettingsProvider initialSettings={settings}>
                                 <BackendProvider
+                                    cachedData={cachedData ?? undefined}
                                     pythonInfo={pythonInfo}
                                     url={url}
                                 >

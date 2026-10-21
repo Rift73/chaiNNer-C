@@ -28,6 +28,7 @@
  */
 #include "chainner.h"
 #include "numeric.h"
+#include "run_kernels.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>

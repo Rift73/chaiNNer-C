@@ -13,9 +13,10 @@ foreach(chainner_c_language C CXX)
             "(${CMAKE_${chainner_c_language}_COMPILER_FRONTEND_VARIANT}); configure through native/Build.ps1")
     endif()
 endforeach()
-# Every target, vendored fpng included:
+# Every target:
 # - baseline x86-64 code (clang-cl's default, SSE2), so the binaries run on any x86-64 CPU;
-#   only the ISA units below and fpng's guarded paths go beyond it, behind runtime checks;
+#   only the ISA units below and the vendored libraries' own guarded paths go beyond it,
+#   behind runtime checks;
 # - ThinLTO;
 # - /fp:strict: no contraction, and strict FP exceptions and rounding, since the kernels'
 #   flag windows mirror NumPy's np.seterr reporting and the pool carries MXCSR (Consult 9 P2);
@@ -117,14 +118,14 @@ add_library(chainner_native SHARED
     src/canny_ops.cpp src/inpaint_ops.cpp src/pixel_art_ops.cpp
     src/bilateral_ops.c src/denoise_ops.cpp src/onnx_runtime.cpp src/framework_image_ops.cpp src/framework_shared_ops.cpp
     src/clipboard_ops.c src/image_setup_ops.c src/scratch.c src/planar_ops.c src/descale_ops.c
-    src/yuv_planes_ops.c src/plane_resample_ops.c
+    src/yuv_planes_ops.c src/plane_resample_ops.c src/dpid_ops.c src/png_encode.c
     # ISA units (SP4 spec 4.3): export-free, one file per kernel family and level, compiled
     # for that level only and reached through a C entry's ISA dispatch, which runs a unit
     # only when the CPU has its level (src/isa.c) or CHAINNER_C_ISA caps it lower.
     src/separable_avx2.c src/convolution_avx2.c src/convert_avx2.c src/lens_avx2.c
     src/morphology_avx2.c src/palette_avx2.c src/dither_avx2.c src/blend_avx2.c
     src/resample_avx2.c src/spectral_avx2.c src/color_avx2.c src/planar_avx2.c
-    src/yuv_planes_avx2.c src/plane_resample_avx2.c
+    src/yuv_planes_avx2.c src/plane_resample_avx2.c src/png_encode_avx2.c
     src/separable_avx512.c src/convolution_avx512.c)
 # The levels' instruction sets, exactly what src/isa.c checks: AVX2 is AVX2, FMA, BMI1 and
 # BMI2; AVX-512 adds F, DQ, CD, BW and VL.
@@ -132,7 +133,7 @@ set(chainner_c_avx2_options /clang:-mavx2 /clang:-mfma /clang:-mbmi /clang:-mbmi
 set_source_files_properties(src/separable_avx2.c src/convolution_avx2.c src/convert_avx2.c
     src/lens_avx2.c src/morphology_avx2.c src/palette_avx2.c src/dither_avx2.c
     src/blend_avx2.c src/resample_avx2.c src/spectral_avx2.c src/color_avx2.c
-    src/planar_avx2.c src/yuv_planes_avx2.c src/plane_resample_avx2.c
+    src/planar_avx2.c src/yuv_planes_avx2.c src/plane_resample_avx2.c src/png_encode_avx2.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
 set_source_files_properties(src/separable_avx512.c src/convolution_avx512.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options};/clang:-mavx512f;/clang:-mavx512dq;/clang:-mavx512cd;/clang:-mavx512bw;/clang:-mavx512vl")
@@ -149,6 +150,9 @@ target_compile_options(chainner_descale PRIVATE /W3)
 set_source_files_properties(third_party/descale/src/x86/descale_avx2.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
 target_link_libraries(chainner_native PRIVATE chainner_descale)
+# The default PNG encoder (src/png_encode.c) compresses with the vendored libdeflate (chainner_deflate,
+# cmake/codecs.cmake), patched for its band pieces (third_party/libdeflate/PROVENANCE.md).
+target_link_libraries(chainner_native PRIVATE chainner_deflate)
 target_include_directories(chainner_native PRIVATE include)
 set_target_properties(chainner_native PROPERTIES
     C_STANDARD 17 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
@@ -183,19 +187,6 @@ set(chainner_c_python_library "${CHAINNER_C_PYTHON_ROOT}/libs/python${chainner_c
 if(NOT EXISTS "${chainner_c_python_library}")
     message(FATAL_ERROR "The runtime's import library ${chainner_c_python_library} is missing")
 endif()
-# Byte-for-byte vendor source used by the user's Imagetools resize build.
-# Keep vendor compiler settings separate from strict first-party diagnostics.
-add_library(chainner_fpng STATIC third_party/fpng/fpng.cpp)
-target_include_directories(chainner_fpng SYSTEM PUBLIC third_party/fpng)
-target_compile_definitions(chainner_fpng PUBLIC FPNG_NO_STDIO)
-set_target_properties(chainner_fpng PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
-# fpng's SSE4.1 and PCLMUL intrinsics need these targets under clang; fpng runs those paths
-# only after its own CPUID check (fpng_init).
-target_compile_options(chainner_fpng PRIVATE /W3 /EHsc /clang:-msse4.1 /clang:-mpclmul)
-if(CHAINNER_C_PDB)
-    # Symbols for fpng's static functions in _chainner_graph.pdb (sampling).
-    target_compile_options(chainner_fpng PRIVATE /Zi)
-endif()
 add_library(_chainner_graph MODULE src/graph_module.cpp src/onnx_graph.cpp src/ncnn_graph.cpp src/onnx_converter.cpp src/onnx_tensorproto.cpp src/onnx_model_application.cpp src/tiling_control.cpp
     src/utility_scalar.cpp src/utility_random.cpp src/utility_text.cpp src/image_io.cpp
     src/execution_ops.cpp src/file_sequence.cpp src/video_io.cpp src/utility_clipboard.cpp
@@ -206,7 +197,7 @@ target_include_directories(_chainner_graph SYSTEM PRIVATE
     "${chainner_c_python_include}" "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pybind11/include"
     "${chainner_c_numpy_include}")
 target_include_directories(_chainner_graph PRIVATE include)
-target_link_libraries(_chainner_graph PRIVATE "${chainner_c_python_library}" chainner_native chainner_fpng user32)
+target_link_libraries(_chainner_graph PRIVATE "${chainner_c_python_library}" chainner_native user32)
 set_target_properties(_chainner_graph PROPERTIES PREFIX "" SUFFIX ".pyd"
     CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO
     LIBRARY_OUTPUT_DIRECTORY "${CHAINNER_C_OUTPUT_DIR}")
@@ -216,6 +207,8 @@ if(CHAINNER_C_PDB)
     target_link_options(_chainner_graph PRIVATE /DEBUG /OPT:REF /OPT:ICF
         "/MAP:${CHAINNER_C_OUTPUT_DIR}/_chainner_graph.map")
 endif()
+include(cmake/run_engine.cmake)
+include(cmake/codecs.cmake)
 
 # chainner_ext.pyd: the drop-in for chainner_ext 0.3.10 (docs/superpowers/specs/
 # 2026-10-06-chainner-ext-c-design.md). Limited API 3.11 against the runtime's python3.lib,
@@ -259,11 +252,12 @@ endforeach()
 set(chainner_c_tensorrt_major 11)
 set(chainner_c_cuda_major 13)
 set(CHAINNER_C_TENSORRT_ROOT "" CACHE PATH
-    "TensorRT ${chainner_c_tensorrt_major} SDK root (include, lib) for vosr2_qkv.dll and the TensorRT runner; empty: not built")
+    "TensorRT ${chainner_c_tensorrt_major} SDK root (include, lib) for vosr2_qkv.dll, drft_trt_plugins.dll and the TensorRT runner; empty: not built")
 set(CHAINNER_C_CUDA_ROOT "" CACHE PATH
-    "CUDA ${chainner_c_cuda_major} toolkit root (bin/nvcc.exe, include, lib/x64) for vosr2_qkv.dll and the TensorRT runner; empty: not built")
+    "CUDA ${chainner_c_cuda_major} toolkit root (bin/nvcc.exe, include, lib/x64) for vosr2_qkv.dll, drft_trt_plugins.dll and the TensorRT runner; empty: not built")
 if(NOT CHAINNER_C_TENSORRT_ROOT AND NOT CHAINNER_C_CUDA_ROOT)
-    message(STATUS "VOSR TensorRT plugin (vosr2_qkv.dll) and TensorRT runner (trt_runner) skipped: set "
+    message(STATUS "VOSR and DRFT TensorRT plugins (vosr2_qkv.dll, drft_trt_plugins.dll) and TensorRT runner "
+        "(trt_runner) skipped: set "
         "CHAINNER_C_TENSORRT_ROOT and CHAINNER_C_CUDA_ROOT to build them")
     return()
 endif()
@@ -343,6 +337,54 @@ if(CHAINNER_C_PDB)
     target_compile_options(vosr2_qkv PRIVATE /Zi)
     target_link_options(vosr2_qkv PRIVATE /DEBUG /OPT:REF /OPT:ICF
         "/MAP:${CHAINNER_C_OUTPUT_DIR}/pytorch/vosr2_qkv.map")
+endif()
+
+# drft_trt_plugins.dll: the TensorRT plugins of legacy DRFT's engines (src/drft, Codex's
+# LegacyBarrierV1 library, compile definitions as his), from the same two roots, beside the DRFT
+# loader in nodes/impl/tensorrt. Engines embed it, so it is never loaded to run one. The four .cu
+# files (kernels and their plugin classes) are compiled by nvcc as qkv.cu is, except two points:
+# - device math: nvcc's defaults (contraction on, IEEE division and square root), the numerics
+#   Codex measured;
+# - /W4 without /WX or -Werror: two warning classes remain, C4211 in nvcc's generated stubs of
+#   Codex's kernels in anonymous namespaces, and EDG's #997 on DrftFinalAffineCrop_TRT, the one
+#   plugin on TensorRT's deprecated IPluginV2DynamicExt (its legacy overloads are private there).
+# DrftAliasedIdentityBarrierPlugin.cpp and the link use clang-cl and lld-link with /W4 /WX.
+set(chainner_c_drft_definitions -DDRFT_ENABLE_OCAB_QKV_PACK_PLUGIN=1
+    -DDRFT_ENABLE_OCAB_QKV_PACK_TOKEN_MAJOR=1 -DDRFT_ENABLE_RELATIVE_BIAS_FP32=1
+    -DDRFT_ENABLE_IDENTITY_BARRIER_PLUGIN=1 -DDRFT_ENABLE_FINAL_AFFINE_CROP_PLUGIN=1
+    -DDRFT_ENABLE_WINDOW_NEURAL_BIAS_PLUGIN=1 -DNOMINMAX -DWIN32_LEAN_AND_MEAN)
+set(chainner_c_drft_objects "")
+foreach(chainner_c_drft_source DrftOCABAttentionSafePlugin DrftOCABQKVPackPlugin
+        DrftFinalAffineCropPlugin DrftWindowNeuralBiasPlugin)
+    set(chainner_c_drft_object "${CMAKE_CURRENT_BINARY_DIR}/drft_${chainner_c_drft_source}.obj")
+    add_custom_command(OUTPUT "${chainner_c_drft_object}"
+        COMMAND "${CMAKE_COMMAND}" -E env "INCLUDE=${chainner_c_nvcc_include}"
+            "${chainner_c_nvcc}" -c "${CMAKE_CURRENT_SOURCE_DIR}/src/drft/${chainner_c_drft_source}.cu"
+            -o "${chainner_c_drft_object}" -ccbin "${chainner_c_nvcc_host}" -O3 -std=c++17
+            "-I${CHAINNER_C_TENSORRT_ROOT}/include" ${chainner_c_drft_definitions}
+            -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_86,code=sm_86
+            -gencode=arch=compute_89,code=sm_89 "-gencode=arch=compute_120,code=[sm_120,compute_120]"
+            --fmad=true --prec-div=true --prec-sqrt=true
+            -Xcompiler "$<IF:$<CONFIG:Debug>,/MTd,/MT>,/W4,/EHsc,/Zc:preprocessor,/fp:strict,/Brepro"
+        DEPENDS "src/drft/${chainner_c_drft_source}.cu"
+        COMMENT "Compiling src/drft/${chainner_c_drft_source}.cu with nvcc"
+        VERBATIM)
+    list(APPEND chainner_c_drft_objects "${chainner_c_drft_object}")
+endforeach()
+set_source_files_properties(${chainner_c_drft_objects} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+add_library(drft_trt_plugins MODULE src/drft/DrftAliasedIdentityBarrierPlugin.cpp ${chainner_c_drft_objects})
+target_include_directories(drft_trt_plugins SYSTEM PRIVATE
+    "${CHAINNER_C_TENSORRT_ROOT}/include" "${CHAINNER_C_CUDA_ROOT}/include")
+target_compile_definitions(drft_trt_plugins PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_link_libraries(drft_trt_plugins PRIVATE "${chainner_c_nvinfer_library}" "${chainner_c_cudart_library}")
+set_target_properties(drft_trt_plugins PROPERTIES PREFIX "" SUFFIX ".dll"
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO
+    LIBRARY_OUTPUT_DIRECTORY "${CHAINNER_C_OUTPUT_DIR}/tensorrt")
+target_compile_options(drft_trt_plugins PRIVATE /W4 /WX /EHsc)
+if(CHAINNER_C_PDB)
+    target_compile_options(drft_trt_plugins PRIVATE /Zi)
+    target_link_options(drft_trt_plugins PRIVATE /DEBUG /OPT:REF /OPT:ICF
+        "/MAP:${CHAINNER_C_OUTPUT_DIR}/tensorrt/drft_trt_plugins.map")
 endif()
 
 # The TensorRT runner (trt_runner/CMakeLists.txt), from the same two roots.

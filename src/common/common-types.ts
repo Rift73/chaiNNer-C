@@ -137,6 +137,19 @@ export interface SliderInput extends InputBase {
     readonly gradient?: readonly string[] | null;
     readonly scale: 'linear' | 'log' | 'log-offset' | 'sqrt';
 }
+/**
+ * A video node's seek bar: the number of a frame in the video. The seek bar spans the node's own
+ * Frame Count output and steps by its FPS output, and sets the node's frame range: `framesInput`
+ * (an enum of "all" and "range"), `inInput` and `outInput`.
+ */
+export interface VideoSeekInput extends Omit<NumberInput, 'kind'> {
+    readonly kind: 'video-seek';
+    readonly framesInput: InputId;
+    readonly inInput: InputId;
+    readonly outInput: InputId;
+    readonly frameCountOutput: OutputId;
+    readonly fpsOutput: OutputId;
+}
 export interface ColorInput extends InputBase {
     readonly kind: 'color';
     readonly def: string;
@@ -157,6 +170,7 @@ export type Input =
     | DropDownInput
     | SliderInput
     | NumberInput
+    | VideoSeekInput
     | ColorInput
     | StaticValueInput;
 

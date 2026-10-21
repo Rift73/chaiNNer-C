@@ -6,6 +6,7 @@
  */
 #include "chainner.h"
 #include "cn_crt_math.h"
+#include "run_kernels.h"
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>

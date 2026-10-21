@@ -2,15 +2,68 @@ from __future__ import annotations
 
 import gc
 import math
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import numpy as np
 import torch
 from spandrel import ImageModelDescriptor
 
-from api import Progress
+from api import Aborted, Progress
 
+from ..native_framework_images import planar_to_interleaved_checked
 from ..upscale.auto_split import Split, Tiler, auto_split
+from .offload import offloaded
 from .utils import safe_cuda_cache_empty
+
+
+class _Stopped(Exception):
+    """Stop, seen between a model's blocks. The forward catches it, so its frames (the
+    activations) are freed before the node raises Aborted."""
+
+
+# The progress of the forward this thread runs (another run may use the same model).
+_forward = threading.local()
+
+
+def _stop_between_blocks(_module: torch.nn.Module, _args: object) -> None:
+    progress: Progress | None = getattr(_forward, "progress", None)
+    if progress is not None and progress.aborted:
+        raise _Stopped
+
+
+@contextmanager
+def _stoppable(module: torch.nn.Module) -> Iterator[None]:
+    """Checks for Stop at each block of `module` (each module with children). Without
+    it a tile's forward runs to its end after Stop, keeping its memory: for minutes
+    when the GPU's memory overflows into shared memory."""
+    handles = [
+        m.register_forward_pre_hook(_stop_between_blocks)
+        for m in module.modules()
+        if next(m.children(), None) is not None
+    ]
+    try:
+        yield
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
+def _forward_or_stopped(
+    model: ImageModelDescriptor[torch.nn.Module],
+    input_tensor: torch.Tensor,
+    progress: Progress,
+) -> torch.Tensor | None:
+    """The model's output, or None when Stop interrupted the forward (whose frames are
+    freed by the time this returns)."""
+    _forward.progress = progress
+    try:
+        return model(input_tensor)
+    except _Stopped:
+        return None
+    finally:
+        _forward.progress = None
 
 
 def _into_standard_image_form(t: torch.Tensor) -> torch.Tensor:
@@ -75,6 +128,26 @@ def _is_finite(img: np.ndarray) -> bool:
     return math.isfinite(img.min()) and math.isfinite(img.max())
 
 
+def _interleaved(t: torch.Tensor) -> tuple[np.ndarray, bool] | None:
+    """A (1, C, H, W) or (C, H, W) float16 or float32 output, rows contiguous, as
+    the BGR(A) float32 image the device permute, flip and CPU cast make, interleaved
+    from its planes on the host in one pass, and whether it is finite; else None.
+    A finite image is the cast's bit for bit; NaN can differ (the cast quiets a
+    signalling half), so a caller converts a non-finite output as before."""
+    if t.ndim == 4 and t.shape[0] == 1:
+        t = t[0]
+    if t.ndim != 3 or t.dtype not in (torch.float16, torch.float32) or t.stride(2) != 1:
+        return None
+    planes = t.detach().cpu().numpy()
+    # Rows that overlap (an output expanded along its height has row stride 0)
+    row_stride = planes.strides[1]
+    if row_stride <= 0 or row_stride < planes.shape[2] * planes.itemsize:
+        return None
+    return planar_to_interleaved_checked(
+        planes, swap_red_blue=planes.shape[0] in (3, 4)
+    )
+
+
 @torch.inference_mode()
 def pytorch_auto_split(
     img: np.ndarray,
@@ -102,16 +175,31 @@ def pytorch_auto_split(
             input_tensor = _rgb_to_bgr(input_tensor)
             input_tensor = _into_batched_form(input_tensor)
 
-            # inference
-            output_tensor = model(input_tensor)
+            # inference; activations past the GPU's memory go to RAM, not the driver's overflow
+            with offloaded(model.model, input_tensor):
+                output_tensor = _forward_or_stopped(model, input_tensor, progress)
+            if output_tensor is None:
+                # The kernels already queued end inside the node, so the memory is
+                # free once the node ends, and the release does not wait for them.
+                input_tensor = None
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                raise Aborted()
 
             # convert back to numpy
-            output_tensor = _into_standard_image_form(output_tensor)
-            output_tensor = _rgb_to_bgr(output_tensor)
-            result = output_tensor.detach().cpu().detach().float().numpy()
-        except RuntimeError as e:
-            # Check to see if its actually the CUDA out of memory error
-            if "allocate" in str(e) or "CUDA" in str(e):
+            interleaved = _interleaved(output_tensor)
+            if interleaved is not None and interleaved[1]:
+                result, finite = interleaved
+            else:
+                # NaN or infinity, or an output the interleave does not read
+                output_tensor = _into_standard_image_form(output_tensor)
+                output_tensor = _rgb_to_bgr(output_tensor)
+                result = output_tensor.detach().cpu().detach().float().numpy()
+                finite = interleaved is None and _is_finite(result)
+        except (RuntimeError, MemoryError) as e:
+            # Out of memory: the device's or the host's (torch's RuntimeError, or
+            # NumPy's MemoryError for the converted output)
+            if isinstance(e, MemoryError) or "allocate" in str(e) or "CUDA" in str(e):
                 # Collect garbage (clear VRAM)
                 if input_tensor is not None:
                     try:
@@ -129,7 +217,7 @@ def pytorch_auto_split(
         # Saving turns NaN into black pixels. NaN already in the input passes through;
         # NaN the model made from a finite tile is an error, raised at the first such
         # tile instead of after the whole image.
-        if not _is_finite(result) and _is_finite(img):
+        if not finite and _is_finite(img):
             message = (
                 f"The {model.architecture.name} model returned invalid values (NaN or"
                 " infinity), which would be saved as black pixels."
@@ -142,4 +230,5 @@ def pytorch_auto_split(
             raise RuntimeError(message)
         return result
 
-    return auto_split(img, upscale, tiler)
+    with _stoppable(model.model):
+        return auto_split(img, upscale, tiler)

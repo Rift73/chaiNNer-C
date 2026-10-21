@@ -10,6 +10,7 @@
 #include "chainner.h"
 #include "cn_crt_math.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include <float.h>
 #include <limits.h>
 #include <math.h>

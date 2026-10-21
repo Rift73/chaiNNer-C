@@ -1,6 +1,7 @@
 /* Stretch Contrast: NumPy-exact bounds, the float64 stretch and channel assembly. */
 #include "chainner.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include "numeric.h"
 #include <stdlib.h>
 #include <string.h>

@@ -1,24 +1,40 @@
+"""The output types of node schemas.
+
+The outputs of a framework's models (NCNN, ONNX, PyTorch, TensorRT, VapourSynth) import
+the framework, so their modules load on first use, as nodes.properties.inputs' do.
+"""
+
+from __future__ import annotations
+
+import importlib
+from typing import TYPE_CHECKING
+
 from .file_outputs import *
 from .generic_outputs import *
 from .numpy_outputs import *
 
-try:
+if TYPE_CHECKING:
     from .ncnn_outputs import *
-except Exception:
-    pass
-try:
     from .onnx_outputs import *
-except Exception:
-    pass
-try:
     from .pytorch_outputs import *
-except Exception:
-    pass
-try:
     from .tensorrt_outputs import *
-except Exception:
-    pass
-try:
     from .vapoursynth_outputs import *
-except Exception:
-    pass
+
+# Each name the framework modules define, by its module.
+FRAMEWORK_OUTPUTS: dict[str, str] = {
+    "NcnnModelOutput": "ncnn_outputs",
+    "OnnxModelOutput": "onnx_outputs",
+    "ModelOutput": "pytorch_outputs",
+    "TorchScriptOutput": "pytorch_outputs",
+    "TensorRTEngineOutput": "tensorrt_outputs",
+    "VideoClipOutput": "vapoursynth_outputs",
+}
+
+
+def __getattr__(name: str) -> object:
+    """Imports a framework's outputs on first use. A framework that fails to import fails
+    the node module that uses it with the framework's error."""
+    module = FRAMEWORK_OUTPUTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(f".{module}", __name__), name)

@@ -54,7 +54,7 @@ def upscale(
             raise ValueError
 
         tiler = parse_tile_size_input(tile_size, estimate)
-        size_req = get_size_req(model)
+        size_req = get_size_req(model, session)
     else:
         tiler = ExactTileSize(exact_size)
         size_req = None

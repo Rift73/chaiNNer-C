@@ -8,7 +8,7 @@ Pre-SP1 history is readable at tag `chainner-c-checkpoint-20261001`.
 
 ```text
 Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle patches
-  -> owned Python/Sanic backend (backend/src): node registry, asyncio executor, HTTP + SSE
+  -> owned Python/Sanic backend (backend/src): node registry, native run engine, HTTP + SSE
      -> Python node contracts: schemas, validation, model objects
         -> chainner_native.dll  C17 kernels, ctypes C ABI v2 (GIL released during calls)
         -> _chainner_graph.pyd  C++20/pybind11: ONNX/NCNN graphs, tiling, codecs, video, utilities
@@ -23,12 +23,13 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 | Runtime ISA dispatch (scalar, AVX2 or AVX-512 per kernel; no CPU check beyond NumPy's x86-64-v2 baseline) | `native/src/isa.c` |
 | C ABI and kernels | `native/include/chainner.h`, `native/src/*.c`; bridges `backend/src/nodes/impl/native*.py` |
 | C++ modules | `native/src/graph_module.cpp` (pybind11 entry), `native/src/*.cpp`, `native/include/*.hpp` |
-| Executor | `backend/src/process.py` (the only executor), `backend/src/server.py` (worker app) |
+| Executor | The native run engine (section 4): `native/src/run/executor.cpp`, `backend/src/native_executor.py`, node ABI `native/include/run_engine.hpp`, entry points `native/src/run/nodes/*.cpp`; `backend/src/process.py` (the diagnostic oracle); `backend/src/server.py` (worker app) |
 | Scheduling and lifetime | `backend/src/nodes/impl/execution_scheduler.py`, `execution_cleanup.py`, `item_window.py`, `backend/src/api/lazy.py` |
 | Native CPU pool | `native/src/parallel.c`, `native/include/parallel.h` |
 | Mirrors' CRT math from the process's `ucrtbase.dll` (Consult 6 D-4; groups in the header) | `native/include/cn_crt_math.h`, `native/src/crt_math.c` |
 | Ownership, cache, events | `backend/src/nodes/impl/native_buffers.py`, `nodes/properties/outputs/numpy_outputs.py`, `chain/cache.py`, `nodes/impl/event_queue.py`, `nodes/impl/numpy_pool.py` (section 6) |
-| Resize and PNG | `backend/src/nodes/impl/native_resample.py`, `native/src/resample_filters.c`, `native/src/image_io.cpp`, `native/third_party/fpng` |
+| Resize and PNG | `backend/src/nodes/impl/native_resample.py`, `native/src/resample_filters.c`, `native/src/dpid_ops.c` (DPID), `native/src/image_io.cpp`, `native/src/png_encode.c` (`png_encode_avx2.c`; the default PNG encoder, with `native/third_party/libdeflate`) |
+| Image codecs and atomic writes (instant-exec lane I) | `native/cmake/codecs.cmake`, `native/src/codecs/*.c` (`native/include/image_codecs.h`), `native/src/image_decode.cpp`, `image_encode.cpp`, `image_preview.cpp`, `native/src/atomic_file.cpp`, `native/src/run/nodes/io.cpp`, `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}`; OpenEXR: `native/src/codecs/exr_codec.c`, `native/third_party/{openexr,imath,libdeflate,zstd,openjph}` |
 | Video | `native/src/video_io.cpp`, `backend/src/nodes/impl/video.py` |
 | Packaging | `native/tools/package_port.py`, `package_files.py`, `package_manifest.py` |
 | UI patches | `native/tools/independent_ui.py`, `native/tools/input-drop.json`, `native/tools/tensorrt-types.json`, `native/tools/tensorrt-clear.json`, `verify_*.cjs` |
@@ -79,7 +80,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
   all); a larger lease grows its slot and frees it on release. A lease never waits: a busy pool gives a temporary
   `malloc`. Resample's coefficients stay in its own slots.
 - `_chainner_graph.pyd`: C++20/pybind11 application logic: ONNX/NCNN graph parsing, optimization, conversion and
-  TensorProto work, model application and tiling control, scalar/random/text utilities, image I/O with fpng, execution
+  TensorProto work, model application and tiling control, scalar/random/text utilities, image I/O, execution
   helpers, file sequences, video I/O, clipboard. C++ exceptions are translated at the Python boundary;
   `native/include/graph_exception.hpp` preserves CPython's handled-exception state inside native catch blocks.
 - `chainner_ext.pyd` (`backend/src/chainner_ext/`) is chaiNNer-C's own C module since 2026-10-06, replacing the Rust
@@ -90,8 +91,8 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
   `pixel_art_tables.inc`, `tiling_control.hpp`.
 - Build (owner directive 2026-10-06; Consult 9): clang-cl, lld-link and llvm-lib of LLVM 23.1.2 only, under Ninja,
   with the Build Tools' MSVC 14.44 libraries and Windows SDK 10.0.26100 (`toolchain.cmake` pins them;
-  `CMakeLists.txt` refuses any other compiler). Every unit is baseline x86-64 code (the ISA units compiled for their level only, fpng for SSE4.1
-  and PCLMUL behind its own CPU check; `CHAINNER_C_MARCH` adds `-march` to local builds only) with ThinLTO, `/fp:strict`
+  `CMakeLists.txt` refuses any other compiler). Every unit is baseline x86-64 code (the ISA units compiled for their level only, the vendored
+  libraries' SIMD behind their own CPU checks; `CHAINNER_C_MARCH` adds `-march` to local builds only) with ThinLTO, `/fp:strict`
   (the kernels' FP-flag windows mirror `np.seterr` and the pool carries MXCSR, so FP operations may not move across
   them), dynamic denormals (kernels run under DAZ/FTZ too), `/Brepro` (no timestamps; no PDB in Release) and
   `-fmacro-prefix-map=<native>=.` (clang's MSVC mangling names an anonymous namespace by a hash of the main file's
@@ -111,6 +112,7 @@ Four pools. Only the native one is budgeted; the engines keep their defaults (se
 | Native `cn_parallel_for(count, grain)` | Windows threadpool; capacity = CPUs in the process affinity mask. `count <= grain` runs inline. A larger call runs `min(1 + (count - 1) / grain, 128)` chunks, a partition that depends on `(count, grain)` alone. The caller works on its own call; generic helpers join the active call with the fewest helpers and re-pick when the set of calls changes; a helper is admitted only while callers plus helpers fit the capacity. Every chunk runs under the caller's MXCSR. The DLL is never unloaded |
 | OpenCV internal pool | OpenCV defaults |
 | BLAS pool | NumPy's OpenBLAS defaults |
+| Native run engine | Workers, one per CPU of the affinity mask (`CHAINNER_C_ENGINE_THREADS`), shared by every run and preview; service threads for each run's driver, event pump, broadcaster and item-window producer, reused and ended after 30 s idle (`CHAINNER_C_ENGINE_IDLE_SECONDS`). At most 8 of them call Python at once (`CHAINNER_C_PYTHON_THREADS`, at most 1024) |
 
 Graph scheduling (`process.py` input gathering): consecutive eligible inputs are awaited together, up to 4 per
 `owned_gather`. Eligible means an eager, non-lazy edge whose upstream subgraph is pure CPU (`pure_cpu_dependency`:
@@ -172,6 +174,53 @@ and returns the object the input will receive, or None when the item does not ex
 nothing runs twice and no event moves. If a node looks ahead during item 0, K is decided there instead of at item 1.
 Elsewhere `iteration` is None. Its user is Upscale Image (VOSR).
 
+Native run engine (instant-exec, the default since 2026-10-19; `_chainner_graph.RunEngine` in
+`native/src/run/executor.cpp`, its plan and Python calls in `backend/src/native_executor.py`). It runs /run and
+/run/individual with process.Executor's semantics, which stays as the diagnostic oracle (`CHAINNER_C_EXECUTOR=python`,
+never a user setting; amendment A5). A driver thread per run follows process.Executor's control flow (generator groups
+one after another, items in order, each item's sinks then collectors, then the sinks outside loops one after another)
+and runs every node that may not run beside others (side effects, a context, a GPU, a lazy input) there, in today's
+order; it gathers a node's inputs as `__gather_inputs` does (up to four with pure-CPU upstreams together, all drained,
+the first error in input order). Pure nodes (`pure_cpu_node`) run on the workers as soon as their inputs are done,
+across branches and the items of the window; a sink outside a loop has only its own upstream computed ahead. A cell a
+worker runs before the commit path needs it (a prefetch, a window job) holds its events until the commit path takes
+it, so a failing run sends none for branches Python never runs. The item window keeps item_window.py's K, budget and
+read-ahead decision; a producer describes items serially and materializes them on the workers (Load Images; the
+native generators Range and Split Spritesheet through `ItemSource`), and sinks' prepare phases run there too. A
+look-ahead is served by pure nodes and by serial ones (any other node without a lazy input, when every error ends the
+loop), computed ahead on the driver one item at a time in order with their iteration view at that item; the slot a
+look-ahead waits for is produced up to its origin + K − 1. Native entry points take engine values (images on the NumPy
+pool) and decline to the Python body (`RunPython`) on a path they do not mirror; any C++ exception becomes the node's
+error as pybind11 would raise it, and an engine thread's own fault stops the run with it as the error. Events are
+built in C++, posted in batches by the pump and flushed before the run's result; broadcasts go latest-first per node,
+image data and LargeImage previews computed natively (`image_preview.cpp`). An individual run's node runs on the
+driver, its output (a native node's as a `RegularOutput`) read before anything releases it. `close()` joins the run's
+threads, then drops every Python reference the engine holds. Stop (`/kill`, or the request dropped): the run ends with
+its engine's end, or, a node still running after 0.5 s (a Python body or native kernel without an abort check), as
+Aborted at once (`NativeExecutor`; `/kill` well within the host's 3 s). That node's thread finishes in the background:
+no later node starts, its result is dropped (no event, no memo entry), its node cleanups and the run's chain cleanups
+run once after it, then the engine closes; the next run (or preview) is accepted at once and starts its nodes after
+that (with an `execution-warning` naming the node it waits for). A later Stop while that node still runs waits for it,
+as Stop did before, so a node that never returns exceeds the host's /kill timeout and the host restarts the worker. A
+late error of that node is logged with its traceback; the server's CUDA check and device-memory return wait for it; a
+run stopped before it started releases its references at once. The Python executor waits for the node
+(`await_owned_node`). Test: `native/tests/test_engine_stop.py`.
+
+Memo cache (amendment A3, in the same file). In-process outputs of allow-listed nodes (native nodes without side
+effects or a context, except Add Noise and Create Noise; 16 audited Python nodes listed in `native_executor.py` and
+`test_engine_memo.py`; Load Image keyed by its file's identity read as it runs, or, precached, the identity its
+individual run recorded; Load Images' items by their file's identity), keyed by schema, constant inputs, package
+settings (but the Result Cache's own) and upstream keys; a generator's per-run outputs only when they follow from its
+inputs alone (not Load Video's FPS, read from its file). Least recently used first out within a budget apart from the
+window's: the user setting Result Cache (Settings > Python > chaiNNer_standard: on/off, default on; Result Cache Size
+(MiB), default min(2 GiB, 10 % of RAM) to the MiB; `backend/src/nodes/impl/result_cache.py`), which each run applies
+at its start (`memo_set_budget`: a smaller size drops the entries above its eighth, then the least recently used until
+the rest fits; off drops every entry and keeps none). `CHAINNER_C_MEMO_BUDGET_MIB` (0 = off), read once per worker
+process, is a diagnostic override that wins over both settings. An entry counts each storage it keeps alive once and
+whole (a view keeps its parent), and one above a budget's eighth is not kept. A hit sends the events of a computed
+node. A dependency change restarts the worker process, which drops it. Tests: `native/tests/test_engine_{differential,scenarios,robustness,memo,
+server}.py` (`native/tools/engine_differential.py` compares both executors' outcomes, events, A6 order and files).
+
 A node's reported time (`node-finish`) is its own work: `timed_supplier` leaves out what its call spends in
 `util.waiting`, as the executor leaves out lazy inputs' evaluation. The waits so marked are those for other work: a
 peek, a TensorRT session's lock (`util.held`; the window runs the node for several items, each waiting its turn) and
@@ -198,11 +247,12 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
   alive through native calls and asynchronous writes. Keep no-op identities where required.
 - C ABI version and status checks stay; DLL/ABI failure is visible.
 - C++ runtime order: the first `msvcp140.dll` a process loads serves every module, and Pillow's
-  bundled 14.29 breaks newer Torch and ONNX Runtime builds (WinError 1114). The worker is safe by
-  one step: `packages/chaiNNer_pytorch/__init__.py` imports torch, which loads the system copy by
-  name, after `chaiNNer_standard` (no Pillow, no runtime yet) and before `load_nodes` imports any
-  node module. `test_runtime_dlls.py` pins both halves. The pytest process preloads the system copy
-  (`conftest.py`); child interpreters must not import Pillow before a framework.
+  bundled 14.29 breaks newer Torch and ONNX Runtime builds (WinError 1114). The worker loads the
+  system copy by its full path (`system.load_system_cpp_runtime`) before any node module: nothing up
+  to `import server` loads Pillow or a runtime, and its light node modules (Pillow's users) load
+  before the frameworks, in the background. `test_runtime_dlls.py` pins both halves. The pytest
+  process preloads the system copy (`conftest.py`); child interpreters must not import Pillow before
+  a framework or the preload.
 - Preserve arithmetic order for exact reductions and per-pixel work. Tolerances and corrections are
   only those in section 7; no blanket image tolerances.
 - Seeded generation and repeated identical pure operations stay reproducible. Execution Number,
@@ -218,9 +268,28 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
 - Video: persistent FFmpeg processes per stream; frame order and shape, partial writes, EOF and
   finalization, audio and codec settings preserved; graceful EOF, then bounded targeted
   termination; owned children reaped. No unconditional hard-shutdown bound is promised.
-- fpng: used only for default-option 8-bit 3/4-channel PNG within its bounds (each dimension
-  <= 65,535; filtered stream below `INT32_MAX - 1 MiB`). Grayscale, 16-bit, explicit codec options
-  or larger images keep the OpenCV encoder. A selected fpng failure is an error, never retried.
+- The default PNG encoder (owner decision 2026-10-21; `native/src/png_encode.c`, `cn_png_encode_u8`): every
+  default-option 8-bit PNG (grey, grey + alpha, BGR, BGRA; Save Image, the viewer, the UI previews) is filtered row by
+  row by libpng's MinSum rule (scalar and AVX2 units, the same bytes) and compressed by libdeflate level 6 in up to 32
+  row bands on the native pool (each band at least 16 KiB and 8 rows), each band an IDAT chunk of one zlib stream
+  (the vendored libdeflate's non-final pieces, `PROVENANCE.md`). The bytes depend on the image alone. Sides beyond
+  2^31 - 1, rows of 2^29 samples or more, 16-bit and explicit codec options keep OpenCV's encoder (its libpng settings,
+  vendored). A failure of the selected encoder is an error, never retried.
+- Native codecs: the libraries today's Pillow 12.3.0 and OpenCV 5.0.0 decode and encode with (libjpeg-turbo 3.1.4.1
+  JPEG8, libpng 1.6.57 with OpenCV's `pnglibconf.h`, classic zlib 1.3.2, libwebp 1.6.0, libtiff 4.7.1) are vendored and
+  called with their settings, so decoded arrays and saved bytes are today's. A native decoder or encoder takes only
+  what it mirrors exactly (Pillow's JPEG marker walk, imdecode's signature order, OpenCV's chunk walks and type
+  rules); anything else (a warning, an error, a variant not ported, MPO, APNG) declines to today's Python path, which
+  gives the result or the error. `CHAINNER_C_NATIVE_CODECS=0` is the diagnostic switch to today's path (the oracle of
+  `native/tests/test_native_codecs.py` and the git-ignored corpus in `native/local/codec-corpus`).
+- OpenEXR: the runtime's OpenCV is built without OpenEXR, so `.exr` (by signature, in the `cv` decoder and the engine's
+  Load Image) decodes through OpenEXRCore 3.5.2 (`exr_codec.c`; ZIP, PIZ, B44, DWA, HTJ2K, ZSTD and the rest; tiled,
+  multipart), even under `CHAINNER_C_NATIVE_CODECS=0`. It gives what OpenCV's ExrDecoder gives under IMREAD_UNCHANGED:
+  float32 (no clipping), BGR(A), the data window, part 0, level 0; two choices differ, Y with A loads as BGRA (OpenCV
+  gives two channels) and luminance/chroma uses OpenEXR's luminance weights (OpenCV uses the primaries' y). Chunks
+  decode in parallel on the native pool; a file it declines raises Load Image's error, as before.
+- File writers write `<final>.chainner-c-<pid>-<seq>.tmp` in the target folder and rename it (`MoveFileExW`, no
+  fsync); a final file with the same bytes is left untouched; failures raise what `open()` raises for the final path.
 - File traversal order, Unicode paths, overwrite/skip options, error continuation, final UI state
   and completion events are external contracts. So are schemas, names, controls and saved chains.
 
@@ -230,7 +299,7 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
 | --- | --- |
 | Output ownership | Weak, bounded provenance lets proven normalized read-only/native outputs and immutable bytes be borrowed (`normalized_readonly`); unknown writable aliases are still normalized or copied |
 | Counted cache | `OutputCache` reservations are consumed per actual edge, including the first computation; side-effect roots reserved separately; no full GC per expiry (the nightly delta also drops per-run `gc.collect()`) |
-| NumPy pool (SP4c) | `native/src/numpy_pool.cpp` in `_chainner_graph` is a NumPy data-memory handler that keeps freed blocks of 512 KiB or more warm: a request takes the smallest idle block whose capacity is in [size, 2 × size] (best fit), else a fresh `VirtualAlloc` block; smaller requests go to NumPy's default handler. Idle bytes are capped at min(512 MiB, 10 % of RAM), oldest released first (`CHAINNER_C_NUMPY_POOL`, README Bench). NumPy keeps its handler per thread, so `numpy_pool.install` runs on the worker's main thread before `app.run` and as `initializer=` of every worker `ThreadPoolExecutor` (`server.py`, `ffmpeg.py`, `web_ui.py`). Idle blocks are released at the end of `/run`, after an individual run's broadcasts are sent (a deferred task) and on `/clear-cache/individual`, the last two only while `ctx.executor is None`, so a preview or cache clear mid-run never empties the run's warm set. Load Video's frames are read into fresh NumPy buffers, so they pass through the handler too (D8). Only addresses change. A failed `/run` (and a stopped one) schedules one full `gc.collect()` after its handler returns and then releases the pool if no run executes (`collect_failed_run`); successful runs never collect. `await_owned_node` and `NodeFlights.run` drop their `future`/`task` locals in `finally`, so an eagerly read failed input frees by refcount |
+| NumPy pool (SP4c) | `native/src/numpy_pool.cpp` in `_chainner_graph` is a NumPy data-memory handler that keeps freed blocks of 512 KiB or more warm: a request takes the smallest idle block whose capacity is in [size, 2 × size] (best fit), else a fresh `VirtualAlloc` block; smaller requests go to NumPy's default handler. Idle bytes are capped at min(2 GiB, 10 % of RAM), oldest released first (`CHAINNER_C_NUMPY_POOL`, README Bench). NumPy keeps its handler per thread, so `numpy_pool.install` runs on the worker's main thread before `app.run` and as `initializer=` of every worker `ThreadPoolExecutor` (`server.py`, `ffmpeg.py`, `web_ui.py`). Idle blocks are released at the end of `/run`, after an individual run's broadcasts are sent (a deferred task) and on `/clear-cache/individual`, the last two only while `ctx.executor is None`, so a preview or cache clear mid-run never empties the run's warm set. Load Video's frames are read into fresh NumPy buffers, so they pass through the handler too (D8). Only addresses change. A failed `/run` (and a stopped one) schedules one full `gc.collect()` after its handler returns and then releases the pool if no run executes (`collect_failed_run`); successful runs never collect. `await_owned_node` and `NodeFlights.run` drop their `future`/`task` locals in `finally`, so an eagerly read failed input frees by refcount |
 | Events | `LatestBroadcasts`: one active computation and one latest pending preview per node. `LatestEventQueue` coalesces routine queued states, keeping control/error events, final state, acknowledgments, cancellation ownership and sequence metadata. `/run/individual` responds without waiting for its broadcasts, as upstream |
 | Generators, collectors | Blocking reads, writes and finalization run in owned workers; cheap Range/Accumulate paths stay inline |
 | Video transport | No redundant contiguous-frame copies; an owning read-only view is held until complete and short writes finish |
@@ -411,8 +480,9 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   2026-10-07 (g0 → {a, b} → join → save, 200 runs of 6 items, CPUs 28–31): upstream 1200 of 1200 items `sa fa sb fb`;
   the port at K = 1: 891 `sa sb fa fb`, 296 `sa sb fb fa`, 13 `sa fa sb fb`.
 - The normalize/enforce clamp follows `np.clip` on the tested stack (NumPy 2.5.3 `clip.cpp`: `x<min→min`, `x>max→max`; −0 and NaN payloads pass; under DAZ a denormal becomes the converted zero of its sign). On the 3.11 stack, NumPy 1.24.4 gave +0 for −0 and Task 3b1 (`602146a5`) mirrored that; U2 lane H restored B3's form when the stack moved.
-- Kept for the owner's record: default PNGs are encoded with fpng, pixel-identical to chaiNNer's but about 19 % larger
-  (7.97 → 9.51 MB for 32 files, VERIFIED 2026-10-04), a deliberate speed-for-size trade the owner may reverse. Composite's
+- Kept for the owner's record: default PNGs are chaiNNer-C's own (MinSum filter, libdeflate level 6 on row bands),
+  pixel-identical to chaiNNer's, 79 % of fpng's size on the owner's six sample frames and faster than fpng's default on
+  large images (2026-10-21; fpng, the encoder before, was about 19 % larger than chaiNNer's). Composite's
   full-overlap shortcut (SP4b Task 6) allocates nothing and succeeds where B3's region mallocs failed under memory exhaustion.
 - Widened annotations, annotation-only (Consult 14 D-31): where upstream annotates `ort.InferenceSession`, the
   backend's session parameters, returns and cache use the `OnnxSession` Protocol (`nodes/impl/onnx/session.py`:
@@ -452,8 +522,8 @@ Test tolerances (saved-image and runtime fixtures stay exact, but for the last r
 | Iterated items' broadcast types and values (runtime verifiers, Consult D-35) | Upstream on 3.14 broadcasts iterated items' types in timing-dependent order (CPython `_chain_future`); the UI may show either last item; the io verifier compares broadcast multisets, not last-wins, for these fields (the port's final value is one the oracle broadcast; `report.json` flags an oracle whose own attempts disagree). A same-side check that the port's final value equals its own last broadcast would be a tautology (the final state is the newest-wins merge of those broadcasts); the port's "latest pending" contract is pinned in the `LatestBroadcasts` unit tests instead (`test_execution_scheduler.py`, `test_execution_cleanup.py`; R3 M-1) |
 
 Not claimed: unchanged global Torch RNG state when alignment/face helpers are reused (reuse skips
-repeated random initialization); identical PNG bytes between fpng and OpenCV (compare decoded
-pixels); video container bytes (compare decoded frames, audio and metadata).
+repeated random initialization); identical PNG bytes between chaiNNer-C's PNG encoder and OpenCV, in files and
+previews (compare decoded pixels); video container bytes (compare decoded frames, audio and metadata).
 
 ## 8. Language policy
 
@@ -478,10 +548,10 @@ verified copy, lock probe, atomic replace) and `package_manifest.py` (schema, id
    download table) becomes `gR.gte(s.version,"3.14.0")`, so a shipped CPython 3.14.x is kept. A missing runtime, or
    one below 3.14, no longer takes upstream's branch that deletes it and downloads 3.11.5: it throws "chaiNNer-C's
    integrated Python is missing or older than 3.14; reinstall chaiNNer-C", which upstream's setup catch logs and
-   offers Retry, system Python or exit (Consult 2 Q6). Main shows chaiNNer-C's version (About `chaiNNer v0.3.6`, the
-   startup log `chaiNNer-C 0.3.6 (upstream 0.25.1-nightly.2025-10-21)`, system information `app.version` 0.3.6 plus
+   offers Retry, system Python or exit (Consult 2 Q6). Main shows chaiNNer-C's version (About `chaiNNer v0.3.7`, the
+   startup log `chaiNNer-C 0.3.7 (upstream 0.25.1-nightly.2025-10-21)`, system information `app.version` 0.3.7 plus
    `app.upstream`), drops the Release Notes item and leaves `app.getVersion()` upstream's, since it stamps saved chains
-   (Consult 2 Q5). The renderer replaces the update header with the logo, the title and a `v0.3.6` tag (no Alpha
+   (Consult 2 Q5). The renderer replaces the update header with the logo, the title and a `v0.3.7` tag (no Alpha
    badge; the manifest's `app_version` stays the upstream baseline), removes the update toggle and rejects
    release-API strings. The renderer then applies the 11 drop edits in `input-drop.json`
    (own baseline pin): directory drops with toasts, locked/connected guards for file and node drops, directory
@@ -528,9 +598,12 @@ another project generated.
 - `backend/src/nodes/impl/chainner_native.LICENSE.txt` carries every adaptation notice, file by file: chaiNNer-rs (MIT;
   2xSaI credit GPL, HQ tables LGPL), colortrans (MIT), OpenCV 4.8.0, Pillow 9.2.0, NumPy 1.24.4 (FreeBSD msun complex
   math in `ncnn_complex_math.hpp`), PyMatting (MIT), PyTorch TensorIterator stride order, resize crate 0.8.3,
-  zhang_hilbert 0.1.1, avx2_mathfun, CPython 3.11.5 `random.py`, pybind11 2.13.6, fpng 1.0.6 (Unlicense).
-- Vendored: `native/third_party/fpng` (`PROVENANCE.md`: hashes, Unlicense, size caps),
-  `native/third_party/pybind11`, `native/third_party/onnxruntime` (C API header, `LICENSE`).
+  mergian/dpid (BSD-3-Clause, `dpid_ops.c`), zhang_hilbert 0.1.1, avx2_mathfun, CPython 3.11.5 `random.py`, pybind11 2.13.6.
+- Vendored: `native/third_party/pybind11`, `native/third_party/onnxruntime` (C API header, `LICENSE`), and the image
+  codecs `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff,openexr,imath,libdeflate,zstd,openjph}`
+  (upstream sources, unchanged but for OpenEXRCore's one recorded line and libdeflate's recorded non-final-piece
+  patch, `PROVENANCE.md` with the release's SHA-256 and signature,
+  `chainner/` configuration headers; notices in `chainner_native.LICENSE.txt`).
 - Ported into `chainner_ext.pyd`: `native/third_party/chainner_ext`, `regex` and `regex-syntax` (MIT OR Apache-2.0) and
   `unicode` (the Unicode 15.0.0 tables' licence), each with its licence texts and `PROVENANCE.md`.
 - Vendored model code: `backend/src/vendor/vosr2` (VOSR 2.0's DiT, DINOv2 and Qwen-Image VAE definitions from

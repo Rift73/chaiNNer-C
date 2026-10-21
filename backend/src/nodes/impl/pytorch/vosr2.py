@@ -19,7 +19,7 @@ from vendor.vosr2.dinov2 import build_dinov2_vitl14
 from vendor.vosr2.lightningdit import LightningDiT
 from vendor.vosr2.qwenimage_vae2d import AutoencoderKLQwenImage2D
 
-from .resource_cache import file_identity
+from ...utils.utils import file_identity
 
 
 class VosrColorCorrection(Enum):

@@ -1,28 +1,32 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import gc
 import importlib
+import itertools
 import logging
 import os
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import uuid
+from collections.abc import Callable, Coroutine, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
-from json import dumps as stringify
 from pathlib import Path
-from typing import Final, TypedDict
+from typing import Any, Final, TypedDict
 
 import psutil
 from sanic import Sanic
 from sanic.log import access_logger, logger
 from sanic.request import Request
-from sanic.response import json
+from sanic.response import HTTPResponse, json
 
 import api
+import image_limits
 from api import (
     ExecutionOptions,
     Group,
@@ -34,11 +38,13 @@ from chain.chain import Chain, FunctionNode, GeneratorNode
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
 from dependencies.store import installed_packages
-from events import EventConsumer, EventQueue, ExecutionErrorData
+from events import EventConsumer, EventQueue, ExecutionErrorData, event_text
+from native_executor import NativeExecutor, ending_runs, executor_kind
 from nodes.impl import native, native_profile, numpy_pool
 from nodes.impl.cors import add_cors
 from nodes.impl.tensorrt import cache as tensorrt_cache
 from process import ExecutionId, Executor, NodeExecutionError, NodeOutput
+from process_temp import use_process_temp_folder
 from progress_controller import Aborted
 from response import (
     RESTART_WORKER_HEADER,
@@ -48,20 +54,258 @@ from response import (
     success_response,
 )
 from server_config import LOG_CONFIG, ServerConfig
+from system import load_system_cpp_runtime
+
+# Pillow's and OpenCV's image size limit, before any module imports cv2 (the node modules load later)
+image_limits.apply()
+# The VRAM offload's pinned RAM (nodes/impl/pytorch/offload.py) page-locked by 8 threads: a
+# first overflow's 15-18 GiB took about 1 s less. CUDA reads it at its start.
+os.environ.setdefault(
+    "PYTORCH_CUDA_ALLOC_CONF",
+    "pinned_use_cuda_host_register:True,pinned_num_register_threads:8",
+)
 
 POOL_SIZE = 8  # executor pool workers, each Executor's pool_size; item window P = max(1, POOL_SIZE - 2)
+
+# The packages in the order they register, which orders their categories.
+PACKAGES: Final = (
+    "chaiNNer_standard",
+    "chaiNNer_pytorch",
+    "chaiNNer_ncnn",
+    "chaiNNer_onnx",
+    "chaiNNer_tensorrt",
+    "chaiNNer_modelopt",
+    "chaiNNer_vapoursynth",
+    "chaiNNer_external",
+)
+# The packages whose node modules load first, so their nodes run while the frameworks
+# load: none of their modules imports a framework or another heavy library, except
+# HEAVY_MODULES (test_light_nodes.py checks both).
+LIGHT_PACKAGES: Final = ("chaiNNer_standard", "chaiNNer_external")
+HEAVY_MODULES: Final = frozenset(
+    {
+        "packages.chaiNNer_standard.image.create_images.create_noise",  # SciPy
+        "packages.chaiNNer_standard.image_channel.misc.alpha_matting",  # PyMatting
+    }
+)
+# The order the other node modules load in, a package at a time: PyTorch, the most
+# used framework (Load Model, Upscale Image), first; the standard package's last, as
+# PyMatting compiles its kernels (about 25 s) on a first start.
+HEAVY_ORDER: Final = (
+    "chaiNNer_pytorch",
+    "chaiNNer_ncnn",
+    "chaiNNer_onnx",
+    "chaiNNer_tensorrt",
+    "chaiNNer_modelopt",
+    "chaiNNer_vapoursynth",
+    "chaiNNer_external",
+    "chaiNNer_standard",
+)
+
+
+class RunTracker:
+    """The runs the worker serves (/run, /run/individual), for NodeLoading's one
+    gc.freeze, which is skipped while a run is in flight or once a run of a node outside
+    the light set has answered (its model may sit in the output cache, and frozen
+    objects are never collected). Updated by the request middleware on the loop thread;
+    the lock keeps a run from starting between the check and the freeze."""
+
+    ROUTES: Final = frozenset({"/run", "/run/individual"})
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.in_flight = 0
+        self.ran_heavy_node = False
+
+    def started(self) -> None:
+        with self.lock:
+            self.in_flight += 1
+
+    def answered(self, heavy: bool) -> None:
+        with self.lock:
+            self.in_flight -= 1
+            self.ran_heavy_node = self.ran_heavy_node or heavy
+
+    def freeze_blocker(self) -> str | None:
+        """Why the freeze must be skipped, or None. Call it holding the lock."""
+        if self.in_flight > 0:
+            return f"{self.in_flight} run(s) in flight"
+        if self.ran_heavy_node:
+            return "a run of a node outside the light set has completed"
+        return None
+
+
+class NodeLoading:
+    """How far the worker's node loading is. It runs beside serving: the packages and
+    their light node modules first, then the other node modules a package at a time.
+    Set by the loading thread, read by requests."""
+
+    def __init__(self) -> None:
+        # The packages are registered (their dependencies are known).
+        self.packages_registered = threading.Event()
+        # The packages are registered and the light node modules loaded.
+        self.light_loaded = threading.Event()
+        # The schema ids of the light nodes, once they have loaded.
+        self.light_schemata: frozenset[str] = frozenset()
+        # By package id: every node module of the package has loaded or failed.
+        self.package_loaded: dict[str, threading.Event] = {
+            name: threading.Event() for name in PACKAGES
+        }
+        # By package id: the node modules that failed to load.
+        self.errors: dict[str, list[api.LoadErrorInfo]] = {}
+        # Every package has loaded, or the loading failed.
+        self.done = threading.Event()
+
+    def package_of(self, schema_id: str) -> api.Package | None:
+        """The package a node most likely belongs to, by its schema id, which names one
+        of the package's categories ("chainner:pytorch:upscale_image")."""
+        if not self.light_loaded.is_set():
+            return None
+        parts = schema_id.split(":")
+        if len(parts) != 3:
+            return None
+        for package in api.registry.packages.values():
+            if any(category.id == parts[1] for category in package.categories):
+                return package
+        return None
+
+    def load_error(self, schema_id: str) -> str | None:
+        """Why the package of a node that is not registered failed to load, once it has;
+        None while it loads, or if its modules loaded."""
+        package = self.package_of(schema_id)
+        if package is None or not self.package_loaded[package.id].is_set():
+            return None
+        errors = self.errors.get(package.id)
+        if not errors:
+            return None
+        reasons = "; ".join(sorted({str(e.error) for e in errors})[:3])
+        return f"{schema_id} is not available: the {package.name} nodes failed to load ({reasons})."
+
+    def settled(self, schema_id: str) -> bool:
+        """Whether a node that is not registered is known not to come anymore."""
+        return self.done.is_set() or self.load_error(schema_id) is not None
+
+    def complete(self) -> bool:
+        """Whether every node module loaded, but those whose dependency is not
+        installed. A module that failed otherwise may load at the next start (torch
+        under memory pressure: WinError 1455), so the app does not cache this list."""
+        return not any(
+            not isinstance(error.error, ModuleNotFoundError)
+            for errors in self.errors.values()
+            for error in errors
+        )
+
+    def load(self, config: ServerConfig) -> None:
+        """Loads every package's nodes, setting the events as it goes, failures included.
+        Raises if config.error_on_failed_node and a node module failed, or if a node
+        failed its checks."""
+        try:
+            load_errors = self._load()
+            log_load_errors(load_errors)
+            if len(load_errors) > 0 and config.error_on_failed_node:
+                raise ValueError("Error importing nodes")
+        finally:
+            for loaded in self.package_loaded.values():
+                loaded.set()
+            self.packages_registered.set()
+            self.light_loaded.set()
+            self.done.set()
+
+    def _load(self) -> list[api.LoadErrorInfo]:
+        # Before any module that may load a C++ runtime (Pillow's).
+        try:
+            load_system_cpp_runtime()
+        except OSError as error:
+            logger.error(
+                f"Could not load the system C++ runtime (msvcp140.dll): {error}."
+                " PyTorch and ONNX Runtime may fail to load."
+            )
+        light, rest = register_packages()
+        self.packages_registered.set()
+        load_errors: list[api.LoadErrorInfo] = []
+
+        def load(name: str, batch: list[api.NodeModule]) -> None:
+            errors = api.registry.load_modules(batch)
+            self.errors.setdefault(name, []).extend(errors)
+            load_errors.extend(errors)
+
+        start = time.perf_counter()
+        logger.info("Loading Nodes...")
+        for name, batch in light.items():
+            load(name, batch)
+        self.light_schemata = frozenset(api.registry.nodes)
+        self.light_loaded.set()
+        for name in PACKAGES:
+            if not rest[name]:
+                self.package_loaded[name].set()
+        logger.info(
+            f"Loaded {len(api.registry.nodes)} nodes in"
+            f" {time.perf_counter() - start:.2f} s; loading the other nodes"
+        )
+
+        for name in HEAVY_ORDER:
+            if rest[name]:
+                try:
+                    load(name, rest[name])
+                finally:
+                    self.package_loaded[name].set()
+                logger.info(
+                    f"Loaded the {name} nodes after {time.perf_counter() - start:.2f} s"
+                )
+        self.freeze_objects()
+        return load_errors
+
+    def freeze_objects(self) -> None:
+        """Moves every object the start made (the modules, the node registry, the
+        frameworks' state) out of the collector's reach, once: each later full
+        collection (collect_failed_run, return_device_memory) then took about 0 ms
+        instead of 136-164 ms. Gate ruling R1 (native/reports/fable-decisions.md,
+        "instant-exec gate R1"): skipped, and never retried, while a run is in flight
+        or once a run of a node outside the light set has completed (RunTracker), as
+        their objects must stay collectable."""
+        with run_tracker.lock:
+            reason = run_tracker.freeze_blocker()
+            if reason is None:
+                gc.collect()
+                gc.freeze()
+        if reason is None:
+            logger.info(f"gc frozen: {gc.get_freeze_count()} objects")
+        else:
+            logger.info(f"freeze skipped: {reason}")
+
+
+def register_packages() -> tuple[
+    dict[str, list[api.NodeModule]], dict[str, list[api.NodeModule]]
+]:
+    """Registers the packages and splits each one's node modules (by package id) into
+    the light ones, which load first, and the others."""
+    for name in PACKAGES:
+        importlib.import_module(f"packages.{name}")
+    packages = {p.id: p for p in api.registry.packages.values()}
+    modules = {
+        name: api.registry.node_modules(__file__, packages[name]) for name in PACKAGES
+    }
+    light = {
+        name: [m for m in modules[name] if m.name not in HEAVY_MODULES]
+        for name in LIGHT_PACKAGES
+    }
+    rest = {
+        name: [m for m in modules[name] if m not in light.get(name, [])]
+        for name in PACKAGES
+    }
+    return light, rest
 
 
 class AppContext:
     def __init__(self):
         self.config: Final[ServerConfig] = ServerConfig.parse_argv()
-        self.executor: Executor | None = None
+        self.executor: Executor | NativeExecutor | None = None
         # A /run is in its handler: set before its first await (it waits for previews
         # before its executor exists), so a second /run is refused meanwhile.
         self.run_starting = False
         # Stop arrived while that /run waited for previews: it ends without running.
         self.run_stopped_early = False
-        self.individual_executors: dict[ExecutionId, Executor] = {}
+        self.individual_executors: dict[ExecutionId, Executor | NativeExecutor] = {}
         self.cache: dict[NodeId, NodeOutput] = {}
         # Increased from 4 to 8 workers for better parallelism in batch processing
         self.pool: Final[ThreadPoolExecutor] = ThreadPoolExecutor(
@@ -134,13 +378,80 @@ class ZeroCounter:
 
 run_individual_counter = ZeroCounter()
 
+run_tracker = RunTracker()
+node_loading = NodeLoading()
+
+
+def run_schema_ids(request: Request) -> list[str] | None:
+    """The schema ids a /run or /run/individual request runs, None if unreadable."""
+    try:
+        body = request.json
+        if request.path == "/run":
+            return [node["schemaId"] for node in body["data"]]
+        return [body["schemaId"]]
+    except Exception:
+        return None
+
+
+def track_run(
+    handler: Callable[[Request], Coroutine[Any, Any, HTTPResponse]],
+) -> Callable[[Request], Coroutine[Any, Any, HTTPResponse]]:
+    """Counts a /run or /run/individual handler as a run in flight (RunTracker) until it
+    ends, also when Sanic cancels it (a dropped request: how the app's Stop ends a /run),
+    which skips the response middleware."""
+
+    @functools.wraps(handler)
+    async def tracked(request: Request) -> HTTPResponse:
+        run_tracker.started()
+        try:
+            return await handler(request)
+        finally:
+            schema_ids = run_schema_ids(request)
+            run_tracker.answered(
+                schema_ids is None
+                or any(s not in node_loading.light_schemata for s in schema_ids)
+            )
+
+    return tracked
+
+
 setup_task = None
 close_task = None
 
 
 async def nodes_available():
+    """Waits until every node has loaded (or failed to): the node and package lists are
+    complete then. Shielded: a request given up while the nodes load (the worker serves
+    from its start) must cancel only itself, not the loading every later request waits
+    for."""
     if setup_task is not None:
-        await setup_task
+        await asyncio.shield(setup_task)
+
+
+async def wait_for_nodes(
+    schema_ids: Iterable[str], stopped: Callable[[], bool] = lambda: False
+) -> None:
+    """Waits until the nodes of `schema_ids` are registered, or known not to come: a run
+    issued while the worker starts waits for its nodes to load. A node whose package
+    failed to load raises ValueError with the package's error; a node no package has is
+    left to the caller. Returns early once `stopped()`."""
+    while True:
+        pending = [
+            schema_id
+            for schema_id in schema_ids
+            if schema_id not in api.registry.nodes
+            and not node_loading.settled(schema_id)
+        ]
+        if not pending or stopped():
+            break
+        await asyncio.sleep(0.01)
+    if stopped():
+        return
+    for schema_id in schema_ids:
+        if schema_id not in api.registry.nodes:
+            error = node_loading.load_error(schema_id)
+            if error is not None:
+                raise ValueError(error)
 
 
 access_logger.addFilter(SSEFilter())
@@ -150,6 +461,15 @@ access_logger.addFilter(SSEFilter())
 async def health(_request: Request):
     """Simple health check endpoint that doesn't require full setup"""
     return json({"status": "ok"})
+
+
+@app.route("/nodes/registered")
+async def registered_nodes(_request: Request):
+    """The schema ids of the nodes registered so far, and whether every node has loaded
+    (or failed to). The host reads it while the nodes load (announce_registered_nodes)."""
+    # Done first: once done, the list read after it is complete.
+    done = node_loading.done.is_set()
+    return json({"schemaIds": list(api.registry.nodes), "done": done})
 
 
 @app.route("/nodes")
@@ -190,6 +510,7 @@ async def nodes(_request: Request):
             "nodes": node_list,
             "categories": [x.to_dict() for x in api.registry.categories],
             "categoriesMissingNodes": [],
+            "complete": node_loading.complete(),
         }
     )
 
@@ -201,9 +522,9 @@ class RunRequest(TypedDict):
 
 
 @app.route("/run", methods=["POST"])
+@track_run
 async def run(request: Request):
     """Runs the provided nodes"""
-    await nodes_available()
     ctx = AppContext.get(request.app)
 
     if ctx.executor or ctx.run_starting:
@@ -227,13 +548,17 @@ async def run(request: Request):
             tracer.log_async = True
             tracer.start()
 
-        # wait until all previews are done
+        full_data: RunRequest = dict(request.json)  # type: ignore
+        # wait until the chain's nodes have loaded and all previews are done
+        await wait_for_nodes(
+            {node["schemaId"] for node in full_data["data"]},
+            lambda: ctx.run_stopped_early,
+        )
         await run_individual_counter.wait_zero()
         if ctx.run_stopped_early:
             logger.info("The run was stopped before it started.")
             return json(success_response(), status=200)
 
-        full_data: RunRequest = dict(request.json)  # type: ignore
         logger.debug(full_data)
         chain = parse_json(full_data["data"])
         optimize(chain)
@@ -249,7 +574,9 @@ async def run(request: Request):
                     ctx.cache.pop(node.id)
 
         logger.info("Running new executor...")
-        executor = Executor(
+        # CHAINNER_C_EXECUTOR: the native run engine or process.Executor (native_executor.py).
+        executor_class = NativeExecutor if executor_kind() == "native" else Executor
+        executor = executor_class(
             id=executor_id,
             chain=chain,
             send_broadcast_data=full_data["sendBroadcastData"],
@@ -283,6 +610,10 @@ async def run(request: Request):
             line = native_profile.log_line()
             if line is not None:
                 logger.info(line)
+            # The VRAM offload's pinned RAM (owner: given back when a run ends).
+            offload = sys.modules.get("nodes.impl.pytorch.offload")
+            if offload is not None:
+                offload.release_pinned_memory()
 
         return json(success_response(), status=200)
     except Exception as exception:
@@ -342,11 +673,16 @@ def collect_failed_run(ctx: AppContext) -> None:
     run schedules this with call_soon, so it runs once the handler has returned and
     dropped the exception. A successful run never collects: gc's only other use is
     return_device_memory, outside runs. The tensors the collection frees stay
-    reserved by PyTorch, so they go back to the driver too.
+    reserved by PyTorch, so they go back to the driver too. While a stopped run's node
+    still runs (and may queue CUDA work), the release waits for that run's end.
     """
     gc.collect()
-    # Not while a /run executes: it releases at its own end.
-    if ctx.executor is None:
+    # Not while a /run executes: it releases at its own end. Nor while a stopped run's
+    # node still runs (it may still queue CUDA work): once it ended.
+    ending = ending_runs()
+    if ctx.executor is None and ending:
+        release_after_ending(ctx, ending)
+    elif ctx.executor is None:
         numpy_pool.release()
         try:
             return_device_memory(collect=False)
@@ -374,9 +710,33 @@ def cuda_context_broken() -> bool:
     return False
 
 
+# The releases that wait for stopped runs' nodes (the loop keeps weak references to tasks).
+deferred_releases: set[asyncio.Future[None]] = set()
+
+
+def release_after_ending(ctx: AppContext, ending: list[asyncio.Task[None]]) -> None:
+    """collect_failed_run's release, once the stopped runs whose node still ran ended."""
+
+    async def release() -> None:
+        await asyncio.wait(ending)
+        if ctx.executor is None and not ending_runs():
+            numpy_pool.release()
+            try:
+                return_device_memory(collect=False)
+            except Exception as error:
+                logger.error("Could not return the GPU's memory: %s", error)
+
+    task = asyncio.ensure_future(release())
+    deferred_releases.add(task)
+    task.add_done_callback(deferred_releases.discard)
+
+
 def restart_headers() -> dict[str, str]:
     """The headers that ask the host to restart this worker when its CUDA context is
-    broken; none otherwise."""
+    broken; none otherwise, and none checked while a stopped run's node still runs
+    (its CUDA work would stall the loop's synchronize; its run's end collects)."""
+    if ending_runs():
+        return {}
     return {RESTART_WORKER_HEADER: "1"} if cuda_context_broken() else {}
 
 
@@ -388,58 +748,74 @@ class RunIndividualRequest(TypedDict):
 
 
 @app.route("/run/individual", methods=["POST"])
+@track_run
 async def run_individual(request: Request):
     """Runs a single node"""
-    await nodes_available()
     ctx = AppContext.get(request.app)
+    start = time.perf_counter()
     try:
         full_data: RunIndividualRequest = dict(request.json)  # type: ignore
         logger.debug(full_data)
 
         node_id = full_data["id"]
         ctx.cache.pop(node_id, None)
-
-        schema_data = api.registry.nodes.get(full_data["schemaId"])
-
-        if schema_data is None:
-            raise ValueError(
-                f"Invalid node {full_data['schemaId']} attempted to run individually"
-            )
-
-        node_data, _ = schema_data
-        if node_data.kind == "generator":
-            node = GeneratorNode(node_id, full_data["schemaId"])
-        elif node_data.kind == "regularNode":
-            node = FunctionNode(node_id, full_data["schemaId"])
-        else:
-            raise ValueError(
-                f"Invalid node kind {node_data.kind} attempted to run individually"
-            )
-        chain = Chain()
-        chain.add_node(node)
-
-        for index, i in enumerate(full_data["inputs"]):
-            chain.inputs.set(node_id, node.data.inputs[index].id, i)
-
-        # only yield certain types of events
-        queue = EventConsumer.filter(
-            ctx.queue, {"node-finish", "node-broadcast", "execution-error"}
-        )
-
-        execution_id = ExecutionId("individual-executor " + node_id)
-        executor = Executor(
-            id=execution_id,
-            chain=chain,
-            send_broadcast_data=True,
-            options=ExecutionOptions.parse(full_data["options"]),
-            loop=app.loop,
-            queue=queue,
-            storage_dir=ctx.storage_dir,
-            pool=ctx.pool,
-            pool_size=POOL_SIZE,
-        )
-
+        arrival = next(individual_arrivals)
+        latest_individual_arrival[node_id] = arrival
+        # Counted from before the wait for its node: a /run waits for every preview,
+        # also one still waiting for its node to load.
         with run_individual_counter:
+            await wait_for_nodes([full_data["schemaId"]])
+            if latest_individual_arrival.get(node_id) != arrival:
+                # A newer preview of this node arrived while this one waited for its node
+                # to load (an input changed): the waiters resume in no particular order,
+                # and only the newest may run, else it could be killed by this one and
+                # this one's output cached.
+                return json({"success": True, "data": None})
+            # The newest has passed its wait: an older one still waiting finds no entry
+            # and stops, so the entry goes (else one stays per node ever previewed).
+            del latest_individual_arrival[node_id]
+
+            schema_data = api.registry.nodes.get(full_data["schemaId"])
+
+            if schema_data is None:
+                raise ValueError(
+                    f"Invalid node {full_data['schemaId']} attempted to run individually"
+                )
+
+            node_data, _ = schema_data
+            if node_data.kind == "generator":
+                node = GeneratorNode(node_id, full_data["schemaId"])
+            elif node_data.kind == "regularNode":
+                node = FunctionNode(node_id, full_data["schemaId"])
+            else:
+                raise ValueError(
+                    f"Invalid node kind {node_data.kind} attempted to run individually"
+                )
+            chain = Chain()
+            chain.add_node(node)
+
+            for index, i in enumerate(full_data["inputs"]):
+                chain.inputs.set(node_id, node.data.inputs[index].id, i)
+
+            # only yield certain types of events
+            queue = EventConsumer.filter(
+                ctx.queue, {"node-finish", "node-broadcast", "execution-error"}
+            )
+
+            execution_id = ExecutionId("individual-executor " + node_id)
+            executor_class = NativeExecutor if executor_kind() == "native" else Executor
+            executor = executor_class(
+                id=execution_id,
+                chain=chain,
+                send_broadcast_data=True,
+                options=ExecutionOptions.parse(full_data["options"]),
+                loop=app.loop,
+                queue=queue,
+                storage_dir=ctx.storage_dir,
+                pool=ctx.pool,
+                pool_size=POOL_SIZE,
+            )
+
             try:
                 if execution_id in ctx.individual_executors:
                     # kill the previous executor (if any)
@@ -471,6 +847,12 @@ async def run_individual(request: Request):
                 release.add_done_callback(individual_releases.discard)
                 # gc.collect() removed - called after every individual node, too frequent
 
+        # From the request's arrival, a wait for the node to load included: the time
+        # from a launch to a startup chain's first preview reads from the log.
+        logger.info(
+            f"Individual run of {full_data['schemaId']} finished in"
+            f" {(time.perf_counter() - start) * 1000:.0f} ms"
+        )
         return json({"success": True, "data": None})
     except Exception as exception:
         logger.error(exception, exc_info=True)
@@ -479,9 +861,15 @@ async def run_individual(request: Request):
 
 # The deferred NumPy pool releases of /run/individual, held until they finish.
 individual_releases: set[asyncio.Task[None]] = set()
+# /run/individual's arrival numbers, and by node id the newest arrival's while it waits
+# for its node.
+individual_arrivals = itertools.count()
+latest_individual_arrival: dict[NodeId, int] = {}
 
 
-async def release_after_broadcasts(ctx: AppContext, executor: Executor) -> None:
+async def release_after_broadcasts(
+    ctx: AppContext, executor: Executor | NativeExecutor
+) -> None:
     """Releases the NumPy pool once an individual run's broadcasts are sent.
 
     The broadcasts free their temporaries when they finish; a release before that
@@ -535,8 +923,10 @@ def return_device_memory_after_burst(ctx: AppContext) -> None:
     def run() -> None:
         global device_memory_return
         device_memory_return = None
-        # Not while a /run executes: it releases at its own end.
-        if ctx.executor is None:
+        # Not while a /run executes: it releases at its own end. Nor while a stopped
+        # run's node still runs: the release waits for its GPU work (2.1 s of a stalled
+        # loop in a VRAM overflow), and release_after_ending returns the memory after it.
+        if ctx.executor is None and not ending_runs():
             return_device_memory()
 
     device_memory_return = asyncio.get_running_loop().call_later(
@@ -546,7 +936,6 @@ def return_device_memory_after_burst(ctx: AppContext) -> None:
 
 @app.route("/clear-cache/individual", methods=["POST"])
 async def clear_cache_individual(request: Request):
-    await nodes_available()
     ctx = AppContext.get(request.app)
     try:
         full_data = dict(request.json)  # type: ignore
@@ -567,7 +956,6 @@ async def clear_cache_individual(request: Request):
 @app.route("/pause", methods=["POST"])
 async def pause(request: Request):
     """Pauses the current execution"""
-    await nodes_available()
     ctx = AppContext.get(request.app)
 
     logger.info("Attempting to pause executor...")
@@ -588,7 +976,6 @@ async def pause(request: Request):
 @app.route("/resume", methods=["POST"])
 async def resume(request: Request):
     """Pauses the current execution"""
-    await nodes_available()
     ctx = AppContext.get(request.app)
 
     logger.info("Attempting to resume executor...")
@@ -609,17 +996,30 @@ async def resume(request: Request):
 @app.route("/kill", methods=["POST"])
 async def kill(request: Request):
     """Kills the current execution"""
-    await nodes_available()
     ctx = AppContext.get(request.app)
 
     logger.info("Attempting to kill executor...")
+    # Stopped runs whose node still runs (the native engine's): this Stop, a second one,
+    # waits for them as Stop waited before, so a node that never returns exceeds the
+    # host's /kill timeout and the host restarts the worker. A single Stop stays prompt.
+    ending = ending_runs()
+
+    async def after_ending() -> None:
+        if ending:
+            logger.info("Waiting for a stopped run's node to finish...")
+            await asyncio.wait(ending)
 
     if not ctx.executor:
         if ctx.run_starting:
             # A /run waiting for previews: it ends there instead of starting.
             ctx.run_stopped_early = True
             logger.info("Stopped a run that waited for previews.")
+            await after_ending()
             return json(success_response(), status=200)
+        if ending:
+            await after_ending()
+            logger.info("Killed executor.")
+            return json(success_response(), status=200, headers=restart_headers())
         logger.warning("No executor to kill.")
         return json(no_executor_response(), status=400)
 
@@ -627,6 +1027,7 @@ async def kill(request: Request):
         ctx.executor.kill()
         while ctx.executor:
             await asyncio.sleep(0.0001)
+        await after_ending()
         logger.info("Killed executor.")
         return json(success_response(), status=200, headers=restart_headers())
     except Exception as exception:
@@ -636,8 +1037,6 @@ async def kill(request: Request):
 
 @app.route("/status")
 async def status(_request: Request):
-    await nodes_available()
-
     ctx = AppContext.get(app)
 
     executor_status: str
@@ -657,13 +1056,23 @@ async def status(_request: Request):
 
 @app.route("/packages", methods=["GET"])
 async def get_packages(request: Request):
-    await nodes_available()
+    # The host reads only the dependencies, which the packages register before their
+    # nodes load; some node modules add settings.
+    if request.args.get("waitForNodes", "true") == "true":
+        await nodes_available()
+    else:
+        while not node_loading.packages_registered.is_set():
+            await asyncio.sleep(0.01)
 
     hide_internal = request.args.get("hideInternal", "true") == "true"
 
     packages = []
     for package in api.registry.packages.values():
         if package.name == "chaiNNer_standard" and hide_internal:
+            # The editor gets the standard package for its settings (the Result Cache)
+            # alone: without its built-in dependencies, as the dependency manager lists
+            # only a package with dependencies.
+            packages.append({**package.to_dict(), "dependencies": []})
             continue
 
         pkg_dependencies = []
@@ -735,26 +1144,10 @@ async def sse(request: Request):
 
     while True:
         message = await ctx.queue.get()
-        await response.send(
-            f"event: {message['event']}\ndata: {stringify(message['data'])}\n\n"
-        )
+        await response.send(event_text(message))
 
 
-async def import_packages(
-    config: ServerConfig,
-):
-    importlib.import_module("packages.chaiNNer_standard")
-    importlib.import_module("packages.chaiNNer_pytorch")
-    importlib.import_module("packages.chaiNNer_ncnn")
-    importlib.import_module("packages.chaiNNer_onnx")
-    importlib.import_module("packages.chaiNNer_tensorrt")
-    importlib.import_module("packages.chaiNNer_modelopt")
-    importlib.import_module("packages.chaiNNer_vapoursynth")
-    importlib.import_module("packages.chaiNNer_external")
-
-    logger.info("Loading Nodes...")
-
-    load_errors = api.registry.load_nodes(__file__)
+def log_load_errors(load_errors: list[api.LoadErrorInfo]) -> None:
     if len(load_errors) > 0:
         import_errors: list[api.LoadErrorInfo] = []
         for e in load_errors:
@@ -786,8 +1179,12 @@ async def import_packages(
                     l = "\n".join("  ->  " + m for m in modules)
                     logger.warning(f"{error}  ->  {count} modules ...\n{l}")
 
-        if config.error_on_failed_node:
-            raise ValueError("Error importing nodes")
+
+async def import_packages(config: ServerConfig):
+    """Loads every package's nodes in a thread of its own, so the worker serves from its
+    start: runs of the nodes that have loaded go ahead, the others wait for theirs
+    (wait_for_nodes)."""
+    await asyncio.to_thread(node_loading.load, config)
 
 
 async def setup(sanic_app: Sanic):
@@ -809,8 +1206,7 @@ async def close_server(sanic_app: Sanic):
         exit_code = 1
 
     # Sanic 25 serves only after the after_server_start listeners return, and loses
-    # a stop requested before that. Setup's imports never yield, so it can finish
-    # first.
+    # a stop requested before that. Setup can finish first.
     while not sanic_app.state.is_running:
         await asyncio.sleep(0.01)
 
@@ -832,6 +1228,16 @@ async def after_server_start(sanic_app: Sanic):
     # start task to close the server
     if ctx.config.close_after_start:
         close_task = loop.create_task(close_server(sanic_app))
+
+
+@app.after_server_stop
+async def after_server_stop(_sanic_app: Sanic):
+    # Load Video's Preview keeps each node's video open between its runs, so stepping
+    # through frames needs no new seek; the readers close here. Never imports the video
+    # module: without Load Video's node module loaded, no reader was opened.
+    video = sys.modules.get("nodes.impl.video")
+    if video is not None:
+        video.close_previews()
 
 
 def exit_with_host(pid: int) -> None:
@@ -861,11 +1267,14 @@ def main():
         ).start()
     # numba (PyMatting's cache=True kernels) otherwise writes its cache beside the
     # runtime's site-packages. numba reads the variable when it is first imported, and
-    # the node modules that import it load in setup, after this.
+    # the node modules that import it load in setup's thread, after this.
     os.environ["NUMBA_CACHE_DIR"] = str(ctx.storage_dir / "numba-cache")
     # The VapourSynth package keeps its function catalog, user functions and overlays
     # there; it reads the variable when its node modules load, in setup.
     os.environ["CHAINNER_VS_DIR"] = str(ctx.storage_dir / "vapoursynth")
+    # Temporary files go to a folder of this worker's own; the folders of workers that
+    # ended without removing theirs are removed.
+    use_process_temp_folder(ctx.storage_dir)
     # Before the event loop exists: its tasks copy this thread's context.
     numpy_pool.install()
     app.run(port=config.port, single_process=True)

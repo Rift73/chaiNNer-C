@@ -1,6 +1,7 @@
 #include "chainner.h"
 #include "convolution_shared.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include <limits.h>
 #include <stdlib.h>
 

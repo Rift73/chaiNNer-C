@@ -65,6 +65,7 @@ def ResizeFilterInput() -> DropDownInput:
             ResizeFilter.BOX: "Area (Box)",
             ResizeFilter.CATROM: "Cubic",
             ResizeFilter.BSPLINE: "B-Spline",
+            ResizeFilter.DPID: "DPID (detail-preserving)",
         },
     )
 

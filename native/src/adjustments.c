@@ -1,6 +1,7 @@
 #include "chainner.h"
 #include "cn_crt_math.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include "numpy_clip_f32.h"
 #include <math.h>
 

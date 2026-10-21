@@ -9,16 +9,16 @@ import { log } from '../../common/log';
 
 export type BackendEventSource = EventSource & { readonly __backend?: never };
 
+/**
+ * The backend's execution events, connected once the backend accepts requests: EventSource
+ * would try a failed connection again only after a few seconds. The execution events of runs
+ * started earlier wait in the backend. (Its setup events: BackendContext's setupEventSource.)
+ */
 export const useBackendEventSource = (
-    url: string
+    url: string,
+    isBackendReady: boolean
 ): readonly [BackendEventSource | null, EventSourceStatus] => {
-    return useEventSource(`${url}/sse`, true);
-};
-
-export const useBackendSetupEventSource = (
-    url: string
-): readonly [BackendEventSource | null, EventSourceStatus] => {
-    return useEventSource(`${url}/setup-sse`, true);
+    return useEventSource(isBackendReady ? `${url}/sse` : '', true);
 };
 
 export type BackendEventSourceListener<T extends keyof BackendEventMap> = (

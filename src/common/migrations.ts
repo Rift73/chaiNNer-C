@@ -2088,6 +2088,38 @@ const splitLoadImagePairs: ModernMigration = (data) => {
     return data;
 };
 
+const loadVideoFrames: ModernMigration = (data) => {
+    // Load Video's Use limit and Limit (inputs 1 and 2) became Frames (10): a limit of N frames
+    // is the Range 0..N-1 (In 11, Out 12), and no limit (or no input 1, as in older chains) is All.
+    const loadVideoIds = new Set<string>();
+    data.nodes.forEach((node) => {
+        if (node.data.schemaId === 'chainner:image:load_video') {
+            loadVideoIds.add(node.id);
+            const inputData = node.data.inputData;
+
+            const useLimit = Boolean(Number(inputData[1] ?? 0));
+            if (useLimit) {
+                inputData[10] = 'range';
+                inputData[11] = 0;
+                inputData[12] = Number(inputData[2] ?? 10) - 1;
+            } else {
+                inputData[10] = 'all';
+            }
+            delete inputData[1];
+            delete inputData[2];
+        }
+    });
+
+    // an edge into Limit has no input left to go to
+    data.edges = data.edges.filter((edge) => {
+        if (!loadVideoIds.has(edge.target) || !edge.targetHandle) return true;
+        const { inputId } = parseTargetHandle(edge.targetHandle);
+        return inputId !== 1 && inputId !== 2;
+    });
+
+    return data;
+};
+
 // ==============
 
 const versionToMigration = (version: string) => {
@@ -2150,6 +2182,7 @@ const migrations = [
     saveVideoAdvancedModeMigration,
     newIteratorToGenerator,
     splitLoadImagePairs,
+    loadVideoFrames,
 ];
 
 export const currentMigration = migrations.length;

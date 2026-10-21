@@ -15,6 +15,7 @@ from spandrel import (
 from api.node_context import NodeContext
 from nodes.impl.native_analysis import mean as native_mean
 from nodes.impl.native_tensors import interpolate_torch
+from nodes.impl.pytorch.skip_init import skip_random_init
 from nodes.impl.pytorch.utils import np2tensor, tensor2np
 from nodes.properties.inputs import ModelInput, SliderInput
 from nodes.properties.outputs import ModelOutput, NumberOutput
@@ -113,7 +114,8 @@ def interpolate_models_node(
         )
     if state_dict is None:
         state_dict = perform_interp(state_a, state_b, amount)
-    model = ModelLoader(pytorch_device).load_from_state_dict(state_dict)
+    with skip_random_init():
+        model = ModelLoader(pytorch_device).load_from_state_dict(state_dict)
     # As Load Model does: Convert To ONNX traces the weights as constants, which
     # must not require grad.
     model.model.requires_grad_(False)
@@ -121,7 +123,10 @@ def interpolate_models_node(
 
 
 def _check_interp_state(interp_50: dict):
-    model_descriptor = ModelLoader(torch.device("cpu")).load_from_state_dict(interp_50)
+    with skip_random_init():
+        model_descriptor = ModelLoader(torch.device("cpu")).load_from_state_dict(
+            interp_50
+        )
     size = max(model_descriptor.size_requirements.minimum, 3)
     size = size + size % model_descriptor.size_requirements.multiple_of
     assert isinstance(size, int), "min_size_restriction must be an int"

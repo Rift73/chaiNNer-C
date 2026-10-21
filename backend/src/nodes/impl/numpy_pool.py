@@ -1,7 +1,7 @@
 """CHAINNER_C_NUMPY_POOL (SP4c): the pyd's NumPy data-memory handler, per thread.
 
 The pyd reads the variable once, at the first install: unset or empty = installed
-with the default cap, min(512 MiB, 10 % of physical memory); 0 = not installed, so
+with the default cap, min(2 GiB, 10 % of physical memory); 0 = not installed, so
 NumPy's default handler serves every request exactly as before SP4c; other ASCII
 digits = installed with that cap in MiB. Any other value, or a NumPy without the
 handler API, leaves the handler uninstalled, with one warning per process.

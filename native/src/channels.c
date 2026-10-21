@@ -1,18 +1,11 @@
 /* Channel assembly and image layout kernels. SPDX-License-Identifier: GPL-3.0-only */
 #include "chainner.h"
 #include "parallel.h"
+#include "run_kernels.h"
 
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* A null source denotes a constant channel. The Python boundary owns every
- * source buffer until the synchronous parallel call returns. */
-typedef struct cn_channel_source {
-    const float *data;
-    size_t channels, channel;
-    float constant;
-} cn_channel_source;
 
 static cn_status image_size(size_t height, size_t width, size_t channels)
 {

@@ -34,6 +34,7 @@
  */
 #include "chainner.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include "numeric.h"
 #include "separable.h"
 #include "separable_shared.h"

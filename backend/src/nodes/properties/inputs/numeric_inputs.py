@@ -4,7 +4,7 @@ import math
 from typing import Literal, Union
 
 import navi
-from api import BaseInput, InputConversion, InputKind
+from api import BaseInput, InputConversion, InputId, InputKind, OutputId
 
 from ...utils.utils import round_half_up
 from .label import LabelStyle, get_default_label_style
@@ -170,4 +170,47 @@ class SliderInput(NumberInput):
             "sliderStep": self.slider_step,
             "gradient": self.gradient,
             "scale": self.scale,
+        }
+
+
+class VideoSeekInput(NumberInput):
+    """A video node's seek bar: the number of a frame in the video (0 is the first).
+
+    The app's seek bar spans the node's Frame Count output and steps by its FPS output (both
+    as the node's last run reported them), and its In and Out buttons set the node's frame
+    range: `frames_input` (an enum with the values "all" and "range") to "range" and
+    `in_input` or `out_input` to the frame. It has no handle."""
+
+    def __init__(
+        self,
+        label: str,
+        *,
+        frames_input: InputId | int,
+        in_input: InputId | int,
+        out_input: InputId | int,
+        frame_count_output: OutputId | int,
+        fps_output: OutputId | int,
+    ):
+        super().__init__(
+            label,
+            default=0,
+            min=0,
+            max=None,
+            kind="video-seek",
+            has_handle=False,
+        )
+        self.frames_input = InputId(frames_input)
+        self.in_input = InputId(in_input)
+        self.out_input = InputId(out_input)
+        self.frame_count_output = OutputId(frame_count_output)
+        self.fps_output = OutputId(fps_output)
+
+    def to_dict(self):
+        return {
+            **super().to_dict(),
+            "framesInput": self.frames_input,
+            "inInput": self.in_input,
+            "outInput": self.out_input,
+            "frameCountOutput": self.frame_count_output,
+            "fpsOutput": self.fps_output,
         }

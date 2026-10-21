@@ -95,7 +95,7 @@ def graph(
         save["inputs"][1]["value"] = str(output)
         return _allowed(nodes), 256, "images/s"
     if case.startswith("video-"):
-        nodes = [node("load", "load_video", {0: str(assets / "moving.mkv"), 1: 0})]
+        nodes = [node("load", "load_video", {0: str(assets / "moving.mkv")})]
         source = edge("load")
         if case == "video-resize-h264":
             nodes.append(

@@ -28,6 +28,7 @@
  */
 #include "chainner.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include <float.h>
 #include <math.h>
 #include <stdlib.h>

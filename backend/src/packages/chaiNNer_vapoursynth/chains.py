@@ -3,6 +3,7 @@ chain's compiled script, and the named clips of Preview Clips and Save Script.""
 
 from __future__ import annotations
 
+import os
 import re
 import stat
 import time
@@ -14,6 +15,7 @@ from sanic.log import logger
 from api import MB, BaseInput, NestedGroup, NodeContext
 from nodes.condition import Condition
 from nodes.groups import if_group, optional_list_group
+from nodes.impl.native_graph import graph
 from nodes.impl.vapoursynth.script import VideoClip, compile_script
 from nodes.properties.inputs import TextInput, VideoClipInput
 
@@ -75,9 +77,11 @@ def remove_old_videos(storage: Path | None) -> None:
 def write_script(
     context: NodeContext, outputs: Sequence[tuple[VideoClip, str]], path: Path
 ) -> Path:
-    """Writes the script of `outputs` (output i = the i-th (clip, name) pair) to path."""
+    """Writes the script of `outputs` (output i = the i-th (clip, name) pair) to path,
+    through a temporary file in its folder (native/include/atomic_file.hpp): the bytes
+    path.write_text(script, encoding="utf-8") wrote, an equal file left untouched."""
     script = compile_script(outputs, cache_mb=get_settings(context).cache_mb)
-    path.write_text(script, encoding="utf-8")
+    graph().atomic_write(path, script.replace("\n", os.linesep).encode("utf-8"))
     return path
 
 

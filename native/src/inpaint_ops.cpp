@@ -44,6 +44,7 @@
  * source reads are explicitly clamped, correcting the original undefined reads.
  */
 #include "repair_buffers.hpp"
+#include "run_kernels.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>

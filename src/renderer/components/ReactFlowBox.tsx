@@ -520,6 +520,9 @@ export const ReactFlowBox = memo(({ wrapperRef, nodeTypes, edgeTypes }: ReactFlo
                 maxZoom={8}
                 minZoom={0.125}
                 multiSelectionKeyCode={multiSelectionKeyCode}
+                // a drag starts once the pointer moves, so a click on a node is not a drag
+                // and does not count as a chain change
+                nodeDragThreshold={1}
                 nodeTypes={nodeTypes}
                 nodes={displayNodes}
                 snapGrid={useMemoArray<[number, number]>([snapToGridAmount, snapToGridAmount])}

@@ -9,7 +9,7 @@ import {
 } from '../types/function';
 import { nullType } from '../types/util';
 import { EMPTY_MAP } from '../util';
-import { EdgeState } from './EdgeState';
+import { EdgeState, EdgeStateConnection } from './EdgeState';
 import type { Edge, Node } from 'reactflow';
 
 const assignmentErrorEquals = (
@@ -57,6 +57,15 @@ const instanceEqual = (a: FunctionInstance, b: FunctionInstance): boolean => {
 
     return true;
 };
+
+const connectionEqual = (a: EdgeStateConnection, b: EdgeStateConnection): boolean =>
+    a.source === b.source &&
+    a.sourceHandle === b.sourceHandle &&
+    a.target === b.target &&
+    a.targetHandle === b.targetHandle;
+const edgeStateEqual = (a: EdgeState, b: EdgeState): boolean =>
+    mapEqual(a.byTargetHandle, b.byTargetHandle, connectionEqual) &&
+    mapEqual(a.byTarget, b.byTarget, (x, y) => arrayEqual(x, y, connectionEqual));
 
 export class TypeState {
     readonly functions: ReadonlyMap<string, FunctionInstance>;
@@ -166,6 +175,21 @@ export class TypeState {
 
         for (const n of nodesMap.values()) {
             addNode(n);
+        }
+
+        // Nothing the types depend on changed (e.g. a node only moved): the previous state,
+        // so that everything that depends on it keeps its work.
+        if (
+            previousTypeState &&
+            mapEqual(functions, previousTypeState.functions, (a, b) => a === b) &&
+            mapEqual(
+                evaluationErrors,
+                previousTypeState.evaluationErrors,
+                (a, b) => a.message === b.message
+            ) &&
+            edgeStateEqual(edges, previousTypeState.edges)
+        ) {
+            return previousTypeState;
         }
 
         return new TypeState(functions, evaluationErrors, edges);

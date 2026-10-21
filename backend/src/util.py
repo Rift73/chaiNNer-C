@@ -30,6 +30,12 @@ def waiting() -> Iterator[None]:
         _waited.seconds += time.perf_counter() - start
 
 
+def waited_seconds() -> float:
+    """The seconds this thread has spent `waiting` so far: the run engine reads it
+    around a node's body, as `timed_supplier` does."""
+    return _waited.seconds
+
+
 @contextmanager
 def held(lock: threading.Lock) -> Iterator[None]:
     """Hold `lock`; the wait for it is `waiting`."""

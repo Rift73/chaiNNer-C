@@ -10,9 +10,10 @@ from typing import Callable, Iterable, Union
 import cv2 as cv2
 import numpy as np
 import pillow_avif  # type: ignore # noqa: F401
-from PIL import Image, TiffImagePlugin
+from PIL import TiffImagePlugin
 from sanic.log import logger as logger
 
+import image_limits
 from nodes.impl.dds.texconv import read_dds_texconv as read_dds_texconv
 from nodes.impl.image_formats import get_available_image_formats
 from nodes.impl.image_formats import get_opencv_formats as get_opencv_formats
@@ -24,6 +25,9 @@ from nodes.utils.utils import get_h_w_c as get_h_w_c
 from nodes.utils.utils import split_file_path as split_file_path
 
 from .. import io_group
+
+# Pillow with the image-size limit, which read_pil and the native Pillow routes read live.
+Image = image_limits.pil_image()
 
 # Pillow builds its plugin registry on first use, and an open() racing another thread's
 # init() can fail to identify a valid file. Load Images decodes items in parallel
@@ -72,8 +76,12 @@ def _read_tiff_straight_alpha(path: Path) -> np.ndarray | None:
     loads as BGRA with the grey in B, G and R, as OpenCV loads a grey+alpha PNG. The
     stored pixels are turned once, by the shared orient(), as the Orientation tag says;
     every other TIFF stays with OpenCV. Pillow cannot open 16-bit grey+alpha, which
-    OpenCV loads as 8-bit grey: a warning says so.
+    OpenCV loads as 8-bit grey: a warning says so. The plainest of these files decode
+    natively to the same array (image_io.cpp read_tiff_alpha); None runs Pillow.
     """
+    native = graph().image_io_read_tiff_alpha(globals(), path)
+    if native is not None:
+        return native
     with open(path, "rb") as file:
         header = file.read(8)
         if header[2:3] == b"\x2b":  # BigTIFF, as Pillow reads its header

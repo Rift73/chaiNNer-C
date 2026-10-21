@@ -50,6 +50,20 @@
     "text": {
       "copyText": "Copy Text",
       "paste": "Paste"
+    },
+    "videoSeek": {
+      "firstFrame": "First frame (Home)",
+      "frameBack": "Previous frame (Left)",
+      "frameForward": "Next frame (Right)",
+      "in": "In",
+      "lastFrame": "Last frame (End)",
+      "out": "Out",
+      "runThisFrame": "Run this frame",
+      "secondBack": "Back 1 second (Shift+Left)",
+      "secondForward": "Forward 1 second (Shift+Right)",
+      "setIn": "Start the frame range here",
+      "setOut": "End the frame range here",
+      "waitingForVideo": "The seek bar works once the node has read the video."
     }
   },
   "outputs": {

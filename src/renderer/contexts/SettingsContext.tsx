@@ -1,5 +1,5 @@
 import { useColorMode } from '@chakra-ui/react';
-import React, { SetStateAction, memo, useCallback, useEffect, useState } from 'react';
+import React, { SetStateAction, memo, useCallback, useEffect, useRef, useState } from 'react';
 import { createContext } from 'use-context-selector';
 import { log } from '../../common/log';
 import { ChainnerSettings, defaultSettings } from '../../common/settings/settings';
@@ -35,17 +35,15 @@ export const SettingsProvider = memo(
             ...defaultSettings,
             ...initialSettings,
         }));
-        const [updateCounter, setUpdateCounter] = useState(0);
 
+        // setters that change nothing keep the settings object, so nothing re-renders or is saved
         const updateSettings: SettingsContextValue['updateSettings'] = useCallback((update) => {
             setSettings((prev) => {
-                if (typeof update === 'function') {
-                    // eslint-disable-next-line no-param-reassign
-                    update = update(prev);
-                }
-                return { ...prev, ...update };
+                const changes = typeof update === 'function' ? update(prev) : update;
+                const keys = Object.keys(changes) as (keyof ChainnerSettings)[];
+                if (keys.every((key) => prev[key] === changes[key])) return prev;
+                return { ...prev, ...changes };
             });
-            setUpdateCounter((prev) => prev + 1);
         }, []);
 
         const setSetting: SettingsContextValue['setSetting'] = useCallback((key, update) => {
@@ -55,13 +53,14 @@ export const SettingsProvider = memo(
                 if (oldValue === newValue) return prev;
                 return { ...prev, [key]: newValue };
             });
-            setUpdateCounter((prev) => prev + 1);
         }, []);
 
+        const savedSettingsRef = useRef(settings);
         useEffect(() => {
-            if (updateCounter === 0) return;
+            if (savedSettingsRef.current === settings) return;
+            savedSettingsRef.current = settings;
             ipcRenderer.invoke('set-settings', settings).catch(log.error);
-        }, [settings, updateCounter]);
+        }, [settings]);
 
         // update theme
         const { setColorMode } = useColorMode();

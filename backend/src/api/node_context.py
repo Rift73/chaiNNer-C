@@ -149,9 +149,24 @@ class IterationView(ABC):
     @abstractmethod
     def index(self) -> int:
         """
-        The index of the item the node runs for: 0 for the loop's first item, then one more
-        per item, an item that failed (a generator that defers errors) included.
+        The index of the item the node runs for: the loop's index base for its first item
+        (the generators' shared Generator.index_base, else 0: Load Video's Range starts at
+        In), then one more per item, an item that failed (a generator that defers errors)
+        included. Context items before the range (see `context`) come first, numbered
+        base - before .. base - 1, so the node sees one sequence through them.
         """
+
+    @property
+    def context(self) -> bool:
+        """
+        True on a context item before the loop's range: a neighbour a temporal node needs
+        (NodeData.temporal_context) that the generator reads only for it. Only the loop's
+        temporal nodes and the nodes they need run for it; its outputs are discarded, so a
+        node only updates its state. Never saved, collected, broadcast or counted in the
+        progress. The items after the range are never committed: they are only served to
+        `peek`.
+        """
+        return False
 
     @property
     @abstractmethod
@@ -202,10 +217,11 @@ class IterationView(ABC):
         the loop or by a generator's non-iterated output, or by a node the window never
         computes ahead (a GPU node, a node with side effects or a context, ...).
 
-        The window's K is decided once per loop run: at item 1, or when a node of the group
-        first looks ahead (lookahead or peek) during item 0. A writer whose output directory
-        comes from a node that has not run yet by then counts as unresolved, so K is 1 when a
-        generator of the group reads files per item.
+        The window's K is decided once per loop run: at the range's second item (item 1
+        without context items), or when a node of the group first looks ahead (lookahead or
+        peek) before it, during a context item or the range's first item. A writer whose
+        output directory comes from a node that has not run yet by then counts as
+        unresolved, so K is 1 when a generator of the group reads files per item.
 
         Like `peek`, call it from the node's own call, never from the event loop's thread.
         """
@@ -242,6 +258,16 @@ class NodeContext(Progress, ABC):
         The generator loop that runs the node once per item, while it runs an item on the
         loop's commit path; None outside a generator loop, for generators and collectors,
         and for a node the item window computes ahead of the loop.
+        """
+        return None
+
+    @property
+    def chosen_item(self) -> int | None:
+        """
+        The item's number when the node's generator loop runs exactly one chosen item
+        (Generator.chosen_item: Load Video's "Run this frame"), for the loop's nodes and
+        collectors, as long as the run lasts; None otherwise, for a loop of several zipped
+        generators, and outside a loop.
         """
         return None
 

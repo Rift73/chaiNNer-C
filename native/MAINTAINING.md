@@ -77,6 +77,11 @@ Checklists for the changes that touch the exactness contract, the build or the p
    `CMakeLists.txt`. After a change there (an SDK bump, a GPU architecture, an nvcc flag), build it twice from clean
    directories (same hash), load it (`import tensorrt`, then `ctypes.CDLL`), record its hash and SDK versions in the
    README table and run `native/tests/test_vosr2_trt_rewrite.py`. A new DLL rebuilds the VOSR TensorRT engines once.
+   The same exception covers legacy DRFT's plugin library `drft_trt_plugins.dll`: nvcc compiles the four `.cu` files
+   of `src/drft` (Codex's kernels and plugin classes) the same way, with nvcc's default device math (Codex's
+   numerics) and host warnings not fatal (README); the same checks apply, with `native/tests/test_drft_plugins.py`.
+   Engines reference its plugins without carrying the DLL (an engine carrying it registers it at every load, and
+   TensorRT refuses a second registration in a process); `drft.load_plugins` registers it once per process.
 
 ## 5. Any UI change
 
@@ -114,9 +119,10 @@ packaging (section 4, item 6; README Build). VOSR's modules, engine caches, host
 
 1. Pins live in `backend/src/packages/chaiNNer_tensorrt/__init__.py` (`tensorrt` 11.4.0.106, `cuda-python` 13.4.1);
    they are GPU-only and not in the lock.
-2. The native binaries (`vosr2_qkv.dll`, the runner's `_chainner_trt.pyd` and `chainner_trt_vs.dll`) are built
-   against the pinned SDK, and TensorRT runs a binary only on the version it was built against or a later one, so an
-   installed TensorRT older than the pin is replaced at startup (auto update, no fallback). A serialized engine loads
+2. The native binaries (`vosr2_qkv.dll`, `drft_trt_plugins.dll`, the runner's `_chainner_trt.pyd` and
+   `chainner_trt_vs.dll`) are built against the pinned SDK, and TensorRT runs a binary only on the version it was
+   built against or a later one, so an installed TensorRT older than the pin is replaced at startup (auto update, no
+   fallback). A serialized engine loads
    only on the TensorRT version and GPU architecture that built it (`nodes/impl/tensorrt/engine_info.py`): after a
    bump, users rebuild engines with Build Engine (VOSR's engines rebuild themselves once).
 3. API changes: update the stubs `stubs/tensorrt/__init__.pyi` and `stubs/cuda/bindings/runtime.pyi` (pyright).
@@ -125,7 +131,8 @@ packaging (section 4, item 6; README Build). VOSR's modules, engine caches, host
 
 ## 8. Package and release
 
-1. Build the native layer, with the TensorRT and CUDA roots so that `vosr2_qkv.dll` ships (nothing checks it);
+1. Build the native layer, with the TensorRT and CUDA roots so that `vosr2_qkv.dll` and `drft_trt_plugins.dll`
+   ship;
    package: `package_port.py --validate-only`, then build or `--refresh`, then a repeat run that must report
    `verified_no_op` (README Package).
 2. Bundle checks (section 5, step 3), `make_oracle.py`, the gates of section 10.
@@ -137,7 +144,9 @@ packaging (section 4, item 6; README Build). VOSR's modules, engine caches, host
 5. VOSR's TensorRT plugin `backend/src/nodes/impl/pytorch/vosr2_qkv.dll` must be built (README Build): without it
    `package_port.py` (all runs, `--validate-only` too) and `npm run make` on Windows (Forge's `prePackage`) refuse to
    package, since such a package has no VOSR TensorRT backends. Only for a package meant to lack them, set
-   `CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1` (exactly `1`) for that run.
+   `CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1` (exactly `1`) for that run. Legacy DRFT's plugin library
+   `drft_trt_plugins.dll` builds from the same roots in the same configure (a failure of its target fails the
+   build), so this check covers it; a package without it has no DRFT TensorRT route.
 
 ## 9. Publish
 

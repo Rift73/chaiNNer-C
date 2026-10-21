@@ -4,6 +4,209 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- Node times (2026-10-21, v0.3.7 re-release 8; `1a68047e`): the run engine leaves a Python body's `util.waiting` out of
+  its time, as `process.Executor`'s `timed_supplier` has since `46ba54ef`. TensorRT Upscale Image had shown its turn in
+  the item window's queue again since the engine (v0.3.7): 4-12 s -> 1.44-1.47 s per image on Load Images -> TensorRT
+  Upscale (DRFT-L x4, fixed 768) -> Resize -> Save PNG, 20 images, RTX 5090; throughput unchanged. Not a DRFT
+  regression: per 768^2 tile the chaiNNer-C engine takes 1482 ms at 2512 MHz / 478 W against Codex's TensorRT 11.2
+  engine's 1619 ms at 2775 MHz / 548 W (denser math reaches the GPU's power cap at fewer watts).
+- PNG encoder (2026-10-21, owner: "use Fast option as default"; v0.3.7 re-release 7): default 8-bit PNGs (1-4
+  channels; Save Image, the Save prepare step, the viewer and UI previews) use `native/src/png_encode.c`: MinSum filter
+  per row (scalar + AVX2 kernel, bytes identical at every ISA level; AVX-512 dropped: no encode-level win), libdeflate
+  1.26 level 6 on up to 32 row bands over the native pool (min 16 KiB / 8 rows per band; vendored libdeflate patched
+  for non-final pieces that join into one stream), own Adler-32 combine, one IDAT per band. fpng removed. Before ->
+  after on 6 real images (pinned, median of 5): 42.3 MB / 174 ms (fpng) -> 33.4 MB / 107 ms (79.0 %, 0.45x fpng
+  SLOWER); 1080p 8.0 -> 4.9 ms; 64x64 0.011 -> 0.061 ms. Pixels identical; bytes differ (tests compare decoded
+  pixels). ECT evaluated and not adopted (74.7 % at -1, ~60x slower even on all cores). Gate 136,110 passed.
+  RELEASED 2026-10-21 as v0.3.7 re-release 7 (fork branch and tag `v0.3.7` at the replay of main up to `eeb4b27b`,
+  the PNG test's sample folder replayed as its environment variable; asset SHA-256 `9aec18a7…767b`, r6 `8A906053…89C3`
+  kept locally); both local installs updated (5 files each) and serve 196 nodes.
+- video-seek (2026-10-21, v0.3.7 re-release 6; branch `feat/video-seek`; design, plan and lane reports in
+  `native/local/video-seek/`, rulings in `native/reports/fable-decisions.md`, "video-seek"): Load Video gains a seek
+  bar (kind `video-seek`: slider, first/-1 s/-1/+1/+1 s/last, frame box, timecode, In/Out, Run this frame), a Preview
+  of the seek frame, Frames All|Range (Use limit migrates to Range 0..Limit-1; Out is an upper bound), Index = the
+  frame's number, Frame Count. Exact seeks (`video.py` frame index + PyAV keyframe seek with open-GOP retry; CLI
+  reader by decode-and-discard; untimed packets -> CLI): frame N of a seek equals item N of a full read in RGB float,
+  RGB 8-bit and Planes (matrix: H.264 B-frames and open GOP, HEVC 10-bit, edit-list MP4, open-GOP HEVC, MPEG-TS,
+  MPEG-PS, rotated, VFR). Context frames for temporal nodes (`NodeData.temporal_context`: Temporal Fix 3/3, VOSR 1/5)
+  in both executors; a Range/one-frame run equals the full run at those frames (Temporal Fix, VOSR Three Frames: bit
+  for bit on the GPU, both executors). A one-frame run makes Save Video write `<name>_f000123.png` (never the video);
+  Auto audio re-encodes a range starting after 0, Copy refuses it. "Run this frame" = `runWithOverrides` (the editor's
+  values and types untouched). Before -> after: frame 5000 of a 1080p H.264 file 19.40 -> 0.22 s (one-frame run,
+  fresh process; 0.016-0.07 s warm); 4K HEVC 10-bit frame 500 6.82 -> 0.34 s; preview +1 frame ~3 ms, -1 ~55 ms.
+  DPID (owner request): Resize/Resize To Side filter "DPID (detail-preserving)" with Lambda (0-10, default 1),
+  `native/src/dpid_ops.c` (mergian/dpid, BSD-3), float, both executors; oracle 5.1e-07; 4K->1080p 8.4 ms (Lanczos
+  7.8 ms). Gate 135,970 passed / 0 failed / 490 skipped (112 s); real use 13/13 checks on both executors over
+  HTTP; the dev UI checked through CDP; GPU check above. RELEASED 2026-10-21 as v0.3.7 re-release 6: fork branch and
+  tag `v0.3.7` at the replay of main up to `dc19bba6`, asset SHA-256 `8a906053…89c3` (r5 `973B2F45…9307` kept
+  locally); both local installs updated (26/25 files, the portable binaries replace the tuned ones) and serve 196
+  nodes.
+- instant-exec (2026-10-19, v0.3.7; branch `instant-exec` from `fffe9cf7`; design, plan, lane reports, the engine review
+  and the owner queue in `native/local/instant-exec/`, rulings in `native/reports/fable-decisions.md`, "instant-exec";
+  24 h, CPU only): outputs as at `fffe9cf7` except the sanctioned changes at the end. Startup: the window loads at once
+  and the editor shows the node list cached in `<root>\ui-cache\backend-ui.json` (README Layout; keyed by the app and
+  backend build, the Python and its distributions, the GPUs and drivers and `CUDA_VISIBLE_DEVICES`; the live list
+  replaces it and re-checks the open chain; no cache = the splash); readiness is pushed over `/setup-sse`; the host
+  spawns the worker first and reads `*.dist-info` in process (no `pip list`); the worker serves at once, registers the
+  light node modules (137 nodes, 0.37 s), then imports the frameworks in the background with a readiness event per
+  package; a run needing a schema not yet loaded waits for it, or fails with its package's import error (A1). A startup
+  chain no longer opens "unsaved" (dirty state by content, `src/common/nodes/chainSnapshot.ts`). Headless host from
+  source, warm, before -> after: host ready 9.9 -> 1.04 s, light preview 9.9 -> 1.05-1.08 s, PyTorch node 9.9 -> 4.4-5.0
+  s, full node list 9.9 -> 5.4-6.4 s; the packaged app (the repo's `electron.exe`, CUDA hidden, alternated with v0.3.6
+  r4, medians of launches 2-4 on a quiet machine, ms from launch; `scratchpad startup\p2`): real interface 10654 -> 1220
+  (x8.7), window 902 -> 850, a Load Image result 2273 and a Load Model result on the CPU 8101 (r4 shows the interface
+  only after every node loaded, 10.7 s); the first launch after an update fills the cache, 13118 -> 10534. Native run
+  engine (ARCHITECTURE section 4), the default executor since `2912a49a`; `CHAINNER_C_EXECUTOR=python` runs
+  process.Executor, the diagnostic oracle, never a user setting (A5). Pure nodes run on shared workers across branches
+  and window items, the others on each run's driver thread in today's order; events are built in C++ and posted in
+  batches; a memo cache keeps allow-listed nodes' outputs across runs inside the worker (the user setting Result
+  Cache: on by default, size default min(2 GiB, 10 % of RAM), applied at each run's start;
+  `CHAINNER_C_MEMO_BUDGET_MIB`, 0 = off, a diagnostic override that wins; a hit sends a computed node's events). The
+  differential suite
+  (`native/tools/engine_differential.py`: both executors over every bench chain and the executor scenarios; outputs,
+  events, A6 order, files) is green; the concurrency review's findings (C1, C2, H1-H4, M1-M3, then N1, N2 and a native
+  preview returning no output) are fixed (`review-engine.md`). In process, 32 synthetic 512x384 JPEGs, ms per item at
+  auto K, Python -> native: `resize-real-256` 2.58 -> 2.09, `lens-spectral` 6.88 -> 3.41, `parallel-branches` 3.44 ->
+  2.24, `palette-median` 2.36 -> 1.75, `normal-map` 3.12 -> 2.73 (x1.14 to x2.02 over ten chains; x1.29 to x2.09 after
+  the review fixes, memo off); K = 1 `resize-real-256` 2.15 -> 1.44, `lens-spectral` 6.13 -> 2.93; 12 sinks of 128 MiB
+  peak at 131 MiB (Python 129); `bench.py` paired against `fffe9cf7` on the frozen tree (`f4d1a58f`; CPUs 16-31, 2
+  pairs, 32 images per trial, 256 for `resize-real-256`, 600 video frames), ms per item before -> after, memo off
+  (`bench-20261019T080356Z`): `resize-real-256` 2.82 -> 1.37 (x2.05), `gaussian` 2.96 -> 1.89 (x1.56), `lens-spectral`
+  8.32 -> 4.37 (x1.90), `morphology` 4.14 -> 3.35 (x1.24), `normal-map` 3.79 -> 3.02 (x1.25), `caption` 3.62 -> 2.40
+  (x1.51), `split-channels` 2.80 -> 2.01 (x1.39), `palette-median` 2.93 -> 1.66 (x1.76), `palette-dither` 4.28 -> 2.47
+  (x1.73), `parallel-branches` 4.03 -> 2.26 (x1.78), `video-ffv1` 3.78 -> 3.08 (x1.23), `video-h264` 6.47 -> 5.88
+  (x1.10), `video-resize-h264` 4.29 -> 2.88 (x1.49); a rerun on a warm memo cache (`bench-20261019T080808Z`) x1.06
+  (`video-h264`) to x6.87 (`lens-spectral`; 7.89 -> 1.15); outputs equal in every trial of both runs. Native nodes (A7:
+  bodies of our native code plus glue only): the bench chains' nodes but Normal Map Generator and Add Caption, 63 of 81
+  other image nodes and 23 of 41 utility nodes have C++ entry points, each bit-identical to its Python body, error type
+  and text included (`native/tests/test_run_nodes_*.py`); a path an entry does not mirror declines to the Python body
+  (`RunPython`; no decline on the 13 bench chains). Per call they are kernel-bound (Gaussian 6/6 at 1080p 2361 -> 2077
+  µs); the gain is no GIL inside the engine. Codecs and writers: vendored libjpeg-turbo 3.1.4.1 (JPEG8), libpng 1.6.57,
+  zlib 1.3.2, libwebp 1.6.0 and libtiff 4.7.1 (ARCHITECTURE section 5) decode JPEG, PNG, WebP, TIFF, BMP and PxM and
+  encode Save Image's PNG, JPG, WebP, BMP and TIFF with today's arrays and bytes (a 4,305-file corpus and 3,024 Save
+  combinations equal under every JSIMD and ISA cap); anything else declines to today's path, which
+  `CHAINNER_C_NATIVE_CODECS=0` forces (the oracle). Native Load Image and Save Image entry points and LargeImage
+  previews. One thread, ms: JPEG decode 512x384 1.48 -> 0.52, 1080p 17.8 -> 6.0; Load Images JPEG item 1.86 -> 0.92;
+  Save JPG 1.31 -> 0.87, PNG 1.28 -> 0.94; previews 4.7 -> 3.8; PNG and WebP decode about equal (library-bound);
+  `_chainner_graph.pyd` 7.7 -> 10.4 MB. Every writer (Save Image, Save Video at a successful close, DDS, the model
+  savers, VapourSynth scripts, the TensorRT timing cache; the app's chain and settings saves) writes a temporary file
+  beside its target and renames it (A4); a target with equal bytes is left untouched, mtime included. Hunt lanes
+  (byte-identical unless listed below). Upscale CPU path: one native interleave per backend (NCHW results are ordinary
+  interleaved images now), the typed caster on contiguous runs, the final clip borrowed by the output check, one-pass
+  alpha helpers, a native TensorRT tile blend, the ONNX size probe per model; 1080p -> 4K tile blending 246 -> 123 ms,
+  NCNN node 174 -> 32 ms, ONNX FP32 34 -> 25 ms, TensorRT tile blend 483 -> 75 ms, RGBA path 311 -> 180 ms. App: a click
+  is not an edit; atomic chain and settings saves (an invalid `settings.json` is moved aside, defaults used); narrower
+  re-renders; one input hash per node (a stale-hash bug fixed; 0.45 -> 0.12 ms at 31 nodes); uninstall KeyError; package
+  rescan after pip; atomic FFmpeg setup; per-process temp folders; clipboard images by content hash. Video: the CLI
+  reader in 1 MiB reads (4K float 430.7 -> 52.9 ms per frame), cached MKV/WebM rate scans and ffprobe results (repeat
+  setup 25.3 -> 0.2 ms), native plane interleave (PyAV 1080p read 5.09 -> 2.83 ms per frame), vspipe evaluation 142.6 ->
+  116.0 ms. Models: sessions follow a changed setting (they kept the old session), Convert To ONNX exports a copy and
+  caches exports, no random init in spandrel builds (DRFT-L build 727 -> 249 ms), ONNX parsed once (DAT2 load 423 -> 347
+  ms), a Build Engine cache (memory; the disk "Engine Cache" setting off by default), Load Models read-ahead (5 models
+  3.6 -> 2.9 s). Gate: NumPy pool idle cap min(512 MiB, 10 %) -> min(2 GiB, 10 % of RAM) (R10; tiled 4x 1080p item 134.2
+  -> 100.8 ms); the Engine Cache key includes its record format (R11); `run_tests.py` keeps the Numba cache per checkout
+  (R12). Second wave (R13): preview rate limit inside loops (R4: per node the first at once, then one per 250 ms, the
+  newest kept; a 1080p 20-item loop 20 -> 7-8 previews) and an encoded-preview cache (64 MiB, 64 entries, held weakly; a
+  repeated Load Image /run 60.1 -> 14.0 ms, its event text 10.9 -> 2.4 ms); MP4 faststart (R5a), Load Video audio trim
+  (R7), Load Images listing, previews of loading nodes held in the window (R13 d), `gc.freeze` (R1; a full collection
+  after loading 226-253 ms -> 0). Phase-end reviews (six) and delta reviews (three), all findings fixed with tests: a
+  preview race at startup (the older of two waiting previews could win and feed Run), the UI cache key covers backend
+  files updated in place, File > Open and drag-and-drop wait for schemas the cached list lacks, pip runs before the
+  early worker, a settings file with a BOM, quit during startup ends the backend, the editor survives a failed live
+  list; native Stop answers in 0.52 s (was 4.7 s, and the host restarted the worker; e2e default chain /kill 6.31 ->
+  0.51 s, rerun equal), a second Stop recovers a hung node, a never-started run leaks nothing, late errors are logged; a
+  NativeExecutor reference cycle (outputs and previews kept until a collection) and PyAV's filter-graph cycle (31.7 MiB
+  per video run) removed (the NumPy pool release check passes again); atomic writes replace a target open with delete
+  sharing (30/200 -> 0/200 failures), short temp names for long names (P8), invalid names fail before writing (a
+  wildcard name could replace a sibling), no lost encode at Save Video's close; TIFF straight alpha honours the size
+  limit, lone-surrogate and NUL paths behave as `open()`, Pillow's EXIF dpi failure declines, codec allocators never
+  throw; the ffprobe cache skips inputs that read other files and sees same-size rewrites (change time); flipped clips
+  read through the CLI (the 8-bit one crashed the worker); the VapourSynth upscale child gets TF32; Convert To ONNX
+  keeps one export per model; `auto_split` overlapping rows and host out-of-memory split; one image normalization, exact
+  value types, one exception mapping, NumPy's memory error text; CPython's `float_pow` for non-finite noise ratios;
+  generator outputs memoized only when they follow from their inputs (a replaced video's FPS was stale). Image size
+  limit (owner, 2026-10-19): 40,000 x 40,000 = 1,600,000,000 pixels on every decode route
+  (`backend/src/image_limits.py`, `CN_MAX_IMAGE_PIXELS`), no warning below, refused above (was Pillow 89,478,485 /
+  178,956,970 and OpenCV 1 << 30). E2E on the frozen tree: 7 chains x 6 steps equal on both executors. Behaviour changes
+  (Fable). Sanctioned output changes: H4 Q1 and R8 (an FP32, Mixed or DUAL ONNX export, and PyTorch -> NCNN's FP32
+  intermediate, of an FP16-loaded model start from the file's FP32 weights when the file is unchanged and they round
+  bitwise to the loaded ones, else from today's FP16 weights with a warning); H4 Q4 (ONNX keeps the loaded file's bytes,
+  so a non-standard writer's file saves as it was, not re-serialised); R5a (MP4 faststart on the mux pass when audio
+  follows: atom order changes, streams equal); R7 (Load Video with a limit trims the audio to the video; it copied the
+  whole audio). A4: a target held open without delete sharing fails with [Errno 13], a symlink at a non-Save-Image
+  writer's target is replaced, a failed or stopped Save Video leaves no file. Event order between independent nodes may
+  differ (C; the kept invariants are checked). Phase-end rulings (P1-P9): the compact layout of engine images is the
+  reference for float reductions downstream of a view (P7; last-digit and signed-zero differences after Crop with
+  offsets or Separate RGBA, `LAYOUT_DIFFERENCES`); GFPGAN's CPU noise no longer repeats a fresh worker's first run (P3);
+  a stopped node with no abort check finishes in the background and the next run waits for it (P4; the Python oracle
+  still waits in /kill); a long target name uses `.cnc-<pid>-<seq>.tmp` (P8); more than 512 channels in the shared ops
+  raise ValueError (P5). Informational (R1): the worker runs one `gc.collect()` and `gc.freeze()` after node loading,
+  lifting the 2026-10-06 scope line against `gc.freeze` (an explicit collection 136-164 ms -> about 0); skipped, never
+  retried, while a run is in flight or after a heavy-package run.
+
+- instant-exec follow-ups (2026-10-19 evening; owner yes on the queue; shipped as v0.3.7 re-releases): v0.3.7 released
+  (fork tag `v0.3.7`; re-release 1 `043317fd`: a /nodes request given up while the nodes load no longer cancels the
+  loading, which left a GPU install's first start without a node list); `.exr` loads (vendored OpenEXRCore 3.5.2 with
+  Imath 3.2.3, zstd 1.5.7, libdeflate 1.26 and OpenJPH 0.32.0, `native/third_party/*/PROVENANCE.md`; OpenCV's EXR
+  semantics, float values clipped to 0..1 at Load Image's output like every float image (Fable); 4K RGBA half 18-36 ms);
+  the Result Cache as a setting (Settings > Python, "chaiNNer_standard": on by default at min(2 GiB, 10 % of RAM), a
+  size in MiB, off empties it; `CHAINNER_C_MEMO_BUDGET_MIB` still wins); Frames to Clip's FFV1 temp in 16 slices where
+  valid (sides >= 7 px, <= 2^27 bits a slice; 1080p 21.8 -> 10.6 ms, 4K 82.1 -> 37.2 ms per frame, frames equal);
+  spandrel 0.4.2+c7 (DRFT's fold without a per-channel loop: DRFT-XL 2447 -> 1652 ms, outputs equal); the image size
+  limit 40,000 x 40,000 pixels (owner); the disk Engine Cache stays off (owner: engines are built and saved); no pip
+  cache (owner). Open: the Python executor's retirement (owner, after v0.3.7's use); MAINTAINING section 10's checks
+  re-based on chaiNNer-C (they compare with upstream; Fable); the hosted CI fails on 18 older pyright errors.
+
+- VRAM after Stop, again (owner report 2026-10-19 20:09 on D:, a DUAL upscale with No Tiling overflowing VRAM): Upscale Image
+  (PyTorch) checked Stop only between tiles, so the tile running at Stop kept its memory until its forward ended (the
+  native engine runs it on in the background; minutes when VRAM spills into shared memory). The forward now checks
+  Stop at each block (each module with children; per thread, the hooks only for the call) and synchronizes before
+  Aborted, which leaves the forward's frames behind. ESRGAN 1280 px single tile, Stop mid-tile: VRAM back 1.1 s ->
+  0.39 s after Stop; 1536 px in 256 px tiles 2.31 -> 2.07 s (one paired run). Also: `progress_controller.Aborted` is
+  `api.Aborted`, so a node's own check_aborted ends its run as stopped, not as a NodeExecutionError, and a stopped
+  run's result read within the grace is no longer reported as never retrieved. Final code on the GPU: 0.40 s, log
+  clean. Released as v0.3.7 re-release 3 (owner yes; fork tag `bdb5372d`, zip `EFE50B86...3409`). In a VRAM
+  overflow (owner: about 2 s with DUAL, No Tiling) the floor is the GPU work already running: a 1x ESRGAN at 6000 px
+  freed its VRAM 6.5 s after Stop, the same with at most 1, 2 or 4 blocks queued ahead or none (the CPU waits about
+  2 s in one CUDA call while Windows pages, then 4.4 s of running operations); ending the worker freed it after 1.9 s.
+  The queue limit was dropped. Fixed meanwhile: a node clear right after Stop no longer returns the GPU's memory on
+  the loop while the stopped node still runs (that wait stalled the loop 2.1 s).
+
+- VRAM offload (owner 2026-10-20: "VRAM overflow but fast, like RamTorch but better", No Tiling kept): Upscale
+  Image's forward on 2 MP or more runs under a dispatch mode (`nodes/impl/pytorch/offload.py`) with PyTorch capped
+  3 GiB below the free VRAM, so Windows never spills to shared memory; past cap - 2 GiB the least recently used
+  activations go to pinned RAM on a copy stream and come back when an op needs them; tensors sharing memory never
+  move. The owner's 1x DUAL (C128G4D16), FP16, No Tiling: 2176 px 232.65 s -> 5.96 s first run, 4.95 s warm (4.6 s
+  at the fitting rate); 1664 px (fits) 2.71 -> 2.71 s; forced to 14 GiB, 13 GiB moved, output bit-identical. The
+  worker sets PYTORCH_CUDA_ALLOC_CONF to page-lock pinned RAM with 8 threads (about 1 s off a first overflow) unless
+  the user set it. A 1x ESRGAN gains nothing (its peak is one op's working set). The pinned RAM goes back to Windows
+  when a run ends (owner's option B; torch 2.14's internal `_host_emptyCache`): through the backend, DUAL 2176 px
+  moved 14.4 GiB and the worker held 2.3 GiB after the run. Released with the Stop loop fix as v0.3.7 re-release 4 (owner yes;
+  fork tag `bf43dbb6`, zip `923F5467...CE24`); both D: installs updated (196 nodes; the PGO-tuned install kept its binaries).
+
+- Legacy DRFT's TensorRT route on main (2026-10-20; owner's Convert To ONNX of a DRFT-L x4 failed with protobuf's 2 GiB
+  limit): `feat/drft-trt` (GPU-accepted 2026-10-18, never merged) merged into main (`8c4ddafc`): Convert To ONNX sends a
+  legacy DRFT with LayerNorm to the plugin exporter (FP32 weights from its file under PyTorch's FP16 setting; the export
+  kept like DUAL's), Build Engine builds it through the engine cache (key: the plugin library's and worker's SHA-256)
+  with Tiling Optimization, and a DRFT ONNX loads as mixed precision. The generic export of a legacy DRFT is unusable:
+  its window routing is decided in Python per size, which the trace froze at 32x32 (20.7-21.9 dB against PyTorch at
+  other sizes), and its folded attention biases (72 x 24 MiB) passed 2 GiB. On the owner's photos the route's BF16 body
+  was 25.9-37.4 dB against PyTorch FP32, PyTorch's own BF16 alike (the 10-18 acceptance image was a mild one); PyTorch
+  FP16 38.7-58.6 dB. Owner: port to FP16 (`97477974`): the window neural bias, QKV pack, OCAB relative bias and final
+  crop plugins take FP16 as well as BF16, the export is FP16, and its attention drops spandrel's +-50 logit clamp (192
+  Clip nodes; 43-52 dB in FP32 by itself). The export traces on the loaded model's device (`8aac9486`): CPU FP16
+  convolutions are ~3,000x slower than BF16 (605 s against 37 s on the CPU; 14-17 s on the GPU). GPU check: the FP16
+  engine gave NaN (the trained logits reach 48.6 million, past FP16's 65504; FP32 logits filled 32 GB at 512^2; FP16
+  logits / 2^16 lost the small ones to TensorRT's flush to zero, 42.0-52.8 dB; BF16 logits alone, `74547060`: 45.1 /
+  49.8 / 56.5 dB but 1486 ms at 512^2). Owner: a fused attention (4 h budget, from 04:40): TensorRT fuses the plain
+  attention pattern into its MHA kernels (192 `_gemm_mha_v2`; FP16: 576 ms but NaN), so `4530d511` runs the attention in
+  BF16 inside the FP16 body: through Convert To ONNX (14 s on the GPU) and Build Engine (140 s), 48.1 / 51.5 / 54.6 dB
+  against PyTorch FP32 on 100x130 crops of three photos (BF16 engine 26.4 / 31.8 / 39.1; PyTorch FP16 38.7 / 54.6 /
+  58.6; a probe build of the same maths 48.7 / 51.3 / 59.1), 512^2 in 678 ms (BF16 engine 708, PyTorch FP16 1693 on
+  10-18); Upscale Image's session and tiler at 300x450: 46.9 dB, 0.39 s. Gate green (135,245). Released as v0.3.7
+  re-release 5 (owner yes; fork tag `74c6e872`, the merge published as one commit; zip `973B2F45...F9307`); both D:
+  installs updated (196 nodes; the PGO-tuned install kept its binaries). i-LN DRFT: out of scope (owner).
+
 - YUV planes, colour information and high bit depth (2026-10-18, branch `feat/yuv-planes`; local design and
   rulings `native/local/yuv-planes/`): video planes are float32 gray images at their stored sizes (Y 0 = black,
   1 = white; U and V centred on 0.5; `nodes/impl/colour_info.py`, every code round-trips exactly). Load Video has
@@ -228,7 +431,7 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   EXIF orientation; straight-alpha and grey+alpha TIFFs; TIFF ExtraSamples; lossless WebP `exact`; GIF palette per
   frame; CPU-only NCNN tiles by available RAM; a vitest runs the app's schema check over the real node list; CLI ends its
   backend; system-Python option removed; Python download honours the proxy; pip's errors reach the UI; Spandrel
-  `0.4.2+c6` (fork release `v0.4.2-c6`, SHA-256 `0f6fd5f9…`; c2: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
+  `0.4.2+c7` (fork release `v0.4.2-c7`, SHA-256 `030ba1a2…`; c2: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
   padding per input for 12; c3, 2026-10-16: DUAL runs in fp16, its last group's dynamic conv in fp32, 1x Light 512²
   343 → 199 ms, 2x 87 → 52 ms vs fp32+TF32; c4, 2026-10-18: HAT and DAT run in fp16, the last group's closing conv
   and the final norm in fp32 (trained 4x HAT-L writes 722k there, DAT2 121k), 70-71 dB from fp32, 256² HAT-L 476 → 250
@@ -238,12 +441,17 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   scaled_dot_product_attention with heads padded to 8 (30-wide heads get no fused kernel), explicit in ONNX
   exports (SDPA's summed bias+mask cost HAT-L 72 → 87 ms in TensorRT); PyTorch fp16 256² cuDNN first HAT-L
   246.1 → 191.9 ms, DAT2 102.8 → 96.4 ms; Convert To ONNX also pads DAT's qkv heads, TensorRT DAT2 47.40 → 44.51
-  ms, all 36 spatial and 84 HAT attention calls in TensorRT's fused kernel). PyTorch tries cuDNN attention first (owner, 2026-10-16: every model in
+  ms, all 36 spatial and 84 HAT attention calls in TensorRT's fused kernel; c7, 2026-10-19: DRFT's edge-branch
+  fold without a per-channel Python loop, bit-identical, CPU fold of a trained 4x DRFT-XL 2447 → 1652 ms, 4x
+  DRFT-M 628 → 402 ms). PyTorch tries cuDNN attention first (owner, 2026-10-16: every model in
   fp16, not DUAL only; DUAL fp16 197.5 → 182.0 ms 1x, 52.0 → 47.0 ms 2x; Windows PyTorch has no Flash Attention).
   With the fp16 setting on, DUAL TensorRT exports start from fp16-rounded weights (68.5–88.6 dB vs exact, below the
   engine's bf16 noise; owner accepted). Deviations: ARCHITECTURE section 7.
 
 ## Last CPU comparison
+
+2026-10-19 (instant-exec, `f4d1a58f` against `fffe9cf7`, `bench-20261019T080356Z` memo off and
+`bench-20261019T080808Z` memo on): State. The comparison below is SP4b's.
 
 2026-10-04 (UTC), SP4b Task 10 Step 3, B0 against `backend/src` (DLL `bb0fd7aa…6fee3`), auto K (K = 8 at 32 CPUs, K = 6 at 8 CPUs, affinity `0xFF` = 4 cores × 2 SMT threads): 32 CPUs `bench-20261004T164739Z` (confirmed by `bench-20261004T165415Z`), 8 CPUs `bench-20261004T170057Z` (confirmed by `bench-20261004T170910Z`); outputs identical in every trial, Final `win` on all 13 cases at both counts. Background load was 10–28 %, above most floors' recorded load (warned in the summaries), so read the magnitudes as indicative. Speedup = confirmation-run median paired ratio (> 1 = faster, the gains of SP2 to SP4b included), 32 / 8 CPUs:
 `resize-real-256` 1.66/1.58, `gaussian` 2.13/2.41, `lens-spectral` 5.95/13.87, `morphology` 3.57/3.12, `normal-map` 2.70/2.47, `caption` 1.72/1.72, `split-channels` 1.82/1.64, `palette-median` 4.76/4.65, `palette-dither` 7.53/6.42, `parallel-branches` 4.74/5.39.
@@ -257,11 +465,11 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 | Item | Plan |
 | --- | --- |
+| Load Video seek bar follow-ups (2026-10-21): the independent-UI patch (`native/tools/independent_ui.py`) for the `video-seek` input kind and runWithOverrides; the CLI path's Frame Count stays the probe's estimate (a run that reaches the end does not teach it); a one-frame run shares the Preview's decoded frame only in RGB float; VOSR Persistent Detail starts its history at a range's first context frame | Next sessions |
 | The error-retention fix's two recorded follow-ups, both INFERRED: a failed `/run/individual` (a preview's inputs) and the per-item errors of a non-fail-fast generator (`process.py:903` keeps `str(e)`; the run then fails, so B collects at its end). Each lets an exception through the same frames as a failed `/run`; A breaks their chaiNNer-C edge, and upstream's `Lazy` edge remains. One later commit (Fable's final review) carries `await_owned_node`'s cancel-branch `error` local, which keeps a cycle if a node fails while a cancel waits. That is reachable, because Sanic cancels the handler when the UI drops `/run`; the fix is `del error` with a cancel-branch test. The same commit carries `owned_gather`'s `results`/`tasks` locals and two comment fixes in `server.py`. Upstream's `Lazy.from_coroutine` `completion` local needs a separate decision. Root cause: `native/reports/error-retention/rootcause.md` | The fix (Fable, 2026-10-06) is two commits: A, `bad1dba7` (`await_owned_node` and `NodeFlights.run` drop their `future`/`task` locals), then B with D (`collect_failed_run`: one `gc.collect()` after a failed or stopped `/run`'s handler returns, then the pool's release if no run executes; ARCHITECTURE section 6). A failed run's arrays are freed right after it, earlier than upstream git's end of the next `/run`; successful runs never collect. Growth record: the release check (0)–(f), with (e) and (f) asserted; verdict `native/reports/error-retention/verdict.md`. OWNER REVIEW FLAG (decision log): `import gc` and that one collection; undo = `git revert` of the second commit. The B1 re-test and SP3b's phase-2 re-check follow it, then SP5a |
 | `lens_blur` builds its kernels on every call (B0's unused `_lens_plans` cache went in SP4b Task 3b); that cost is still not measured; SP3b did not take it up. SP3 follow-ups: bench cases for a resumed batch with skip-existing (a second run over the same output folder; harness) and for a heavy untaken Conditional branch; a K spot-check at 4 CPUs (affinity `0xF`); count the replay round trips, then skip the round trip when a replay has no concurrent sibling; compare folder identity in the read-ahead predicate (would close the loopback-alias and non-Windows case-insensitivity residuals). SP2 native-pool carry-overs, deferred (SP3 kept the pool unchanged): the spurious WakeAll on re-pin, the `leave` comment, the `cn_parallel_dispatches` non-Windows note, measuring whether dropping the generation bump in `leave` pays. Backend and test cleanups: dead `sequence` branch in `nodes/impl/native_layout.py:154-174` (Stack Images Sequence does not ship); `# pyright: ignore` in `nodes/impl/event_queue.py`; `native_analysis.is_grayscale` has no shipped caller (retire it or test it against numpy); split the 3605-line `native/tests/test_item_window.py` by concern (read-ahead predicate, engine and executor, Save phases, fresh interpreter) | SP4b, SP3b, SP3c and SP4c are closed (State). Order (Fable, 2026-10-06): the error-retention fix (done, first row), then the B1 re-test and SP3b's phase-2 re-check, then SP5a (State, SP4c; rows below). A commit-path lever (B1 is re-tested after the error-retention fix) stays inside SP3c's boundary: outputs bit-identical to the installed chaiNNer and B3; file writes in item order, each complete before its node's finish event and before the next item's commit; events and `sse_contract` identical; the same error object, selected and surfaced at the same point relative to earlier and later items' side effects; Stop, pause and generator-once unchanged; K = 1 within noise. SP3 follow-ups and SP2 carry-overs: not yet scheduled (the SP4 attribution is done); cleanups SP4 or later |
 | SP4b parked levers, sizes in `native/reports/sp4/profile-final.md` section 7: output allocation (SP4c, done, State; first touch costs 0.15–0.20 µs per page, 88–117 µs per fresh 2.36 MB output; a 'clamped-by-us' registry mark would also skip the borrow's scan and freeze, 41–65 and 26–33 µs per output); resample horizontal SIMD (≈ 200 of ≈ 220 µs per call at 1 CPU, INFERRED); resample grain (720p: 13.6 of 31 wakes empty per call) and morphology grains (`cn_filter_morphology` runs 9 chunks per dispatch; Task 4b's line-grain variants were neutral or cost 30–35 % more CPU); `cn_filter_morphology`'s algorithm (2114 µs against ≤ 1400; erode ≈ 23× its serial bound); lens convolution grain (K = 1 per call 85.7 µs at Task 3c, ≈ 123 µs now, INFERRED from Task 3e's grain 16384; a count-dependent grain is the candidate); the commit path (SP3c, closed, State): 91–97 % of every image item, by measurement the largest lever on 6 of 10 image graphs, yet SP3c's probe confirmed no win | SP4c took output allocation (State); the others stay parked, chosen by measured size, each with its own paired A/B; phase 2's revival rule (State, SP3b) is applied at the re-profile after SP4c (the re-check follows the error-retention fix) |
 | SP5a-c (owner directive 2026-10-06, Consult 9): the product build is clang-cl 23.1.2 only, `-march=icelake-server` with ThinLTO and no PGO, `/fp:strict`, `/Brepro` (ARCHITECTURE section 3); MSVC and gcc left the build, and a startup check refuses a CPU below Ice Lake-SP / Zen 4. The A/B against MSVC was replaced by the switch. `isa_check.py`'s instruction-set checks (`objects`, `dll`) are retired, since every unit is Ice Lake-SP code and the ThinLTO objects are bitcode; its `text` comparison stays. Corrected 2026-10-07 (owner): baseline x86-64 with runtime AVX2/AVX-512 dispatch, no CPU refusal, `-march` local-only (State) | The old-vs-new bench (CPython 3.11 + MSVC against 3.14 + clang) is the only timing; `-mprefer-vector-width=512` is an optional measured A/B after it; CCD affinity stays optional |
-| Known third-party diagnostics (Consult 12 D-20): the clang build prints vendored fpng's two `-Wunused-function` warnings, `fpng.cpp:113` `simple_swap64` and `:124` `swap64` (fpng builds at its vendor `/W3`, outside `/WX`). A vendored file is patched only for an output or safety defect, as a recorded patch with its new SHA-256 in that component's `PROVENANCE.md`, never for a diagnostic, and no suppression flag is added | Standing rule |
 | NaN-bit robustness (Consult 12 D-21): `cn_spectral_multiply` stays as is (equal to OpenCV 5.0.0 at every level; its NaN bits follow operand order). Any codegen-affecting toolchain or flag change (an LLVM bump, `-mprefer-vector-width=512`, PGO) re-runs `test_packed_spectrum_all_parities` and the NaN goldens (`test_golden_kernels` tail and dither, `test_forced_paths`) at all three `CHAINNER_C_ISA` levels; a failure is fixed in the integer shape of `normal_nan_outputs` (`color_shared.h`), never by a flag | Standing rule; SP5b (PGO) applies it before landing |
 | Isolated CMake outputs: SP4a added `CHAINNER_C_OUTPUT_DIR` (default unchanged: every default configuration still writes the DLL/PYD into `backend/src/nodes/impl`) and `CHAINNER_C_PDB`; reproducible default build from a clean clone; bench harness: the media root `F:\chaiNNer-C-diagnostics` is still hard-coded (`bench.py:245`), and the pyright errors at `bench_fixtures.py:84` and `image_utils.py:346` predate SP4b (found in Tasks 10a and 3b2). Closed: comparing the static CRT with `ucrtbase.dll`, FMA3 path on and off (Consult 6 D-4, commit "native: mirrors call the process's ucrtbase.dll math (D-4)"). Mirrors of a reference library's own CRT call now call the process's `ucrtbase.dll` through `cn_crt` (`native/include/cn_crt_math.h`). `native/tests/test_crt_math.py` compares every entry with the static CRT and warns on a difference: on this machine only `pow` with FMA3 differs, by 1 ulp (12 of the test's 32,786 inputs; 261 of 1,048,594 in an enlarged run). Bench note (Consult 8 R-d): no tested bits change; two untested double-`pow` paths (PyMatting's pre-round level sizes, ncnn's float64 power) now follow NumPy, as the probe test records | SP5a, before any build variant |
 | Closed by `3a324fe1`: a process that loads every package and node module and then exits normally died at interpreter shutdown: a call to address 0 from `ntdll` (`0xC0000005`, crash report with module "unknown"). Seen in an import probe; `run.py --close-after-start` (`npm run type-check:runtime`) takes the same path on Windows. The fix: the NCNN session frees its cached nets, then ncnn's Vulkan instance, at exit, so a normal exit returns 0 (U4-light item 2, VERIFIED on the GPU: `server.py <port> --close-after-start` with Vulkan visible, 0xC0000005 before and 0 after; the controller's re-run of `type-check:runtime`'s command line on main `a831d6b6`, Vulkan visible, 2026-10-07: exit 0, its three variables set directly since this checkout has no `node_modules`). Each `--close-after-start` exit also prints Sanic's "Task was destroyed but it is pending!" and its Python 3.14 event-loop-policy `DeprecationWarning`s (relayed at ERROR by the host), as upstream's code does on this stack (the oracle, two runs); that policy API is removed in Python 3.16, so a 3.16 upgrade needs a Sanic release without it. The `msvcp140.dll` crash reports of 2026-09-21 to 2026-10-02 are resolved: they were Torch/ONNX Runtime import failures in test processes where Pillow's bundled 14.29 loaded first; `native/tests/conftest.py` now loads the system copy and the suite runs in one process | Closed by `3a324fe1` (controller re-run: exit 0). Leftover crash-report clones (`python.exe`, 0 threads) lock DLLs until an elevated `taskkill /F /PID` or a reboot |
@@ -292,6 +500,12 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | VapourSynth hunt follow-ups (2026-10-16; the v0.3.5 re-release has the 21 hunt fixes plus 3; rulings by the Fable stand-in in `native/reports/fable-decisions.md`): startup install of user modules outside the node import (the host waits 300 s for nodes, an install may take 900 s); vspipe in a job object so it ends with the worker (move `OwnedJob` to `nodes/impl/owned_job.py`, soft `assign`, vsview excluded); hide the ~36 base classes that always fail in Class dropdowns (scan hide list, vs-jetpack-version tagged) with MVTools methods needing analyze(), no-clip/tuple returns and object-only methods; `*args` clips; wrapped signatures (DFTTest.extract_freq, Morpho.black/white_hat); version pins in user_modules.toml; name a hanging user file in the scan timeout; uninstall removes transitive deps no other package needs (keep numpy, scipy and chaiNNer-C's own); uninstall KeyError; AI Upscale SAR with non-uniform ONNX scale; Preview Clips checks a temp copy before rewriting an open vsview's script; silent vsview start failure and per-worker viewers; `range` ints by sibling params; union inputs; FilePathType paths; per-plane expression lists; "*" file drag-and-drop (frontend). | Reports in the session scratchpad `vshunt\a1..a5-report.md`, rulings in `vshunt\fable-rulings.md` |
 | GPU phase of the YUV/TensorRT 11.4 work, the rest (owner approval only; ESRGAN models, DUAL Light/XS) | Phase 1 done 2026-10-18 (`native/local/yuv-planes/report-gpu.md`: runner tests, Upscale Image and AI Upscale bit-identical, 11.2 vs 11.4, bridge vs runner vs vstrt, the 11.2-engine message; Tile documented, not honoured). Left: AI Upscale's runner default on a 1080p RGBS testsrc2 clip, Streams 1 and 2, against the bridge (`CHAINNER_C_TRT_RUNNER=0`) with one ESRGAN engine, headless, 50 frames after warm-up: frames bit-identical, ms/frame each; vosr2_qkv and DUAL on 11.4 |
 | GPU checks deferred on 2026-10-16 (a model was training; light checks only): Build Engine Fixed 64x64 -> Get Engine Info -> Upscale on 200x150 under chaiNNer-C's TensorRT 11.2; a fixed-size ONNX engine keeps its size under 11.2; the timing cache file after the first build and "Loaded" on the second; Stop and worker kill during a real DUAL build (no child left, VRAM back); the TensorRT session-leak paths (need a CUDA fault); the VOSR CUDA checks listed in the area-7 hunt report | The owner's next GPU session |
+| instant-exec, deferred by ruling (Fable, 2026-10-19): Save Video adds audio in the encode pass, dropping the second full pass (R5b); Clip Frames evaluates its script twice (a sidecar from the frames run's evaluation); Normal Map Generator native only with a native FFT, no partial port (R9); an optional row stride in the image ABI (a partial-width crop copies today where Python returned a view); Load Images as a native `ItemSource`, only if `resize-real-256` shows at least 0.1 ms per item of GIL-held glue; zlib-ng inflate for PNG and TIFF decode (read side only); the Python executor and its white-box tests retired in the first release after v0.3.7 whose full gate passes with the native default (A5) | Next sessions, each with its paired measurement; GPU items: `GPU-DEFERRED.md` rows 6-22 |
+| instant-exec residuals (the lane reports' open lists, `native/local/instant-exec/report-*.md`). Engine: 16 concurrent previews 20 ms against Python's 9; a fault outside a node names no node; a context node computed ahead runs its cleanups at once (outputs equal); no memo for native generators' items; the memo counts a storage an item and its crop share twice (errs safe); a file changed between stat and decode can hit a stale entry (a same-size rewrite is seen by its change time); latent: `decide()` takes a slot after the GIL, paused time while the driver blocks outside `suspend()`; engine images are always C-contiguous (P7: the reference); `engine_differential.py` builds a chain per executor, so side-effect order across sinks is not compared exactly. Startup: the first launch after an update shows the splash once; fresh storage compiles PyMatting (about 25 s, delaying its two nodes and the full list); Run is inert until the backend takes requests (about 1 s). Nodes: a Seed through Pass Through is an equal new object; above 2^63 bytes NumPy raises ValueError where the engine raises MemoryError or OverflowError (per-node decision). Codecs: non-plain TIFF Load Image and GIF/TGA/AVIF/DDS Save Image still decline; `JSIMD_FORCENONE` changes our libjpeg-turbo, not OpenCV's (one CMYK JPEG-in-TIFF); the writer's cross-drive move is untested; `.exr` still fails (owner queue). Upscale: the size probe's disk cache and background probe at Load Model; `recover_alpha` per chunk; output-changing TensorRT balanced tiles and PyTorch tile batching (owner decision). App: pip's `~` folders and FFmpeg's `.part`/`.tmp` crash leftovers are not swept; a backend crash's `app.exit(1)` skips the settings flush; `useSettings` subscribes to the whole object; a layout-only counter, an incremental type pass and preview reuse on reopen (skipped: small gain). Video: a fused float BGR -> 16-bit planes kernel; `chainner_vs/upscale.py` `_image` still `np.stack`s; no native PyAV reader (Save Video sets the pace). Models: `size_probe.py` could use `model_facts`; the probe and the build cache hash the same bytes twice; Interpolate Models and auto_split mutate shared models; two concurrent first uses of an ONNX session make two sessions. Backend: `file_sequence.cpp` resolves every folder (`realpath`; a 1000x5 tree 227 ms against 105 ms with `scandir`) unless the second wave's listing work covers it; dead code: `server.py`'s `/packages` builds a dependency list it discards. Final wave: an 8.3 short target name is no longer expanded by the atomic writer; a module that fails on every start for a reason other than a missing dependency never writes the UI cache (that start shows the splash, as before); `gc.freeze` is skipped when a framework node's preview finished first (the owner's template), so R1's gain is for starts without one; the native codecs read OpenCV's limit variables as plain integers only; two Convert To ONNX nodes with different options on one model re-export on each run; the size probe re-probes a model that does not run on each load | Next sessions, by measured size |
+| Owner queue (instant-exec, 2026-10-19; `native/local/instant-exec/owner-queue.md`): release v0.3.7 (tag, push, D: update)? The native engine becomes every user's default executor; the Python one stays reachable by `CHAINNER_C_EXECUTOR=python` until its retirement. FFV1 `-level 3 -slices 16` for Frames to Clip's internal lossless temp? That node 2.7x faster, temp bytes change, one named exception to the codec rule (R6). Build Engine's disk Engine Cache on by default? Up to 16 GiB of engines in the storage folder. A pip wheel cache for dependency installs (multi-GB, the disk rule). The memo cache as a user setting. The `.exr` loading fix (OpenCV's build has no OpenEXR). The spandrel fork wheel release with the DRFT fold speed-up (build 309 -> 210 ms). The Python executor's retirement in the first release after v0.3.7 (A5). Checks: the image size limit as read (40,000 x 40,000 = 1.6 billion pixels in total, each side up to 1,048,576); clicking a node selects it on mouse-up (was mouse-down); the packaged `out\` startup timing (one launch; a new folder may prompt the firewall); the GPU checks, `GPU-DEFERRED.md` rows 6-22 | The owner's yes or no |
+| VRAM after Stop follow-ups (2026-10-19): on `CHAINNER_C_EXECUTOR=python` a dropped /run's node that ends after the request keeps its memory reserved (collect_failed_run ran before it ended: 18 GB held 25 s in the probe) | Release after the node's end on the Python executor |
+| DRFT TensorRT route (2026-10-20): released (re-release 5, State); the ONNX size probe logs four tracebacks for any plugin ONNX (DUAL's too; the load is unaffected); Convert To NCNN still takes a legacy DRFT through the generic export (wrong at sizes other than 32x32) | On request |
+| VRAM offload follow-ups (2026-10-20): a first overflow in a session pays the page-locking of its pinned RAM (2176 px: 5.96 s against 4.95 s warm), again in each run that overflows (its pinned RAM is released at the run's end); least-recently-used order brings 6.8 GiB back where a traced farthest-next-use plan would bring almost none; only Upscale Image's forward is covered (inputs of 2 MP or more) | A traced plan if the warm 7 % matters |
 
 ## Decision log
 

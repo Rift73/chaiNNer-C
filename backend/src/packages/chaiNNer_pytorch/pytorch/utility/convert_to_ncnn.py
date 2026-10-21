@@ -18,6 +18,7 @@ from nodes.properties.outputs import NcnnModelOutput, TextOutput
 
 from ...settings import get_settings
 from .. import utility_group
+from ..io.load_model import full_precision_source
 
 
 @utility_group.register(
@@ -70,9 +71,11 @@ def convert_to_ncnn_node(
     exec_options = get_settings(context)
     device = exec_options.device
 
-    # Intermediate conversion to ONNX is always fp32
+    # Intermediate conversion to ONNX is always fp32, from the FP32 weights of a model
+    # Load Model loaded in FP16.
+    source = full_precision_source(model, "Convert To NCNN")
     onnx_model = load_onnx_model(
-        convert_to_onnx_impl(model, device, False, "data", "output")
+        convert_to_onnx_impl(source, device, False, "data", "output")
     )
     ncnn_model, fp_mode = onnx_convert_to_ncnn_node(onnx_model, is_fp16)
 

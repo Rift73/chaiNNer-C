@@ -48,7 +48,7 @@ export interface NodeProps {
 
 const BreakPointInner = memo(({ id }: NodeProps) => {
     const { getEdges, getNode } = useReactFlow<NodeData, EdgeData>();
-    const { edgeChanges } = useContext(GlobalVolatileContext);
+    const edgeChanges = useContextSelector(GlobalVolatileContext, (c) => c.edgeChanges);
     const { removeNodesById, removeEdgeBreakpoint } = useContext(GlobalContext);
     const { functionDefinitions } = useContext(BackendContext);
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes as ct
+import math
 import operator
 from functools import lru_cache
 
@@ -18,6 +19,7 @@ def _api():
     signatures = {
         "cn_resample_nearest": [fp, fp, *([size] * 5)],
         "cn_resample_filtered": [fp, fp, *([size] * 5), integer, integer, integer],
+        "cn_resample_dpid": [fp, fp, *([size] * 5), ct.c_float, integer, integer],
         "cn_resample_alpha": [fp, fp, size, integer],
         "cn_resample_border": [
             fp,
@@ -102,6 +104,49 @@ def filtered(
             filter_id,
             bool(gamma_correction),
             vector_clip,
+        )
+    )
+    return out
+
+
+def dpid(
+    image: np.ndarray,
+    dimensions: tuple[int, int],
+    lam: float,
+    separate_alpha: bool = False,
+    gamma_correction: bool = False,
+) -> np.ndarray:
+    """DPID (Weber et al. 2016, native/src/dpid_ops.c) with detail weight lam >= 0.
+
+    A four-channel image carries alpha with the colour weights (the caller
+    premultiplied it) unless separate_alpha, which downscales alpha as its own
+    one-channel DPID. Gamma correction as filtered's."""
+    h, w, c = _shape(image)
+    out_w, out_h = (operator.index(value) for value in dimensions)
+    if not math.isfinite(lam) or lam < 0:
+        raise ValueError("DPID's lambda must be a finite number of at least 0")
+    if min(out_h, out_w) < 0:
+        raise OverflowError("Resize dimensions cannot be negative")
+    if max(h, w) > 2**31 - 1 or max(out_h, out_w) > 2**32 - 1:
+        raise OverflowError("Resize dimensions exceed the native coordinate range")
+    if out_h * out_w * c * 4 > 16 * 2**30:
+        raise ValueError("Resize output exceeds the 16 GiB image limit")
+    out = np.empty((out_h, out_w, c), np.float32)
+    if out.size == 0:
+        return out
+    source = f32(image)
+    check(
+        _api().cn_resample_dpid(
+            ptr(source),
+            ptr(out),
+            h,
+            w,
+            c,
+            out_h,
+            out_w,
+            lam,
+            bool(separate_alpha),
+            bool(gamma_correction),
         )
     )
     return out

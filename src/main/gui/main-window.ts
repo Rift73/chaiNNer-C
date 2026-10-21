@@ -11,7 +11,6 @@ import EventSource from 'eventsource';
 import fs, { constants } from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import { v4 as uuid4 } from 'uuid';
 import { BackendEventMap } from '../../common/Backend';
 import { FileSaveResult, Version } from '../../common/common-types';
 import { log } from '../../common/log';
@@ -21,16 +20,17 @@ import { Progress, ProgressController, ProgressToken, SubProgress } from '../../
 import { assertNever } from '../../common/util';
 import { chainnerCVersion } from '../../common/version';
 import { OpenArguments, parseArgs } from '../arguments';
-import { BackendProcess } from '../backend/process';
+import { BackendProcess, getBackendPath, stopBackendOnQuit } from '../backend/process';
 import { setupBackend } from '../backend/setup';
 import { buildInfo } from '../buildInfo';
-import { readClipboardImageAsPng } from '../clipboardImage';
+import { readClipboardImageAsPng, storeClipboardPng } from '../clipboardImage';
 import { isArmMac, isMac } from '../env';
 import { addBrowserWindow, addFile, addFiles, removeFile, removeFiles } from '../fileWatcher';
 import { getLogsFolder, getRootDir, installDir } from '../platform';
 import { BrowserWindowWithSafeIpc, ipcMain } from '../safeIpc';
 import { SaveData, SaveFile, openSaveFile } from '../SaveFile';
-import { writeSettings } from '../setting-storage';
+import { SettingsWriter } from '../setting-storage';
+import { UiCache, getUiCacheFile } from '../uiCache';
 import { MenuData, setMainMenu } from './menu';
 
 const version = app.getVersion() as Version;
@@ -65,7 +65,8 @@ const initiateSaveDialog = async (
 const registerEventHandlerPreSetup = (
     mainWindow: BrowserWindowWithSafeIpc,
     args: OpenArguments,
-    settings: ChainnerSettings
+    settings: ChainnerSettings,
+    settingsWriter: SettingsWriter
 ) => {
     // Synchronous handlers for preload script
     ipcMain.on('get-app-version-sync', (event) => {
@@ -93,22 +94,19 @@ const registerEventHandlerPreSetup = (
 
     // settings
     let currentSettings = settings;
-    let savingInProgress = false;
     ipcMain.handle('get-settings', () => currentSettings);
     ipcMain.handle('set-settings', (_, newSettings) => {
         currentSettings = newSettings;
-        if (savingInProgress) {
-            return;
-        }
-        savingInProgress = true;
-        setTimeout(() => {
-            savingInProgress = false;
-            try {
-                writeSettings(currentSettings);
-            } catch (error) {
-                log.error('Unable to save settings.', error);
-            }
-        }, 1000);
+        settingsWriter.save(newSettings);
+    });
+    // the last changes (e.g. the window size) are written before the app ends
+    app.on('will-quit', (event) => {
+        if (settingsWriter.idle) return;
+        event.preventDefault();
+        settingsWriter
+            .flush()
+            .finally(() => app.quit())
+            .catch(log.error);
     });
 
     // menu
@@ -163,7 +161,8 @@ const registerEventHandlerPreSetup = (
         }
     });
 
-    ipcMain.handle('quit-application', () => {
+    ipcMain.handle('quit-application', async () => {
+        await settingsWriter.flush();
         app.exit();
     });
 
@@ -290,12 +289,9 @@ const registerEventHandlerPreSetup = (
     ipcMain.handle('clipboard-availableFormats', () => clipboard.availableFormats());
     ipcMain.handle('clipboard-readHTML', () => clipboard.readHTML());
     ipcMain.handle('clipboard-readRTF', () => clipboard.readRTF());
-    ipcMain.handle('clipboard-readImage-and-store', async () => {
-        const imgData = readClipboardImageAsPng(clipboard);
-        const imgPath = path.join(os.tmpdir(), `chaiNNer-clipboard-${uuid4()}.png`);
-        await fs.writeFile(imgPath, imgData);
-        return imgPath;
-    });
+    ipcMain.handle('clipboard-readImage-and-store', () =>
+        storeClipboardPng(os.tmpdir(), readClipboardImageAsPng(clipboard))
+    );
     ipcMain.handle('clipboard-writeImage', (event, image) => clipboard.writeImage(image));
     ipcMain.handle('clipboard-writeImageFromURL', (event, url) => {
         const image = nativeImage.createFromDataURL(url);
@@ -310,14 +306,29 @@ const registerEventHandlerPreSetup = (
     ipcMain.handle('unwatch-files', (event, ps) => removeFiles(ps));
 };
 
+/**
+ * The handlers the renderer calls at its start, registered before it loads: they answer once the
+ * backend process has started, which runs beside the window's loading.
+ */
+const registerEventHandlerBackendInfo = (
+    backendPromise: Promise<BackendProcess>,
+    uiCache: UiCache | undefined
+) => {
+    ipcMain.handle('owns-backend', async () => (await backendPromise).owned);
+    ipcMain.handle('get-backend-url', async () => (await backendPromise).url);
+    ipcMain.handle('get-python', async () => (await backendPromise).python);
+
+    ipcMain.handle('get-ui-cache', async () => uiCache?.read());
+    ipcMain.on('update-ui-cache', (_, data) => {
+        uiCache?.write(data).catch(log.error);
+    });
+};
+
 const registerEventHandlerPostSetup = (
     mainWindow: BrowserWindowWithSafeIpc,
-    backend: BackendProcess
+    backend: BackendProcess,
+    settingsWriter: SettingsWriter
 ) => {
-    ipcMain.handle('owns-backend', () => backend.owned);
-    ipcMain.handle('get-backend-url', () => backend.url);
-    ipcMain.handle('get-python', () => backend.python);
-
     if (backend.owned) {
         backend.addErrorListener((error) => {
             dialog.showMessageBoxSync({
@@ -351,11 +362,6 @@ const registerEventHandlerPostSetup = (
             });
             app.exit(1);
         });
-
-        app.on('before-quit', () => {
-            backend.clearErrorListeners();
-            backend.tryKill().catch(log.error);
-        });
     }
 
     ipcMain.handle('restart-backend', async () => {
@@ -381,6 +387,7 @@ const registerEventHandlerPostSetup = (
         if (backend.owned) {
             backend
                 .tryKill()
+                .then(() => settingsWriter.flush())
                 .finally(() => {
                     app.relaunch();
                     app.exit();
@@ -575,10 +582,40 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
 
     setupProgressListeners(mainWindow, progressController);
 
+    const settingsWriter = new SettingsWriter();
+
     try {
-        registerEventHandlerPreSetup(mainWindow, args, settings);
-        const backend = await createBackend(SubProgress.slice(progressController, 0, 0.25), args);
-        registerEventHandlerPostSetup(mainWindow, backend);
+        registerEventHandlerPreSetup(mainWindow, args, settings, settingsWriter);
+
+        // The backend starts while the window loads. A remote backend's node list is not cached:
+        // its Python and packages are not on this computer.
+        const backendPromise = createBackend(SubProgress.slice(progressController, 0, 0.25), args);
+        stopBackendOnQuit(backendPromise);
+        const uiCache = args.remoteBackend
+            ? undefined
+            : new UiCache(
+                  getUiCacheFile(getRootDir()),
+                  async () => (await backendPromise).python,
+                  path.dirname(getBackendPath())
+              );
+        registerEventHandlerBackendInfo(backendPromise, uiCache);
+
+        mainWindow.once('ready-to-show', () => {
+            mainWindow.show();
+            if (settings.lastWindowSize.maximized) {
+                mainWindow.maximize();
+            }
+        });
+
+        // and load the index.html of the app.
+        const loading = MAIN_WINDOW_VITE_DEV_SERVER_URL
+            ? mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
+            : mainWindow.loadFile(
+                  path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`)
+              );
+
+        const backend = await backendPromise;
+        registerEventHandlerPostSetup(mainWindow, backend, settingsWriter);
 
         const sse = new EventSource(`${backend.url}/setup-sse`, {
             withCredentials: true,
@@ -603,25 +640,7 @@ export const createMainWindow = async (args: OpenArguments, settings: ChainnerSe
             }
         });
 
-        if (mainWindow.isDestroyed()) {
-            return;
-        }
-
-        mainWindow.once('ready-to-show', () => {
-            mainWindow.show();
-            if (settings.lastWindowSize.maximized) {
-                mainWindow.maximize();
-            }
-        });
-
-        // and load the index.html of the app.
-        if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-            await mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
-        } else {
-            await mainWindow.loadFile(
-                path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`)
-            );
-        }
+        await loading;
     } catch (error) {
         if (error instanceof CriticalError) {
             await progressController.submitInterrupt(error.interrupt);

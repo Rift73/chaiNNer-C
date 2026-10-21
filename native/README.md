@@ -1,8 +1,8 @@
 # chaiNNer-C: build, test, package, bench
 
-chaiNNer-C v0.3.6, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
+chaiNNer-C v0.3.7, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
 installed nightly `0.25.1-nightly.2025-10-21` UI with pinned bundle patches, the single backend in `backend/src`, and a
-native C17/C++20 layer. The UI shows v0.3.6 (header, About, startup log, system information with `app.upstream`), while
+native C17/C++20 layer. The UI shows v0.3.7 (header, About, startup log, system information with `app.upstream`), while
 `app.getVersion()` stays upstream's, so saved chains keep the upstream version stamp and upstream's migrations read
 them correctly. Design: `ARCHITECTURE.md`. State and
 decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md` (user guide) and
@@ -14,12 +14,12 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
 | Path | Role |
 | --- | --- |
 | `backend/src/` | The only backend; ships byte for byte (stored verbatim as LF, upstream's line ending: `backend/src/** -text`); its `nodes/impl/chainner_native.dll` and `_chainner_graph.pyd` (and `nodes/impl/pytorch/vosr2_qkv.dll` when built) are git-ignored binaries written by the build |
-| `native/src/`, `native/include/`, `native/third_party/` | C17 kernels, C++20 modules; vendored pybind11, fpng 1.0.6, ONNX Runtime C header |
+| `native/src/`, `native/include/`, `native/third_party/` | C17 kernels, C++20 modules; vendored pybind11, the image codec libraries, ONNX Runtime C header |
 | `native/tests/` | pytest suites and frozen `reference_*` oracles (stored verbatim: `native/tests/reference_*/** -text`) |
 | `native/tools/` | Packager, UI patches, runtime verifiers, benchmark harness, code generators, `isa_check.py text` (compares two binaries' code sections), `golden_kernels.py` (golden manifests of the SP4 kernels; usage in each docstring) |
 | `native/reports/`, `out/chaiNNer-C/` | Ignored: local evidence (never needed to build or package), and the portable package |
 | `out/chaiNNer-C-py311/` | Ignored: the last CPython 3.11 package, kept read-only as the old-stack bench side and the undo; deleting it is owner-only |
-| `src/`, `tests/` | Upstream frontend at `d56e507f` with the package's two UI patches ported, CPython 3.14.8 as its integrated Python and `%APPDATA%\chaiNNer-C` as its root; the run-from-source UI (`npm start`), never shipped. It alone has VOSR's iterated input condition (no package patch carries them) |
+| `src/`, `tests/` | Upstream frontend at `d56e507f` with the package's two UI patches ported, CPython 3.14.8 as its integrated Python and `%APPDATA%\chaiNNer-C` as its root (a `portable` build: its own folder), where `ui-cache\backend-ui.json` keeps the last node list so the editor shows at once while the backend starts; the run-from-source UI (`npm start`), never shipped. It alone has VOSR's iterated input condition (no package patch carries them) |
 
 ## Prerequisites
 
@@ -84,12 +84,13 @@ Build Tools' copy, which must exist) and `native/toolchain.cmake`, which pins th
 2026-10-06): clang-cl 23.1.2 with lld-link and llvm-lib, MSVC toolset 14.44.35207 and Windows SDK 10.0.26100.0, no
 Developer environment. Configuration refuses any other version of the three (`CMakeLists.txt` for clang-cl,
 `toolchain.cmake` for the toolset directory's version and the SDK version), and the package manifest records them
-(`native_toolchain`). It builds `chainner_native.dll` (C17, C ABI version 2), `_chainner_graph.pyd` (C++20/pybind11, linked
-against the DLL, fpng and the runtime's `python314.lib`) and `chainner_ext.pyd`. Every target: baseline x86-64 code
+(`native_toolchain`). It builds `chainner_native.dll` (C17, C ABI version 2; with the vendored libdeflate for the default
+PNG encoder), `_chainner_graph.pyd` (C++20/pybind11, linked against the DLL, the image codec libraries and the runtime's
+`python314.lib`) and `chainner_ext.pyd`. Every target: baseline x86-64 code
 (the ISA units for their level only, exactly what `src/isa.c` checks: `*_avx2.c` AVX2, FMA, BMI1 and BMI2,
-`*_avx512.c` those plus AVX-512 F/DQ/CD/BW/VL; fpng `-msse4.1 -mpclmul` behind its own CPU check), ThinLTO, `/fp:strict`, dynamic denormals, `/Brepro` (the same sources give the same binaries; no PDB in Release) and
+`*_avx512.c` those plus AVX-512 F/DQ/CD/BW/VL; the vendored libraries' SIMD behind their own CPU checks), ThinLTO, `/fp:strict`, dynamic denormals, `/Brepro` (the same sources give the same binaries; no PDB in Release) and
 the static runtime; first-party targets `/W4 /WX` (the standing strict check; no suppressions), `/EHsc` for C++;
-fpng keeps its vendor `/W3`. `-Define NAME=VALUE` passes CMake entries: the runtime
+vendored libraries keep their vendor `/W3`. `-Define NAME=VALUE` passes CMake entries: the runtime
 (`CHAINNER_C_PYTHON_ROOT=...`, on a directory's first configure), the toolchain's four roots for other install
 locations (`chainner_c_llvm`, `chainner_c_vc_tools`, `chainner_c_sdk`, `chainner_c_sdk_version`; defaults are the
 paths above, in `toolchain.cmake`; also on a directory's first configure), `CHAINNER_C_PDB=ON` (PDBs and linker maps; it must
@@ -103,15 +104,17 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 `CHAINNER_C_EXT_OUTPUT_DIR`, default `backend/src/chainner_ext`), replacing the only known-good copies. Copy them to
 `native\build\held\` first and check `Get-FileHash` against those copies. The build is reproducible: the same sources
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
-map, `.gitattributes`). This source's binaries (portable builds of 2026-10-18, after the YUV planes, DDS and
-TensorRT runner work, with TensorRT 11.4.0.106 and CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
+map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` and `_chainner_graph.pyd` of 2026-10-21, with the
+default PNG encoder, `drft_trt_plugins.dll` of 2026-10-20, the others of 2026-10-18, with TensorRT 11.4.0.106 and
+CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
-| `chainner_native.dll` | `cf438e3c3dbae42aacfee4bbc0198b7795255487b9e189ae5dcb9ab73b02bba7` |
-| `_chainner_graph.pyd` | `5b1297c1b5df57a73d02baa909f19fa4d2029f2642f21eb87fb0051e411fb322` |
+| `chainner_native.dll` | `bfe03c8994cf84d3971999fcc1268b5909085bcca6f14164ea9f1ef49d333ba5` |
+| `_chainner_graph.pyd` | `e9d1697fda67dffc04586a61d01c1d8389ae9c76d20e69407fbb4399241e5c35` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 | `vosr2_qkv.dll` | `5b5cde9c2c037f0ed3d48ce0fe59b3ff01432c610edc358fdb7b0155e5b93497` |
+| `drft_trt_plugins.dll` | `2bc86cb6918a196d9a03b1f0bc3ab7e3a78c6440567eb6e191642f3f1bb89091` |
 | `_chainner_trt.pyd` | `7d0f774c3426fb2900f05493ef5650f90aa66a997bb000d12c9c71f3cb05d947` |
 | `chainner_trt_vs.dll` | `f7d12717a7cbd02a09ea34728de92a1421ff0902acb73705107b095741b09a9c` |
 
@@ -126,6 +129,20 @@ compute_120 PTX, `/W4 /WX` on the host side and `-Werror all-warnings`. `qkv_plu
 and lld-link with the flags above (TensorRT's and CUDA's headers as system headers). The DLL imports only
 `nvinfer_11.dll` (CUDA 13's `cudart.lib` is the static runtime) and is reproducible like the others. Its hash is part
 of the VOSR TensorRT engine caches' identity, so a new DLL rebuilds those engines once.
+
+**Legacy DRFT's TensorRT plugins** `drft_trt_plugins.dll` (`src/drft`, Codex's LegacyBarrierV1 library: OCAB
+attention, relative bias and Q/K/V packing, the window neural bias, the identity barrier and the output tail; the
+plugins the export uses take FP16, its precision with BF16 attention since 2026-10-20, as well as Codex's BF16) build from the same two
+roots into `CHAINNER_C_OUTPUT_DIR\tensorrt` (default `backend/src/nodes/impl/tensorrt`). DRFT
+engines reference its plugins without carrying the DLL (TensorRT refuses a second registration of a carried library
+in one process); chaiNNer-C registers it once per process before loading engines, and users need no compiler. Its four
+`.cu` files are compiled by nvcc as `qkv.cu` is, with two differences: nvcc's default device math (contraction on,
+IEEE division and square root), the numerics Codex measured, and host warnings at `/W4` but not fatal, since nvcc's
+generated stubs of kernels in anonymous namespaces raise C4211 and the output-tail plugin, the one on TensorRT's
+deprecated `IPluginV2DynamicExt`, raises EDG's #997. `DrftAliasedIdentityBarrierPlugin.cpp` and the link use clang-cl
+with `/W4 /WX`. The DLL imports only `KERNEL32.dll`. Unlike the others, its bytes depend on the checkout's path
+(nvcc's output): the same sources, CUDA 13.4.92 and TensorRT 11.4.0.106 gave `fe92b59b…` in a worktree and the hash
+above in the main checkout. `native/tests/test_drft_plugins.py` checks its six creators.
 
 **The TensorRT runner** (`trt_runner`, the C++ engine runner) builds from the same two roots: `_chainner_trt.pyd`
 (the Python module) and, when `CHAINNER_C_VAPOURSYNTH_INCLUDE` names the directory of VapourSynth's `VapourSynth4.h`,
@@ -276,7 +293,7 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
 ## Bench
 
 ```powershell
-.\native\.venv\Scripts\python.exe -B native\tools\bench.py [--a TREE] [--b TREE] [--cases CASE ...] [--repeats N] [--record-noise] [--env-a NAME=VALUE] [--env-b NAME=VALUE] [--profile] [--python-a PATH] [--python-b PATH] [--png-compare sha256|decoded]
+.\native\.venv\Scripts\python.exe -B native\tools\bench.py [--a TREE] [--b TREE] [--cases CASE ...] [--repeats N] [--record-noise] [--env-a NAME=VALUE] [--env-b NAME=VALUE] [--profile] [--python-a PATH] [--python-b PATH] [--png-compare sha256|decoded] [--allow-schema-change]
 # against upstream's nightly (the pinned app's backend on the installed chaiNNer's Python, both read-only; B is the package; PNG bytes differ by encoder, pixels do not):
 .\native\.venv\Scripts\python.exe -B native\tools\bench.py --a native\local\upstream\app-0.25.1-nightly2025-10-21\resources\src --python-a "$env:APPDATA\chaiNNer\python\python\python.exe" --png-compare decoded
 ```
@@ -290,11 +307,13 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
   `normal-map`, `caption`, `split-channels`, `palette-median`, `palette-dither`, `parallel-branches`, `video-ffv1`,
   `video-h264`, `video-resize-h264`. All 13 at 6 pairs take roughly 10-20 minutes.
 - Per case: one warm-up pair, then N measured pairs in alternating order (N even; verdicts need `MIN_PAIRS = 6`). Outputs and final
-  UI state must be identical in every trial or the run fails. Oracles: PNG files by SHA-256 (default) or, with `--png-compare
+  UI state must be identical in every trial or the run fails; so must both sides' `/nodes`, unless `--allow-schema-change`
+  (a before/after across a branch that changes node schemas) records the difference as `schema_change` instead. Oracles: PNG files by SHA-256 (default) or, with `--png-compare
   decoded`, by pixels and colour chunks (another encoder's files); ffprobe plus streamed FFmpeg raw BGR24 SHA-256; SSE tail validation.
 - Each trial records B's item-window decision and counts (`item_windows`); `CHAINNER_C_ITEM_WINDOW=k` in the environment forces K (`1` = sequential); `CHAINNER_C_SERIAL_PRODUCER=1` forces the serial producer (any other value is ignored); `CHAINNER_C_ISA=scalar|avx2|avx512` (set per side with `--env-a`/`--env-b`) caps our ISA units, while the C runtime's and the compiler's own dispatched code follow the CPU (logged as `native isa=...`, recorded as `native_isa`); `avx2` also caps the AVX-512 units, for a part that downclocks under them (spec 4.3 residual).
+- The native run engine runs every `/run` and `/run/individual` (ARCHITECTURE section 4); `CHAINNER_C_EXECUTOR=python` selects process.Executor, the diagnostic oracle (never a user setting). `CHAINNER_C_MEMO_BUDGET_MIB` is its memo cache's budget (`0` = off), a diagnostic override that wins over the user's Result Cache settings (Settings > Python > chaiNNer_standard: on by default, size default min(2 GiB, 10 % of RAM), applied at each run's start): a backend that runs a case again reuses those outputs, so set it to `0` with `--env-b` unless the memo is what you measure. `CHAINNER_C_ENGINE_THREADS` (workers, default one per CPU of the affinity mask, at least 2), `CHAINNER_C_PYTHON_THREADS` (engine threads in Python at once, default 8) and `CHAINNER_C_ENGINE_IDLE_SECONDS` (a service thread's idle time before it ends, default 30) take a positive count; any other value keeps the default. `CHAINNER_C_NATIVE_CODECS=0` sends every image decode and encode to today's Python path (the codec corpus's oracle).
 - `CHAINNER_C_PROFILE=1` only through `--profile`: a timer table per trial in `native_profile`, plus a `pool` entry (this run's deltas of the native pool's dispatches, wakes and empty wakes); never a gate.
-- `CHAINNER_C_NUMPY_POOL` (the backend's NumPy memory pool: freed blocks of 512 KiB or more stay warm; read once per process; also the A/B switch, set per side with `--env-a`/`--env-b`): unset or empty = on, idle bytes capped at min(512 MiB, 10 % of RAM); `0` = the pool is not installed (NumPy's default handler, as before SP4c); digits = the cap in MiB; an invalid value = one warning, and the pool is not installed. It needs NumPy 1.23 or newer: an older or mismatched NumPy gets one warning and the default handler. `0` does not undo D8: Load Video's frames are read into fresh NumPy buffers either way, D8 has no runtime switch, and its undo is `git revert 14176509 4cceb734`. With `CHAINNER_C_PROFILE=1` its counters are a `numpy_pool` entry of the same profile line.
+- `CHAINNER_C_NUMPY_POOL` (the backend's NumPy memory pool: freed blocks of 512 KiB or more stay warm; read once per process; also the A/B switch, set per side with `--env-a`/`--env-b`): unset or empty = on, idle bytes capped at min(2 GiB, 10 % of RAM); `0` = the pool is not installed (NumPy's default handler, as before SP4c); digits = the cap in MiB; an invalid value = one warning, and the pool is not installed. It needs NumPy 1.23 or newer: an older or mismatched NumPy gets one warning and the default handler. `0` does not undo D8: Load Video's frames are read into fresh NumPy buffers either way, D8 has no runtime switch, and its undo is `git revert 14176509 4cceb734`. With `CHAINNER_C_PROFILE=1` its counters are a `numpy_pool` entry of the same profile line.
 - Verdicts compare the median paired ratio with two floors from `native/tools/bench-data/noise-floor.json`, the noise floor and the
   current floor (this K setting's A/A launches): `win` (beyond both, most pairs agree), `regression` (beyond both; blocks),
   `regression (within current A/A)` (beyond the noise floor only; reported, not blocking), `neutral`, `unknown` (no usable floor or

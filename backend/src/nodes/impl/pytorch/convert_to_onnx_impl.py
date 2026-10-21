@@ -1,4 +1,6 @@
+import copy
 from io import BytesIO
+from typing import TypeVar
 
 import torch
 from spandrel import ImageModelDescriptor, ModelDescriptor
@@ -8,19 +10,38 @@ from spandrel.architectures.SCUNet import SCUNet
 
 from . import attention_export
 
+_Descriptor = TypeVar("_Descriptor", bound=ModelDescriptor)
+
 
 def is_onnx_supported(model: ModelDescriptor) -> bool:
     return not isinstance(model.model, (SCUNet, SAFMN, CRAFT))
 
 
-def convert_to_onnx_impl(
+def export_copy(
+    model: _Descriptor, device: torch.device, use_half: bool = False
+) -> _Descriptor:
+    """A copy of `model` to export: in evaluation mode on `device`, in the export's
+    precision. `model` itself is not changed: Upscale Image and Save Model share it."""
+    if use_half and not model.supports_half:
+        raise ValueError(
+            f"Model of arch {model.architecture} does not support half precision."
+        )
+    model = copy.deepcopy(model)
+    model.eval().to(device)
+    if use_half:
+        model.half()
+    else:
+        model.float()
+    return model
+
+
+def export_onnx(
     model: ModelDescriptor,
-    device: torch.device,
-    use_half: bool = False,
     input_name: str = "input",
     output_name: str = "output",
     opset_version: int = 14,
 ) -> bytes:
+    """The ONNX export of `model`, a copy from `export_copy`, in its precision."""
     # https://github.com/onnx/onnx/issues/654
     dynamic_axes = {
         input_name: {0: "batch_size", 2: "height", 3: "width"},
@@ -28,18 +49,7 @@ def convert_to_onnx_impl(
     }
     size = 32
     dummy_input = torch.rand(1, model.input_channels, size, size)
-    dummy_input = dummy_input.to(device)
-
-    if use_half:
-        if not model.supports_half:
-            raise ValueError(
-                f"Model of arch {model.architecture} does not support half precision."
-            )
-        model.half()
-        dummy_input = dummy_input.half()
-    else:
-        model.float()
-        dummy_input = dummy_input.float()
+    dummy_input = dummy_input.to(model.device, model.dtype)
 
     # HAT and DAT: a copy with their attention laid out for TensorRT (exact)
     model = attention_export.for_export(model)
@@ -101,3 +111,17 @@ def convert_to_onnx_impl(
         )
         f.seek(0)
         return f.read()
+
+
+def convert_to_onnx_impl(
+    model: ModelDescriptor,
+    device: torch.device,
+    use_half: bool = False,
+    input_name: str = "input",
+    output_name: str = "output",
+    opset_version: int = 14,
+) -> bytes:
+    """`model` exported to ONNX on `device`; `model` is not changed."""
+    return export_onnx(
+        export_copy(model, device, use_half), input_name, output_name, opset_version
+    )

@@ -1,32 +1,64 @@
 /* Planar half or float32 samples to interleaved float32: a model's NCHW output
- * plane set (for example the TensorRT node's pinned output, cropped) as an HWC
- * image, in one pass. See planar_shared.h for the exactness rules. */
+ * plane set (every upscaling backend's output, cropped, red and blue swapped where
+ * asked) or a video frame's planes as an HWC image, in one pass, finding whether
+ * every sample is finite. See planar_shared.h for the exactness rules. */
 #include "planar_shared.h"
 #include "parallel.h"
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+
+typedef struct {
+    planar_job job;
+    volatile long special; /* 1 once a chunk saw an Inf or NaN sample */
+} planar_call;
 
 static void planar_range(void *context, size_t begin, size_t end)
 {
-    const planar_job *job = context;
+    planar_call *call = context;
+    int special;
 #if defined(_MSC_VER) && defined(_M_X64)
-    if (job->isa >= CN_ISA_AVX2) {
-        cn_planar_rows_avx2(job, begin, end);
-        return;
-    }
+    if (call->job.isa >= CN_ISA_AVX2)
+        special = cn_planar_rows_avx2(&call->job, begin, end);
+    else
 #endif
-    planar_rows(job, begin, end, 0);
+        special = planar_rows(&call->job, begin, end, 0);
+    if (special) {
+#ifdef _MSC_VER
+        _InterlockedOr(&call->special, 1);
+#else
+        __atomic_fetch_or(&call->special, 1, __ATOMIC_RELAXED);
+#endif
+    }
 }
 
-/* Strides are in elements. Refused: a null pointer, no channel, rows wider than
+/* Both entries' rows [0, height) across the pool; finite (may be null) as below. */
+static cn_status run_planar(planar_job job, size_t height, int *finite)
+{
+    planar_call call = {job, 0};
+    size_t grain = 65536 / (job.width * job.channels) + 1;
+    cn_status status = cn_parallel_for(height, grain, planar_range, &call);
+    if (finite) *finite = !call.special;
+    return status;
+}
+
+/* Strides are in elements; order as planar_job's. finite (may be null): 1 when every
+ * sample is finite, else 0 (NaN or Inf). Refused: a null pointer, no channel, an
+ * order other than 0-2 (2 with fewer than three channels), rows wider than
  * row_stride, a misaligned pointer, and a source that overlaps the output. */
 CN_EXPORT cn_status cn_planar_to_interleaved_f32(const void *src, int half,
     size_t plane_stride, size_t row_stride, size_t height, size_t width,
-    size_t channels, int reverse, float *out)
+    size_t channels, int order, float *out, int *finite)
 {
     size_t item = half ? sizeof(uint16_t) : sizeof(float);
     if (src == NULL || out == NULL || channels == 0 || width > row_stride
+        || order < 0 || order > 2 || (order == 2 && channels < 3)
         || (uintptr_t)src % item != 0 || (uintptr_t)out % sizeof(float) != 0)
         return CN_INVALID_ARGUMENT;
-    if (height == 0 || width == 0) return CN_OK;
+    if (height == 0 || width == 0) {
+        if (finite) *finite = 1;
+        return CN_OK;
+    }
     if (height - 1 > (SIZE_MAX - width) / row_stride) return CN_SIZE_OVERFLOW;
     size_t plane = (height - 1) * row_stride + width;
     if (plane_stride != 0 && channels - 1 > (SIZE_MAX - plane) / plane_stride)
@@ -39,8 +71,42 @@ CN_EXPORT cn_status cn_planar_to_interleaved_f32(const void *src, int half,
     size_t src_bytes = extent * item, out_bytes = height * width * channels * sizeof(float);
     if (s > UINTPTR_MAX - src_bytes || o > UINTPTR_MAX - out_bytes) return CN_SIZE_OVERFLOW;
     if (s < o + out_bytes && o < s + src_bytes) return CN_INVALID_ARGUMENT;
-    planar_job job = {src, out, plane_stride, row_stride, width, channels,
-        half != 0, reverse != 0, cn_isa_current()};
-    size_t grain = 65536 / (width * channels) + 1;
-    return cn_parallel_for(height, grain, planar_range, &job);
+    planar_job job = {src, NULL, NULL, out, plane_stride, row_stride, width, channels,
+        half != 0, order, cn_isa_current()};
+    return run_planar(job, height, finite);
+}
+
+/* Planes at separate addresses (a decoder's planes, or one buffer's planes in another
+ * order): output channel k reads planes[k], whose rows are row_strides[k] elements
+ * apart; the order of the pointers is the output's channel order. Refused as above,
+ * for each plane. */
+CN_EXPORT cn_status cn_planes_to_interleaved_f32(const void *const *planes,
+    const size_t *row_strides, int half, size_t height, size_t width, size_t channels,
+    float *out)
+{
+    size_t item = half ? sizeof(uint16_t) : sizeof(float);
+    if (planes == NULL || row_strides == NULL || out == NULL || channels == 0
+        || (uintptr_t)out % sizeof(float) != 0)
+        return CN_INVALID_ARGUMENT;
+    for (size_t k = 0; k < channels; ++k)
+        if (planes[k] == NULL || width > row_strides[k] || (uintptr_t)planes[k] % item != 0)
+            return CN_INVALID_ARGUMENT;
+    if (height == 0 || width == 0) return CN_OK;
+    if (height > SIZE_MAX / width || height * width > SIZE_MAX / channels / sizeof(float))
+        return CN_SIZE_OVERFLOW;
+    uintptr_t o = (uintptr_t)out;
+    size_t out_bytes = height * width * channels * sizeof(float);
+    if (o > UINTPTR_MAX - out_bytes) return CN_SIZE_OVERFLOW;
+    for (size_t k = 0; k < channels; ++k) {
+        if (height - 1 > (SIZE_MAX - width) / row_strides[k]) return CN_SIZE_OVERFLOW;
+        size_t extent = (height - 1) * row_strides[k] + width;
+        if (extent > SIZE_MAX / item) return CN_SIZE_OVERFLOW;
+        uintptr_t s = (uintptr_t)planes[k];
+        size_t src_bytes = extent * item;
+        if (s > UINTPTR_MAX - src_bytes) return CN_SIZE_OVERFLOW;
+        if (s < o + out_bytes && o < s + src_bytes) return CN_INVALID_ARGUMENT;
+    }
+    planar_job job = {NULL, planes, row_strides, out, 0, 0, width, channels, half != 0, 0,
+        cn_isa_current()};
+    return run_planar(job, height, NULL);
 }

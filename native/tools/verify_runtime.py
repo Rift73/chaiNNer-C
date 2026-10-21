@@ -15,7 +15,9 @@ created by this helper are shut down.
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
+import functools
 import hashlib
 import http.client
 import json
@@ -35,6 +37,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 import package_files
 import package_manifest
 from packaging.utils import NormalizedName, canonicalize_name
@@ -217,6 +221,8 @@ class Events:
     def __init__(self, port: int):
         self.port = port
         self.events = []
+        # time.monotonic() as each event arrived, for diagnosis; never compared.
+        self.received: list[float] = []
         self.error = None
         self.ready = threading.Event()
         self.stopping = threading.Event()
@@ -248,6 +254,7 @@ class Events:
                 elif line.startswith("data:"):
                     data.append(line[5:].strip())
                 elif not line and data:
+                    self.received.append(time.monotonic())
                     self.events.append(
                         {
                             "event": event or "message",
@@ -1595,7 +1602,7 @@ def run_backend(label: str, backend: Path, python: Path, root: Path, timeout: fl
             )
         metadata = {}
         for endpoint in METADATA_ENDPOINTS:
-            metadata[endpoint] = request(port, "/" + endpoint, timeout=30)
+            metadata[endpoint] = request(port, "/" + endpoint, timeout=METADATA_TIMEOUT)
             write_json(directory / (endpoint + ".json"), metadata[endpoint])
         schemas = {x["schemaId"]: x for x in metadata["nodes"]["nodes"]}
         result.update(metadata_record(metadata))
@@ -1812,6 +1819,24 @@ def generator_node_ids(nodes: list[dict], schemas: dict) -> list[str]:
     )
 
 
+# A LargeImage preview's PNG data URL. The port writes its PNG previews with chaiNNer-C's encoder
+# (native/src/png_encode.c): the oracle's pixels in other bytes, so a PNG preview compares as its decoded
+# pixels, as the PNG files the nodes save do (compare_images).
+PNG_PREVIEW = "data:image/png;base64,"
+
+
+@functools.lru_cache(maxsize=256)
+def png_preview_pixels(url: str) -> str:
+    """A PNG preview's URL as its pixels: the dtype, shape and SHA-256 of the C-order bytes of the array
+    cv2.imdecode(IMREAD_UNCHANGED) returns. A URL OpenCV cannot decode raises."""
+    data = np.frombuffer(base64.b64decode(url[len(PNG_PREVIEW) :]), np.uint8)
+    pixels = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+    if pixels is None:
+        raise RuntimeError("OpenCV cannot decode a PNG preview")
+    digest = hashlib.sha256(pixels.tobytes()).hexdigest()
+    return f"data:image/png;pixels={pixels.dtype.name}{list(pixels.shape)}:{digest}"
+
+
 def canonical(value: Any, directory: Path):
     if isinstance(value, dict):
         return {
@@ -1823,6 +1848,8 @@ def canonical(value: Any, directory: Path):
     if isinstance(value, list):
         return [canonical(item, directory) for item in value]
     if isinstance(value, str):
+        if value.startswith(PNG_PREVIEW):
+            return png_preview_pixels(value)
         return value.replace(str(directory), "<run>").replace(
             directory.as_posix(), "<run>"
         )
@@ -2154,6 +2181,11 @@ def broadcast_multisets(attempts: list[dict]) -> list[dict[str, dict[str, int]]]
 # The metadata endpoints every runtime verifier reads from both backends, and the
 # two that carry the Dependency declarations; each run records the latter whole.
 METADATA_ENDPOINTS = ("nodes", "packages", "features", "installed-dependencies")
+# Seconds for a metadata request. /nodes, /packages and /features answer once the
+# worker has loaded every node, which the host's readiness (/status) no longer waits
+# for (instant startup): with a cold Numba cache (a new storage folder), PyMatting
+# first compiles its kernels for 25-45 s.
+METADATA_TIMEOUT = 300
 DEPENDENCY_ENDPOINTS = ("packages", "installed-dependencies")
 # The /packages dependency fields the declarations change; every other is exact.
 DECLARED_FIELDS = frozenset({"version", "pypiName", "findLink"})

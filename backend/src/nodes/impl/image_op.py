@@ -16,8 +16,11 @@ The given image is guaranteed to *not* be modified.
 def clipped(op: ImageOp) -> ImageOp:
     """
     Ensures that all values in the returned image are between 0 and 1.
+
+    A float32 image is returned read-only and registered as normalized, so an
+    ImageOutput that receives it borrows it instead of clipping a copy again.
     """
-    return lambda i: clip_image(op(i))
+    return lambda i: clip_image(op(i), frozen=True)
 
 
 P = ParamSpec("P")

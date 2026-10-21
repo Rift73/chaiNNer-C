@@ -72,7 +72,15 @@ export interface BackendNodesResponse {
     nodes: NodeSchema[];
     categories: Category[];
     categoriesMissingNodes: CategoryId[];
+    /**
+     * Whether every node module loaded, but those whose dependency is not installed. A module
+     * that failed otherwise (e.g. torch under memory pressure) may load at the next start, so
+     * such a list is not cached.
+     */
+    complete: boolean;
 }
+/** What the editor needs of the backend to show its nodes: the /nodes and /packages replies. */
+export type BackendData = [BackendNodesResponse, Package[]];
 export interface BackendRunRequest {
     data: BackendJsonNode[];
     options: PackageSettings;
@@ -372,6 +380,10 @@ export interface BackendEventMap {
         message: string;
         progress: number;
         statusProgress?: number | null;
+    };
+    /** The nodes the backend has registered so far, while it loads them. */
+    'backend-nodes-registered': {
+        schemaIds: SchemaId[];
     };
     'package-install-status': {
         message: string;

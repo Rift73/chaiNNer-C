@@ -65,8 +65,8 @@ const accessors: {
     number: (info, node, inputData, types) => {
         const input = node.inputs.find((i) => i.id === info.inputId);
         if (!input) throw new Error(`Input ${info.inputId} not found`);
-        if (input.kind !== 'number' && input.kind !== 'slider')
-            throw new Error(`Input ${info.inputId} is not a number/slider`);
+        if (input.kind !== 'number' && input.kind !== 'slider' && input.kind !== 'video-seek')
+            throw new Error(`Input ${info.inputId} is not a number/slider/video-seek`);
 
         let value = inputData[input.id];
         if (types) {

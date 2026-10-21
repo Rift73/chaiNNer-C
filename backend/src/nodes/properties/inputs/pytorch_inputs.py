@@ -11,7 +11,9 @@ from api import BaseInput
 
 
 def _model_with_purpose(purpose: set[Purpose]):
-    sub_type = " | ".join('"' + p + '"' for p in purpose)
+    # sorted: a set's order changes from one start to the next, and so would the node
+    # list, which the app caches between starts
+    sub_type = " | ".join('"' + p + '"' for p in sorted(purpose))
     return "PyTorchModel { subType: " + sub_type + " }"
 
 

@@ -2,7 +2,7 @@ import { Type } from '@chainner/navi';
 import { Box, Center, HStack, Text } from '@chakra-ui/react';
 import React, { memo, useCallback, useMemo } from 'react';
 import { Connection } from 'reactflow';
-import { useContext } from 'use-context-selector';
+import { useContextSelector } from 'use-context-selector';
 import { Output, OutputId } from '../../../common/common-types';
 import { stringifySourceHandle } from '../../../common/util';
 import { VALID, invalid } from '../../../common/Validity';
@@ -22,8 +22,14 @@ export interface OutputHandleProps {
 
 export const OutputHandle = memo(
     ({ id, outputId, isIterated, definitionType, type, isConnected }: OutputHandleProps) => {
-        const { isValidConnection, useConnectingFrom } = useContext(GlobalVolatileContext);
-        const [connectingFrom] = useConnectingFrom;
+        const isValidConnection = useContextSelector(
+            GlobalVolatileContext,
+            (c) => c.isValidConnection
+        );
+        const connectingFrom = useContextSelector(
+            GlobalVolatileContext,
+            (c) => c.useConnectingFrom[0]
+        );
 
         const isValidConnectionForRf = useCallback(
             (connection: Readonly<Connection>): boolean => {

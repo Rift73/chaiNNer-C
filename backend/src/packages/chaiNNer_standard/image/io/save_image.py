@@ -213,11 +213,14 @@ def DdsFormatDropdown() -> DropDownInput:
     )
 
 
-SUPPORTED_FORMATS = {f for f, _ in SUPPORTED_DDS_FORMATS}
-SUPPORTED_BC7_FORMATS = list(SUPPORTED_FORMATS.intersection(BC7_FORMATS))
-SUPPORTED_BC123_FORMATS = list(SUPPORTED_FORMATS.intersection(BC123_FORMATS))
-SUPPORTED_WITH_ALPHA = list(SUPPORTED_FORMATS.intersection(WITH_ALPHA))
-SUPPORTED_GPU_FORMATS = list(SUPPORTED_FORMATS.intersection(BC6H_FORMATS | BC7_FORMATS))
+# In the dropdown's order. A set's order changes from one start to the next, and so
+# would the node list, which the app caches between starts.
+SUPPORTED_BC7_FORMATS = [f for f, _ in SUPPORTED_DDS_FORMATS if f in BC7_FORMATS]
+SUPPORTED_BC123_FORMATS = [f for f, _ in SUPPORTED_DDS_FORMATS if f in BC123_FORMATS]
+SUPPORTED_WITH_ALPHA = [f for f, _ in SUPPORTED_DDS_FORMATS if f in WITH_ALPHA]
+SUPPORTED_GPU_FORMATS = [
+    f for f, _ in SUPPORTED_DDS_FORMATS if f in BC6H_FORMATS | BC7_FORMATS
+]
 
 
 class DDSErrorMetric(Enum):

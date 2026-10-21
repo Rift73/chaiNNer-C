@@ -5,6 +5,7 @@
 #include "cn_crt_math.h"
 #include "procedural.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include "noise_rng.h"
 #include <math.h>
 #include <string.h>

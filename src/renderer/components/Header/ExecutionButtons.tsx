@@ -3,12 +3,14 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { IoPause, IoPlay, IoStop } from 'react-icons/io5';
 import { useContext } from 'use-context-selector';
+import { BackendContext } from '../../contexts/BackendContext';
 import { ExecutionContext, ExecutionStatus } from '../../contexts/ExecutionContext';
 
 export const ExecutionButtons = memo(() => {
     const { t } = useTranslation();
 
     const { run, pause, kill, status } = useContext(ExecutionContext);
+    const { isBackendReady } = useContext(BackendContext);
 
     return (
         <HStack>
@@ -29,6 +31,7 @@ export const ExecutionButtons = memo(() => {
                     colorScheme="green"
                     icon={<IoPlay />}
                     isDisabled={
+                        !isBackendReady ||
                         !(status === ExecutionStatus.READY || status === ExecutionStatus.PAUSED)
                     }
                     size="md"

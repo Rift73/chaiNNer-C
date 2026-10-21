@@ -37,6 +37,7 @@ from .. import processing_group
     ],
     outputs=[ImageOutput(image_type="Input0", channels=3)],
     node_context=True,
+    temporal_context=(RADIUS, RADIUS),
 )
 def temporal_fix_node(
     context: NodeContext, img: np.ndarray, strength: float

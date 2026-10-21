@@ -86,7 +86,8 @@ const assignInput = (
             break;
         }
         case 'number':
-        case 'slider': {
+        case 'slider':
+        case 'video-seek': {
             if (typeof value !== 'number')
                 throw new Error(`${errorStart}, which expects a number value.`);
 

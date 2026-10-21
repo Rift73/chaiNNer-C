@@ -7,6 +7,7 @@ from sanic.log import logger
 
 from api import Generator, IteratorOutputInfo
 from nodes.impl.onnx.model import OnnxModel
+from nodes.impl.read_ahead import from_list_read_ahead
 from nodes.properties.inputs import BoolInput, DirectoryInput
 from nodes.properties.outputs import (
     DirectoryOutput,
@@ -14,7 +15,7 @@ from nodes.properties.outputs import (
     OnnxModelOutput,
     TextOutput,
 )
-from nodes.utils.utils import list_all_files_sorted
+from nodes.utils.utils import file_identity, list_all_files_sorted
 
 from .. import batch_processing_group
 from ..io.load_model import load_model_node
@@ -54,8 +55,11 @@ def load_models_node(
 ) -> tuple[Generator[tuple[OnnxModel, str, str, int]], Path]:
     logger.debug(f"Iterating over models in directory: {directory}")
 
-    def load_model(path: Path, index: int):
-        model, dirname, basename = load_model_node(path)
+    # The next model loads in the background (on the CPU) while the current is used.
+    def load_model(
+        path: Path, loaded: tuple[OnnxModel, Path, str], index: int
+    ) -> tuple[OnnxModel, str, str, int]:
+        model, dirname, basename = loaded
         # Get relative path from root directory passed by Iterator directory input
         rel_path = os.path.relpath(dirname, directory)
         return model, rel_path, basename, index
@@ -64,6 +68,8 @@ def load_models_node(
     model_files = list_all_files_sorted(directory, supported_filetypes)
 
     return (
-        Generator.from_list(model_files, load_model).with_fail_fast(fail_fast),
+        from_list_read_ahead(
+            model_files, load_model_node, load_model, identity=file_identity
+        ).with_fail_fast(fail_fast),
         directory,
     )

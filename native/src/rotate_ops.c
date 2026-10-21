@@ -31,6 +31,7 @@
  */
 #include "chainner.h"
 #include "parallel.h"
+#include "run_kernels.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>

@@ -1,33 +1,16 @@
 from __future__ import annotations
 
-import subprocess
-from json import loads as json_parse
-
 from .store import (
-    ENV,
     DependencyInfo,
-    distribution_name,
+    filter_necessary_to_install,
     install_dependencies_sync,
-    installed_packages,
-    python_path,
+    scan_installed_packages,
 )
 
 # Get the list of installed packages
 # We can't rely on using the package's __version__ attribute because not all packages actually have it
 try:
-    pip_list = subprocess.check_output(
-        [
-            python_path,
-            "-m",
-            "pip",
-            "list",
-            "--format=json",
-            "--disable-pip-version-check",
-        ],
-        env=ENV,
-    )
-    for p in json_parse(pip_list):
-        installed_packages[distribution_name(p["name"])] = p["version"]
+    scan_installed_packages()
 except Exception as e:
     print(f"Failed to get installed packages: {e}")
 
@@ -93,4 +76,10 @@ deps: list[DependencyInfo] = [
     ),
 ]
 
-install_dependencies_sync(deps)
+# The ones missing or outdated: none but on a first start. Found without pip, so run.py
+# knows whether pip must run before it starts the worker.
+missing = filter_necessary_to_install(deps)
+
+
+def install() -> None:
+    install_dependencies_sync(missing)

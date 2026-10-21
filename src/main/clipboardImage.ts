@@ -1,3 +1,8 @@
+import { createHash } from 'crypto';
+import fs from 'fs/promises';
+import path from 'path';
+import { writeFileAtomic } from './util';
+
 // The first 8 bytes of every PNG file
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -43,4 +48,22 @@ export const readClipboardImageAsPng = (clipboard: ImageClipboard): Buffer => {
         return appPng;
     }
     return image.toPNG();
+};
+
+/**
+ * Stores a pasted PNG in `dir` and returns its path. The file is named by its content: pasting the
+ * same image again reuses the file (and with its path, the Load Image node's cached result), and
+ * it is written through a temporary file, so a file with the name is always complete.
+ */
+export const storeClipboardPng = async (dir: string, png: Buffer): Promise<string> => {
+    const hash = createHash('sha256').update(png).digest('hex').slice(0, 32);
+    const file = path.join(dir, `chaiNNer-clipboard-${hash}.png`);
+    const stored = await fs.stat(file).then(
+        (stats) => stats.size === png.length,
+        () => false
+    );
+    if (!stored) {
+        await writeFileAtomic(file, png);
+    }
+    return file;
 };

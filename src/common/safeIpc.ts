@@ -1,3 +1,4 @@
+import { BackendData } from './Backend';
 import { FileOpenResult, FileSaveResult, PythonInfo } from './common-types';
 import { ChainnerSettings } from './settings/settings';
 import { Progress } from './ui/progress';
@@ -17,6 +18,7 @@ type SendChannelInfo<Args extends unknown[] = []> = ChannelInfo<void, Args>;
 export interface InvokeChannels {
     'get-python': ChannelInfo<PythonInfo>;
     'get-backend-url': ChannelInfo<string>;
+    'get-ui-cache': ChannelInfo<BackendData | undefined>;
     'refresh-nodes': ChannelInfo<boolean>;
     'dir-select': ChannelInfo<OpenDialogReturnValue, [dirPath: string]>;
     'file-select': ChannelInfo<
@@ -114,6 +116,7 @@ export interface SendChannels {
     'setup-progress': SendChannelInfo<[progress: Progress]>;
     'backend-started': SendChannelInfo;
     'backend-ready': SendChannelInfo;
+    'update-ui-cache': SendChannelInfo<[data: BackendData]>;
     'file-new': SendChannelInfo;
     'file-open': SendChannelInfo<[FileOpenResult<ParsedSaveData>]>;
     'file-save-as': SendChannelInfo;

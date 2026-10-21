@@ -63,6 +63,14 @@ class ImageResizeMode(Enum):
             )
             .with_id(6)
         ),
+        if_enum_group(5, ResizeFilter.DPID)(
+            NumberInput("Lambda", precision=2, step=0.1, default=1.0, min=0, max=10)
+            .with_docs(
+                "DPID's detail weight. 0 gives an area average, as Area (Box); larger values favour the pixels that differ most from their neighbourhood, which keeps small details and thin lines.",
+                "DPID is a downscaler: a side that grows gets an area sample.",
+            )
+            .with_id(7),
+        ),
     ],
     outputs=[
         ImageOutput(
@@ -113,6 +121,7 @@ def resize_node(
     height: int,
     filter: ResizeFilter,
     separate_alpha: bool,
+    dpid_lambda: float,
 ) -> np.ndarray:
     h, w, _ = get_h_w_c(img)
 
@@ -131,4 +140,5 @@ def resize_node(
         filter,
         separate_alpha=separate_alpha,
         gamma_correction=False,
+        dpid_lambda=dpid_lambda,
     )
