@@ -18,7 +18,8 @@ from .. import miscellaneous_group
     schema_id="chainner:image:image_metrics",
     name="Image Metrics",
     description=(
-        """Calculate image quality metrics (MSE, PSNR, SSIM) between two images."""
+        "Calculate image quality metrics (MSE, PSNR, SSIM) between two images. "
+        "SSIM ranges from -1 to 1 and is NaN when either image dimension is below 11 pixels."
     ),
     icon="MdOutlineAssessment",
     inputs=[
@@ -28,7 +29,7 @@ from .. import miscellaneous_group
     outputs=[
         NumberOutput("MSE", output_type="0..1"),
         NumberOutput("PSNR", output_type="0.."),
-        NumberOutput("SSIM", output_type="0..1"),
+        NumberOutput("SSIM", output_type="-1..1 | nan"),
     ],
 )
 def image_metrics_node(

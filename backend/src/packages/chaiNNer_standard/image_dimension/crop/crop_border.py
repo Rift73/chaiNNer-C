@@ -59,8 +59,8 @@ class SelectMode(Enum):
                 let pad = Input3;
 
                 Image {
-                    width: min(max(uint, 1 + 2 * pad), Input0.width),
-                    height: min(max(uint, 1 + 2 * pad), Input0.height),
+                    width: min(max(uint, 1 + pad), Input0.width),
+                    height: min(max(uint, 1 + pad), Input0.height),
                     channels: Input0.channels,
                 }
                 """,

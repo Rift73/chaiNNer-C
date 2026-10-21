@@ -447,6 +447,19 @@ def test_installed_metadata_unchanged(original, relative):
             )
             if original in DPID_NODES:
                 without_dpid(after)
+            if original == "crop_border.py":
+                # F22 admits padding clipped at an edge. Adapt only the frozen
+                # expectation in memory; compare all other metadata verbatim.
+                for expression in ast.walk(before.decorator_list[0]):
+                    if (
+                        isinstance(expression, ast.keyword)
+                        and expression.arg == "image_type"
+                        and isinstance(expression.value, ast.Constant)
+                    ):
+                        text = expression.value.value
+                        assert isinstance(text, str)
+                        assert text.count("1 + 2 * pad") == 2
+                        expression.value.value = text.replace("1 + 2 * pad", "1 + pad")
             assert ast.dump(before.args) == ast.dump(after.args)
             assert [ast.dump(d) for d in before.decorator_list] == [
                 ast.dump(d) for d in after.decorator_list

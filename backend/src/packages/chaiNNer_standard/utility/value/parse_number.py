@@ -19,7 +19,7 @@ from .. import value_group
     outputs=[
         NumberOutput(
             "Value",
-            output_type="int & number::parseInt(Input0, Input1)",
+            output_type="parseInt(Input0, Input1)",
         ).with_never_reason("The given text cannot be parsed into a number."),
     ],
 )
