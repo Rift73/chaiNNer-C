@@ -274,23 +274,27 @@ export class BorrowedBackendProcess implements BaseBackendProcess {
     static async fromUrl(url: string): Promise<BorrowedBackendProcess> {
         const backend = getBackend(url);
         let python: PythonInfo | undefined;
-        // try a few times to get python info, in case backend is still starting up
-        const maxTries = 50;
+        // A cold backend can take minutes to import its dependencies.
+        const deadline = Date.now() + 5 * 60 * 1000;
         const startSleep = 1;
         const maxSleep = 250;
+        let lastError: unknown;
 
-        for (let i = 0; i < maxTries; i += 1) {
+        for (let i = 0; Date.now() < deadline; i += 1) {
             try {
                 // eslint-disable-next-line no-await-in-loop
                 python = await backend.pythonInfo();
                 break;
-            } catch {
+            } catch (error) {
+                lastError = error;
                 // eslint-disable-next-line no-await-in-loop
-                await delay(Math.max(maxSleep, startSleep * 2 ** i));
+                await delay(
+                    Math.min(maxSleep, startSleep * 2 ** i, Math.max(0, deadline - Date.now()))
+                );
             }
         }
         if (!python) {
-            throw new Error('Unable to get python info from backend');
+            throw new Error(`Unable to get python info from backend: ${String(lastError)}`);
         }
         return new BorrowedBackendProcess(url, python);
     }
