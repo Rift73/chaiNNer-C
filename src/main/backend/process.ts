@@ -310,11 +310,21 @@ export type BackendProcess = OwnedBackendProcess | BorrowedBackendProcess;
 export const stopBackendOnQuit = (backendPromise: Promise<BackendProcess>): void => {
     let quitting = false;
     let started: OwnedBackendProcess | undefined;
-    app.on('before-quit', () => {
+    app.on('will-quit', (event) => {
+        // The earlier settings handler waits for its writes, then retries quitting.
+        if (event.defaultPrevented) return;
+        if (quitting) {
+            event.preventDefault();
+            return;
+        }
         quitting = true;
         if (started) {
+            event.preventDefault();
             started.clearErrorListeners();
-            started.tryKill().catch(log.error);
+            started
+                .tryKill()
+                .finally(() => app.exit())
+                .catch(log.error);
         }
     });
     backendPromise

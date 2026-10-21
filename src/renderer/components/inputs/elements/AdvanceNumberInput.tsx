@@ -9,6 +9,8 @@ import {
 } from '@chakra-ui/react';
 import { evaluate, isBigNumber, isComplex, isFraction, isNumber, isUnit, number } from 'mathjs';
 import { CSSProperties, MouseEventHandler, memo, useCallback, useEffect, useRef } from 'react';
+import { useContextSelector } from 'use-context-selector';
+import { GlobalContext } from '../../../contexts/GlobalNodeState';
 import './AdvancedNumberInput.scss';
 
 const validChars = /^[\w.+\-*()^!%&|~ /]$/iu;
@@ -84,6 +86,7 @@ export const AdvancedNumberInput = memo(
 
         alignSelf,
     }: AdvancedNumberInputProps) => {
+        const typedSinceCommit = useRef(false);
         const getNumericValue = (): number | undefined => {
             const rawNumber = inputString.trim() ? parseNumberString(inputString) : defaultValue;
             const valAsNumber = precision > 0 ? rawNumber : Math.round(rawNumber);
@@ -96,6 +99,7 @@ export const AdvancedNumberInput = memo(
             // eslint-disable-next-line @typescript-eslint/no-use-before-define
             cancelAutoCommit();
 
+            typedSinceCommit.current = false;
             setInput(value);
             const formatted = hideTrailingZeros ? String(value) : value.toFixed(precision);
             setInputString(formatted);
@@ -126,7 +130,22 @@ export const AdvancedNumberInput = memo(
             cancelAutoCommit();
         }, [inputString, cancelAutoCommit]);
 
+        const registerInputFlush = useContextSelector(GlobalContext, (c) => c.registerInputFlush);
+        const flushDraft = useRef(() => {});
+        flushDraft.current = () => {
+            if (!typedSinceCommit.current || isDisabled || noRepeatOnBlur) return;
+            cancelAutoCommit();
+            const value = getNumericValue();
+            if (value !== undefined) {
+                setValue(value);
+            }
+        };
+        useEffect(() => registerInputFlush(() => flushDraft.current()), [registerInputFlush]);
+
         // event handlers
+        const onTextChange = () => {
+            typedSinceCommit.current = true;
+        };
         const onBlur = () => {
             cancelAutoCommit();
             if (noRepeatOnBlur) return;
@@ -201,6 +220,7 @@ export const AdvancedNumberInput = memo(
                             py={1}
                             size={1}
                             w={inputWidth}
+                            onChange={onTextChange}
                             onKeyDown={onKeyDown}
                         />
                         <NumberInputStepper
@@ -256,6 +276,7 @@ export const AdvancedNumberInput = memo(
                         pr="var(--number-input-stepper-width)"
                         size={1}
                         w={inputWidth}
+                        onChange={onTextChange}
                         onKeyDown={onKeyDown}
                     />
                     <NumberInputStepper className="small-stepper">

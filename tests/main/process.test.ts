@@ -6,28 +6,34 @@ import { PythonInfo } from '../../src/common/common-types';
 import { delay } from '../../src/common/util';
 import { BackendProcess, SHUTDOWN_TIMEOUT_MS } from '../../src/main/backend/process';
 
-const { shutdown, pythonInfo, quitListeners } = vi.hoisted(() => ({
+type QuitEvent = Pick<Electron.Event, 'defaultPrevented' | 'preventDefault'>;
+
+const { shutdown, pythonInfo, quitListeners, appExit } = vi.hoisted(() => ({
     shutdown: vi.fn<[], Promise<void>>(),
     pythonInfo: vi.fn<[], Promise<PythonInfo>>(),
-    quitListeners: [] as (() => void)[],
+    quitListeners: [] as ((event: QuitEvent) => void)[],
+    appExit: vi.fn(),
 }));
 
 vi.mock('electron/main', () => ({
     app: {
         getAppPath: () => '',
-        on: (event: string, listener: () => void) => {
-            if (event === 'before-quit') {
+        exit: appExit,
+        on: (event: string, listener: (event: QuitEvent) => void) => {
+            if (event === 'will-quit') {
                 quitListeners.push(listener);
             }
         },
     },
 }));
 
-// as app.quit() begins
+// After every window has agreed to close.
 const quit = () => {
+    const event = { defaultPrevented: false, preventDefault: vi.fn() };
     for (const listener of quitListeners) {
-        listener();
+        listener(event);
     }
+    return event;
 };
 vi.mock('../../src/common/Backend', () => ({ getBackend: () => ({ shutdown, pythonInfo }) }));
 
@@ -58,6 +64,7 @@ afterEach(async () => {
     shutdown.mockReset();
     pythonInfo.mockReset();
     quitListeners.splice(0);
+    appExit.mockReset();
     await rm(resourcesPath, { recursive: true, force: true });
 });
 
@@ -174,10 +181,12 @@ test('a backend that started is stopped when the app quits', async () => {
     stopBackendOnQuit(Promise.resolve(backend));
     await delay(0);
 
-    quit();
+    const event = quit();
+    expect(event.preventDefault).toHaveBeenCalledOnce();
 
     await expectStopped(pid);
     expect(shutdown).toHaveBeenCalledOnce();
+    expect(appExit).toHaveBeenCalledOnce();
 });
 
 test('a backend that starts after the app began to quit is ended at once', async () => {
