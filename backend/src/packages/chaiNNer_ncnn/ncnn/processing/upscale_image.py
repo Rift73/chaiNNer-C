@@ -8,7 +8,7 @@ import numpy as np
 from ncnn import ncnn
 from sanic.log import logger
 
-from api import NodeContext
+from api import Aborted, NodeContext, Progress
 from nodes.groups import Condition, if_enum_group, if_group
 from nodes.impl.ncnn.auto_split import ncnn_auto_split
 from nodes.impl.ncnn.model import NcnnModelWrapper
@@ -83,6 +83,7 @@ def upscale_impl(
     tile_size: TileSize,
     collect_after: bool = True,
     swap_red_blue: bool = False,
+    progress: Progress | None = None,
 ):
     net = get_ncnn_net(model, settings=settings)
     try:
@@ -131,6 +132,7 @@ def upscale_impl(
                     collect_after=collect_after,
                     size_multiple=model.size_multiple,
                     swap_red_blue=swap_red_blue,
+                    progress=progress,
                 )
         else:
             result = ncnn_auto_split(
@@ -144,7 +146,10 @@ def upscale_impl(
                 collect_after=collect_after,
                 size_multiple=model.size_multiple,
                 swap_red_blue=swap_red_blue,
+                progress=progress,
             )
+    except Aborted:
+        raise
     except (RuntimeError, ValueError):
         raise
     except Exception as e:
@@ -240,6 +245,7 @@ def upscale_image_node(
             TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
             collect_after=False,
             swap_red_blue=ic in (3, 4),
+            progress=context,
         )
         # A result with the input's 3 or 4 channels came back BGR(A); any other is
         # converted as before.

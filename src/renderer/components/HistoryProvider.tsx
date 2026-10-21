@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Edge, Node, useReactFlow } from 'reactflow';
 import { useContext, useContextSelector } from 'use-context-selector';
 import { EdgeData, NodeData } from '../../common/common-types';
@@ -27,7 +28,7 @@ export const HistoryProvider = memo(
             GlobalVolatileContext,
             (c) => `${c.nodeChanges},${c.edgeChanges}`
         );
-        const { changeNodes, changeEdges } = useContext(GlobalContext);
+        const { changeNodes, changeEdges, flushInputChanges } = useContext(GlobalContext);
         const { getNodes, getEdges } = useReactFlow();
 
         // eslint-disable-next-line react/hook-use-state
@@ -35,6 +36,7 @@ export const HistoryProvider = memo(
             return EditHistory.create(historyState(getNodes(), getEdges()), 100);
         });
         const historyRef = useRef(initialValue);
+        const commitTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
         const [selfUpdate, setSelfUpdate] = useState(false);
         useEffect(() => {
@@ -48,37 +50,46 @@ export const HistoryProvider = memo(
 
         const apply = useCallback(
             ({ nodes, edges }: HistoryState) => {
-                setSelfUpdate(true);
-                changeNodes(nodes);
-                changeEdges(edges);
+                flushSync(() => {
+                    setSelfUpdate(true);
+                    changeNodes(nodes);
+                    changeEdges(edges);
+                });
             },
             [setSelfUpdate, changeNodes, changeEdges]
         );
+
+        const commitCurrent = useCallback(() => {
+            clearTimeout(commitTimerRef.current);
+            historyRef.current = historyRef.current.commit(
+                historyState(
+                    getNodes().map((n) => ({ ...n, selected: false })),
+                    getEdges()
+                )
+            );
+        }, [getNodes, getEdges]);
 
         // commit to history
         useEffect(() => {
             if (selfUpdate) return noop;
 
-            const id = setTimeout(() => {
-                historyRef.current = historyRef.current.commit(
-                    historyState(
-                        getNodes().map((n) => ({ ...n, selected: false })),
-                        getEdges()
-                    )
-                );
-            }, 250);
+            const id = setTimeout(commitCurrent, 250);
+            commitTimerRef.current = id;
             return () => clearTimeout(id);
-            // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [changeId]);
+        }, [changeId, commitCurrent, selfUpdate]);
 
         const undo = useCallback(() => {
+            flushInputChanges();
+            commitCurrent();
             historyRef.current = historyRef.current.undo();
             apply(historyRef.current.current);
-        }, [apply]);
+        }, [apply, commitCurrent, flushInputChanges]);
         const redo = useCallback(() => {
+            flushInputChanges();
+            commitCurrent();
             historyRef.current = historyRef.current.redo();
             apply(historyRef.current.current);
-        }, [apply]);
+        }, [apply, commitCurrent, flushInputChanges]);
 
         useIpcRendererListener('history-undo', undo);
         useIpcRendererListener('history-redo', redo);

@@ -1,6 +1,7 @@
 import {
     Arg,
     Int,
+    IntIntervalType,
     Intrinsic,
     NeverType,
     NumberPrimitive,
@@ -378,7 +379,7 @@ const pyPadCenter = (text: string, width: number, char: string): string => {
     const textLength = unicodeLength(text);
     const missing = width - textLength;
     if (missing <= 0) return text;
-    const missingStart = Math.floor(missing / 2);
+    const missingStart = Math.floor(missing / 2) + (missing % 2) * (width % 2);
     return char.repeat(missingStart) + text + char.repeat(missing - missingStart);
 };
 
@@ -421,6 +422,38 @@ export const padCenter = wrapTernary<StringPrimitive, Int, StringPrimitive, Stri
         }
     }
 );
+
+const PARSE_INT_RANGE = new IntIntervalType(-Infinity, Infinity);
+export const parseInt = wrapBinary<StringPrimitive, Int, Int>((text, base) => {
+    if (text.type !== 'literal') return PARSE_INT_RANGE;
+
+    // CPython accepts Unicode decimal digits and whitespace, with ASCII signs and prefixes.
+    const normalized = text.value
+        .replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '')
+        .replace(/\p{Decimal_Number}/gu, (digit) => {
+            if (digit >= '0' && digit <= '9') return digit;
+            const point = digit.codePointAt(0)!;
+            let start = point;
+            while (/\p{Decimal_Number}/u.test(String.fromCodePoint(start - 1))) start -= 1;
+            return String((point - start) % 10);
+        });
+
+    return handleNumberLiterals<Int>(base, PARSE_INT_RANGE, (radix) => {
+        if (!Number.isInteger(radix) || radix < 2 || radix > 36) return NeverType.instance;
+        let digits = normalized.replace(/^[+-]/, '');
+        if (radix === 2) digits = digits.replace(/^0b_?/i, '');
+        if (radix === 8) digits = digits.replace(/^0o_?/i, '');
+        if (radix === 16) digits = digits.replace(/^0x_?/i, '');
+        const alphabet = '0123456789abcdefghijklmnopqrstuvwxyz'.slice(0, radix);
+        if (!new RegExp(`^[${alphabet}](?:_?[${alphabet}])*$`, 'i').test(digits)) {
+            return NeverType.instance;
+        }
+        const magnitude = Number.parseInt(digits.replace(/_/g, ''), radix);
+        const value = normalized.startsWith('-') && magnitude !== 0 ? -magnitude : magnitude;
+        // Python integers beyond JS's exact range still have a valid integer type.
+        return Number.isSafeInteger(value) ? literal(value) : PARSE_INT_RANGE;
+    });
+});
 
 export const splitFilePath = wrapScopedUnary(
     (scope, filePath: StringPrimitive): StructInstanceType => {

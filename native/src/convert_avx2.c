@@ -42,13 +42,13 @@ static void f32_f32(const float *src, float *out, int normalize, size_t i, size_
         _mm256_storeu_ps(out + i, clamp_lanes(_mm256_loadu_ps(src + i)));
 }
 
-/* f32 -> u8: clamp_lanes when normalize; scaled = 255 * value (vmulps); events from
+/* f32 -> u8: always clamp_lanes; scaled = 255 * value (vmulps); events from
  * bit masks: 1, a finite value with an infinite scaled value; 4, a signalling NaN
  * source; 2, scaled NaN or outside [-2^31, 2^31), which stores B3's INT32_MIN.
  * Otherwise vroundps to nearest even (independent of MXCSR) and vcvtps2dq (exact on
  * integers); the low byte of each int32 is stored (vpshufb, vpermd: truncation,
  * never a saturating pack). */
-static long f32_u8(const float *src, uint8_t *out, int normalize, size_t i, size_t end)
+static long f32_u8(const float *src, uint8_t *out, size_t i, size_t end)
 {
     const __m256 scale = _mm256_set1_ps(255.0f);
     const __m256 low = _mm256_set1_ps(-2147483648.0f), high = _mm256_set1_ps(2147483648.0f);
@@ -67,7 +67,7 @@ static long f32_u8(const float *src, uint8_t *out, int normalize, size_t i, size
     long events = 0;
     for (; end - i >= 8; i += 8) {
         __m256 source = _mm256_loadu_ps(src + i);
-        __m256 value = normalize ? clamp_lanes(source) : source;
+        __m256 value = clamp_lanes(source);
         __m256 scaled = _mm256_mul_ps(scale, value);
         __m256i value_bits = _mm256_and_si256(_mm256_castps_si256(value), magnitude);
         __m256i scaled_bits = _mm256_and_si256(_mm256_castps_si256(scaled), magnitude);
@@ -145,6 +145,6 @@ long cn_convert_avx2(const convert_job *j, size_t begin, size_t end)
     else if (j->output == 0)
         f32_f32((const float *)j->src, (float *)j->out, j->normalize, first, last);
     else
-        events |= f32_u8((const float *)j->src, (uint8_t *)j->out, j->normalize, first, last);
+        events |= f32_u8((const float *)j->src, (uint8_t *)j->out, first, last);
     return events | convert_scalar(j, last, end);
 }

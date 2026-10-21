@@ -6,7 +6,7 @@ import { MdContentCopy, MdContentPaste } from 'react-icons/md';
 import { useContextSelector } from 'use-context-selector';
 import { useDebouncedCallback } from 'use-debounce';
 import { log } from '../../../common/log';
-import { GlobalVolatileContext } from '../../contexts/GlobalNodeState';
+import { GlobalContext, GlobalVolatileContext } from '../../contexts/GlobalNodeState';
 import { typeToString } from '../../helpers/naviHelpers';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useInputRefactor } from '../../hooks/useInputRefactor';
@@ -97,6 +97,14 @@ export const TextInput = memo(
         const delayedInputValue = useDebouncedCallback((text: string) => {
             inputValue(text, true);
         }, 500);
+        const registerInputFlush = useContextSelector(GlobalContext, (c) => c.registerInputFlush);
+        useEffect(() => {
+            const unregister = registerInputFlush(delayedInputValue.flush);
+            return () => {
+                delayedInputValue.flush();
+                unregister();
+            };
+        }, [delayedInputValue, registerInputFlush]);
 
         const [lastInvalidCharacter, setLastInvalidCharacter] = useState<string>();
         useEffect(() => {
@@ -238,6 +246,7 @@ export const TextInput = memo(
                         resize="none"
                         value={displayText ?? ''}
                         w="full"
+                        onBlur={() => delayedInputValue.flush()}
                         onChange={onChange}
                         onContextMenu={menu.onContextMenu}
                     />
@@ -255,6 +264,7 @@ export const TextInput = memo(
                     placeholder={placeholder ?? label}
                     size="sm"
                     value={displayText ?? ''}
+                    onBlur={() => delayedInputValue.flush()}
                     onChange={onChange}
                     onContextMenu={menu.onContextMenu}
                 />

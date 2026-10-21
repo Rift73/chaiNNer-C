@@ -1,15 +1,12 @@
 /* Native image decoding with today's results (GPL-3.0); see native/include/image_decode.hpp. */
 #include "image_decode.hpp"
 
+#include "file_handle.hpp"
 #include "image_codecs.h"
 
 #include <algorithm>
 #include <cstring>
 #include <string>
-
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
 
 namespace cn::image_decode {
 namespace {
@@ -291,21 +288,20 @@ bool enabled() {
 }
 
 bool read_file(const std::filesystem::path &path, std::vector<uint8_t> &data) {
-    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                    nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return false;
+    const cn::files::Handle file(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                           nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    if (!file.valid()) return false;
     LARGE_INTEGER size;
-    bool ok = GetFileSizeEx(file, &size) != 0 && size.QuadPart >= 0 && uint64_t(size.QuadPart) <= SIZE_MAX;
+    bool ok = GetFileSizeEx(file.handle, &size) != 0 && size.QuadPart >= 0 && uint64_t(size.QuadPart) <= SIZE_MAX;
     if (ok) {
         data.resize(size_t(size.QuadPart));
         for (size_t done = 0; ok && done < data.size();) {
             DWORD got = 0;
             const DWORD want = DWORD(std::min<size_t>(data.size() - done, 1u << 30));
-            ok = ReadFile(file, data.data() + done, want, &got, nullptr) != 0 && got != 0;
+            ok = ReadFile(file.handle, data.data() + done, want, &got, nullptr) != 0 && got != 0;
             done += got;
         }
     }
-    CloseHandle(file);
     return ok;
 }
 

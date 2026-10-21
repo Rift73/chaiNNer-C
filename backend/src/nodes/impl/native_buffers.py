@@ -131,6 +131,9 @@ def converted_pixels(
     permuted output (Lens Blur's transposed plane) keeps its strides, as upstream's
     ImageOutput passes them on. The conversion runs flat over both arrays in that
     order; the source is copied first only if it has gaps.
+
+    Integer output always saturates to [0, 1] before quantization. ``normalized``
+    remains a compatibility argument; it no longer permits integer wraparound.
     """
     if bits not in (0, 8, 16):
         raise ValueError("Expected float32 normalization, uint8 or uint16 output")
@@ -147,7 +150,7 @@ def converted_pixels(
             source.size,
             _TYPES[source.dtype],
             {0: 0, 8: 1, 16: 2}[bits],
-            int(not normalized or bits == 0),
+            1,
             ct.byref(events),
         )
     )

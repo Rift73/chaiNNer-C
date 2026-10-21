@@ -2,6 +2,7 @@
 #include "image_preview.hpp"
 
 #include "chainner_ext_kernels.h"
+#include "codec_output.hpp"
 #include "image_codecs.h"
 #include "image_encode.hpp"
 #include "run_kernels.h"
@@ -80,7 +81,7 @@ bool encode_step(Pixels &image, int target, double grace, bool lossless, std::ve
     const size_t count = size_t(image.height) * image.width * image.channels;
     std::vector<uint8_t> pixels(count);
     int events = 0;
-    if (cn_pixels_convert_checked(image.data, pixels.data(), count, type_float32, output_uint8, 0, &events) != CN_OK ||
+    if (cn_pixels_convert_checked(image.data, pixels.data(), count, type_float32, output_uint8, 1, &events) != CN_OK ||
         events)
         return false; // NumPy would report the event (warn, raise, print or call): today's path does
     if (image.channels > 3 || lossless) {
@@ -99,10 +100,10 @@ bool encode_step(Pixels &image, int target, double grace, bool lossless, std::ve
         }
     }
     const cn_codec_image view{pixels.data(), image.height, image.width, image.channels, 1, size_t(image.width) * image.channels};
-    cn_codec_output out{};
+    cn::codecs::Output output;
+    auto &out = output.value;
     const cn_codec_status status = cn_jpeg_encode(&view, 95, 0x221111, 0, &out);
     if (status == CN_CODEC_OK) url = "data:image/jpg;base64," + base64({out.data, out.size});
-    cn_codec_output_free(&out);
     return status == CN_CODEC_OK;
 }
 

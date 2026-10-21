@@ -89,7 +89,7 @@ void high_pass(NodeContext &, std::span<const Value> inputs, std::vector<Value> 
     } else {
         const Image *given = std::get_if<Image>(&inputs[3]);
         if (!given) throw NodeError("AssertionError", "Expected a blurred image to be given.");
-        blurred = *given;
+        blurred = input.channels > 3 && given->channels > 3 ? select_channels(*given, {0, 1, 2}) : *given;
     }
     if (blurred.height != image.height || blurred.width != image.width || blurred.channels != image.channels)
         throw NodeError("AssertionError", "Expected blurred image to have same shape as the input image.");

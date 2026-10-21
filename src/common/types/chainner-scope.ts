@@ -18,6 +18,7 @@ import {
     padEnd,
     padStart,
     parseColorJson,
+    parseInt,
     regexFind,
     regexReplace,
     splitFilePath,
@@ -193,6 +194,7 @@ intrinsic def regexFind(text: string, regex: string, pattern: string): string | 
 intrinsic def padStart(text: string, width: uint, padding: string): string;
 intrinsic def padEnd(text: string, width: uint, padding: string): string;
 intrinsic def padCenter(text: string, width: uint, padding: string): string;
+intrinsic def parseInt(text: string, base: int(2..36)): int;
 intrinsic def splitFilePath(path: string): SplitFilePath;
 intrinsic def parseColorJson(json: string): Color;
 intrinsic def getParentDirectory(path: string, times: uint): string;
@@ -209,6 +211,7 @@ export const getChainnerScope = lazy((): Scope => {
         padStart: makeScoped(padStart),
         padEnd: makeScoped(padEnd),
         padCenter: makeScoped(padCenter),
+        parseInt: makeScoped(parseInt),
         splitFilePath,
         parseColorJson,
         getParentDirectory: makeScoped(getParentDirectory),

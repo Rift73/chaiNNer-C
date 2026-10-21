@@ -437,6 +437,7 @@ struct EncoderLog {
 class WriterResource {
 public:
     O process=py::none();
+    O size=py::none();
     // The writer's temporary file (Writer.target): Stop deletes it, never another file.
     O target=py::none();
     EncoderLog log;
@@ -499,6 +500,7 @@ bool writer_open(const py::dict&g,const O&self,const O&width,const O&height,bool
         O process=stream.attr("run_async")(py::arg("pipe_stdin")=true,py::arg("pipe_stdout")=false,
             py::arg("pipe_stderr")=true,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffmpeg"));
         auto state=resource(self);state->process=process;state->completed=false;
+        state->size=py::make_tuple(width,height);
         state->log=EncoderLog();
         try {state->log.start(process);}
         catch(...) {state->abort();throw;} // Undrained stderr could block the encoder.
@@ -583,10 +585,12 @@ void raise_if_encoder_stopped(const O&self,const py::error_already_set&error) {
     throw py::error_already_set();
 }
 void writer_frame(const py::dict&g,const O&self,const O&image,const O&prepared) {
+    auto state=resource(self);
+    if(state->size.is_none())state->size=self.attr("first_frame")(image);
     if(self.attr("out").is_none()) {
-        O size=self.attr("first_frame")(image);
-        self.attr("start")(size[py::int_(0)],size[py::int_(1)]);
+        self.attr("start")(state->size[py::int_(0)],state->size[py::int_(1)]);
     }
+    self.attr("check_frame")(image,state->size);
     // A prepared frame (SP3-P9) is the payload computed ahead.
     O frame=prepared.is_none()?O(self.attr("payload")(image)):O(prepared.attr("result")());
     if(!self.attr("out").is_none() && !self.attr("out").attr("stdin").is_none()) {
@@ -830,13 +834,13 @@ class FrameIterator {
             // converts as FFmpeg chooses.
             O matrix=py::getattr(loader_,"input_matrix",py::none());
             if(!matrix.is_none())options["vf"]=py::str("scale=in_color_matrix={}:flags={}").attr("format")(matrix,flags);
-            output=global(globals_,"ffmpeg").attr("input")(loader_.attr("path")).attr("output");
+            output=global(globals_,"ffmpeg").attr("input")(loader_.attr("path"))[py::str("v:0")].attr("output");
         } else {
             options=dict({{"format",py::str("rawvideo")},{"pix_fmt",format_.attr("pix_fmt")},{"sws_flags",py::str(flags)}});
             O scale=format_.attr("scale");
             if(!scale.is_none())options["vf"]=py::str("scale={}").attr("format")(scale);
             py::dict input_options=format_.attr("input_options");
-            output=call(global(globals_,"ffmpeg").attr("input"),py::make_tuple(loader_.attr("path")),input_options).attr("output");
+            output=call(global(globals_,"ffmpeg").attr("input"),py::make_tuple(loader_.attr("path")),input_options)[py::str("v:0")].attr("output");
         }
         options["loglevel"]="error";
         process_=call(output,py::make_tuple("pipe:"),options)
@@ -898,7 +902,11 @@ public:
             O count=py::int_(read);
             if(!truth(count)) {
                 global(globals_,"logger").attr("debug")("Can't receive frame (stream end?). Exiting ...");
-                finish();throw py::stop_iteration();
+                finish();
+                O code=process_.attr("returncode");
+                if(!eq(code,py::int_(0)))
+                    graphpy::raise(PyExc_RuntimeError,fmt("FFmpeg stopped while Load Video was reading the video (exit code {})",code));
+                throw py::stop_iteration();
             }
             py::list shape;shape.append(height_);shape.append(width_);shape.append(py::int_(3));
             // The frame stays immutable, as the view of the read's bytes was: the buffer is
@@ -1011,15 +1019,16 @@ O load_video(const py::dict&g,const O&context,const O&path,const O&ranged,const 
     // Exact where PyAV reads the file, else the probe's estimate, which the CLI's
     // renumbered frames can pass or fall short of (video.py frame_count).
     O count=loader.attr("frame_count")();
+    const bool exact_count=!loader.attr("exact_frame_count")().is_none();
     // A Seek past the end (the node's video changed to a shorter one) shows the last frame.
     O shown=builtin("max")(py::int_(0),builtin("min")(seek,sub(count,py::int_(1))));
     O preview=global(g,"load_preview")(context.attr("node_id"),loader,shown);
     O none=py::none(),base=py::int_(0),stop=none,checked=none,chosen=none,ready=none,length=count,audio;
     if(truth(ranged)) {
         base=first;stop=add(last,py::int_(1));checked=last;
-        // The frames In..Out the video holds by its count (on the CLI path, by the estimate:
-        // the loop ends when the stream does).
-        O read_last=builtin("min")(last,sub(count,py::int_(1)));
+        // An estimate cannot bound the requested range: the CLI can yield more
+        // frames. IndexedFrames still stops at actual EOF.
+        O read_last=exact_count?builtin("min")(last,sub(count,py::int_(1))):last;
         length=builtin("max")(py::int_(0),sub(add(read_last,py::int_(1)),first));
         // The audio of the frames read, so the mux copies no more of it (instant-exec gate
         // R7): from In / fps for their count / fps. An Out past an estimated count (no
@@ -1027,8 +1036,6 @@ O load_video(const py::dict&g,const O&context,const O&path,const O&ranged,const 
         // (audio past the end is not there to copy); an Out within the count reads to Out
         // either way.
         O frames=length;
-        if(cmp(last,sub(count,py::int_(1)),Py_GT) && loader.attr("exact_frame_count")().is_none())
-            frames=builtin("max")(py::int_(0),sub(stop,first));
         audio=cmp(fps,py::int_(0),Py_GT)
             ?O(loader.attr("get_audio_stream")(div(frames,fps),div(first,fps)))
             :O(loader.attr("get_audio_stream")());
@@ -1048,13 +1055,13 @@ O load_video(const py::dict&g,const O&context,const O&path,const O&ranged,const 
         return py::cast(it);
     });
     // The context frames around a Range (api/iter.py Generator.context): up to `before`
-    // frames before In and `after` after Out, as many as the video holds by its count
-    // (none after an Out past the end). All reads every frame: none.
-    O around=py::cpp_function([loader,context,ranged,base,stop,first,checked,count](const O&before,const O&after){
+    // frames before In and `after` after Out. Only exact counts bound lookahead;
+    // otherwise actual EOF clips it. All reads every frame: none.
+    O around=py::cpp_function([loader,context,ranged,base,stop,first,checked,count,exact_count](const O&before,const O&after){
         O b=py::int_(0),a=py::int_(0),start=base,end=stop;
         if(truth(ranged)) {
             b=builtin("max")(py::int_(0),builtin("min")(before,first));
-            a=builtin("max")(py::int_(0),builtin("min")(after,sub(sub(count,py::int_(1)),checked)));
+            a=exact_count?builtin("max")(py::int_(0),builtin("min")(after,sub(sub(count,py::int_(1)),checked))):after;
             start=sub(first,b);end=add(stop,a);
         }
         auto it=std::make_shared<IndexedFrames>(loader,start,end,first,checked,py::none());
@@ -1064,6 +1071,7 @@ O load_video(const py::dict&g,const O&context,const O&path,const O&ranged,const 
     O metadata=global(g,"LoadedVideo")(loader.attr("metadata"),settings.attr("mode"),loader.attr("colour"));
     O generator=global(g,"Generator").attr("from_iter")(py::arg("supplier")=supplier,py::arg("expected_length")=length)
         .attr("with_metadata")(metadata).attr("with_range")(base,chosen,around);
+    generator.attr("length_is_exact")=py::bool_(exact_count);
     generator.attr("source_paths")=py::tuple(); // Frames come from the FFmpeg pipe.
     return py::make_tuple(generator,parts[py::int_(0)],parts[py::int_(1)],fps,audio,preview,count);
 }

@@ -6,6 +6,7 @@
 #include "../kernel_status.hpp"
 
 #include "atomic_file.hpp"
+#include "codec_output.hpp"
 #include "image_codecs.h"
 #include "image_decode.hpp"
 #include "image_encode.hpp"
@@ -160,13 +161,13 @@ void load_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
     outputs.push_back(std::move(name));
 }
 
-/* to_uint8 / to_uint16 of an enforced image (cn_pixels_convert_checked: float32 to 8 or 16 bits, no clamp, half to
+/* to_uint8 / to_uint16 of an enforced image (cn_pixels_convert_checked: float32 to 8 or 16 bits, clamped, half to
  * even); a floating-point event, which NumPy would report, declines. */
 std::vector<uint8_t> quantized(const Image &image, int bits)
 {
     std::vector<uint8_t> out(image.values() * size_t(bits / 8));
     int events = 0;
-    check(cn_pixels_convert_checked(image.data, out.data(), image.values(), 0, bits == 8 ? 1 : 2, 0, &events));
+    check(cn_pixels_convert_checked(image.data, out.data(), image.values(), 0, bits == 8 ? 1 : 2, 1, &events));
     if (events) throw RunPython{};
     return out;
 }
@@ -197,19 +198,21 @@ std::vector<uint8_t> save_bytes(const Image &image, std::span<const Value> input
     const int64_t quality = std::get<int64_t>(inputs[7]), compression = std::get<int64_t>(inputs[11]);
     if (format == "webp" && webp_lossless && channels == 4)
         for (size_t i = 0; i < pixels.size(); i += 4) std::swap(pixels[i], pixels[i + 2]); // BGRA2RGBA for Pillow
-    cn_codec_output out{};
-    cn_codec_status status = CN_CODEC_FALLBACK;
-    if (format == "png") status = cn_png_encode(&view, &out);
-    else if (format == "jpg" && quality >= 0 && quality <= 100)
-        status = cn_jpeg_encode(&view, int(quality), uint32_t(std::get<int64_t>(inputs[8])), std::get<bool>(inputs[9]) ? 1 : 0, &out);
-    else if (format == "webp" && webp_lossless && channels == 4) status = cn_webp_encode_exact(&view, &out);
-    else if (format == "webp" && quality <= 100) status = cn_webp_encode(&view, webp_lossless ? 101 : int(quality), &out);
-    else if (format == "bmp") status = cn_bmp_encode(&view, &out);
-    else if (format == "tiff" && (floats || compression == 1 || compression == 5 || compression == 8))
-        status = cn_tiff_encode(&view, floats ? 0 : int(compression), &out);
-    if (status == CN_CODEC_OK) bytes.assign(out.data, out.data + out.size);
-    cn_codec_output_free(&out);
-    if (status != CN_CODEC_OK) throw RunPython{};
+    {
+        cn::codecs::Output output;
+        auto &out = output.value;
+        cn_codec_status status = CN_CODEC_FALLBACK;
+        if (format == "png") status = cn_png_encode(&view, &out);
+        else if (format == "jpg" && quality >= 0 && quality <= 100)
+            status = cn_jpeg_encode(&view, int(quality), uint32_t(std::get<int64_t>(inputs[8])), std::get<bool>(inputs[9]) ? 1 : 0, &out);
+        else if (format == "webp" && webp_lossless && channels == 4) status = cn_webp_encode_exact(&view, &out);
+        else if (format == "webp" && quality <= 100) status = cn_webp_encode(&view, webp_lossless ? 101 : int(quality), &out);
+        else if (format == "bmp") status = cn_bmp_encode(&view, &out);
+        else if (format == "tiff" && (floats || compression == 1 || compression == 5 || compression == 8))
+            status = cn_tiff_encode(&view, floats ? 0 : int(compression), &out);
+        if (status != CN_CODEC_OK) throw RunPython{};
+        bytes.assign(out.data, out.data + out.size);
+    }
     if (std::vector<uint8_t> fixed; format == "tiff" && cn::image_encode::tiff_extra_samples(bytes, fixed)) return fixed;
     return bytes;
 }

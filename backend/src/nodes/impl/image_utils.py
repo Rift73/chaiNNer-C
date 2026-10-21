@@ -113,7 +113,8 @@ def to_uint8(img: np.ndarray, normalized: bool = False) -> np.ndarray:
     """
     Returns a new uint8 image with the given image data.
 
-    If `normalized` is `False`, then the image will be normalized before being converted to uint8.
+    Values saturate to the representable range before rounding. `normalized` is
+    retained for caller compatibility and does not skip saturation.
     """
     if img.dtype == np.uint8:
         return img.copy()
@@ -122,8 +123,7 @@ def to_uint8(img: np.ndarray, normalized: bool = False) -> np.ndarray:
     if converted is not None:
         return converted
 
-    if not normalized or img.dtype != np.float32:
-        img = normalize(img)
+    img = normalize(img)
 
     return (img * 255).round().astype(np.uint8)
 
@@ -132,7 +132,8 @@ def to_uint16(img: np.ndarray, normalized: bool = False) -> np.ndarray:
     """
     Returns a new uint16 image with the given image data.
 
-    If `normalized` is `False`, then the image will be normalized before being converted to uint16.
+    Values saturate to the representable range before rounding. `normalized` is
+    retained for caller compatibility and does not skip saturation.
     """
     if img.dtype == np.uint16:
         return img.copy()
@@ -141,8 +142,7 @@ def to_uint16(img: np.ndarray, normalized: bool = False) -> np.ndarray:
     if converted is not None:
         return converted
 
-    if not normalized or img.dtype != np.float32:
-        img = normalize(img)
+    img = normalize(img)
 
     return (img * 65535).round().astype(np.uint16)
 

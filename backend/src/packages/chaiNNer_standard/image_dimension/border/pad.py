@@ -92,7 +92,18 @@ class BorderMode(Enum):
                     },
                 };
 
-                size & Image { channels: BorderType::getOutputChannels(border, i.channels, color) }
+                let hasBorder = match Input3 {
+                    BorderMode::Border => amount > 0,
+                    BorderMode::Edges => max(left, top, right, bottom) > 0,
+                    BorderMode::Offsets => left > 0 or top > 0
+                        or width > i.width + left or height > i.height + top,
+                };
+
+                size & Image {
+                    channels: if hasBorder {
+                        BorderType::getOutputChannels(border, i.channels, color)
+                    } else { i.channels }
+                }
             """,
             assume_normalized=True,
         )

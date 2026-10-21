@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Callable, cast
 
 import numpy as np
 
+from api import Progress
 from nodes.impl.onnx.model import SizeReq
 
 from ..native_framework_images import planar_to_interleaved, reflect_pad, swap_red_blue
@@ -113,12 +114,15 @@ def onnx_auto_split(
     tiler: Tiler,
     size_req: SizeReq | None = None,
     collect_after: bool = True,
+    progress: Progress | None = None,
 ) -> np.ndarray:
     input_name = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
     is_fp16_model = session.get_inputs()[0].type == "tensor(float16)"
 
     def upscale(img: np.ndarray, _: object):
+        if progress is not None:
+            progress.check_aborted()
         try:
             lr_img = cast_numpy(img, np.dtype(np.float16)) if is_fp16_model else img
             lr_img, remove_pad = _pad(lr_img, size_req or SizeReq())
@@ -155,7 +159,7 @@ def onnx_auto_split(
                 raise
 
     try:
-        return auto_split(img, upscale, tiler)
+        return auto_split(img, upscale, tiler, progress=progress)
     finally:
         if collect_after:
             gc.collect()

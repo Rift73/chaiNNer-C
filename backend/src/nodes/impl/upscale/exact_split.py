@@ -8,6 +8,8 @@ from typing import Callable
 import numpy as np
 from sanic.log import logger as logger
 
+from api import Progress
+
 from ...utils.utils import Padding as Padding
 from ...utils.utils import Region as Region
 from ...utils.utils import Size
@@ -62,9 +64,10 @@ def _exact_split_without_padding(
     exact_size: Size,
     upscale: Callable[[np.ndarray, Region], np.ndarray],
     overlap: int,
+    progress: Progress | None = None,
 ) -> np.ndarray:
     return graph().tiling_installed_exact_split_exact_split_without_padding(
-        globals(), img, exact_size, upscale, overlap
+        globals(), img, exact_size, upscale, overlap, progress
     )
 
 
@@ -73,7 +76,8 @@ def exact_split(
     exact_size: Size,
     upscale: Callable[[np.ndarray, Region], np.ndarray],
     overlap: int = 16,
+    progress: Progress | None = None,
 ) -> np.ndarray:
     return graph().tiling_installed_exact_split_exact_split(
-        globals(), img, exact_size, upscale, overlap
+        globals(), img, exact_size, upscale, overlap, progress
     )

@@ -150,6 +150,7 @@ struct NlmJob {
     const Byte *padded;
     Byte *out;
     size_t height, width, padded_width, channels, tile_rows;
+    size_t tiles_per_chunk, extra_tiles;
     int patch, search, border, shift;
     const int *weights;
     Scratch *scratch;
@@ -159,14 +160,17 @@ int distance(const Byte *a, const Byte *b, size_t channels) {
     for (size_t c = 0; c < channels; ++c) { int d = a[c]-b[c]; sum += d*d; }
     return sum;
 }
-void nlm_tiles(void *opaque, size_t begin, size_t end) {
+void nlm_tiles(void *opaque, size_t begin, size_t end) noexcept {
     const auto &j = *static_cast<NlmJob *>(opaque);
     size_t stride = j.padded_width*j.channels;
     size_t columns = j.width+static_cast<size_t>(j.patch)*2;
     size_t patch_size = static_cast<size_t>(j.patch)*2+1;
-    for (size_t tile = begin; tile < end; ++tile) {
+    auto &scratch = j.scratch[begin];
+    size_t first_tile = begin*j.tiles_per_chunk+std::min(begin,j.extra_tiles);
+    size_t last_tile = end*j.tiles_per_chunk+std::min(end,j.extra_tiles);
+    for (size_t tile = first_tile; tile < last_tile; ++tile) {
         size_t first = tile*j.tile_rows, last = std::min(first+j.tile_rows, j.height);
-        auto &scratch = j.scratch[tile];
+        std::fill(scratch.sums.begin(), scratch.sums.end(), 0);
         for (int dy = -j.search; dy <= j.search; ++dy) {
             for (int dx = -j.search; dx <= j.search; ++dx) {
                 ptrdiff_t displacement = static_cast<ptrdiff_t>(dy)*static_cast<ptrdiff_t>(stride) + dx*static_cast<ptrdiff_t>(j.channels);
@@ -236,13 +240,16 @@ cn_status nlm(const Byte *src, Byte *out, size_t height, size_t width, size_t ch
     constexpr size_t tile_rows = 16;
     size_t tiles = (height+tile_rows-1)/tile_rows;
     if (width > SIZE_MAX/(tile_rows*(channels+1)*sizeof(uint32_t))) return CN_SIZE_OVERFLOW;
-    std::vector<Scratch> scratch(tiles);
-    for (size_t i = 0; i < tiles; ++i) {
+    // At most 128 work items gives each workspace its own cn_parallel_for callback.
+    size_t chunks = std::min(tiles,size_t{128});
+    std::vector<Scratch> scratch(chunks);
+    for (size_t i = 0; i < chunks; ++i) {
         scratch[i].columns.resize(width+static_cast<size_t>(patch)*2);
-        scratch[i].sums.resize(std::min(tile_rows,height-i*tile_rows)*width*(channels+1));
+        scratch[i].sums.resize(std::min(tile_rows,height)*width*(channels+1));
     }
-    NlmJob job{padded.data(),out,height,width,pw,channels,tile_rows,patch,search,border,shift,weights.data(),scratch.data()};
-    return cn_parallel_for(tiles, 1, nlm_tiles, &job);
+    NlmJob job{padded.data(),out,height,width,pw,channels,tile_rows,tiles/chunks,tiles%chunks,
+        patch,search,border,shift,weights.data(),scratch.data()};
+    return cn_parallel_for(chunks, 1, nlm_tiles, &job);
 }
 }
 

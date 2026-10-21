@@ -175,6 +175,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         getInputHash,
         setManualOutputType,
         clearManualTypes,
+        flushInputChanges,
     } = useContext(GlobalContext);
     const {
         schemata,
@@ -436,11 +437,13 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
 
     const runNodes = useCallback(
         async (overrides: ReadonlyMap<string, InputData>) => {
+            flushInputChanges();
             // The overriding values go into copies of the nodes: the editor's nodes and their
             // input hashes keep theirs.
+            const overridden = withInputOverrides(getNodes(), getEdges(), overrides);
             const { nodes, edges, report } = optimizeChain(
-                withInputOverrides(getNodes(), overrides),
-                getEdges(),
+                overridden.nodes,
+                overridden.edges,
                 schemata,
                 passthrough
             );
@@ -544,6 +547,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             }
         },
         [
+            flushInputChanges,
             getNodes,
             getEdges,
             schemata,

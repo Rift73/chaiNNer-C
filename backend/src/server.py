@@ -15,6 +15,7 @@ import traceback
 import uuid
 from collections.abc import Callable, Coroutine, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Final, TypedDict
@@ -305,6 +306,8 @@ class AppContext:
         self.run_starting = False
         # Stop arrived while that /run waited for previews: it ends without running.
         self.run_stopped_early = False
+        # Pause/Resume while a /run waits applies before its first node runs.
+        self.run_paused_early = False
         self.individual_executors: dict[ExecutionId, Executor | NativeExecutor] = {}
         self.cache: dict[NodeId, NodeOutput] = {}
         # Increased from 4 to 8 workers for better parallelism in batch processing
@@ -535,6 +538,7 @@ async def run(request: Request):
     # the first waits for previews.
     ctx.run_starting = True
     ctx.run_stopped_early = False
+    ctx.run_paused_early = False
 
     executor_id = ExecutionId("main-executor " + uuid.uuid4().hex)
 
@@ -593,6 +597,8 @@ async def run(request: Request):
             if native_profile.enabled():
                 native_profile.start_loop_thread_cpu()
             ctx.executor = executor
+            if ctx.run_paused_early:
+                executor.pause()
             await executor.run()
         except Aborted:
             asyncio.get_running_loop().call_soon(collect_failed_run, ctx)
@@ -656,6 +662,7 @@ async def run(request: Request):
         )
     finally:
         ctx.run_starting = False
+        ctx.run_paused_early = False
         if ctx.config.trace and tracer is not None:
             logger.info("Stopping VizTracer...")
             tracer.stop()
@@ -753,6 +760,8 @@ async def run_individual(request: Request):
     """Runs a single node"""
     ctx = AppContext.get(request.app)
     start = time.perf_counter()
+    node_id: NodeId | None = None
+    arrival: int | None = None
     try:
         full_data: RunIndividualRequest = dict(request.json)  # type: ignore
         logger.debug(full_data)
@@ -771,10 +780,6 @@ async def run_individual(request: Request):
                 # and only the newest may run, else it could be killed by this one and
                 # this one's output cached.
                 return json({"success": True, "data": None})
-            # The newest has passed its wait: an older one still waiting finds no entry
-            # and stops, so the entry goes (else one stays per node ever previewed).
-            del latest_individual_arrival[node_id]
-
             schema_data = api.registry.nodes.get(full_data["schemaId"])
 
             if schema_data is None:
@@ -790,6 +795,14 @@ async def run_individual(request: Request):
             else:
                 raise ValueError(
                     f"Invalid node kind {node_data.kind} attempted to run individually"
+                )
+            if node_data.node_context:
+                # Scope cache registrations to the actual body, which may outlive
+                # this handler after Stop. A cleared body's late use cannot retain
+                # resources or release a newer same-ID preview's registration.
+                preview = tensorrt_cache.Preview(node_id)
+                node.data = replace(
+                    node_data, run=functools.partial(preview.run, node_data.run)
                 )
             chain = Chain()
             chain.add_node(node)
@@ -833,7 +846,10 @@ async def run_individual(request: Request):
                     raise ValueError(
                         f"Invalid node kind {node_data.kind} attempted to run individually"
                     )
-                if not isinstance(node, GeneratorNode):
+                if (
+                    not isinstance(node, GeneratorNode)
+                    and latest_individual_arrival.get(node_id) == arrival
+                ):
                     ctx.cache[node_id] = output
             except Aborted:
                 pass
@@ -857,12 +873,15 @@ async def run_individual(request: Request):
     except Exception as exception:
         logger.error(exception, exc_info=True)
         return json({"success": False, "error": str(exception)})
+    finally:
+        if node_id is not None and latest_individual_arrival.get(node_id) == arrival:
+            latest_individual_arrival.pop(node_id, None)
 
 
 # The deferred NumPy pool releases of /run/individual, held until they finish.
 individual_releases: set[asyncio.Task[None]] = set()
-# /run/individual's arrival numbers, and by node id the newest arrival's while it waits
-# for its node.
+# The newest preview owns its node's cache entry until completion; clearing the node
+# revokes that ownership, including while a preview waits for its node to load.
 individual_arrivals = itertools.count()
 latest_individual_arrival: dict[NodeId, int] = {}
 
@@ -941,6 +960,11 @@ async def clear_cache_individual(request: Request):
         full_data = dict(request.json)  # type: ignore
         # TensorRT and VOSR engines, sessions and models outlive runs (every
         # SharedCache); a session in use is freed when its run returns it.
+        latest_individual_arrival.pop(full_data["id"], None)
+        execution_id = ExecutionId("individual-executor " + full_data["id"])
+        individual = ctx.individual_executors.get(execution_id)
+        if individual is not None:
+            individual.kill()
         tensorrt_cache.release_node(full_data["id"])
         return_device_memory_after_burst(ctx)
         if ctx.cache.get(full_data["id"], None) is not None:
@@ -961,6 +985,9 @@ async def pause(request: Request):
     logger.info("Attempting to pause executor...")
 
     if not ctx.executor:
+        if ctx.run_starting and not ctx.run_stopped_early:
+            ctx.run_paused_early = True
+            return json(success_response(), status=200)
         logger.warning("No executor to pause.")
         return json(no_executor_response(), status=400)
 
@@ -981,6 +1008,9 @@ async def resume(request: Request):
     logger.info("Attempting to resume executor...")
 
     if not ctx.executor:
+        if ctx.run_starting and not ctx.run_stopped_early:
+            ctx.run_paused_early = False
+            return json(success_response(), status=200)
         logger.warning("No executor to resume.")
         return json(no_executor_response(), status=400)
 
@@ -1045,6 +1075,13 @@ async def status(_request: Request):
         if e.progress.aborted:
             executor_status = "killing"
         elif e.progress.paused:
+            executor_status = "paused"
+        else:
+            executor_status = "running"
+    elif ctx.run_starting:
+        if ctx.run_stopped_early:
+            executor_status = "killing"
+        elif ctx.run_paused_early:
             executor_status = "paused"
         else:
             executor_status = "running"

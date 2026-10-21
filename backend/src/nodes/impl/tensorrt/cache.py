@@ -16,9 +16,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Hashable, Iterator
 from contextlib import contextmanager
-from threading import Lock
+from threading import Lock, local
 from typing import Any, Generic, TypeVar
-from weakref import WeakSet
+from weakref import WeakSet, WeakValueDictionary
 
 from api import NodeId
 from util import held
@@ -29,6 +29,36 @@ T = TypeVar("T")
 
 # Every cache `release_node` clears; the session cache joins when its module loads.
 _CACHES: WeakSet[SharedCache[Any]] = WeakSet()
+_PREVIEWS: WeakValueDictionary[NodeId, Preview] = WeakValueDictionary()
+
+
+class _PreviewLocal(local):
+    current: Preview | None = None
+
+
+_preview = _PreviewLocal()
+
+
+class Preview:
+    """Cache ownership of one preview body, including a body still running after Stop."""
+
+    def __init__(self, node_id: NodeId) -> None:
+        self.node_id = node_id
+        self.revoked = False
+        previous = _PREVIEWS.get(node_id)
+        if previous is not None:
+            previous.revoked = True
+        _PREVIEWS[node_id] = self
+
+    def run(self, fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+        previous, _preview.current = _preview.current, self
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _preview.current = previous
+            if self.revoked:
+                for shared in list(_CACHES):
+                    shared.release_node(self.node_id, self)
 
 
 class _Entry(Generic[T]):
@@ -44,7 +74,7 @@ class SharedCache(Generic[T]):
         self._close = close
         self._lock = Lock()
         self._entries: dict[Hashable, _Entry[T]] = {}
-        self._held: dict[NodeId, Hashable] = {}
+        self._held: dict[NodeId, tuple[Hashable, Preview | None]] = {}
         _CACHES.add(self)
 
     def __len__(self) -> int:
@@ -61,9 +91,10 @@ class SharedCache(Generic[T]):
 
     def _drop(self, node_id: NodeId) -> T | None:
         """Drop the reference of `node_id` (lock held); returns a value to close."""
-        key = self._held.pop(node_id, None)
-        if key is None:
+        registration = self._held.pop(node_id, None)
+        if registration is None:
             return None
+        key, _ = registration
         self._entries[key].refs.discard(node_id)
         return self._detach(key)
 
@@ -71,9 +102,17 @@ class SharedCache(Generic[T]):
         if value is not None:
             self._close(value)
 
-    def release_node(self, node_id: NodeId) -> None:
+    def release_node(self, node_id: NodeId, preview: Preview | None = None) -> None:
         """Release the reference of `node_id`; an unknown id is a no-op."""
+        current = _preview.current
+        if preview is None and current is not None and current.revoked:
+            preview = current
         with self._lock:
+            registration = self._held.get(node_id)
+            if preview is not None and (
+                registration is None or registration[1] is not preview
+            ):
+                return
             doomed = self._drop(node_id)
         self._close_value(doomed)
 
@@ -86,16 +125,21 @@ class SharedCache(Generic[T]):
         The value is created on first use. An exception from the body closes the
         value (its state is unknown); the next use creates it again.
         """
+        preview = _preview.current
+        if preview is not None and preview.node_id != node_id:
+            preview = None
         with self._lock:
+            retain = preview is None or not preview.revoked
             doomed = None
-            if self._held.get(node_id, key) != key:
+            if retain and self._held.get(node_id, (key, None))[0] != key:
                 doomed = self._drop(node_id)
             entry = self._entries.get(key)
             if entry is None:
                 entry = _Entry()
                 self._entries[key] = entry
-            entry.refs.add(node_id)
-            self._held[node_id] = key
+            if retain:
+                entry.refs.add(node_id)
+                self._held[node_id] = (key, preview)
             entry.users += 1
         try:
             self._close_value(doomed)
@@ -122,5 +166,8 @@ engines: SharedCache[TensorRTEngine] = SharedCache(TensorRTEngine.close)
 
 def release_node(node_id: NodeId) -> None:
     """Release a node's references in every cache (Load Engine, Upscale Image)."""
+    preview = _PREVIEWS.pop(node_id, None)
+    if preview is not None:
+        preview.revoked = True
     for shared in list(_CACHES):
         shared.release_node(node_id)

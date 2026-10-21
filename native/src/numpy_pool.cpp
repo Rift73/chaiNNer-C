@@ -330,6 +330,20 @@ Block *retire(Block *block)
     return released;
 }
 
+/* Detaches every idle block under the lock; the caller releases the chain outside it. */
+Block *detach_idle()
+{
+    Block *chain = nullptr;
+    while (oldest) {
+        Block *block = oldest;
+        idle_unlink(block);
+        table_erase(block);
+        block->older = chain;
+        chain = block;
+    }
+    return chain;
+}
+
 void release(Block *chain)
 {
     while (chain) {
@@ -447,6 +461,19 @@ void *pool_allocate(size_t size, Op op)
         }
     }
     void *data = block ? block->data : pool_fresh(size);
+    if (!data && !block) {
+        Block *released;
+        {
+            Locked held;
+            if (config.profile) {
+                counts.evictions += held_blocks;
+                counts.evicted_bytes += held_bytes;
+            }
+            released = detach_idle();
+        }
+        release(released);
+        data = pool_fresh(size);
+    }
     if (config.profile && op != op_realloc) sample(data, size);
     if (block && op == op_calloc) std::memset(data, 0, size);
     return data;
@@ -739,13 +766,7 @@ py::tuple release_idle()
     {
         Locked held;
         bytes = held_bytes;
-        while (oldest) {
-            Block *block = oldest;
-            idle_unlink(block);
-            table_erase(block);
-            block->older = chain;
-            chain = block;
-        }
+        chain = detach_idle();
         if (config.profile) {
             ++counts.releases;
             counts.released_bytes += bytes;

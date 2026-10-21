@@ -1,8 +1,8 @@
 # chaiNNer-C: build, test, package, bench
 
-chaiNNer-C v0.3.7, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
+chaiNNer-C v0.3.8, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
 installed nightly `0.25.1-nightly.2025-10-21` UI with pinned bundle patches, the single backend in `backend/src`, and a
-native C17/C++20 layer. The UI shows v0.3.7 (header, About, startup log, system information with `app.upstream`), while
+native C17/C++20 layer. The UI shows v0.3.8 (header, About, startup log, system information with `app.upstream`), while
 `app.getVersion()` stays upstream's, so saved chains keep the upstream version stamp and upstream's migrations read
 them correctly. Design: `ARCHITECTURE.md`. State and
 decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md` (user guide) and
@@ -104,14 +104,14 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 `CHAINNER_C_EXT_OUTPUT_DIR`, default `backend/src/chainner_ext`), replacing the only known-good copies. Copy them to
 `native\build\held\` first and check `Get-FileHash` against those copies. The build is reproducible: the same sources
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
-map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` and `_chainner_graph.pyd` of 2026-10-21, with the
-default PNG encoder, `drft_trt_plugins.dll` of 2026-10-20, the others of 2026-10-18, with TensorRT 11.4.0.106 and
+map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` and `_chainner_graph.pyd` of 2026-10-22, with the
+default PNG encoder and approved follow-on corrections, `drft_trt_plugins.dll` of 2026-10-20, the others of 2026-10-18, with TensorRT 11.4.0.106 and
 CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
-| `chainner_native.dll` | `bfe03c8994cf84d3971999fcc1268b5909085bcca6f14164ea9f1ef49d333ba5` |
-| `_chainner_graph.pyd` | `e9d1697fda67dffc04586a61d01c1d8389ae9c76d20e69407fbb4399241e5c35` |
+| `chainner_native.dll` | `bbdb17aedecf270daa09d4df8be4d8d89ff1d85b90661657482efb1307309bd2` |
+| `_chainner_graph.pyd` | `c533aae9fea50c7399f1d6261088bd01b4f781510b58b3ff5321698bf81e4827` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 | `vosr2_qkv.dll` | `5b5cde9c2c037f0ed3d48ce0fe59b3ff01432c610edc358fdb7b0155e5b93497` |
 | `drft_trt_plugins.dll` | `2bc86cb6918a196d9a03b1f0bc3ab7e3a78c6440567eb6e191642f3f1bb89091` |

@@ -262,6 +262,8 @@ public:
     }
     void insert(const Key &key, Entry entry)
     {
+        // Even scalar/text entries retain a key, outputs and LRU bookkeeping.
+        entry.bytes += int64_t(sizeof(Entry) + sizeof(Key) * 2 + sizeof(void *) * 6);
         std::vector<Entry> evicted;  // released outside the lock
         std::lock_guard<std::mutex> locked(mutex_);
         if (!enabled() || entry.bytes > budget_ / 8 || entries_.count(key)) return;
@@ -751,7 +753,7 @@ private:
     void drive();
     void suspend();
     void ensure(const CellRef &ref, bool commit = true);
-    bool parallel(const CellRef &ref);
+    bool parallel(const CellRef &ref, std::optional<std::map<std::pair<int, int64_t>, bool>> &known);
     void demand(const CellRef &ref);
     void want(const CellRef &ref);
     void prefetch(const CellRef &ref, std::set<std::pair<int, int64_t>> &seen);
@@ -1448,7 +1450,8 @@ void Run::ensure(const CellRef &ref, bool commit)
         bool together;
         {
             std::lock_guard<std::mutex> locked(mutex_);
-            together = edge && parallel(source);
+            std::optional<std::map<std::pair<int, int64_t>, bool>> known;
+            together = edge && parallel(source, known);
         }
         if (together) {
             batch.push_back(source);
@@ -1491,14 +1494,18 @@ void Run::ensure(const CellRef &ref, bool commit)
 }
 
 /* process's pure_cpu_dependency: a cell computed, or pure with every input such a cell (mutex_ held). */
-bool Run::parallel(const CellRef &ref)
+bool Run::parallel(const CellRef &ref, std::optional<std::map<std::pair<int, int64_t>, bool>> &known)
 {
     const Cell &c = cell(ref);
     if (c.state == State::done || c.state == State::released) return true;
     const NodePlan &node = nodes_[size_t(ref.node)];
     if (!node.pure) return false;
+    if (!known) known.emplace();
+    auto [entry, inserted] = known->try_emplace(std::pair{ref.node, ref.slot}, false);
+    if (!inserted) return entry->second;
     for (size_t i = 0; i < node.inputs.size(); ++i)
-        if (node.inputs[i].source >= 0 && !parallel(source_of(ref, int(i)))) return false;
+        if (node.inputs[i].source >= 0 && !parallel(source_of(ref, int(i)), known)) return false;
+    entry->second = true;
     return true;
 }
 
@@ -2150,6 +2157,7 @@ void Run::iterate_group(const GroupPlan &group)
     suspend();
     std::vector<GeneratorRun> generators;
     std::vector<CollectorRun> collectors;
+    std::set<int> collector_ids;
     std::set<int64_t> lengths, bases;
     // Context items (process.Executor.__iterate_generator_nodes): a group's only generator reads, for its temporal
     // nodes, `before` items before its range and `after` items after it.
@@ -2164,6 +2172,7 @@ void Run::iterate_group(const GroupPlan &group)
             run.native = static_cells_[size_t(plan.node)].items;
         }
         int64_t base = 0;  // a native generator reads its source whole
+        bool exact_length = true;
         if (run.native) {
             run.expected = run.native->expected_length();
             run.fail_fast = run.native->fail_fast();
@@ -2184,12 +2193,14 @@ void Run::iterate_group(const GroupPlan &group)
                 before = items[4].cast<int64_t>();
                 after = items[5].cast<int64_t>();
                 base = items[6].cast<int64_t>();
+                exact_length = items[7].cast<bool>();
             } catch (py::error_already_set &error) {
                 throw PythonError{current_error(error)};
             }
         }
         bases.insert(base);
         for (int collector : plan.collectors) {
+            if (!collector_ids.insert(collector).second) continue;
             suspend();
             Clock::time_point start = Clock::now();
             CellRef ref{collector, -1};
@@ -2199,7 +2210,7 @@ void Run::iterate_group(const GroupPlan &group)
             if (c.state == State::failed) throw PythonError{c.error};
             collectors.push_back({collector, c.object, c.inputs, seconds_since(start)});
         }
-        lengths.insert(run.expected);
+        if (exact_length) lengths.insert(run.expected);
         run.loop_start = run.last = Clock::now();
         run.paused_start = run.last_paused = time_paused_;
         emit_progress(plan.node, {}, 0, run.expected);
@@ -3187,6 +3198,8 @@ int64_t Run::memo_bytes(const std::vector<Value> &outputs)
                 bytes += int64_t(image->storage->bytes());
         } else if (const PyRef *object = std::get_if<PyRef>(&value)) {
             python.push_back(*object);
+        } else if (const auto *text = std::get_if<std::string>(&value)) {
+            bytes += int64_t(text->capacity()) + 1;
         }
     }
     if (python.empty()) return bytes;

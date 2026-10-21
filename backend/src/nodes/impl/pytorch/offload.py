@@ -142,15 +142,15 @@ class OffloadMode(TorchDispatchMode):
         inputs = [
             a for a in pytree.tree_leaves((args, kwargs)) if isinstance(a, torch.Tensor)
         ]
-        for t in inputs:
-            if id(t) in self.moved:
-                self._bring_back(t)
         keep = {id(t) for t in inputs}
         while torch.cuda.memory_allocated(self.device) > self.limit:
             if not self._move_out(keep):
                 break
         while True:
             try:
+                for t in inputs:
+                    if id(t) in self.moved:
+                        self._bring_back(t)
                 out = func(*args, **kwargs)
                 break
             except torch.OutOfMemoryError:
@@ -187,6 +187,10 @@ def offloaded(module: torch.nn.Module, x: torch.Tensor) -> Iterator[None]:
     allocated = torch.cuda.memory_allocated(device)
     previous = torch.cuda.get_per_process_memory_fraction(device)
     cap = min(free + reserved - HEADROOM, int(previous * total))
+    if cap <= WORKSPACE:
+        raise torch.OutOfMemoryError(
+            "CUDA memory is insufficient for activation offload and its workspace."
+        )
     known = _bytes_per_pixel.get(module)
     torch.cuda.reset_peak_memory_stats(device)
     mode = None

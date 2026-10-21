@@ -11,8 +11,8 @@ from __future__ import annotations
 import ctypes
 import threading
 from collections import OrderedDict, deque
-from collections.abc import Callable
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -76,6 +76,7 @@ class TensorRTSession:
     (implements `TileRunner`)."""
 
     def __init__(self, engine: TensorRTEngine, gpu_index: int) -> None:
+        self._gpu_index = gpu_index
         check_cuda(cudart.cudaSetDevice(gpu_index))
         # The engine Load Engine deserialized, kept alive until `close`.
         self._loaded = engine.acquire(gpu_index, deserialize_engine)
@@ -188,6 +189,9 @@ class TensorRTSession:
 
     def submit(self, tile: np.ndarray) -> None:
         """Enqueue one HWC float32 BGR tile; at most two may be in flight."""
+        if not self._queue:
+            # Direct callers may start the next image on another worker thread.
+            check_cuda(cudart.cudaSetDevice(self._gpu_index))
         if len(self._queue) >= 2:
             raise RuntimeError("Collect a tile before submitting a third one.")
         h, w, c = tile.shape
@@ -324,6 +328,7 @@ class TensorRTSession:
             except Exception as e:
                 errors.append(e)
 
+        attempt(lambda: check_cuda(cudart.cudaSetDevice(self._gpu_index)))
         attempt(lambda: check_cuda(cudart.cudaStreamSynchronize(self._stream)))
         self._queue.clear()
         attempt(self._drop_graphs)
@@ -347,10 +352,13 @@ class TensorRTSession:
 _sessions: SharedCache[TensorRTSession] = SharedCache(TensorRTSession.close)
 
 
+@contextmanager
 def use_tensorrt_session(
     engine: TensorRTEngine, gpu_index: int, node_id: NodeId
-) -> AbstractContextManager[TensorRTSession]:
+) -> Iterator[TensorRTSession]:
     """The session for an engine on a GPU, kept across runs for `node_id` (see `cache`)."""
-    return _sessions.use(
+    with _sessions.use(
         (engine, gpu_index), node_id, lambda: TensorRTSession(engine, gpu_index)
-    )
+    ) as session:
+        check_cuda(cudart.cudaSetDevice(gpu_index))
+        yield session

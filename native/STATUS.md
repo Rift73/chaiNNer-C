@@ -4,12 +4,75 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- Guided grayscale tiling (2026-10-22, Claude's approved one-line follow-up; not released): the Guided callback now
+  applies its existing `_as_3d` helper to each processed tile before assembly. Final grayscale outputs still become
+  HxW through ImageOutput; multichannel results are unchanged. The new non-square grayscale CPU regression failed
+  before the fix while its RGB control passed; all eight focused Guided CPU cases pass afterward. Scoped format/lint
+  passed. The single real GPU rerun used byte-identical source/guide arrays to the previous failed run: two tiles each
+  trained for 1,000 CUDA Adam updates, then returned a finite 432x768 grayscale image. Output was visually inspected
+  against its guide; no obvious tile discontinuity. The prior assembly defect is closed. No full-suite rerun or native
+  rebuild (explicitly waived for this one-line Python change); the previous A1 gate stands. Evidence:
+  `native/local/implementation-review/guided-fix/RESULTS.md`. No benchmark, app launch, push, release or D: change;
+  Claude owns packaging/release and the installed UI checks after handback.
+- Claude implementation-review follow-ups (2026-10-22, tested source `3a345dee`; not released): completed F11/F12
+  document-generation protection and ordered saves by canonical target, including file-link/directory-junction aliases.
+  Startup Stop stays Killing; Pause/Resume apply before execution; cleared preview bodies cannot retain cache entries
+  or release their Undo successor's registration. Numeric changes use the common draft-flush path; Guided retries only
+  memory failures; retry-trace/video-range checks and the two reviewed nits are complete. Final concurrency review accepted.
+  Portable native build, TypeScript, scoped lint and focused checks passed. Required final CPU gate on main:
+  **136,190 passed / 0 failed / 0 errors / 491 skipped (109 s, 17 shards)**, superseding the previous phase's partial gate.
+  Authorized GPU functional checks: the owner's frame 4032 YUV/model graph reduced isolated bright-color candidates
+  122 -> 0 (source) and 684 -> 0 (processed), with negative pre-save floats captured and the affected crops inspected;
+  ONNX and NCNN each completed one GPU tile then raised Stop; trained U2NetP Remove Background passed and was visually
+  inspected. Guided performed 1,000 CUDA training updates, then failed grayscale tile assembly (2D tile into 3D buffer):
+  separate pre-existing defect, no complete output, awaiting Claude review and owner approval. Evidence and exact limits:
+  `native/local/implementation-review/IMPLEMENTATION_REVIEW_RESULTS.md`. No benchmark/speed claim, app launch, packaging,
+  D: update, push or release; actual UI/installed checks remain pending. Small segmentation weights were downloaded only
+  into the task folder with explicit permission. The three code commits are `d9027458`, `18e05e25`, `3a345dee`.
+- Claude follow-on decisions (2026-10-22, source implementation; not released): F02-F10, F13-F16,
+  F18-F26 and D01 implemented, plus CV3 Guided Upscale bulk patch preparation and CV4 non-matting
+  background-removal assembly through the existing C kernel. Integer image exports now saturate extended RGB
+  before rounding (+Inf white, -Inf black, NaN diagnostics retained); floating-point planes and float32 TIFF
+  remain extended-range. Shared collectors run once per item/group, temporal radii accumulate through serial
+  dependencies, and estimated video counts no longer truncate requested ranges or lookahead. Max-tiler retries
+  retain row position and output scale; ONNX/NCNN Stop reaches tile callbacks; PyTorch only retries memory errors.
+  Active previews stop on cache clear, numeric drafts join the existing flush registry, and backend shutdown waits
+  until window closing is accepted. Type declarations and resource-failure cleanup follow Claude's decisions.
+  Portable native builds, TypeScript check and 10 type-expression cases passed. The one permitted full-gate rerun
+  finished 136,162 passed / 21 failed / 0 errors / 491 skipped (181 s). All 21 failures then passed focused checks
+  after explicit frozen-reference/schema expectation adapters and correction of the duplicate color quantizer.
+  At that phase's close no third full gate ran; its tree had focused validation only (superseded by the review gate above). Existing
+  full Pyright issues match unchanged main (30 errors / 44 warnings); the final range-contract files check clean.
+  No GPU work, timing claims, app launch, release or D: installation update. Evidence is under
+  `native/local/follow-on-implementation/`; the review authority remains
+  `native/local/hunt-20261021/CLAUDE_FOLLOW_ON_DECISIONS.md`.
+- Reviewed hunt corrections (2026-10-21, source implementation; not released): execution-only video range overrides
+  remove incoming connections before serialization; Save Video rejects changed frame/plane geometry before writing;
+  the CLI decoder selects the first video track and reports a nonzero exit at natural EOF. Corrupt videos that
+  FFmpeg gives up on now fail instead of saving their readable prefix. Stop and early range completion stay distinct.
+  Pending text edits flush on blur/unmount and before Save/Run/Undo/Redo; history commits the current edit before
+  stepping. Preview cache publication requires the current request's ownership. Dependency walks memoize shared
+  subgraphs per walk, text counts toward the result cache budget, idle NumPy blocks are reclaimed once after a failed
+  fresh allocation, and Denoise reuses at most 128 preallocated scratch workspaces without changing its integer math.
+  Custom High Pass accepts RGBA blurred inputs while preserving source alpha; Stack Images and Pad describe their
+  actual channel counts. PSNR now uses `10*log10(1/MSE)` before rounding: old values divided by about 2.303 give the
+  new decibel values, except where old MSE rounding distorted them; saved PSNR thresholds must be updated. TensorRT
+  sessions select their device on reuse/teardown; PyTorch offload rejects insufficient headroom as a CUDA memory error
+  and retries restoration after evicting only non-input activations. Remote backend startup has a five-minute deadline.
+  Portable native build, TypeScript check, scoped lint and the approved critical checks passed. The phase gate passed
+  136,125 / 0 failed / 491 skipped (117 s) on its one permitted rerun, after updating existing fakes/metadata assertions
+  for the accepted contracts; an untouched, unseeded CPU VOSR numerical check failed in the first gate and passed both
+  alone and in the rerun (recorded, no VOSR code/tolerance change). Evidence: `native/local/hunt-20261021/`.
+  No speed gain measured, no GPU execution, no packaged UI launch, and neither D: installation updated.
 - Node times (2026-10-21, v0.3.7 re-release 8; `1a68047e`): the run engine leaves a Python body's `util.waiting` out of
   its time, as `process.Executor`'s `timed_supplier` has since `46ba54ef`. TensorRT Upscale Image had shown its turn in
   the item window's queue again since the engine (v0.3.7): 4-12 s -> 1.44-1.47 s per image on Load Images -> TensorRT
   Upscale (DRFT-L x4, fixed 768) -> Resize -> Save PNG, 20 images, RTX 5090; throughput unchanged. Not a DRFT
   regression: per 768^2 tile the chaiNNer-C engine takes 1482 ms at 2512 MHz / 478 W against Codex's TensorRT 11.2
   engine's 1619 ms at 2775 MHz / 548 W (denser math reaches the GPU's power cap at fewer watts).
+  RELEASED 2026-10-21 as v0.3.7 re-release 8 (fork branch and tag `v0.3.7` at the replay of main up to `01042e33`;
+  asset SHA-256 `da475ce1…cd6c`, r7 `9AEC18A7…767B` kept locally; gate 136,111 passed); both local installs updated
+  (3 files each, plus their tuned `_chainner_graph.pyd` rebuilt with the existing profile) and serve 196 nodes.
 - PNG encoder (2026-10-21, owner: "use Fast option as default"; v0.3.7 re-release 7): default 8-bit PNGs (1-4
   channels; Save Image, the Save prepare step, the viewer and UI previews) use `native/src/png_encode.c`: MinSum filter
   per row (scalar + AVX2 kernel, bytes identical at every ISA level; AVX-512 dropped: no encode-level win), libdeflate
@@ -465,6 +528,12 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 | Item | Plan |
 | --- | --- |
+| Follow-on F01/F17: concurrent Skip Existing writers and concurrent settings writers | Still deferred by Claude. F11/F12 were subsequently approved and implemented in `3a345dee` |
+| Follow-on installed UI checks: numeric field Ctrl+S, real focus/stepper/wheel events and accepted/canceled quit | Claude handles the installed v0.3.8 checks after release/update; no source app launch in this task. Prescribed YUV/model, ONNX/NCNN Stop, background removal and the corrected Guided GPU run passed |
+| Python type check baseline: 30 errors and 44 warnings; test_video_io.py has an existing RUF005 lint warning | Unchanged baseline verified against d846db15; no unrelated repairs in this phase |
+| Hunt O02: cold CFR Matroska/WebM rate detection and frame indexing read packets twice, then cache the result | Deferred unless a long cold load visibly stalls; preserve their different counting rules |
+| Hunt O03: opt-in `CHAINNER_C_TRT_RUNNER=1` retains both Python and C++ TensorRT engine copies | Parked: the cross-boundary ownership change is riskier than the current saving |
+| Hunt GPU corrections B16-B18: owning-device reuse/teardown, low-headroom split admission, activation restore recovery | CPU/source checks only; real-device confirmation deferred in `GPU-DEFERRED.md` |
 | Load Video seek bar follow-ups (2026-10-21): the independent-UI patch (`native/tools/independent_ui.py`) for the `video-seek` input kind and runWithOverrides; the CLI path's Frame Count stays the probe's estimate (a run that reaches the end does not teach it); a one-frame run shares the Preview's decoded frame only in RGB float; VOSR Persistent Detail starts its history at a range's first context frame | Next sessions |
 | The error-retention fix's two recorded follow-ups, both INFERRED: a failed `/run/individual` (a preview's inputs) and the per-item errors of a non-fail-fast generator (`process.py:903` keeps `str(e)`; the run then fails, so B collects at its end). Each lets an exception through the same frames as a failed `/run`; A breaks their chaiNNer-C edge, and upstream's `Lazy` edge remains. One later commit (Fable's final review) carries `await_owned_node`'s cancel-branch `error` local, which keeps a cycle if a node fails while a cancel waits. That is reachable, because Sanic cancels the handler when the UI drops `/run`; the fix is `del error` with a cancel-branch test. The same commit carries `owned_gather`'s `results`/`tasks` locals and two comment fixes in `server.py`. Upstream's `Lazy.from_coroutine` `completion` local needs a separate decision. Root cause: `native/reports/error-retention/rootcause.md` | The fix (Fable, 2026-10-06) is two commits: A, `bad1dba7` (`await_owned_node` and `NodeFlights.run` drop their `future`/`task` locals), then B with D (`collect_failed_run`: one `gc.collect()` after a failed or stopped `/run`'s handler returns, then the pool's release if no run executes; ARCHITECTURE section 6). A failed run's arrays are freed right after it, earlier than upstream git's end of the next `/run`; successful runs never collect. Growth record: the release check (0)–(f), with (e) and (f) asserted; verdict `native/reports/error-retention/verdict.md`. OWNER REVIEW FLAG (decision log): `import gc` and that one collection; undo = `git revert` of the second commit. The B1 re-test and SP3b's phase-2 re-check follow it, then SP5a |
 | `lens_blur` builds its kernels on every call (B0's unused `_lens_plans` cache went in SP4b Task 3b); that cost is still not measured; SP3b did not take it up. SP3 follow-ups: bench cases for a resumed batch with skip-existing (a second run over the same output folder; harness) and for a heavy untaken Conditional branch; a K spot-check at 4 CPUs (affinity `0xF`); count the replay round trips, then skip the round trip when a replay has no concurrent sibling; compare folder identity in the read-ahead predicate (would close the loopback-alias and non-Windows case-insensitivity residuals). SP2 native-pool carry-overs, deferred (SP3 kept the pool unchanged): the spurious WakeAll on re-pin, the `leave` comment, the `cn_parallel_dispatches` non-Windows note, measuring whether dropping the generation bump in `leave` pays. Backend and test cleanups: dead `sequence` branch in `nodes/impl/native_layout.py:154-174` (Stack Images Sequence does not ship); `# pyright: ignore` in `nodes/impl/event_queue.py`; `native_analysis.is_grayscale` has no shipped caller (retire it or test it against numpy); split the 3605-line `native/tests/test_item_window.py` by concern (read-ahead predicate, engine and executor, Save phases, fresh interpreter) | SP4b, SP3b, SP3c and SP4c are closed (State). Order (Fable, 2026-10-06): the error-retention fix (done, first row), then the B1 re-test and SP3b's phase-2 re-check, then SP5a (State, SP4c; rows below). A commit-path lever (B1 is re-tested after the error-retention fix) stays inside SP3c's boundary: outputs bit-identical to the installed chaiNNer and B3; file writes in item order, each complete before its node's finish event and before the next item's commit; events and `sse_contract` identical; the same error object, selected and surfaced at the same point relative to earlier and later items' side effects; Stop, pause and generator-once unchanged; K = 1 within noise. SP3 follow-ups and SP2 carry-overs: not yet scheduled (the SP4 attribution is done); cleanups SP4 or later |
@@ -509,6 +578,25 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 ## Decision log
 
+- 2026-10-22 (owner: do exactly CLAUDE_GUIDED_DECISION.md): apply the one-line Guided tile-axis correction, add one
+  non-square grayscale CPU test with RGB control, repeat the single Guided GPU sample with final HxW shape, commit and
+  hand back. Only focused pix_transform tests, no new full suite/native rebuild; no release or D: changes by Codex.
+- 2026-10-22 (implementation review): owner supplied `CLAUDE_IMPLEMENTATION_REVIEW.md` and freed the GPU. Implement
+  A2 F11/F12 and B1-B8, then one final main CPU gate followed by the prescribed sequential GPU functional checks;
+  no benchmarks, large-DUAL/multi-GPU work, app launch, D: update, push or release. Release remains a separate decision.
+  Owner explicitly approved downloading small U2NetP weights into the task folder; no dependency installation.
+  The newly reproduced Guided grayscale assembly defect is recorded for Claude and owner approval, not implemented.
+- 2026-10-22 (owner: implement Claude's follow-on decisions): F26 saturates all shared integer exports, including
+  normalized=True and infinities; preserve NaN and floating-point output semantics. Keep normalized parameters for
+  caller compatibility. F19's zero-epoch case gets exactly the requested optimizer steps, not a forced full epoch;
+  positive epochs are unchanged. D01 keeps small-image SSIM NaN and makes the type/documentation admit it.
+- 2026-10-22 (follow-on validation): no GPU use while owner trains; no app launch, deployment, dependency installation,
+  push or release. Six Sol xhigh implementation lanes, bounded Sol repairs and one Astra max source reviewer; narrow critical discriminators
+  and the existing one-phase CPU gate. F01/F11/F12/F17 and other performance proposals stay deferred.
+- 2026-10-21 (owner/Claude review B13): PSNR changes to decibels from unrounded MSE, infinity only at zero; native/Python together, analytic check and saved-threshold release note.
+- 2026-10-21 (owner/Claude review B15): Pad uses the type-only border-channel correction, including unions for connected values; runtime pixels stay unchanged.
+- 2026-10-21 (owner/Claude review B18): protect all operation inputs and retry failed activation restoration after non-input eviction; one CPU stand-in check only, real DUAL VRAM confirmation deferred.
+- 2026-10-21 (current hunt): no GPU benchmarks; functional GPU work only within 1 GB VRAM. This implementation phase uses no GPU. Delegated work uses GPT-6.1 Sol xhigh, with one GPT-6 Astra max reviewer when justified.
 User rulings (pre-program handoff section 2, at the tag; still binding):
 
 - Exact chaiNNer UI/UX: schemas, names, controls, saved chains, previews, errors, cancellation,

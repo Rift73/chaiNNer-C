@@ -199,7 +199,13 @@ def pytorch_auto_split(
         except (RuntimeError, MemoryError) as e:
             # Out of memory: the device's or the host's (torch's RuntimeError, or
             # NumPy's MemoryError for the converted output)
-            if isinstance(e, MemoryError) or "allocate" in str(e) or "CUDA" in str(e):
+            if (
+                isinstance(e, torch.OutOfMemoryError)
+                or isinstance(e, MemoryError)
+                or "allocate" in str(e).lower()
+                or "out of memory" in str(e).lower()
+                or "ALLOC_FAILED" in str(e)
+            ):
                 # Collect garbage (clear VRAM)
                 if input_tensor is not None:
                     try:
