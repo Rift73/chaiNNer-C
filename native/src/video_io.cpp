@@ -437,6 +437,7 @@ struct EncoderLog {
 class WriterResource {
 public:
     O process=py::none();
+    O size=py::none();
     // The writer's temporary file (Writer.target): Stop deletes it, never another file.
     O target=py::none();
     EncoderLog log;
@@ -499,6 +500,7 @@ bool writer_open(const py::dict&g,const O&self,const O&width,const O&height,bool
         O process=stream.attr("run_async")(py::arg("pipe_stdin")=true,py::arg("pipe_stdout")=false,
             py::arg("pipe_stderr")=true,py::arg("cmd")=self.attr("ffmpeg_env").attr("ffmpeg"));
         auto state=resource(self);state->process=process;state->completed=false;
+        state->size=py::make_tuple(width,height);
         state->log=EncoderLog();
         try {state->log.start(process);}
         catch(...) {state->abort();throw;} // Undrained stderr could block the encoder.
@@ -583,10 +585,12 @@ void raise_if_encoder_stopped(const O&self,const py::error_already_set&error) {
     throw py::error_already_set();
 }
 void writer_frame(const py::dict&g,const O&self,const O&image,const O&prepared) {
+    auto state=resource(self);
+    if(state->size.is_none())state->size=self.attr("first_frame")(image);
     if(self.attr("out").is_none()) {
-        O size=self.attr("first_frame")(image);
-        self.attr("start")(size[py::int_(0)],size[py::int_(1)]);
+        self.attr("start")(state->size[py::int_(0)],state->size[py::int_(1)]);
     }
+    self.attr("check_frame")(image,state->size);
     // A prepared frame (SP3-P9) is the payload computed ahead.
     O frame=prepared.is_none()?O(self.attr("payload")(image)):O(prepared.attr("result")());
     if(!self.attr("out").is_none() && !self.attr("out").attr("stdin").is_none()) {
@@ -830,13 +834,13 @@ class FrameIterator {
             // converts as FFmpeg chooses.
             O matrix=py::getattr(loader_,"input_matrix",py::none());
             if(!matrix.is_none())options["vf"]=py::str("scale=in_color_matrix={}:flags={}").attr("format")(matrix,flags);
-            output=global(globals_,"ffmpeg").attr("input")(loader_.attr("path")).attr("output");
+            output=global(globals_,"ffmpeg").attr("input")(loader_.attr("path"))[py::str("v:0")].attr("output");
         } else {
             options=dict({{"format",py::str("rawvideo")},{"pix_fmt",format_.attr("pix_fmt")},{"sws_flags",py::str(flags)}});
             O scale=format_.attr("scale");
             if(!scale.is_none())options["vf"]=py::str("scale={}").attr("format")(scale);
             py::dict input_options=format_.attr("input_options");
-            output=call(global(globals_,"ffmpeg").attr("input"),py::make_tuple(loader_.attr("path")),input_options).attr("output");
+            output=call(global(globals_,"ffmpeg").attr("input"),py::make_tuple(loader_.attr("path")),input_options)[py::str("v:0")].attr("output");
         }
         options["loglevel"]="error";
         process_=call(output,py::make_tuple("pipe:"),options)
@@ -898,7 +902,11 @@ public:
             O count=py::int_(read);
             if(!truth(count)) {
                 global(globals_,"logger").attr("debug")("Can't receive frame (stream end?). Exiting ...");
-                finish();throw py::stop_iteration();
+                finish();
+                O code=process_.attr("returncode");
+                if(!eq(code,py::int_(0)))
+                    graphpy::raise(PyExc_RuntimeError,fmt("FFmpeg stopped while Load Video was reading the video (exit code {})",code));
+                throw py::stop_iteration();
             }
             py::list shape;shape.append(height_);shape.append(width_);shape.append(py::int_(3));
             // The frame stays immutable, as the view of the read's bytes was: the buffer is

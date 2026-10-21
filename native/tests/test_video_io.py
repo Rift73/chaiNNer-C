@@ -27,7 +27,7 @@ import threading
 import time
 import types
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
@@ -41,6 +41,7 @@ from nodes.impl import colour_info
 from nodes.impl.image_utils import to_uint8, to_uint16
 from nodes.impl.native_framework_images import planes_to_interleaved
 from nodes.impl.native_graph import graph
+from nodes.impl.yuv_rgb import resolve_colour_info
 from nodes.utils.utils import file_identity, get_h_w_c, split_file_path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -176,6 +177,10 @@ class FakeStream:
 
     def __str__(self):
         return self.label
+
+    def __getitem__(self, selector):
+        assert selector == "v:0"
+        return self
 
     def output(self, *args, **kwargs):
         self.env.record("output", (self, *args), kwargs)
@@ -941,6 +946,8 @@ def load(kind, component, env=None):
         g.update({name: getattr(colour_info, name) for name in COLOUR_NAMES})
         g["file_identity"] = file_identity
         g["planes_to_interleaved"] = planes_to_interleaved
+        g["replace"] = replace
+        g["resolve_colour_info"] = resolve_colour_info
         # Load Video's generator carries its frame range (with_range), which the
         # installed api lacks.
         g["Generator"] = Generator
@@ -1490,6 +1497,47 @@ def test_end_of_stream_stops_as_today():
     assert env.processes[0].returncode is not None
     with pytest.raises(StopIteration):
         next(it)
+
+
+@pytest.mark.parametrize("ending", ["eof", "stop", "range"])
+def test_reader_nonzero_exit_only_fails_at_natural_eof(tmp_path, monkeypatch, ending):
+    monkeypatch.setenv("CHAINNER_C_VIDEO_READER", "cli")
+    env = FakeFFmpeg(chunks=[bytes(12)])
+    vg = load("native", "video", env)
+    loader = vg["VideoLoader"](
+        Path("input.mkv"), types.SimpleNamespace(ffmpeg="f", ffprobe="p")
+    )
+    frames = loader.stream_frames()
+    if ending == "range":
+        frames = vg["_first"](frames, 1)
+    g = load("native", "save_video", env)
+    g["os"] = mock_os(env)
+    context = Context()
+    collector = g["save_video_node"](**node_args(g, context, tmp_path))
+    try:
+        collector.on_iterate(next(frames))
+        decoder = env.processes[0]
+        decoder.returncode = 23
+        if ending == "eof":
+            with pytest.raises(RuntimeError, match=r"Load Video.*exit code 23"):
+                for frame in frames:
+                    collector.on_iterate(frame)
+                collector.on_complete()
+        elif ending == "range":
+            with pytest.raises(StopIteration):
+                next(frames)
+            collector.on_complete()
+        else:
+            frames.close()
+    finally:
+        frames.close()
+        context.cleanup()
+    assert decoder.returncode == 23
+    assert decoder.stdout.closed
+    assert sum(event[0] == "write" for event in env.events) == 1
+    assert any(event[0] == "commit" for event in env.events) == (ending == "range")
+    if ending != "range":
+        assert any(event[0] == "abandon" for event in env.events)
 
 
 class CountingRaw(io.FileIO):
@@ -3371,6 +3419,68 @@ def test_prepared_frames_write_todays_payload():
     for prepared in (False, True):
         results.append(run(prepared))
     assert results[0] == results[1]
+
+
+@pytest.mark.parametrize(
+    ("mode", "prepared"),
+    [
+        ("rgb", False),
+        ("rgb", True),
+        ("rgb8", False),
+        ("rgb8", True),
+        ("y", False),
+        ("u", False),
+        ("v", False),
+    ],
+)
+def test_writer_rejects_changed_geometry_before_writing(tmp_path, mode, prepared):
+    from nodes.impl.item_window import Prepared
+
+    env = FakeFFmpeg()
+    g = load("native", "save_video", env)
+    context = Context()
+    rgb = mode in {"rgb", "rgb8"}
+    collector = g["save_video_node"](
+        **node_args(
+            g,
+            context,
+            tmp_path,
+            mode=g["VideoInputMode"].RGB if rgb else g["VideoInputMode"].PLANES,
+            additional_parameters="-pix_fmt bgr0" if mode == "rgb8" else None,
+        )
+    )
+    if rgb:
+        first = [np.zeros((2, 4, 3), np.float32), None, None, None]
+        changed = [np.zeros((4, 2, 3), np.float32), None, None, None]
+    else:
+        first = [None, np.zeros((4, 8), np.float32)]
+        first += [np.zeros((2, 4), np.float32) for _ in range(2)]
+        changed = first.copy()
+        index = {"y": 1, "u": 2, "v": 3}[mode]
+        plane = first[index]
+        assert plane is not None
+        changed[index] = plane.T.copy()
+    holder = None
+    try:
+        if prepared:
+            holder = Prepared(g["prepare_video_frame"](collector, first))
+            g["commit_video_frame"](collector, first, holder)
+            holder = Prepared(g["prepare_video_frame"](collector, changed))
+        else:
+            collector.on_iterate(tuple(first))
+        writes = [event for event in env.events if event[0] == "write"]
+        assert len(writes) == 1
+        with pytest.raises(ValueError, match="changed size"):
+            if prepared:
+                assert holder is not None
+                g["commit_video_frame"](collector, changed, holder)
+            else:
+                collector.on_iterate(tuple(changed))
+        assert [event for event in env.events if event[0] == "write"] == writes
+    finally:
+        context.cleanup()
+    assert any(event[0] == "abandon" for event in env.events)
+    assert not any(event[0] in {"run", "commit"} for event in env.events)
 
 
 @pytest.mark.parametrize(

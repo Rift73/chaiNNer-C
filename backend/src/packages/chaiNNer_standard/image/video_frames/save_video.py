@@ -353,6 +353,31 @@ class Writer:
             return "bgr24"
         return "gbrp16le"
 
+    def check_frame(self, frame: object, size: tuple[int, int]) -> None:
+        """Check the source geometry before writing even a prepared payload."""
+        planes = self._planes(frame)
+        if planes is None:
+            h, w, _ = get_h_w_c(self._image(frame))
+            if (w, h) != size:
+                raise ValueError(
+                    f"The frames changed size: {w}x{h} after {size[0]}x{size[1]}."
+                )
+            return
+        coding = self.coding
+        assert coding is not None
+        y, u, v = planes
+        luma, chroma = coding.luma_size, coding.chroma_size
+        if (
+            (y.shape[1], y.shape[0]) != luma
+            or (u.shape[1], u.shape[0]) != chroma
+            or u.shape != v.shape
+        ):
+            raise ValueError(
+                f"The planes changed size: Y {y.shape[1]}x{y.shape[0]}, U"
+                f" {u.shape[1]}x{u.shape[0]} and V {v.shape[1]}x{v.shape[0]} after"
+                f" Y {luma[0]}x{luma[1]} and U/V {chroma[0]}x{chroma[1]}."
+            )
+
     def payload(self, frame: object) -> np.ndarray:
         """A frame's bytes in pipe_format."""
         coding = self.coding
@@ -361,14 +386,8 @@ class Writer:
             if self.pipe_format == "bgr24":
                 return to_uint8(self._image(frame), normalized=True)
             return rgb_payload(self._image(frame))
+        self.check_frame(frame, coding.luma_size)
         y, u, v = planes
-        luma, chroma = coding.luma_size, coding.chroma_size
-        if (y.shape[1], y.shape[0]) != luma or (u.shape[1], u.shape[0]) != chroma:
-            raise ValueError(
-                f"The planes changed size: Y {y.shape[1]}x{y.shape[0]} and U"
-                f" {u.shape[1]}x{u.shape[0]} after Y {luma[0]}x{luma[1]} and U"
-                f" {chroma[0]}x{chroma[1]}."
-            )
         u, v = self._sited(u, v)
         chroma_coded = coding.matrix is not Matrix.RGB
         codes = [

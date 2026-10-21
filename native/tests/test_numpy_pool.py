@@ -837,15 +837,22 @@ def test_video_frames_are_served_by_the_pool(profile):
         class Process:                                  # what Load Video uses of Popen
             def __init__(self):
                 self.stdout = io.BufferedReader(io.BytesIO(payload))
+                self.returncode = None
 
             def __enter__(self):
                 return self
 
             def __exit__(self, *exc):
                 self.stdout.close()
+                self.returncode = 0
                 return False
 
-        stream = types.SimpleNamespace()
+        class Stream(types.SimpleNamespace):
+            def __getitem__(self, selector):
+                assert selector == "v:0"
+                return self
+
+        stream = Stream()
         stream.output = lambda *args, **kwargs: stream
         stream.run_async = lambda **kwargs: Process()
         names = {
