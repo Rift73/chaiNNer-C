@@ -4,6 +4,24 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- Reviewed hunt corrections (2026-10-21, source implementation; not released): execution-only video range overrides
+  remove incoming connections before serialization; Save Video rejects changed frame/plane geometry before writing;
+  the CLI decoder selects the first video track and reports a nonzero exit at natural EOF. Corrupt videos that
+  FFmpeg gives up on now fail instead of saving their readable prefix. Stop and early range completion stay distinct.
+  Pending text edits flush on blur/unmount and before Save/Run/Undo/Redo; history commits the current edit before
+  stepping. Preview cache publication requires the current request's ownership. Dependency walks memoize shared
+  subgraphs per walk, text counts toward the result cache budget, idle NumPy blocks are reclaimed once after a failed
+  fresh allocation, and Denoise reuses at most 128 preallocated scratch workspaces without changing its integer math.
+  Custom High Pass accepts RGBA blurred inputs while preserving source alpha; Stack Images and Pad describe their
+  actual channel counts. PSNR now uses `10*log10(1/MSE)` before rounding: old values divided by about 2.303 give the
+  new decibel values, except where old MSE rounding distorted them; saved PSNR thresholds must be updated. TensorRT
+  sessions select their device on reuse/teardown; PyTorch offload rejects insufficient headroom as a CUDA memory error
+  and retries restoration after evicting only non-input activations. Remote backend startup has a five-minute deadline.
+  Portable native build, TypeScript check, scoped lint and the approved critical checks passed. The phase gate passed
+  136,125 / 0 failed / 491 skipped (117 s) on its one permitted rerun, after updating existing fakes/metadata assertions
+  for the accepted contracts; an untouched, unseeded CPU VOSR numerical check failed in the first gate and passed both
+  alone and in the rerun (recorded, no VOSR code/tolerance change). Evidence: `native/local/hunt-20261021/`.
+  No speed gain measured, no GPU execution, no packaged UI launch, and neither D: installation updated.
 - Node times (2026-10-21, v0.3.7 re-release 8; `1a68047e`): the run engine leaves a Python body's `util.waiting` out of
   its time, as `process.Executor`'s `timed_supplier` has since `46ba54ef`. TensorRT Upscale Image had shown its turn in
   the item window's queue again since the engine (v0.3.7): 4-12 s -> 1.44-1.47 s per image on Load Images -> TensorRT
@@ -468,6 +486,9 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 | Item | Plan |
 | --- | --- |
+| Hunt O02: cold CFR Matroska/WebM rate detection and frame indexing read packets twice, then cache the result | Deferred unless a long cold load visibly stalls; preserve their different counting rules |
+| Hunt O03: opt-in `CHAINNER_C_TRT_RUNNER=1` retains both Python and C++ TensorRT engine copies | Parked: the cross-boundary ownership change is riskier than the current saving |
+| Hunt GPU corrections B16-B18: owning-device reuse/teardown, low-headroom split admission, activation restore recovery | CPU/source checks only; real-device confirmation deferred in `GPU-DEFERRED.md` |
 | Load Video seek bar follow-ups (2026-10-21): the independent-UI patch (`native/tools/independent_ui.py`) for the `video-seek` input kind and runWithOverrides; the CLI path's Frame Count stays the probe's estimate (a run that reaches the end does not teach it); a one-frame run shares the Preview's decoded frame only in RGB float; VOSR Persistent Detail starts its history at a range's first context frame | Next sessions |
 | The error-retention fix's two recorded follow-ups, both INFERRED: a failed `/run/individual` (a preview's inputs) and the per-item errors of a non-fail-fast generator (`process.py:903` keeps `str(e)`; the run then fails, so B collects at its end). Each lets an exception through the same frames as a failed `/run`; A breaks their chaiNNer-C edge, and upstream's `Lazy` edge remains. One later commit (Fable's final review) carries `await_owned_node`'s cancel-branch `error` local, which keeps a cycle if a node fails while a cancel waits. That is reachable, because Sanic cancels the handler when the UI drops `/run`; the fix is `del error` with a cancel-branch test. The same commit carries `owned_gather`'s `results`/`tasks` locals and two comment fixes in `server.py`. Upstream's `Lazy.from_coroutine` `completion` local needs a separate decision. Root cause: `native/reports/error-retention/rootcause.md` | The fix (Fable, 2026-10-06) is two commits: A, `bad1dba7` (`await_owned_node` and `NodeFlights.run` drop their `future`/`task` locals), then B with D (`collect_failed_run`: one `gc.collect()` after a failed or stopped `/run`'s handler returns, then the pool's release if no run executes; ARCHITECTURE section 6). A failed run's arrays are freed right after it, earlier than upstream git's end of the next `/run`; successful runs never collect. Growth record: the release check (0)–(f), with (e) and (f) asserted; verdict `native/reports/error-retention/verdict.md`. OWNER REVIEW FLAG (decision log): `import gc` and that one collection; undo = `git revert` of the second commit. The B1 re-test and SP3b's phase-2 re-check follow it, then SP5a |
 | `lens_blur` builds its kernels on every call (B0's unused `_lens_plans` cache went in SP4b Task 3b); that cost is still not measured; SP3b did not take it up. SP3 follow-ups: bench cases for a resumed batch with skip-existing (a second run over the same output folder; harness) and for a heavy untaken Conditional branch; a K spot-check at 4 CPUs (affinity `0xF`); count the replay round trips, then skip the round trip when a replay has no concurrent sibling; compare folder identity in the read-ahead predicate (would close the loopback-alias and non-Windows case-insensitivity residuals). SP2 native-pool carry-overs, deferred (SP3 kept the pool unchanged): the spurious WakeAll on re-pin, the `leave` comment, the `cn_parallel_dispatches` non-Windows note, measuring whether dropping the generation bump in `leave` pays. Backend and test cleanups: dead `sequence` branch in `nodes/impl/native_layout.py:154-174` (Stack Images Sequence does not ship); `# pyright: ignore` in `nodes/impl/event_queue.py`; `native_analysis.is_grayscale` has no shipped caller (retire it or test it against numpy); split the 3605-line `native/tests/test_item_window.py` by concern (read-ahead predicate, engine and executor, Save phases, fresh interpreter) | SP4b, SP3b, SP3c and SP4c are closed (State). Order (Fable, 2026-10-06): the error-retention fix (done, first row), then the B1 re-test and SP3b's phase-2 re-check, then SP5a (State, SP4c; rows below). A commit-path lever (B1 is re-tested after the error-retention fix) stays inside SP3c's boundary: outputs bit-identical to the installed chaiNNer and B3; file writes in item order, each complete before its node's finish event and before the next item's commit; events and `sse_contract` identical; the same error object, selected and surfaced at the same point relative to earlier and later items' side effects; Stop, pause and generator-once unchanged; K = 1 within noise. SP3 follow-ups and SP2 carry-overs: not yet scheduled (the SP4 attribution is done); cleanups SP4 or later |
@@ -512,6 +533,10 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 ## Decision log
 
+- 2026-10-21 (owner/Claude review B13): PSNR changes to decibels from unrounded MSE, infinity only at zero; native/Python together, analytic check and saved-threshold release note.
+- 2026-10-21 (owner/Claude review B15): Pad uses the type-only border-channel correction, including unions for connected values; runtime pixels stay unchanged.
+- 2026-10-21 (owner/Claude review B18): protect all operation inputs and retry failed activation restoration after non-input eviction; one CPU stand-in check only, real DUAL VRAM confirmation deferred.
+- 2026-10-21 (current hunt): no GPU benchmarks; functional GPU work only within 1 GB VRAM. This implementation phase uses no GPU. Delegated work uses GPT-6.1 Sol xhigh, with one GPT-6 Astra max reviewer when justified.
 User rulings (pre-program handoff section 2, at the tag; still binding):
 
 - Exact chaiNNer UI/UX: schemas, names, controls, saved chains, previews, errors, cancellation,
