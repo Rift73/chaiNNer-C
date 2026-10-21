@@ -9,7 +9,6 @@ from typing import Any
 import numpy as np
 import pytest
 import torch
-
 from nodes.impl.pytorch.pix_transform import pix_transform as guided
 
 
@@ -101,3 +100,34 @@ def test_guided_patch_order_bits_and_rng(m, d):
         assert actual.dtype == expected.dtype
         assert torch.equal(actual.view(torch.int32), expected.view(torch.int32))
     assert torch.equal(torch.get_rng_state(), before)
+
+
+@pytest.mark.parametrize("channels", [1, 3], ids=["grayscale", "rgb-control"])
+def test_guided_non_square_tile_assembly(monkeypatch, channels):
+    from nodes.impl.pytorch.pix_transform import auto_split as guided_split
+    from nodes.impl.upscale.grayscale import SplitMode
+    from nodes.properties.outputs import ImageOutput
+
+    calls = []
+
+    def transform(source_img, guide_img, device, params):
+        assert device.type == "cpu"
+        assert source_img.ndim == 2
+        assert guide_img.shape == (channels, *[size * 2 for size in source_img.shape])
+        calls.append(source_img.shape)
+        return source_img.repeat(2, axis=0).repeat(2, axis=1)
+
+    monkeypatch.setattr(guided_split, "pix_transform", transform)
+    y, x, c = np.indices((64, 96, channels))
+    source = ((3 * y + 5 * x + 17 * c) % 251).astype(np.float32) / 256
+    expected = source.repeat(2, axis=0).repeat(2, axis=1)
+    result = guided_split.pix_transform_auto_split(
+        source, expected, torch.device("cpu"), guided.Params(), SplitMode.RGB
+    )
+    # Exercise the public grayscale output convention as well as the tiler boundary.
+    result = ImageOutput().enforce(result)
+    assert len(calls) >= 2 * channels
+    if channels == 1:
+        expected = expected[:, :, 0]
+    assert result.shape == expected.shape
+    np.testing.assert_allclose(result, expected, rtol=0, atol=1e-7)

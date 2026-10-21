@@ -4,6 +4,16 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- Guided grayscale tiling (2026-10-22, Claude's approved one-line follow-up; not released): the Guided callback now
+  applies its existing `_as_3d` helper to each processed tile before assembly. Final grayscale outputs still become
+  HxW through ImageOutput; multichannel results are unchanged. The new non-square grayscale CPU regression failed
+  before the fix while its RGB control passed; all eight focused Guided CPU cases pass afterward. Scoped format/lint
+  passed. The single real GPU rerun used byte-identical source/guide arrays to the previous failed run: two tiles each
+  trained for 1,000 CUDA Adam updates, then returned a finite 432x768 grayscale image. Output was visually inspected
+  against its guide; no obvious tile discontinuity. The prior assembly defect is closed. No full-suite rerun or native
+  rebuild (explicitly waived for this one-line Python change); the previous A1 gate stands. Evidence:
+  `native/local/implementation-review/guided-fix/RESULTS.md`. No benchmark, app launch, push, release or D: change;
+  Claude owns packaging/release and the installed UI checks after handback.
 - Claude implementation-review follow-ups (2026-10-22, tested source `3a345dee`; not released): completed F11/F12
   document-generation protection and ordered saves by canonical target, including file-link/directory-junction aliases.
   Startup Stop stays Killing; Pause/Resume apply before execution; cleared preview bodies cannot retain cache entries
@@ -519,8 +529,7 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | Item | Plan |
 | --- | --- |
 | Follow-on F01/F17: concurrent Skip Existing writers and concurrent settings writers | Still deferred by Claude. F11/F12 were subsequently approved and implemented in `3a345dee` |
-| Guided Upscale: non-square grayscale inputs fail after training when a 2D tile enters the 3D tile assembler | Reproduced GPU check; `native/local/implementation-review/GUIDED_GRAYSCALE_REVIEW.md`. Awaiting Claude review and owner implementation approval; not fixed |
-| Follow-on installed UI checks: numeric field Ctrl+S, real focus/stepper/wheel events and accepted/canceled quit | No app launch authorized; handler/source tests do not establish installed behavior. The prescribed YUV/model, ONNX/NCNN Stop and trained background-removal GPU checks passed; Guided failed as recorded above |
+| Follow-on installed UI checks: numeric field Ctrl+S, real focus/stepper/wheel events and accepted/canceled quit | Claude handles the installed v0.3.8 checks after release/update; no source app launch in this task. Prescribed YUV/model, ONNX/NCNN Stop, background removal and the corrected Guided GPU run passed |
 | Python type check baseline: 30 errors and 44 warnings; test_video_io.py has an existing RUF005 lint warning | Unchanged baseline verified against d846db15; no unrelated repairs in this phase |
 | Hunt O02: cold CFR Matroska/WebM rate detection and frame indexing read packets twice, then cache the result | Deferred unless a long cold load visibly stalls; preserve their different counting rules |
 | Hunt O03: opt-in `CHAINNER_C_TRT_RUNNER=1` retains both Python and C++ TensorRT engine copies | Parked: the cross-boundary ownership change is riskier than the current saving |
@@ -569,6 +578,9 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 ## Decision log
 
+- 2026-10-22 (owner: do exactly CLAUDE_GUIDED_DECISION.md): apply the one-line Guided tile-axis correction, add one
+  non-square grayscale CPU test with RGB control, repeat the single Guided GPU sample with final HxW shape, commit and
+  hand back. Only focused pix_transform tests, no new full suite/native rebuild; no release or D: changes by Codex.
 - 2026-10-22 (implementation review): owner supplied `CLAUDE_IMPLEMENTATION_REVIEW.md` and freed the GPU. Implement
   A2 F11/F12 and B1-B8, then one final main CPU gate followed by the prescribed sequential GPU functional checks;
   no benchmarks, large-DUAL/multi-GPU work, app launch, D: update, push or release. Release remains a separate decision.

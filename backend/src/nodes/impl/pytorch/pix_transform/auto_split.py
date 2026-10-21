@@ -77,7 +77,7 @@ def pix_transform_auto_split(
             # passthrough single colors to speed up alpha channels
             pass_op = to_op(passthrough_single_color)(scale, pix_op)
 
-            return grayscale_split(tile, pass_op, split_mode)
+            return _as_3d(grayscale_split(tile, pass_op, split_mode))
         except (RuntimeError, MemoryError) as e:
             # Only retry device or host memory failures.
             if (
