@@ -946,6 +946,10 @@ async def clear_cache_individual(request: Request):
         # TensorRT and VOSR engines, sessions and models outlive runs (every
         # SharedCache); a session in use is freed when its run returns it.
         latest_individual_arrival.pop(full_data["id"], None)
+        execution_id = ExecutionId("individual-executor " + full_data["id"])
+        individual = ctx.individual_executors.get(execution_id)
+        if individual is not None:
+            individual.kill()
         tensorrt_cache.release_node(full_data["id"])
         return_device_memory_after_burst(ctx)
         if ctx.cache.get(full_data["id"], None) is not None:
@@ -1053,6 +1057,8 @@ async def status(_request: Request):
             executor_status = "paused"
         else:
             executor_status = "running"
+    elif ctx.run_starting:
+        executor_status = "running"
     else:
         executor_status = "ready"
 

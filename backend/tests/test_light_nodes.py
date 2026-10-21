@@ -133,6 +133,82 @@ def upscale_image_node() -> None:
     pass
 
 
+def test_clearing_active_preview_stops_side_effect_and_allows_undo(
+    server: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    import api
+
+    loading, pytorch = loading_with(server, monkeypatch)
+    loading.light_loaded.set()
+    loading.package_loaded["chaiNNer_pytorch"].set()
+    group = pytorch.categories[0].add_node_group("Processing")
+    group.register(
+        UPSCALE, name="Preview", description="", inputs=[], outputs=[], generated=True
+    )(upscale_image_node)
+    api.registry.load_modules([])
+    markers: list[str] = []
+
+    async def scenario():
+        entered, resume = asyncio.Event(), asyncio.Event()
+
+        class Executor:
+            def __init__(self, **_kwargs: object):
+                self.stopped = False
+
+            def kill(self):
+                self.stopped = True
+
+            async def process_regular_node(self, _node: object):
+                entered.set()
+                await resume.wait()
+                if self.stopped:
+                    raise server.Aborted()
+                markers.append("written")
+                return "output"
+
+            async def flush_broadcasts(self):
+                pass
+
+        monkeypatch.setattr(server, "Executor", Executor)
+        monkeypatch.setattr(server, "executor_kind", lambda: "python")
+        monkeypatch.setattr(
+            server, "return_device_memory_after_burst", lambda _ctx: None
+        )
+        monkeypatch.setattr(server.tensorrt_cache, "release_node", lambda _id: None)
+        monkeypatch.setattr(server.app.ctx, "cache", {})
+        monkeypatch.setattr(server.app.ctx, "individual_executors", {})
+        app = SimpleNamespace(ctx=server.app.ctx, loop=asyncio.get_running_loop())
+        monkeypatch.setattr(server, "app", app)
+        request = SimpleNamespace(
+            app=app,
+            json={
+                "id": "cleared-node",
+                "schemaId": UPSCALE,
+                "inputs": [],
+                "options": {},
+            },
+        )
+        preview = asyncio.create_task(server.run_individual(request))
+        await asyncio.wait_for(entered.wait(), 2)
+        cleared = await server.clear_cache_individual(
+            SimpleNamespace(app=app, json={"id": "cleared-node"})
+        )
+        assert json.loads(cleared.body)["success"]
+        resume.set()
+        await asyncio.wait_for(preview, 2)
+        assert markers == []
+        assert "cleared-node" not in app.ctx.cache
+        # Undo restores the same ID: it gets a new executor, not a permanent tombstone.
+        restored = await server.run_individual(request)
+        assert json.loads(restored.body)["success"]
+        assert markers == ["written"]
+        assert app.ctx.cache["cleared-node"] == "output"
+        if server.individual_releases:
+            await asyncio.gather(*server.individual_releases)
+
+    asyncio.run(scenario())
+
+
 UPSCALE = "chainner:pytorch:upscale_image"
 
 
