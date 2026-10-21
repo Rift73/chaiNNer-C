@@ -5,6 +5,7 @@ are stand-ins that count themselves (no GPU builds an engine)."""
 from __future__ import annotations
 
 import dataclasses
+import errno
 import os
 import stat
 import threading
@@ -313,6 +314,34 @@ def warnings_logged(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         lambda message, *args, **kwargs: logged.append(message % args),
     )
     return logged
+
+
+def test_a_failed_write_removes_its_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    logged = warnings_logged(monkeypatch)
+    make_temporary = build_cache.tempfile.NamedTemporaryFile
+    temporaries: list[Path] = []
+
+    def temporary_file(**kwargs: Any) -> Any:
+        output = make_temporary(**kwargs)
+        temporaries.append(Path(output.name))
+
+        def failed_write(data: bytes) -> int:
+            output.file.write(data[:1])
+            raise OSError(errno.ENOSPC, "simulated full disk")
+
+        monkeypatch.setattr(output, "write", failed_write)
+        return output
+
+    monkeypatch.setattr(build_cache.tempfile, "NamedTemporaryFile", temporary_file)
+    build = Builds()
+    engine = cached_engine(key(), build, str(tmp_path))
+
+    assert engine.bytes and build.runs == 1
+    assert len(temporaries) == 1 and not temporaries[0].exists()
+    assert list(tmp_path.iterdir()) == []
+    assert len(logged) == 1 and "could not keep" in logged[0]
 
 
 def test_a_file_that_cannot_be_read_is_a_miss(

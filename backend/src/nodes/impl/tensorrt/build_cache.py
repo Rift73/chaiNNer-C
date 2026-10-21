@@ -282,12 +282,13 @@ def _store(directory: Path, key: str, engine: TensorRTEngine) -> None:
         except OSError:
             logger.warning("Engine Cache: could not remove %s.", stray, exc_info=True)
     try:
-        with tempfile.NamedTemporaryFile(
+        output = tempfile.NamedTemporaryFile(
             dir=directory, prefix=f"{key}.", suffix=".tmp", delete=False
-        ) as output:
-            temporary = Path(output.name)
-            output.write(_encode(engine))
+        )
+        temporary = Path(output.name)
         try:
+            with output:
+                output.write(_encode(engine))
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
