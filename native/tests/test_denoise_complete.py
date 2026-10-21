@@ -126,6 +126,15 @@ def test_nlm_exact(channels, strength, patch, search):
     exact(native_denoise.nlm(source, strength, patch, search), expected)
 
 
+def test_nlm_reuses_chunk_workspace_with_short_final_tile():
+    # 257 tiles over 128 chunks: the final chunk reuses its sums for a one-row tile.
+    source = image((4097, 3), 2) // 8 + 64
+    expected = cv2.fastNlMeansDenoising(
+        source, h=17.3, templateWindowSize=3, searchWindowSize=5
+    )
+    exact(native_denoise.nlm(source, 17.3, 1, 2), expected)
+
+
 @pytest.mark.parametrize("channels", [1, 2])
 def test_every_registered_strength_step(channels):
     # Both L and AB weight tables. Low-contrast samples exercise weights instead
