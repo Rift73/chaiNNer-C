@@ -7,6 +7,8 @@ from typing import Callable, Union
 import numpy as np
 from sanic.log import logger as logger
 
+from api import Progress
+
 from ...utils.utils import Region as Region
 from ...utils.utils import Size
 from ...utils.utils import get_h_w_c as get_h_w_c
@@ -27,10 +29,14 @@ SplitImageOp = Callable[[np.ndarray, Region], Union[np.ndarray, Split]]
 
 
 def auto_split(
-    img: np.ndarray, upscale: SplitImageOp, tiler: Tiler, overlap: int = 16
+    img: np.ndarray,
+    upscale: SplitImageOp,
+    tiler: Tiler,
+    overlap: int = 16,
+    progress: Progress | None = None,
 ) -> np.ndarray:
     return graph().tiling_installed_auto_split_auto_split(
-        globals(), img, upscale, tiler, overlap
+        globals(), img, upscale, tiler, overlap, progress
     )
 
 
@@ -44,9 +50,10 @@ def _exact_split(
     starting_tile_size: Size,
     split_tile_size: Callable[[Size], Size],
     overlap: int,
+    progress: Progress | None = None,
 ) -> np.ndarray:
     return graph().tiling_installed_auto_split_exact_split(
-        globals(), img, upscale, starting_tile_size, split_tile_size, overlap
+        globals(), img, upscale, starting_tile_size, split_tile_size, overlap, progress
     )
 
 
@@ -56,7 +63,8 @@ def _max_split(
     starting_tile_size: Size,
     split_tile_size: Callable[[Size], Size],
     overlap: int,
+    progress: Progress | None = None,
 ) -> np.ndarray:
     return graph().tiling_installed_auto_split_max_split(
-        globals(), img, upscale, starting_tile_size, split_tile_size, overlap
+        globals(), img, upscale, starting_tile_size, split_tile_size, overlap, progress
     )

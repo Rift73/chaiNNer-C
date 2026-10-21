@@ -270,7 +270,15 @@ def test_ncnn_node_planes_interleaved_as_converted(
     net = create_ncnn_net(model, SETTINGS)
     monkeypatch.setattr(ncnn_node, "get_ncnn_net", lambda *_, **__: net)
     monkeypatch.setattr(ncnn_node, "get_settings", lambda _: SETTINGS)
-    context = cast(NodeContext, SimpleNamespace(add_cleanup=lambda *_, **__: None))
+    progress = Progress.noop_progress()
+    context = cast(
+        NodeContext,
+        SimpleNamespace(
+            add_cleanup=lambda *_, **__: None,
+            check_aborted=progress.check_aborted,
+            set_progress=progress.set_progress,
+        ),
+    )
     rgba = image((20, 28, 4), 3, exceptional=False)
     rgba[:, :, 3] = np.linspace(0, 1, 28, dtype=np.float32)
     for img in (rgba[:, :, :1], rgba[:, :, :3], rgba):

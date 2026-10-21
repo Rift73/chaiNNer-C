@@ -5,7 +5,7 @@ import gc
 import numpy as np
 from sanic.log import logger
 
-from api import NodeContext
+from api import NodeContext, Progress
 from nodes.groups import Condition, if_enum_group, if_group
 from nodes.impl.onnx.auto_split import onnx_auto_split
 from nodes.impl.onnx.model import OnnxGeneric
@@ -46,6 +46,7 @@ def upscale(
     exact_size: tuple[int, int] | None,
     model: OnnxGeneric,
     collect_after: bool = True,
+    progress: Progress | None = None,
 ) -> np.ndarray:
     logger.debug("Upscaling image")
     if exact_size is None:
@@ -65,6 +66,7 @@ def upscale(
         tiler=tiler,
         size_req=size_req,
         collect_after=collect_after,
+        progress=progress,
     )
 
 
@@ -74,6 +76,7 @@ def upscale_with_session(
     session: OnnxSession,
     tile_size: TileSize,
     separate_alpha: bool,
+    progress: Progress | None = None,
 ) -> np.ndarray:
     """The node's upscale of one image with the model's session (also used by
     VapourSynth's AI Upscale, which has no node context)."""
@@ -99,6 +102,7 @@ def upscale_with_session(
             exact_size,
             model,
             collect_after=False,
+            progress=progress,
         ),
         separate_alpha,
     )
@@ -158,6 +162,7 @@ def upscale_image_node(
         session,
         TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
         separate_alpha,
+        progress=context,
     )
 
 

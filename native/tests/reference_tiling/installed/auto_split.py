@@ -6,6 +6,8 @@ from typing import Callable, Union
 import numpy as np
 from sanic.log import logger
 
+from api import Progress
+
 from ...utils.utils import Region, Size, get_h_w_c
 from .exact_split import exact_split
 from .tile_blending import BlendDirection, TileBlender, TileOverlap, half_sin_blend_fn
@@ -24,6 +26,7 @@ def auto_split(
     upscale: SplitImageOp,
     tiler: Tiler,
     overlap: int = 16,
+    progress: Progress | None = None,
 ) -> np.ndarray:
     """
     Splits the image into tiles according to the given tiler.
@@ -48,6 +51,7 @@ def auto_split(
         starting_tile_size=tiler.starting_tile_size(w, h, c),
         split_tile_size=tiler.split,
         overlap=overlap,
+        progress=progress,
     )
 
 
@@ -61,6 +65,7 @@ def _exact_split(
     starting_tile_size: Size,
     split_tile_size: Callable[[Size], Size],
     overlap: int,
+    progress: Progress | None = None,
 ) -> np.ndarray:
     h, w, c = get_h_w_c(img)
     logger.debug(
@@ -83,6 +88,7 @@ def _exact_split(
                 exact_size=starting_tile_size,
                 upscale=no_split_upscale,
                 overlap=min(max_overlap, overlap),
+                progress=progress,
             )
         except _SplitEx:
             starting_tile_size = split_tile_size(starting_tile_size)
@@ -96,6 +102,7 @@ def _max_split(
     starting_tile_size: Size,
     split_tile_size: Callable[[Size], Size],
     overlap: int,
+    progress: Progress | None = None,
 ) -> np.ndarray:
     """
     Splits the image into tiles with at most the given tile size.
@@ -116,6 +123,8 @@ def _max_split(
         # the image might be small enough so that we don't have to split at all
         upscale_result = upscale(img, img_region)
         if not isinstance(upscale_result, Split):
+            if progress is not None:
+                progress.set_progress(1.0)
             return upscale_result
 
         # the image was too large
@@ -150,12 +159,14 @@ def _max_split(
         tile_count_y = math.ceil(h / max_tile_size[1])
         tile_size_x = math.ceil(w / tile_count_x)
         tile_size_y = math.ceil(h / tile_count_y)
+        total_tiles = tile_count_x * tile_count_y
 
         logger.debug(
             f"Currently {tile_count_x}x{tile_count_y} tiles each {tile_size_x}x{tile_size_y}px."
         )
 
         prev_row_result: TileBlender | None = None
+        tiles_processed = 0
 
         for y in range(tile_count_y):
             if y < start_y:
@@ -178,7 +189,7 @@ def _max_split(
 
                     new_tile_count_y = math.ceil(h / max_tile_size[1])
                     new_tile_size_y = math.ceil(h / new_tile_count_y)
-                    start_y = (y * tile_size_x) // new_tile_size_y
+                    start_y = (y * tile_size_y) // new_tile_size_y
 
                     logger.debug(
                         f"Split occurred. New tile size is {max_tile_size}. Starting at row {start_y}."
@@ -187,7 +198,7 @@ def _max_split(
                     # reset result
                     if result is not None:
                         # we already added at least one row, so we have to set the offset back
-                        result.offset = start_y * new_tile_size_y
+                        result.offset = start_y * new_tile_size_y * scale
 
                     restart = True
                     break
@@ -220,6 +231,10 @@ def _max_split(
                 row_result.add_tile(
                     upscale_result, TileOverlap(pad.left * scale, pad.right * scale)
                 )
+
+                tiles_processed += 1
+                if progress is not None:
+                    progress.set_progress(tiles_processed / total_tiles)
 
             if restart:
                 break

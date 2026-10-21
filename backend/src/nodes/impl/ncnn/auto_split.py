@@ -8,6 +8,8 @@ import numpy as np
 from ncnn import ncnn
 from sanic.log import logger
 
+from api import Progress
+
 from ...utils.utils import Size, get_h_w_c
 from ..image_utils import to_uint8
 from ..native_framework_images import ncnn_input, planar_to_interleaved
@@ -71,6 +73,7 @@ def ncnn_auto_split(
     collect_after: bool = True,
     size_multiple: int = 1,
     swap_red_blue: bool = False,
+    progress: Progress | None = None,
 ) -> np.ndarray:
     # A model that starts with a Reorg needs a height and width that are a multiple
     # of its stride (NcnnModelWrapper.size_multiple), so the image is padded with
@@ -101,6 +104,8 @@ def ncnn_auto_split(
     whole_image = img
 
     def upscale(img: np.ndarray, _: object):
+        if progress is not None:
+            progress.check_aborted()
         if use_gpu:
             with _net_opt_lock:
                 net.opt.blob_vkallocator = blob_vkallocator
@@ -188,7 +193,7 @@ def ncnn_auto_split(
         return result
 
     try:
-        result = auto_split(img, upscale, tiler)
+        result = auto_split(img, upscale, tiler, progress=progress)
         if pad_h or pad_w:
             scale = result.shape[0] // img.shape[0]
             result = result[: h * scale, : w * scale]

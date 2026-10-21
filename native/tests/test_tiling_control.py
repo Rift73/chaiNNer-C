@@ -150,8 +150,53 @@ def test_complete_plans_and_pixels(shape, strategy, overlap, scale, layout):
 @pytest.mark.parametrize("overlap", [0, 1, 4])
 def test_restart_and_completed_row_reuse(shape, split_at, overlap):
     image = np.random.default_rng(18).random(shape, dtype=np.float32)
-    args = (image, "max", (64, 64), overlap, 2, split_at)
-    assert run(NEW, *args) == run(OLD, *args)
+    calls = 0
+
+    def upscale(tile, _region):
+        nonlocal calls
+        calls += 1
+        if calls in split_at:
+            return NEW[0].Split()
+        return np.repeat(np.repeat(tile, 2, axis=0), 2, axis=1)
+
+    actual = NEW[0].auto_split(image, upscale, NEW[2].MaxTileSize(64), overlap)
+    expected = np.repeat(np.repeat(image, 2, axis=0), 2, axis=1)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-7)
+
+
+@pytest.mark.parametrize("variant", ["pinned", "installed", "source"])
+@pytest.mark.parametrize("shape", [(97, 151, 3), (151, 97, 3)])
+@pytest.mark.parametrize("scale", [1, 2])
+def test_max_retry_at_second_row_preserves_pixels(variant, shape, scale):
+    from nodes.impl.native_graph import graph
+
+    image = np.random.default_rng(18).random(shape, dtype=np.float32)
+    auto = OLD[0] if variant == "pinned" else NEW[0]
+    calls = []
+    splits = []
+    tile_count_x = (shape[1] + 63) // 64
+    tile_count_y = (shape[0] + 47) // 48
+    tile_height = (shape[0] + tile_count_y - 1) // tile_count_y
+
+    def upscale(tile, region):
+        calls.append(region)
+        if len(calls) == tile_count_x + 1:
+            assert region.y == tile_height - 4  # first tile of row 1, with overlap
+            return auto.Split()
+        return np.repeat(np.repeat(tile, scale, axis=0), scale, axis=1)
+
+    def shrink(size):
+        splits.append(size)
+        return size[0] // 2, size[1] // 2
+
+    args = (image, upscale, (64, 48), shrink, 4)
+    if variant == "source":
+        result = graph().tiling_source_auto_split_max_split(vars(auto), *args, None)
+    else:
+        result = auto._max_split(*args)
+    assert splits == [(64, 48)]
+    expected = np.repeat(np.repeat(image, scale, axis=0), scale, axis=1)
+    np.testing.assert_allclose(result, expected, rtol=1e-6, atol=1e-7)
 
 
 @pytest.mark.parametrize("strategy", ["none", "exact", "max"])

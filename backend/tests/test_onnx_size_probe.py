@@ -21,7 +21,7 @@ from spandrel.architectures.SwinIR import SwinIR
 # The node's modules load the native backend, which GitHub's checks do not build.
 pytest.importorskip("nodes.impl._chainner_graph")
 
-from api import NodeContext, SettingsParser
+from api import NodeContext, Progress, SettingsParser
 from nodes.impl.native_onnx_runtime import NativeSession
 from nodes.impl.onnx import size_probe
 from nodes.impl.onnx.auto_split import onnx_auto_split
@@ -39,6 +39,9 @@ class Context:
 
     def __init__(self):
         self.settings = SettingsParser({"execution_provider": "CPUExecutionProvider"})
+        progress = Progress.noop_progress()
+        self.check_aborted = progress.check_aborted
+        self.set_progress = progress.set_progress
 
     def add_cleanup(self, fn: Callable[[], None], after: str = "chain"):
         pass
