@@ -248,12 +248,12 @@ inline uint32_t dither_count(const Value &value, const char *message)
     return uint32_t(*count);
 }
 
-/* image_utils.to_uint8 of a float32 image (native_buffers.converted_pixels to uint8: normalized skips the clip to
- * [0, 1] first). NumPy's floating-point warnings for NaN or out-of-range values are not raised. */
-inline std::vector<uint8_t> to_uint8(const Image &image, bool normalized)
+/* image_utils.to_uint8 of a float32 image: always saturate before quantizing.
+ * The compatibility flag is ignored. NumPy's NaN warnings are not raised here. */
+inline std::vector<uint8_t> to_uint8(const Image &image, bool /* normalized */)
 {
     std::vector<uint8_t> out(std::max<size_t>(image.values(), 1));
-    check(cn_pixels_convert_checked(image.data, out.data(), image.values(), 0, 1, normalized ? 0 : 1, nullptr));
+    check(cn_pixels_convert_checked(image.data, out.data(), image.values(), 0, 1, 1, nullptr));
     return out;
 }
 

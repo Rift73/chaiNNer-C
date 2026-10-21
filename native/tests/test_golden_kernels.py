@@ -27,6 +27,7 @@ MXCSR state and size.
 
 import ctypes
 import dataclasses
+import functools
 import hashlib
 import itertools
 import json
@@ -35,6 +36,7 @@ import struct
 import subprocess
 import sys
 from pathlib import Path
+from types import FunctionType, ModuleType
 
 import cv2
 import golden_kernels
@@ -124,6 +126,7 @@ from golden_kernels import (
     run_case,
     sweep_cases,
 )
+from test_buffers import ORIGINAL as FROZEN_IMAGE_UTILS
 from test_composite_complete import reference as composite_reference
 from test_isa_dispatch import isa_get, isa_set
 
@@ -3100,21 +3103,26 @@ def upstream_image(array):
     return array[..., 0] if array.shape[2] == 1 else array
 
 
-def upstream_blend(case):
-    """Upstream's blend_images (reference_blend.py) of a cn_blend_images case, on
-    NumPy 2.5.3 under the case's MXCSR state, as a (pixels, channels) array."""
+def upstream_blend(case, reference=reference_blend):
+    """Frozen raw/image blend under the case's MXCSR; image output is (pixels, channels)."""
+    mode = reference.BlendMode(case.args["mode"])
+    if case.entry == golden_kernels.BLEND_MODE:
+        overlay, base = (
+            make_array(case.inputs[name]) for name in golden_kernels.BLEND_INPUTS
+        )
+        with golden_kernels.mxcsr(native.lib(), case.mxcsr), np.errstate(all="ignore"):
+            return reference.ImageBlender().apply_blend(overlay, base, mode)
     pixels = case.args["pixels"]
     overlay, base = (
         upstream_image(make_array(case.inputs[name]).reshape(1, pixels, -1))
         for name in golden_kernels.BLEND_INPUTS
     )
-    mode = reference_blend.BlendMode(case.args["mode"])
     with golden_kernels.mxcsr(native.lib(), case.mxcsr), np.errstate(all="ignore"):
-        out = reference_blend.blend_images(overlay, base, mode)
+        out = reference.blend_images(overlay, base, mode)
     return np.ascontiguousarray(out).reshape(pixels, -1)
 
 
-def upstream_composite(case):
+def upstream_composite(case, blend_images_node=composite_reference.blend_images_node):
     """Upstream's Blend Images node (test_composite_complete's reference, which
     blends with reference_blend) of a cn_composite_canvas case: its layers, mode,
     pixel offsets and crop, on NumPy 2.5.3 under the case's MXCSR state. A constant
@@ -3133,7 +3141,7 @@ def upstream_composite(case):
     x, y = args["x"], args["y"]
     constant = args["base_constant"] or args["overlay_constant"]
     with golden_kernels.mxcsr(native.lib(), case.mxcsr), np.errstate(all="ignore"):
-        out = composite_reference.blend_images_node(
+        out = blend_images_node(
             base,
             overlay,
             composite_reference.BlendMode(args["mode"]),
@@ -3168,10 +3176,75 @@ def d17_outputs(case, outputs):
     return upstream
 
 
+@functools.cache
+def f26_references():
+    """Private frozen algorithms: no edits to shared module globals or sys.modules."""
+    path = Path(reference_blend.__file__)
+    blend = ModuleType("f26_reference_blend")
+    exec(compile(path.read_bytes(), str(path), "exec"), blend.__dict__)
+
+    def to_uint8(image, normalized=False):
+        # F26 makes normalized=True saturate too; all blend inputs are float32.
+        assert image.dtype == np.float32
+        return (np.clip(image, 0, 1) * 255).round().astype(np.uint8)
+
+    blend.__dict__.update(
+        to_uint8=to_uint8,
+        normalize=FROZEN_IMAGE_UTILS.normalize,
+        as_target_channels=FROZEN_IMAGE_UTILS.as_target_channels,
+    )
+    namespace = dict(composite_reference.__dict__)
+    namespace.update(
+        blend_images=lambda a, b, mode: blend.blend_images(
+            a, b, blend.BlendMode(mode.value)
+        ),
+        as_2d_grayscale=FROZEN_IMAGE_UTILS.as_2d_grayscale,
+        convert_to_bgra=FROZEN_IMAGE_UTILS.convert_to_bgra,
+    )
+    composite = FunctionType(composite_reference.blend_images_node.__code__, namespace)
+    return blend, composite
+
+
+def f26_outputs(case):
+    """Approved integer saturation, independently computed; keep B3 manifests intact."""
+    if case.entry in (
+        *golden_kernels.KERNEL_ENTRIES["blend"],
+        golden_kernels.COMPOSITE_ENTRY,
+    ):
+        if case.args["mode"] != reference_blend.BlendMode.XOR.value:
+            return None
+        blend, composite = f26_references()
+        out = (
+            upstream_composite(case, composite)
+            if case.entry == golden_kernels.COMPOSITE_ENTRY
+            else upstream_blend(case, blend)
+        )
+        return {"out": digest(out, case.payloads)}
+    if (
+        case.entry != golden_kernels.CONVERT_ENTRY
+        or case.args["type"] != 0
+        or case.args["output"] == 0
+        or case.args["normalize"] != 0
+    ):
+        return None
+    source = make_array(case.inputs["src"])
+    words = source.view(np.uint32)
+    nan = (words & 0x7FFFFFFF) > 0x7F800000
+    signalling = nan & ((words & 0x00400000) == 0)
+    events = (2 if nan.any() else 0) | (4 if signalling.any() else 0)
+    dtype, scale = (np.uint8, 255) if case.args["output"] == 1 else (np.uint16, 65535)
+    with golden_kernels.mxcsr(native.lib(), case.mxcsr), np.errstate(all="ignore"):
+        out = (np.clip(source, 0, 1) * scale).round().astype(dtype)
+    return {
+        "out": hashlib.sha256(out.tobytes()).hexdigest(),
+        "events": digest_int(events),
+    }
+
+
 def current_outputs(case, outputs):
     """A manifest case's outputs on the current DLL: B3's record (outputs), except
-    upstream's for a D-17.1 case (d17_outputs)."""
-    return d17_outputs(case, outputs) or outputs
+    the independent F26 saturation or D-17.1 signed-zero reference."""
+    return f26_outputs(case) or d17_outputs(case, outputs) or outputs
 
 
 @pytest.mark.parametrize("level", range(len(native.ISA_LEVELS)), ids=native.ISA_LEVELS)
@@ -3187,15 +3260,11 @@ def test_current_dll_matches_the_b3_manifest(kernel, level):
         mismatched = [
             case.id
             for case, outputs in cases
-            if run_case(native.lib(), case) != outputs
+            if run_case(native.lib(), case) != current_outputs(case, outputs)
         ]
     finally:
         assert isa_set(effective) == effective
-    assert mismatched == [
-        case.id
-        for case, outputs in cases
-        if d5_corrected(case) or d17_outputs(case, outputs) is not None
-    ]
+    assert mismatched == [case.id for case, outputs in cases if d5_corrected(case)]
 
 
 @pytest.mark.parametrize("level", range(len(native.ISA_LEVELS)), ids=native.ISA_LEVELS)

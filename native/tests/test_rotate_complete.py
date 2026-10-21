@@ -1,12 +1,9 @@
-"""Exact affine rotation against frozen helper + installed Pillow 9.2.0.
-
-The original helper and original pixel conversions are bound by test_layout_ops;
-the oracle therefore never follows a newly converted production helper.
-"""
+"""Frozen Pillow rotation with an explicit adapter for approved byte saturation."""
 
 from __future__ import annotations
 
 import ctypes as ct
+import types
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -17,7 +14,26 @@ from test_layout_ops import LAYOUTS, MODULES, image
 from nodes.impl import native_rotate
 from nodes.impl.native import ptr
 
-current, reference = MODULES["rotate"]
+current, _legacy_reference = MODULES["rotate"]
+reference = types.ModuleType("saturating_rotate_reference")
+reference.__dict__.update(_legacy_reference.__dict__)
+_legacy_rotate = _legacy_reference.rotate
+_legacy_to_uint8 = _legacy_rotate.__globals__["to_uint8"]
+
+
+def saturated_to_uint8(img, normalized=False):
+    # F26 always clamps at the byte boundary, including normalized float32.
+    # Keep the frozen dtype normalization, rounding and NaN diagnostics.
+    return _legacy_to_uint8(img, normalized=False)
+
+
+reference.rotate = types.FunctionType(
+    _legacy_rotate.__code__,
+    {**_legacy_rotate.__globals__, "to_uint8": saturated_to_uint8},
+)
+reference.rotate_node = types.FunctionType(
+    _legacy_reference.rotate_node.__code__, reference.__dict__
+)
 
 
 def compare(source, angle, interpolation, expand, fill, *, helper=False):

@@ -10,17 +10,25 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-from test_filter_ops import MODULES
+from test_filter_ops import MODULES, REFERENCE, load_body
 from test_resample_ops import LAYOUTS, with_layout
 
 from nodes.impl import native_filters as native
 from nodes.impl.native import ptr
 
-current, reference = MODULES["distance_transform"]
+current = MODULES["distance_transform"][0]
+reference = load_body(REFERENCE / "miscellaneous/distance_transform.py")
 pixels = runpy.run_path(
     str(Path(__file__).with_name("reference_layout") / "rotation_pixels.py")
 )
-reference.__dict__["to_uint8"] = pixels["to_uint8"]
+
+
+def saturated_to_uint8(img, normalized=False):
+    # F26 clamps before byte conversion; keep the frozen rounding and NaN path.
+    return pixels["to_uint8"](img, normalized=False)
+
+
+reference.__dict__["to_uint8"] = saturated_to_uint8
 
 
 def fixture(shape, kind):

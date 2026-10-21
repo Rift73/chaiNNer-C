@@ -719,6 +719,12 @@ def test_nonfinite_save_quantization(tmp_path, fmt):
     expected = None
     for current in [False, True]:
         module = modules(current).save
+        if not current:
+            # F26 changes integer conversion, not the frozen save algorithm.
+            # Adapt only its test namespace; NaNs still reach the cast diagnostic.
+            module.to_uint8 = lambda img, normalized: OLD_UTILS.to_uint8(
+                np.clip(img, 0, 1), normalized=normalized
+            )
         captured = []
         module.cv_save_image = lambda path, arr, options, captured=captured: (
             captured.append((arr.dtype.str, arr.tobytes(), options))

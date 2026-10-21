@@ -141,8 +141,8 @@ def test_metadata_unchanged(name):
     a = [node for node in original.body if isinstance(node, ast.FunctionDef)][-1]
     b = [node for node in current.body if isinstance(node, ast.FunctionDef)][-1]
     assert ast.dump(a.args) == ast.dump(b.args)
-    # B14/B15 intentionally correct output channels only. Keep comparing the
-    # dimensions and all other registration metadata with the frozen snapshot.
+    # Adapt only the approved B14/B15 channel and F08 stack dimension corrections
+    # in this private AST; compare all remaining registration metadata exactly.
     if name in {"pad", "stack_images"}:
         for definition in (a, b):
             for expression in ast.walk(definition.decorator_list[0]):
@@ -160,8 +160,17 @@ def test_metadata_unchanged(name):
                             "channels:ifhasBorder{BorderType::getOutputChannels(border,i.channels,color)}else{i.channels}",
                             "channels:BorderType::getOutputChannels(border,i.channels,color)",
                         )
-                    else:
-                        text = text.replace("getChannels(Input0)", "Input0.channels")
+                    elif definition is a:
+                        replacements = {
+                            "letmaxChannels=max(Input0.channels,": "letmaxChannels=max(getChannels(Input0),",
+                            "_asi=>int(1..)&round(i.width*maxHeight/i.height)": "_asi=>ifgetChannels(i)<maxChannels{maxWidth}"
+                            "else{int(1..)&round(i.width*maxHeight/i.height)}",
+                            "_asi=>int(1..)&round(i.height*maxWidth/i.width)": "_asi=>ifgetChannels(i)<maxChannels{maxHeight}"
+                            "else{int(1..)&round(i.height*maxWidth/i.width)}",
+                        }
+                        for old, approved in replacements.items():
+                            assert text.count(old) == 1
+                            text = text.replace(old, approved)
                     expression.value.value = text
     assert [ast.dump(d) for d in a.decorator_list] == [
         ast.dump(d) for d in b.decorator_list
@@ -476,7 +485,13 @@ def test_rotate_arbitrary_retained(layout, interpolation):
 
 
 @pytest.mark.parametrize("special", [np.nan, np.inf, -np.inf, -0.0, -1.0, 2.0])
-def test_rotate_quantization_edges(special):
+def test_rotate_quantization_edges(special, monkeypatch):
+    def saturated_to_uint8(img, normalized=False):
+        # F26 clamps before the frozen rounding; never call production conversion.
+        return _pixels.to_uint8(img, normalized=False)
+
+    reference = MODULES["rotate"][1]
+    monkeypatch.setitem(reference.rotate.__globals__, "to_uint8", saturated_to_uint8)
     data = image(4)
     data[0, 0] = special
     with np.errstate(all="ignore"):

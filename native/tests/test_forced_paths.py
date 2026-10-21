@@ -42,7 +42,6 @@ from test_golden_kernels import (
     compose_reference,
     current_outputs,
     d5_corrected,
-    d17_outputs,
     shortcut_clauses,
     special_set,
 )
@@ -263,21 +262,15 @@ def holds_denormal(case):
 
 
 def assert_levels_match_b3(found, levels):
-    """Each (case, manifest outputs) gives those outputs at every level: B3's (no
-    conversion case is re-based on the oracle under NumPy 2.5.3), except exactly the
-    cases B3 refused and Consult 8 D-5 dithers (d5_corrected) and the blend clip's
-    signed zeros Consult 11 D-17.1 corrects (d17_outputs)."""
-    corrected = [
-        case.id
-        for case, outputs in found
-        if d5_corrected(case) or d17_outputs(case, outputs) is not None
-    ]
+    """Each case matches B3 or its independent F26/D-17.1 reference at every level;
+    only the cases B3 refused and Consult 8 D-5 dithers remain mismatches."""
+    corrected = [case.id for case, outputs in found if d5_corrected(case)]
     for level in levels:
         assert isa_set(level) == level
         mismatched = [
             case.id
             for case, outputs in found
-            if run_case(native.lib(), case) != outputs
+            if run_case(native.lib(), case) != current_outputs(case, outputs)
         ]
         assert mismatched == corrected, native.ISA_LEVELS[level]
 
@@ -1283,10 +1276,8 @@ def test_conversion_chunk_starts_off_the_lane_grid(levels):
 
 
 def test_sp4b_sweep_reaches_scaled_values_beyond_int32():
-    """Review M2/N2: the in-suite sweep (SP4B_SWEEP) holds an f32 -> u8 case without
-    the clamp, (0,1,0), whose AVX2 path sets bit 2 per lane, on raw float32 bits with
-    a finite |v| * 255 >= 2^31; so test_sp4b_levels_equal_scalar compares those
-    lanes with the scalar level."""
+    """The sweep includes raw finite values beyond int32 when scaled. F26 now
+    saturates these even with normalize=0; SIMD and scalar must still agree."""
     found = []
     for kernel in SP4B_KERNELS:
         if kernel not in golden_kernels.CONVERSION_KERNELS:

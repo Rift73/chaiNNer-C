@@ -141,15 +141,15 @@ static long signalling_nan(uint32_t bits)
         !(bits & 0x00400000u) ? 4 : 0;
 }
 
-/* f32 -> u8 (type 0, output 1), with the clamp when normalize. */
+/* Integer output always saturates to its representable range. normalize only
+ * controls float output; extended-range float images must never wrap on export. */
 static long convert_f32_u8(const convert_job *j, size_t begin, size_t end)
 {
     const float *src = (const float *)j->src;
     uint8_t *out = (uint8_t *)j->out;
-    int clamp = j->normalize;
     long events = 0;
     for (size_t i = begin; i < end; ++i) {
-        float value = clamp ? clamp_unit(src[i]) : src[i];
+        float value = clamp_unit(src[i]);
         out[i] = (uint8_t)scaled_integer(value, 255.0f, &events);
         events |= signalling_nan(float_bits(src[i]));
     }
@@ -206,7 +206,7 @@ static void load_values(const convert_job *j, size_t start, size_t count, float 
 static long convert_generic(const convert_job *j, size_t begin, size_t end)
 {
     float values[CN_CONVERT_BLOCK];
-    int clamp = j->normalize || j->type != 0;
+    int clamp = j->output != 0 || j->normalize || j->type != 0;
     float scale = j->output == 1 ? 255.0f : 65535.0f;
     long events = 0;
     size_t start = begin, count, k;

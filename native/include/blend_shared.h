@@ -52,21 +52,19 @@ static float clip(float value)
 #endif
 }
 
-/* NumPy round uses ties-to-even. Avoid dependence on the process rounding mode.
- * Inputs normally lie in [0,1]; wrapping also matches finite uint8 casts outside
- * that range. NumPy's invalid float-to-uint8 cast produces zero on our platform.
+/* XOR follows the shared saturating float-to-uint8 contract (F26). NumPy round
+ * uses ties-to-even; avoid dependence on the process rounding mode. A NaN casts
+ * to zero on our platform, while infinities saturate before scaling.
  */
 static unsigned char to_uint8(float value)
 {
-    float scaled = value * 255.0f;
+    float scaled = clip(value) * 255.0f;
     if (!isfinite(scaled)) return 0;
     float lower = floorf(scaled);
     float fraction = scaled - lower;
     if (fraction > 0.5f || (fraction == 0.5f && fmodf(lower, 2.0f) != 0.0f))
         lower += 1.0f;
-    float wrapped = fmodf(lower, 256.0f);
-    if (wrapped < 0.0f) wrapped += 256.0f;
-    return (unsigned char)wrapped;
+    return (unsigned char)lower;
 }
 
 static float color_burn(float a, float b)

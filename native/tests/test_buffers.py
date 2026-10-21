@@ -135,7 +135,9 @@ def test_pixel_conversion(dtype, layout, name, normalized):
     args = () if name == "normalize" else (normalized,)
     with np.errstate(all="ignore"):
         actual = getattr(image_utils, name)(image, *args)
-        expected = getattr(ORIGINAL, name)(image, *args)
+        # F26: integer exports always use the oracle's saturating path, even when
+        # callers claim their float data is already normalized.
+        expected = getattr(ORIGINAL, name)(image)
     assert actual.dtype == expected.dtype and actual.shape == expected.shape
     np.testing.assert_array_equal(actual, expected)
     np.testing.assert_array_equal(image, before)
@@ -163,7 +165,7 @@ def test_quantization_rounding_and_extremes(bits):
     ]
     for value in variants:
         with np.errstate(all="ignore"):
-            expected = getattr(ORIGINAL, f"to_uint{bits}")(value, True)
+            expected = getattr(ORIGINAL, f"to_uint{bits}")(value, False)
             actual = getattr(image_utils, f"to_uint{bits}")(value, True)
         np.testing.assert_array_equal(actual, expected)
 

@@ -58,7 +58,7 @@ CN_RUN_KERNEL cn_status cn_box_mean_u8(const uint8_t *src, uint8_t *dst,
     size_t height, size_t width, size_t radius);
 CN_RUN_KERNEL cn_status cn_box_separable(const float *src, float *dst,
     size_t height, size_t width, size_t channels, double radius_x, double radius_y, size_t lanes);
-/* buffers.c */
+/* buffers.c: integer outputs always clamp to [0, 1]; normalize only controls float output. */
 CN_RUN_KERNEL cn_status cn_pixels_convert_checked(const void *src, void *out, size_t count,
     int type, int output, int normalize, int *events);
 CN_RUN_KERNEL cn_status cn_pixels_normalized_f32(const float *src, size_t count, int *same);

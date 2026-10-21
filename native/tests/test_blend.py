@@ -1,4 +1,4 @@
-"""Differential tests against the unchanged upstream blend algorithms."""
+"""Frozen blend algorithms with an explicit F26 integer-conversion adapter."""
 
 import ctypes
 import itertools
@@ -15,6 +15,16 @@ from nodes.impl.blend import (
 )
 from nodes.impl.native import lib, ptr
 from nodes.impl.native_blend import composite
+
+
+@pytest.fixture(autouse=True)
+def saturating_xor_reference(monkeypatch):
+    # The frozen XOR body imports today's to_uint8. Give its test namespace an
+    # independent NumPy conversion with the approved saturation and rounding.
+    def to_uint8(img, normalized=False):
+        return (np.clip(img, 0, 1) * 255).round().astype(np.uint8)
+
+    monkeypatch.setattr(reference, "to_uint8", to_uint8)
 
 
 def assert_parity(actual, expected):

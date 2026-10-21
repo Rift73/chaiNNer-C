@@ -115,16 +115,12 @@ CN_EXPORT cn_status cn_threshold_f32(const float *src, const float *binary,
     return cn_parallel_for(count, 65536, threshold_range, &job);
 }
 
-/* NumPy round(float32 * 255).astype(uint8): ties-to-even, wrap finite values,
- * and convert NaN/infinity to zero. Avoid undefined out-of-range C casts. */
+/* F26: saturate before the existing byte rounding, as the shared converter does.
+ * Keep the NaN-to-zero result and in-range rounding unchanged. */
 static uint8_t quantize(float value) {
-    float scaled = value * 255.0f;
+    float scaled = cn_numpy_clip_f32(value, 0.0f, 1.0f) * 255.0f;
     if (!isfinite(scaled)) return 0;
-    float rounded = nearbyintf(scaled);
-    if (rounded >= 0.0f && rounded <= 255.0f) return (uint8_t)rounded;
-    float wrapped = fmodf(rounded, 256.0f);
-    if (wrapped < 0.0f) wrapped += 256.0f;
-    return (uint8_t)wrapped;
+    return (uint8_t)nearbyintf(scaled);
 }
 
 typedef struct quantize_job {

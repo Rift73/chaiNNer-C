@@ -3,6 +3,7 @@
  * buffer/channel preparation, save policy/options, and owned job lifecycles.
  * CPython pathlib and OS APIs preserve the installed host semantics. */
 #include "atomic_file.hpp"
+#include "codec_output.hpp"
 #include "graph_python.hpp"
 #include "graph_exception.hpp"
 #include "image_codecs.h"
@@ -470,7 +471,8 @@ bool codec_image(const O& value,cn_codec_image& image) {
 // Runs an encoder without the GIL into a NumPy-pool block; the encoded bytes as a uint8 array that owns the block
 // (as cv2.imencode returns its buffer), or None when it declines.
 O run_encoder(const std::function<cn_codec_status(cn_codec_output&)>& encoder) {
-    cn_codec_output out{};
+    cn::codecs::Output output;
+    auto& out=output.value;
     out.allocate=cn_numpy_pool_allocate;
     out.release=cn_numpy_pool_free;
     cn_codec_status status;
@@ -478,12 +480,10 @@ O run_encoder(const std::function<cn_codec_status(cn_codec_output&)>& encoder) {
         py::gil_scoped_release release;
         status=encoder(out);
     }
-    if(status!=CN_CODEC_OK) {
-        cn_codec_output_free(&out);
-        return py::none();
-    }
+    if(status!=CN_CODEC_OK)return py::none();
     py::capsule owner(out.data,[](void* data){cn_numpy_pool_free(data);});
-    return py::array_t<uint8_t>({py::ssize_t(out.size)},{py::ssize_t(1)},out.data,owner);
+    out.data=nullptr; // The capsule owns the buffer only after its construction succeeds.
+    return py::array_t<uint8_t>({py::ssize_t(out.size)},{py::ssize_t(1)},owner.get_pointer<uint8_t>(),owner);
 }
 bool extension_is(const O& extension,std::initializer_list<const char*> names) {
     if(!PyUnicode_Check(extension.ptr()))return false;
@@ -562,7 +562,14 @@ O encode(py::dict g,O extension,O image,O params) {
         (PyList_CheckExact(params.ptr()) || PyTuple_CheckExact(params.ptr())) && py::len(params)==0)
         buffer=encode_png(image);
     if(buffer.is_none())buffer=native_encode(g,extension,image,params);
-    if(buffer.is_none())buffer=index(name(g,"cv2").attr("imencode")(format(".{}",extension),image,params),1);
+    if(buffer.is_none()) {
+        O result=name(g,"cv2").attr("imencode")(format(".{}",extension),image,params);
+        if(!truth(index(result,0))) {
+            O shape=image.attr("shape");
+            raise(PyExc_RuntimeError,format("Failed to encode {} image of size {}x{}",extension.attr("upper")(),index(shape,1),index(shape,0)));
+        }
+        buffer=index(result,1);
+    }
     O lower=extension.attr("lower")();
     if(equal(lower,py::str(".tiff")) || equal(lower,py::str(".tif")))buffer=add_extra_samples(buffer);
     return buffer;

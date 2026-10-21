@@ -1,7 +1,7 @@
 """CPU differential coverage for C color, threshold and material algorithms.
 
-The references are frozen upstream node bodies. Only registration decorators
-and their unused UI imports are stripped; numerical helpers remain unchanged.
+The references are frozen upstream node bodies. Registration decorators and
+unused UI imports are stripped; approved byte saturation is adapted explicitly.
 """
 
 from __future__ import annotations
@@ -62,6 +62,19 @@ MODULES = {
     for name, relative in PATHS.items()
 }
 HEIGHT_REFERENCE = load_body(REFERENCE / "height.py")
+PIXELS_REFERENCE = load_body(
+    Path(__file__).with_name("reference_layout") / "rotation_pixels.py"
+)
+
+
+def saturated_to_uint8(img, normalized=False):
+    # F26 clamps even normalized float32, preserving frozen rounding/NaN behavior.
+    return PIXELS_REFERENCE.to_uint8(img, normalized=False)
+
+
+# Own the reference namespace so other suites importing MODULES are not mutated.
+AUTO_THRESHOLD_REFERENCE = load_body(REFERENCE / "generate_threshold.py")
+AUTO_THRESHOLD_REFERENCE.__dict__["to_uint8"] = saturated_to_uint8
 
 
 def image(channels=3, layout="contiguous", shape=(13, 17), seed=327):
@@ -170,7 +183,7 @@ def test_threshold_boundaries_and_nonfinite(kind, shape):
 @pytest.mark.parametrize("method", [0, 1])
 @pytest.mark.parametrize("shape", [(1, 1), (2, 2), (17, 13), (257, 513)])
 def test_auto_threshold(channels, method, shape):
-    current, reference = MODULES["generate_threshold"]
+    current, reference = MODULES["generate_threshold"][0], AUTO_THRESHOLD_REFERENCE
     img = image(channels, "readonly", shape)
     actual = current.generate_threshold_node(img, current.AutoThreshold(method))
     expected = reference.generate_threshold_node(img, reference.AutoThreshold(method))
@@ -180,7 +193,7 @@ def test_auto_threshold(channels, method, shape):
 @pytest.mark.parametrize("value", [0, 1, 0.5, -0.1, 1.2, np.nan, np.inf])
 @pytest.mark.parametrize("method", [0, 1])
 def test_auto_threshold_constant_and_nonfinite(value, method):
-    current, reference = MODULES["generate_threshold"]
+    current, reference = MODULES["generate_threshold"][0], AUTO_THRESHOLD_REFERENCE
     img = np.full((7, 11), value, dtype=np.float32)
     with np.errstate(all="ignore"):
         equal(
@@ -190,13 +203,20 @@ def test_auto_threshold_constant_and_nonfinite(value, method):
 
 
 def test_quantization_rounding_and_wrapping():
+    """F26 replaces wrapping with saturation while preserving in-range rounding."""
     values = np.array(
         [0, 1, -1, 2, -10, 10, np.nan, np.inf, -np.inf, 1e30, -1e30], np.float32
     )
     ties = (np.arange(-30, 280, dtype=np.float32) + 0.5) / 255
     img = np.concatenate([values, ties]).reshape((1, -1))
     with np.errstate(all="ignore"):
-        equal(native.quantize_u8(img), to_uint8(img, normalized=True))
+        expected = saturated_to_uint8(img)
+        np.testing.assert_array_equal(
+            expected[0, : len(values)],
+            [0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0],
+        )
+        equal(to_uint8(img, normalized=True), expected)
+        equal(native.quantize_u8(img), expected)
 
 
 @pytest.mark.parametrize("kind", [0, 1])
@@ -371,7 +391,7 @@ def test_parallel_concurrent_pipelines():
             current.hue_and_saturation_node(img, 31.3, 15.7, -25.3),
             reference.hue_and_saturation_node(img, 31.3, 15.7, -25.3),
         )
-        current, reference = MODULES["generate_threshold"]
+        current, reference = MODULES["generate_threshold"][0], AUTO_THRESHOLD_REFERENCE
         equal(
             current.generate_threshold_node(img, current.AutoThreshold.OTSU),
             reference.generate_threshold_node(img, reference.AutoThreshold.OTSU),

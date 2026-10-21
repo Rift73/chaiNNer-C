@@ -27,8 +27,8 @@ NODE = (
 REFERENCE = Path(__file__).with_name("reference_color_ops") / "threshold_adaptive.py"
 CURRENT, ORIGINAL = load_body(NODE), load_body(REFERENCE)
 
-# Freeze the old float32 byte-conversion body too: the production image_utils
-# now delegates this operation to C and must not be used by the reference.
+# Keep frozen rounding and NaN diagnostics; adapt its byte boundary to F26's
+# approved saturation without using production conversion code.
 _path = Path(__file__).with_name("reference_normal_complete") / "image_utils.py"
 _tree = ast.parse(_path.read_text("utf-8"))
 _tree.body = [
@@ -38,7 +38,13 @@ _tree.body = [
 ]
 _globals = {"np": np}
 exec(compile(_tree, str(_path), "exec"), _globals)
-ORIGINAL.__dict__.update(to_uint8=_globals["to_uint8"])
+
+
+def saturated_to_uint8(img, normalized=False):
+    return _globals["to_uint8"](np.clip(img, 0, 1), normalized=True)
+
+
+ORIGINAL.__dict__.update(to_uint8=saturated_to_uint8)
 
 # Exercise the actual registered ImageInput enforcement body without importing
 # unrelated optional model providers from the input-registry package.
@@ -143,16 +149,29 @@ def test_enforced_exceptional_inputs_preserve_errors_and_warnings(method, value)
     assert enforce(image).shape == (3, 5)
     results = []
     for module in (ORIGINAL, CURRENT):
-        with np.errstate(all="raise"), pytest.raises(FloatingPointError) as error:
-            call(module, image, method, 0, 1)
+        if np.isnan(value):
+            with (
+                np.errstate(all="raise"),
+                pytest.raises(
+                    FloatingPointError, match="invalid value encountered in cast"
+                ),
+            ):
+                call(module, image, method, 0, 1)
+        else:
+            # Infinities and large finite values now saturate before multiply.
+            with np.errstate(all="raise"):
+                call(module, image, method, 0, 1)
         with warnings.catch_warnings(record=True) as records, np.errstate(all="warn"):
             warnings.simplefilter("always")
             result = call(module, image, method, 0, 1)
-        results.append(
-            (str(error.value), [(r.category, str(r.message)) for r in records], result)
+        expected_warnings = (
+            [(RuntimeWarning, "invalid value encountered in cast")]
+            if np.isnan(value)
+            else []
         )
-    assert results[0][:2] == results[1][:2]
-    np.testing.assert_array_equal(results[0][2], results[1][2])
+        assert [(r.category, str(r.message)) for r in records] == expected_warnings
+        results.append(result)
+    np.testing.assert_array_equal(results[0], results[1])
 
 
 def test_all_bulk_computation_native_and_concurrent(monkeypatch):

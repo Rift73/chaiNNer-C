@@ -1,4 +1,4 @@
-"""Pinned NumPy exceptional casts, including observable error policy."""
+"""Saturating integer export against NumPy's clamped path, including NaN policy."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def test_random_float_bitpatterns(bits, shape, layout):
         image = other
     saved = image.tobytes()
     with np.errstate(all="ignore"):
-        expected = getattr(ORIGINAL, f"to_uint{bits}")(image, normalized=True)
+        expected = getattr(ORIGINAL, f"to_uint{bits}")(image, normalized=False)
         actual = getattr(image_utils, f"to_uint{bits}")(image, normalized=True)
         assert native.converted_pixels(image, bits, True) is not None
     assert actual.tobytes() == expected.tobytes()
@@ -85,7 +85,7 @@ def test_integer_cast_boundaries(bits):
     with np.errstate(all="ignore"):
         assert (
             getattr(image_utils, f"to_uint{bits}")(image, normalized=True).tobytes()
-            == getattr(ORIGINAL, f"to_uint{bits}")(image, normalized=True).tobytes()
+            == getattr(ORIGINAL, f"to_uint{bits}")(image, normalized=False).tobytes()
         )
 
 
@@ -110,7 +110,7 @@ def test_diagnostics_and_raises(bits, normalized, kind):
                 warnings.simplefilter("always")
                 try:
                     result = getattr(module, f"to_uint{bits}")(
-                        image, normalized=normalized
+                        image, normalized=normalized if module is image_utils else False
                     )
                 except FloatingPointError as error:
                     outcome = type(error), str(error)
@@ -123,7 +123,7 @@ def test_diagnostics_and_raises(bits, normalized, kind):
 @pytest.mark.parametrize("policy", ["call", "log", "print"])
 def test_floating_error_handlers(policy, capfd):
     old_handler = np.geterrcall()
-    image = np.array([np.inf, np.finfo(np.float32).max], np.float32)
+    image = np.array([np.nan, np.inf, np.finfo(np.float32).max], np.float32)
     observed = []
     try:
         for module in (ORIGINAL, image_utils):
@@ -135,7 +135,7 @@ def test_floating_error_handlers(policy, capfd):
                 else log
             )
             with np.errstate(all=policy):
-                result = module.to_uint16(image, normalized=True)
+                result = module.to_uint16(image, normalized=module is image_utils)
             observed.append(
                 (result.tobytes(), calls, log.getvalue(), capfd.readouterr().err)
             )
@@ -148,7 +148,7 @@ def test_concurrent_exceptional_conversion():
     image = data((257, 263, 3))
     image.flags.writeable = False
     with np.errstate(all="ignore"):
-        expected = ORIGINAL.to_uint16(image, normalized=True)
+        expected = ORIGINAL.to_uint16(image, normalized=False)
 
     def run(_):
         with np.errstate(all="ignore"):

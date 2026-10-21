@@ -1,6 +1,8 @@
 /* Atomic file writes (GPL-3.0); see native/include/atomic_file.hpp. */
 #include "atomic_file.hpp"
 
+#include "file_handle.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -15,10 +17,6 @@
 #include <io.h>
 #include <share.h>
 #include <sys/stat.h>
-
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
 
 namespace cn::files {
 namespace {
@@ -119,18 +117,6 @@ bool same_bytes(const std::filesystem::path &a, const std::filesystem::path &b) 
     }
     return true;
 }
-
-// A handle closed when it goes out of scope.
-struct Handle {
-    HANDLE handle;
-    explicit Handle(HANDLE opened) : handle(opened) {}
-    Handle(const Handle &) = delete;
-    Handle &operator=(const Handle &) = delete;
-    ~Handle() {
-        if (valid()) CloseHandle(handle);
-    }
-    bool valid() const { return handle != INVALID_HANDLE_VALUE; }
-};
 
 // Whether Windows can create a file of this name: 1 to 255 UTF-16 units, no control character and none of
 // <>:"/\|?* (wildcards to a search, so the name must never reach one).
