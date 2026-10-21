@@ -15,6 +15,7 @@ import traceback
 import uuid
 from collections.abc import Callable, Coroutine, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Final, TypedDict
@@ -305,6 +306,8 @@ class AppContext:
         self.run_starting = False
         # Stop arrived while that /run waited for previews: it ends without running.
         self.run_stopped_early = False
+        # Pause/Resume while a /run waits applies before its first node runs.
+        self.run_paused_early = False
         self.individual_executors: dict[ExecutionId, Executor | NativeExecutor] = {}
         self.cache: dict[NodeId, NodeOutput] = {}
         # Increased from 4 to 8 workers for better parallelism in batch processing
@@ -535,6 +538,7 @@ async def run(request: Request):
     # the first waits for previews.
     ctx.run_starting = True
     ctx.run_stopped_early = False
+    ctx.run_paused_early = False
 
     executor_id = ExecutionId("main-executor " + uuid.uuid4().hex)
 
@@ -593,6 +597,8 @@ async def run(request: Request):
             if native_profile.enabled():
                 native_profile.start_loop_thread_cpu()
             ctx.executor = executor
+            if ctx.run_paused_early:
+                executor.pause()
             await executor.run()
         except Aborted:
             asyncio.get_running_loop().call_soon(collect_failed_run, ctx)
@@ -656,6 +662,7 @@ async def run(request: Request):
         )
     finally:
         ctx.run_starting = False
+        ctx.run_paused_early = False
         if ctx.config.trace and tracer is not None:
             logger.info("Stopping VizTracer...")
             tracer.stop()
@@ -788,6 +795,14 @@ async def run_individual(request: Request):
             else:
                 raise ValueError(
                     f"Invalid node kind {node_data.kind} attempted to run individually"
+                )
+            if node_data.node_context:
+                # Scope cache registrations to the actual body, which may outlive
+                # this handler after Stop. A cleared body's late use cannot retain
+                # resources or release a newer same-ID preview's registration.
+                preview = tensorrt_cache.Preview(node_id)
+                node.data = replace(
+                    node_data, run=functools.partial(preview.run, node_data.run)
                 )
             chain = Chain()
             chain.add_node(node)
@@ -970,6 +985,9 @@ async def pause(request: Request):
     logger.info("Attempting to pause executor...")
 
     if not ctx.executor:
+        if ctx.run_starting and not ctx.run_stopped_early:
+            ctx.run_paused_early = True
+            return json(success_response(), status=200)
         logger.warning("No executor to pause.")
         return json(no_executor_response(), status=400)
 
@@ -990,6 +1008,9 @@ async def resume(request: Request):
     logger.info("Attempting to resume executor...")
 
     if not ctx.executor:
+        if ctx.run_starting and not ctx.run_stopped_early:
+            ctx.run_paused_early = False
+            return json(success_response(), status=200)
         logger.warning("No executor to resume.")
         return json(no_executor_response(), status=400)
 
@@ -1058,7 +1079,12 @@ async def status(_request: Request):
         else:
             executor_status = "running"
     elif ctx.run_starting:
-        executor_status = "running"
+        if ctx.run_stopped_early:
+            executor_status = "killing"
+        elif ctx.run_paused_early:
+            executor_status = "paused"
+        else:
+            executor_status = "running"
     else:
         executor_status = "ready"
 

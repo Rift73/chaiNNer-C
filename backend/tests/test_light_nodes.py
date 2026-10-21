@@ -212,6 +212,127 @@ def test_clearing_active_preview_stops_side_effect_and_allows_undo(
 UPSCALE = "chainner:pytorch:upscale_image"
 
 
+@pytest.mark.parametrize("undo_first", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+def test_cleared_preview_late_cache_use_preserves_undo(
+    server: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    undo_first: bool,
+    background: bool,
+):
+    import api
+    from chain.chain import FunctionNode
+    from nodes.impl.tensorrt.cache import SharedCache
+
+    loading, pytorch = loading_with(server, monkeypatch)
+    loading.light_loaded.set()
+    loading.package_loaded["chaiNNer_pytorch"].set()
+    entered, proceed = threading.Event(), threading.Event()
+    closed: list[object] = []
+    shared: SharedCache[object] = SharedCache(closed.append)
+    old_value, new_value = object(), object()
+    node_id = api.NodeId("late-cache-preview")
+
+    def preview_body(context: SimpleNamespace):
+        if context.first:
+            entered.set()
+            assert proceed.wait(5)
+        value = old_value if context.first else new_value
+        with shared.use(value, node_id, lambda: value):
+            return value
+
+    group = pytorch.categories[0].add_node_group("Processing")
+    group.register(
+        UPSCALE,
+        name="Preview",
+        description="",
+        inputs=[],
+        outputs=[],
+        generated=True,
+        node_context=True,
+    )(preview_body)
+    api.registry.load_modules([])
+
+    async def scenario():
+        bodies: list[asyncio.Task[object]] = []
+        executors: list[Executor] = []
+
+        class Executor:
+            def __init__(self, **_kwargs: object):
+                self.first = not executors
+                self.stopped = asyncio.Event()
+                executors.append(self)
+
+            def kill(self):
+                self.stopped.set()
+
+            async def process_regular_node(self, node: FunctionNode):
+                body = asyncio.create_task(
+                    asyncio.to_thread(node.data.run, SimpleNamespace(first=self.first))
+                )
+                bodies.append(body)
+                if self.first and background:
+                    await self.stopped.wait()
+                    # Native previews can return Aborted while their node still runs.
+                    raise server.Aborted()
+                value = await body
+                if self.stopped.is_set():
+                    raise server.Aborted()
+                return value
+
+            async def flush_broadcasts(self):
+                pass
+
+        monkeypatch.setattr(server, "Executor", Executor)
+        monkeypatch.setattr(server, "executor_kind", lambda: "python")
+        monkeypatch.setattr(
+            server, "return_device_memory_after_burst", lambda _ctx: None
+        )
+        monkeypatch.setattr(server.app.ctx, "cache", {})
+        monkeypatch.setattr(server.app.ctx, "individual_executors", {})
+        app = SimpleNamespace(ctx=server.app.ctx, loop=asyncio.get_running_loop())
+        monkeypatch.setattr(server, "app", app)
+        request = SimpleNamespace(
+            app=app,
+            json={"id": node_id, "schemaId": UPSCALE, "inputs": [], "options": {}},
+        )
+        preview = asyncio.create_task(server.run_individual(request))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            cleared = await server.clear_cache_individual(request)
+            assert json.loads(cleared.body)["success"]
+            if background:
+                await asyncio.wait_for(preview, 2)
+            if undo_first:
+                restored = await server.run_individual(request)
+                assert json.loads(restored.body)["success"]
+                assert app.ctx.cache[node_id] is new_value
+                assert len(shared) == 1 and not closed
+            proceed.set()
+            await asyncio.wait_for(preview, 2)
+            await asyncio.wait_for(asyncio.gather(*bodies), 2)
+            assert closed == [old_value]
+            if undo_first:
+                assert app.ctx.cache[node_id] is new_value
+                assert len(shared) == 1
+            else:
+                assert node_id not in app.ctx.cache and len(shared) == 0
+                restored = await server.run_individual(request)
+                assert json.loads(restored.body)["success"]
+                assert app.ctx.cache[node_id] is new_value
+            cleared = await server.clear_cache_individual(request)
+            assert json.loads(cleared.body)["success"]
+            assert closed == [old_value, new_value] and len(shared) == 0
+        finally:
+            proceed.set()
+            await asyncio.gather(preview, *bodies, return_exceptions=True)
+            if server.individual_releases:
+                await asyncio.gather(*server.individual_releases)
+            shared.release_node(node_id)
+
+    asyncio.run(scenario())
+
+
 def test_a_run_waits_for_its_node_to_load(
     server: ModuleType, monkeypatch: pytest.MonkeyPatch
 ):
