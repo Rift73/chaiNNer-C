@@ -371,6 +371,7 @@ export const GlobalProvider = memo(
         }, [edgeChanges, nodeChanges, getNodes, getEdges]);
 
         const [savePath, setSavePathInternal] = useSessionStorage<string | null>('save-path', null);
+        const documentGeneration = useRef(0);
         const [openRecent, pushOpenPath, removeRecentPath] = useOpenRecent();
         const setSavePath = useCallback(
             (path: string | undefined) => {
@@ -471,7 +472,10 @@ export const GlobalProvider = memo(
         const performSave = useCallback(
             async (saveAs: boolean): Promise<SaveResult> => {
                 try {
+                    const generation = documentGeneration.current;
                     const saveData = dumpState();
+                    const snapshot = chainSnapshot(saveData.nodes, saveData.edges);
+                    let newSavePath: string | undefined;
                     if (!saveAs && savePath) {
                         await ipcRenderer.invoke('file-save-json', saveData, savePath);
                     } else {
@@ -483,9 +487,12 @@ export const GlobalProvider = memo(
                         if (result.kind === 'Canceled') {
                             return SaveResult.Canceled;
                         }
-                        setSavePath(result.path);
+                        newSavePath = result.path;
                     }
-                    setSavedSnapshot(chainSnapshot(saveData.nodes, saveData.edges));
+                    // A completed save belongs to the document that started it, including on exit.
+                    if (documentGeneration.current !== generation) return SaveResult.Canceled;
+                    if (newSavePath !== undefined) setSavePath(newSavePath);
+                    setSavedSnapshot(snapshot);
                     return SaveResult.Saved;
                 } catch (error) {
                     log.error(error);
@@ -652,6 +659,7 @@ export const GlobalProvider = memo(
                     });
                 }
 
+                documentGeneration.current += 1;
                 outputDataActions.clear();
                 // React Flow reuses the nodes that keep their id, so they have to run again to
                 // get back the output data that was just cleared
@@ -701,6 +709,7 @@ export const GlobalProvider = memo(
                 return;
             }
 
+            documentGeneration.current += 1;
             changeNodes([]);
             changeEdges([]);
             setSavedSnapshot(EMPTY_CHAIN_SNAPSHOT);

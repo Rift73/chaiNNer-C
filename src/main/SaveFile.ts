@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
-import { realpath, writeFile } from 'fs/promises';
+import fs from 'fs/promises';
+import { basename, dirname, join, resolve } from 'path';
 import { EdgeData, FileOpenResult, NodeData, Version } from '../common/common-types';
 import { log } from '../common/log';
 import { currentMigration, migrate } from '../common/migrations';
@@ -30,6 +31,10 @@ const hash = (value: string): string => {
 };
 
 export class SaveFile {
+    private static pendingReservation: Promise<void> = Promise.resolve();
+
+    private static readonly pendingWrites = new Map<string, Promise<void>>();
+
     static parse(value: string): ParsedSaveData {
         if (!/^\s*\{/.test(value)) {
             // base64 decode
@@ -118,15 +123,52 @@ export class SaveFile {
      */
     static async write(path: string, saveData: SaveData, version: Version): Promise<void> {
         const content = SaveFile.stringify(saveData, version);
-        const target = await realpath(path).catch(() => path);
+        const absolutePath = resolve(path);
+        const previousReservation = SaveFile.pendingReservation;
+        let finishReservation = () => {};
+        // Reserve arrival order before realpath, including requests through different aliases.
+        SaveFile.pendingReservation = new Promise<void>((resolveReservation) => {
+            finishReservation = resolveReservation;
+        });
+        let writing: Promise<void>;
         try {
-            await writeFileAtomic(target, content);
-        } catch (error) {
-            const { code } = error as NodeJS.ErrnoException;
-            if (code !== 'EPERM' && code !== 'EBUSY') throw error;
-            log.warn(`Unable to replace ${target} (${code}), writing it in place.`);
-            await writeFile(target, content, 'utf-8');
+            await previousReservation;
+            const target = await fs.realpath(absolutePath).catch(async () => {
+                const parent = dirname(absolutePath);
+                const directory = await fs.realpath(parent).catch(() => parent);
+                return join(directory, basename(absolutePath));
+            });
+            const key = process.platform === 'win32' ? target.toLowerCase() : target;
+            const previous = SaveFile.pendingWrites.get(key);
+            let finish = () => {};
+            const done = new Promise<void>((resolveWrite) => {
+                finish = resolveWrite;
+            });
+            SaveFile.pendingWrites.set(key, done);
+            writing = (async () => {
+                try {
+                    await previous;
+                    try {
+                        await writeFileAtomic(target, content);
+                    } catch (error) {
+                        const { code } = error as NodeJS.ErrnoException;
+                        if (code !== 'EPERM' && code !== 'EBUSY') throw error;
+                        log.warn(`Unable to replace ${target} (${code}), writing it in place.`);
+                        await fs.writeFile(target, content, 'utf-8');
+                    }
+                } finally {
+                    // Failure rejects its caller while releasing the next save of this target.
+                    finish();
+                    if (SaveFile.pendingWrites.get(key) === done) {
+                        SaveFile.pendingWrites.delete(key);
+                    }
+                }
+            })();
+        } finally {
+            // Only resolution/reservation is global; writes to unrelated targets can overlap.
+            finishReservation();
         }
+        await writing;
     }
 }
 

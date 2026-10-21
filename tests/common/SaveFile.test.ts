@@ -143,6 +143,97 @@ const expectedContent = async (): Promise<unknown> => {
     return (JSON.parse(SaveFile.stringify(saveData, '0.0.0-test')) as RawSaveFile).content;
 };
 
+test('Overlapping Save As writes keep request order even when the first path lookup is delayed', async () => {
+    const saveData = await SaveFile.read(path.join(dataDir, 'crop.chn'));
+    await withTempDir(async (dir) => {
+        const file = path.join(dir, 'new-chain.chn');
+        let release = () => {};
+        const blocked = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const realpath = fsPromises.realpath.bind(fsPromises);
+        const lookup = vi.spyOn(fsPromises, 'realpath').mockImplementationOnce(async (p) => {
+            await blocked;
+            return realpath(p);
+        });
+        const write = vi.spyOn(fsPromises, 'writeFile');
+        const first = SaveFile.write(file, saveData, '0.0.0-test');
+        const secondData = { ...saveData, viewport: { x: 2, y: 0, zoom: 1 } };
+        const second = SaveFile.write(file, secondData, '0.0.0-test');
+        try {
+            await vi.waitFor(() => expect(lookup).toHaveBeenCalled());
+            expect(lookup).toHaveBeenCalledOnce();
+            expect(write).not.toHaveBeenCalled();
+        } finally {
+            release();
+            await Promise.all([first, second]);
+        }
+
+        expect(savedContent(file)).toMatchObject({ viewport: secondData.viewport });
+        expect(fs.readdirSync(dir)).toEqual(['new-chain.chn']);
+    });
+});
+
+test('A delayed rename blocks the same path but lets another path save', async () => {
+    const saveData = await SaveFile.read(path.join(dataDir, 'crop.chn'));
+    await withTempDir(async (dir) => {
+        const file = path.join(dir, 'chain.chn');
+        fs.writeFileSync(file, 'old chain');
+        let release = () => {};
+        const blocked = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const rename = fsPromises.rename.bind(fsPromises);
+        const renames = vi.spyOn(fsPromises, 'rename').mockImplementationOnce(async (from, to) => {
+            await blocked;
+            return rename(from, to);
+        });
+        const first = SaveFile.write(file, saveData, '0.0.0-test');
+        const secondData = { ...saveData, viewport: { x: 2, y: 0, zoom: 1 } };
+        try {
+            await vi.waitFor(() => expect(renames).toHaveBeenCalledOnce());
+            // Use another spelling of the same absolute path, including Windows case folding.
+            const samePath = path.join(dir, 'unused', '..', 'chain.chn');
+            const second = SaveFile.write(
+                process.platform === 'win32' ? samePath.toUpperCase() : samePath,
+                secondData,
+                '0.0.0-test'
+            );
+            try {
+                await SaveFile.write(path.join(dir, 'other.chn'), saveData, '0.0.0-test');
+                expect(renames).toHaveBeenCalledTimes(2);
+                expect(fs.readFileSync(file, 'utf-8')).toBe('old chain');
+            } finally {
+                release();
+                await second;
+            }
+        } finally {
+            release();
+            await first;
+        }
+
+        expect(savedContent(file)).toMatchObject({ viewport: secondData.viewport });
+        expect(fs.readdirSync(dir).sort()).toEqual(['chain.chn', 'other.chn']);
+    });
+});
+
+test('A failed queued save rejects its caller and allows later saves of the path', async () => {
+    const saveData = await SaveFile.read(path.join(dataDir, 'crop.chn'));
+    await withTempDir(async (dir) => {
+        const file = path.join(dir, 'chain.chn');
+        vi.spyOn(fsPromises, 'rename').mockRejectedValueOnce(errnoError('EIO'));
+        const first = SaveFile.write(file, saveData, '0.0.0-test');
+        const secondData = { ...saveData, viewport: { x: 2, y: 0, zoom: 1 } };
+        const second = SaveFile.write(file, secondData, '0.0.0-test');
+
+        await Promise.all([expect(first).rejects.toThrow('EIO'), second]);
+        expect(savedContent(file)).toMatchObject({ viewport: secondData.viewport });
+        await SaveFile.write(file, saveData, '0.0.0-test');
+        expect(savedContent(file)).toEqual(await expectedContent());
+        expect(fs.readdirSync(dir)).toEqual(['chain.chn']);
+    });
+});
+
 test('Write replaces the chain and leaves no temporary file', async () => {
     const saveData = await SaveFile.read(path.join(dataDir, 'crop.chn'));
     await withTempDir(async (dir) => {
@@ -169,6 +260,70 @@ const canSymlink = ((): boolean => {
         fs.rmSync(dir, { recursive: true, force: true });
     }
 })();
+
+test.skipIf(!canSymlink).each(['existing file link', 'new file through a directory link'])(
+    'Delayed alias resolution reserves writes in arrival order for the same target: %s',
+    async (kind) => {
+        const saveData = await SaveFile.read(path.join(dataDir, 'crop.chn'));
+        await withTempDir(async (dir) => {
+            const target = path.join(dir, 'chain.chn');
+            const existingFile = kind === 'existing file link';
+            const link = path.join(dir, existingFile ? 'link.chn' : 'alias');
+            if (existingFile) {
+                fs.writeFileSync(target, 'old chain');
+                fs.symlinkSync(target, link, 'file');
+            } else {
+                fs.symlinkSync(dir, link, process.platform === 'win32' ? 'junction' : 'dir');
+            }
+            let releaseLookup = () => {};
+            let releaseRename = () => {};
+            const blockedLookup = new Promise<void>((resolve) => {
+                releaseLookup = resolve;
+            });
+            const blockedRename = new Promise<void>((resolve) => {
+                releaseRename = resolve;
+            });
+            const realpath = fsPromises.realpath.bind(fsPromises);
+            const lookup = vi.spyOn(fsPromises, 'realpath').mockImplementationOnce(async (p) => {
+                await blockedLookup;
+                return realpath(p);
+            });
+            const rename = fsPromises.rename.bind(fsPromises);
+            const renames = vi
+                .spyOn(fsPromises, 'rename')
+                .mockImplementationOnce(async (from, to) => {
+                    await blockedRename;
+                    return rename(from, to);
+                });
+            const first = SaveFile.write(
+                existingFile ? link : path.join(link, 'chain.chn'),
+                saveData,
+                '0.0.0-test'
+            );
+            const secondData = { ...saveData, viewport: { x: 2, y: 0, zoom: 1 } };
+            const second = SaveFile.write(target, secondData, '0.0.0-test');
+            try {
+                await vi.waitFor(() => expect(lookup).toHaveBeenCalled());
+                expect(lookup).toHaveBeenCalledOnce();
+                releaseLookup();
+                await vi.waitFor(() => {
+                    expect(lookup).toHaveBeenCalledTimes(existingFile ? 2 : 4);
+                    expect(renames).toHaveBeenCalled();
+                });
+                expect(renames).toHaveBeenCalledOnce();
+                if (existingFile) expect(fs.readFileSync(target, 'utf-8')).toBe('old chain');
+                else expect(fs.existsSync(target)).toBe(false);
+            } finally {
+                releaseLookup();
+                releaseRename();
+                await Promise.all([first, second]);
+            }
+            expect(savedContent(target)).toMatchObject({ viewport: secondData.viewport });
+            expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+            expect(fs.readdirSync(dir).sort()).toEqual([path.basename(link), 'chain.chn'].sort());
+        });
+    }
+);
 
 test.skipIf(!canSymlink)('Write through a link updates the file it points to', async () => {
     const saveData = await SaveFile.read(path.join(dataDir, 'crop.chn'));
