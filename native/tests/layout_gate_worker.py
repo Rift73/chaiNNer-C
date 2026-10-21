@@ -4,6 +4,8 @@ Run as ``python -B layout_gate_worker.py ROOT OUT [--layouts L,...] [--schemas S
 [--trace FILE ...] [--mixed] [--chains [--producers S,...]]``. ROOT is a backend
 source tree: chaiNNer-C's backend/src, or the oracle's src (make_oracle.py). Both
 trees use the same package names, so each runs in its own process.
+The oracle uses --approved-image-outputs for the reviewed High Pass RGBA and
+PSNR decibel corrections; its source files remain unchanged.
 
 Every chaiNNer_standard node with an image input is run on cases built from that
 node's own definition:
@@ -46,6 +48,7 @@ import base64
 import hashlib
 import importlib
 import json
+import math
 import os
 import sys
 import threading
@@ -164,9 +167,6 @@ FILLED = {
     "chainner:image:high_pass": {"Blurred Image"},
     "chainner:image:merge_channels": {"Channel(s) B"},
 }
-# Image inputs with a fixed channel count, by label: High Pass blurs only the
-# colour channels of a 4-channel image, so its custom blurred image has 3.
-FIXED_CHANNELS = {"chainner:image:high_pass": {"Blurred Image": 3}}
 # Nodes whose images are rounded to this many steps per unit, -0 kept. So the
 # "All colors" palette sees at most 6**4 values (+0 and -0 apart), within its 4096
 # colours, and signed-zero ties: np.unique keeps whichever of +0 and -0 its unstable
@@ -193,6 +193,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--mixed", action="store_true")
     parser.add_argument("--chains", action="store_true")
     parser.add_argument("--producers", default="")
+    parser.add_argument("--approved-image-outputs", action="store_true")
     return parser.parse_args()
 
 
@@ -215,7 +216,8 @@ class Trace:
 class Tree:
     """One backend tree's registry, process module and image enforcement."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, approved_image_outputs: bool = False) -> None:
+        self.approved_image_outputs = approved_image_outputs
         sys.path.insert(0, str(root))
         api = importlib.import_module("api")
         self.process = importlib.import_module("process")
@@ -248,13 +250,11 @@ def image_indices(tree: Tree, node: Any) -> list[int]:
 
 def case_channels(tree: Tree, node: Any, count: int) -> dict[int, int] | None:
     """Each filled image input's channel count, or None if none takes count."""
-    fixed = FIXED_CHANNELS.get(node.schema_id, {})
     chosen = {}
     for index in image_indices(tree, node):
         allowed = allowed_channels(node.inputs[index])
-        chosen[index] = fixed.get(
-            node.inputs[index].label,
-            count if allowed is None or count in allowed else max(allowed or [count]),
+        chosen[index] = (
+            count if allowed is None or count in allowed else max(allowed or [count])
         )
     return chosen if count in chosen.values() else None
 
@@ -429,6 +429,16 @@ def execute(
 ) -> tuple[list[object], list[object]]:
     """The node's enforced outputs and their broadcast data, as the executor makes them."""
     node = tree.nodes[schema]
+    if tree.approved_image_outputs and schema == "chainner:image:high_pass":
+        image, blurred = values[0], values[3]
+        if (
+            values[1] == 1
+            and isinstance(image, np.ndarray)
+            and isinstance(blurred, np.ndarray)
+            and image.shape[2] == blurred.shape[2] == 4
+        ):
+            # The old body strips only the main image's alpha (approved B12).
+            values = [*values[:3], blurred[:, :, :3], *values[4:]]
     result = tree.process.run_node(node, None, values, "layout-gate")
     if node.kind == "collector":
         index = next(
@@ -454,6 +464,16 @@ def execute(
         return [items, result.partial_output], []
     else:
         outputs = result.output
+    if tree.approved_image_outputs and schema == "chainner:image:image_metrics":
+        # Preserve the baseline MSE/SSIM; derive approved B13 PSNR independently
+        # from unrounded NumPy MSE, retaining the input's layout throughout.
+        original, comparison = (np.asarray(value) for value in values)
+        if original.ndim == 3 and original.shape[2] > 1:
+            original = cv2.cvtColor(original, cv2.COLOR_BGR2YCrCb)[:, :, 0]
+            comparison = cv2.cvtColor(comparison, cv2.COLOR_BGR2YCrCb)[:, :, 0]
+        mse = float(np.mean((comparison - original) ** 2))
+        psnr = math.inf if mse == 0 else 10 * math.log10(1 / mse)
+        outputs = [outputs[0], round(psnr, 6), outputs[2]]
     broadcasts: list[object] = [
         None if value is None else o.get_broadcast_data(value)
         for o, value in zip(node.outputs, outputs, strict=True)
@@ -583,7 +603,7 @@ def main() -> int:
     root = args.root.resolve()
     # Caption loads its font from beside __main__'s file, the app's run.py.
     sys.modules["__main__"].__file__ = str(root / "run.py")
-    tree = Tree(root)
+    tree = Tree(root, approved_image_outputs=args.approved_image_outputs)
     schemas = [s for s in args.schemas.split(",") if s] or sorted(
         schema
         for schema, node in tree.nodes.items()

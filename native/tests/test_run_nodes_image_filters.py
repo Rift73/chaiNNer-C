@@ -76,15 +76,21 @@ def test_unsharp_mask_large_sigma_declines():
 def test_high_pass_matches(mode, radius, contrast, size, channels):
     height, width = size
     img = make(("high pass", mode, radius, contrast), size, channels)
-    blurred = image(seed_of("blurred", size, channels), height, width, min(channels, 3))
-    assert_native_matches("chainner:image:high_pass", [img, mode, radius, blurred, contrast])
+    blurred = image(seed_of("blurred", size, channels), height, width, channels)
+    result = assert_native_matches("chainner:image:high_pass", [img, mode, radius, blurred, contrast])
+    assert result[0] == "outputs"
+
+
+def test_high_pass_rgba_custom():
+    img = image(2, 5, 6, 4)
+    result = assert_native_matches("chainner:image:high_pass", [img, 1, 3.0, image(3, 5, 6, 4), 1.0])
+    assert result[0] == "outputs"
 
 
 def test_high_pass_errors():
     img = image(2, 5, 6, 4)
     cases: list[list[object]] = [
         [img, 1, 3.0, None, 1.0],
-        [img, 1, 3.0, image(3, 5, 6, 4), 1.0],
         [img, 1, 3.0, image(3, 6, 5, 3), 1.0],
         [img, 0, 3.0, None, 1.0],
         [np.zeros((0, 5, 3), np.float32), 1, 3.0, np.zeros((0, 5, 3), np.float32), 1.0],

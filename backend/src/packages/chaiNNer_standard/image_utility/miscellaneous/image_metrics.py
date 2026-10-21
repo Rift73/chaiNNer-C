@@ -45,8 +45,8 @@ def image_metrics_node(
         orig_img = cvt_color(orig_img, cv2.COLOR_BGR2YCrCb)[:, :, 0]
         comp_img = cvt_color(comp_img, cv2.COLOR_BGR2YCrCb)[:, :, 0]
 
-    mse = round(mean(binary(comp_img, orig_img, 2)), 6)
-    psnr = round(10 * math.log(1 / mse), 6)
-    ssim = round(calculate_ssim(comp_img, orig_img), 6)
+    mse = mean(binary(comp_img, orig_img, 2))
+    psnr = math.inf if mse == 0 else 10 * math.log10(1 / float(mse))
+    ssim = calculate_ssim(comp_img, orig_img)
 
-    return (float(mse), float(psnr), ssim)
+    return (float(round(mse, 6)), round(psnr, 6), round(ssim, 6))

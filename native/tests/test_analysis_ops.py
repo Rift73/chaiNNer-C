@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import ctypes as ct
 import importlib.util
+import math
 import re
 import types
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +24,7 @@ from nodes.impl.color_transfer import mean_std
 from nodes.impl.dithering import palette
 from nodes.impl.image_utils import calculate_ssim
 from nodes.impl.native import lib
+from nodes.impl.native_graph import graph
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "backend/src"
@@ -173,9 +175,22 @@ def test_metrics(channels, layout):
     actual, original = MODULES["image_metrics"]
     expected = original.image_metrics_node(image, other)
     result = actual.image_metrics_node(image, other)
-    np.testing.assert_array_equal(result, expected)
-    # No mathematical correction of the original natural-log PSNR definition.
-    assert result[:2] == expected[:2]
+    assert (result[0], result[2]) == (expected[0], expected[2])
+    if channels > 1:
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)[:, :, 0]
+        other = cv2.cvtColor(other, cv2.COLOR_BGR2YCrCb)[:, :, 0]
+    mse = float(np.mean((other - image) ** 2))
+    assert result[1] == round(10 * math.log10(1 / mse), 6)
+
+
+def test_metrics_psnr_decibels():
+    original = np.zeros((17, 19), np.float32)
+    comparison = np.full_like(original, 0.5)
+    actual, _ = MODULES["image_metrics"]
+    python = actual.image_metrics_node(original, comparison)
+    native_result = graph().run_native("chainner:image:image_metrics", [original, comparison])
+    assert python[:2] == (0.25, 6.0206)
+    assert tuple(native_result[:2]) == (0.25, 6.0206)
 
 
 @pytest.mark.parametrize("size", [1, 9, 10, 11, 19, 151])

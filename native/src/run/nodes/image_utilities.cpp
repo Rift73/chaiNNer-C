@@ -379,15 +379,13 @@ void image_metrics(NodeContext &, std::span<const Value> inputs, std::vector<Val
         original = select_channels(cvt_color(original, 8, 0, 3), {0});
         comparison = select_channels(cvt_color(comparison, 8, 0, 3), {0});
     }
-    float mse = numpy_round6(analysis_mean(analysis_binary(comparison, original, 2)));
-    // math.log(1 / mse) of a float32 mse >= 0: 1 / inf is 0.0, outside log's domain; inf and NaN pass through.
-    float reciprocal = 1.0f / mse;
+    float mse = analysis_mean(analysis_binary(comparison, original, 2));
+    double reciprocal = 1.0 / double(mse);
     if (reciprocal == 0) throw NodeError("ValueError", "expected a positive input, got 0.0");
-    double logarithm = std::isfinite(reciprocal) ? cn_crt.log(double(reciprocal)) : double(reciprocal);
-    double psnr = python_round(10 * logarithm, 6);
+    double psnr = mse == 0 ? std::numeric_limits<double>::infinity() : 10 * std::log10(reciprocal);
     double ssim = python_round(calculate_ssim(comparison, original), 6);
-    outputs.push_back(double(mse));
-    outputs.push_back(psnr);
+    outputs.push_back(double(numpy_round6(mse)));
+    outputs.push_back(python_round(psnr, 6));
     outputs.push_back(ssim);
 }
 

@@ -100,6 +100,8 @@ def high_pass_node(
         blurred = fast_gaussian_blur(img, radius)
     elif mode == BlurMode.CUSTOM:
         assert blurred is not None, "Expected a blurred image to be given."
+        if c > 3 and get_h_w_c(blurred)[2] > 3:
+            blurred = blurred[:, :, :3]
 
     assert blurred.shape == img.shape, (
         "Expected blurred image to have same shape as the input image."

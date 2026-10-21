@@ -16,7 +16,10 @@ reason); save_dds_texture runs as a texture array with its default DDS format, B
 
 - Layout-sensitive consumers are the nodes whose run enters native_palette,
   native_transfer, native_analysis or native_numpy_reduce (CONSUMERS; the trace must
-  find exactly these). They equal the oracle bit for bit on both layouts.
+  find exactly these). They equal the oracle bit for bit on both layouts, with
+  the approved High Pass RGBA and PSNR decibel corrections applied explicitly
+  by the oracle worker. MSE, SSIM, pixels, alpha, strides and broadcasts retain
+  their full comparisons; test_analysis_ops also checks analytic PSNR values.
 - Their inputs hold signed-zero ties, so on some case the oracle's own two
   layouts differ. Without that difference, the comparison above could not tell a
   mirror that ignores the layout from one that follows it.
@@ -182,6 +185,7 @@ def gate(tmp_path_factory) -> tuple[dict, dict]:
         source,
         [
             *producers,
+            "--approved-image-outputs",
             "--schemas",
             ",".join(sorted(CONSUMERS | ORACLE_VALUES | ORACLE_EXACT)),
         ],
