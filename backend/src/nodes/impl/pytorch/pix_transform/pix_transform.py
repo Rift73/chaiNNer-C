@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import islice
 from typing import Literal
 
 import numpy as np
@@ -69,14 +70,12 @@ def pix_transform(
     guide_tensor = torch.from_numpy(guide_img).float().to(device)
     source_tensor = torch.from_numpy(source_img).float().to(device)
 
-    guide_patches = torch.zeros((m * m, guide_tensor.shape[0], d, d)).to(device)
-    source_pixels = torch.zeros((m * m, 1)).to(device)
-    for i in range(m):
-        for j in range(m):
-            guide_patches[j + i * m, :, :, :] = guide_tensor[
-                :, i * d : (i + 1) * d, j * d : (j + 1) * d
-            ]
-            source_pixels[j + i * m] = source_tensor[i : (i + 1), j : (j + 1)]
+    guide_patches = (
+        guide_tensor.reshape(guide_tensor.shape[0], m, d, m, d)
+        .permute(1, 3, 0, 2, 4)
+        .reshape(m * m, guide_tensor.shape[0], d, d)
+    )
+    source_pixels = source_tensor.reshape(m * m, 1)
 
     train_data = torch.utils.data.TensorDataset(guide_patches, source_pixels)
     train_loader = torch.utils.data.DataLoader(
@@ -103,8 +102,12 @@ def pix_transform(
     ###############################################################################################
 
     epochs = params.batch_size * params.iteration // (m * m)
-    for _epoch in range(epochs):
-        for x, y in train_loader:
+    for _epoch in range(max(1, epochs)):
+        # A zero-epoch image still gets the requested number of optimizer steps.
+        batches = (
+            islice(train_loader, params.iteration) if epochs == 0 else train_loader
+        )
+        for x, y in batches:
             optimizer.zero_grad()
 
             y_pred = mynet(x)
