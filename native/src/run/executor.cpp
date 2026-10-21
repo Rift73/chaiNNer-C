@@ -262,6 +262,8 @@ public:
     }
     void insert(const Key &key, Entry entry)
     {
+        // Even scalar/text entries retain a key, outputs and LRU bookkeeping.
+        entry.bytes += int64_t(sizeof(Entry) + sizeof(Key) * 2 + sizeof(void *) * 6);
         std::vector<Entry> evicted;  // released outside the lock
         std::lock_guard<std::mutex> locked(mutex_);
         if (!enabled() || entry.bytes > budget_ / 8 || entries_.count(key)) return;
@@ -3192,6 +3194,8 @@ int64_t Run::memo_bytes(const std::vector<Value> &outputs)
                 bytes += int64_t(image->storage->bytes());
         } else if (const PyRef *object = std::get_if<PyRef>(&value)) {
             python.push_back(*object);
+        } else if (const auto *text = std::get_if<std::string>(&value)) {
+            bytes += int64_t(text->capacity()) + 1;
         }
     }
     if (python.empty()) return bytes;

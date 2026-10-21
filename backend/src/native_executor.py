@@ -188,7 +188,7 @@ def memo_constant(value: object) -> str | None:
 
 def memo_bytes(values: list[object]) -> int:
     """The memory a memo entry of these values keeps alive: each NumPy array's root buffer once (a view keeps its base
-    alive, e.g. a slice of a loaded image) and bytes objects."""
+    alive, e.g. a slice of a loaded image), bytes and strings."""
     roots: dict[int, int] = {}
     total = 0
     for value in values:
@@ -199,6 +199,8 @@ def memo_bytes(values: list[object]) -> int:
             roots[id(root)] = root.nbytes
         elif isinstance(value, bytes):
             total += len(value)
+        elif isinstance(value, str):
+            total += sys.getsizeof(value)
     return total + sum(roots.values())
 
 
