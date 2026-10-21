@@ -751,7 +751,7 @@ private:
     void drive();
     void suspend();
     void ensure(const CellRef &ref, bool commit = true);
-    bool parallel(const CellRef &ref);
+    bool parallel(const CellRef &ref, std::optional<std::map<std::pair<int, int64_t>, bool>> &known);
     void demand(const CellRef &ref);
     void want(const CellRef &ref);
     void prefetch(const CellRef &ref, std::set<std::pair<int, int64_t>> &seen);
@@ -1448,7 +1448,8 @@ void Run::ensure(const CellRef &ref, bool commit)
         bool together;
         {
             std::lock_guard<std::mutex> locked(mutex_);
-            together = edge && parallel(source);
+            std::optional<std::map<std::pair<int, int64_t>, bool>> known;
+            together = edge && parallel(source, known);
         }
         if (together) {
             batch.push_back(source);
@@ -1491,14 +1492,18 @@ void Run::ensure(const CellRef &ref, bool commit)
 }
 
 /* process's pure_cpu_dependency: a cell computed, or pure with every input such a cell (mutex_ held). */
-bool Run::parallel(const CellRef &ref)
+bool Run::parallel(const CellRef &ref, std::optional<std::map<std::pair<int, int64_t>, bool>> &known)
 {
     const Cell &c = cell(ref);
     if (c.state == State::done || c.state == State::released) return true;
     const NodePlan &node = nodes_[size_t(ref.node)];
     if (!node.pure) return false;
+    if (!known) known.emplace();
+    auto [entry, inserted] = known->try_emplace(std::pair{ref.node, ref.slot}, false);
+    if (!inserted) return entry->second;
     for (size_t i = 0; i < node.inputs.size(); ++i)
-        if (node.inputs[i].source >= 0 && !parallel(source_of(ref, int(i)))) return false;
+        if (node.inputs[i].source >= 0 && !parallel(source_of(ref, int(i)), known)) return false;
+    entry->second = true;
     return true;
 }
 

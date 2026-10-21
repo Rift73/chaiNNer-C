@@ -100,20 +100,33 @@ def pure_cpu_dependency(
     executor: DependencyExecutor, node_id: NodeId, visiting: set[NodeId] | None = None
 ) -> bool:
     """Parallelize only eager, side-effect-free CPU subgraphs with ready roots."""
+    visiting = set() if visiting is None else visiting
+    return _pure_cpu_dependency(executor, node_id, visiting, {})
+
+
+def _pure_cpu_dependency(
+    executor: DependencyExecutor,
+    node_id: NodeId,
+    visiting: set[NodeId],
+    known: dict[NodeId, bool],
+) -> bool:
+    if node_id in known:
+        return known[node_id]
     if executor.node_cache.has(node_id):
         return True
     if not pure_cpu_node(executor.chain.nodes[node_id].data):
         return False
-    visiting = set() if visiting is None else visiting
     if node_id in visiting:
         return False
     visiting.add(node_id)
     try:
-        return all(
+        result = all(
             not isinstance(value, EdgeInput)
-            or pure_cpu_dependency(executor, value.id, visiting)
+            or _pure_cpu_dependency(executor, value.id, visiting, known)
             for value in executor.inputs.get(node_id)
         )
+        known[node_id] = result
+        return result
     finally:
         visiting.remove(node_id)
 
