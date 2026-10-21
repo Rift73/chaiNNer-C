@@ -1,6 +1,7 @@
 import { Expression } from '@chainner/navi';
 import { dirname, parse } from 'path';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
     Connection,
     Edge,
@@ -121,6 +122,8 @@ interface Global {
     addEdgeChanges: () => void;
     changeNodes: SetState<Node<NodeData>[]>;
     changeEdges: SetState<Edge<EdgeData>[]>;
+    registerInputFlush: (flush: () => void) => () => void;
+    flushInputChanges: () => void;
     selectNode: (nodeId: string) => void;
     addIndividuallyRunning: (node: string) => void;
     removeIndividuallyRunning: (node: string) => void;
@@ -215,6 +218,20 @@ export const GlobalProvider = memo(
             () => wrapRefChanges(setEdgesRef, addEdgeChanges),
             [addEdgeChanges]
         );
+
+        const inputFlushers = useRef(new Set<() => void>());
+        const registerInputFlush = useCallback((flush: () => void) => {
+            inputFlushers.current.add(flush);
+            return () => {
+                inputFlushers.current.delete(flush);
+            };
+        }, []);
+        const flushInputChanges = useCallback(() => {
+            // Inputs update controlled React state; graph readers need those updates applied.
+            flushSync(() => {
+                inputFlushers.current.forEach((flush) => flush());
+            });
+        }, []);
 
         const [manualOutputTypes, setManualOutputType, clearManualOutputTypes] = useTypeMap<
             string,
@@ -443,12 +460,13 @@ export const GlobalProvider = memo(
         );
 
         const dumpState = useCallback((): SaveData => {
+            flushInputChanges();
             return {
                 nodes: getNodes(),
                 edges: getEdges(),
                 viewport: getViewport(),
             };
-        }, [getNodes, getEdges, getViewport]);
+        }, [flushInputChanges, getNodes, getEdges, getViewport]);
 
         const performSave = useCallback(
             async (saveAs: boolean): Promise<SaveResult> => {
@@ -1394,6 +1412,8 @@ export const GlobalProvider = memo(
             addEdgeChanges,
             changeNodes,
             changeEdges,
+            registerInputFlush,
+            flushInputChanges,
             selectNode,
             addIndividuallyRunning,
             removeIndividuallyRunning,
