@@ -1799,7 +1799,7 @@ class Executor:
         self, iterated: set[NodeId], sinks: Iterable[Node]
     ) -> tuple[list[FunctionNode], frozenset[NodeId]]:
         """
-        The loop's temporal nodes, in topological order: its nodes without side effects that declare a temporal context (NodeData.temporal_context) and feed one of its sinks, so the loop runs them. Also the loop's nodes that run for a context item: those and the nodes they need.
+        The loop's temporal nodes, in the chain's sink-first order: its nodes without side effects that declare a temporal context (NodeData.temporal_context) and feed one of its sinks, so the loop runs them. Also the loop's nodes that run for a context item: those and the nodes they need.
         """
         ancestors: set[NodeId] = set()
         pending = [node.id for node in sinks]
@@ -1837,6 +1837,7 @@ class Executor:
         num_generators = len(generator_nodes)
         expected_lengths = {}
         collectors: list[tuple[Collector, _Timer, CollectorNode]] = []
+        collector_ids: set[NodeId] = set()
         output_nodes: set[FunctionNode] = set()
         all_iterated_nodes: set[NodeId] = set()
         generator_suppliers: dict[NodeId, typing.Iterator[Output | Exception]] = {}
@@ -1873,13 +1874,27 @@ class Executor:
                 temporal_nodes, context_nodes = self.__temporal_nodes(
                     all_iterated_nodes, [*output_nodes, *collector_nodes]
                 )
-                needs = [
-                    typing.cast(tuple[int, int], n.data.temporal_context)
+                radii = {
+                    n.id: typing.cast(tuple[int, int], n.data.temporal_context)
                     for n in temporal_nodes
-                ]
+                }
+                needs: dict[NodeId, tuple[int, int]] = {}
+                # Sources first: add along each path, taking maxima where paths merge.
+                for node_id in reversed(self.chain.topological_order()):
+                    if node_id not in all_iterated_nodes:
+                        continue
+                    inputs = [
+                        needs.get(edge.source.id, (0, 0))
+                        for edge in self.chain.edges_to(node_id)
+                    ]
+                    radius = radii.get(node_id, (0, 0))
+                    needs[node_id] = (
+                        max((need[0] for need in inputs), default=0) + radius[0],
+                        max((need[1] for need in inputs), default=0) + radius[1],
+                    )
                 wanted = (
-                    max((need[0] for need in needs), default=0),
-                    max((need[1] for need in needs), default=0),
+                    max((need[0] for need in needs.values()), default=0),
+                    max((need[1] for need in needs.values()), default=0),
                 )
                 if wanted == (0, 0) or generator.expected_length == 0:
                     generator_suppliers[node.id] = generator.supplier().__iter__()
@@ -1891,6 +1906,9 @@ class Executor:
                     )
                     generator_suppliers[node.id] = items.__iter__()
             for collector_node in collector_nodes:
+                if collector_node.id in collector_ids:
+                    continue
+                collector_ids.add(collector_node.id)
                 await self.progress.suspend()
                 timer = _Timer()
                 with timer.run():
@@ -1902,7 +1920,12 @@ class Executor:
             iter_times = _IterationTimer(self.progress)
             iter_timers[node.id] = iter_times
             self.__send_node_progress(node, [], 0, expected_length)
-        if not len(set(expected_lengths.values())) <= 1:
+        exact_lengths = {
+            expected_lengths[node_id]
+            for node_id, output in generator_outputs.items()
+            if output.generator.length_is_exact
+        }
+        if len(exact_lengths) > 1:
             raise AssertionError(
                 "Expected all connected iterators to have the same length"
             )

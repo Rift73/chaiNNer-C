@@ -29,6 +29,9 @@ class Generator(Generic[I]):
     context: Callable[[int, int], tuple[Iterable[I | Exception], int, int]] | None = (
         None
     )
+    # Exact lengths may be compared before combining generators. A video reader
+    # with only a count estimate (or a Range upper bound) must instead reach EOF.
+    length_is_exact: bool = True
 
     def with_fail_fast(self, fail_fast: bool):
         self.fail_fast = fail_fast

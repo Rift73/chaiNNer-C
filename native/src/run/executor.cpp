@@ -2157,6 +2157,7 @@ void Run::iterate_group(const GroupPlan &group)
     suspend();
     std::vector<GeneratorRun> generators;
     std::vector<CollectorRun> collectors;
+    std::set<int> collector_ids;
     std::set<int64_t> lengths, bases;
     // Context items (process.Executor.__iterate_generator_nodes): a group's only generator reads, for its temporal
     // nodes, `before` items before its range and `after` items after it.
@@ -2171,6 +2172,7 @@ void Run::iterate_group(const GroupPlan &group)
             run.native = static_cells_[size_t(plan.node)].items;
         }
         int64_t base = 0;  // a native generator reads its source whole
+        bool exact_length = true;
         if (run.native) {
             run.expected = run.native->expected_length();
             run.fail_fast = run.native->fail_fast();
@@ -2191,12 +2193,14 @@ void Run::iterate_group(const GroupPlan &group)
                 before = items[4].cast<int64_t>();
                 after = items[5].cast<int64_t>();
                 base = items[6].cast<int64_t>();
+                exact_length = items[7].cast<bool>();
             } catch (py::error_already_set &error) {
                 throw PythonError{current_error(error)};
             }
         }
         bases.insert(base);
         for (int collector : plan.collectors) {
+            if (!collector_ids.insert(collector).second) continue;
             suspend();
             Clock::time_point start = Clock::now();
             CellRef ref{collector, -1};
@@ -2206,7 +2210,7 @@ void Run::iterate_group(const GroupPlan &group)
             if (c.state == State::failed) throw PythonError{c.error};
             collectors.push_back({collector, c.object, c.inputs, seconds_since(start)});
         }
-        lengths.insert(run.expected);
+        if (exact_length) lengths.insert(run.expected);
         run.loop_start = run.last = Clock::now();
         run.paused_start = run.last_paused = time_paused_;
         emit_progress(plan.node, {}, 0, run.expected);

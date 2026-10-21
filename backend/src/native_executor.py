@@ -323,8 +323,8 @@ def _temporal_nodes(
     chain: Chain, iterated: set[NodeId], sinks: list[Node]
 ) -> list[FunctionNode]:
     """process.Executor.__temporal_nodes: a loop's nodes without side effects that declare a temporal context
-    (NodeData.temporal_context) and feed one of its sinks, in topological order. The engine runs them for a context
-    item, with the nodes they need."""
+    (NodeData.temporal_context) and feed one of its sinks, in the chain's sink-first order. The engine runs them for
+    a context item, with the nodes they need."""
     ancestors: set[NodeId] = set()
     pending = [node.id for node in sinks]
     while pending:
@@ -699,8 +699,8 @@ class _Hooks:
         output: object,
         wanted: tuple[int, int] | None,
         iterated: list[int],
-    ) -> tuple[Iterator[object], bool, int, bool, int, int, int]:
-        """A generator node's items: (iterator, split, expected length, fail_fast, before, after, index base). split:
+    ) -> tuple[Iterator[object], bool, int, bool, int, int, int, bool]:
+        """A generator node's items: (iterator, split, expected length, fail_fast, before, after, index base, exact length). split:
         the iterator names its items (describe) apart from loading them (materialize), as Load Images' native iterator
         does. wanted: the context items (before, after) the loop's temporal nodes want when the generator is its
         group's only one, else None (process.Executor.__iterate_generator_nodes): it then gives its chosen item to
@@ -735,6 +735,7 @@ class _Hooks:
             before,
             after,
             generator.index_base,
+            generator.length_is_exact,
         )
 
     def file_identity(self, path: object) -> str | None:
@@ -1221,7 +1222,22 @@ def build_plan(
                 temporal = _temporal_nodes(
                     chain, {n.id for n in seen}, [*outputs, *collectors]
                 )
-        needs = [cast("tuple[int, int]", n.data.temporal_context) for n in temporal]
+        radii = {
+            n.id: cast("tuple[int, int]", n.data.temporal_context) for n in temporal
+        }
+        needs: dict[NodeId, tuple[int, int]] = {}
+        # Sources first: add along each path, taking maxima where paths merge.
+        for node_id in reversed(chain.topological_order()):
+            if positions[node_id] not in iterated:
+                continue
+            inputs_needs = [
+                needs.get(edge.source.id, (0, 0)) for edge in chain.edges_to(node_id)
+            ]
+            radius = radii.get(node_id, (0, 0))
+            needs[node_id] = (
+                max((need[0] for need in inputs_needs), default=0) + radius[0],
+                max((need[1] for need in inputs_needs), default=0) + radius[1],
+            )
         groups.append(
             {
                 "generators": entries,
@@ -1230,8 +1246,8 @@ def build_plan(
                 "temporal": [positions[n.id] for n in temporal],
                 # The context items (before, after) its temporal nodes want.
                 "context": (
-                    max((need[0] for need in needs), default=0),
-                    max((need[1] for need in needs), default=0),
+                    max((need[0] for need in needs.values()), default=0),
+                    max((need[1] for need in needs.values()), default=0),
                 ),
             }
         )

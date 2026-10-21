@@ -2218,7 +2218,10 @@ def test_loader_node_index_limit_audio_and_supplier_reuse(use_limit, limit):
         assert snap(first) == snap(second)
         results.append(
             (
-                generated.expected_length,
+                # F14: CLI estimates no longer truncate a requested Range's length.
+                min(generated.expected_length, 4)
+                if use_limit
+                else generated.expected_length,
                 vars(installed_metadata(generated.metadata)),
                 snap(first),
                 directory,
@@ -2253,12 +2256,12 @@ def past_the_end(n, count):
         # Checked at the first item, so the node still reports its Frame Count.
         (2, 1, 0, ("error", ("ValueError", "In (frame 2) is after Out (frame 1)."))),
         # Out is an upper bound, as the limit was: past the probe's count, or past the
-        # pipe's end, the video is read to its end; the length is the probe's.
-        (0, 9, 4, ("ok", ((0, 0), (1, 1), (2, 2)))),
+        # pipe's end, the video is read to its end; requested length is an upper bound.
+        (0, 9, 10, ("ok", ((0, 0), (1, 1), (2, 2)))),
         (1, 3, 3, ("ok", ((1, 1), (2, 2)))),
         # In past the end fails, naming the frames there are.
-        (3, 5, 1, past_the_end(3, 3)),
-        (5, 6, 0, past_the_end(5, 3)),
+        (3, 5, 3, past_the_end(3, 3)),
+        (5, 6, 2, past_the_end(5, 3)),
     ],
 )
 def test_a_range_s_frames_and_errors(first, last, length, expected):
@@ -2278,9 +2281,9 @@ def test_a_range_s_frames_and_errors(first, last, length, expected):
     assert all(p.returncode is not None for p in env.processes)
 
 
-def test_a_range_s_context_frames_are_clipped_to_the_video():
-    # Range 1..2 of a video the probe counts 4 frames: 5 wanted before and 5 after give
-    # 1 and 1. The pipe ends after 3 frames, inside the frames after: no error.
+def test_a_range_s_context_frames_are_clipped_by_eof_not_an_estimate():
+    # The probe's estimate is 4. All requested lookahead remains available, and
+    # the actual pipe ends after 3 frames without error.
     env = FakeFFmpeg(chunks=[bytes([i] * 12) for i in range(3)])
     vg = load("native", "video", env)
     g = load("native", "load_video", env)
@@ -2289,7 +2292,7 @@ def test_a_range_s_context_frames_are_clipped_to_the_video():
     generated = run_load_video(g, context, Path("folder/test.mkv"), 1, 2)[0]
     assert generated.context is not None
     items, before, after = generated.context(5, 5)
-    assert (before, after) == (1, 1)
+    assert (before, after) == (1, 5)
     assert frames_read(items) == [(0, 0), (1, 1), (2, 2)]
     # In past the pipe's end, behind context frames: the In error when they end.
     generated = run_load_video(g, context, Path("folder/test.mkv"), 3, 5)[0]
@@ -2302,6 +2305,25 @@ def test_a_range_s_context_frames_are_clipped_to_the_video():
     assert whole.context is not None
     items, before, after = whole.context(5, 5)
     assert (before, after) == (0, 0)
+    context.cleanup()
+    assert all(p.returncode is not None for p in env.processes)
+
+
+@pytest.mark.parametrize("first,last", [(95, 99), (100, 104)])
+def test_underestimated_count_keeps_range_and_temporal_lookahead(first, last):
+    probe = valid_probe()
+    probe["streams"][1]["nb_frames"] = "100"
+    env = FakeFFmpeg(probe=probe, chunks=[bytes([i] * 12) for i in range(150)])
+    vg = load("native", "video", env)
+    g = load("native", "load_video", env)
+    link_loader(g, vg)
+    context = Context()
+    generated = run_load_video(g, context, Path("folder/test.mkv"), first, last)[0]
+    assert generated.expected_length == 5
+    assert generated.context is not None
+    items, before, after = generated.context(3, 3)
+    assert (before, after) == (3, 3)
+    assert [item[1] for item in items] == list(range(first - 3, last + 4))
     context.cleanup()
     assert all(p.returncode is not None for p in env.processes)
 

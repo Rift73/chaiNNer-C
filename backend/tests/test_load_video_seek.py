@@ -723,7 +723,8 @@ def test_out_is_an_upper_bound_and_in_past_the_end_fails(
     # frames read where the count is exact (PyAV), else at Out.
     for first, last in ((0, 999), (140, 150)):
         generator, _, _, fps, audio, *_ = run_node(context, path, frames=(first, last))
-        assert generator.expected_length == 150 - first
+        assert generator.expected_length == (last - first + 1 if cli else 150 - first)
+        assert generator.length_is_exact == (not cli)
         read = items_of(generator.supplier())
         assert [item[1] for item in read] == list(range(first, 150))
         np.testing.assert_array_equal(read[-1][0], full[149])
@@ -746,7 +747,7 @@ def test_out_is_an_upper_bound_and_in_past_the_end_fails(
             next(iter(outputs[0].supplier()))
     if cli:
         # The CLI path counts by the probe's estimate: an Out past a low one still reads
-        # to the stream's end, the length being the estimate's.
+        # to the stream's end, the requested length being an upper bound.
         init = video.VideoLoader.__init__
 
         def low_estimate(loader: video.VideoLoader, *arguments: Any):
@@ -758,7 +759,8 @@ def test_out_is_an_upper_bound_and_in_past_the_end_fails(
         monkeypatch.setattr(video.VideoLoader, "__init__", low_estimate)
         for last, end in ((120, 121), (999, 150)):
             outputs = run_node(context, path, frames=(95, last))
-            assert (outputs[8], outputs[0].expected_length) == (100, 5)
+            assert (outputs[8], outputs[0].expected_length) == (100, last - 95 + 1)
+            assert not outputs[0].length_is_exact
             read = items_of(outputs[0].supplier())
             assert [item[1] for item in read] == list(range(95, end))
             np.testing.assert_array_equal(read[-1][0], full[end - 1])
