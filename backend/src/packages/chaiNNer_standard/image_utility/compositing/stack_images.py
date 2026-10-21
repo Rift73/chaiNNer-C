@@ -81,7 +81,7 @@ class Orientation(Enum):
                     getHeight(Input14)
                 );
                 let maxChannels = max(
-                    Input0.channels,
+                    getChannels(Input0),
                     getChannels(Input1),
                     getChannels(Input2),
                     getChannels(Input3),

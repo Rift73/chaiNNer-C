@@ -141,6 +141,28 @@ def test_metadata_unchanged(name):
     a = [node for node in original.body if isinstance(node, ast.FunctionDef)][-1]
     b = [node for node in current.body if isinstance(node, ast.FunctionDef)][-1]
     assert ast.dump(a.args) == ast.dump(b.args)
+    # B14/B15 intentionally correct output channels only. Keep comparing the
+    # dimensions and all other registration metadata with the frozen snapshot.
+    if name in {"pad", "stack_images"}:
+        for definition in (a, b):
+            for expression in ast.walk(definition.decorator_list[0]):
+                if (
+                    isinstance(expression, ast.keyword)
+                    and expression.arg == "image_type"
+                    and isinstance(expression.value, ast.Constant)
+                ):
+                    text = "".join(expression.value.value.split())
+                    if name == "pad":
+                        before, marker, after = text.partition("lethasBorder=")
+                        if marker:
+                            text = before + after.split("};", 1)[1]
+                        text = text.replace(
+                            "channels:ifhasBorder{BorderType::getOutputChannels(border,i.channels,color)}else{i.channels}",
+                            "channels:BorderType::getOutputChannels(border,i.channels,color)",
+                        )
+                    else:
+                        text = text.replace("getChannels(Input0)", "Input0.channels")
+                    expression.value.value = text
     assert [ast.dump(d) for d in a.decorator_list] == [
         ast.dump(d) for d in b.decorator_list
     ]
