@@ -66,7 +66,7 @@ def judged(name: str):
     upstream's: the function above, except where it divides 0 by 0. A one-pixel axis
     is position 0; a zero-width diagonal or radial interval is a step, 0 before its
     edge and 1 at or after it. The radial position is clamped to 0..1, as the
-    diagonal's is (Fable, 2026-10-23)."""
+    diagonal's is (2026-10-23)."""
     original = globals()[name]
     signature = inspect.signature(original)
 

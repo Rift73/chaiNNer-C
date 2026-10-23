@@ -224,7 +224,7 @@ std::filesystem::path utf8_path(const std::string &text)
 }
 
 /* image_io.cpp full_path: base / relative (unless empty or ".") / f"{filename}.{extension}", absolutised as
- * ntpath.abspath does (GetFullPathNameW) instead of Path.resolve(), which names the same file (Fable, lane I Q3). */
+ * ntpath.abspath does (GetFullPathNameW) instead of Path.resolve(), which names the same file (ruling, lane I Q3). */
 std::filesystem::path full_path(std::span<const Value> inputs)
 {
     std::filesystem::path path = std::get<Path>(inputs[1]).value;

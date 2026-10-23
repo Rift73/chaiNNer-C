@@ -212,7 +212,7 @@ void loader_init(const py::dict&g,const O&self,const O&path,const O&env) {
     self.attr("video_stream")=video;
     // Both readers convert YUV by the file's matrix tag; untagged HD video (the stored
     // size, as mpv guesses) is BT.709, as players show it, where FFmpeg assumes BT.601
-    // (upstream chaiNNer #3053, owner-approved 2026-10-09). None keeps FFmpeg's choice.
+    // (upstream chaiNNer #3053, approved 2026-10-09). None keeps FFmpeg's choice.
     O space=video.attr("get")("color_space","unknown");
     const bool untagged=eq(space,py::str("unknown")) || eq(space,py::str("unspecified"));
     self.attr("input_matrix")=untagged && high_definition(builtin("int")(video[py::str("width")]),builtin("int")(video[py::str("height")]))?O(py::str("bt709")):O(py::none());
@@ -721,7 +721,7 @@ void writer_close(const py::dict&g,const O&self) {
                 catch(const py::error_already_set&e) {raise_if_encoder_stopped(self,e);throw;}
             }
             // A non-zero exit fails the run before the audio mux, where upstream leaves it
-            // unchecked (owner-approved 2026-10-09). After a zero exit, anything FFmpeg
+            // unchecked (approved 2026-10-09). After a zero exit, anything FFmpeg
             // printed is logged.
             O code=self.attr("out").attr("wait")();
             if(!eq(code,py::int_(0)))fail(PyExc_RuntimeError,encoder_stopped(self,code).c_str());

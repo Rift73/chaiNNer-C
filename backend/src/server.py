@@ -260,7 +260,7 @@ class NodeLoading:
         """Moves every object the start made (the modules, the node registry, the
         frameworks' state) out of the collector's reach, once: each later full
         collection (collect_failed_run, return_device_memory) then took about 0 ms
-        instead of 136-164 ms. Gate ruling R1 (native/reports/fable-decisions.md,
+        instead of 136-164 ms. Gate ruling R1 (the decision log,
         "instant-exec gate R1"): skipped, and never retried, while a run is in flight
         or once a run of a node outside the light set has completed (RunTracker), as
         their objects must stay collectable."""
@@ -616,7 +616,7 @@ async def run(request: Request):
             line = native_profile.log_line()
             if line is not None:
                 logger.info(line)
-            # The VRAM offload's pinned RAM (owner: given back when a run ends).
+            # The VRAM offload's pinned RAM (given back when a run ends).
             offload = sys.modules.get("nodes.impl.pytorch.offload")
             if offload is not None:
                 offload.release_pinned_memory()

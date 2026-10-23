@@ -8,7 +8,7 @@ from their forks' release wheels as the lock's direct-URL pins, the rest from Py
 fails unless pip check is clean, pip's version is the header's and pip freeze equals the pins line for line. The lock
 is not written.
 -Relock is the deliberate upgrade step, followed by the full acceptance: the archive checked against the release's
-SHA256SUMS, the backend's dependencies at their latest versions (the 2026-10-06 Python-stack upgrade, Fable's ruling),
+SHA256SUMS, the backend's dependencies at their latest versions (the 2026-10-06 Python-stack upgrade, the ruling),
 then the freeze and a new lock (the freeze under a header with the interpreter, the archive's SHA-256 and pip's version).
 -BuildOnly provisions what native\Build.ps1 needs and nothing else: the lock's CPython, downloaded and checked as
 above, with only the lock's numpy and pybind11 pins (no torch, no pip check or freeze comparison). The full run on the

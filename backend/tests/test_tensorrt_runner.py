@@ -680,7 +680,7 @@ def test_a_build_without_the_runner_uses_the_python_paths(
     ]
 
 
-# GPU tests: an owner-approved GPU session only (ESRGAN engines only).
+# GPU tests: an approved GPU session only (ESRGAN engines only).
 GPU_ENGINE = os.environ.get("CHAINNER_C_GPU_ENGINE", "")
 gpu = pytest.mark.skipif(
     os.environ.get("CHAINNER_C_GPU_TESTS") != "1" or not Path(GPU_ENGINE).is_file(),

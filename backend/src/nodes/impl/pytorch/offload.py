@@ -220,7 +220,7 @@ def offloaded(module: torch.nn.Module, x: torch.Tensor) -> Iterator[None]:
 
 
 def release_pinned_memory() -> None:
-    """Gives the RAM pinned for moved activations back to Windows (owner 2026-10-20: when a
+    """Gives the RAM pinned for moved activations back to Windows (2026-10-20: when a
     run ends, so an idle worker holds no locked RAM; a run's later images reuse it). PyTorch
     keeps it until the process ends otherwise, and 2.14 frees it only through this internal
     call (the runtime pins torch)."""

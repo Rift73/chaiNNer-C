@@ -18,7 +18,7 @@ local, git-ignored `docs/superpowers/specs/2026-10-06-chainner-ext-c-design.md`,
 ## Files
 
 `native/CMakeLists.txt` lists every source file below, so no lane edits it (the one exception:
-X2 added `hir_literal.c` under the stand-in's Consult 4). Each ported file opens with one line
+X2 added `hir_literal.c` under consult 4). Each ported file opens with one line
 naming its Rust origin and licence. The `.h` files are private to their lane's `.c` files.
 
 | File | Rust origin | Public functions | Lane |

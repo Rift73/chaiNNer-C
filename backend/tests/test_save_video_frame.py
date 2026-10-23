@@ -1,5 +1,5 @@
 """Save Video in a run of one chosen frame (Load Video's "Run this frame", or In = Out;
-owner-approved 2026-10-21) saves that frame as `<video name>_f000123.png` next to where
+approved 2026-10-21) saves that frame as `<video name>_f000123.png` next to where
 the video would go: in 16 bits when the video would have more than 8, Planes converted
 to RGB by their coding, the audio left out. FFmpeg never starts and the video's file is
 never created or touched, yet settings the video would refuse fail the run as they would

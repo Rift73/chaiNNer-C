@@ -126,7 +126,7 @@ bool valid_name(const std::wstring &name) {
            });
 }
 
-// The temporary name for sequence number `seq` (the ruled format, fable-decisions P8):
+// The temporary name for sequence number `seq` (the ruled format, decision P8):
 // `<final>.chainner-c-<pid>-<seq>.tmp`; `.cnc-<pid>-<seq>.tmp` in final's folder where that name would pass the
 // 255-unit name limit or, with long paths off, MAX_PATH. In the \\?\ form once its full path reaches MAX_PATH.
 // The short name only for a valid final name (valid_name()): an invalid one keeps the ruled name, whose creation then

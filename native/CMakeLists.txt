@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(chainner_native VERSION 1.0.0 LANGUAGES C CXX)
 
-# The one toolchain (owner directive 2026-10-06): clang-cl of LLVM 23.1.2 with lld-link and
+# The one toolchain (decision 2026-10-06): clang-cl of LLVM 23.1.2 with lld-link and
 # llvm-lib under Ninja, against the Build Tools' MSVC libraries and the Windows SDK, all
 # pinned by Build.ps1, which configures every build directory.
 foreach(chainner_c_language C CXX)
@@ -30,7 +30,7 @@ add_compile_options(-flto=thin /fp:strict /clang:-fdenormal-fp-math=dynamic /Bre
 add_link_options(/Brepro)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 # A local-machine option, never for releases: -march=<value> on every target (for example
-# icelake-server on the owner's PC). The binaries then run only on CPUs with that ISA.
+# icelake-server on the development PC). The binaries then run only on CPUs with that ISA.
 set(CHAINNER_C_MARCH "" CACHE STRING
     "Local builds only, never releases: -march=<value> for every target (default: none, any x86-64 CPU)")
 if(CHAINNER_C_MARCH)
@@ -263,7 +263,7 @@ endif()
 # vosr2_qkv.dll: the VosrQkvPack TensorRT plugin of VOSR's TensorRT path (src/vosr2), beside its
 # loader in nodes/impl/pytorch. Optional: built when both roots below are given (Build.ps1 -Define,
 # on any configure), else skipped with one status line. qkv.cu alone is compiled by nvcc with the
-# pinned toolset's cl.exe as its host compiler (owner-approved exception, 2026-10-13); the plugin
+# pinned toolset's cl.exe as its host compiler (approved exception, 2026-10-13); the plugin
 # interface and the link use clang-cl and lld-link with every option above. nvcc keeps exact device
 # math (no contraction, IEEE division and square root) and emits SASS for sm_80, sm_86, sm_89 and
 # sm_120 plus compute_120 PTX (BF16 needs sm_80 or newer). Configuration refuses any other TensorRT
@@ -358,14 +358,14 @@ if(CHAINNER_C_PDB)
         "/MAP:${CHAINNER_C_OUTPUT_DIR}/pytorch/vosr2_qkv.map")
 endif()
 
-# drft_trt_plugins.dll: the TensorRT plugins of legacy DRFT's engines (src/drft, Codex's
+# drft_trt_plugins.dll: the TensorRT plugins of legacy DRFT's engines (src/drft, the
 # LegacyBarrierV1 library, compile definitions as his), from the same two roots, beside the DRFT
 # loader in nodes/impl/tensorrt. Engines embed it, so it is never loaded to run one. The four .cu
 # files (kernels and their plugin classes) are compiled by nvcc as qkv.cu is, except two points:
 # - device math: nvcc's defaults (contraction on, IEEE division and square root), the numerics
 #   Codex measured;
 # - /W4 without /WX or -Werror: two warning classes remain, C4211 in nvcc's generated stubs of
-#   Codex's kernels in anonymous namespaces, and EDG's #997 on DrftFinalAffineCrop_TRT, the one
+#   the kernels in anonymous namespaces, and EDG's #997 on DrftFinalAffineCrop_TRT, the one
 #   plugin on TensorRT's deprecated IPluginV2DynamicExt (its legacy overloads are private there).
 # DrftAliasedIdentityBarrierPlugin.cpp and the link use clang-cl and lld-link with /W4 /WX.
 set(chainner_c_drft_definitions -DDRFT_ENABLE_OCAB_QKV_PACK_PLUGIN=1

@@ -19,9 +19,9 @@ fetches).
 One line differs from upstream. `OpenEXRCore/internal_zip.c` line 23 enables its SSE4.1 predictor for any
 MSVC-compatible x64 compiler without a CPU check; clang-cl rejects those intrinsics without the target feature, and
 the shipped build must run on every x86-64 CPU, so the guard gains `!defined(__clang__)`: clang-cl takes upstream's
-portable scalar loop unless `__SSE4_1__` is defined (the owner's `CHAINNER_C_MARCH` builds). Decoded bytes are the
+portable scalar loop unless `__SSE4_1__` is defined (the `CHAINNER_C_MARCH` builds). Decoded bytes are the
 same either way. Upstream SHA-256 `2caf5ac8adc83a0c328391259b21ffc648e84b058bf24e43d49597b55280cb1f`, patched
-`fd009eac1ebaf7981d95c5601d17b43b454053adc0a757f8e75ab547a7e29e78` (stand-in decision, 2026-10-19).
+`fd009eac1ebaf7981d95c5601d17b43b454053adc0a757f8e75ab547a7e29e78` (decision, 2026-10-19).
 
 `chainner/` holds the headers OpenEXR's CMake writes from `cmake/*.h.in` for a static, non-embedded Windows x64
 library built with clang-cl: `OpenEXRConfig.h` (3.5.2, library version 34.3.5.2, namespaces `Imf_3_5`/`Imf`, Imath

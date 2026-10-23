@@ -3386,7 +3386,7 @@ def zero_class_differences(a, b):
 
 
 def test_morphology_node_calls_equal_opencv():
-    """Parity at design time (owner, 2026-10-04; task4-verdict.md): every morphology
+    """Parity at design time (2026-10-04; task4-verdict.md): every morphology
     manifest case that is a node call (node_call) equals the installed chaiNNer's node
     code, cv2.dilate or cv2.erode with getStructuringElement(shape, (2 r + 1,) * 2) and
     the iterations, run in this venv (OpenCV 4.8.0, as installed) under the case's MXCSR

@@ -95,7 +95,7 @@ EXECUTORS = ("python", "native")
 DEFAULT_EXECUTOR = "native"
 STATIC_HITS = -1  # a static cache entry (StaticCaching) in the plan
 # A /run's LargeImage previews of a loop's items: per node, the first at once, then at most one start per this many
-# seconds, the newest kept meanwhile; a loop's and the run's end send what waits (hunt-misc 6, Fable R4). 0: no limit
+# seconds, the newest kept meanwhile; a loop's and the run's end send what waits (hunt-misc 6, ruling R4). 0: no limit
 # (engine_differential.every_broadcast, as the oracle sends every broadcast).
 PREVIEW_INTERVAL = 0.25
 # A stopped run's own end (its events and cleanups) is awaited this long; a node still running then (a long Python

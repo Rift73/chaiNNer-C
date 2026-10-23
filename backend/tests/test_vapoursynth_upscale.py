@@ -61,7 +61,7 @@ pytest.importorskip("nodes.impl._chainner_graph")
 chainner_vs = importlib.import_module("nodes.impl.vapoursynth.chainner_vs")
 bridge = importlib.import_module("nodes.impl.vapoursynth.chainner_vs.upscale")
 
-# A 2x ESRGAN (7 MB) and a 4x Compact ONNX (2.5 MB) from the owner's model folder.
+# A 2x ESRGAN (7 MB) and a 4x Compact ONNX (2.5 MB) from the local model folder.
 ESRGAN_2X = Path(r"C:\Executables\models\ESRGAN\2x_Waifaux-NL3-SuperLite_latest_G.pth")
 COMPACT_4X_ONNX = Path(
     r"C:\Executables\models\ESRGAN\4xLSDIRCompactN-fp32-opset17.onnx"

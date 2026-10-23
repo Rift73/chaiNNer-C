@@ -5,7 +5,7 @@ the output in float (no 8-bit truncation) and the CUDA footprint edges (Matlab's
 the bottom edge against sy, a typo not reproduced). Its distance is the L2 norm over the colour
 channels divided by the square root of their count: on 0..1 with three channels, main.cu's
 division by sqrt(3 * 255^2) on 0..255. The C kernel keeps its images in float32, so results
-agree within TOLERANCE (fable-decisions.md, 2026-10-21).
+agree within TOLERANCE (the decision log, 2026-10-21).
 """
 
 from __future__ import annotations

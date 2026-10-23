@@ -353,7 +353,7 @@ def transparent_pairs(size):
 
 @pytest.mark.parametrize("size", [(5, 3), (1, 1)])
 def test_color_transfer_fully_transparent_returns_the_image(size):
-    # Mean+Std gave NaN or failed, the others raised LinAlgError (Fable, 2026-10-23).
+    # Mean+Std gave NaN or failed, the others raised LinAlgError (2026-10-23).
     node = node_data("chainner:image:color_transfer")
     for img, ref in transparent_pairs(size):
         for colorspace in ("L*a*b*", "RGB"):

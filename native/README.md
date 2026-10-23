@@ -18,7 +18,7 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
 | `native/tests/` | pytest suites and frozen `reference_*` oracles (stored verbatim: `native/tests/reference_*/** -text`) |
 | `native/tools/` | Packager, UI patches, runtime verifiers, benchmark harness, code generators, `isa_check.py text` (compares two binaries' code sections), `golden_kernels.py` (golden manifests of the SP4 kernels; usage in each docstring) |
 | `native/reports/`, `out/chaiNNer-C/` | Ignored: local evidence (never needed to build or package), and the portable package |
-| `out/chaiNNer-C-py311/` | Ignored: the last CPython 3.11 package, kept read-only as the old-stack bench side and the undo; deleting it is owner-only |
+| `out/chaiNNer-C-py311/` | Ignored: the last CPython 3.11 package, kept read-only as the old-stack bench side and the undo; deleting it is a manual step |
 | `src/`, `tests/` | Upstream frontend at `d56e507f` with the package's two UI patches ported, CPython 3.14.8 as its integrated Python and `%APPDATA%\chaiNNer-C` as its root (a `portable` build: its own folder), where `ui-cache\backend-ui.json` keeps the last node list so the editor shows at once while the backend starts; the run-from-source UI (`npm start`), never shipped. It alone has VOSR's iterated input condition (no package patch carries them) |
 
 ## Prerequisites
@@ -61,7 +61,7 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
   & '.\native\.venv\Scripts\python.exe' -B native\tools\make_oracle.py
   ```
 
-  It replaces the installed app (`$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21`), which the owner's chaiNNer
+  It replaces the installed app (`$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21`), which the installed chaiNNer
   update removed on 2026-10-08. Its UI bundles are the pinned ones (`BASELINE_HASHES`); its backend is upstream's own,
   without the installed copy's local delta (ARCHITECTURE section 2: the GPU lease's 4 files and 10 changed files: the
   server, process, events and cache modules and 4 PyTorch files; no `chaiNNer_standard` node and not `texconv`).
@@ -80,7 +80,7 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
 ```
 
 `Build.ps1` configures `native/build` (`-BuildDirectory` for another) with Ninja (`-Ninja <ninja.exe>`; default the
-Build Tools' copy, which must exist) and `native/toolchain.cmake`, which pins the one toolchain (owner directive
+Build Tools' copy, which must exist) and `native/toolchain.cmake`, which pins the one toolchain (decision
 2026-10-06): clang-cl 23.1.2 with lld-link and llvm-lib, MSVC toolset 14.44.35207 and Windows SDK 10.0.26100.0, no
 Developer environment. Configuration refuses any other version of the three (`CMakeLists.txt` for clang-cl,
 `toolchain.cmake` for the toolset directory's version and the SDK version), and the package manifest records them
@@ -125,21 +125,21 @@ optional fourth target: `-Define CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>,CHAI
 (on any configure; Prerequisites) builds it into `CHAINNER_C_OUTPUT_DIR\pytorch` (default
 `backend/src/nodes/impl/pytorch`). Without them configuration prints that it was skipped and the three binaries are
 unchanged; one root alone, or another TensorRT or CUDA major, fails configuration. `qkv.cu` alone is compiled by nvcc
-with the pinned toolset's `cl.exe` as its host compiler (the owner-approved exception to the one toolchain): exact
+with the pinned toolset's `cl.exe` as its host compiler (the approved exception to the one toolchain): exact
 device math (`--fmad=false --prec-div=true --prec-sqrt=true`), SASS for sm_80, sm_86, sm_89 and sm_120 plus
 compute_120 PTX, `/W4 /WX` on the host side and `-Werror all-warnings`. `qkv_plugin.cpp` and the link use clang-cl
 and lld-link with the flags above (TensorRT's and CUDA's headers as system headers). The DLL imports only
 `nvinfer_11.dll` (CUDA 13's `cudart.lib` is the static runtime) and is reproducible like the others. Its hash is part
 of the VOSR TensorRT engine caches' identity, so a new DLL rebuilds those engines once.
 
-**Legacy DRFT's TensorRT plugins** `drft_trt_plugins.dll` (`src/drft`, Codex's LegacyBarrierV1 library: OCAB
+**Legacy DRFT's TensorRT plugins** `drft_trt_plugins.dll` (`src/drft`, the LegacyBarrierV1 library: OCAB
 attention, relative bias and Q/K/V packing, the window neural bias, the identity barrier and the output tail; the
-plugins the export uses take FP16, its precision with BF16 attention since 2026-10-20, as well as Codex's BF16) build from the same two
+plugins the export uses take FP16, its precision with BF16 attention since 2026-10-20, as well as the BF16) build from the same two
 roots into `CHAINNER_C_OUTPUT_DIR\tensorrt` (default `backend/src/nodes/impl/tensorrt`). DRFT
 engines reference its plugins without carrying the DLL (TensorRT refuses a second registration of a carried library
 in one process); chaiNNer-C registers it once per process before loading engines, and users need no compiler. Its four
 `.cu` files are compiled by nvcc as `qkv.cu` is, with two differences: nvcc's default device math (contraction on,
-IEEE division and square root), the numerics Codex measured, and host warnings at `/W4` but not fatal, since nvcc's
+IEEE division and square root), the numerics an earlier review measured, and host warnings at `/W4` but not fatal, since nvcc's
 generated stubs of kernels in anonymous namespaces raise C4211 and the output-tail plugin, the one on TensorRT's
 deprecated `IPluginV2DynamicExt`, raises EDG's #997. `DrftAliasedIdentityBarrierPlugin.cpp` and the link use clang-cl
 with `/W4 /WX`. The DLL imports only `KERNEL32.dll`. Unlike the others, its bytes depend on the checkout's path
@@ -255,7 +255,7 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
   `native_toolchain` records the clang-cl, MSVC toolset and Windows SDK versions the build pins (read from
   `CMakeLists.txt` and `toolchain.cmake`, each pinned exactly once, or the run fails); a refresh rewrites it with
   the backend's binaries, and a package from before the record gains it at its next refresh. A package copied
-  before 2026-10-07 also carries `python_stack.overlay`, a retired key a refresh ignores. Releasing is owner-only.
+  before 2026-10-07 also carries `python_stack.overlay`, a retired key a refresh ignores. Releasing is a manual step.
 - A locked DLL/PYD (a running package) fails the run before any write and names the paths. Close
   that app yourself; never kill processes. A run interrupted mid-write recovers on the next run.
 - A file changed outside the tool, an untracked or missing file under `backend/src`, or an
@@ -286,7 +286,7 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
   unchanged, the package diff against the ruled allow-list (`launch_change`, Consult 8 R-i: a frozen list at the root,
   bytecode only under the backend, since the runtime ships compiled, Consult 10 D-9, and a write there names the
   module the build missed; the app does not inherit `PYTHONDONTWRITEBYTECODE`) and the
-  startup log; then the dependency manager and the owner chains (`CHAINS`, `default.chn` with PyTorch on the CPU: allow
+  startup log; then the dependency manager and the reference chains (`CHAINS`, `default.chn` with PyTorch on the CPU: allow
   time) on the package's host against the oracle, with a mid-run `/kill`. It refuses to start while the installed
   chaiNNer or the package runs (an exited process object, 0 threads, is skipped and listed in the summary's
   `exited_processes_skipped`). Evidence and `summary.json` go to
@@ -329,7 +329,7 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
 
 ## Safety
 
-The `F:\` paths in this section and in the bench records above are the local gates' paths on the owner's machine
+The `F:\` paths in this section and in the bench records above are the local gates' paths on the machine
 (Consult 14 D-30 (d)).
 
 - Protected, read-only: the installed app, `$env:APPDATA\chaiNNer` (profile and

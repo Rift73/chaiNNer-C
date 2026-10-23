@@ -124,7 +124,7 @@ def test_gc_is_used_only_by_collect_failed_run_return_device_memory_and_the_free
     # runs only when a cleared node's GPU memory goes back outside a run, so a
     # successful run still never collects. The one exception: NodeLoading's
     # gc.collect(); gc.freeze() once after the node loading, which logs the frozen
-    # count (gate ruling R1, native/reports/fable-decisions.md "instant-exec gate R1").
+    # count (gate ruling R1, the decision log "instant-exec gate R1").
     tree = ast.parse(source("server.py"))
     names = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "gc"]
     assert len(names) == 5

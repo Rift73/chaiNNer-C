@@ -1,4 +1,4 @@
-"""chaiNNer-C's default PNG encoder (native/src/png_encode.c, owner decision 2026-10-21), CPU only.
+"""chaiNNer-C's default PNG encoder (native/src/png_encode.c, decision 2026-10-21), CPU only.
 
 Every default 8-bit PNG (grey, grey + alpha, BGR, BGRA) is MinSum-filtered and compressed by libdeflate level 6
 in row bands, one zlib stream. Checked here: exact pixels through OpenCV, Pillow and chaiNNer-C's own decoder;

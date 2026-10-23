@@ -1128,7 +1128,7 @@ def test_unported_opencv_extension_is_not_read_natively(
 
 
 # ---------------------------------------------------------------------------------------------
-# The image-size limit (owner, 2026-10-19): 40,000 x 40,000 pixels on every route. Headers only:
+# The image-size limit (2026-10-19): 40,000 x 40,000 pixels on every route. Headers only:
 # the native decoders' requests are refused (image_io_decode_request), so nothing is allocated.
 
 

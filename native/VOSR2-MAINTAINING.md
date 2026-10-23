@@ -19,11 +19,11 @@ with FP8). In `backend/src/nodes/impl/pytorch/`:
   splits, centred on the box, only where it can hold that middle alone; both backends lay it over the grid's
   normalized blend with `face_feather` (1 out to 25 latents from its centre, a raised cosine to 0 by 31), so its edge
   hands over more gently than two grid windows do; `WindowPlan` keeps a video's layout per shot,
-  re-planned at a cut; owner 2026-10-14, after detail-, difference- and amount-based seam triggers failed), `vosr2_streaming.py`
+  re-planned at a cut; 2026-10-14, after detail-, difference- and amount-based seam triggers failed), `vosr2_streaming.py`
   (Low's whole-image VAE in bounded bands), `vosr2_texture.py` (grain pass, both backends: synthesized grain hashed
-  from seed, frame and pixel position; `GRAIN_GAIN` 1.16 is the owner's choice of 2026-10-13, 1.4 times the bicubic
+  from seed, frame and pixel position; `GRAIN_GAIN` 1.16 is the choice of 2026-10-13, 1.4 times the bicubic
   source grain on Castorice 2x; in a video the node keeps the last input, and areas whose fine texture changed get
-  that frame's grain while still areas keep the seed's, owner 2026-10-14; stateless, so a changed area returns to the
+  that frame's grain while still areas keep the seed's, 2026-10-14; stateless, so a changed area returns to the
   seed's grain one still frame later; temporal restorations get no grain, the stabilized output does).
 - `vosr2_trt_models.py` (the ten `STAGES`, profiles), `vosr2_trt_rewrite.py`, `vosr2_export.py`,
   `vosr2_trt_compile.py` (builder settings), `vosr2_trt_build.py`, `vosr2_fp8_build.py` (compile workers in an owned
@@ -74,7 +74,7 @@ A new set (notes `99dd0f1a:native/VOSR2-FP8.md`; scripts local, git-ignored, `na
 2. Calibrate with NVIDIA ModelOpt 0.47.0 (max, per node) in its own environment; rescale to amax/448 by (127/448)².
 3. Put the Q/DQ pairs on the original graph, with DiT attention, input and output projections and the VAE in BF16/FP32.
 4. Compile and compare with BF16 on real images and video (contours, motion error).
-5. Assemble the 16 files, upload to the new folder (owner-approved), check hashes, change `MANIFEST_SHA256`.
+5. Assemble the 16 files, upload to the new folder (approved), check hashes, change `MANIFEST_SHA256`.
 
 ## Temporal design
 

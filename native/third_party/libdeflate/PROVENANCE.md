@@ -36,4 +36,4 @@ The changes, all in `lib/deflate_compress.c` but the declaration:
 before. SHA-256 upstream / patched: `libdeflate.h` `1bb50a3ff8c6980c1031c0e9bb324cf99df51379fdca77a358644cca841765cc`
 / `2d780d8f7733f695da1a074a10804165794f3ceea244859360bdd9f2b2704ca4`, `lib/deflate_compress.c`
 `a46dae12f2020b68d20c965ae43f9710e3e792bf77f3ca4611582f8d8d0c9541` /
-`245eae0a7eaf45c4f80454fb3b916ad1084f67fe3fa1ea032808ba59f4e3d675` (owner decision, 2026-10-21).
+`245eae0a7eaf45c4f80454fb3b916ad1084f67fe3fa1ea032808ba59f4e3d675` (decision, 2026-10-21).

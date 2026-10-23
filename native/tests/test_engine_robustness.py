@@ -553,7 +553,7 @@ def test_a_lazy_input_read_after_its_run_fails_cleanly(tmp_path):
 
 
 def test_loop_previews_are_rate_limited(registry, tmp_path):
-    # Fable R4: a loop's LargeImage previews (View Image of a 1080p image per item, an item every 80 ms) start at most
+    # ruling R4: a loop's LargeImage previews (View Image of a 1080p image per item, an item every 80 ms) start at most
     # once per 250 ms per node, the first at once, the newest kept; the loop's end sends the last item's.
     def paced(trace: list[object]) -> Chain:
         b = Builder()

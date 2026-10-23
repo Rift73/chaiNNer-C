@@ -2,10 +2,10 @@
 backend/src): the ONNX's plugin nodes come from chaiNNer-C's plugin library, loaded into
 this process's plugin registry. The engine does not carry the library (TensorRT would
 register it again at every load and refuse the second); processes that load the engine
-register it once (drft.load_plugins). The builder policy is Codex's trtexec build of DRFT-L (strongly
+register it once (drft.load_plugins). The builder policy is the reference trtexec build of DRFT-L (strongly
 typed, no auxiliary streams, detailed profiling verbosity, a fresh timing cache) with
 Build Engine's workspace (GiB; 0 is TensorRT's default), optimization level, TF32 (1/0),
-sparse weights (1/0) and tiling optimization (none, fast, moderate or full); Codex's are
+sparse weights (1/0) and tiling optimization (none, fast, moderate or full); the reference values are
 0, 3, 0, 1 and none.
 The engine has one optimization profile, minimum, optimum and maximum input sizes
 given as HxW, and its input is named for the ONNX's input alignment

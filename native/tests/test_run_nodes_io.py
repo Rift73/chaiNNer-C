@@ -279,7 +279,7 @@ def symlink(link: Path, target: Path, directory: bool) -> Path:
 )
 def test_save_image_targets_the_same_file(tmp_path, monkeypatch, shape):
     # The native entry point's lexical target names the same file as today's Path.resolve(): same bytes, the same
-    # file, and the same names in the folder (Fable, lane I Q3).
+    # file, and the same names in the folder (ruling, lane I Q3).
     real = tmp_path / "real"
     real.mkdir()
     monkeypatch.chdir(tmp_path)

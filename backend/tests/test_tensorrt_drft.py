@@ -269,7 +269,7 @@ def _worker_arguments(
     ]
 
 
-def test_the_worker_loads_the_plugin_library_with_codexs_policy(
+def test_the_worker_loads_the_plugin_library_with_reference_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     trt, record = _fake_tensorrt(loaded=object())

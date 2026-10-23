@@ -785,7 +785,7 @@ def run_backend(
 def video_first(semantic: object) -> object:
     """A decoded video file's semantic with its video streams before the rest.
 
-    Save Video muxes the source's audio after the video (owner-approved fix for
+    Save Video muxes the source's audio after the video (approved fix for
     upstream chaiNNer #3331; ARCHITECTURE section 7) where the installed oracle put
     it first. The port's file must match the oracle's stream for stream; only their
     order moves. Every other semantic passes unchanged.

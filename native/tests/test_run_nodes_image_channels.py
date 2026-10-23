@@ -153,7 +153,7 @@ def chroma_key_body(inputs):
 
 
 def test_chroma_key_trimap_without_background_or_foreground():
-    # The solver refused a frame without the key colour, or of only the key colour (Fable, 2026-10-23).
+    # The solver refused a frame without the key colour, or of only the key colour (2026-10-23).
     key = Color.bgr((0.0, 1.0, 0.0))
     plain = image(1, 8, 8, 3, edges=False)
     keyed = np.full((8, 8, 3), key.value, np.float32)

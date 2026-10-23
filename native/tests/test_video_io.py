@@ -297,7 +297,7 @@ class Context:
             callback()
 
 
-# Save Video's audio mux departs from both frozen references (owner-approved fix for
+# Save Video's audio mux departs from both frozen references (approved fix for
 # upstream chaiNNer #3331; ARCHITECTURE section 7). The "intended" oracle is the
 # frozen source snapshot, upstream v0.25.1's mux, with this block replaced. Against
 # upstream: (a) the options come first, so a WebM Copy raises before the mux as in
@@ -309,7 +309,7 @@ class Context:
 # after a failure) saves the video without it; (g) os.replace swaps the files
 # atomically, so a failed swap keeps the video; (h) each Opus stream gets min(320k,
 # 256k x channels), libopus's per-channel ceiling, so mono into WebM works
-# (owner-approved). (m) Atomic writes (instant-exec A4): FFmpeg and the mux each write a
+# (approved). (m) Atomic writes (instant-exec A4): FFmpeg and the mux each write a
 # temporary file of the path (atomic_target, the muxer named as the extension picks it);
 # a successful close commits the finished one, a failure or Stop abandons them. (n)
 # instant-exec gate R5a: with audio, an MP4's or MOV's faststart (the node's, not a
@@ -515,7 +515,7 @@ INTENDED_MUX = (
 )
 
 
-# Save Video's colours depart from both frozen references too (owner-approved fix for
+# Save Video's colours depart from both frozen references too (approved fix for
 # upstream chaiNNer #3053; ARCHITECTURE section 7): (i) YUV output other than GIF gets
 # all four colour tags, BT.601 for SD and BT.709 for HD (width >= 1280 or height >
 # 576), the user's tags winning, and a scale filter converting to the final matrix and

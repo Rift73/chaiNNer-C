@@ -1,5 +1,5 @@
 """The worker's one gc.freeze after its node loading (gate ruling R1,
-native/reports/fable-decisions.md "instant-exec gate R1").
+the decision log "instant-exec gate R1").
 
 Frozen objects are never collected: the freeze is skipped, and never retried, while a
 run is in flight or once a run of a node outside the light set has completed (its

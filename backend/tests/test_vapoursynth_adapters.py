@@ -725,7 +725,7 @@ def test_path() -> None:
     "path",
     [
         r"C:\My Videos\clip 1.mkv",
-        r"D:\owner's clips\it's.mkv",
+        r"D:\my clips\it's.mkv",
         "E:\\ünïcødé\\日本語\\clip.mkv",
         r"\\server\share\a'b\"c.mkv",
         "F:\\new\\table\\x.mkv",
