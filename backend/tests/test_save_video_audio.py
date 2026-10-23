@@ -1,6 +1,6 @@
 """Save Video muxes the source's audio with chaiNNer's own FFmpeg, so a PC without
 FFmpeg on PATH still gets it; "Auto" transcodes the audio to AAC when the container
-cannot hold a copy of it; and audio the mux cannot carry fails the run instead of
+cannot hold a copy of it or it is PCM or FLAC going into an MP4; and audio the mux cannot carry fails the run instead of
 leaving a silent video (upstream chaiNNer #3331). An MP4 or MOV with audio gets its
 faststart on the mux, which writes the final file (instant-exec gate R5a), and Load
 Video's Range cuts the audio to the frames read (R7)."""
@@ -234,26 +234,59 @@ def test_copyable_audio_is_copied_unchanged(
     assert audio_packets(out) == audio_packets(src)
 
 
-def test_auto_transcodes_audio_the_container_cannot_copy(tmp_path: Path):
-    # MP4 cannot hold PCM on the integrated FFmpeg 5.1.2.
-    src = source(tmp_path, "src.mov", "pcm_s16le")
+@pytest.mark.parametrize(
+    ("name", "codec"),
+    [("src.mov", "pcm_s16le"), ("src.mov", "pcm_s24le"), ("src.mkv", "flac")],
+)
+def test_auto_transcodes_pcm_and_flac_for_mp4(tmp_path: Path, name: str, codec: str):
+    # FFmpeg 6.1 and later copy PCM and FLAC into MP4, where many players cannot play
+    # them; FFmpeg 5.1.2 refused the copy, so Auto's AAC stays the output.
+    src = source(tmp_path, name, codec)
     save(tmp_path, src, VideoFormat.MP4, AudioSettings.AUTO)
     assert streams(saved(tmp_path, VideoFormat.MP4)) == ["video:h264", "audio:aac"]
 
 
-def test_auto_copies_pcm_where_the_container_holds_it(tmp_path: Path):
+def test_auto_transcodes_audio_the_container_cannot_copy(tmp_path: Path):
+    # AVI cannot hold Opus on any FFmpeg Save Video uses.
+    src = source(tmp_path, "src.mkv", "libopus")
+    save(tmp_path, src, VideoFormat.AVI, AudioSettings.AUTO)
+    assert streams(saved(tmp_path, VideoFormat.AVI)) == ["video:h264", "audio:aac"]
+
+
+@pytest.mark.parametrize("container", [VideoFormat.MKV, VideoFormat.MOV])
+def test_auto_copies_pcm_where_the_container_holds_it(
+    tmp_path: Path, container: VideoFormat
+):
     src = source(tmp_path, "src.mov", "pcm_s16le")
-    save(tmp_path, src, VideoFormat.MKV, AudioSettings.AUTO)
-    out = saved(tmp_path, VideoFormat.MKV)
+    save(tmp_path, src, container, AudioSettings.AUTO)
+    out = saved(tmp_path, container)
+    assert streams(out) == ["video:h264", "audio:pcm_s16le"]
+    assert audio_packets(out) == audio_packets(src)
+
+
+def test_copy_keeps_pcm_in_mp4(tmp_path: Path):
+    # Copy copies whatever FFmpeg muxes: the pinned FFmpeg 9 holds PCM in MP4, where
+    # 5.1.2 (an older integrated copy) refuses it.
+    src = source(tmp_path, "src.mov", "pcm_s16le")
+    direct = subprocess.run(
+        [FFMPEG, "-v", "error", "-y", "-i", str(src), "-c", "copy", tmp_path / "x.mp4"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+    )
+    if direct.returncode != 0:
+        pytest.skip("this FFmpeg cannot hold PCM in MP4")
+    save(tmp_path, src, VideoFormat.MP4, AudioSettings.COPY)
+    out = saved(tmp_path, VideoFormat.MP4)
     assert streams(out) == ["video:h264", "audio:pcm_s16le"]
     assert audio_packets(out) == audio_packets(src)
 
 
 def test_copy_the_container_cannot_hold_is_an_error(tmp_path: Path):
     # Copy never transcodes; the run fails and, as every failed write, leaves no file:
-    # the video goes to its path only at a successful close.
-    src = source(tmp_path, "src.mov", "pcm_s16le")
-    message = r"copy the pcm_s16le audio into the \.mp4 file\. Set Audio to Auto or"
+    # the video goes to its path only at a successful close. MP4 cannot hold 8-bit PCM.
+    src = source(tmp_path, "src.mov", "pcm_u8")
+    message = r"copy the pcm_u8 audio into the \.mp4 file\. Set Audio to Auto or"
     with pytest.raises(RuntimeError, match=message):
         save(tmp_path, src, VideoFormat.MP4, AudioSettings.COPY)
     assert not saved(tmp_path, VideoFormat.MP4).exists()

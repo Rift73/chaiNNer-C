@@ -314,7 +314,9 @@ class Context:
 # a successful close commits the finished one, a failure or Stop abandons them. (n)
 # instant-exec gate R5a: with audio, an MP4's or MOV's faststart (the node's, not a
 # user's -movflags) goes to the mux, which writes the final file, instead of the encode
-# pass; a source without audio then gets its video alone copied with faststart.
+# pass; a source without audio then gets its video alone copied with faststart. (o)
+# Auto transcodes PCM and FLAC audio for MP4 before the mux: FFmpeg 6.1 and later copy
+# them into MP4, which many players cannot play, where 5.1.2 refused the copy.
 INTENDED_MUX = (
     """        if self.audio is not None:
             video_path = self.save_path
@@ -422,10 +424,20 @@ INTENDED_MUX = (
                 params["loglevel"] = "error"  # (b)
                 return params
 
-            output_params = options(self.audio_settings)  # (a)
+            settings = self.audio_settings
+            if settings == AudioSettings.AUTO and self.container == VideoFormat.MP4:  # (o)
+                for stream in audio_streams():
+                    codec = stream.get("codec_name", "")
+                    if codec.startswith("pcm_") or codec == "flac":
+                        logger.info(
+                            f"Auto transcodes the {codec} audio: players often cannot"
+                            " play it in an .mp4 file"
+                        )
+                        settings = AudioSettings.TRANSCODE
+                        break
+            output_params = options(settings)  # (a)
             transcode_on_failure = (  # (c)
-                self.audio_settings == AudioSettings.AUTO
-                and output_params["acodec"] == "copy"
+                settings == AudioSettings.AUTO and output_params["acodec"] == "copy"
             )
             video_path = self.save_path
             if not os.path.exists(self.target.temp):  # (m)
@@ -522,7 +534,9 @@ INTENDED_MUX = (
 # range after the user's -vf (-filter:v, -filter); (k) GIF with the node's yuv420p (which
 # FFmpeg replaces with the fixed bgr8 palette) is written as pal8 with a palette made for
 # each frame, after the user's -vf; a user pixel format, or a user -filter_complex (-lavfi),
-# which FFmpeg refuses beside a -vf, keeps FFmpeg's conversion.
+# which FFmpeg refuses beside a -vf, keeps FFmpeg's conversion. (p) A setparams after the
+# scale puts the matrix, primaries and transfer tags on the frames too: FFmpeg 7 and later
+# take them from the frames over -colorspace, -color_primaries and -color_trc.
 INTENDED_COLOURS = [
     (
         """@dataclass
@@ -596,6 +610,24 @@ class Writer:
         scale += f"out_h_chr_pos={positions[location][0]}:"
         scale += f"out_v_chr_pos={positions[location][1]}:"
     params["vf"] = ",".join([*filters, scale + "flags=accurate_rnd+full_chroma_int"])
+    names = {
+        "colorspace": (
+            "bt709", "bt470bg", "smpte170m", "bt2020nc", "bt2020c", "smpte240m", "fcc",
+            "ycgco", "ictcp", "gbr",
+        ),
+        "color_primaries": (
+            "bt709", "bt470m", "bt470bg", "smpte170m", "smpte240m", "film", "bt2020",
+            "smpte428", "smpte431", "smpte432", "jedec-p22",
+        ),
+        "color_trc": (
+            "bt709", "smpte170m", "bt470m", "bt470bg", "smpte240m", "linear",
+            "iec61966-2-1", "iec61966-2-4", "bt2020-10", "bt2020-12", "smpte2084",
+            "arib-std-b67", "smpte428",
+        ),
+    }
+    tags = [f"{key}={params[key]}" for key in names if str(params.get(key)) in names[key]]
+    if tags:  # (p)
+        params["vf"] += ",setparams=" + ":".join(tags)
     return params
 
 
@@ -1724,7 +1756,7 @@ def test_audio_errors_exact(step, error, setting):
 
 
 class FailFirstMux(FakeFFmpeg):
-    """FFmpeg whose first mux fails as 5.1.2's does for PCM audio in MP4."""
+    """FFmpeg whose first mux fails as it does for audio the container cannot hold."""
 
     def run(self, *args, **kwargs):
         first = not any(e[0] == "run" for e in self.events)
@@ -1771,6 +1803,36 @@ def test_failed_copy_transcodes_on_auto_and_raises_otherwise(setting, source_aud
         assert "the unknown audio" in result[1][1]
         assert ("Set Audio to Auto or Transcode" in result[1][1]) == (setting == "COPY")
         assert len(options) == 1
+
+
+@pytest.mark.parametrize(
+    ("container", "codec", "acodec"),
+    [
+        ("MP4", "pcm_s16le", "aac"),
+        ("MP4", "flac", "aac"),
+        ("MP4", "aac", "copy"),
+        ("MOV", "pcm_s16le", "copy"),
+    ],
+)
+def test_auto_transcodes_pcm_and_flac_for_mp4(container, codec, acodec):
+    # (o): one mux, with Transcode's options for PCM and FLAC into MP4 only.
+    probe = {"streams": [{"codec_type": "audio", "codec_name": codec}]}
+    results = []
+    for kind in ("intended", "native"):
+        env = FakeFFmpeg(probe=probe)
+        g = load(kind, "save_video", env)
+        g["os"] = mock_os(env)
+        w = writer(
+            g,
+            container=container,
+            audio=FakeStream(env, "audio"),
+            audio_settings="AUTO",
+        )
+        results.append((outcome(w.close), env.events.copy()))
+    assert results[0] == results[1]
+    result, events = results[1]
+    assert result == ("ok", None)
+    assert [dict(e[2])["acodec"] for e in events if e[0] == "output"] == [acodec]
 
 
 @pytest.mark.parametrize("source_audio", [True, False])
@@ -2175,7 +2237,11 @@ def test_colour_options_follow_size_and_user_tags(
         assert output["colorspace"] == expected
         assert {"color_primaries", "color_trc"} <= output.keys()
     assert "color_range" in output
-    assert output["vf"].endswith("flags=accurate_rnd+full_chroma_int")
+    # (p): the matrix, primaries and transfer go on the frames too, after the conversion.
+    keys = ("colorspace", "color_primaries", "color_trc")
+    tags = [f"{k}={output[k]}" for k in keys if k in output and output[k] != "rgb"]
+    suffix = ",setparams=" + ":".join(tags) if tags else ""
+    assert output["vf"].endswith("flags=accurate_rnd+full_chroma_int" + suffix)
 
 
 def test_writer_context_abort_no_mux_and_reaps_after_pipe_error(tmp_path):

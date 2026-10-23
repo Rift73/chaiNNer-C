@@ -7,6 +7,7 @@ from functools import lru_cache
 
 import numpy as np
 
+from .linear_light import LightTransfer, encode_inplace, linearize
 from .native import check, f32, lib, ptr
 
 _lib = lib()
@@ -110,11 +111,14 @@ def descale(
     shift: tuple[float, float],
     active: tuple[float, float],
     border: int,
+    light: LightTransfer | None = None,
 ) -> np.ndarray:
     """image (H x W or H x W x C float32) descaled to width x height. mode and border take
     descale's DescaleMode and DescaleBorder values; shift and active are (left, top) and
     (width, height) of the source window in target pixels. A direction whose size, shift
-    and window are unchanged is skipped."""
+    and window are unchanged is skipped. light descales in linear light with that curve:
+    the colour channels (alpha, a fourth channel, as is) linearized before the solve and
+    encoded after, never clipped."""
     source = f32(image)
     h, w = source.shape[:2]
     channels = 1 if source.ndim == 2 else source.shape[2]
@@ -139,6 +143,8 @@ def descale(
     # From NumPy, whose pool keeps it warm across a batch: fresh pages cost more than the solve.
     workspace = np.empty(size, np.uint8)
     result = np.empty((height, width, channels), np.float32)
+    if light is not None:
+        source = linearize(source, light)
     check(
         _lib.cn_descale(
             ptr(source),
@@ -151,4 +157,6 @@ def descale(
             size,
         )
     )
+    if light is not None:
+        encode_inplace(result, light)
     return result if source.ndim == 3 else result[:, :, 0]

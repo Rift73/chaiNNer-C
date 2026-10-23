@@ -38,9 +38,25 @@ export default defineConfig((env) => {
             },
         },
         clearScreen: false,
+        // The renderer's only page. Without it, Vite's dependency scan reads every HTML file under
+        // the root (out/, native/), which delays the main process build that `start` waits for.
+        optimizeDeps: {
+            entries: ['index.html'],
+        },
         server: {
             watch: {
-                ignored: ['**/translation.json'],
+                // The renderer's sources are under src/. The other top-level folders hold the Python
+                // backend, native builds, the runtime and venv, and packaged apps: watching them made
+                // the dev server open a handle per folder (about 237,000 in a full checkout).
+                ignored: [
+                    '**/translation.json',
+                    '**/native/**',
+                    '**/backend/**',
+                    '**/out/**',
+                    '**/.vite/**',
+                    '**/.pytest_cache/**',
+                    '**/.ruff_cache/**',
+                ],
             },
         },
     } as UserConfig;

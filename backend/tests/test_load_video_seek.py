@@ -107,7 +107,7 @@ FILES: dict[str, tuple[str | None, tuple[str, ...], tuple[str, ...]]] = {
     # the GOP before.
     "h264-open-gop.mp4": (None, (), H264_OPEN_GOP),
     "h264-open-gop.ts": (None, (), H264_OPEN_GOP),
-    # A display matrix (90 degrees); the integrated FFmpeg 5.1 has no -display_rotation.
+    # A display matrix (90 degrees); FFmpeg 5.1 has no -display_rotation (made()).
     "rotated.mp4": (H264, (), ("-c", "copy", "-metadata:s:v:0", "rotate=90")),
     # Read through the FFmpeg CLI, which renumbers the frames to a constant rate.
     "variable.mkv": (
@@ -155,11 +155,26 @@ def folder(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return tmp_path_factory.mktemp("seek")
 
 
+def display_rotation() -> bool:
+    """Whether the integrated FFmpeg has -display_rotation (FFmpeg 7 and later)."""
+    help_text = subprocess.run(
+        [FFMPEG, "-hide_banner", "-h", "long"],
+        capture_output=True,
+        check=True,
+        stdin=subprocess.DEVNULL,
+        text=True,
+    ).stdout
+    return "-display_rotation" in help_text
+
+
 def made(folder: Path, name: str) -> Path:
     """The matrix's file `name` in `folder`, made on first use."""
     path = folder / name
     if not path.exists():
         source, input_options, options = FILES[name]
+        if name == "rotated.mp4" and display_rotation():
+            # FFmpeg 7 and later ignore the rotate tag; this is the same display matrix.
+            input_options, options = ("-display_rotation:v:0", "90"), ("-c", "copy")
         inputs = SOURCE if source is None else ("-i", str(made(folder, source)))
         run_ffmpeg(*input_options, *inputs, *options, str(path))
     return path
@@ -799,6 +814,7 @@ def test_preview_of_planes_rgb_cannot_convert_is_the_y_plane(
     run_ffmpeg(
         *SOURCE[:-2],
         *("-frames:v", "12", "-c:v", "ffv1", "-pix_fmt", "yuv420p10le"),
+        *("-vf", "format=yuv420p10le,setparams=colorspace=bt2020c"),
         *("-colorspace", "bt2020c", str(path)),
     )
     warnings: list[str] = []

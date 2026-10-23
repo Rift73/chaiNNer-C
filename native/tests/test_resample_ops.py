@@ -14,6 +14,7 @@ import pytest
 
 from nodes.impl import native_resample as native
 from nodes.impl import resize as current
+from nodes.impl.linear_light import LightTransfer
 from nodes.impl.native import lib, ptr
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -260,9 +261,11 @@ def test_resize_to_side_adapter(side, condition, target):
     equal(actual, expected)
 
 
+# Linear Light off: the node as it was, whatever the Transfer.
+@pytest.mark.parametrize("transfer", list(LightTransfer))
 @pytest.mark.parametrize("mode", [0, 1])
 @pytest.mark.parametrize("separate", [False, True])
-def test_resize_adapter(mode, separate):
+def test_resize_adapter(mode, separate, transfer):
     source = image()
     actual = resize_node.resize_node(
         source,
@@ -273,6 +276,8 @@ def test_resize_adapter(mode, separate):
         current.ResizeFilter.LINEAR,
         separate,
         1.0,
+        False,
+        transfer,
     )
     expected = resize_node_ref.resize_node(
         source,
@@ -427,6 +432,33 @@ def without_dpid(function: ast.FunctionDef) -> None:
     assert "NumberInput('Lambda'" in group
 
 
+# The node that gained Linear Light (2026-10-23): its last two inputs and parameters, and
+# the curve its key info appends.
+LIGHT_NODES = {"resize_node.py"}
+
+
+def keyword(register: ast.expr, name: str) -> ast.keyword:
+    assert isinstance(register, ast.Call)
+    (found,) = [k for k in register.keywords if k.arg == name]
+    return found
+
+
+def without_linear_light(function: ast.FunctionDef, key_info: ast.expr) -> None:
+    """Removes the node's Linear Light and Transfer groups and parameters, asserting they
+    are there, and puts back the frozen key_info once the node's appends the curve."""
+    for name in ("transfer", "linear_light"):
+        assert function.args.args.pop().arg == name
+    (register,) = function.decorator_list
+    inputs = keyword(register, "inputs").value
+    assert isinstance(inputs, ast.List)
+    transfer, toggle = ast.unparse(inputs.elts.pop()), ast.unparse(inputs.elts.pop())
+    assert "LightTransferInput(LightTransfer.SRGB)" in transfer
+    assert "BoolInput('Linear Light'" in toggle
+    info = keyword(register, "key_info")
+    assert "LightTransfer::label(Input9)" in ast.unparse(info.value)
+    info.value = key_info
+
+
 @pytest.mark.parametrize(
     "original,relative",
     [
@@ -445,6 +477,9 @@ def test_installed_metadata_unchanged(original, relative):
                 for node in b.body
                 if isinstance(node, ast.FunctionDef) and node.name == before.name
             )
+            if original in LIGHT_NODES:
+                frozen = keyword(before.decorator_list[0], "key_info").value
+                without_linear_light(after, frozen)
             if original in DPID_NODES:
                 without_dpid(after)
             if original == "crop_border.py":

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { IpcRendererEvent, contextBridge, ipcRenderer } from 'electron';
+import { IpcRendererEvent, contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { Version } from '../common/common-types';
 import type { BuildInfo } from '../common/version';
 
@@ -18,6 +18,12 @@ contextBridge.exposeInMainWorld('appConstants', {
     isArmMac,
     appDataPath,
     buildInfo,
+});
+
+// Electron 32 removed the non-standard `File.path` property. Its replacement,
+// `webUtils.getPathForFile`, needs the `electron` module, so the preload script bridges it.
+contextBridge.exposeInMainWorld('electronFileUtils', {
+    getPathForFile: (file: File): string => webUtils.getPathForFile(file),
 });
 
 contextBridge.exposeInMainWorld('unsafeIpcRenderer', {
@@ -41,9 +47,6 @@ contextBridge.exposeInMainWorld('unsafeIpcRenderer', {
     send: (channel: string, ...args: any[]): void => ipcRenderer.send(channel, ...args),
     // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     sendSync: (channel: string, ...args: any[]): any => ipcRenderer.sendSync(channel, ...args),
-    sendTo: (webContentsId: number, channel: string, ...args: any[]): void =>
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-        ipcRenderer.sendTo(webContentsId, channel, ...args),
     // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     sendToHost: (channel: string, ...args: any[]): void => ipcRenderer.sendToHost(channel, ...args),
 });

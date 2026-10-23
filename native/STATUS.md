@@ -4,6 +4,40 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- 2026-10-23 **Get Native Resolution, Linear Light, FFmpeg 9.0.2 pin, Electron 43** (five parallel branches and an
+  integration branch, CPU only, 19:38-23:30 GMT+8; local branch `gn/integration`, not pushed or released; the
+  local merge into `chaiNNer-C` follows one review). Design and reports: `native/local/getnative-20261023/`.
+  - **Get Native Resolution** (Image Dimensions > Utility): Vernier 0.2's analysis core vendored unchanged
+    (`native/third_party/vernier`, MIT), built per ISA level (baseline and AVX2, identical JSON; AVX2 20 % less time
+    per frame); Image and Video tabs, the node opens the video itself (even / keyframes / scene midpoints / typed
+    times, 1-200 frames). Same verdicts, grids, kernels and scores (1e-6) as Vernier's `nativeprobe.exe`. The
+    kernel is decided across the frames on the voted grid from least-squares scores (a preset needs 7 or more
+    frames consistently in its favour; the free bicubic is a nuisance model): planted set 297 frames correct and
+    supported against Vernier's rule's 85, none wrong; held-out episodes E04-E11 Bilinear supported 8 of 8
+    (Vernier's rule 0); grids unchanged against the earlier record. E01, Keyframes, 50 frames: 1488x837 Bilinear,
+    kernel supported over 25 frames, 113 s, 0.37 GB. Detector 2.32 s per 1080p frame against nativeprobe's 2.54 s.
+    The outputs carry the stored (encoded) values; light models add evidence to Status and Report only.
+  - **Linear Light** on Descale and Resize: a checkbox (off) and a Transfer dropdown (Gamma 2.4, sRGB, Gamma 2.2,
+    BT.709 camera; Descale defaults to Gamma 2.4, Resize to sRGB), signed and unclipped; Resize converts the colours
+    before premultiplying alpha with every curve. Kernel with a polynomial power and an AVX2 unit, identical at every
+    level (4.1 MP RGB, Linear Light on: Resize Lanczos 42.9 -> 28.9 ms, Descale Bilinear 44.7 -> 34.3 ms).
+  - **FFmpeg 9.0.2** pinned per platform by version and SHA-256 (BtbN Windows/Linux, evermeet macOS x64,
+    martin-riedl macOS arm64) with a `chainner-ffmpeg.json` marker: an older copy of ours (the 5.1.2 download, an
+    older marker) stays in use while the update downloads in the background (connect and read timeouts) into
+    `ffmpeg.staged`, which replaces it at a later start once nothing runs the old copy; a user-replaced or newer copy
+    is kept. FFmpeg 7 and later take colour tags from the frames: Save Video now sets them with `setparams` (without
+    it every YUV video written by an FFmpeg 8 or 9 build, the D: install's included, lacked its primaries and transfer
+    tags, and SD output lost its chroma siting), and Auto transcodes PCM and FLAC going into MP4 as it did on 5.1.2.
+    Video suites pass on 5.1.2 and 9.0.2.
+  - **Electron 25.8.4 -> 43.8.3**, Electron Forge 7.11.2, Node 24 pin for `npm run make` (`.nvmrc`,
+    `engines.node`), upstream #3343 (dropdown spacer) and #3344 (dialogs open in the last folder); `ipcRenderer.sendTo`
+    and `File.path` replaced. 45 waits for the clipboard rewrite (Electron 44 rebuilt the clipboard API).
+    `tsc`, eslint/stylelint and vitest (288 passed, 1 skipped) clean.
+  - Gate (APPDATA pointed at a scratch folder holding the pinned 9.0.2; `test_matting_complete.py` not run):
+    136,917 passed, 0 failed, 493 skipped (three `run_tests.py` shards, and the fourth shard's files in one process
+    after the corrupt-DLL load test stopped waiting on Windows' Bad Image box); `tsc`, eslint/stylelint, vitest clean.
+    Binaries `chainner_native.dll` `49cf7d54…`, `_chainner_graph.pyd` `9183c102…` (after the review's fix round).
+
 - RELEASED 2026-10-23 as **v0.3.8 re-release 1**: the bug
   and speed hunt below. Fork branch and tag `v0.3.8` at the publish of this tree (over `f7462c74`, with a
   follow-up that drops references to people and tools from notes and comments); asset SHA-256 `7599fc12…5e47` (`npm run make`, Node 25.2.1; zip verified against git, 0
@@ -563,8 +597,15 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | --- | --- |
 | Yes/no questions from the 2026-10-23 hunt (`native/local/hunt-20261023/REPORT.md`, "Your yes/no list"): (1) Save Video FFV1 `-level 3 -slices 16` (14-46 % faster saves, frames identical, bytes change; ruling 7); (2) Save Image PNG compression level 5 (-24 % save time, +0.7 % size); (3) Blue Noise non-identical speedup (prototype 8-19x, 6 of 65,536 ranks differ; ruling 11); (4) upscale run-ahead for PyTorch/ONNX/NCNN (branch `hunt/upscale-runahead`, needs a GPU check of a two-GPU-upscale chain) | The yes or no |
 | 2026-10-23 hunt GPU phase: merged upscale changes bit-identical on TensorRT fp16, PyTorch CUDA fp16 and NCNN Vulkan (TensorRT RGBA 4x -8 %); ONNX's CUDA provider did not start in a plain process ("Could not locate cublasLt64_12.dll", runtime CUDA 13) and the process ended silently | Check in the app: ONNX Upscale Image on CUDA |
-| Integrated FFmpeg is 5.1.2 (upstream's unversioned 2024 download link): option 1 was chosen on 2026-10-23: pin a current release by version + SHA-256, update older installed copies at startup, leave user-replaced copies alone | Next session |
-| Node.js 25.2.1 (pinned for `npm run make`) is end-of-life with high-severity advisories (a hook flagged it 2026-10-23) | Decision on the next Node pin |
+| Electron 43 checks still to make by hand: first start of the packaged zip, a folder dropped onto inputs, dropdown group headers, dialogs remembering the folder, screenshot copy, Squirrel install and uninstall. Passed by hand on 2026-10-24 from source: first start, a `.chn` and an image dropped, chain copy and paste, image paste, Get Native Resolution's values in Number/Text nodes, Linear Light. A start listens on a socket (Vite, Electron, the backend): new program paths raise a Firewall prompt | By hand, announced first (`native/local/getnative-20261023/electron-report.md`, "Start check") |
+| Electron 45: Electron 44 rebuilt the main-process clipboard (`readBuffer`, `writeBuffer`, `availableFormats`, `readHTML`, `readRTF`, `readImage`, `writeImage` removed); call sites `main-window.ts` (clipboard IPC), `clipboardImage.ts`, `copyAndPaste.ts`, `nodeScreenshot.ts`; also 44's `net.request` navigate-mode check and 45's sandboxed preloads | A clipboard migration with live tests (chain data byte-compatible with older chaiNNer, PNG screenshots, image paste's alpha rule) before Electron 43's end of life (January 2027) |
+| `Squirrel.exe` is missing from the portable zip: Forge 7.11 runs the makers concurrently, so the zip no longer picks up the copy electron-winstaller makes (inert in a portable package; `verify_independent_ui.cjs` expects none; the installer's nupkg has it) | Accept, or copy it in `postMake` (without the chaiNNer icon) |
+| Get Native Resolution's grid search at CRF 23 on x1.29 upscales: the planted 960x540 grid is supported on 0 of 288 frames (13 leading; supported frames sit on 930x523/930x540); at CRF 16, 98 of 288. Fractional plants vote 959x540 or 961x539 | A grid-core investigation (Vernier's search, not the kernel rule) |
+| Get Native Resolution's fold-ratio kernel fingerprint was set aside: its statistic carries 1/(1 + 1/SNR(f)), which varies across the band, so soft or compressed content looks like a softer kernel (2 wrong supported decisions at CRF 16); the code is in history (`e03c36e4`) | A noise-corrected estimator (a noise floor from the permuted coherence, or noise in the model) before another try |
+| Get Native Resolution follow-ups: the packet-index scan is not abortable (about 7 s cold on a 1.4 GB file, also for one typed time); `parameters.json`'s `selection` keeps Vernier's per-frame meaning on the Video tab; a video with a rotating display matrix refuses the light models; no Descaled output on the Video tab | Next session |
+| Backend video tests read the FFmpeg in `%APPDATA%\chaiNNer\backend-storage` and give Save Video that storage, so with the pinned FFmpeg a gate run with the real APPDATA would update that copy; tests that start the backend worker without a storage folder write `backend-storage\temp` under the real roaming folder (appdirs ignores the APPDATA variable) | A scratch storage fixture with the pinned FFmpeg, and `--storage-dir` for started workers; until then run the gate with APPDATA pointed at a scratch folder |
+| Video written by Save Video through an FFmpeg 8.x or 9 build before the `setparams` fix (the D: install's FFmpeg 8 build included) has no primaries or transfer tags; FFmpeg 5.1.2 wrote them | Fixed for new saves; files already written keep their tags as written |
+| npm 11.19 (Node 24.22.1) skips the install scripts of `@swc/core`, `core-js-pure`, `electron-winstaller` and `esbuild` (none is needed) and warns on every install; the lock pins `@electron/node-gyp` from GitHub over `git+ssh`, so `npm ci` needs GitHub access | An `allowScripts` list; a registry `@electron/node-gyp` when Forge's rebuild has one |
 | 2026-10-23 hunt, found not fixed: Load Video on a truncated file ends early with success; Python executor does not wait for a lazy input on Stop; chains deeper than ~990 nodes hit the recursion limit (depth limit or iterative engine: to decide); ncnn `pow` with negative bases; NAFNet conversion KeyError; every node re-renders on edge changes; Denoise / Lens Blur SIMD rewrites; PNG encode is now the largest batch cost; editor speed-ups and the damaged-chain message need an in-app check | Next sessions |
 | Follow-on F01/F17: concurrent Skip Existing writers and concurrent settings writers | Still deferred by review. F11/F12 were subsequently approved and implemented in `3a345dee` |
 | Follow-on installed UI checks left: numeric drafts changed by stepper/arrow keys/wheel, and the backend stopping after an accepted quit | Typed numeric Ctrl+S and Quit-then-Cancel PASSED on the installed v0.3.8 (2026-10-22). Prescribed YUV/model, ONNX/NCNN Stop, background removal and the corrected Guided GPU run passed |
@@ -603,7 +644,7 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | `tests/common/backend-nodes.test.ts` imports nodes with `error_on_failed_node=False`, so a node that fails to import disappears silently | Assert a few schema ids or import strictly |
 | `Build.ps1 -Configuration Debug` fails at `chainner_ext` (needs `python314_d.lib`, which the runtime lacks; pre-existing) | Skip `chainner_ext` in Debug or provide the debug library |
 | Upstream check and bug hunt (2026-10-16), queued items, each ruled by the review stand-in (`the decision log`, "2026-10-16 · Upstream check and bug hunt"): `independent_ui.py` patches for 17d9331c (uninstall a disabled package) and 3f671309 (hidden experimental toggle), with the nightly-restore item (first row); Electron logs backend stdout per chunk, so bare prints are missing from `main.log` (a line-based reader keeping every level); the read-ahead predicate refinement for look-ahead nodes (compute Save Image's folder nodes before the item-0 decision, compare the full output folder; Save Image's skipped-file CPU work also runs ahead); look-ahead jobs share the node's cleanup set (latent); Descale: a multi-reflect Mirror instead of the refusal, and a schema-range sweep for degenerate Blur/Taps (Blur 0.01 Bilinear gives black); PyAV CFR resampling for variable-rate MKV/WebM (today they use the CLI reader); VOSR engine-cache self-heal (move a corrupt cache aside, rebuild); pip resolves on every backend start (a lock-vs-installed check); lazy inputs: evaluate the producer inline on the waiting thread; untaken-branch outputs cached until run end; malformed `/run` error wording; Save Image: reject `..` (user-visible), RGBA to JPEG flatten vs drop (choice), AVIF 4:0:0 label, `nul` message; Riemersma History Length above about 487 M; ONNX int64-input message; Build Engine minimum 48 px; a newer-chaiNNer chain notice | Next sessions, in the order of the decisions file |
-| Open questions (2026-10-16): Electron 25 -> 43 (about 40 advisories; must land with upstream #3343/#3344), vitest 1 -> 4 (with ip-address 9 -> 10 and adm-zip 0.5 -> 0.6), upstream #3318 (OOM recovery and tile-size display, a feature), re-release v0.3.4 with today's Descale Mirror out-of-bounds fix (v0.3.4 ships the bug), and the upstream features #3140/#3191/#3187/#3222 stay out | The yes or no |
+| Open questions (2026-10-16): vitest 1 -> 4 (with ip-address 9 -> 10 and adm-zip 0.5 -> 0.6), upstream #3318 (OOM recovery and tile-size display, a feature), re-release v0.3.4 with today's Descale Mirror out-of-bounds fix (v0.3.4 ships the bug), and the upstream features #3140/#3191/#3187/#3222 stay out | The yes or no |
 | VapourSynth hunt follow-ups (2026-10-16; the v0.3.5 re-release has the 21 hunt fixes plus 3; rulings by the review stand-in in `the decision log`): startup install of user modules outside the node import (the host waits 300 s for nodes, an install may take 900 s); vspipe in a job object so it ends with the worker (move `OwnedJob` to `nodes/impl/owned_job.py`, soft `assign`, vsview excluded); hide the ~36 base classes that always fail in Class dropdowns (scan hide list, vs-jetpack-version tagged) with MVTools methods needing analyze(), no-clip/tuple returns and object-only methods; `*args` clips; wrapped signatures (DFTTest.extract_freq, Morpho.black/white_hat); version pins in user_modules.toml; name a hanging user file in the scan timeout; uninstall removes transitive deps no other package needs (keep numpy, scipy and chaiNNer-C's own); uninstall KeyError; AI Upscale SAR with non-uniform ONNX scale; Preview Clips checks a temp copy before rewriting an open vsview's script; silent vsview start failure and per-worker viewers; `range` ints by sibling params; union inputs; FilePathType paths; per-plane expression lists; "*" file drag-and-drop (frontend). | Reports in the session scratchpad `vshunt\a1..a5-report.md`, rulings in the local rulings file |
 | GPU phase of the YUV/TensorRT 11.4 work, the rest (approval only; ESRGAN models, DUAL Light/XS) | Phase 1 done 2026-10-18 (`native/local/yuv-planes/report-gpu.md`: runner tests, Upscale Image and AI Upscale bit-identical, 11.2 vs 11.4, bridge vs runner vs vstrt, the 11.2-engine message; Tile documented, not honoured). Left: AI Upscale's runner default on a 1080p RGBS testsrc2 clip, Streams 1 and 2, against the bridge (`CHAINNER_C_TRT_RUNNER=0`) with one ESRGAN engine, headless, 50 frames after warm-up: frames bit-identical, ms/frame each; vosr2_qkv and DUAL on 11.4 |
 | GPU checks deferred on 2026-10-16 (a model was training; light checks only): Build Engine Fixed 64x64 -> Get Engine Info -> Upscale on 200x150 under chaiNNer-C's TensorRT 11.2; a fixed-size ONNX engine keeps its size under 11.2; the timing cache file after the first build and "Loaded" on the second; Stop and worker kill during a real DUAL build (no child left, VRAM back); the TensorRT session-leak paths (need a CUDA fault); the VOSR CUDA checks listed in the area-7 hunt report | The next GPU session |
@@ -616,6 +657,14 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 ## Decision log
 
+- 2026-10-23 (Get Native Resolution, Linear Light, FFmpeg pin, Electron): the node opens the video itself; its
+  outputs carry the stored (encoded) values, light models are evidence only; an ambiguous kernel carries the
+  smallest support in the 8 % band; the kernel rule is the least-squares cross-frame rule (the fold-ratio
+  fingerprint failed its pre-registered keep rule and was set aside); FFmpeg pinned at 9.0.2 on every platform;
+  Electron 43.8.3 rather than 45 (clipboard rewrite in 44); Save Video sets its colour tags on the frames and Auto
+  transcodes PCM and FLAC going into MP4; the GIF test judges palette error perceptually (FFmpeg 6.0's OkLab
+  palettegen). Records: `native/local/getnative-20261023/` (CONTRACT.md, the rulings file, the branch and
+  integration reports).
 - 2026-10-22 (the guided decision): apply the one-line Guided tile-axis correction, add one
   non-square grayscale CPU test with RGB control, repeat the single Guided GPU sample with final HxW shape, commit and
   hand back. Only focused pix_transform tests, no new full suite/native rebuild; no release or D: changes by an earlier review.

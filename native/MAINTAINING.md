@@ -137,7 +137,7 @@ packaging (section 4, item 6; README Build). VOSR's modules, engine caches, host
    `verified_no_op` (README Package).
 2. Bundle checks (section 5, step 3), `make_oracle.py`, the gates of section 10.
 3. Release zip from source: `npm ci`, the native build (Forge copies `backend/src` with the binaries), then
-   `npm run make`; `forge.config.js` adds the `portable` marker to the zip and deletes `.pyc` files first. Its top
+   `npm run make`, both under Node 24 LTS (`.nvmrc`, `engines.node`); `forge.config.js` adds the `portable` marker to the zip and deletes `.pyc` files first. Its top
    maps cross-zip's `fs.rmdir(..., { recursive })`, which Node 25 removed, to `fs.rm`: keep it while maker-zip uses
    cross-zip.
 4. The `native/README.md` hash table must match the shipped binaries.

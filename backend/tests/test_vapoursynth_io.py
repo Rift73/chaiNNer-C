@@ -225,10 +225,11 @@ def test_untagged_yuv_frames_use_load_videos_matrix(
 def test_stop_ends_vspipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run: str):
     # A vspipe that does not end: an evaluation that indexes a long video or a hung
     # plugin, a frame that an AI model renders for minutes.
-    started: list[subprocess.Popen[bytes]] = []
+    # The runner's own Popen arguments pass through, its text mode included.
+    started: list[subprocess.Popen[Any]] = []
     popen = subprocess.Popen
 
-    def hanging(command: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+    def hanging(command: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
         sleep = [sys.executable, "-c", "import time; time.sleep(60)"]
         started.append(popen(sleep, **kwargs))
         return started[-1]
@@ -758,9 +759,10 @@ def test_frames_to_clip_errors(
     with pytest.raises(ValueError, match="were 8x6 with 1 channels, 4x3 with 1"):
         collect(tmp_path, [(None, y, u, u), (None, y, y, y)], "planes")
 
-    # FFmpeg rejects an option (another codec's tag): its exit code and its message.
+    # FFmpeg rejects an option (another codec's tag): its exit code (1 from FFmpeg 5.1,
+    # the error's own code from FFmpeg 7) and its message.
     monkeypatch.setattr(frames_to_clip, "GBRPF32_NUT_TAG", "FFV1")
-    with pytest.raises(RuntimeError, match=r"FFmpeg stopped .*exit code 1.*FFV1"):
+    with pytest.raises(RuntimeError, match=r"FFmpeg stopped .*exit code \d+\).*FFV1"):
         collect(tmp_path, [(rgb, None, None, None)] * 3, precision="32")
 
 

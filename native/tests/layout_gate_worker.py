@@ -77,6 +77,9 @@ EXCLUDED = {
     "its frames are to_uint8's result, written as C-order bytes "
     "(video_io.cpp frame_payload: a memoryview only of a C-contiguous frame, else "
     "tobytes)",
+    "chainner:image:get_native_resolution": "its Report carries the run's time and "
+    "timings, and it refuses transparent images by design; test_getnative_node.py "
+    "compares its permuted and C layouts",
 }
 # Dropdowns that keep their default, by label. Save DDS Texture's format stays BC1:
 # BC6H and BC7 encode on the GPU by default (test_dds.py runs every format, -nogpu).
@@ -479,7 +482,7 @@ def execute(
             values = [*values[:3], blurred[:, :, :3], *values[4:]]
     approved = approved_result(tree, schema, node, values)
     if approved is not None:
-        outputs = tree.process.enforce_output(approved, node).output
+        outputs: list[object] = tree.process.enforce_output(approved, node).output
         return outputs, broadcast_data(node, outputs)
     result = tree.process.run_node(node, None, values, "layout-gate")
     if node.kind == "collector":

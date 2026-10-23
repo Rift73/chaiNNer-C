@@ -183,6 +183,7 @@ def test_planes_round_trip_bit_identically(
     source = tmp_path / "source.mkv"
     ffmpeg(
         *("-f", "lavfi", "-i", "testsrc2=size=64x48:rate=5:duration=0.6"),
+        *("-vf", f"setparams=color_primaries={primaries}:color_trc={transfer}"),
         *("-c:v", "ffv1", "-pix_fmt", f"yuv{layout}p{depth}"),
         *("-colorspace", matrix, "-color_primaries", primaries),
         *("-color_trc", transfer, "-color_range", colour_range),
@@ -227,6 +228,7 @@ def test_planes_keep_their_codes_on_an_ffmpeg_that_converts_tags(
     source = tmp_path / "source.mkv"
     ffmpeg(
         *("-f", "lavfi", "-i", "testsrc2=size=64x48:rate=5:duration=0.6"),
+        *("-vf", "setparams=color_primaries=bt709:color_trc=bt709"),
         *("-c:v", "ffv1", "-pix_fmt", "yuv420p", "-colorspace", "bt709"),
         *("-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"),
         *("-chroma_sample_location", "left", str(source)),

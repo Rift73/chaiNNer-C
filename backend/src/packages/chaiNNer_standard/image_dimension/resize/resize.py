@@ -6,11 +6,13 @@ import numpy as np
 
 from api import KeyInfo
 from nodes.groups import Condition, if_enum_group, if_group
+from nodes.impl.linear_light import LightTransfer
 from nodes.impl.resize import ResizeFilter, resize
 from nodes.properties.inputs import (
     BoolInput,
     EnumInput,
     ImageInput,
+    LightTransferInput,
     NumberInput,
     ResizeFilterInput,
 )
@@ -71,6 +73,17 @@ class ImageResizeMode(Enum):
             )
             .with_id(7),
         ),
+        if_group(~Condition.enum(5, ResizeFilter.NEAREST))(
+            BoolInput("Linear Light", default=False)
+            .with_docs(
+                "Resize in linear light: the colour channels go through the Transfer curve to linear light before the resize and back after, so bright and dark detail mix as light does (no darkened edges, thin bright lines kept when downscaling). Alpha is not converted.",
+                "With alpha, the colours are converted before they are weighted by alpha. Nearest Neighbor mixes no pixels, so it has no Linear Light.",
+            )
+            .with_id(8),
+        ),
+        if_group(Condition.bool(8, True) & ~Condition.enum(5, ResizeFilter.NEAREST))(
+            LightTransferInput(LightTransfer.SRGB).with_id(9),
+        ),
     ],
     outputs=[
         ImageOutput(
@@ -106,9 +119,14 @@ class ImageResizeMode(Enum):
         let width = Input3;
         let height = Input4;
 
-        match mode {
+        let size = match mode {
             ImageResizeMode::Percentage => string::concat(toString(scale), "%"),
             ImageResizeMode::Absolute => string::concat(toString(width), "x", toString(height)),
+        };
+
+        match Input5 {
+            ResizeFilter::Nearest => size,
+            _ => if Input8 { string::concat(size, " · ", LightTransfer::label(Input9)) } else { size },
         }
         """
     ),
@@ -122,6 +140,8 @@ def resize_node(
     filter: ResizeFilter,
     separate_alpha: bool,
     dpid_lambda: float,
+    linear_light: bool,
+    transfer: LightTransfer,
 ) -> np.ndarray:
     h, w, _ = get_h_w_c(img)
 
@@ -141,4 +161,5 @@ def resize_node(
         separate_alpha=separate_alpha,
         gamma_correction=False,
         dpid_lambda=dpid_lambda,
+        light=transfer if linear_light else None,
     )

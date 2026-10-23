@@ -10,6 +10,7 @@ from ...impl.color.convert_data import (
 
 # pylint: disable=relative-beyond-top-level
 from ...impl.image_utils import BorderType
+from ...impl.linear_light import LightTransfer
 from ...impl.pil_utils import RotationInterpolationMethod
 from ...impl.resize import ResizeFilter
 from .generic_inputs import DropDownGroup, DropDownInput, EnumInput
@@ -67,6 +68,34 @@ def ResizeFilterInput() -> DropDownInput:
             ResizeFilter.BSPLINE: "B-Spline",
             ResizeFilter.DPID: "DPID (detail-preserving)",
         },
+    )
+
+
+def LightTransferInput(default: LightTransfer) -> DropDownInput:
+    """Linear Light's curve; LightTransfer::label gives a key info its short name."""
+    return EnumInput(
+        LightTransfer,
+        label="Transfer",
+        default=default,
+        option_labels={
+            LightTransfer.GAMMA_24: "Gamma 2.4 (BT.1886)",
+            LightTransfer.SRGB: "sRGB",
+            LightTransfer.GAMMA_22: "Gamma 2.2",
+            LightTransfer.BT709_CAMERA: "BT.709 camera (inverse OETF)",
+        },
+        extra_definitions="""
+            def LightTransfer::label(transfer: LightTransfer): string {
+                match transfer {
+                    LightTransfer::Gamma24 => "Gamma 2.4",
+                    LightTransfer::Srgb => "sRGB",
+                    LightTransfer::Gamma22 => "Gamma 2.2",
+                    LightTransfer::Bt709Camera => "BT.709 camera",
+                }
+            }
+        """,
+    ).with_docs(
+        "The curve the image's values are encoded with: Gamma 2.4 (BT.1886) for video as displayed, sRGB for images and screen captures, Gamma 2.2 for a plain 2.2 power, BT.709 camera to undo the camera curve (scene light).",
+        "The curves never clip: they continue above 1 and are mirrored below 0, so values outside 0-1 (such as Descale's ringing) survive the conversion. A resize filter that clamps its result to 0-1 still clamps it.",
     )
 
 

@@ -23,10 +23,23 @@ def resize_inputs(
     filter_value: int,
     separate_alpha: bool,
     dpid_lambda: float = 1.0,
+    linear_light: bool = False,
+    transfer: int = 1,
 ) -> list[object]:
-    """Resize's inputs; target is (width, height) for Absolute."""
+    """Resize's inputs; target is (width, height) for Absolute, transfer a LightTransfer value."""
     width, height = target
-    return [img, mode, scale, width, height, filter_value, separate_alpha, dpid_lambda]
+    return [
+        img,
+        mode,
+        scale,
+        width,
+        height,
+        filter_value,
+        separate_alpha,
+        dpid_lambda,
+        linear_light,
+        transfer,
+    ]
 
 
 @pytest.mark.parametrize("separate_alpha", [False, True])
@@ -68,6 +81,29 @@ def test_resize_dpid_lambda_matches(channels, target, separate_alpha, dpid_lambd
     assert assert_native_matches(RESIZE, inputs)[0] == "outputs"
 
 
+@pytest.mark.parametrize("transfer", [0, 1, 2, 3])
+@pytest.mark.parametrize("separate_alpha", [False, True])
+@pytest.mark.parametrize("filter_value", FILTERS)
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_resize_linear_light_matches(channels, filter_value, separate_alpha, transfer):
+    key = ("resize light", channels, filter_value, separate_alpha, transfer)
+    img = image(seed_of(*key), 17, 31, channels)
+    for target in [(5, 3), (47, 29), (31, 17)]:
+        for linear_light in (False, True):
+            inputs = resize_inputs(
+                img,
+                ABSOLUTE,
+                100,
+                target,
+                filter_value,
+                separate_alpha,
+                1.0,
+                linear_light,
+                transfer,
+            )
+            assert assert_native_matches(RESIZE, inputs)[0] == "outputs"
+
+
 @pytest.mark.parametrize(
     "filter_value",
     [
@@ -96,10 +132,19 @@ def test_resize_same_size_returns_the_input_itself(channels, filter_value):
         ((0, 7), PERCENT, 0, (1, 1)),
     ],
 )
+@pytest.mark.parametrize("linear_light", [False, True])
 @pytest.mark.parametrize("filter_value", FILTERS)
-def test_resize_empty_image_error(shape, mode, scale, target, filter_value):
+def test_resize_empty_image_error(
+    shape, mode, scale, target, filter_value, linear_light
+):
     inputs = resize_inputs(
-        np.zeros(shape, np.float32), mode, scale, target, filter_value, False
+        np.zeros(shape, np.float32),
+        mode,
+        scale,
+        target,
+        filter_value,
+        False,
+        linear_light=linear_light,
     )
     outcome = assert_native_matches(RESIZE, inputs)
     assert outcome == (

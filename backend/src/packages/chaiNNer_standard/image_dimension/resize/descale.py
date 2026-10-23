@@ -5,9 +5,16 @@ from enum import Enum
 import numpy as np
 
 from api import KeyInfo
-from nodes.groups import if_enum_group
+from nodes.groups import Condition, if_enum_group, if_group
+from nodes.impl.linear_light import LightTransfer
 from nodes.impl.native_descale import descale
-from nodes.properties.inputs import EnumInput, ImageInput, NumberInput
+from nodes.properties.inputs import (
+    BoolInput,
+    EnumInput,
+    ImageInput,
+    LightTransferInput,
+    NumberInput,
+)
 from nodes.properties.outputs import ImageOutput
 
 from .. import resize_group
@@ -88,6 +95,15 @@ class DescaleBorder(Enum):
         )
         .with_docs("The padding the upscale used at the image edges.")
         .with_id(12),
+        BoolInput("Linear Light", default=False)
+        .with_docs(
+            "For an upscale done in linear light: the colour channels go through the Transfer curve to linear light before the descale and back after. Alpha is not converted.",
+            "A one-channel image is converted as one plane, which is approximate for a Y (luma) plane: linear light belongs to R, G and B.",
+        )
+        .with_id(13),
+        if_group(Condition.bool(13, True))(
+            LightTransferInput(LightTransfer.GAMMA_24).with_id(14),
+        ),
     ],
     outputs=[
         ImageOutput(
@@ -101,7 +117,11 @@ class DescaleBorder(Enum):
         )
     ],
     key_info=KeyInfo.type(
-        """string::concat(toString(Input1), "x", toString(Input2))"""
+        """
+        let size = string::concat(toString(Input1), "x", toString(Input2));
+
+        if Input13 { string::concat(size, " · ", LightTransfer::label(Input14)) } else { size }
+        """
     ),
 )
 def descale_node(
@@ -118,6 +138,8 @@ def descale_node(
     src_width: float,
     src_height: float,
     border: DescaleBorder,
+    linear_light: bool,
+    transfer: LightTransfer,
 ) -> np.ndarray:
     return descale(
         img,
@@ -131,4 +153,5 @@ def descale_node(
         (src_left, src_top),
         (src_width or width, src_height or height),
         border.value,
+        transfer if linear_light else None,
     )

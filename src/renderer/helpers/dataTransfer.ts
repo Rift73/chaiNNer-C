@@ -37,15 +37,21 @@ export const includesDirectory = (dataTransfer: DataTransfer): boolean =>
         (item) => item.kind === 'file' && item.webkitGetAsEntry()?.isDirectory === true
     );
 
+/**
+ * The absolute path of a dropped file. Electron 32 removed `File.path`; the preload script bridges
+ * its replacement, `webUtils.getPathForFile`.
+ */
+export const getFilePath = (file: File): string => window.electronFileUtils.getPathForFile(file);
+
 export const getSingleFileWithExtension = (
     dataTransfer: DataTransfer,
     allowedExtensions: readonly string[]
 ): string | undefined => {
     if (dataTransfer.files.length === 1 && !includesDirectory(dataTransfer)) {
-        const [file] = dataTransfer.files;
-        const extension = extname(file.path).toLowerCase();
+        const path = getFilePath(dataTransfer.files[0]);
+        const extension = extname(path).toLowerCase();
         if (allowedExtensions.includes(extension)) {
-            return file.path;
+            return path;
         }
     }
     return undefined;
@@ -119,17 +125,10 @@ const chainnerPresetProcessor: DataTransferProcessor = (
 
 const openChainnerFileProcessor: DataTransferProcessor = (dataTransfer) => {
     if (dataTransfer.files.length === 1 && !includesDirectory(dataTransfer)) {
-        const [file] = dataTransfer.files;
-        if (/\.chn/i.test(file.path)) {
-            // found a .chn file
-
-            ipcRenderer
-                .invoke('open-save-file', file.path)
-                .then((result) => {
-                    // TODO: 1 is hard-coded. Find a better way
-                    ipcRenderer.sendTo(1, 'file-open', result);
-                })
-                .catch(log.error);
+        const path = getFilePath(dataTransfer.files[0]);
+        if (/\.chn/i.test(path)) {
+            // found a .chn file; the main process opens it and sends the result over `file-open`
+            ipcRenderer.invoke('open-save-file', path).catch(log.error);
 
             return true;
         }

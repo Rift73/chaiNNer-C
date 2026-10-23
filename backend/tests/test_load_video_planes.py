@@ -277,6 +277,7 @@ def test_colour_outputs_and_choices(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     path = make_video(
         tmp_path / "tagged.mkv",
         SOURCE,
+        *("-vf", "setparams=color_primaries=bt709:color_trc=bt709"),
         *("-c:v", "ffv1", "-pix_fmt", "yuv420p"),
         *("-colorspace", "bt709", "-color_primaries", "bt709"),
         *("-color_trc", "bt709", "-color_range", "tv"),
@@ -331,6 +332,7 @@ def test_failed_hdr_probe_reads_without_hdr_metadata(
     path = make_video(
         tmp_path / "pq.mkv",
         SOURCE,
+        *("-vf", "setparams=color_primaries=bt2020:color_trc=smpte2084"),
         *("-c:v", "ffv1", "-pix_fmt", "yuv420p10le", "-colorspace", "bt2020nc"),
         *("-color_primaries", "bt2020", "-color_trc", "smpte2084"),
     )
@@ -361,6 +363,7 @@ def test_rgb_mode_refuses_constant_luminance(
     path = make_video(
         tmp_path / "cl.mkv",
         SOURCE,
+        *("-vf", "format=yuv420p10le,setparams=colorspace=bt2020c"),
         *("-c:v", "ffv1", "-pix_fmt", "yuv420p10le", "-colorspace", "bt2020c"),
     )
     with pytest.raises(

@@ -19,6 +19,7 @@ import { log } from '../../../common/log';
 
 import { getFields, isDirectory } from '../../../common/types/util';
 import { AlertBoxContext } from '../../contexts/AlertBoxContext';
+import { getFilePath } from '../../helpers/dataTransfer';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useInputRefactor } from '../../hooks/useInputRefactor';
 import { useLastDirectory } from '../../hooks/useLastDirectory';
@@ -92,7 +93,7 @@ export const DirectoryInput = memo(
             const entries = Array.from(items).filter((item) => item.kind === 'file');
             const folder =
                 entries.length === 1 && entries[0].webkitGetAsEntry()?.isDirectory === true
-                    ? files[0].path
+                    ? getFilePath(files[0])
                     : undefined;
             if (folder) {
                 setValue(folder);

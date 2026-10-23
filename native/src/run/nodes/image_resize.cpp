@@ -150,7 +150,7 @@ Extent Extent::round_half_up(double value)
 }
 
 Value resize(const Image &image, Extent width, Extent height, int64_t filter, bool separate_alpha,
-             bool gamma_correction, double dpid_lambda)
+             std::optional<int64_t> light, double dpid_lambda)
 {
     check_memory(width, height, image.channels);
     /* A dimension beyond 2^63 compares as UINT64_MAX: above every image size and coordinate limit. */
@@ -167,18 +167,23 @@ Value resize(const Image &image, Extent width, Extent height, int64_t filter, bo
     }
     bool premultiplied = !separate_alpha && image.channels == 4;
     Image source = image;
-    if (premultiplied) {
+    if (light) {
+        /* An empty image: the body's linear copy passes, and the resample's own check fails with this error. */
         nonempty(image);
-        MutableImage alpha = MutableImage::allocate(image.height, image.width, 4);
-        check(cn_resample_alpha(image.data, alpha.data(), size_t(image.height) * size_t(image.width), 0));
+        source = linearize(image, *light);
+    }
+    if (premultiplied) {
+        nonempty(source);
+        MutableImage alpha = MutableImage::allocate(source.height, source.width, 4);
+        check(cn_resample_alpha(source.data, alpha.data(), size_t(source.height) * size_t(source.width), 0));
         source = std::move(alpha).publish();
     }
-    /* Premultiplied RGBA carries alpha with DPID's colour weights. */
-    MutableImage out = filter == filter_dpid
-                           ? dpid(source, new_w, new_h, dpid_lambda, separate_alpha, gamma_correction)
-                           : filtered(source, new_w, new_h, filter, gamma_correction);
+    /* Premultiplied RGBA carries alpha with DPID's colour weights; the nodes pass gamma_correction=False. */
+    MutableImage out = filter == filter_dpid ? dpid(source, new_w, new_h, dpid_lambda, separate_alpha, false)
+                                             : filtered(source, new_w, new_h, filter, false);
     size_t pixels = size_t(out.height()) * size_t(out.width());
     if (premultiplied && pixels) check(cn_resample_alpha(out.data(), out.data(), pixels, 1));
+    if (light) encode_light(out, *light);
     return std::move(out).publish();
 }
 

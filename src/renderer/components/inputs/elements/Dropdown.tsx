@@ -76,14 +76,6 @@ const renderSelectItem = (item: DropDownItem, unavailable: string): JSX.Element[
         return [
             <option
                 disabled
-                key={`--pad-${pseudoValue}`}
-                style={{ fontSize: '30%' }}
-                value={`--pad-${pseudoValue}`}
-            >
-                {' '}
-            </option>,
-            <option
-                disabled
                 key={pseudoValue}
                 style={{
                     fontSize: '110%',

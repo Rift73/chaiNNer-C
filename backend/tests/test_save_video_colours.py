@@ -268,7 +268,7 @@ def untagged_clip(tmp_path: Path, size: tuple[int, int], matrix: str) -> Path:
             "-i",
             "pipe:",
             "-vf",
-            f"{scale}:flags=accurate_rnd+full_chroma_int",
+            f"{scale}:flags=accurate_rnd+full_chroma_int,setparams=colorspace=unknown",
             "-c:v",
             "libx264",
             "-qp",
@@ -307,6 +307,32 @@ def gradient(width: int, height: int) -> np.ndarray:
     return np.stack([np.full_like(x, 0.5), y / (height - 1), x / (width - 1)], axis=-1)
 
 
+def oklab(bgr: np.ndarray) -> np.ndarray:
+    """8-bit sRGB BGR pixels in OkLab (Ottosson's matrices)."""
+    c = bgr[..., ::-1].astype(np.float64) / 255
+    linear = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    lms = np.cbrt(
+        linear
+        @ np.array(
+            [
+                [0.4122214708, 0.5363325363, 0.0514459929],
+                [0.2119034982, 0.6806995451, 0.1073969566],
+                [0.0883024619, 0.2817188376, 0.6299787005],
+            ]
+        ).T
+    )
+    return (
+        lms
+        @ np.array(
+            [
+                [0.2104542553, 0.7936177850, -0.0040720468],
+                [1.9779984951, -2.4285922050, 0.4505937099],
+                [0.0259040371, 0.7827717662, -0.8086757660],
+            ]
+        ).T
+    )
+
+
 @pytest.mark.parametrize("pattern", ["gradient", "grey"])
 def test_gif_gets_a_palette_per_frame(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pattern: str
@@ -336,6 +362,17 @@ def test_gif_gets_a_palette_per_frame(
     assert [frame["pts"] for frame in json.loads(probe)["frames"]] == [0, 50]
     original = np.round(image * 255).astype(int)
     for cli in (False, True):
-        error = np.abs(read(path, monkeypatch, cli).astype(int) - original)
-        assert error.max() <= (0 if pattern == "grey" else 30)
-        assert error.mean() <= 5
+        frame = read(path, monkeypatch, cli)
+        error = np.abs(frame.astype(int) - original)
+        if pattern == "grey":
+            assert error.max() == 0
+            continue
+        # The palette is judged as seen: FFmpeg 6.0's palettegen clusters in OkLab, so
+        # a channel the eye barely sees can be 54 levels off at the gradient's corners
+        # (FFmpeg 9.0.2 and 8.x; 25 on 5.1.2) while every pixel is perceptually closer
+        # than 5.1.2's. Measured: mean RGB error 3.73 (9.0.2) and 3.17 (5.1.2); largest
+        # OkLab distance 0.041 and 0.060, mean 0.012 and 0.015.
+        assert error.mean() <= 4.0
+        distance = np.linalg.norm(oklab(frame) - oklab(original), axis=-1)
+        assert distance.max() <= 0.07
+        assert distance.mean() <= 0.02

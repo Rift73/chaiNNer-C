@@ -228,8 +228,17 @@ def test_load_failure_names_the_library_error(monkeypatch, tmp_path):
     broken = tmp_path / "chainner_native.dll"
     broken.write_bytes(b"not a library")
     monkeypatch.setattr(native, "library_path", lambda: broken)
-    with pytest.raises(RuntimeError) as raised:
-        native.lib.__wrapped__()
+    # Unless the error mode fails critical errors (SEM_FAILCRITICALERRORS, 1), Windows
+    # answers the corrupt image with a modal "Bad Image" box and the load waits for it: a
+    # run started without that mode hung.
+    kernel32 = ct.WinDLL("kernel32", use_last_error=True)
+    previous = ct.c_uint()
+    assert kernel32.SetThreadErrorMode(1, ct.byref(previous))
+    try:
+        with pytest.raises(RuntimeError) as raised:
+            native.lib.__wrapped__()
+    finally:
+        kernel32.SetThreadErrorMode(previous.value, None)
     message = str(raised.value)
     assert isinstance(raised.value.__cause__, OSError)
     assert str(broken) in message

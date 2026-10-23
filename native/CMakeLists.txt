@@ -132,7 +132,8 @@ add_library(chainner_native SHARED
     src/canny_ops.cpp src/inpaint_ops.cpp src/pixel_art_ops.cpp
     src/bilateral_ops.c src/denoise_ops.cpp src/onnx_runtime.cpp src/framework_image_ops.cpp src/framework_shared_ops.cpp
     src/clipboard_ops.c src/image_setup_ops.c src/scratch.c src/planar_ops.c src/descale_ops.c
-    src/yuv_planes_ops.c src/plane_resample_ops.c src/dpid_ops.c src/png_encode.c
+    src/yuv_planes_ops.c src/plane_resample_ops.c src/dpid_ops.c src/png_encode.c src/linear_light_ops.c
+    src/getnative_ops.cpp
     # ISA units (SP4 spec 4.3): export-free, one file per kernel family and level, compiled
     # for that level only and reached through a C entry's ISA dispatch, which runs a unit
     # only when the CPU has its level (src/isa.c) or CHAINNER_C_ISA caps it lower.
@@ -141,7 +142,7 @@ add_library(chainner_native SHARED
     src/resample_avx2.c src/spectral_avx2.c src/color_avx2.c src/planar_avx2.c
     src/yuv_planes_avx2.c src/plane_resample_avx2.c src/png_encode_avx2.c src/alpha_gamma_avx2.c
     src/neighborhood_avx2.c src/statistics_avx2.c src/unsharp_avx2.c
-    src/wavelet_avx2.c src/cast_half_avx2.c src/separable_avx512.c src/convolution_avx512.c)
+    src/wavelet_avx2.c src/cast_half_avx2.c src/linear_light_avx2.c src/separable_avx512.c src/convolution_avx512.c)
 # The levels' instruction sets, exactly what src/isa.c checks: AVX2 is AVX2, FMA, BMI1 and
 # BMI2; AVX-512 adds F, DQ, CD, BW and VL.
 set(chainner_c_avx2_options /clang:-mavx2 /clang:-mfma /clang:-mbmi /clang:-mbmi2)
@@ -150,6 +151,7 @@ set_source_files_properties(src/separable_avx2.c src/convolution_avx2.c src/conv
     src/blend_avx2.c src/resample_avx2.c src/spectral_avx2.c src/color_avx2.c
     src/planar_avx2.c src/yuv_planes_avx2.c src/plane_resample_avx2.c src/png_encode_avx2.c src/alpha_gamma_avx2.c
     src/neighborhood_avx2.c src/statistics_avx2.c src/unsharp_avx2.c src/wavelet_avx2.c src/cast_half_avx2.c
+    src/linear_light_avx2.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
 set_source_files_properties(src/separable_avx512.c src/convolution_avx512.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options};/clang:-mavx512f;/clang:-mavx512dq;/clang:-mavx512cd;/clang:-mavx512bw;/clang:-mavx512vl")
@@ -166,6 +168,33 @@ target_compile_options(chainner_descale PRIVATE /W3)
 set_source_files_properties(third_party/descale/src/x86/descale_avx2.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
 target_link_libraries(chainner_native PRIVATE chainner_descale)
+# Vernier 0.2's analysis core (MIT; third_party/vernier/PROVENANCE.md) for Get Native Resolution,
+# built once per ISA level with the session (src/getnative_unit.cpp) and the kernel decision
+# (src/getnative_kernel.cpp). Each build renames the core's namespace on the command line, so both
+# link side by side; src/getnative_ops.cpp picks one per session by cn_isa_current(). Both use
+# Vernier's floating-point model (the compiler's default: /fp:strict's reason, NumPy's flag windows,
+# does not apply to them) with contraction off, so they give bit-identical results. The baseline
+# library links first, so the standard library's inline functions both compile resolve to its
+# baseline copies.
+foreach(level base avx2)
+    set(target chainner_vernier_${level})
+    add_library(${target} STATIC third_party/vernier/src/resample.cpp third_party/vernier/src/analyze.cpp
+        third_party/vernier/src/spectrum.cpp src/getnative_unit.cpp src/getnative_kernel.cpp)
+    target_include_directories(${target} SYSTEM PRIVATE third_party/vernier/include)
+    target_include_directories(${target} PRIVATE include src)
+    target_compile_definitions(${target} PRIVATE native=cn_vernier_${level}
+        CN_GETNATIVE_UNIT=cn_getnative_unit_${level})
+    set_target_properties(${target} PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+    get_target_property(options ${target} COMPILE_OPTIONS)
+    list(REMOVE_ITEM options /fp:strict)
+    set_target_properties(${target} PROPERTIES COMPILE_OPTIONS "${options}")
+    target_compile_options(${target} PRIVATE /EHsc /clang:-ffp-contract=off)
+    target_link_libraries(chainner_native PRIVATE ${target})
+endforeach()
+target_compile_options(chainner_vernier_avx2 PRIVATE ${chainner_c_avx2_options})
+set_source_files_properties(third_party/vernier/src/resample.cpp third_party/vernier/src/analyze.cpp
+    third_party/vernier/src/spectrum.cpp PROPERTIES COMPILE_OPTIONS /W3)
+set_source_files_properties(src/getnative_unit.cpp src/getnative_kernel.cpp PROPERTIES COMPILE_OPTIONS "/W4;/WX")
 # The default PNG encoder (src/png_encode.c) compresses with the vendored libdeflate (chainner_deflate,
 # cmake/codecs.cmake), patched for its band pieces (third_party/libdeflate/PROVENANCE.md).
 target_link_libraries(chainner_native PRIVATE chainner_deflate)

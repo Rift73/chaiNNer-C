@@ -244,10 +244,25 @@ DESCALES = [
 def test_descale_matches(parameters, kernel, border, channels):
     width, height, *rest = parameters
     img = make(("descale", parameters), (31, 17), channels)
-    assert_native_matches("chainner:image:descale", [img, width, height, kernel, rest[0], rest[1], rest[2], *rest[3:], border])
+    assert_native_matches(
+        "chainner:image:descale", [img, width, height, kernel, rest[0], rest[1], rest[2], *rest[3:], border, False, 0]
+    )
 
 
-def test_descale_errors():
+# Linear Light (13) off with each Transfer (14), then on.
+@pytest.mark.parametrize("light", [(False, 1), (False, 3), (True, 0), (True, 1), (True, 2), (True, 3)])
+@pytest.mark.parametrize("channels", CHANNELS)
+@pytest.mark.parametrize("kernel", [1, 2, 3, 6])
+@pytest.mark.parametrize("parameters", DESCALES[:4])
+def test_descale_linear_light_matches(parameters, kernel, channels, light):
+    width, height, *rest = parameters
+    img = make(("descale light", parameters), (31, 17), channels)
+    inputs = [img, width, height, kernel, rest[0], rest[1], rest[2], *rest[3:], 2, *light]
+    assert assert_native_matches("chainner:image:descale", inputs)[0] == "outputs"
+
+
+@pytest.mark.parametrize("light", [(False, 0), (True, 1)])
+def test_descale_errors(light):
     img = image(3, 10, 12, 3)
     cases: list[list[object]] = [
         [img, 13, 10, 1, 0.0, 0.5, 3, 1.0, 0.0, 0.0, 0.0, 0.0, 0],
@@ -257,4 +272,4 @@ def test_descale_errors():
         [np.zeros((0, 5, 3), np.float32), 1, 1, 1, 0.0, 0.5, 3, 1.0, 0.0, 0.0, 0.0, 0.0, 0],
     ]
     for inputs in cases:
-        assert_native_matches("chainner:image:descale", inputs)
+        assert_native_matches("chainner:image:descale", [*inputs, *light])

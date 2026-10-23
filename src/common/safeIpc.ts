@@ -37,7 +37,11 @@ export interface InvokeChannels {
     'relaunch-application': ChannelInfo<void>;
     'quit-application': ChannelInfo<void>;
     'open-url': ChannelInfo<void, [url: string]>;
-    'open-save-file': ChannelInfo<FileOpenResult<ParsedSaveData>, [path: string]>;
+    /**
+     * Opens a save file and pushes the result to the main window over `file-open`, as for files
+     * opened by the OS or the menu.
+     */
+    'open-save-file': ChannelInfo<void, [path: string]>;
 
     // settings
     'get-settings': ChannelInfo<ChainnerSettings>;

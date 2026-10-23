@@ -275,6 +275,7 @@ def make_video(path: Path, *arguments: str) -> dict[str, object]:
 def test_real_files_report_their_tags(tmp_path: Path):
     tagged = make_video(
         tmp_path / "tagged.mkv",
+        *("-vf", "setparams=color_primaries=bt2020:color_trc=arib-std-b67"),
         *("-c:v", "ffv1", "-pix_fmt", "yuv422p10le"),
         *("-colorspace", "bt2020nc", "-color_primaries", "bt2020"),
         *("-color_trc", "arib-std-b67", "-color_range", "pc"),

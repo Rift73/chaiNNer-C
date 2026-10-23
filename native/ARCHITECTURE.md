@@ -30,7 +30,9 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 | Ownership, cache, events | `backend/src/nodes/impl/native_buffers.py`, `nodes/properties/outputs/numpy_outputs.py`, `chain/cache.py`, `nodes/impl/event_queue.py`, `nodes/impl/numpy_pool.py` (section 6) |
 | Resize and PNG | `backend/src/nodes/impl/native_resample.py`, `native/src/resample_filters.c`, `native/src/dpid_ops.c` (DPID), `native/src/image_io.cpp`, `native/src/png_encode.c` (`png_encode_avx2.c`; the default PNG encoder, with `native/third_party/libdeflate`) |
 | Image codecs and atomic writes (instant-exec lane I) | `native/cmake/codecs.cmake`, `native/src/codecs/*.c` (`native/include/image_codecs.h`), `native/src/image_decode.cpp`, `image_encode.cpp`, `image_preview.cpp`, `native/src/atomic_file.cpp`, `native/src/run/nodes/io.cpp`, `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}`; OpenEXR: `native/src/codecs/exr_codec.c`, `native/third_party/{openexr,imath,libdeflate,zstd,openjph}` |
-| Video | `native/src/video_io.cpp`, `backend/src/nodes/impl/video.py` |
+| Linear Light (Descale, Resize) | `native/include/linear_light.h` (the curves), `native/src/linear_light_ops.c` (`linear_light_avx2.c`), `backend/src/nodes/impl/linear_light.py` |
+| Get Native Resolution | `native/third_party/vernier` (Vernier 0.2's core), `native/src/getnative_ops.cpp` (C entries), `getnative_unit.cpp` (session, reports), `getnative_kernel.cpp` (cross-frame kernel decision), `backend/src/nodes/impl/native_getnative.py`, `getnative_media.py` (sampling and frames) |
+| Video | `native/src/video_io.cpp`, `backend/src/nodes/impl/video.py`, `backend/src/nodes/impl/ffmpeg.py` (the pinned FFmpeg and its update) |
 | Packaging | `native/tools/package_port.py`, `package_files.py`, `package_manifest.py` |
 | UI patches | `native/tools/independent_ui.py`, `native/tools/input-drop.json`, `native/tools/tensorrt-types.json`, `native/tools/tensorrt-clear.json`, `verify_*.cjs` |
 | Benchmark and profile | `native/tools/bench*.py`, `native/tools/bench-data/`; native-call timer `backend/src/nodes/impl/native_profile.py` (`CHAINNER_C_PROFILE`, README Bench) |
@@ -61,7 +63,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 - The nightly's GPU lease was removed on 2026-10-05 (decision): its 4 files are gone and every spot it hooked is
   upstream again. The delta's TF32, ONNX export size 32, `gc.collect()` removals and 8-worker pool stay (deliberate choice).
 - UI: the package ships the installed Electron 25 bundles with pinned patches (section 9). `src/`
-  is upstream `d56e507f` (Electron `^25.8.4`) with the two UI patches ported to the TypeScript, its integrated Python
+  is upstream `d56e507f`, moved to Electron `^43.8.3` and Electron Forge 7.11.2, with the two UI patches ported to the TypeScript, its integrated Python
   moved to CPython 3.14.8 (kept at 3.14.8 or newer) and its own root `%APPDATA%\chaiNNer-C`: the run-from-source UI (`npm start`), never part of the package. Do not
   substitute newer frontend, preload or main assets into the installed runtime.
 - The package owns its backend like normal chaiNNer. A `--remote-backend` launch changes ownership
@@ -69,8 +71,9 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 
 ## 3. Native layer
 
-- Sources: 136 files under `native/src` and `native/include` (66 `.c`, 24 `.cpp`, 34 `.h`,
-  11 `.hpp`, 1 `.inc`; 51,362 physical lines including generated tables and attributed adaptations).
+- Sources: 292 files under `native/src` and `native/include`, subfolders included (134 `.c`, 58 `.cpp`, 5 `.cu`,
+  63 `.h`, 30 `.hpp`, 2 `.inc`; 124,547 physical lines including generated tables and attributed adaptations).
+  Vendored libraries are under `native/third_party`.
 - `chainner_native.dll`: C17 image kernels behind a C ABI. `backend/src/nodes/impl/native.py`
   loads it with ctypes and requires `cn_abi_version() == 2`; a load or ABI failure raises, never
   selecting a Python implementation. `cn_status` codes map to `TypeError`/`ValueError`/
@@ -234,15 +237,24 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
   SIMD only where bit-identical (elementwise, per-output lane); no FMA contraction, reordered reductions or fast-math
   (`/fp:strict`). ISA dispatch (SP4): engine-mirror parameters (`lanes`, `fused`) choose each output's operations, the
   level only the code that runs them: `scalar`, `avx2` or `avx512`, probed once in `isa.c` (`CHAINNER_C_ISA`
-  caps it), in export-free units compiled for their level only: eleven `*_avx2.c` (conversions, convolution, lens, separable filters,
-  morphology with its exceptional scan, median cut and palette counts, dither, blend, resample, the spectral multiply,
-  the normal output) and the kept `convolution_avx512.c` and `separable_avx512.c` (16-lane groups; spec 4.3's keep rule:
+  caps it), in export-free units compiled for their level only: twenty-two `*_avx2.c` (conversions, convolution, lens,
+  separable filters, morphology with its exceptional scan, median cut and palette counts, dither, blend, resample, the
+  spectral multiply, the normal output, planar to interleaved, YUV plane codes, the plane resampler, PNG row filters,
+  Gamma's approximation, Median Blur's 3x3 and 5x5 interiors, the min/max reduce, Unsharp Mask's weighted sum, Wavelet
+  Color Fix's blur, the float16 cast and Linear Light's curves), the AVX2 build of Get Native Resolution's analysis
+  (below) and the kept `convolution_avx512.c` and `separable_avx512.c` (16-lane groups; spec 4.3's keep rule:
   a timer win, no throughput loss; separable: kept on the 8-CPU timer by controller ruling), which `CHAINNER_C_ISA=avx2`
-  caps on parts that downclock. The multiply (`spectral_avx2.c`) and the normal output (`color_avx2.c`) share their
-  per-element code with the baseline unit through `spectral_shared.h` and `color_shared.h` (static helpers); the
+  caps on parts that downclock. The multiply (`spectral_avx2.c`), the normal output (`color_avx2.c`) and Linear Light
+  (`linear_light_avx2.c`) share their per-element code with the baseline unit through `spectral_shared.h`,
+  `color_shared.h` and `linear_light_shared.h` (static helpers); the
   other SP4b Task 8 tail kernels are baseline row loops. Descale is exempt from cross-level identity (ruling
   2026-10-16): the vendored vapoursynth-descale solver uses FMA on AVX2, so its output equals the VapourSynth
   plugin's on the same CPU; `DESCALE_OPT_NONE` in `descale_api()` (`src/descale_ops.c`) would restore it.
+  Get Native Resolution's vendored Vernier core is built per level with its session units (`getnative_unit.cpp`,
+  `getnative_kernel.cpp`) into `chainner_vernier_base` and `chainner_vernier_avx2`, its namespace renamed per build;
+  `getnative_ops.cpp` picks one per session by `cn_isa_current()`. Both use Vernier's own floating-point model instead
+  of `/fp:strict`, contraction off, so both levels give identical results (`test_getnative.py`); the analysis runs its
+  own `std::thread` workers, not the pool.
 - Never mutate cached graph inputs; never turn a borrowed view writable. Bridges keep every owner
   alive through native calls and asynchronous writes. Keep no-op identities where required.
 - C ABI version and status checks stay; DLL/ABI failure is visible.
@@ -457,8 +469,10 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
 - Save Video's audio mux (approved, upstream chaiNNer #3331): chaiNNer's own FFmpeg muxes the audio after the
   video, as upstream v0.25.1 does, where the frozen nightly ran the `ffmpeg` on `PATH` with the audio first and only
   logged a failure, so without FFmpeg on `PATH` every saved video was silent. Auto copies the audio and, when the
-  container cannot hold the copy (PCM in MP4 on the integrated FFmpeg 5.1.2), transcodes it with Transcode's options
-  (AAC at 320 kb/s; upstream has no fallback). Audio the mux cannot carry fails the run instead of leaving a silent
+  container cannot hold the copy, transcodes it with Transcode's options (AAC at 320 kb/s; upstream has no fallback).
+  For player compatibility Auto also transcodes PCM and FLAC audio going into an MP4 (decided 2026-10-23): FFmpeg 6.1
+  and later copy them into MP4, which many players cannot play, where FFmpeg 5.1.2 (integrated before 9.0.2) refused
+  the copy, so the output is the AAC it was; Copy copies whatever FFmpeg muxes (oracle departure (o)). Audio the mux cannot carry fails the run instead of leaving a silent
   video, where upstream logs: Copy names the codec and container and suggests Auto or Transcode, a failed transcode
   names its encoder; a WebM Copy still raises before the mux, as in the nightly. WebM's Opus gets
   min(320 kb/s, 256 kb/s × channels) per stream, libopus's per-channel ceiling (approved 2026-10-09): a mono
@@ -474,7 +488,9 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   tags (matrix, primaries, transfer, range `tv`): BT.601 (`smpte170m`; `bt470bg` primaries at 576 lines) for SD, BT.709
   for HD (width ≥ 1280 or height > 576, mpv's guess), and an explicit `scale` filter with
   `accurate_rnd+full_chroma_int` converts to them, where FFmpeg 5.1.2's default point-sampled chroma and turned grey
-  128 into (125,128,125). Colour tags given in Additional parameters win and the conversion follows the final matrix
+  128 into (125,128,125). A `setparams` after the conversion (and in Planes mode) puts the matrix, primaries and
+  transfer on the frames too (2026-10-23): FFmpeg 7 and later take the tags from the frames, so without it they dropped
+  the primaries and transfer and converted BT.601 output a second time, losing the chroma siting. Colour tags given in Additional parameters win and the conversion follows the final matrix
   and range; a user matrix alone takes its own family's primaries and transfer whatever the size (BT.2020: `bt2020`
   and BT.709's curve, which H.273 makes BT.2020's at 8 bits), while primaries or a transfer without a matrix, or a
   matrix of no family here, add no other tag but the range. A user `-vf` runs before the conversion. RGB output is unchanged; GIF is the next bullet. Load Video honours a
@@ -626,6 +642,8 @@ another project generated.
   2xSaI credit GPL, HQ tables LGPL), colortrans (MIT), OpenCV 4.8.0, Pillow 9.2.0, NumPy 1.24.4 (FreeBSD msun complex
   math in `ncnn_complex_math.hpp`), PyMatting (MIT), PyTorch TensorIterator stride order, resize crate 0.8.3,
   mergian/dpid (BSD-3-Clause, `dpid_ops.c`), zhang_hilbert 0.1.1, avx2_mathfun, CPython 3.11.5 `random.py`, pybind11 2.13.6.
+- Vendored: `native/third_party/vernier` (Vernier 0.2's analysis core, MIT, unchanged, `PROVENANCE.md`; notice in
+  `chainner_native.LICENSE.txt`).
 - Vendored: `native/third_party/pybind11`, `native/third_party/onnxruntime` (C API header, `LICENSE`), and the image
   codecs `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff,openexr,imath,libdeflate,zstd,openjph}`
   (upstream sources, unchanged but for OpenEXRCore's one recorded line, libdeflate's recorded non-final-piece patch

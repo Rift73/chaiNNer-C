@@ -658,6 +658,18 @@ O mux_audio(const py::dict&g,const O&self) {
         logger.attr("info")(py::str("Auto transcodes the audio from {} s: a copy would start before the video's first frame").attr("format")(start));
         settings=member(g,"AudioSettings","TRANSCODE");
     }
+    if(eq(settings,auto_settings) && eq(container,member(g,"VideoFormat","MP4"))) {
+        // FFmpeg 6.1 and later copy PCM and FLAC into MP4, which many players cannot play;
+        // FFmpeg 5.1.2 refused the copy, so Auto transcoded them, and still does. Copy copies.
+        for(py::handle sh:audio_streams(g,self)) {
+            O codec=py::reinterpret_borrow<O>(sh).attr("get")("codec_name",py::str(""));
+            if(truth(codec.attr("startswith")("pcm_")) || eq(codec,py::str("flac"))) {
+                logger.attr("info")(py::str("Auto transcodes the {} audio: players often cannot play it in an .mp4 file").attr("format")(codec));
+                settings=member(g,"AudioSettings","TRANSCODE");
+                break;
+            }
+        }
+    }
     py::dict params=audio_options(g,self,settings); // A WebM Copy raises before the mux.
     bool transcode_on_failure=eq(settings,auto_settings) && eq(params["acodec"],py::str("copy"));
     if(!truth(os.attr("path").attr("exists")(target.attr("temp")))) {logger.attr("error")(fmt("Video file not found at {}",path));return target;}
