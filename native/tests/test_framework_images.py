@@ -25,6 +25,7 @@ from nodes.impl import native_framework_images as native
 from nodes.impl.image_utils import to_uint8
 from nodes.impl.native_tensors import cast_numpy
 from nodes.impl.onnx.model import SizeReq
+from nodes.impl.upscale.bounded_tiler import BoundedTiler
 from nodes.impl.upscale.tiler import Tiler
 from nodes.utils.utils import get_h_w_c
 
@@ -464,6 +465,7 @@ def test_onnx_host_image_roundtrip(dtype, channels, nhwc, padding):
         swap_red_blue=native.swap_red_blue,
         cast_numpy=cast_numpy,
         planar_to_interleaved=native.planar_to_interleaved,
+        BoundedTiler=BoundedTiler,
     )
     # Pads within reflection's reach (size - 1), where the reference's padding is ours;
     # test_onnx_padding_beyond_reflection covers longer ones.
@@ -524,6 +526,7 @@ def test_onnx_padding_beyond_reflection(channels, shape):
         swap_red_blue=native.swap_red_blue,
         cast_numpy=cast_numpy,
         planar_to_interleaved=native.planar_to_interleaved,
+        BoundedTiler=BoundedTiler,
     )
     h, w = shape
     image = np.random.default_rng(336).random(
@@ -716,6 +719,7 @@ def test_tiny_real_cpu_ncnn_roundtrip(channels, kind):
         ncnn_input=native.ncnn_input,
         planar_to_interleaved=native.planar_to_interleaved,
         Tiler=Tiler,
+        BoundedTiler=BoundedTiler,
     )
     baseline.__dict__.update(use_gpu=False)
     modified.__dict__.update(use_gpu=False)
@@ -863,6 +867,7 @@ def test_real_cpu_onnx_image_roundtrip(dtype, channels, nhwc):
         cast_numpy=cast_numpy,
         planar_to_interleaved=native.planar_to_interleaved,
         auto_split=single,
+        BoundedTiler=BoundedTiler,
     )
     original = load(
         REFERENCE / "onnx/auto_split.py", SizeReq=SizeReq, auto_split=single

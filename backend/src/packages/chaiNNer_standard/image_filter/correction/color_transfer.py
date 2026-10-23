@@ -86,6 +86,12 @@ def color_transfer_node(
 
     ref_valid_rgb_indices = transfer_mask(ref_img)
 
+    # A fully transparent image has nothing to recolour and a fully transparent
+    # reference no colour to give: the image itself (2026-10-23; upstream gave NaN
+    # or failed).
+    if not valid_rgb_indices.any() or not ref_valid_rgb_indices.any():
+        return img
+
     transfer = bgr_img
     if algorithm == TransferColorAlgorithm.MEAN_STD:
         transfer = mean_std_transfer(

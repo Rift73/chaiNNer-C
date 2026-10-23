@@ -274,6 +274,57 @@ def png_bad_idat_crc(data: bytes) -> bytes:
     )
 
 
+def png_filtered(
+    color_type: int,
+    channels: int,
+    filters: list[int],
+    pieces: int = 1,
+    wbits: int = 15,
+    stream_end: Callable[[bytes], bytes] = lambda stream: stream,
+    before_idat: bytes = b"",
+    after_idat: bytes = b"",
+    iend_crc_ok: bool = True,
+    depth: int = 8,
+) -> bytes:
+    """A 13-wide PNG of depth-bit random filtered rows, one per filter type in filters, deflated with a 2^wbits window;
+    stream_end rewrites the zlib stream, which is split over pieces IDAT chunks between before_idat and after_idat."""
+    width = 13
+    samples = np.random.default_rng(len(filters) * 7 + color_type).integers(
+        0, 256, (len(filters), (width * channels * depth + 7) // 8), dtype=np.uint8
+    )
+    raw = b"".join(
+        bytes([kind]) + row.tobytes()
+        for kind, row in zip(filters, samples, strict=True)
+    )
+    compressor = zlib.compressobj(9, zlib.DEFLATED, wbits)
+    stream = stream_end(compressor.compress(raw) + compressor.flush())
+    cuts = [len(stream) * k // pieces for k in range(pieces + 1)]
+    ihdr = struct.pack(">IIBBBBB", width, len(filters), depth, color_type, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", ihdr)
+        + before_idat
+        + b"".join(
+            png_chunk(b"IDAT", stream[cuts[k] : cuts[k + 1]]) for k in range(pieces)
+        )
+        + after_idat
+        + png_chunk(b"IEND", b"", iend_crc_ok)
+    )
+
+
+def png_palette(colors: int, trns: bool) -> bytes:
+    """PLTE of colors random colours, and with trns a tRNS for the first half of them."""
+    rng = np.random.default_rng(colors)
+    chunks = png_chunk(
+        b"PLTE", rng.integers(0, 256, colors * 3, dtype=np.uint8).tobytes()
+    )
+    if trns:
+        chunks += png_chunk(
+            b"tRNS", rng.integers(0, 256, max(colors // 2, 1), dtype=np.uint8).tobytes()
+        )
+    return chunks
+
+
 def bmp_rle8(indices: np.ndarray, palette: np.ndarray) -> bytes:
     """A BI_RLE8 bitmap of one-index runs (bottom-up rows)."""
     h, w = indices.shape
@@ -479,6 +530,87 @@ def decode_cases() -> list[DecodeCase]:
         "truncated": lambda: cv_bytes(".png", BGR8)[:60],
         "apng": lambda: pil_bytes(
             rgba, "PNG", save_all=True, append_images=[rgba.rotate(180)]
+        ),
+        # The direct path (png_codec.c png_decode_direct): every filter on every first row and channel count, and
+        # the files it leaves to libpng.
+        **{
+            f"filters_{first}_{channels}": (
+                lambda first=first, channels=channels: png_filtered(
+                    {1: 0, 3: 2, 4: 6}[channels],
+                    channels,
+                    [(first + y) % 5 for y in range(11)],
+                    pieces=1 + first % 3,
+                )
+            )
+            for first in range(5)
+            for channels in (1, 3, 4)
+        },
+        **{
+            f"filters16_{first}_{channels}": (
+                lambda first=first, channels=channels: png_filtered(
+                    {1: 0, 3: 2, 4: 6}[channels],
+                    channels,
+                    [(first + y) % 5 for y in range(11)],
+                    pieces=1 + first % 2,
+                    depth=16,
+                )
+            )
+            for first in (2, 4)
+            for channels in (1, 3, 4)
+        },
+        # Indexed: a full palette at each depth (every index inside it), with and without tRNS, and indices past a
+        # 16-colour palette (libpng's warning and black, through the fallback).
+        **{
+            f"palette{depth}{'_trns' if trns else ''}": (
+                lambda depth=depth, trns=trns: png_filtered(
+                    3,
+                    1,
+                    [4, 1, 2, 3, 0, 4],
+                    depth=depth,
+                    before_idat=png_palette(2**depth, trns),
+                )
+            )
+            for depth in (1, 2, 4, 8)
+            for trns in (False, True)
+        },
+        "palette8_past_16": lambda: png_filtered(
+            3, 1, [4, 1, 2, 3, 0, 4], before_idat=png_palette(16, True)
+        ),
+        "window_512": lambda: png_filtered(2, 3, [4, 1, 2, 3, 0], wbits=9),
+        "bad_filter": lambda: png_filtered(2, 3, [4, 1, 5, 3, 0]),
+        # An invalid filter type in an indexed image: libpng's error, not decoded pixels.
+        **{
+            f"palette{depth}_bad_filter": (
+                lambda depth=depth: png_filtered(
+                    3,
+                    1,
+                    [4, 1, 7, 3, 0],
+                    depth=depth,
+                    before_idat=png_palette(2**depth, False),
+                )
+            )
+            for depth in (2, 8)
+        },
+        "extra_zlib_data": lambda: png_filtered(
+            2, 3, [4, 1, 2], stream_end=lambda stream: stream + b"\0\0"
+        ),
+        "bad_adler": lambda: png_filtered(
+            6, 4, [4, 1, 2], stream_end=lambda s: s[:-1] + bytes([s[-1] ^ 1])
+        ),
+        "short_zlib_stream": lambda: png_filtered(
+            0, 1, [4, 1, 2], stream_end=lambda stream: stream[:-6]
+        ),
+        "text_after_idat": lambda: png_filtered(
+            2, 3, [4, 1, 2], after_idat=png_chunk(b"tEXt", b"k\0v")
+        ),
+        "iend_bad_crc": lambda: png_filtered(2, 3, [4, 1, 2], iend_crc_ok=False),
+        "grey_gamma_srgb": lambda: png_filtered(
+            0,
+            1,
+            [4, 1, 2, 3],
+            before_idat=png_chunk(b"gAMA", struct.pack(">I", 45455))
+            + png_chunk(b"sRGB", b"\0")
+            + png_chunk(b"pHYs", struct.pack(">IIB", 2835, 2835, 1)),
         ),
     }
     for name, make in pngs.items():

@@ -216,6 +216,8 @@ class TensorRTSession:
         chw = tile.transpose(2, 0, 1)
         if c == 3:
             chw = chw[::-1]  # BGR -> RGB
+        elif c == 4:
+            chw = chw[[2, 1, 0, 3]]  # BGRA -> RGBA
         dst = h_in.array(self._in.storage, in_shape)[0]
         if self._in.is_bf16:
             dst[...] = float32_to_bf16_bits(chw)
@@ -308,13 +310,13 @@ class TensorRTSession:
         check_cuda(cudart.cudaEventSynchronize(self._events[slot]))
         chw = self._h_out[slot].array(self._out.storage, out_shape)[0]
         chw = chw[:, :height, :width]
-        bgr = chw.shape[0] == 3  # RGB -> BGR
+        bgr = chw.shape[0] in (3, 4)  # RGB(A) -> BGR(A)
         if self._out.is_bf16:
             if bgr:
-                chw = chw[::-1]
+                chw = chw[[2, 1, 0, 3][: chw.shape[0]]]
             return np.ascontiguousarray(bf16_bits_to_float32(chw).transpose(1, 2, 0))
         # One pass from the pinned planar buffer into interleaved float32.
-        return planar_to_interleaved(chw, reverse=bgr)
+        return planar_to_interleaved(chw, swap_red_blue=bgr)
 
     def close(self) -> None:
         """Free the session. After a CUDA error any step may raise: every step still

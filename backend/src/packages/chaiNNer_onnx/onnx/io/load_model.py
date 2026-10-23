@@ -46,12 +46,25 @@ def load_model_node(path: Path) -> tuple[OnnxModel, Path, str]:
     # compressed one (Save Model's Compress) is one whole model. A tensor kept outside
     # names its file under the key "location", so bytes without that word hold the
     # whole model, which is parsed once and kept as it is.
-    data = decompressed(path)
-    if data is None:
-        data = path.read_bytes()
-        model = data if b"location" not in data else onnx.load_model(str(path))
-    else:
-        model = data if b"location" not in data else onnx.load_from_string(data)
+    try:
+        data = decompressed(path)
+        if data is None:
+            data = path.read_bytes()
+            model = data if b"location" not in data else onnx.load_model(str(path))
+        else:
+            model = data if b"location" not in data else onnx.load_from_string(data)
+        if not data:
+            # ONNX parses no bytes as a model without a graph, which only fails later.
+            raise ValueError("the file is empty")
+        onnx_model = load_onnx_model(model)
+    except OSError:
+        raise
+    except Exception as e:
+        # A damaged file fails anywhere in the reading, with the reader's own words.
+        raise ValueError(
+            f"The ONNX model {path.name} cannot be read ({type(e).__name__}: {e})."
+            " The file may be damaged or hold a model chaiNNer does not support."
+        ) from e
 
     dirname, basename, _ = split_file_path(path)
-    return load_onnx_model(model), dirname, basename
+    return onnx_model, dirname, basename

@@ -38,7 +38,7 @@ import pytest
 
 from api import Generator
 from nodes.impl import colour_info
-from nodes.impl.image_utils import to_uint8, to_uint16
+from nodes.impl.image_utils import to_uint8, to_uint16, to_uint16_gbr_planes
 from nodes.impl.native_framework_images import planes_to_interleaved
 from nodes.impl.native_graph import graph
 from nodes.impl.yuv_rgb import resolve_colour_info
@@ -928,6 +928,7 @@ def load(kind, component, env=None):
             "get_h_w_c": get_h_w_c,
             "to_uint8": to_uint8,
             "to_uint16": to_uint16,
+            "to_uint16_gbr_planes": to_uint16_gbr_planes,
             "pixel_layout": colour_info.pixel_layout,
             "split_file_path": split_file_path,
             "Generator": API["Generator"],

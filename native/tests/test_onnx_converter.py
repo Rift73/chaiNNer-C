@@ -27,6 +27,19 @@ package = types.ModuleType(PACKAGE)
 package.__path__ = [str(FROZEN)]
 sys.modules[PACKAGE] = package
 old = importlib.import_module(PACKAGE + ".onnx_to_ncnn")
+# The oracle runs the frozen converter with the generator's CORRECTIONS, the source the
+# native converter translates (same file name and line numbers, for coverage).
+sys.path.insert(0, str(Path(__file__).parents[1] / "tools"))
+generator = importlib.import_module("generate_onnx_converter")
+source = FROZEN / "onnx_to_ncnn.py"
+exec(
+    compile(
+        generator.corrected_source(source.read_text(encoding="utf-8")),
+        str(source),
+        "exec",
+    ),
+    vars(old),
+)
 for name in ("NcnnLayer", "NcnnModel"):
     setattr(old, name, getattr(reference, name))
 old.__dict__.update(NcnnOptimizer=ReferenceOptimizer)
@@ -195,7 +208,8 @@ def test_convolution_weights(op, group, bias, dtype, fp16):
         ],
         weights,
     )
-    check(source, fp16)
+    # A ConvTranspose (no output_shape) failed with NumPy 2 before the CORRECTIONS.
+    check(source, fp16, success=True)
 
 
 @pytest.mark.parametrize("seed", range(30))

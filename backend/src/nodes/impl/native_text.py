@@ -56,24 +56,23 @@ def scan(text: str) -> tuple[list[str], str]:
 def fit(
     width: int, height: int, ref_width: float, ref_height: float, lines: int
 ) -> int:
-    if ref_width == 0 or ref_height == 0:
-        # Upstream's own float divisions, in its order, so the interpreter raises its
-        # ZeroDivisionError ("division by zero" on CPython 3.14).
-        int(width * 100.0 / ref_width)
-        int(height * 100.0 / (ref_height * lines))
+    """The font size that fits the text in width x height, at least 1: a smaller fit
+    overflows instead of failing (Pillow refuses size 0). The reference size of the
+    text at size 100 must be positive."""
     result = ct.c_double()
     check(
         _api().cn_text_fit(
             width, height, ref_width, ref_height, lines, ct.byref(result)
         )
     )
-    return int(result.value)
+    return max(int(result.value), 1)
 
 
 def caption_fit(height: int, width: int, measured: float = 0) -> int:
+    """The caption's font size, at least 1, as fit's."""
     result = ct.c_double()
     check(_api().cn_caption_fit(height, width, measured, ct.byref(result)))
-    return int(result.value)
+    return max(int(result.value), 1)
 
 
 def anchor(

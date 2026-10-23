@@ -69,9 +69,10 @@ for _gradient_name in (
     "radial_gradient",
     "conic_gradient",
 ):
-    # The frozen node must not import the production C gradient as its oracle.
+    # The frozen node must not import the production C gradient as its oracle; its
+    # gradients follow chaiNNer-C's judged limits and radial clamp.
     setattr(
-        ORIGINAL_GRADIENT, _gradient_name, getattr(reference_gradients, _gradient_name)
+        ORIGINAL_GRADIENT, _gradient_name, reference_gradients.judged(_gradient_name)
     )
 CREATE_NOISE = load_node(NODES / "create_noise.py")
 ORIGINAL_CREATE_NOISE = load_node(REFERENCE / "create_noise_node.py")

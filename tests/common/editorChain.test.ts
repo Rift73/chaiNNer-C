@@ -8,6 +8,7 @@ import {
     NodeGroupId,
     NodeSchema,
     NumberInput,
+    OutputId,
     SchemaId,
 } from '../../src/common/common-types';
 import {
@@ -45,7 +46,16 @@ const descaleSchema: NodeSchema = {
     icon: '',
     kind: 'regularNode',
     inputs: [numberInput(1, 'Width', 1280), numberInput(2, 'Height', 720)],
-    outputs: [],
+    outputs: [
+        {
+            id: 0 as OutputId,
+            type: 'Image',
+            label: 'Image',
+            kind: 'generic',
+            hasHandle: true,
+            suggest: false,
+        },
+    ],
     groupLayout: [1 as InputId, 2 as InputId],
     iteratorInputs: [],
     iteratorOutputs: [],
@@ -78,25 +88,82 @@ const edge = (source: string, target: string): Edge<EdgeData> => ({
     animated: true,
 });
 
+// Node ids are UUIDs, which handles start with (parseSourceHandle).
+const A = '00000000-0000-0000-0000-00000000000a';
+const B = '00000000-0000-0000-0000-00000000000b';
+const C = '00000000-0000-0000-0000-00000000000c';
+const D = '00000000-0000-0000-0000-00000000000d';
+
 // A chain as it is pasted from another chaiNNer: an unknown node, and a known node that lacks an
 // input (Height) and has a null one (Width).
 const pastedNodes = [
-    node('a', DESCALE, { 1: null, 3: 'kept' }),
-    node('b', IS_GRAYSCALE, {}),
-    node('c', IS_GRAYSCALE, {}),
-    node('d', DESCALE, { 1: 1920, 2: 1080 }),
+    node(A, DESCALE, { 1: null, 3: 'kept' }),
+    node(B, IS_GRAYSCALE, {}),
+    node(C, IS_GRAYSCALE, {}),
+    node(D, DESCALE, { 1: 1920, 2: 1080 }),
 ];
-const pastedEdges = [edge('b', 'a'), edge('d', 'a')];
+const pastedEdges = [edge(B, A), edge(D, A)];
 
 test('Unknown nodes are dropped with their edges', () => {
     const chain = toEditorChain(schemata, pastedNodes, pastedEdges);
 
-    expect(chain.nodes.map((n) => n.id)).toEqual(['a', 'd']);
-    expect(chain.edges.map((e) => e.id)).toEqual(['d-a']);
+    expect(chain.nodes.map((n) => n.id)).toEqual([A, D]);
+    expect(chain.edges.map((e) => e.id)).toEqual([`${D}-${A}`]);
     expect(chain.edges[0].animated).toBe(false);
     expect(chain.droppedNodes).toEqual([IS_GRAYSCALE, IS_GRAYSCALE]);
+    // the edge of a dropped node goes with it
+    expect(chain.droppedEdges).toBe(0);
     // an incomplete load leaves the chain unsaved
     expect(chain.complete).toBe(false);
+});
+
+test('Edges that do not fit their nodes are dropped', () => {
+    // A chain file is untrusted: each of these made the editor's type evaluation throw after
+    // every change (a cycle overflowed its stack).
+    const kept = edge(D, A);
+    const broken: Edge<EdgeData>[] = [
+        { ...edge(A, D), id: 'no handles', sourceHandle: undefined, targetHandle: undefined },
+        { ...edge(A, D), id: 'handle of another node', sourceHandle: `${B}-0` },
+        { ...edge(A, D), id: 'missing input', targetHandle: `${D}-99` },
+        { ...edge(A, D), id: 'missing output', sourceHandle: `${A}-5` },
+        { ...edge(A, A), id: 'self loop', targetHandle: `${A}-2` },
+    ];
+    const cycle = { ...edge(A, D), id: 'closes a cycle', targetHandle: `${D}-2` };
+    const second = { ...edge(A, A), id: 'second into one input', targetHandle: `${A}-1` };
+    const chain = toEditorChain(
+        schemata,
+        [pastedNodes[0], pastedNodes[3]],
+        [kept, ...broken, cycle, second]
+    );
+
+    expect(chain.edges.map((e) => e.id)).toEqual([kept.id]);
+    expect(chain.droppedEdges).toBe(broken.length + 2);
+    expect(chain.droppedNodes).toEqual([]);
+    expect(chain.complete).toBe(false);
+});
+
+test('A node without a position or input data gets the origin and its defaults', () => {
+    const bare = {
+        ...node(A, DESCALE, {}),
+        position: undefined,
+        data: { id: A, schemaId: DESCALE, inputData: null },
+    } as unknown as Node<NodeData>;
+    const chain = toEditorChain(schemata, [bare], []);
+
+    expect(chain.nodes[0].position).toEqual({ x: 0, y: 0 });
+    expect(chain.nodes[0].data.inputData).toEqual({ 1: 1280, 2: 720 });
+    expect(chain.complete).toBe(true);
+});
+
+test('An input value that is no number or text gets its default', () => {
+    // e.g. an object where a file path goes: the type evaluation of the path threw
+    const chain = toEditorChain(
+        schemata,
+        [node(A, DESCALE, { 1: { path: 'x' }, 2: [1], 3: true })],
+        []
+    );
+
+    expect(chain.nodes[0].data.inputData).toEqual({ 1: 1280, 2: 720 });
 });
 
 test('Missing and null inputs get their defaults', () => {

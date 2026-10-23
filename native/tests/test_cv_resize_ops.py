@@ -170,6 +170,20 @@ def test_concurrent_large_image(mode, ipp_off):
         exact(actual, reference)
 
 
+@pytest.mark.parametrize("channels", [1, 3, 4])
+@pytest.mark.parametrize("size", [(150, 132), (100, 88), (60, 132), (241, 211)])
+def test_area_ranges_start_inside_rows(channels, size):
+    # Outputs above the 16384-sample work grain, whose rows (and three-channel
+    # pixels) the grain does not divide, so work ranges start inside a row:
+    # integer factors 2x2, 3x3 and 5x2 (a tail after the four-tap groups), and
+    # a fractional one.
+    image = np.random.default_rng(337).random((264, 300, channels), dtype=np.float32)
+    exact(
+        native_cv_resize.resize(image, size, cv2.INTER_AREA),
+        cv2.resize(image, size, interpolation=cv2.INTER_AREA),
+    )
+
+
 @pytest.mark.parametrize("mode", [cv2.INTER_AREA, cv2.INTER_LINEAR])
 def test_native_path_has_no_opencv_resize(mode, monkeypatch, ipp_off):
     image = np.random.default_rng(711).random((31, 37, 4), dtype=np.float32)

@@ -452,7 +452,13 @@ class PackageRegistry:
         self.nodes: dict[str, tuple[NodeData, NodeGroup]] = {}
 
     def get_node(self, schema_id: str) -> NodeData:
-        return self.nodes[schema_id][0]
+        registered = self.nodes.get(schema_id)
+        if registered is None:
+            # A chain file from a newer chaiNNer, or for a package not installed.
+            raise ValueError(
+                f"The node {schema_id!r} is not available in this chaiNNer."
+            )
+        return registered[0]
 
     def get_package(self, schema_id: str) -> Package:
         return self.nodes[schema_id][1].category.package

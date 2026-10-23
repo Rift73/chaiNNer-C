@@ -2,9 +2,11 @@
 
 import numpy as np
 import pytest
-from native_differential import assert_native_matches
+from native_differential import assert_native_matches, node_data
 from native_images import SIZES, image, seed_of
 
+import api
+import process
 from nodes.impl.color.color import Color
 
 GREY = Color.gray(0.3)
@@ -143,6 +145,30 @@ def test_chroma_key_matches(chroma, key, size):
     img = image(seed_of("chroma", size), height, width, 3)
     img[: height // 2, : width // 2] = np.array(key.value, np.float32)
     assert_native_matches("chainner:image:chroma_key", [img, key, *chroma])
+
+
+def chroma_key_body(inputs):
+    node = node_data("chainner:image:chroma_key")
+    return node.run(*process.enforce_inputs(list(inputs), node, api.NodeId("chroma"), []))
+
+
+def test_chroma_key_trimap_without_background_or_foreground():
+    # The solver refused a frame without the key colour, or of only the key colour (Fable, 2026-10-23).
+    key = Color.bgr((0.0, 1.0, 0.0))
+    plain = image(1, 8, 8, 3, edges=False)
+    keyed = np.full((8, 8, 3), key.value, np.float32)
+    for img, alpha in [(plain, np.ones((8, 8), np.float32)), (keyed, np.zeros((8, 8), np.float32))]:
+        trimap = [img, key, 2, 1.0, 2.0, 10.0, 4, 4, False]
+        assert_native_matches("chainner:image:chroma_key", trimap, declines=True)
+        result = chroma_key_body(trimap)
+        assert result.tobytes() == np.dstack((img, alpha)).tobytes()
+        binary = chroma_key_body([img, key, 1, 1.0, 2.0, 10.0, 4, 4, False])
+        np.testing.assert_array_equal(result[..., 3], binary[..., 3])
+    # A frame with the key colour in one quadrant still runs the solver.
+    mixed = image(seed_of("chroma", (17, 31)), 17, 31, 3, edges=False)
+    mixed[:8, :15] = np.array(key.value, np.float32)
+    alpha = chroma_key_body([mixed, key, 2, 1.0, 2.0, 10.0, 4, 4, False])[..., 3]
+    assert 0 < alpha.mean() < 1
 
 
 def test_chroma_key_edge_cases():

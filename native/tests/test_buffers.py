@@ -170,6 +170,67 @@ def test_quantization_rounding_and_extremes(bits):
         np.testing.assert_array_equal(actual, expected)
 
 
+def gathered_planes(image):
+    """to_uint16's values as G, B and R planes, as Save Video and Frames to Clip piped
+    them before the one-pass entry."""
+    return np.ascontiguousarray(
+        image_utils.to_uint16(image).transpose(2, 0, 1)[[1, 0, 2]]
+    )
+
+
+@pytest.mark.parametrize(
+    ("dtype", "layout"),
+    [
+        (np.float32, "C"),
+        (np.float32, "F"),
+        (np.float32, "crop"),
+        (np.float64, "C"),
+        (np.uint8, "C"),
+        (np.uint16, "C"),
+    ],
+)
+def test_gbr_planes_equal_the_conversion_rearranged(dtype, layout):
+    """to_uint16_gbr_planes gives to_uint16's values in gbrp's plane order (G, B, R of
+    BGR) for every input: a C-contiguous float32 image through the one-pass native entry
+    (out-of-range values clamp, -0 and denormals included), any other through
+    to_uint16 and a gather."""
+    rng = np.random.default_rng(29)
+    if np.issubdtype(dtype, np.integer):
+        image = rng.integers(
+            0, np.iinfo(dtype).max, (37, 53, 3), dtype=dtype, endpoint=True
+        )
+    else:
+        image = (rng.random((37, 53, 3)) * 1.4 - 0.2).astype(dtype)
+        image[0, :3] = (-0.0, 1e-42, 1.0 + 1e-6)
+    if layout == "F":
+        image = np.asfortranarray(image)
+    elif layout == "crop":
+        image = image[3:30, 5:50]
+    planes = image_utils.to_uint16_gbr_planes(image)
+    assert planes.dtype == np.uint16 and planes.flags.c_contiguous
+    assert planes.tobytes() == gathered_planes(image).tobytes()
+
+
+def test_gbr_planes_report_nan_as_the_conversion_does():
+    """A NaN's invalid cast reaches NumPy's error handling as to_uint16's does (here a
+    raise), and with errors ignored both give its 0."""
+    image = np.full((4, 9, 3), 0.5, np.float32)
+    image[2, 7, 1] = np.nan
+    for convert in (image_utils.to_uint16, image_utils.to_uint16_gbr_planes):
+        with (
+            np.errstate(invalid="raise"),
+            pytest.raises(
+                FloatingPointError, match="invalid value encountered in cast"
+            ),
+        ):
+            convert(image)
+    with np.errstate(invalid="ignore"):
+        assert (
+            image_utils.to_uint16_gbr_planes(image).tobytes()
+            == gathered_planes(image).tobytes()
+        )
+
+
 @pytest.mark.parametrize("shape", [(0, 2, 3), (2, 0), (0,), ()])
 def test_empty_scalar_conversion(shape):
     value = np.zeros(shape, np.float32)
@@ -285,6 +346,26 @@ def test_single_row_tile_strides(shape, layout):
     actual = tiles._fast_mix(a, b, weights)
     np.testing.assert_array_equal(actual, expected)
     np.testing.assert_array_equal(image, before)
+
+
+@pytest.mark.parametrize("weights_axis", ["column", "row", "full"])
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_tile_mix_across_chunks(weights_axis, channels):
+    # Overlap views of wider images (rows further apart than their pixels), large
+    # enough that the pool's chunks start inside rows and inside pixels.
+    rng = np.random.default_rng(29)
+    shape = (149, 193, channels)
+    left = rng.random((149, 251, channels), dtype=np.float32)[:, 31:224]
+    right = rng.random((160, 220, channels), dtype=np.float32)[5:154, :193]
+    if weights_axis == "column":
+        weights = np.broadcast_to(rng.random((1, 193, 1), dtype=np.float32), shape)
+    elif weights_axis == "row":
+        weights = np.broadcast_to(rng.random((149, 1, 1), dtype=np.float32), shape)
+    else:
+        weights = rng.random(shape, dtype=np.float32)
+    expected = ORIGINAL_TILES._fast_mix(left, right, weights)
+    actual = native_buffers.tile_mix(left, right, weights)
+    assert actual.tobytes() == expected.tobytes()
 
 
 def test_concurrent_bulk_calls():

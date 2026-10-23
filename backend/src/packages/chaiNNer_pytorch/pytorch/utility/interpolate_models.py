@@ -135,8 +135,10 @@ def _check_interp_state(interp_50: dict):
     with torch.no_grad():
         img_tensor = np2tensor(fake_img, change_range=True).cpu()
         if isinstance(model_descriptor, MaskedImageModelDescriptor):
-            np.ones((size, size, 1), dtype=np.float32)
-            mask_tensor = np2tensor(fake_img, change_range=True).cpu()
+            # A one-channel mask (upstream made it and passed the image instead, which
+            # an inpainting model refuses, so these never interpolated).
+            fake_mask = np.ones((size, size, 1), dtype=np.float32)
+            mask_tensor = np2tensor(fake_mask, change_range=True).cpu()
             t_out = model_descriptor(img_tensor, mask_tensor)
         elif isinstance(model_descriptor, ImageModelDescriptor):  # type: ignore <- I get that this can technically never happen, but please just let me write exhaustive checks
             t_out = model_descriptor(img_tensor)

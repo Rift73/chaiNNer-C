@@ -468,6 +468,10 @@ O text_slice(O text, O operation, O start, O length, O maximum,
         O lower = py::int_(-static_cast<Py_ssize_t>(py::len(text)));
         if (!compare(start, lower, Py_GT)) start = lower;
         O end = add(start, length);
+        // A negative start whose length reaches the end slices to the end, as the node's type says; upstream's
+        // start + length wrapped past 0 to the text's beginning ("hello", -2, 5 gave "").
+        O zero = py::int_(0);
+        if (compare(start, zero, Py_LT) && !compare(end, zero, Py_LT)) end = py::none();
         return slice(text, start, end);
     }
     if (compare(operation, operation_type.attr("MAX_LENGTH"), Py_EQ)) {

@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from scipy import ndimage
 
-from nodes.impl import native_blue
+from nodes.impl import native_blue, native_noise
 from nodes.impl.native import check, lib
 from nodes.impl.noise_functions import blue
 
@@ -36,6 +36,24 @@ def test_all_rankings_exact(shape, sigma, seed):
     actual = generate(shape, sigma, seed)
     np.testing.assert_array_equal(actual, expected)
     np.testing.assert_array_equal(np.sort(actual, axis=None), np.arange(actual.size))
+
+
+def test_split_searches_rank_exactly():
+    # 136 columns of 64 split each search's column passes into two parallel chunks,
+    # whose best scores combine as one search in index order, and every row's transform
+    # (at the start and when the minority turns over) into two.
+    expected = original.create_blue_noise((64, 136), 1.5, seed=5)
+    np.testing.assert_array_equal(generate((64, 136), 1.5, 5), expected)
+
+
+@pytest.mark.parametrize("shape", [(1, 2), (2, 1)])
+@pytest.mark.parametrize("seed", [0, 1, 274])
+def test_two_pixels_rank_in_seeded_order(shape, seed):
+    # Upstream's swap loop never ends for two pixels: Create Noise's Blue Noise hung
+    # at 1x2 and 2x1.
+    actual = generate(shape, 1.5, seed)
+    expected = native_noise.seeded_permutation(seed, 2).reshape(shape)
+    np.testing.assert_array_equal(actual, expected)
 
 
 @pytest.mark.parametrize("fraction", [-1, 0, 0.01, 0.25, 0.5, 1, 5])
@@ -99,7 +117,8 @@ def test_full_periodic_fields_and_extrema(shape, sigma, density):
 def test_node_normalization_promotion(count):
     ranks = np.arange(count, dtype=np.int32).reshape(1, count)
     with np.errstate(all="ignore"):
-        expected = ranks.astype(np.float32) / (count - 1)
+        # A single rank is 0 (ruling of 2026-10-23), where upstream divides 0 by 0.
+        expected = ranks.astype(np.float32) / (count - 1 or 1)
         actual = native_blue.normalize(ranks)
     assert expected.dtype == actual.dtype
     np.testing.assert_array_equal(np.isnan(actual), np.isnan(expected))

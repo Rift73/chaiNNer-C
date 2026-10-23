@@ -111,13 +111,15 @@ def test_a_model_with_external_data_loads_as_before(tmp_path: Path):
 
 
 def test_a_corrupt_file_raises_what_it_raised(tmp_path: Path):
+    # as the cause of Load Model's error, which names the file
     path = tmp_path / "model.onnx"
     path.write_bytes(b"\x0a\xff\xff\xff\xff\x0fnot a model")
     with pytest.raises(DecodeError) as expected:
         onnx.load_model(str(path))
-    with pytest.raises(DecodeError) as actual:
+    with pytest.raises(ValueError) as actual:
         load_model_node(path)
-    assert str(actual.value) == str(expected.value)
+    assert isinstance(actual.value.__cause__, DecodeError)
+    assert str(actual.value.__cause__) == str(expected.value)
 
 
 def count_parses(monkeypatch: pytest.MonkeyPatch) -> list[int]:

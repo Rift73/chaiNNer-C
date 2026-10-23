@@ -3,6 +3,7 @@ its readers (PyAV and the FFmpeg CLI). Runs on chaiNNer's integrated FFmpeg."""
 
 from __future__ import annotations
 
+import _winapi
 import os
 import subprocess
 from collections.abc import Callable
@@ -40,6 +41,8 @@ from packages.chaiNNer_standard.image.video_frames.load_video import (
 
 STORAGE = Path(os.environ.get("APPDATA", "")) / "chaiNNer" / "backend-storage"
 FFMPEG, FFPROBE = map(str, get_executable_path(STORAGE / "ffmpeg"))
+# The local gates' FFmpeg (native/tools/bench_oracle.py), newer than the integrated one.
+NEWER_FFMPEG = Path(r"C:\Executables\ffmpeg-8.1-full_build-shared\bin\ffmpeg.exe")
 
 pytestmark = pytest.mark.skipif(
     not Path(FFMPEG).exists(), reason="the integrated FFmpeg is not downloaded"
@@ -52,8 +55,8 @@ class Context:
 
     node_id = "load-video"  # the Preview's reader is the node's
 
-    def __init__(self):
-        self.storage_dir = STORAGE
+    def __init__(self, storage: Path = STORAGE):
+        self.storage_dir = storage
         self.cleanups: list[Callable[[], None]] = []
 
     def add_cleanup(self, fn: Callable[[], None]):
@@ -107,12 +110,13 @@ def load(
     mode: VideoMode,
     precision: RgbPrecision = RgbPrecision.FLOAT,
     choices: tuple[Any, ...] = AUTO,
+    storage: Path = STORAGE,
 ) -> tuple[list[tuple[Any, ...]], ColourInfo, str]:
     if cli:
         monkeypatch.setenv("CHAINNER_C_VIDEO_READER", "cli")
     else:
         monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
-    context = Context()
+    context = Context(storage)
     outputs = load_video_node(
         cast(NodeContext, context),
         path,
@@ -167,6 +171,41 @@ def test_planes_are_the_stored_codes(
             codes = float_to_code(plane, depth, colour.full_range, plane_index > 0)
             np.testing.assert_array_equal(codes.ravel(), raw[offset : offset + size])
             offset += size
+
+
+@pytest.fixture
+def newer_ffmpeg_storage(tmp_path: Path):
+    """A storage folder whose ffmpeg/ is the local gates' FFmpeg 8.1 (a junction,
+    removed link-only)."""
+    if not NEWER_FFMPEG.exists():
+        pytest.skip("the local gates' FFmpeg is not installed")
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    _winapi.CreateJunction(str(NEWER_FFMPEG.parent), str(storage / "ffmpeg"))
+    yield storage
+    os.rmdir(storage / "ffmpeg")
+
+
+def test_cli_planes_on_a_newer_ffmpeg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, newer_ffmpeg_storage: Path
+):
+    """The CLI reader keeps the stored orientation of planes with -noautorotate, which
+    FFmpeg 8.1 takes as 5.1.2 does: 8.1's -autorotate takes no value, so `-autorotate
+    0` failed to start (its 0 read as the output)."""
+    path = make_video(
+        tmp_path / "planes.mkv", SOURCE, "-c:v", "ffv1", "-pix_fmt", "yuv420p"
+    )
+    items, colour, _ = load(
+        path, monkeypatch, True, VideoMode.PLANES, storage=newer_ffmpeg_storage
+    )
+    raw = np.frombuffer(raw_planes(path, "yuv420p"), np.uint8)
+    codes = [
+        float_to_code(plane, 8, colour.full_range, index > 0).ravel()
+        for _, _, *planes in items
+        for index, plane in enumerate(planes)
+    ]
+    assert len(items) == 3
+    np.testing.assert_array_equal(np.concatenate(codes), raw)
 
 
 def test_both_readers_and_modes_agree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

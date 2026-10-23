@@ -3622,9 +3622,9 @@ def test_load_images_two_phase_equals_k1_with_out_of_order_finishes(
     # (at most 10 s) until item 2's has finished, so a later decode finishes first: slot
     # 2 is described and materialized while slot 1's decode waits, which the serial
     # producer cannot do. Files, events and the error equal K = 1's. Deferred, the
-    # message lists the items in folder order; fail-fast, the first corrupt item's own
-    # error object is raised, not a node error (so execution-error's source is None),
-    # after item 1's save and before any later one.
+    # message lists the items in folder order, each after its file; fail-fast, Load
+    # Images' error is raised, caused by the first corrupt item's own error object
+    # (process.loop_node_error), after item 1's save and before any later one.
     monkeypatch.delenv(SERIAL_PRODUCER_VARIABLE, raising=False)
     image_files(tmp_path / "in", 7, corrupt={2, 4})
     runs = {}
@@ -3670,11 +3670,15 @@ def test_load_images_two_phase_equals_k1_with_out_of_order_finishes(
     assert stripped(three.pipeline.events) == stripped(one.pipeline.events)
     if fail_fast:
         assert list(one.files) == ["0.png", "1.png"]
-        assert one.error is one.raised[2] and three.error is three.raised[2]
-        assert not isinstance(three.error, process.NodeExecutionError)
+        for run in (one, three):
+            assert isinstance(run.error, process.NodeExecutionError)
+            assert run.error.node_id == "g0" and run.error.__cause__ is run.raised[2]
+        assert str(three.error) == f"{tmp_path / 'in' / '2.png'}: {three.raised[2]}"
     else:
         assert list(one.files) == ["0.png", "1.png", "3.png", "5.png", "6.png"]
-        errors = "\n- ".join(str(one.raised[i]) for i in (2, 4))  # in folder order
+        errors = "\n- ".join(  # in folder order
+            f"{tmp_path / 'in' / f'{i}.png'}: {one.raised[i]}" for i in (2, 4)
+        )
         assert str(three.error) == str(one.error)
         assert str(one.error) == f"Errors occurred during iteration:\n- {errors}"
 
@@ -3684,7 +3688,8 @@ def test_split_item_without_an_image_fails_at_its_slot_as_today(monkeypatch, tmp
     # The window takes a materialize that returns None as the end (P2), so Load Images'
     # never does: an item whose load gives no image fails at its slot, as at K = 1, and
     # later items go on. Item 2 fails in its image enforce; item 4 in the unpack of
-    # load_image_node's result, which the iterator gives as the item's error.
+    # load_image_node's result, which the iterator gives as the item's error, after
+    # its file.
     monkeypatch.delenv(SERIAL_PRODUCER_VARIABLE, raising=False)
     image_files(tmp_path / "in", 6)
 
@@ -3708,7 +3713,7 @@ def test_split_item_without_an_image_fails_at_its_slot_as_today(monkeypatch, tmp
     assert files_three == files_one
     assert type(error_three) is type(error_one)
     assert str(error_three) == str(error_one)
-    unpack = "cannot unpack non-iterable NoneType object"
+    unpack = f"{tmp_path / 'in' / '4.png'}: cannot unpack non-iterable NoneType object"
     assert str(error_one) == f"Errors occurred during iteration:\n- \n- {unpack}"
     assert stripped(three.events) == stripped(one.events)
 
@@ -3718,8 +3723,9 @@ def test_load_image_node_runs_once_per_item_never_before_its_describe(
     monkeypatch, tmp_path
 ):
     # Spec 5: Load Images' decode (load_image_node) runs once per item, in the
-    # materialize of a slot already described (item 0's inside __next__, as today), and
-    # describes stay within K - 1 slots of the committing one (SP3 4.3).
+    # materialize of a slot already described (item 0's too, as the engine takes it:
+    # never through __next__), and describes stay within K - 1 slots of the committing
+    # one (SP3 4.3).
     monkeypatch.delenv(SERIAL_PRODUCER_VARIABLE, raising=False)
     image_files(tmp_path / "in", 7)
     log, ahead = [], []
@@ -3754,13 +3760,13 @@ def test_load_image_node_runs_once_per_item_never_before_its_describe(
     assert pipeline.decisions == ["item window K=3 (override)"]
     assert pipeline.summary["materialized"] == 6  # items 1-6; slot 7 is the end
     assert Counter(i for kind, i in log if kind == "load") == dict.fromkeys(range(7), 1)
-    assert log[:2] == [("next", None), ("load", 0)]
-    assert log.count(("next", None)) == 1
-    for i in range(1, 7):
+    assert log[:2] == [("describe", 0), ("load", 0)]
+    assert ("next", None) not in log
+    for i in range(7):
         assert log.index(("describe", i)) < log.index(("load", i))
-    # at item i's save, slots up to i + K - 1 were described, some beyond slot i
-    assert all(i <= count <= i + 2 for i, count in ahead)
-    assert max(count - i for i, count in ahead) >= 1
+    # at item i's save, slots 0 up to i + K - 1 were described, some beyond slot i
+    assert all(i + 1 <= count <= i + 3 for i, count in ahead)
+    assert max(count - i for i, count in ahead) >= 2
 
 
 @pytest.mark.usefixtures("phases_registry")

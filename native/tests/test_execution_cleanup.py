@@ -465,6 +465,40 @@ def test_cancelled_owned_job_frees_its_inputs_when_it_then_fails(monkeypatch):
         gc.enable()
 
 
+def test_cancelled_owned_job_that_stops_logs_nothing(monkeypatch):
+    # The UI's Stop drops /run (a cancel) and sends /kill: the running job then ends
+    # with Aborted (a lazy input's wait, a node's check_aborted), which is the Stop
+    # itself, not a node failure to log.
+    logged = []
+    monkeypatch.setattr(
+        execution_cleanup.logger, "error", lambda _, error: logged.append(str(error))
+    )
+    release = threading.Event()
+
+    def stopped_job():
+        assert release.wait(5), "Test release was never signalled"
+        raise Aborted()
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            task = asyncio.create_task(
+                await_owned_node(loop.run_in_executor(pool, stopped_job))
+            )
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    try:
+        asyncio.run(main())
+    finally:
+        release.set()
+    assert logged == []
+
+
 def test_failed_gathered_branch_frees_its_inputs_without_a_collection():
     # owned_gather raises the first failed branch's error, whose traceback then
     # holds its frame, so its locals may not keep that error.

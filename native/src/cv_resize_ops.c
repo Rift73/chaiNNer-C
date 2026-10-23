@@ -62,35 +62,49 @@ static cn_status validate(const float *src, float *out, size_t h, size_t w,
     return CN_OK;
 }
 
+/* The output sample after (y, x, ch), in row-major order: the area loops walk their
+ * range with these counters instead of dividing each index. */
+static void next_sample(const resize_context *ctx, size_t *y, size_t *x, size_t *ch)
+{
+    if (++*ch < ctx->channels) return;
+    *ch = 0;
+    if (++*x < ctx->dw) return;
+    *x = 0;
+    ++*y;
+}
+
 static void integer_area(void *opaque, size_t begin, size_t end)
 {
     const resize_context *ctx = opaque;
     size_t row = ctx->dw * ctx->channels, area = ctx->ix * ctx->iy;
     float scale = 1.0f / (float)area;
-    for (size_t i = begin; i < end; ++i) {
-        size_t y = i / row, x = (i % row) / ctx->channels, ch = i % ctx->channels;
+    size_t y = begin / row, x = begin % row / ctx->channels, ch = begin % ctx->channels;
+    for (size_t i = begin; i < end; ++i, next_sample(ctx, &y, &x, &ch)) {
         size_t origin = (y * ctx->iy * ctx->w + x * ctx->ix) * ctx->channels + ch;
         float sum = 0.0f;
         /* OpenCV's baseline SSE2 2x2 path uses paired row sums for C1/C4.
          * The scalar tail instead uses the four-tap left-associated sum. */
         int vector = ctx->ix == 2 && ctx->iy == 2 &&
-            (ctx->channels == 4 || (ctx->channels == 1 && i % row < row / 4 * 4));
+            (ctx->channels == 4 || (ctx->channels == 1 && x < row / 4 * 4));
         if (vector) {
             const float *p = ctx->src + origin;
             size_t c = ctx->channels, step = ctx->w * c;
             sum = (p[0] + p[c]) + (p[step] + p[step + c]);
         } else {
-            size_t k = 0;
+            /* Tap k is (k / ix, k % ix): tx and ty step through them in k's order. */
+            size_t k = 0, tx = 0, ty = 0;
             for (; k + 4 <= area; k += 4) {
                 float values[4];
                 for (size_t t = 0; t < 4; ++t) {
-                    size_t offset = ((k + t) / ctx->ix * ctx->w + (k + t) % ctx->ix) * ctx->channels;
-                    values[t] = ctx->src[origin + offset];
+                    values[t] = ctx->src[origin + (ty * ctx->w + tx) * ctx->channels];
+                    if (++tx == ctx->ix) { tx = 0; ++ty; }
                 }
                 sum += ((values[0] + values[1]) + values[2]) + values[3];
             }
-            for (; k < area; ++k)
-                sum += ctx->src[origin + (k / ctx->ix * ctx->w + k % ctx->ix) * ctx->channels];
+            for (; k < area; ++k) {
+                sum += ctx->src[origin + (ty * ctx->w + tx) * ctx->channels];
+                if (++tx == ctx->ix) { tx = 0; ++ty; }
+            }
         }
         ctx->out[i] = sum * scale;
     }
@@ -127,8 +141,8 @@ static void fractional_area(void *opaque, size_t begin, size_t end)
 {
     const resize_context *ctx = opaque;
     size_t row = ctx->dw * ctx->channels;
-    for (size_t i = begin; i < end; ++i) {
-        size_t y = i / row, x = (i % row) / ctx->channels, ch = i % ctx->channels;
+    size_t y = begin / row, x = begin % row / ctx->channels, ch = begin % ctx->channels;
+    for (size_t i = begin; i < end; ++i, next_sample(ctx, &y, &x, &ch)) {
         area_line xl = ctx->xl[x], yl = ctx->yl[y];
         float sum = 0.0f;
         for (size_t ky = 0; ky < yl.count; ++ky) {

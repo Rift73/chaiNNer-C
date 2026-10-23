@@ -181,13 +181,11 @@ def stack(
             th, tw = int(np.floor(h * max_w / w + 0.5)), max_w
         expanded_c = 3 if c == 1 else c
         if expanded_c < max_c and not sequence:
-            # The installed Stack Images allocates the original maxima while
-            # promoting channels. Preserve its broadcast/failure behavior.
-            if th not in (1, max_h) or tw not in (1, max_w):
-                raise ValueError(
-                    f"could not broadcast input array from shape {(th, tw, expanded_c)} into shape {(max_h, max_w, expanded_c)}"
-                )
-            th, tw = max_h, max_w
+            # Upstream allocates a promoted image at the largest height and width: a
+            # one-pixel strip broadcasts to them (kept), any other size failed with
+            # NumPy's broadcast error and now keeps its own size (2026-10-23).
+            if th in (1, max_h) and tw in (1, max_w):
+                th, tw = max_h, max_w
         targets.append((th, tw))
     out_h = max_h if orientation == "horizontal" else sum(t[0] for t in targets)
     out_w = sum(t[1] for t in targets) if orientation == "horizontal" else max_w

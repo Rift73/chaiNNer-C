@@ -84,6 +84,19 @@ def stopped_chain(where, trace, alive, started):
         b.edge("source", 0, "slow", 0)
         b.node("sink", lambda x: trace.append(("sink", clock())), outputs=0, side_effects=True)
         b.edge("slow", 0, "sink", 0)
+    elif where == "lazy":
+        # As Save Image reads its image: a side-effect node already running reads the slow node through a lazy
+        # input, which an engine worker computes; Stop ends the read, so the sink never gets the value.
+        def sink(lazy):
+            lazy.value
+            trace.append(("sink", clock()))
+
+        b.node("source", lambda x: x)
+        b.value("source", 0, 1)
+        b.node("slow", slow)
+        b.edge("source", 0, "slow", 0)
+        b.node("sink", sink, outputs=0, side_effects=True, lazy=(0,))
+        b.edge("slow", 0, "sink", 0)
     else:
         # A side-effect node with a context: it runs on the run's driver.
         b.node("source", source, context=True)
@@ -171,7 +184,11 @@ async def stop(where, drop):
 results = {}
 for kind in ("python", "native"):
     os.environ["CHAINNER_C_EXECUTOR"] = kind
-    for where, drop in (("worker", True), ("driver", True), ("driver", False)):
+    for where, drop in (("worker", True), ("lazy", True), ("driver", True), ("driver", False)):
+        if (kind, where) == ("python", "lazy"):
+            # process.Executor ends the lazy read at Stop without waiting for the node that computes it: only the
+            # engine's case is checked.
+            continue
         results[f"{kind} {where} {'dropped' if drop else 'kept'}"] = asyncio.run(stop(where, drop))
 print(json.dumps(results))
 """
@@ -203,11 +220,18 @@ def stops(tmp_path_factory) -> dict[str, Any]:
     return stops
 
 
-CASES = ["worker dropped", "driver dropped", "driver kept"]
+CASES = ["worker dropped", "lazy dropped", "driver dropped", "driver kept"]
 
 
-@pytest.mark.parametrize("case", CASES)
-@pytest.mark.parametrize("kind", ["native", "python"])
+@pytest.mark.parametrize(
+    ("kind", "case"),
+    [
+        (kind, case)
+        for kind in ("native", "python")
+        for case in CASES
+        if (kind, case) != ("python", "lazy dropped")
+    ],
+)
 def test_stop_during_a_long_node(stops, kind, case):
     stop = stops[f"{kind} {case}"]
     trace = dict(stop["trace"])
@@ -236,7 +260,8 @@ def test_stop_during_a_long_node(stops, kind, case):
     assert trace["next run's node"] >= max(at for name, at in stop["trace"] if name != "next run's node"), stop
     # Nothing of the stopped run is left: its executor, its node's output, its engine's background end.
     assert stop["ending_runs"] == 0, stop
-    # The memo keeps the computed source, not the stopped node (the Python executor has no memo).
+    # The memo keeps the computed source, not the stopped node (the Python executor has no memo; the lazy case's
+    # source is the worker case's entry).
     assert stop["memo_entries"] == (1 if (kind, case) == ("native", "worker dropped") else 0), stop
     assert stop["alive"] == [False] * len(stop["alive"]), stop
 

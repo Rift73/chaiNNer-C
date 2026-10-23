@@ -1,3 +1,4 @@
+import inspect
 import math
 
 import numpy as np
@@ -58,3 +59,34 @@ def conic_gradient(img: np.ndarray, rotation: float = 0):
     angles[angles < 0] += 2 * np.pi
     p = angles / math.pi / 2
     img[:] = p.reshape(img.shape)
+
+
+def judged(name: str):
+    """chaiNNer-C's contract for the gradient `name` (ruling of 2026-10-23), not
+    upstream's: the function above, except where it divides 0 by 0. A one-pixel axis
+    is position 0; a zero-width diagonal or radial interval is a step, 0 before its
+    edge and 1 at or after it. The radial position is clamped to 0..1, as the
+    diagonal's is (Fable, 2026-10-23)."""
+    original = globals()[name]
+    signature = inspect.signature(original)
+
+    def gradient(img: np.ndarray, *args: float, **kwargs: float):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            original(img, *args, **kwargs)
+        undefined = np.isnan(img)
+        if name in ("horizontal_gradient", "vertical_gradient"):
+            img[undefined] = 0
+        elif name == "diagonal_gradient":
+            img[undefined] = 1
+        elif name == "radial_gradient":
+            radii = signature.bind(img, *args, **kwargs)
+            radii.apply_defaults()
+            if (
+                radii.arguments["inner_radius_percent"]
+                == radii.arguments["outer_radius_percent"]
+            ):
+                img[:] = undefined | (img > 0)
+            else:
+                np.clip(img, 0, 1, out=img)
+
+    return gradient

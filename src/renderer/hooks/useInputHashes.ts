@@ -16,6 +16,20 @@ import { EMPTY_MAP, deriveUniqueId, stringifyTargetHandle } from '../../common/u
  * inputs through, and per input the value (`null` for none) or, for a connected input, the hash of
  * the connected node in a list (which no value is).
  */
+interface KnownHash {
+    readonly schemata: SchemaMap;
+    /** Per input of the schema: the hash of the connected node, if any. */
+    readonly sources: readonly (string | undefined)[];
+    readonly hash: string;
+}
+/**
+ * Each node's hash, by its node data, with the rest it was made of: the node list and the hashes
+ * of the nodes connected to its inputs. The hashes are computed after every change, and a change
+ * replaces the data of the nodes it changes, never changing data in place: a node whose data and
+ * connected hashes stay keeps its hash without hashing again.
+ */
+const knownHashes = new WeakMap<NodeData, KnownHash>();
+
 export const computeInputHashes = (
     nodes: readonly Node<NodeData>[],
     edges: readonly Edge<EdgeData>[],
@@ -32,30 +46,42 @@ export const computeInputHashes = (
         if (hash) return hash;
 
         const schema = schemata.get(node.data.schemaId);
-        const inputs: (string | readonly [string] | null)[] = [
-            node.data.schemaId,
-            String(node.data.isPassthrough ?? false),
-        ];
-        for (const input of schema.inputs) {
+        const sources = schema.inputs.map((input): string | undefined => {
             const connectedEdge = byTargetHandle.get(
                 stringifyTargetHandle({ nodeId: node.id, inputId: input.id })
             );
-            if (connectedEdge) {
-                const source = byId.get(connectedEdge.source);
-                if (source) {
-                    // input gets passed by the connected node
-                    inputs.push([getInputHash(source)]);
-                    // eslint-disable-next-line no-continue
-                    continue;
-                }
-            }
+            const source = connectedEdge && byId.get(connectedEdge.source);
+            // input gets passed by the connected node
+            return source ? getInputHash(source) : undefined;
+        });
 
-            const value = node.data.inputData[input.id];
-            // eslint-disable-next-line eqeqeq
-            inputs.push(value == undefined ? null : String(value));
+        const known = knownHashes.get(node.data);
+        if (
+            known &&
+            known.schemata === schemata &&
+            known.sources.length === sources.length &&
+            known.sources.every((s, i) => s === sources[i])
+        ) {
+            hash = known.hash;
+        } else {
+            const inputs: (string | readonly [string] | null)[] = [
+                node.data.schemaId,
+                String(node.data.isPassthrough ?? false),
+            ];
+            schema.inputs.forEach((input, i) => {
+                const source = sources[i];
+                if (source !== undefined) {
+                    inputs.push([source]);
+                } else {
+                    const value = node.data.inputData[input.id];
+                    // eslint-disable-next-line eqeqeq
+                    inputs.push(value == undefined ? null : String(value));
+                }
+            });
+            hash = deriveUniqueId(JSON.stringify(inputs));
+            knownHashes.set(node.data, { schemata, sources, hash });
         }
 
-        hash = deriveUniqueId(JSON.stringify(inputs));
         hashes.set(node.id, hash);
         return hash;
     };

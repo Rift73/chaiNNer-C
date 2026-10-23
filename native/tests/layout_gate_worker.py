@@ -5,7 +5,9 @@ Run as ``python -B layout_gate_worker.py ROOT OUT [--layouts L,...] [--schemas S
 source tree: chaiNNer-C's backend/src, or the oracle's src (make_oracle.py). Both
 trees use the same package names, so each runs in its own process.
 The oracle uses --approved-image-outputs for the reviewed High Pass RGBA and
-PSNR decibel corrections; its source files remain unchanged.
+PSNR decibel corrections and the 2026-10-23 rulings (Premultiplied Alpha's
+transparent black, Color Transfer's transparent inputs, Chroma Key's trimap without
+background or foreground); its source files remain unchanged.
 
 Every chaiNNer_standard node with an image input is run on cases built from that
 node's own definition:
@@ -424,6 +426,42 @@ def encode(value: object) -> object:
     }
 
 
+def broadcast_data(node: Any, outputs: list[object]) -> list[object]:
+    return [
+        None if value is None else o.get_broadcast_data(value)
+        for o, value in zip(node.outputs, outputs, strict=True)
+    ]
+
+
+def approved_result(
+    tree: Tree, schema: str, node: Any, values: list[object]
+) -> np.ndarray | None:
+    """The raw result of an approved 2026-10-23 correction the old body cannot give:
+    Color Transfer returns its image when the image or the reference has no opaque
+    pixel; Chroma Key's Trimap Matting returns the frame unkeyed (alpha 1) when its
+    trimap has no background, or keyed whole (alpha 0) when it has no foreground."""
+    if not tree.approved_image_outputs:
+        return None
+    if schema == "chainner:image:color_transfer":
+        clear = [
+            image.ndim == 3 and image.shape[2] == 4 and not (image[..., 3] > 0).any()
+            for image in values[:2]
+            if isinstance(image, np.ndarray)
+        ]
+        return np.asarray(values[0]) if any(clear) else None
+    if schema == "chainner:image:chroma_key" and values[2] == 2 and not values[8]:
+        # Any other error is raised again by the caller's own run.
+        try:
+            tree.process.run_node(node, None, values, "layout-gate")
+        except Exception as error:
+            for missing, alpha in (("background", 1), ("foreground", 0)):
+                if f"Trimap did not contain {missing} values" in str(error):
+                    image = np.asarray(values[0])
+                    plane = np.full(image.shape[:2], alpha, np.float32)
+                    return np.dstack((image, plane))
+    return None
+
+
 def execute(
     tree: Tree, schema: str, values: list[object], tiles: list[np.ndarray]
 ) -> tuple[list[object], list[object]]:
@@ -439,6 +477,10 @@ def execute(
         ):
             # The old body strips only the main image's alpha (approved B12).
             values = [*values[:3], blurred[:, :, :3], *values[4:]]
+    approved = approved_result(tree, schema, node, values)
+    if approved is not None:
+        outputs = tree.process.enforce_output(approved, node).output
+        return outputs, broadcast_data(node, outputs)
     result = tree.process.run_node(node, None, values, "layout-gate")
     if node.kind == "collector":
         index = next(
@@ -474,11 +516,19 @@ def execute(
         mse = float(np.mean((comparison - original) ** 2))
         psnr = math.inf if mse == 0 else 10 * math.log10(1 / mse)
         outputs = [outputs[0], round(psnr, 6), outputs[2]]
-    broadcasts: list[object] = [
-        None if value is None else o.get_broadcast_data(value)
-        for o, value in zip(node.outputs, outputs, strict=True)
-    ]
-    return outputs, broadcasts
+    if (
+        tree.approved_image_outputs
+        and schema == "chainner:image:premultiplied_alpha"
+        and values[1] == "Premultiplied -> Straight"
+    ):
+        # Transparent black stays black where the old body divides 0 by 0 (NaN),
+        # approved 2026-10-23; the result keeps its layout.
+        source = np.asarray(values[0])
+        kept = (source[..., :3] == 0) & (source[..., 3:] == 0)
+        fixed = np.array(outputs[0], order="K")
+        fixed[..., :3] = np.where(kept, source[..., :3], fixed[..., :3])
+        outputs = [fixed]
+    return outputs, broadcast_data(node, outputs)
 
 
 def saved_files(directory: Path) -> dict[str, str]:

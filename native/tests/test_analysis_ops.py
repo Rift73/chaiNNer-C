@@ -596,8 +596,13 @@ def test_color_transfer_zero_variance_and_empty_mask(overflow, reciprocal, empty
                         reciprocal,
                     )
                 )
-    if results:
-        arrays(*results)
+    if empty_mask:
+        if results:
+            arrays(*results)
+    else:
+        # A channel without spread scales by 0 (ruling of 2026-10-23): the solid image takes the reference's mean,
+        # where upstream divides 0 by 0.
+        arrays(results[0], np.full_like(image, 0.75))
 
 
 @pytest.mark.parametrize("shape", [(3,), (0, 4), (2, 3, 0), (2, 3, 4, 5)])

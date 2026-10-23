@@ -63,6 +63,18 @@ def test_create_gradient_matches(style, pair, reverse, size):
     assert_native_matches("chainner:image:create_gradient", [width, height, first, second, reverse, name, *parameters])
 
 
+@pytest.mark.parametrize(("inner", "outer"), [(0, 100), (25, 50), (0, 50)])
+def test_create_gradient_radial_stays_between_its_colours(inner, outer):
+    # Upstream extrapolated past both colours: 0.3 -> 0.6 gave 0.72 in the corners (Fable, 2026-10-23).
+    inputs = [64, 48, Color.gray(0.3), Color.gray(0.6), False, "Radial", 45, 100, inner, outer, 0]
+    outcome = assert_native_matches("chainner:image:create_gradient", inputs)
+    out = np.frombuffer(outcome[1][0][-1], np.float32).reshape(48, 64)
+    low, high = np.float32(0.3), np.float32(0.6)
+    assert low <= out.min() and out.max() <= high
+    assert out[0, 0] == out[0, -1] == out[-1, 0] == out[-1, -1] == high
+    assert out[24, 32] == low
+
+
 @pytest.mark.parametrize("size", [1, 2, 3, 64, 255])
 def test_create_colorwheel_matches(size):
     assert_native_matches("chainner:image:create_colorwheel", [size])
@@ -104,12 +116,15 @@ NOISE = [
 ]
 
 
-@pytest.mark.parametrize("size", [(1, 1), (5, 3), (31, 17), (64, 64)])
+@pytest.mark.parametrize("size", [(1, 1), (1, 2), (2, 1), (5, 3), (31, 17), (64, 64)])
 @pytest.mark.parametrize("seed", [0, 12345, 2**32 - 1])
 @pytest.mark.parametrize("noise", NOISE)
 def test_create_noise_matches(noise, seed, size):
     width, height = size
-    assert_native_matches("chainner:image:create_noise", [width, height, seed, *noise])
+    outcome = assert_native_matches("chainner:image:create_noise", [width, height, seed, *noise])
+    if noise[0] == "Blue Noise":
+        # NaN at 1x1, and it never finished at 1x2 and 2x1.
+        assert not np.isnan(np.frombuffer(outcome[1][0][-1], np.float32)).any()
 
 
 # NaN is rejected by the input enforce before the body runs.

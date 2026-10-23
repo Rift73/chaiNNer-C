@@ -63,7 +63,9 @@ class ImageInput(BaseInput):
 
             return value
 
-        assert isinstance(value, np.ndarray)
+        assert isinstance(value, np.ndarray), (
+            f"The input {self.label} takes an image, not a {type(value).__name__}."
+        )
         _, _, c = get_h_w_c(value)
 
         if self.channels is not None and c not in self.channels:

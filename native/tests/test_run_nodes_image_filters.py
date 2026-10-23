@@ -2,9 +2,11 @@
 
 import numpy as np
 import pytest
-from native_differential import assert_native_matches
+from native_differential import assert_native_matches, node_data
 from native_images import CHANNELS, EMPTY_SHAPES, SIZES, image, seed_of
 
+import api
+import process
 from nodes.utils.seed import Seed
 
 CASES = [(size, channels) for size in SIZES for channels in CHANNELS]
@@ -29,13 +31,26 @@ def test_add_noise_matches(amount, seed, noise_type, color, size, channels):
 
 def test_add_noise_edge_cases():
     img = image(3, 5, 6, 3)
-    for seed in (-1, -(2**40), 2**62 + 12345):
-        assert_native_matches("chainner:image:add_noise", [img, "uniform", "rgb", 50.0, seed])
-    assert_native_matches("chainner:image:add_noise", [img, "uniform", "rgb", 50.0, Seed(2**70)], declines=True)
+    assert_native_matches("chainner:image:add_noise", [img, "uniform", "rgb", 50.0, 2**62 + 12345])
+    for seed in (-1, -(2**40), Seed(2**70)):
+        assert_native_matches("chainner:image:add_noise", [img, "uniform", "rgb", 50.0, seed], declines=True)
     for shape in EMPTY_SHAPES:
         assert_native_matches(
             "chainner:image:add_noise", [np.zeros(shape, np.float32), "gaussian", "gray", 50.0, 1], declines=True
         )
+
+
+@pytest.mark.parametrize("noise_type", NOISE_TYPES)
+@pytest.mark.parametrize("seed", [-1, -(2**40), -(2**4096)])
+def test_add_noise_negative_seeds_take_to_u32(noise_type, seed):
+    # Seed inputs accept any integer; the generators raised "expected non-negative integer" for a negative one.
+    node = node_data("chainner:image:add_noise")
+    img = image(seed_of("negative noise", noise_type), 5, 6, 3)
+    noisy = node.run(*process.enforce_inputs([img, noise_type, "rgb", 50.0, seed], node, api.NodeId("noise"), []))
+    expected = node.run(
+        *process.enforce_inputs([img, noise_type, "rgb", 50.0, Seed(seed).to_u32()], node, api.NodeId("noise"), [])
+    )
+    np.testing.assert_array_equal(noisy.view(np.uint32), expected.view(np.uint32))
 
 
 @pytest.mark.parametrize(("size", "channels"), CASES)
@@ -309,6 +324,54 @@ def test_color_transfer_matches(overflow, reciprocal, colorspace, channels, refe
     if channels == 4:
         img[: size[0] // 2, :, 3] = 0
     assert_native_matches("chainner:image:color_transfer", [img, ref, "mean_std", colorspace, overflow, reciprocal])
+
+
+@pytest.mark.parametrize("colorspace", ["L*a*b*", "RGB"])
+@pytest.mark.parametrize(("overflow", "reciprocal"), [(1, True), (0, True), (1, False), (0, False)])
+def test_color_transfer_solid_images_take_the_reference_mean(overflow, reciprocal, colorspace):
+    # Upstream divided by a zero standard deviation here: NaN in RGB, white in L*a*b*.
+    solid, gray = np.full((9, 8, 3), 0.5, np.float32), np.full((7, 6, 3), 0.2, np.float32)
+    for img, ref in [(solid, image(4, 7, 6, 3, edges=False)), (image(5, 9, 8, 3, edges=False), gray), (solid, gray)]:
+        outcome = assert_native_matches(
+            "chainner:image:color_transfer", [img, ref, "mean_std", colorspace, overflow, reciprocal]
+        )
+        pixels = np.frombuffer(outcome[1][0][-1], np.float32)
+        assert not np.isnan(pixels).any()
+        if ref is gray:
+            np.testing.assert_allclose(pixels, 0.2, atol=1e-3)
+
+
+def transparent_pairs(size):
+    """(image, reference) RGBA pairs where the image, the reference or both have no opaque pixel."""
+    height, width = size
+    opaque = image(seed_of("opaque", size), height, width, 4, edges=False)
+    opaque[..., 3] = 1
+    clear = image(seed_of("clear", size), height, width, 4, edges=False)
+    clear[..., 3] = 0
+    return [(clear, opaque), (opaque, clear), (clear, clear)]
+
+
+@pytest.mark.parametrize("size", [(5, 3), (1, 1)])
+def test_color_transfer_fully_transparent_returns_the_image(size):
+    # Mean+Std gave NaN or failed, the others raised LinAlgError (Fable, 2026-10-23).
+    node = node_data("chainner:image:color_transfer")
+    for img, ref in transparent_pairs(size):
+        for colorspace in ("L*a*b*", "RGB"):
+            for overflow in (1, 0):
+                inputs = [img, ref, "mean_std", colorspace, overflow, True]
+                outcome = assert_native_matches("chainner:image:color_transfer", inputs)
+                assert outcome[1][0][-1] == img.tobytes()
+        for algorithm in ("linear_histogram", "principal_color"):
+            inputs = [img, ref, algorithm, "RGB", 1, True]
+            assert_native_matches("chainner:image:color_transfer", inputs, declines=True)
+            result = node.run(*process.enforce_inputs(inputs, node, api.NodeId("transfer"), []))
+            assert result.tobytes() == img.tobytes()
+    # One opaque reference pixel still transfers its colour.
+    img, ref = transparent_pairs(size)[1]
+    ref[0, 0, 3] = 1
+    for algorithm in ("mean_std", "linear_histogram", "principal_color"):
+        result = node.run(*process.enforce_inputs([img, ref, algorithm, "RGB", 1, True], node, api.NodeId("t"), []))
+        assert result.tobytes() != img.tobytes()
 
 
 def test_color_transfer_declines():

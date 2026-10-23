@@ -36,6 +36,10 @@ float cn_numpy_sum_f32(const float *x, size_t n, size_t stride, size_t block, si
    period as in cn_numpy_sum_f32. n > 0. */
 float cn_numpy_extreme_f32(const float *x, size_t n, int lanes, int maximum, size_t block,
                            size_t period);
+/* statistics_avx2.c, for ISA level avx2 or above: the 8-lane reduce's eight-vector and single-vector loops of
+   cn_numpy_extreme_f32 over x[0, len), each lane the scalar sequence, into accumulator[0, 8); returns the elements
+   it consumed (len rounded down to 8). */
+size_t cn_numpy_extreme8_avx2(float *accumulator, const float *x, size_t len, int maximum);
 /* np.partition of one contiguous float32 lane for count ascending, normalized
    kth (NumPy's introselect, NaN last). n > 0, every kth < n. */
 void cn_numpy_partition_f32(float *v, size_t n, const size_t *kth, size_t count);

@@ -275,6 +275,25 @@ def test_lab_inverse_piecewise_boundaries(width: int) -> None:
     )
 
 
+@pytest.mark.parametrize("blue", [0, 2])
+def test_lab_to_four_channels(blue: int) -> None:
+    # The C entry also writes Lab to BGR(A) with alpha 1 (no cv2 code reaches it):
+    # the colour channels are the three-channel result's.
+    function = native._api().cn_color_convert_f32
+    source = input_image(cv2.COLOR_LAB2BGR, 41, 9)
+    three = np.zeros((9, 41, 3), np.float32)
+    four = np.zeros((9, 41, 4), np.float32)
+    for out, channels in ((three, 3), (four, 4)):
+        assert (
+            function(
+                native.ptr(source), native.ptr(out), 9, 41, 3, channels, 11, blue, 4, 0
+            )
+            == 0
+        )
+    exact(four[..., :3], three)
+    exact(four[..., 3], np.ones((9, 41), np.float32))
+
+
 @pytest.mark.parametrize("size", [1, 3, 4, 7, 8, 9, 16, 33, 127])
 def test_colorwheel_node(size: int) -> None:
     from test_analysis_ops import load_body

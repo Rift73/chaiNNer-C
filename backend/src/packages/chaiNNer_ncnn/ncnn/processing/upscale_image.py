@@ -236,7 +236,9 @@ def upscale_image_node(
             i = cv2.cvtColor(i, cv2.COLOR_BGR2RGB)
         elif ic == 4:
             i = cv2.cvtColor(i, cv2.COLOR_BGRA2RGBA)
-        i = upscale_impl(
+        # The model's result in RGB(A) comes back BGR(A), whatever the channels of its
+        # input (a 1 -> 3 model's too); one of 1 channel is grey.
+        return upscale_impl(
             settings,
             i,
             model,
@@ -244,17 +246,9 @@ def upscale_image_node(
             model.model.layers[-1].outputs[0],
             TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
             collect_after=False,
-            swap_red_blue=ic in (3, 4),
+            swap_red_blue=True,
             progress=context,
         )
-        # A result with the input's 3 or 4 channels came back BGR(A); any other is
-        # converted as before.
-        if get_h_w_c(i)[2] != ic:
-            if ic == 3:
-                i = cv2.cvtColor(i, cv2.COLOR_RGB2BGR)
-            elif ic == 4:
-                i = cv2.cvtColor(i, cv2.COLOR_RGBA2BGRA)
-        return i
 
     return convenient_upscale(img, model.in_nc, model.out_nc, upscale, separate_alpha)
 

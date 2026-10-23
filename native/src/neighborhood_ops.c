@@ -1,12 +1,17 @@
 #include "chainner.h"
 #include "chainner_ext_kernels.h"
 #include "dither_shared.h"
+#include "isa.h"
+#include "median_shared.h"
 #include "numeric.h"
 #include "parallel.h"
 #include "run_kernels.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_M_X64)
+#include <xmmintrin.h>
+#endif
 
 /* Column counts fit uint16_t through public radius 1000 (height <=2001).
    Window accumulators use uint32_t: an entire window can hold 4,004,001
@@ -31,9 +36,11 @@ typedef struct small_median_job {
     float *out;
     size_t h, w, c, radius, vector_lanes;
     int sorting_network;
+    cn_isa_level isa;
 } small_median_job;
 
-/* Comparator networks adapted from OpenCV 5.0.0 median_blur.simd.hpp.
+/* Comparator networks adapted from OpenCV 5.0.0 median_blur.simd.hpp (the
+   square ones in median_shared.h, with their notice).
    Copyright (C) 2000-2008, 2018 Intel Corporation; (C) 2009 Willow Garage;
    (C) 2014-2015 Itseez. BSD notice is in chainner_native.LICENSE.txt.
    Scalar std::min/max and vector MINPS/MAXPS choose different operands for
@@ -54,30 +61,17 @@ static void median_minmax(float *a, float *b, int vector) {
 static float network_median(float *values, size_t count, int vector) {
     static const uint8_t thin3[][2] = {{0,1},{1,2},{0,1}};
     static const uint8_t thin5[][2] = {{0,1},{3,4},{2,3},{3,4},{0,2},{2,4},{1,3},{1,2}};
-    static const uint8_t square3[][2] = {
-        {1,2},{4,5},{7,8},{0,1},{3,4},{6,7},{1,2},{4,5},{7,8},
-        {0,3},{5,8},{4,7},{3,6},{1,4},{2,5},{4,7},{4,2},{6,4},{4,2}
-    };
-    static const uint8_t square5[][2] = {
-        {1,2},{0,1},{1,2},{4,5},{3,4},{4,5},{0,3},{2,5},{2,3},{1,4},
-        {1,2},{3,4},{7,8},{6,7},{7,8},{10,11},{9,10},{10,11},{6,9},{8,11},
-        {8,9},{7,10},{7,8},{9,10},{0,6},{4,10},{4,6},{2,8},{2,4},{6,8},
-        {1,7},{5,11},{5,7},{3,9},{3,5},{7,9},{1,2},{3,4},{5,6},{7,8},
-        {9,10},{13,14},{12,13},{13,14},{16,17},{15,16},{16,17},{12,15},{14,17},{14,15},
-        {13,16},{13,14},{15,16},{19,20},{18,19},{19,20},{21,22},{23,24},{21,23},{22,24},
-        {22,23},{18,21},{20,23},{20,21},{19,22},{22,24},{19,20},{21,22},{23,24},{12,18},
-        {16,22},{16,18},{14,20},{20,24},{14,16},{18,20},{22,24},{13,19},{17,23},{17,19},
-        {15,21},{15,17},{19,21},{13,14},{15,16},{17,18},{19,20},{21,22},{23,24},{0,12},
-        {8,20},{8,12},{4,16},{16,24},{12,16},{2,14},{10,22},{10,14},{6,18},{6,10},
-        {10,12},{1,13},{9,21},{9,13},{5,17},{13,17},{3,15},{11,23},{11,15},{7,19},
-        {7,11},{11,13},{11,12}
-    };
     const uint8_t (*pairs)[2];
     size_t length;
     if (count == 3) { pairs = thin3; length = sizeof(thin3) / sizeof(thin3[0]); }
     else if (count == 5) { pairs = thin5; length = sizeof(thin5) / sizeof(thin5[0]); }
-    else if (count == 9) { pairs = square3; length = sizeof(square3) / sizeof(square3[0]); }
-    else { pairs = square5; length = sizeof(square5) / sizeof(square5[0]); }
+    else if (count == 9) {
+        pairs = cn_median_square3;
+        length = sizeof(cn_median_square3) / sizeof(cn_median_square3[0]);
+    } else {
+        pairs = cn_median_square5;
+        length = sizeof(cn_median_square5) / sizeof(cn_median_square5[0]);
+    }
     for (size_t i = 0; i < length; ++i)
         median_minmax(values + pairs[i][0], values + pairs[i][1], vector);
     return values[count / 2];
@@ -103,39 +97,62 @@ static float select_middle(float *values, size_t count) {
     return values[middle];
 }
 
+static void small_median_one(const small_median_job *job, size_t i) {
+    size_t channel = i % job->c, x = i / job->c % job->w;
+    size_t y = i / job->c / job->w, count = 0;
+    float values[25];
+    if (job->sorting_network && (job->w == 1 || job->h == 1)) {
+        size_t position = job->w == 1 ? y : x;
+        size_t length = job->w == 1 ? job->h : job->w;
+        for (size_t d = 0; d <= 2 * job->radius; ++d) {
+            size_t at = d < job->radius ? low_edge(position, job->radius - d) :
+                high_edge(position, d - job->radius, length);
+            values[count++] = job->src[at * job->c + channel];
+        }
+        job->out[i] = network_median(values, count, 0);
+        return;
+    }
+    for (size_t dy = 0; dy <= 2 * job->radius; ++dy) {
+        size_t yy = dy < job->radius ? low_edge(y, job->radius - dy) :
+            high_edge(y, dy - job->radius, job->h);
+        for (size_t dx = 0; dx <= 2 * job->radius; ++dx) {
+            size_t xx = dx < job->radius ? low_edge(x, job->radius - dx) :
+                high_edge(x, dx - job->radius, job->w);
+            values[count++] = job->src[(yy * job->w + xx) * job->c + channel];
+        }
+    }
+    if (job->sorting_network) {
+        size_t start = job->radius * job->c, flat_x = x * job->c + channel;
+        size_t interior = job->w > 2 * job->radius ?
+            (job->w - 2 * job->radius) * job->c : 0;
+        size_t finish = interior >= job->vector_lanes ? start + interior : start;
+        job->out[i] = network_median(values, count, flat_x >= start && flat_x < finish);
+    } else job->out[i] = select_middle(values, count);
+}
+
+/* Samples [begin, end). Without NaN and -0 (no sorting network) at avx2 and above, each row's part of the range
+   whose windows lie inside the row (at least 8 samples) goes through the AVX2 unit: there the median is one value
+   whatever the comparisons choose, so its network gives select_middle's result. */
 static void small_median_range(void *context, size_t begin, size_t end) {
     small_median_job *job = (small_median_job *)context;
-    for (size_t i = begin; i < end; ++i) {
-        size_t channel = i % job->c, x = i / job->c % job->w;
-        size_t y = i / job->c / job->w, count = 0;
-        float values[25];
-        if (job->sorting_network && (job->w == 1 || job->h == 1)) {
-            size_t position = job->w == 1 ? y : x;
-            size_t length = job->w == 1 ? job->h : job->w;
-            for (size_t d = 0; d <= 2 * job->radius; ++d) {
-                size_t at = d < job->radius ? low_edge(position, job->radius - d) :
-                    high_edge(position, d - job->radius, length);
-                values[count++] = job->src[at * job->c + channel];
-            }
-            job->out[i] = network_median(values, count, 0);
-            continue;
-        }
-        for (size_t dy = 0; dy <= 2 * job->radius; ++dy) {
-            size_t yy = dy < job->radius ? low_edge(y, job->radius - dy) :
-                high_edge(y, dy - job->radius, job->h);
-            for (size_t dx = 0; dx <= 2 * job->radius; ++dx) {
-                size_t xx = dx < job->radius ? low_edge(x, job->radius - dx) :
-                    high_edge(x, dx - job->radius, job->w);
-                values[count++] = job->src[(yy * job->w + xx) * job->c + channel];
+    for (size_t i = begin; i < end;) {
+#if defined(_MSC_VER) && defined(_M_X64)
+        if (!job->sorting_network && job->isa >= CN_ISA_AVX2 && job->w > 2 * job->radius) {
+            size_t row = job->w * job->c, y = i / row, at = i - y * row;
+            size_t stop = end - i < row - at ? at + (end - i) : row;
+            size_t first = job->radius * job->c, last = (job->w - job->radius) * job->c;
+            size_t from = at > first ? at : first, to = stop < last ? stop : last;
+            if (to > from && to - from >= 8) {
+                for (; at < from; ++at) small_median_one(job, y * row + at);
+                cn_median_interior_avx2(job->src, job->out, job->h, job->w, job->c, job->radius, y, from, to);
+                for (at = to; at < stop; ++at) small_median_one(job, y * row + at);
+                i = y * row + stop;
+                continue;
             }
         }
-        if (job->sorting_network) {
-            size_t start = job->radius * job->c, flat_x = x * job->c + channel;
-            size_t interior = job->w > 2 * job->radius ?
-                (job->w - 2 * job->radius) * job->c : 0;
-            size_t finish = interior >= job->vector_lanes ? start + interior : start;
-            job->out[i] = network_median(values, count, flat_x >= start && flat_x < finish);
-        } else job->out[i] = select_middle(values, count);
+#endif
+        small_median_one(job, i);
+        ++i;
     }
 }
 
@@ -145,8 +162,15 @@ CN_EXPORT cn_status cn_neighborhood_median_f32(const float *src, float *out,
         (vector_lanes != 4 && vector_lanes != 8 && vector_lanes != 16))
         return CN_INVALID_ARGUMENT;
     if (h > SIZE_MAX / w || h * w > SIZE_MAX / sizeof(float) / c) return CN_SIZE_OVERFLOW;
-    small_median_job job = { src, out, h, w, c, radius, vector_lanes, 0 };
-    for (size_t i = 0; i < h * w * c; ++i) {
+    small_median_job job = { src, out, h, w, c, radius, vector_lanes, 0, cn_isa_current() };
+    size_t i = 0;
+#if defined(_MSC_VER) && defined(_M_X64)
+    if (job.isa >= CN_ISA_AVX2 && !(_mm_getcsr() & 0x40)) {
+        job.sorting_network = cn_median_special_avx2(src, h * w * c);
+        i = h * w * c;
+    }
+#endif
+    for (; i < h * w * c; ++i) {
         if (isnan(src[i]) || (src[i] == 0 && signbit(src[i]))) {
             job.sorting_network = 1;
             break;
@@ -163,7 +187,7 @@ typedef struct histogram_job {
     const uint8_t *src;
     uint8_t *out;
     column_histogram *columns;
-    size_t h, w, c, radius, original_width;
+    size_t h, w, c, radius, original_width, stripe, stripes;
     int transpose;
 } histogram_job;
 
@@ -177,22 +201,27 @@ static void add_column(column_histogram *hist, uint8_t value, size_t weight) {
 }
 
 /* A two-level, lazily updated sliding histogram. Fine bins are updated only
-   for the coarse bucket containing the median. Scratch is O(min(H,W)*C),
-   independent of radius and image area; the image is never padded/copied. */
+   for the coarse bucket containing the median. Each task is one channel's
+   stripe of rows along the longer side: it builds its columns' histograms from
+   its first row's window (clamped rows, the multiset the slide from row 0
+   reaches there), so the stripes give the same outputs as one slide. Scratch is
+   O(min(H,W)*C) per stripe, independent of radius and image area; the image is
+   never padded/copied. */
 static void histogram_range(void *context, size_t begin, size_t end) {
     histogram_job *job = (histogram_job *)context;
     size_t r = job->radius, kernel = 2 * r + 1;
     uint32_t middle = (uint32_t)(kernel * kernel / 2);
-    for (size_t c = begin; c < end; ++c) {
-        column_histogram *columns = job->columns + c * job->w;
+    for (size_t task = begin; task < end; ++task) {
+        size_t c = task / job->stripes, first = task % job->stripes * job->stripe;
+        size_t last = job->h - first < job->stripe ? job->h : first + job->stripe;
+        column_histogram *columns = job->columns + task * job->w;
         for (size_t x = 0; x < job->w; ++x) {
-            for (size_t y = 0; y <= r && y < job->h; ++y) {
-                size_t weight = y == 0 ? r + 1 : 1;
-                if (y == job->h - 1 && r >= job->h) weight += r - job->h + 1;
-                add_column(columns + x, job->src[image_index(job, y, x, c)], weight);
+            for (size_t d = 0; d < kernel; ++d) {
+                size_t y = d < r ? low_edge(first, r - d) : high_edge(first, d - r, job->h);
+                add_column(columns + x, job->src[image_index(job, y, x, c)], 1);
             }
         }
-        for (size_t y = 0; y < job->h; ++y) {
+        for (size_t y = first; y < last; ++y) {
             uint32_t coarse[16] = {0}, fine[16][16] = {{0}};
             size_t updated[16];
             for (size_t b = 0; b < 16; ++b) updated[b] = SIZE_MAX;
@@ -237,7 +266,7 @@ static void histogram_range(void *context, size_t begin, size_t end) {
                     coarse[b] += columns[enter].coarse[b];
                 }
             }
-            if (y == job->h - 1) break;
+            if (y + 1 == last) break;
             size_t leave = low_edge(y, r), enter = high_edge(y, r + 1, job->h);
             for (size_t x = 0; x < job->w; ++x) {
                 uint8_t old = job->src[image_index(job, leave, x, c)];
@@ -254,12 +283,19 @@ CN_EXPORT cn_status cn_neighborhood_median_u8(const uint8_t *src, uint8_t *out,
     if (!src || !out || radius < 3 || radius > 1000) return CN_INVALID_ARGUMENT;
     cn_status status = dimensions(h, w, c);
     if (status != CN_OK) return status;
-    size_t narrow = h < w ? h : w;
-    if (narrow > SIZE_MAX / sizeof(column_histogram) / c) return CN_SIZE_OVERFLOW;
-    column_histogram *columns = calloc(narrow * c, sizeof(column_histogram));
+    size_t narrow = h < w ? h : w, wide = h < w ? w : h;
+    /* Stripes of at least four windows and 64 rows, so a stripe's start costs a
+       fraction of its slide, and at most 8 per channel, which bounds the columns'
+       copies; the partition depends on the image and radius alone. */
+    size_t stripe = 4 * (2 * radius + 1);
+    if (stripe < 64) stripe = 64;
+    if (stripe < (wide + 7) / 8) stripe = (wide + 7) / 8;
+    size_t stripes = (wide + stripe - 1) / stripe;
+    if (narrow > SIZE_MAX / sizeof(column_histogram) / c / stripes) return CN_SIZE_OVERFLOW;
+    column_histogram *columns = calloc(narrow * c * stripes, sizeof(column_histogram));
     if (!columns) return CN_ALLOCATION_FAILED;
-    histogram_job job = { src, out, columns, h < w ? w : h, narrow, c, radius, w, h < w };
-    status = cn_parallel_for(c, 1, histogram_range, &job);
+    histogram_job job = { src, out, columns, wide, narrow, c, radius, w, stripe, stripes, h < w };
+    status = cn_parallel_for(c * stripes, 1, histogram_range, &job);
     free(columns);
     return status;
 }

@@ -89,6 +89,30 @@ def test_shape_and_attribute_operators(name, op, attrs, _, fp16):
     check(model([helper.make_node(op, ["x"], ["y"], name="shape", **attrs)]), fp16)
 
 
+@pytest.mark.parametrize(
+    ("op", "axes", "steps", "converts"),
+    [
+        ("Slice", [1, 2], [1, 1], True),
+        ("Slice", [1, 2], None, True),
+        ("Slice", [0, 1], [1, 1], True),
+        ("Slice", [-1], [1], True),
+        ("Slice", [1], [2], False),
+        ("Squeeze", [1, 2], None, True),
+    ],
+)
+def test_slice_and_squeeze_corrections(op, axes, steps, converts):
+    """generate_onnx_converter.py's CORRECTIONS: steps of 1 and several axes convert,
+    a Slice drops the batch axis's entry, and a step NCNN's Crop lacks is refused."""
+    attrs: dict[str, Any] = {"axes": axes}
+    if op == "Slice":
+        attrs.update(starts=[0] * len(axes), ends=[3] * len(axes))
+    if steps is not None:
+        attrs["steps"] = steps
+    node = helper.make_node(op, ["x"], ["y"], name="shape", **attrs)
+    outcome = check(model([node]), success=converts)
+    assert outcome[0] == ("ok" if converts else "AssertionError")
+
+
 @pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64])
 @pytest.mark.parametrize(
     "op",

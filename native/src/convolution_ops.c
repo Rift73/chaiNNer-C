@@ -16,7 +16,10 @@ static cn_status dimensions(size_t h, size_t w, size_t c) {
     return CN_OK;
 }
 
+/* An in-range coordinate is its own image (the box sums' interior taps take this
+   branch, without the division). */
 static size_t reflect101(int64_t coordinate, size_t length) {
+    if (coordinate >= 0 && (uint64_t)coordinate < length) return (size_t)coordinate;
     if (length == 1) return 0;
     int64_t period = (int64_t)(length - 1) * 2;
     coordinate %= period;

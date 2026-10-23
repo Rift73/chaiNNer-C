@@ -486,8 +486,8 @@ def test_interpolation_orchestration_order(failure):
             lambda module=module, a_bytes=a_bytes, b_bytes=b_bytes: (
                 module.interpolate_models_node(
                     "context",
-                    types.SimpleNamespace(bytes=a_bytes),
-                    types.SimpleNamespace(bytes=b_bytes),
+                    types.SimpleNamespace(bytes=a_bytes, info=FP32),
+                    types.SimpleNamespace(bytes=b_bytes, info=FP32),
                     25,
                 )
             )
@@ -513,6 +513,11 @@ def test_interpolation_orchestration_order(failure):
 
 def scalar(value):
     return np.asarray(value, np.float32)
+
+
+# A model's info as the interpolation reads it: two models of one precision (the node
+# refuses two precisions before the shared path these tests compare).
+FP32 = types.SimpleNamespace(dtype="fp32")
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
@@ -739,8 +744,8 @@ def test_initializer_rebuild_partial_failures(failure):
         value, error, caught = outcome(
             lambda module=module: module.interpolate_models_node(
                 None,
-                types.SimpleNamespace(bytes=b"a"),
-                types.SimpleNamespace(bytes=b"b"),
+                types.SimpleNamespace(bytes=b"a", info=FP32),
+                types.SimpleNamespace(bytes=b"b", info=FP32),
                 25,
             )
         )

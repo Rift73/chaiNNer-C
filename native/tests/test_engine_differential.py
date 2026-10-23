@@ -10,6 +10,7 @@ from __future__ import annotations
 import _winapi
 import importlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -337,6 +338,258 @@ def test_native_node_error_matches(schemas, assets, tmp_path):
             )
         )
     assert errors[0] == errors[1] and errors[0][1] == "ZeroDivisionError"
+
+
+@pytest.mark.parametrize("fail_fast", [1, 0])
+def test_a_generator_item_error_names_its_node_and_file(
+    schemas, assets, tmp_path, fail_fast
+):
+    # Load Images over a folder whose third file is truncated: the error names Load Images (the UI highlights it)
+    # and the file, on both executors, the window's items and the first item alike.
+    folder = tmp_path / "images"
+    folder.mkdir()
+    for index in range(6):
+        image = cv2.imread(str(assets / "images" / f"{index:03}.jpg"))
+        assert cv2.imwrite(str(folder / f"{index:03}.png"), image)
+    broken = folder / "002.png"
+    broken.write_bytes(broken.read_bytes()[:200])
+    output = tmp_path / "out"
+    results = []
+    for kind in ("python", "native"):
+        shutil.rmtree(output, ignore_errors=True)
+        output.mkdir()
+        nodes = [
+            make_node(
+                schemas,
+                "load",
+                "chainner:image:load_images",
+                {0: str(folder), 2: 0, 4: 0, 6: fail_fast},
+            ),
+            make_node(
+                schemas,
+                "save",
+                "chainner:image:save",
+                {
+                    0: edge("load"),
+                    1: str(output),
+                    2: None,
+                    3: edge("load", 3),
+                    4: "png",
+                    15: "u8",
+                },
+            ),
+        ]
+        chain = parse_json(cast("list[JsonNode]", nodes))
+        optimize(chain)
+        results.append((chain, execute(kind, chain, storage=assets / "storage")))
+    (_, oracle), (chain, engine) = results
+    assert mismatches("item-error", chain, oracle, engine, tmp_path) == []
+    error = engine.error
+    if fail_fast:
+        assert isinstance(error, process.NodeExecutionError), repr(error)
+        assert error.node_id == "load" and error.__cause__ is not None
+        assert str(error) == f"{broken}: {error.__cause__}"
+        assert error.inputs[0] == {"type": "literal", "value": str(folder)}
+    else:
+        # The deferred errors' summary names no node, each line its file.
+        assert not isinstance(error, process.NodeExecutionError), repr(error)
+        assert f"\n- {broken}: " in str(error)
+
+
+def test_a_collector_completion_error_names_its_node(schemas, assets):
+    # Merge Spritesheet fails in its completion (12 sprites of different sizes in 3 x 3): the error names it, with
+    # its constant inputs, as its per-item errors do.
+    errors = []
+    for kind in ("python", "native"):
+        nodes = [
+            make_node(
+                schemas,
+                "load",
+                "chainner:image:load_images",
+                {0: str(assets / "images"), 2: 0, 4: 0, 6: 1},
+            ),
+            make_node(
+                schemas,
+                "merge",
+                "chainner:image:merge_spritesheet",
+                {0: edge("load"), 1: 3, 2: 3},
+            ),
+            make_node(schemas, "view", "chainner:image:view", {0: edge("merge")}),
+        ]
+        chain = parse_json(cast("list[JsonNode]", nodes))
+        optimize(chain)
+        error = execute(kind, chain, storage=assets / "storage").error
+        assert isinstance(error, process.NodeExecutionError), f"{kind}: {error!r}"
+        assert error.inputs[1] == {"type": "literal", "value": 3}, error.inputs
+        errors.append((error.node_id, str(error), type(error.__cause__).__name__))
+    assert errors[0] == errors[1] and errors[0][0] == "merge", errors
+
+
+def test_a_collector_input_error_reports_its_iterated_inputs(
+    schemas, assets, monkeypatch
+):
+    # A one-channel frame into Save Video fails its Image Sequence's enforce: the error reports that input as given,
+    # and the worker logs no traceback for each of Save Video's other inputs (it enforced None placeholders).
+    if not (assets / "moving.mkv").exists():
+        pytest.skip(f"the pinned FFmpeg ({FFMPEG}) is not installed")
+    logged: list[str] = []
+    monkeypatch.setattr(
+        process.logger, "error", lambda message, *_a, **_k: logged.append(message)
+    )
+    for kind in ("python", "native"):
+        logged.clear()
+        nodes = [
+            make_node(
+                schemas,
+                "load",
+                "chainner:image:load_video",
+                {0: str(assets / "moving.mkv")},
+            ),
+            make_node(
+                schemas, "split", "chainner:image:split_channels", {0: edge("load")}
+            ),
+            make_node(
+                schemas,
+                "sv",
+                "chainner:image:save_video",
+                {
+                    0: edge("split"),
+                    1: str(assets / "unused"),
+                    2: "clip",
+                    14: edge("load", 4),
+                    15: None,
+                },
+            ),
+        ]
+        chain = parse_json(cast("list[JsonNode]", nodes))
+        optimize(chain)
+        error = execute(kind, chain, storage=assets / "storage").error
+        assert isinstance(error, process.NodeExecutionError), f"{kind}: {error!r}"
+        assert error.node_id == "sv"
+        assert error.inputs[0] == {
+            "type": "formatted",
+            "formatString": "Grayscale Image 320x180",
+        }
+        iterated = set(
+            api.registry.nodes["chainner:image:save_video"][0].iterable_inputs[0].inputs
+        )
+        assert set(error.inputs) <= iterated, error.inputs
+        assert not [m for m in logged if m.startswith("Error enforcing input")], logged
+
+
+def test_a_generator_error_at_its_first_item_names_its_node(schemas, assets):
+    # Load Video's Range with In after Out fails at its first item, as an error of Load Video.
+    if not (assets / "moving.mkv").exists():
+        pytest.skip(f"the pinned FFmpeg ({FFMPEG}) is not installed")
+    errors = []
+    for kind in ("python", "native"):
+        nodes = [
+            make_node(
+                schemas,
+                "load",
+                "chainner:image:load_video",
+                {0: str(assets / "moving.mkv"), 10: "range", 11: 12, 12: 5},
+            ),
+            make_node(schemas, "view", "chainner:image:view", {0: edge("load")}),
+        ]
+        chain = parse_json(cast("list[JsonNode]", nodes))
+        optimize(chain)
+        error = execute(kind, chain, storage=assets / "storage").error
+        assert isinstance(error, process.NodeExecutionError), f"{kind}: {error!r}"
+        errors.append((error.node_id, str(error), type(error.__cause__).__name__))
+    expected = ("load", "In (frame 12) is after Out (frame 5).", "ValueError")
+    assert errors[0] == errors[1] == expected
+
+
+def malformed_chain(schemas, case: str) -> list[dict]:
+    """A chain file's content as people may share it, broken one way."""
+    nodes = [
+        make_node(schemas, "load", "chainner:image:load", {0: "x.png"}),
+        make_node(
+            schemas, "blur", "chainner:image:gaussian_blur", {0: edge("load"), 1: 2}
+        ),
+    ]
+    blur = nodes[1]
+    if case == "cycle":
+        blur["inputs"][1] = edge("blur")
+    elif case == "edge to a missing node":
+        blur["inputs"][0] = edge("ghost")
+    elif case == "edge to a missing output":
+        blur["inputs"][0] = edge("load", 7)
+    elif case == "edge to output -1":
+        blur["inputs"][0] = edge("load", -1)
+    elif case == "edge output as text":
+        blur["inputs"][0] = {"type": "edge", "id": "load", "index": "0"}
+    elif case == "too many inputs":
+        blur["inputs"].append({"type": "value", "value": 1})
+    elif case == "unknown schema":
+        blur["schemaId"] = "chainner:image:no_such_node"
+    elif case == "generator kind on a regular node":
+        blur["nodeType"] = "generator"
+    return nodes
+
+
+@pytest.mark.parametrize(
+    ("case", "error", "message"),
+    [
+        ("cycle", ValueError, "form a cycle, so these nodes cannot run: blur."),
+        ("edge to a missing node", ValueError, "output 0 of the node 'ghost', which"),
+        ("edge to a missing output", ValueError, "output 7 of the node 'load', which"),
+        ("edge to output -1", ValueError, "output -1 of the node 'load', which"),
+        ("edge output as text", ValueError, "output '0' of the node 'load', which"),
+        ("too many inputs", ValueError, "blur (Gaussian Blur) has 3 inputs, not 4."),
+        (
+            "unknown schema",
+            ValueError,
+            "'chainner:image:no_such_node' is not available",
+        ),
+        ("generator kind on a regular node", AssertionError, "is a regularNode, not a"),
+    ],
+)
+def test_a_malformed_chain_is_a_clear_error(schemas, case, error, message):
+    # A shared chain file is untrusted: each break is an error that names it (before:
+    # a recursion error, an empty message, a KeyError of an id, or output -1 taken as the
+    # last output), raised before any node runs.
+    with pytest.raises(error, match=re.escape(message)):
+        parse_json(cast("list[JsonNode]", malformed_chain(schemas, case)))
+
+
+@pytest.mark.parametrize(
+    ("node_id", "index", "value", "message"),
+    [
+        ("blur", 1, "abc", "The input Radius X takes a number, not a str."),
+        ("blur", 0, 3, "The input Image takes an image, not a int."),
+        ("load", 0, 5, "The input Image File takes a file, not a int."),
+    ],
+)
+def test_a_wrong_input_type_names_the_input(
+    schemas, assets, node_id, index, value, message
+):
+    # The UI never sends these; a chain file can. Both executors name the input and what
+    # it takes (before: an empty message).
+    for kind in ("python", "native"):
+        nodes = [
+            make_node(
+                schemas,
+                "load",
+                "chainner:image:load",
+                {0: str(assets / "images" / "000.jpg")},
+            ),
+            make_node(
+                schemas,
+                "blur",
+                "chainner:image:gaussian_blur",
+                {0: edge("load"), 1: 2, 2: 2},
+            ),
+            make_node(schemas, "view", "chainner:image:view", {0: edge("blur")}),
+        ]
+        (target,) = [n for n in nodes if n["id"] == node_id]
+        target["inputs"][index] = {"type": "value", "value": value}
+        chain = parse_json(cast("list[JsonNode]", nodes))
+        optimize(chain)
+        error = execute(kind, chain, storage=assets / "storage").error
+        assert isinstance(error, process.NodeExecutionError), f"{kind}: {error!r}"
+        assert (error.node_id, str(error)) == (node_id, message), kind
 
 
 @pytest.mark.parametrize("case", [*VIDEO_CASES, "video-frames"])

@@ -159,8 +159,11 @@ def levels(
 def log_linear(
     img: np.ndarray, black: float, white: float, gamma: float, invert: bool
 ) -> np.ndarray:
-    # Preserve Python's scalar exceptions for gamma=0 or equal black/white.
+    # Python's scalar exceptions for gamma=0 or an overflowing pow stay; equal black and
+    # white (no range) gets the node's own message, before the image is read.
     offset = pow(10.0, (black - white) * 0.002 / gamma)
+    if offset == 1.0:
+        raise ValueError("Black and White must differ")
     gain = 1.0 / (1.0 - offset)
     source, target, result, _, _ = _in_order(img)
     check(

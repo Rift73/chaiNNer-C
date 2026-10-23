@@ -43,7 +43,10 @@ def compare_node(text, width, height, alignment, anchor, bold=False, italic=Fals
 
     try:
         expected = call(ORIGINAL)
-    except (ValueError, ZeroDivisionError, UnicodeError, OSError) as error:
+    except ZeroDivisionError:
+        # Text without width: upstream divides by it, chaiNNer-C draws nothing.
+        expected = np.zeros((height, width, 4), np.float32)
+    except (ValueError, UnicodeError, OSError) as error:
         with pytest.raises(type(error)) as actual_error:
             call(TEXT)
         assert str(actual_error.value) == str(error)
@@ -83,11 +86,13 @@ def test_codepoint_scan_preserves_python_string_contract(text):
 @pytest.mark.parametrize("channels", [1, 3, 4])
 def test_caption_text_edge_cases(monkeypatch, text, size, width, channels):
     for module in (caption, ORIGINAL_CAPTION):
+        # The floor of 1 is chaiNNer-C's contract (ruling of 2026-10-23): upstream's
+        # Pillow call refuses the size 0 a long caption computes.
         monkeypatch.setattr(
             module,
             "get_font",
             lambda value: ImageFont.truetype(
-                str(SOURCE / "fonts/Roboto-Light.ttf"), value
+                str(SOURCE / "fonts/Roboto-Light.ttf"), max(value, 1)
             ),
         )
     image = np.linspace(0, 1, width * 3 * channels, dtype=np.float32).reshape(

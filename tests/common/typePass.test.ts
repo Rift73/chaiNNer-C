@@ -1,6 +1,6 @@
-import { Type, literal } from '@chainner/navi';
+import { Type, literal, union } from '@chainner/navi';
 import { Edge, Node } from 'reactflow';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import {
     CategoryId,
     EdgeData,
@@ -11,6 +11,7 @@ import {
     NodeGroupId,
     NodeKind,
     NodeSchema,
+    NumberInput,
     OutputId,
     SchemaId,
 } from '../../src/common/common-types';
@@ -18,6 +19,7 @@ import { ChainLineage } from '../../src/common/nodes/lineage';
 import { parseFunctionDefinitions } from '../../src/common/nodes/parseFunctionDefinitions';
 import { TypeState } from '../../src/common/nodes/TypeState';
 import { SchemaMap } from '../../src/common/SchemaMap';
+import { FunctionInstance } from '../../src/common/types/function';
 import { EMPTY_MAP, stringifySourceHandle, stringifyTargetHandle } from '../../src/common/util';
 
 // The type pass (ChainLineage and TypeState) keeps its objects for a chain whose lineages and
@@ -69,10 +71,44 @@ const makeSchema = (schemaId: SchemaId, kind: NodeKind): NodeSchema => ({
     deprecated: false,
     features: [],
 });
+// a number node whose output is the number it gets
+const NUMBER = 'test:type-pass:number' as SchemaId;
+const numberInput: NumberInput = {
+    id: 0 as InputId,
+    type: 'number',
+    conversions: [],
+    kind: 'number',
+    label: 'Number',
+    optional: false,
+    hasHandle: true,
+    hint: false,
+    suggest: false,
+    def: 0,
+    precision: 0,
+    controlsStep: 1,
+    hideTrailingZeros: true,
+    labelStyle: 'default',
+};
+const numberSchema: NodeSchema = {
+    ...makeSchema(NUMBER, 'regularNode'),
+    inputs: [numberInput],
+    outputs: [
+        {
+            id: 0 as OutputId,
+            type: 'Input0',
+            label: 'Number',
+            kind: 'generic',
+            hasHandle: true,
+            suggest: false,
+        },
+    ],
+};
+
 const schemata = new SchemaMap([
     makeSchema(LOAD_IMAGES, 'generator'),
     makeSchema(LOAD_VIDEO, 'generator'),
     makeSchema(RESIZE, 'regularNode'),
+    numberSchema,
 ]);
 
 const node = (id: string, schemaId: SchemaId, x = 0): Node<NodeData> => ({
@@ -183,4 +219,68 @@ test('a changed type, connection or node gives a new type state', () => {
     const lessNodes = typeState(nodes.slice(0, 2), edges.slice(0, 1), types);
     expect(lessNodes).not.toBe(types);
     expect(lessNodes.functions.has(B)).toBe(false);
+});
+
+// Number A -> Number B, and Number C alone
+const numbers = (a: number, c: number, x = 0) => [
+    { ...node(A, NUMBER, x), data: { id: A, schemaId: NUMBER, inputData: { 0: a } } },
+    { ...node(B, NUMBER, x), data: { id: B, schemaId: NUMBER, inputData: { 0: 9 } } },
+    { ...node(C, NUMBER, x), data: { id: C, schemaId: NUMBER, inputData: { 0: c } } },
+];
+const numberEdges = [edge(A, B)];
+const outputOf = (types: TypeState, id: string) =>
+    types.functions.get(id)?.outputs.get(0 as OutputId);
+
+test('the type pass evaluates only the nodes whose inputs changed', () => {
+    const types = typeState(numbers(1, 2), numberEdges);
+    const evaluate = vi.spyOn(FunctionInstance, 'fromPartialInputs');
+    try {
+        // C's value: C only
+        const c = typeState(numbers(1, 3), numberEdges, types);
+        expect(evaluate).toHaveBeenCalledTimes(1);
+        expect(outputOf(c, C)).toEqual(literal(3));
+        expect(c.functions.get(A)).toBe(types.functions.get(A));
+        expect(c.functions.get(B)).toBe(types.functions.get(B));
+
+        // A's value: A, and B, whose input is A's output
+        evaluate.mockClear();
+        const a = typeState(numbers(5, 3), numberEdges, c);
+        expect(evaluate).toHaveBeenCalledTimes(2);
+        expect(outputOf(a, B)).toEqual(literal(5));
+        expect(a.functions.get(C)).toBe(c.functions.get(C));
+
+        // moved nodes: nothing, and the same state
+        evaluate.mockClear();
+        expect(typeState(numbers(5, 3, 100), numberEdges, a)).toBe(a);
+        expect(evaluate).not.toHaveBeenCalled();
+
+        // without its edge, B takes its own value
+        const unconnected = typeState(numbers(5, 3), [], a);
+        expect(outputOf(unconnected, B)).toEqual(literal(9));
+    } finally {
+        evaluate.mockRestore();
+    }
+});
+
+test('a narrowing changed in place is a change', () => {
+    // the editor's narrowing maps change in place (useTypeMap)
+    const narrowing = new Map([[A, new Map([[0 as OutputId, literal(1) as Type]])]]);
+    const types = typeState(numbers(1, 2), numberEdges, undefined, narrowing);
+    expect(outputOf(types, B)).toEqual(literal(1));
+
+    narrowing.get(A)!.set(0 as OutputId, union(literal(1), literal(2)));
+    const widened = typeState(numbers(1, 2), numberEdges, types, narrowing);
+    expect(widened).toBe(types);
+
+    narrowing.delete(A);
+    const unnarrowed = typeState(numbers(1, 2), numberEdges, widened, narrowing);
+    expect(outputOf(unnarrowed, B)).toEqual(literal(1));
+
+    // a narrowing that leaves no type: B's input keeps its default
+    narrowing.set(A, new Map([[0 as OutputId, literal(7) as Type]]));
+    const narrowed = typeState(numbers(1, 2), numberEdges, unnarrowed, narrowing);
+    expect(narrowed).not.toBe(unnarrowed);
+    expect(narrowed.functions.get(B)).toEqual(
+        typeState(numbers(1, 2), numberEdges, undefined, narrowing).functions.get(B)
+    );
 });

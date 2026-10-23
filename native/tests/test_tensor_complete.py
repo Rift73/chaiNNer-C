@@ -11,11 +11,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import golden_kernels
 import numpy as np
 import pytest
 import torch
 
 from nodes.impl import native_tensors as native
+from nodes.impl.native import lib
 from nodes.impl.native_analysis import mean as native_mean
 from nodes.impl.native_graph import graph
 from nodes.impl.pytorch.skip_init import skip_random_init
@@ -644,6 +646,98 @@ def test_casts_fold_runs_across_chunks(source_layout, target_layout, pair):
     expected, expected_events = invoke(lambda: source.astype(target_type))
     assert np.ascontiguousarray(target).tobytes() == expected.tobytes()
     assert actual_events == expected_events
+
+
+# float32 words around the float16 rounding's edges: +-0, the least normal half (2^-14)
+# and the subnormals below it, ties, the largest half (65504) and the first value that
+# rounds to Inf (65520), Inf, quiet and signalling NaNs with payloads, float denormals.
+HALF_EDGES = (
+    0x00000000,
+    0x80000000,
+    0x387FEFFF,
+    0x387FF000,
+    0x387FFFFF,
+    0x38800000,
+    0xB8800001,
+    0x33000000,
+    0x33000001,
+    0x477FE000,
+    0x477FEFFF,
+    0x477FF000,
+    0xC77FFFFF,
+    0x47800000,
+    0x3F801000,
+    0x3F803000,
+    0x3F800FFF,
+    0x7F800000,
+    0xFF800000,
+    0x7F800001,
+    0x7F812345,
+    0xFFC0BEEF,
+    0x7FC00000,
+    0x00000001,
+    0x807FFFFF,
+)
+
+
+def _isa_state() -> tuple[int, int, int]:
+    """(effective, requested, CPU maximum) ISA level of this process."""
+    function = lib()["cn_isa_get"]
+    function.argtypes = [ct.POINTER(ct.c_int)]
+    state = (ct.c_int * 3)()
+    assert function(state) == 0
+    return state[0], state[1], state[2]
+
+
+def _isa_set(level: int) -> int:
+    function = lib()["cn_isa_set"]
+    function.argtypes = [ct.c_int]
+    return function(level)
+
+
+@pytest.mark.parametrize("state", ("default", "daz_ftz"))
+@pytest.mark.parametrize("layout", ("contiguous", "planes", "reversed"))
+def test_float_to_half_cast_at_every_isa_level(state, layout):
+    # The AVX2 lanes convert groups of 8 values that all round without a condition
+    # (+-0 or a normal finite half); a group holding any other value (the edges
+    # above, every other bit pattern) takes the scalar rounding. Every level gives
+    # the scalar level's bits and warnings, and at the default MXCSR NumPy's: a
+    # contiguous run, TensorRT's planes of an HWC tile (gathered) and reversed rows.
+    rng = np.random.default_rng(406)
+    shape = (149, 211, 3)
+    words = rng.integers(0, 2**32, shape, dtype=np.uint64).astype(np.uint32)
+    halves = rng.uniform(-66000, 66000, shape).astype(np.float32).view(np.uint32)
+    words = np.where(rng.random(shape) < 0.97, halves, words)
+    flat = words.reshape(-1)
+    for index, word in enumerate(HALF_EDGES):
+        flat[97 * index + 5] = word
+        flat[-89 * index - 3] = word
+    image = words.view(np.float32)
+    source = {
+        "contiguous": image,
+        "planes": image.transpose(2, 0, 1)[::-1],
+        "reversed": image[::-1, ::-2],
+    }[layout]
+
+    def invoke(function):
+        with warnings.catch_warnings(record=True) as recorded, np.errstate(all="warn"):
+            out = function()
+        return out.tobytes(), sorted(str(w.message) for w in recorded)
+
+    effective, _, cpu = _isa_state()
+    results = []
+    try:
+        for level in range(cpu + 1):
+            assert _isa_set(level) == level
+            with golden_kernels.mxcsr(lib(), state):
+                results.append(
+                    invoke(lambda: native.cast_numpy(source, np.dtype(np.float16)))
+                )
+    finally:
+        assert _isa_set(effective) == effective
+    assert all(result == results[0] for result in results[1:])
+    if state == "default":
+        assert results[0] == invoke(lambda: source.astype(np.float16))
 
 
 @pytest.mark.parametrize("layout", ("contiguous", "tile", "planar", "broadcast"))

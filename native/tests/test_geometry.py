@@ -66,7 +66,7 @@ def test_gradients(name, args, shape, strided):
     expected = np.empty(shape, dtype=np.float32)
     with np.errstate(all="ignore"):
         assert getattr(gradients, name)(actual, *args) is None
-        assert getattr(reference_gradients, name)(expected, *args) is None
+        assert reference_gradients.judged(name)(expected, *args) is None
     assert_equivalent(actual, expected)
 
 
@@ -76,8 +76,36 @@ def test_gradient_float64_compatibility(name, args):
     expected = np.empty_like(actual)
     with np.errstate(all="ignore"):
         getattr(gradients, name)(actual, *args)
-        getattr(reference_gradients, name)(expected, *args)
+        reference_gradients.judged(name)(expected, *args)
     np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize(
+    "name,args,shape,values",
+    [
+        ("horizontal_gradient", (), (5, 1), {0}),
+        ("vertical_gradient", (), (1, 5), {0}),
+        ("diagonal_gradient", (0, 0), (8, 11), {0, 1}),
+        ("radial_gradient", (0.5, 0.5), (8, 11), {0, 1}),
+    ],
+)
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_degenerate_gradients_take_their_limits(name, args, shape, values, dtype):
+    # Upstream divides 0 by 0 here: NaN pixels, which Create Gradient returned.
+    actual = np.empty(shape, dtype=dtype)
+    getattr(gradients, name)(actual, *args)
+    assert set(np.unique(actual).tolist()) == values
+
+
+@pytest.mark.parametrize("radii", [(0, 1), (0.25, 0.5), (0, 0.5), (0.8, 0.1)])
+def test_radial_native_equals_numpy_fallback(radii):
+    # The float32 C kernel and the float64 NumPy fallback, both clamped to 0..1.
+    native = np.empty((48, 64), dtype=np.float32)
+    fallback = np.empty((48, 64), dtype=np.float64)
+    gradients.radial_gradient(native, *radii)
+    gradients.radial_gradient(fallback, *radii)
+    np.testing.assert_array_equal(native, fallback.astype(np.float32))
+    assert native.min() >= 0 and native.max() <= 1
 
 
 def test_diagonal_float32_angle_compatibility():
@@ -348,7 +376,7 @@ def test_large_gradient_parallel_parity(name, args):
     actual = np.empty((257, 513), dtype=np.float32)
     expected = np.empty_like(actual)
     getattr(gradients, name)(actual, *args)
-    getattr(reference_gradients, name)(expected, *args)
+    reference_gradients.judged(name)(expected, *args)
     assert_equivalent(actual, expected)
 
 

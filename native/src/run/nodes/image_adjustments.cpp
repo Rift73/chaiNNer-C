@@ -148,12 +148,12 @@ void gamma(NodeContext &, std::span<const Value> inputs, std::vector<Value> &out
 }
 
 /* chainner:image:log2lin (gamma/log_to_linear.py, native_adjustments.log_linear): the offset's pow and the gain's
- * division (ZeroDivisionError when black equals white) raise before the image is checked. */
+ * check (ValueError when black equals white) raise before the image is checked. */
 void log_to_linear(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     double black = number(inputs[1]), white = number(inputs[2]), gamma = number(inputs[3]);
     double offset = python_pow(10.0, (black - white) * 0.002 / gamma);
-    if (1.0 - offset == 0) throw NodeError("ZeroDivisionError", "division by zero");
+    if (offset == 1.0) throw NodeError("ValueError", "Black and White must differ");
     double gain = 1.0 / (1.0 - offset);
     const Image &image = std::get<Image>(inputs[0]);
     adjustable_shape(image);

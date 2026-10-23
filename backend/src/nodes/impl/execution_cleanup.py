@@ -8,6 +8,8 @@ from typing import TypeVar
 
 from sanic.log import logger
 
+from api import Aborted
+
 T = TypeVar("T")
 
 
@@ -64,7 +66,8 @@ async def await_owned_node(future: asyncio.Future[T]) -> T:
                 continue
         if not future.cancelled():
             error = future.exception()
-            if error is not None:
+            # Aborted is the Stop that cancelled this wait, not a failure.
+            if error is not None and not isinstance(error, Aborted):
                 logger.error("Node failed while cancellation was pending: %s", error)
             # Like future: its traceback holds this frame.
             del error

@@ -4,6 +4,7 @@ GPU is used."""
 
 from __future__ import annotations
 
+import ctypes
 import importlib
 import sys
 import weakref
@@ -23,17 +24,30 @@ from nodes.impl.tensorrt.model import (
 ILLEGAL_ADDRESS = 700
 
 
+class _Handle(str):
+    """A stream or event handle: its name, and an integer as TensorRT takes a stream."""
+
+    def __int__(self) -> int:
+        return 0
+
+
 class _Cudart(ModuleType):
     """cuda.bindings.runtime: every call succeeds and is recorded, until `fail` names
-    it (call name -> successful calls before it fails)."""
+    it (call name -> successful calls before it fails). Device and pinned memory are
+    host buffers, and copies between them are memmoves."""
 
     def __init__(self) -> None:
         super().__init__("cuda.bindings.runtime")
         self.__dict__.update(
-            cudaEventDisableTiming=2, cudaError_t=SimpleNamespace(cudaSuccess=0)
+            cudaEventDisableTiming=2,
+            cudaError_t=SimpleNamespace(cudaSuccess=0),
+            cudaMemcpyKind=SimpleNamespace(
+                cudaMemcpyHostToDevice=1, cudaMemcpyDeviceToHost=2
+            ),
         )
         self.fail: dict[str, int] = {}
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.memory: list[ctypes.Array[ctypes.c_char]] = []
 
     def __getattr__(self, name: str) -> Callable[..., tuple[Any, ...]]:
         if not name.startswith("cuda"):
@@ -49,7 +63,12 @@ class _Cudart(ModuleType):
         if name in ("cudaGetErrorName", "cudaGetErrorString"):
             return 0, b"cudaErrorIllegalAddress"
         if name in created:
-            return 0, f"{created[name]}{count}"
+            return 0, _Handle(f"{created[name]}{count}")
+        if name in ("cudaMalloc", "cudaMallocHost"):
+            self.memory.append(ctypes.create_string_buffer(args[0]))
+            return 0, ctypes.addressof(self.memory[-1])
+        if name == "cudaMemcpyAsync":
+            ctypes.memmove(args[0], args[1], args[2])
         return (0,)
 
     def destroyed(self) -> list[str]:
@@ -200,3 +219,77 @@ def test_close_after_a_cuda_error_still_frees_everything(
     engine.close()
     assert loaded.engine is None
     assert loaded.contexts_gone_first is True
+
+
+class _Weighting(_Context):
+    """An engine's execution: 2x nearest, its output channel k times k + 1, so the
+    order the planes arrive in shows in the result."""
+
+    def __init__(self) -> None:
+        self.addresses: dict[str, int] = {}
+        self.shape = (1, 1, 1, 1)
+
+    def set_input_shape(self, _name: str, shape: tuple[int, ...]) -> bool:
+        self.shape = shape
+        return True
+
+    def get_tensor_shape(self, _name: str) -> tuple[int, ...]:
+        n, c, h, w = self.shape
+        return n, c, 2 * h, 2 * w
+
+    def update_device_memory_size_for_shapes(self) -> int:
+        return 0
+
+    def set_tensor_address(self, name: str, address: int) -> None:
+        self.addresses[name] = address
+
+    def execute_async_v3(self, _stream: int) -> bool:
+        _, c, h, w = self.shape
+        source = (ctypes.c_float * (c * h * w)).from_address(self.addresses["input"])
+        planes = np.frombuffer(source, np.float32).reshape(c, h, w)
+        weights = np.arange(1, c + 1, dtype=np.float32)[:, None, None]
+        result = planes.repeat(2, 1).repeat(2, 2) * weights
+        target = (ctypes.c_float * result.size).from_address(self.addresses["output"])
+        np.frombuffer(target, np.float32)[:] = result.reshape(-1)
+        return True
+
+
+class _WeightingEngine(_CudaEngine):
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.channels = channels
+
+    def get_tensor_profile_shape(self, _name: str, _profile: int) -> tuple:
+        c = self.channels
+        return (1, c, 64, 64), (1, c, 128, 128), (1, c, 256, 256)
+
+    def create_execution_context(self, _strategy: object) -> _Context:
+        context = _Weighting()
+        self.contexts.append(weakref.ref(context))
+        return context
+
+
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_planes_reach_the_engine_in_rgb_order_and_return_bgr(
+    inference: ModuleType, channels: int
+):
+    # The engine takes and gives RGB(A) planes, as the ONNX it was built from, and as
+    # ONNX's and PyTorch's nodes feed it: an RGBA engine's red and blue were swapped.
+    from nodes.impl.tensorrt.tiling import tiled_upscale
+
+    loaded = DeserializedEngine(object(), _WeightingEngine(channels), 0)
+    shape = (1, channels, 64, 64)
+    info = TensorRTEngineInfo(
+        "fp32", channels, channels, 2, "sm_120", "11", True, shape, shape, shape
+    )
+    session = inference.TensorRTSession(TensorRTEngine(b"engine", info, loaded), 0)
+    image = np.random.default_rng(31).random((40, 50, channels), np.float32)
+    out = tiled_upscale(image, 2, session.bounds, session)
+    session.close()
+
+    # BGR(A) image -> RGB(A) planes -> channel k times k + 1 -> BGR(A) result
+    order = [2, 1, 0, 3][:channels] if channels > 1 else [0]
+    weights = np.empty(channels, np.float32)
+    weights[order] = np.arange(1, channels + 1, dtype=np.float32)
+    expected = image.repeat(2, 0).repeat(2, 1) * weights
+    np.testing.assert_array_equal(out, expected)

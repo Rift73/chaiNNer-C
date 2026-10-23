@@ -4,6 +4,7 @@ chroma siting is honoured on load, on save and by the siting correction, and 8-b
 
 from __future__ import annotations
 
+import _winapi
 import json
 import os
 import subprocess
@@ -53,6 +54,9 @@ from packages.chaiNNer_standard.image.video_frames.save_video import (
 
 STORAGE = Path(os.environ.get("APPDATA", "")) / "chaiNNer" / "backend-storage"
 FFMPEG, FFPROBE = map(str, get_executable_path(STORAGE / "ffmpeg"))
+# The local gates' FFmpeg (native/tools/bench_oracle.py), a newer FFmpeg than the
+# integrated one.
+NEWER_FFMPEG = Path(r"C:\Executables\ffmpeg-8.1-full_build-shared\bin\ffmpeg.exe")
 
 pytestmark = pytest.mark.skipif(
     not Path(FFMPEG).exists(), reason="the integrated FFmpeg is not downloaded"
@@ -67,8 +71,8 @@ class Context:
     chosen_item = None  # every item runs, so Save Video writes the video
     node_id = "load-video"  # Load Video's Preview reader is the node's
 
-    def __init__(self):
-        self.storage_dir = STORAGE
+    def __init__(self, storage: Path = STORAGE):
+        self.storage_dir = storage
         self.cleanups: list[Callable[[], None]] = []
 
     def add_cleanup(self, fn: Callable[[], None]):
@@ -123,9 +127,10 @@ def save(
     siting: SitingCorrection = SitingCorrection.AUTO,
     encoder: VideoEncoder = VideoEncoder.FFV1,
     additional: str | None = None,
+    storage: Path = STORAGE,
 ) -> Path:
     matrix, transfer, primaries, range_, chroma_location = choices
-    context = Context()
+    context = Context(storage)
     collector = save_video_node(
         cast(NodeContext, context),
         None,
@@ -195,6 +200,52 @@ def test_planes_round_trip_bit_identically(
     for item, again in zip(items, reloaded, strict=True):
         for plane, plane_again in zip(item[2:], again[2:], strict=True):
             assert plane.dtype == plane_again.dtype == np.float32
+            np.testing.assert_array_equal(plane, plane_again)
+
+
+@pytest.fixture
+def newer_ffmpeg_storage(tmp_path: Path):
+    """A storage folder whose ffmpeg/ is the local gates' FFmpeg 8.1 (a junction,
+    removed link-only)."""
+    if not NEWER_FFMPEG.exists():
+        pytest.skip("the local gates' FFmpeg is not installed")
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    _winapi.CreateJunction(str(NEWER_FFMPEG.parent), str(storage / "ffmpeg"))
+    yield storage
+    os.rmdir(storage / "ffmpeg")
+
+
+@pytest.mark.parametrize("additional", [None, "-colorspace bt470bg"])
+def test_planes_keep_their_codes_on_an_ffmpeg_that_converts_tags(
+    tmp_path: Path, newer_ffmpeg_storage: Path, additional: str | None
+):
+    """FFmpeg 8.1 converts frames whose colour tags differ from the output's (piped
+    untagged BT.709 planes came out with other codes), where the integrated 5.1.2 only
+    tags them: Save Video gives its input the output's tags, so planes round trip
+    bit-identically through such an FFmpeg too, also retagged by a user's tag."""
+    source = tmp_path / "source.mkv"
+    ffmpeg(
+        *("-f", "lavfi", "-i", "testsrc2=size=64x48:rate=5:duration=0.6"),
+        *("-c:v", "ffv1", "-pix_fmt", "yuv420p", "-colorspace", "bt709"),
+        *("-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"),
+        *("-chroma_sample_location", "left", str(source)),
+    )
+    items, colour = load(source, VideoMode.PLANES)
+    planes = [(None, *item[2:]) for item in items]
+    saved = save(
+        tmp_path,
+        planes,
+        VideoInputMode.PLANES,
+        colour,
+        additional=additional,
+        storage=newer_ffmpeg_storage,
+    )
+    reloaded, reloaded_colour = load(saved, VideoMode.PLANES)
+    assert reloaded_colour.matrix.value == ("bt470bg" if additional else "bt709")
+    assert len(reloaded) == len(items) == 3
+    for item, again in zip(items, reloaded, strict=True):
+        for plane, plane_again in zip(item[2:], again[2:], strict=True):
             np.testing.assert_array_equal(plane, plane_again)
 
 

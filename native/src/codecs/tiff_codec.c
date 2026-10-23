@@ -499,17 +499,18 @@ typedef struct ifd_entry {
 enum {
     TAG_SUBFILE, TAG_WIDTH, TAG_LENGTH, TAG_BITS, TAG_COMPRESSION, TAG_PHOTOMETRIC, TAG_FILL, TAG_OFFSETS,
     TAG_ORIENTATION, TAG_SAMPLES, TAG_ROWS, TAG_COUNTS, TAG_XRES, TAG_YRES, TAG_PLANAR, TAG_UNIT, TAG_PREDICTOR,
-    TAG_EXTRA, TAG_FORMAT, TAG_KINDS
+    TAG_EXTRA, TAG_FORMAT, TAG_XMP, TAG_KINDS
 };
-static const uint16_t straight_alpha_tags[TAG_KINDS] = {254, 256, 257, 258, 259, 262, 266, 273, 274,
-                                                        277, 278, 279, 282, 283, 284, 296, 317, 338, 339};
+static const uint16_t straight_alpha_tags[TAG_KINDS] = {254, 256, 257, 258, 259, 262, 266, 273, 274, 277,
+                                                        278, 279, 282, 283, 284, 296, 317, 338, 339, 700};
 
+/* A value's size in bytes for the types Pillow reads (ImageFileDirectory_v2's _load_dispatch), 0 for the others. */
 static unsigned ifd_unit(uint32_t type) {
     switch (type) {
-    case 1: case 2: case 7: return 1; /* BYTE, ASCII, UNDEFINED */
-    case 3: return 2;                 /* SHORT */
-    case 4: case 13: return 4;        /* LONG, IFD */
-    case 5: case 16: return 8;        /* RATIONAL, LONG8 */
+    case 1: case 2: case 6: case 7: return 1; /* BYTE, ASCII, SBYTE, UNDEFINED */
+    case 3: case 8: return 2;                 /* SHORT, SSHORT */
+    case 4: case 9: case 11: case 13: return 4; /* LONG, SLONG, FLOAT, IFD */
+    case 5: case 10: case 12: case 16: return 8; /* RATIONAL, SRATIONAL, DOUBLE, LONG8 */
     default: return 0;
     }
 }
@@ -536,7 +537,54 @@ static int ifd_all(const ifd_reader *r, const ifd_entry *e, uint64_t value) {
 }
 
 static const uint32_t TYPE_SHORT[] = {3, 0}, TYPE_LONG[] = {4, 0}, TYPE_INTEGER[] = {3, 4, 0},
-                      TYPE_OFFSET[] = {3, 4, 16, 0}, TYPE_RATIONAL[] = {5, 0}, TYPE_ASCII[] = {2, 0};
+                      TYPE_OFFSET[] = {3, 4, 16, 0}, TYPE_RATIONAL[] = {5, 0}, TYPE_ASCII[] = {2, 0},
+                      TYPE_BYTE[] = {1, 0};
+
+/* Whether Pillow loads the Exif IFD at `ifd` without a warning: TiffImageFile.load_end reads it (getexif's get_ifd),
+ * and ImageFileDirectory_v2.load warns when its entry count, an entry, a value stored apart or the next IFD's offset
+ * is cut short. Several numbers for a tag Pillow's Exif table gives one value (ExifVersion, FlashpixVersion, the
+ * Interoperability IFD, CFAPattern) warn too ("Metadata Warning"); every other tag of the group takes any count.
+ * Types Pillow does not read are skipped, as it skips them. */
+static int exif_ifd_quiet(const ifd_reader *r, uint64_t ifd) {
+    const unsigned word = r->big ? 8 : 4, count_bytes = r->big ? 8 : 2, entry_size = r->big ? 20 : 12;
+    if (ifd > r->size || r->size - ifd < count_bytes) return 0;
+    const uint64_t entries = ifd_read(r, (size_t)ifd, count_bytes), room = r->size - ifd - count_bytes;
+    if (entries > room / entry_size || room - entries * entry_size < word) return 0;
+    for (uint64_t i = 0; i < entries; ++i) {
+        const size_t at = (size_t)(ifd + count_bytes + i * entry_size);
+        const uint32_t tag = (uint32_t)ifd_read(r, at, 2), type = (uint32_t)ifd_read(r, at + 2, 2);
+        const uint64_t count = ifd_read(r, at + 4, word);
+        const unsigned unit = ifd_unit(type);
+        if (!unit) continue;
+        if (count > 1 && type != 1 && type != 2 && type != 7 &&
+            (tag == 36864 || tag == 40960 || tag == 40965 || tag == 41730))
+            return 0;
+        if (count > r->size / unit) return 0;
+        if (count * unit > word) {
+            const uint64_t offset = ifd_read(r, at + 4 + word, word);
+            if (offset > r->size || count * unit > r->size - offset) return 0;
+        }
+    }
+    return 1;
+}
+
+/* The orientation Pillow's getexif() takes from the XMP packet when IFD0 has no Orientation tag: the digit after
+ * the first `tiff:Orientation="` or `tiff:Orientation>` (re.search of rb'tiff:Orientation(="|>)([0-9])'), else 1.
+ * TiffImageFile.load_end turns the image by it (exif_transpose). */
+static uint64_t xmp_orientation(const ifd_reader *r, const ifd_entry *xmp) {
+    static const char key[] = "tiff:Orientation";
+    const size_t key_length = sizeof key - 1, size = (size_t)xmp->count;
+    const uint8_t *p = r->data + xmp->at;
+    for (size_t i = 0; size - i > key_length; ++i) {
+        if (memcmp(p + i, key, key_length) != 0) continue;
+        size_t at = i + key_length;
+        if (p[at] == '=' && size - at > 1 && p[at + 1] == '"') at += 2;
+        else if (p[at] == '>') at += 1;
+        else continue;
+        if (at < size && p[at] >= '0' && p[at] <= '9') return (uint64_t)(p[at] - '0');
+    }
+    return 1;
+}
 
 /* Reads IFD0 into `tags` (absent tags have count 0): false for anything Pillow would warn about, skip, or that this
  * decoder does not take. */
@@ -574,24 +622,22 @@ static int straight_alpha_ifd(const ifd_reader *r, ifd_entry *tags) {
             values = (size_t)offset;
         }
         const ifd_entry e = {type, count, values};
-        /* Tags Pillow's _setup never reads (or, ICC and XMP, reads as the bytes they are), in their usual types:
-         * text, PageNumber, white point and primaries, XMP, IPTC, Photoshop, the Exif IFD's offset, ICC profile,
-         * Photoshop layers. */
+        /* Tags Pillow's _setup never reads (or, ICC, reads as the bytes they are), in their usual types: text,
+         * PageNumber, white point and primaries, IPTC, Photoshop, the Exif IFD's offset (its IFD as Pillow's load_end
+         * reads it without a warning), ICC profile, Photoshop layers. */
         if ((tag == 318 && ifd_is(&e, TYPE_RATIONAL, 2)) || (tag == 319 && ifd_is(&e, TYPE_RATIONAL, 6))) continue;
         if (tag == 269 || tag == 270 || tag == 271 || tag == 272 || tag == 285 || tag == 305 || tag == 306 ||
             tag == 315) {
             if (!ifd_is(&e, TYPE_ASCII, 0)) return 0;
             continue;
         }
-        if (tag == 297 || tag == 700 || tag == 33723 || tag == 34377 || tag == 34665 || tag == 34675 ||
-            tag == 37724) {
-            static const uint32_t TYPE_BYTE[] = {1, 0}, TYPE_UNDEFINED[] = {7, 0}, TYPE_BLOB[] = {1, 7, 0},
-                                  TYPE_IPTC[] = {1, 4, 7, 0}, TYPE_IFD[] = {4, 13, 0};
+        if (tag == 297 || tag == 33723 || tag == 34377 || tag == 34665 || tag == 34675 || tag == 37724) {
+            static const uint32_t TYPE_UNDEFINED[] = {7, 0}, TYPE_BLOB[] = {1, 7, 0}, TYPE_IPTC[] = {1, 4, 7, 0},
+                                  TYPE_IFD[] = {4, 13, 0};
             const int usual = tag == 297     ? ifd_is(&e, TYPE_SHORT, 2)
-                              : tag == 700   ? ifd_is(&e, TYPE_BYTE, 0)
                               : tag == 33723 ? ifd_is(&e, TYPE_IPTC, 0)
                               : tag == 34377 ? ifd_is(&e, TYPE_BLOB, 0)
-                              : tag == 34665 ? ifd_is(&e, TYPE_IFD, 1)
+                              : tag == 34665 ? ifd_is(&e, TYPE_IFD, 1) && exif_ifd_quiet(r, ifd_value(r, &e, 0))
                                              : ifd_is(&e, TYPE_UNDEFINED, 0);
             if (!usual) return 0;
             continue;
@@ -640,6 +686,7 @@ cn_codec_status cn_tiff_decode_pillow_alpha(const uint8_t *data, size_t size, cn
         (t[TAG_FORMAT].count && (!ifd_is(&t[TAG_FORMAT], TYPE_SHORT, 0) || !ifd_all(&r, &t[TAG_FORMAT], 1) ||
                                  (t[TAG_FORMAT].count != 1 && t[TAG_FORMAT].count != samples))) ||
         (t[TAG_ORIENTATION].count && !ifd_is(&t[TAG_ORIENTATION], TYPE_SHORT, 1)) ||
+        (t[TAG_XMP].count && !ifd_is(&t[TAG_XMP], TYPE_BYTE, 0)) ||
         (t[TAG_UNIT].count && (!ifd_is(&t[TAG_UNIT], TYPE_SHORT, 1) || ifd_value(&r, &t[TAG_UNIT], 0) < 1 ||
                                ifd_value(&r, &t[TAG_UNIT], 0) > 3)))
         return CN_CODEC_FALLBACK;
@@ -655,8 +702,10 @@ cn_codec_status cn_tiff_decode_pillow_alpha(const uint8_t *data, size_t size, cn
     if (!ifd_is(&t[TAG_OFFSETS], TYPE_OFFSET, strips) || !ifd_is(&t[TAG_COUNTS], TYPE_OFFSET, strips))
         return CN_CODEC_FALLBACK;
     const size_t row_bytes = (size_t)width * samples;
-    const uint64_t value = t[TAG_ORIENTATION].count ? ifd_value(&r, &t[TAG_ORIENTATION], 0) : 1;
-    *orientation = value >= 2 && value <= 8 ? (int)value : 1; /* image_io_orient's range */
+    const uint64_t value = t[TAG_ORIENTATION].count ? ifd_value(&r, &t[TAG_ORIENTATION], 0)
+                           : t[TAG_XMP].count       ? xmp_orientation(&r, &t[TAG_XMP])
+                                                    : 1;
+    *orientation = value >= 2 && value <= 8 ? (int)value : 1; /* image_io_orient's range, exif_transpose's */
     uint8_t *const out = allocate(context, (uint32_t)height, (uint32_t)width, 4, CN_SAMPLE_U8);
     if (!out) return CN_CODEC_FALLBACK;
     /* Rows as Pillow gives them after convert("RGBA") (grey copied to R, G and B) and cvtColor's RGBA2BGRA. */

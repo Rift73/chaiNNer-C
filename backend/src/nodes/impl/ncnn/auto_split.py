@@ -14,6 +14,7 @@ from ...utils.utils import Size, get_h_w_c
 from ..image_utils import to_uint8
 from ..native_framework_images import ncnn_input, planar_to_interleaved
 from ..upscale.auto_split import Split, Tiler, auto_split
+from ..upscale.bounded_tiler import BoundedTiler
 
 use_gpu = ncnn.get_gpu_count() > 0
 # PyPI ncnn's Extractor has no Vulkan allocator setters, so an extractor takes them
@@ -78,9 +79,9 @@ def ncnn_auto_split(
     # A model that starts with a Reorg needs a height and width that are a multiple
     # of its stride (NcnnModelWrapper.size_multiple), so the image is padded with
     # its edge pixels, every tile is kept a multiple, and the result is cropped
-    # back. Other models are tiled as before. swap_red_blue: a result with the
-    # image's 3 or 4 channels comes back with red and blue swapped (RGB(A) <->
-    # BGR(A)), as it is interleaved.
+    # back. Other models are tiled as before. swap_red_blue: a result with 3 or 4
+    # channels comes back with red and blue swapped (RGB(A) <-> BGR(A)), as it is
+    # interleaved, whatever the image's channels.
     h, w = img.shape[:2]
     pad_h, pad_w = -h % size_multiple, -w % size_multiple
     if pad_h or pad_w:
@@ -170,8 +171,7 @@ def ncnn_auto_split(
             raise RuntimeError(message)
         planes = np.asarray(mat_out)
         result = planar_to_interleaved(
-            planes,
-            swap_red_blue=swap_red_blue and lr_c in (3, 4) and planes.shape[0] == lr_c,
+            planes, swap_red_blue=swap_red_blue and planes.shape[0] in (3, 4)
         )
         del ex, mat_in, mat_out
         clear_vkallocators()
@@ -193,7 +193,7 @@ def ncnn_auto_split(
         return result
 
     try:
-        result = auto_split(img, upscale, tiler, progress=progress)
+        result = auto_split(img, upscale, BoundedTiler(tiler), progress=progress)
         if pad_h or pad_w:
             scale = result.shape[0] // img.shape[0]
             result = result[: h * scale, : w * scale]

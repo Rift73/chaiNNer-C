@@ -10,6 +10,7 @@ import ast
 import ctypes as ct
 import types
 from pathlib import Path
+from runpy import run_path
 
 import numpy as np
 import pytest
@@ -58,6 +59,15 @@ MODULES = {
     name: (load_body(NODES / path), load_body(REFERENCE / Path(path).name))
     for name, path in PATHS.items()
 }
+# Upstream's Premultiplied Alpha and Color Levels with chaiNNer-C's limits where they
+# divide 0 by 0 (reference_adjustments/judged.py).
+_judged = run_path(str(REFERENCE / "judged.py"))
+_original_premultiplied = MODULES["premultiplied_alpha"][1]
+_original_premultiplied.premultiplied_alpha_node = _judged["premultiplied_alpha"](
+    _original_premultiplied
+)
+_original_levels = MODULES["color_levels"][1]
+_original_levels.color_levels_node = _judged["color_levels"](_original_levels)
 
 
 def source(channels, layout):
@@ -148,18 +158,28 @@ def test_levels(channels, mask, values):
     compare("color_levels", source(channels, "strided"), args)
 
 
+def test_levels_with_equal_black_and_white_is_a_step():
+    # A value exactly at the level was 0/0 upstream (NaN); it takes the output white.
+    native, _ = MODULES["color_levels"]
+    img = np.array([[0.2, 0.5, 0.7]], np.float32)
+    out = native.color_levels_node(img, True, True, True, False, 0.5, 0.5, 1, 0.1, 0.9)
+    np.testing.assert_allclose(out.reshape(-1), [0.1, 0.9, 0.9], rtol=0, atol=1e-6)
+
+
 @pytest.mark.parametrize("name", ["PREMULTIPLY_RGB", "UNPREMULTIPLY_RGB"])
 def test_alpha_association(name):
     native, original = MODULES["premultiplied_alpha"]
     img = source(4, "readonly").copy()
     img[0, 0, :] = 0
     img[0, 1, 3] = 0
-    compare(
+    actual = compare(
         "premultiplied_alpha",
         img,
         [getattr(native.AlphaAssociation, name)],
         [getattr(original.AlphaAssociation, name)],
     )
+    # Transparent black stays black, where upstream's unpremultiply gave NaN.
+    np.testing.assert_array_equal(actual[0, 0], 0)
 
 
 @pytest.mark.parametrize("channels", [1, 3, 4])

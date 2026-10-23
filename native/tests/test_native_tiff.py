@@ -239,7 +239,49 @@ def straight_alpha_files(tmp_path) -> dict[str, bytes]:
     files["pillow-la-orientation-3"] = pillow_tiff(
         la, compression="tiff_lzw", tiffinfo={274: 3}
     )
+    # Without an Orientation tag Pillow turns the image by the XMP packet's (getexif,
+    # TiffImageFile.load_end); with one, the tag alone counts.
+    files["pillow-rgba-xmp-orientation-6"] = pillow_tiff(rgba, tiffinfo={700: XMP_6})
+    files["pillow-la-xmp-orientation-8"] = pillow_tiff(
+        la, compression="tiff_lzw", tiffinfo={700: XMP_8}
+    )
+    files["pillow-rgba-xmp-under-orientation-1"] = pillow_tiff(
+        rgba, tiffinfo={274: 1, 700: XMP_6}
+    )
+    files["pillow-rgba-exif-ifd"] = bytes(with_exif_ifd())
+    # Pillow's Exif table gives Orientation no count there: two values load quietly.
+    files["pillow-rgba-exif-ifd-two-orientations"] = bytes(with_exif_ifd((274, (1, 1))))
     return files
+
+
+XMP_6 = b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:Description tiff:Orientation="6"/></x:xmpmeta>'
+XMP_8 = b"<x:xmpmeta><tiff:Orientation>8</tiff:Orientation></x:xmpmeta>"
+
+
+def ifd0_value_at(data: bytes | bytearray, tag: int) -> int:
+    """Where the value of IFD0's entry `tag` is (a little-endian classic TIFF)."""
+    ifd = struct.unpack_from("<I", data, 4)[0]
+    count = struct.unpack_from("<H", data, ifd)[0]
+    for entry in range(ifd + 2, ifd + 2 + 12 * count, 12):
+        if struct.unpack_from("<H", data, entry)[0] == tag:
+            return entry + 8
+    raise AssertionError(f"no tag {tag}")
+
+
+def with_exif_ifd(shorts: tuple[int, tuple[int, ...]] | None = None) -> bytearray:
+    """A Pillow RGBA TIFF with an Exif IFD after its data: DateTimeOriginal, and a tag of
+    one or two SHORT values when given as (tag, values)."""
+    data = bytearray(pillow_tiff(Image.fromarray(RGBA8, "RGBA"), tiffinfo={34665: 0}))
+    data += bytes(len(data) % 2)
+    text = b"2026:10:23 04:00:00\0"
+    count = 1 + bool(shorts)
+    entries = struct.pack("<HHII", 0x9003, 2, len(text), len(data) + 2 + 12 * count + 4)
+    if shorts:
+        tag, values = shorts
+        inline = struct.pack(f"<{len(values)}H", *values).ljust(4, b"\0")
+        entries += struct.pack("<HHI", tag, 3, len(values)) + inline
+    struct.pack_into("<I", data, ifd0_value_at(data, 34665), len(data))
+    return data + struct.pack("<H", count) + entries + bytes(4) + text
 
 
 def test_straight_alpha_tiffs_decode_natively(tmp_path, monkeypatch):
@@ -267,6 +309,47 @@ def test_straight_alpha_tiffs_decode_natively(tmp_path, monkeypatch):
             )
             native = load_image.load_image_node(path)[0]
         assert native.shape == today.shape and native.tobytes() == today.tobytes(), name
+
+
+def corrupt_exif_ifd(kind: str) -> bytes:
+    """A Pillow RGBA TIFF whose Exif IFD Pillow's load warns about: its pointer past the
+    end, an IFD cut short after its entry count, or two numbers for ExifVersion, which
+    Pillow's Exif table gives one value."""
+    if kind == "two":
+        return bytes(with_exif_ifd((36864, (48, 50))))
+    data = with_exif_ifd()
+    pointer = ifd0_value_at(data, 34665)
+    if kind == "past-the-end":
+        struct.pack_into("<I", data, pointer, len(data) - 1)
+    else:
+        struct.pack_into("<I", data, pointer, len(data))
+        data += struct.pack("<H", 3) + bytes(5)
+    return bytes(data)
+
+
+@pytest.mark.parametrize("kind", ["past-the-end", "cut", "two"])
+def test_straight_alpha_tiff_with_corrupt_exif_ifd_goes_to_today_path(
+    tmp_path, monkeypatch, kind
+):
+    """Pillow's load reads the Exif IFD (TiffImageFile.load_end) and warns about one it
+    cannot read whole or that gives a tag more values than it takes: the native decoder
+    declines such a file, so today's path gives the image and the warning."""
+    data = corrupt_exif_ifd(kind)
+    assert graph().image_io_decode_request(data, "pil-tiff-alpha", H * W) is None
+    path = tmp_path / f"exif-{kind}.tif"
+    path.write_bytes(data)
+    results = []
+    for native in (False, True):
+        if native:
+            monkeypatch.delenv("CHAINNER_C_NATIVE_CODECS")
+        else:
+            monkeypatch.setenv("CHAINNER_C_NATIVE_CODECS", "0")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            image = load_image.load_image_node(path)[0]
+        results.append((image.shape, image.tobytes(), [str(w.message) for w in caught]))
+    assert results[0][2], "today's path warns"
+    assert results[1] == results[0]
 
 
 @pytest.mark.parametrize("limit", [H * W - 1, (H * W - 1) // 2])

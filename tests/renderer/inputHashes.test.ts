@@ -98,6 +98,31 @@ test('a changed input changes the hash of its node and the nodes after it', () =
     expect(changed.get(id(3))).toBe(hashes.get(id(3)));
 });
 
+test('a node keeps its hash only while its data and connected hashes stay', () => {
+    // node data is replaced on every change, never changed in place; a copy of the chain (new
+    // data objects) computes every hash again
+    const fresh = (chainNodes: Node<NodeData>[], chainEdges: Edge<EdgeData>[]) =>
+        computeInputHashes(structuredClone(chainNodes), chainEdges, schemata);
+    const steps: [Node<NodeData>[], Edge<EdgeData>[]][] = [
+        [nodes, edges],
+        // node 1 changed: node 2 keeps its data, but its connected hash changed
+        [[node(1, { 0: 'z', 1: 2 }), nodes[1], nodes[2]], edges],
+        [nodes, edges],
+        // node 2 without its connection: its own (missing) value again
+        [nodes, []],
+        // node 3 into node 2's other input
+        [nodes, [...edges, edge(3, 2, 1)]],
+        // another node list: the same hashes, made again
+        [nodes, edges],
+    ];
+    for (const [chainNodes, chainEdges] of steps) {
+        expect(computeInputHashes(chainNodes, chainEdges, schemata)).toEqual(
+            fresh(chainNodes, chainEdges)
+        );
+    }
+    expect(computeInputHashes(nodes, edges, new SchemaMap(schemata.schemata))).toEqual(hashes);
+});
+
 test('different inputs never read as the same inputs', () => {
     const hashOf = (values: Values, chainEdges: Edge<EdgeData>[] = []) =>
         computeInputHashes([nodes[0], node(2, values)], chainEdges, schemata).get(id(2));

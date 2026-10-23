@@ -148,10 +148,34 @@ BLEND_OVERLAY_X0_Y0_FACTORS = {
                 if bothImages {extendedCanvasSize} else {maxSize}
             };
 
+            // Where the overlay reaches past the base, the canvas pads the base with
+            // transparency (RGBA). Cropped to the base, an overlay that misses it leaves
+            // the base as it is. The aligned positions always overlap the base.
+            struct Offset { x: int, y: int }
+            let offset = match position {
+                BlendOverlayPosition::PercentOffset => Offset {
+                    x: percentToOffset(baseSize.width, overlaySize.width, Input4),
+                    y: percentToOffset(baseSize.height, overlaySize.height, Input5),
+                },
+                BlendOverlayPosition::PixelOffset => Offset { x: Input6, y: Input7 },
+                _ => Offset { x: 0, y: 0 },
+            };
+            let missesBase = offset.x >= baseSize.width
+                or offset.x + overlaySize.width <= 0
+                or offset.y >= baseSize.height
+                or offset.y + overlaySize.height <= 0;
+            let padded = canvasSize.width > baseSize.width
+                or canvasSize.height > baseSize.height;
+            let layers = max(base.channels, overlay.channels);
+
             Image {
                 width: canvasSize.width & uint,
                 height: canvasSize.height & uint,
-                channels: max(base.channels, overlay.channels)
+                channels: if cropToFit {
+                    if missesBase { base.channels } else { layers }
+                } else {
+                    if bothImages { if padded { 4 } else { layers } } else { layers }
+                }
             }
             """,
             assume_normalized=True,

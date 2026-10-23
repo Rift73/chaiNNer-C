@@ -2,12 +2,14 @@
 #error "convert_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
 /* The pixel conversions' AVX2 unit (/arch:AVX2, spec 4.3): no export, reached only
- * through convert_range's dispatch on the call's ISA level (SP4b D7) and
- * cn_pixels_normalized_f32's (Task 3b). Each lane runs its element's sequence in
- * convert_shared.h (B3's; the clamp is np.clip's: clamp_lanes); groups of 8 start at
- * indices = 0 (mod 8) inside [begin, end) and never cross the chunk's ends, and the
- * head and tail run convert_scalar. The normalized scan is one serial any-match
- * pass over integer words. */
+ * through convert_range's dispatch on the call's ISA level (SP4b D7),
+ * cn_pixels_normalized_f32's (Task 3b) and gbr_planes_range's. Each lane runs its
+ * element's sequence in convert_shared.h (B3's; the clamp is np.clip's: clamp_lanes);
+ * groups of 8 start at indices = 0 (mod 8) inside [begin, end) and never cross the
+ * chunk's ends, and the head and tail run convert_scalar. The G, B and R planes
+ * (cn_gbr_planes_avx2) take groups of 8 pixels from the chunk's start and its last
+ * pixels through gbr_planes_scalar. The normalized scan is one serial any-match pass
+ * over integer words. */
 #include "convert_shared.h"
 #include <immintrin.h>
 
@@ -42,56 +44,122 @@ static void f32_f32(const float *src, float *out, int normalize, size_t i, size_
         _mm256_storeu_ps(out + i, clamp_lanes(_mm256_loadu_ps(src + i)));
 }
 
-/* f32 -> u8: always clamp_lanes; scaled = 255 * value (vmulps); events from
- * bit masks: 1, a finite value with an infinite scaled value; 4, a signalling NaN
- * source; 2, scaled NaN or outside [-2^31, 2^31), which stores B3's INT32_MIN.
+/* The event masks of a run of integer_lanes groups, each lane all ones once its event
+ * occurred. */
+typedef struct lane_events {
+    __m256i overflow, invalid, signalling;
+} lane_events;
+
+/* f32 -> integer per lane, the u8 and u16 outputs' shared sequence: always
+ * clamp_lanes; scaled = scale * value (vmulps; 255 or 65535); events from bit masks:
+ * overflow, a finite value with an infinite scaled value; signalling, a signalling NaN
+ * source; invalid, scaled NaN or outside [-2^31, 2^31), which gives B3's INT32_MIN.
  * Otherwise vroundps to nearest even (independent of MXCSR) and vcvtps2dq (exact on
- * integers); the low byte of each int32 is stored (vpshufb, vpermd: truncation,
- * never a saturating pack). */
-static long f32_u8(const float *src, uint8_t *out, size_t i, size_t end)
+ * integers). */
+static __m256i integer_lanes(__m256 source, __m256 scale, lane_events *events)
 {
-    const __m256 scale = _mm256_set1_ps(255.0f);
     const __m256 low = _mm256_set1_ps(-2147483648.0f), high = _mm256_set1_ps(2147483648.0f);
     const __m256i magnitude = _mm256_set1_epi32(0x7fffffff);
     const __m256i infinity = _mm256_set1_epi32(0x7f800000);
     const __m256i largest = _mm256_set1_epi32(0x7f7fffff);
     const __m256i quiet = _mm256_set1_epi32(0x00400000);
-    const __m256i sentinel = _mm256_set1_epi32(INT32_MIN);
     const __m256i none = _mm256_setzero_si256();
+    __m256 value = clamp_lanes(source);
+    __m256 scaled = _mm256_mul_ps(scale, value);
+    __m256i value_bits = _mm256_and_si256(_mm256_castps_si256(value), magnitude);
+    __m256i scaled_bits = _mm256_and_si256(_mm256_castps_si256(scaled), magnitude);
+    __m256i source_bits = _mm256_castps_si256(source);
+    __m256i nonfinite = _mm256_cmpgt_epi32(value_bits, largest);
+    __m256i infinite = _mm256_cmpeq_epi32(scaled_bits, infinity);
+    events->overflow = _mm256_or_si256(events->overflow, _mm256_andnot_si256(nonfinite, infinite));
+    __m256i nan = _mm256_cmpgt_epi32(_mm256_and_si256(source_bits, magnitude), infinity);
+    __m256i loud = _mm256_cmpeq_epi32(_mm256_and_si256(source_bits, quiet), none);
+    events->signalling = _mm256_or_si256(events->signalling, _mm256_and_si256(nan, loud));
+    __m256 inside = _mm256_and_ps(_mm256_cmp_ps(scaled, low, _CMP_GE_OQ),
+                                  _mm256_cmp_ps(scaled, high, _CMP_LT_OQ));
+    __m256i outside = _mm256_cmpeq_epi32(_mm256_castps_si256(inside), none);
+    events->invalid = _mm256_or_si256(events->invalid, outside);
+    __m256i integers = _mm256_cvtps_epi32(
+        _mm256_round_ps(scaled, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+    return _mm256_blendv_epi8(integers, _mm256_set1_epi32(INT32_MIN), outside);
+}
+
+/* The event bits (1 overflow, 2 invalid, 4 signalling) of a run's masks. */
+static long lane_event_bits(const lane_events *events)
+{
+    long bits = 0;
+    if (!_mm256_testz_si256(events->overflow, events->overflow)) bits |= 1;
+    if (!_mm256_testz_si256(events->invalid, events->invalid)) bits |= 2;
+    if (!_mm256_testz_si256(events->signalling, events->signalling)) bits |= 4;
+    return bits;
+}
+
+/* The low two bytes of each int32 to out[0, 8) (vpshufb, vpermd: truncation, never a
+ * saturating pack), as convert_scalar's (uint16_t) cast stores it. */
+static void store_u16(uint16_t *out, __m256i integers)
+{
+    /* Bytes 0 and 1 of each int32 to the low 8 bytes of its 128-bit lane, then both
+     * lanes' low two dwords together. */
+    const __m256i bytes = _mm256_setr_epi8(0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1,
+                                           0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1);
+    const __m256i gather = _mm256_setr_epi32(0, 1, 4, 5, 0, 0, 0, 0);
+    __m256i packed = _mm256_permutevar8x32_epi32(_mm256_shuffle_epi8(integers, bytes), gather);
+    _mm_storeu_si128((__m128i *)out, _mm256_castsi256_si128(packed));
+}
+
+/* f32 -> u8 (output 1) or u16 (output 2): integer_lanes, then the low byte of each
+ * int32 (vpshufb, vpermd: truncation, as convert_scalar's (uint8_t) cast) or
+ * store_u16. */
+static long f32_integer(const float *src, void *out, int output, size_t i, size_t end)
+{
+    const __m256 scale = _mm256_set1_ps(output == 1 ? 255.0f : 65535.0f);
     /* Byte 0 of each int32 to the low 4 bytes of its 128-bit lane, then both lanes'
      * low dwords together. */
     const __m256i bytes = _mm256_setr_epi8(0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
                                            0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
     const __m256i gather = _mm256_setr_epi32(0, 4, 0, 0, 0, 0, 0, 0);
-    __m256i overflow = none, invalid = none, signalling = none;
-    long events = 0;
+    lane_events events = {_mm256_setzero_si256(), _mm256_setzero_si256(), _mm256_setzero_si256()};
     for (; end - i >= 8; i += 8) {
-        __m256 source = _mm256_loadu_ps(src + i);
-        __m256 value = clamp_lanes(source);
-        __m256 scaled = _mm256_mul_ps(scale, value);
-        __m256i value_bits = _mm256_and_si256(_mm256_castps_si256(value), magnitude);
-        __m256i scaled_bits = _mm256_and_si256(_mm256_castps_si256(scaled), magnitude);
-        __m256i source_bits = _mm256_castps_si256(source);
-        __m256i nonfinite = _mm256_cmpgt_epi32(value_bits, largest);
-        __m256i infinite = _mm256_cmpeq_epi32(scaled_bits, infinity);
-        overflow = _mm256_or_si256(overflow, _mm256_andnot_si256(nonfinite, infinite));
-        __m256i nan = _mm256_cmpgt_epi32(_mm256_and_si256(source_bits, magnitude), infinity);
-        __m256i loud = _mm256_cmpeq_epi32(_mm256_and_si256(source_bits, quiet), none);
-        signalling = _mm256_or_si256(signalling, _mm256_and_si256(nan, loud));
-        __m256 inside = _mm256_and_ps(_mm256_cmp_ps(scaled, low, _CMP_GE_OQ),
-                                      _mm256_cmp_ps(scaled, high, _CMP_LT_OQ));
-        __m256i outside = _mm256_cmpeq_epi32(_mm256_castps_si256(inside), none);
-        invalid = _mm256_or_si256(invalid, outside);
-        __m256i integers = _mm256_cvtps_epi32(
-            _mm256_round_ps(scaled, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
-        integers = _mm256_blendv_epi8(integers, sentinel, outside);
+        __m256i integers = integer_lanes(_mm256_loadu_ps(src + i), scale, &events);
+        if (output == 2) {
+            store_u16((uint16_t *)out + i, integers);
+            continue;
+        }
         __m256i packed = _mm256_permutevar8x32_epi32(_mm256_shuffle_epi8(integers, bytes), gather);
-        _mm_storel_epi64((__m128i *)(out + i), _mm256_castsi256_si128(packed));
+        _mm_storel_epi64((__m128i *)((uint8_t *)out + i), _mm256_castsi256_si128(packed));
     }
-    if (!_mm256_testz_si256(overflow, overflow)) events |= 1;
-    if (!_mm256_testz_si256(invalid, invalid)) events |= 2;
-    if (!_mm256_testz_si256(signalling, signalling)) events |= 4;
-    return events;
+    return lane_event_bits(&events);
+}
+
+/* Each group of 8 BGR pixels is 24 floats in three loads; a pixel's channel c is
+ * float 3 * pixel + c, so load v holds channel (8 v + p) % 3 at position p. Two blends
+ * take each position from the load holding the channel there (vblendps), and vpermd
+ * puts the 8 pixels in order; the values are moved bit for bit. Each plane's 8 values
+ * then convert as f32_integer's u16 lanes. */
+long cn_gbr_planes_avx2(const float *src, uint16_t *out, size_t pixels, size_t begin,
+                        size_t end)
+{
+    const __m256 scale = _mm256_set1_ps(65535.0f);
+    const __m256i blue = _mm256_setr_epi32(0, 3, 6, 1, 4, 7, 2, 5);
+    const __m256i green = _mm256_setr_epi32(1, 4, 7, 2, 5, 0, 3, 6);
+    const __m256i red = _mm256_setr_epi32(2, 5, 0, 3, 6, 1, 4, 7);
+    lane_events events = {_mm256_setzero_si256(), _mm256_setzero_si256(), _mm256_setzero_si256()};
+    size_t i = begin;
+    for (; end - i >= 8; i += 8) {
+        const float *group = src + 3 * i;
+        __m256 v0 = _mm256_loadu_ps(group), v1 = _mm256_loadu_ps(group + 8);
+        __m256 v2 = _mm256_loadu_ps(group + 16);
+        __m256 b = _mm256_permutevar8x32_ps(
+            _mm256_blend_ps(_mm256_blend_ps(v0, v1, 0x92), v2, 0x24), blue);
+        __m256 g = _mm256_permutevar8x32_ps(
+            _mm256_blend_ps(_mm256_blend_ps(v0, v1, 0x24), v2, 0x49), green);
+        __m256 r = _mm256_permutevar8x32_ps(
+            _mm256_blend_ps(_mm256_blend_ps(v0, v1, 0x49), v2, 0x92), red);
+        store_u16(out + i, integer_lanes(g, scale, &events));
+        store_u16(out + pixels + i, integer_lanes(b, scale, &events));
+        store_u16(out + 2 * pixels + i, integer_lanes(r, scale, &events));
+    }
+    return lane_event_bits(&events) | gbr_planes_scalar(src, out, pixels, i, end);
 }
 
 /* cn_pixels_normalized_f32's bit tests per lane: all ones where the word is +0 or in
@@ -145,6 +213,6 @@ long cn_convert_avx2(const convert_job *j, size_t begin, size_t end)
     else if (j->output == 0)
         f32_f32((const float *)j->src, (float *)j->out, j->normalize, first, last);
     else
-        events |= f32_u8((const float *)j->src, (uint8_t *)j->out, first, last);
+        events |= f32_integer((const float *)j->src, j->out, j->output, first, last);
     return events | convert_scalar(j, last, end);
 }

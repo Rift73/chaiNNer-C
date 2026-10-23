@@ -256,3 +256,5 @@ foreach(chainner_c_target chainner_deflate chainner_zstd chainner_openjph chainn
 endforeach()
 target_sources(chainner_codecs PRIVATE src/codecs/exr_codec.c src/codecs/exr_openjph.cpp)
 target_link_libraries(chainner_codecs PRIVATE chainner_openexr chainner_openjph chainner_native)
+# The PNG decoder's direct path inflates with it and checks IDAT CRCs (src/codecs/png_codec.c).
+target_link_libraries(chainner_codecs PRIVATE chainner_deflate)

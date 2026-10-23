@@ -92,8 +92,10 @@ cn_codec_status cn_tiff_decode(const uint8_t *data, size_t size, cn_codec_alloca
 /* Decodes what Load Image's straight-alpha TIFF decoder (load_image.py's _read_tiff_straight_alpha, Pillow 12.3)
  * gives for its plainest files: 8-bit RGBA or grey+alpha with ExtraSamples (2,) in contiguous strips, uncompressed
  * (Pillow's raw decoder) or LZW, Deflate or PackBits (libtiff), as BGRA with the grey copied to B, G and R, before
- * the orientation turn; *orientation is set to the Orientation tag (1 outside 2-8) before `allocate` is called. Any
- * other tag, type, count or value, and anything Pillow would warn about, falls back to the Python decoder. */
+ * the orientation turn; *orientation is set to the Orientation tag, or without one to the XMP packet's
+ * tiff:Orientation as Pillow's getexif() reads it (1 outside 2-8), before `allocate` is called. Any other tag, type,
+ * count or value, and anything Pillow would warn about (an Exif IFD it reads with a warning too), falls back to the
+ * Python decoder. */
 cn_codec_status cn_tiff_decode_pillow_alpha(const uint8_t *data, size_t size, cn_codec_allocate allocate,
                                             void *context, int *orientation);
 

@@ -1402,6 +1402,66 @@ def test_clamp_is_np_clip_at_every_level(count, levels):
                             assert out.tobytes() == tails[output], (*where, args)
 
 
+# cn_pixels_gbr_planes_u16's grain: cn_pixels_convert_checked's 262,144 elements in
+# pixels of three.
+GBR_PLANES_GRAIN = 87382
+
+
+@pytest.mark.parametrize("pixels", [1, 7, 8, 9, 17, 155, 2 * GBR_PLANES_GRAIN + 13])
+def test_gbr_planes_are_the_u16_conversion_rearranged_at_every_level(pixels, levels):
+    """cn_pixels_gbr_planes_u16 (Save Video's and Frames to Clip's RGB frames) gives, in
+    both MXCSR states and at every level, cn_pixels_convert_checked's (0, 2, 1) output
+    of the same BGR pixels as G, B and R planes, with its event bits. Every fifth source
+    word is CLAMP_TABLE's (NaN payloads, signalling NaNs, -0, denormals, values out of
+    [0, 1]), the rest random in [0, 1); 9 and 17 pixels leave a scalar tail after the
+    8-pixel groups, and the largest count runs 3 chunks whose starts are off the 8-pixel
+    grid."""
+    lib = native.lib()
+    planes = lib["cn_pixels_gbr_planes_u16"]
+    planes.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
+    planes.argtypes += [ctypes.POINTER(ctypes.c_int)]
+    planes.restype = ctypes.c_int
+    convert = lib["cn_pixels_convert_checked"]
+    convert.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+    convert.argtypes += [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+    convert.restype = ctypes.c_int
+    if pixels > GBR_PLANES_GRAIN:
+        starts = [begin for begin, _ in partition(pixels, GBR_PLANES_GRAIN)[1:]]
+        assert len(starts) == 2 and all(begin % 8 for begin in starts), starts
+    source = np.random.default_rng(pixels).random(pixels * 3, dtype=np.float32)
+    words = source.view(np.uint32)
+    words[::5] = np.resize([row[0] for row in CLAMP_TABLE], words[::5].size)
+    for state in MXCSR_STATES:
+        with golden_kernels.mxcsr(lib, state):
+            for level in levels:
+                assert isa_set(level) == level
+                where = (state, native.ISA_LEVELS[level])
+                flat = np.empty(pixels * 3, np.uint16)
+                events = ctypes.c_int(-1)
+                status = convert(
+                    source.ctypes.data,
+                    flat.ctypes.data,
+                    flat.size,
+                    0,
+                    2,
+                    1,
+                    ctypes.byref(events),
+                )
+                assert status == 0, where
+                out = np.empty((3, pixels), np.uint16)
+                planar_events = ctypes.c_int(-1)
+                status = planes(
+                    source.ctypes.data,
+                    out.ctypes.data,
+                    pixels,
+                    ctypes.byref(planar_events),
+                )
+                assert status == 0, where
+                expected = np.ascontiguousarray(flat.reshape(pixels, 3).T[[1, 0, 2]])
+                assert out.tobytes() == expected.tobytes(), where
+                assert planar_events.value == events.value, where
+
+
 @pytest.mark.parametrize("kernel", golden_kernels.CONVERSION_KERNELS)
 def test_clamping_conversions_equal_the_oracle_at_every_level(kernel, levels):
     """Task 3b1 (P-4): every clamping conversion (golden_kernels.clamps) of the kernel's

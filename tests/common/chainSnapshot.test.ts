@@ -72,6 +72,31 @@ test('an unset property and an undefined one are the same', () => {
     );
 });
 
+test('the snapshot is the sorted JSON of what a save keeps', () => {
+    const inputData = { [10 as InputId]: 1, [2 as InputId]: 'x' };
+    expect(chainSnapshot([node('a', LOAD_IMAGE, { inputData })], edges)).toBe(
+        '{"edges":["[\\"a\\",\\"a-0\\",\\"b\\",\\"b-0\\"]"],"nodes":[{"data":{"inputData":{"2":"x","10":1},"schemaId":"chainner:image:load"},"id":"a","position":{"x":10,"y":20},"type":"regularNode"}]}'
+    );
+});
+
+test('a node keeps its part of the snapshot only while its data and place stay', () => {
+    // node data is replaced on every change, never changed in place: a node with the same data
+    // object keeps its part, unless its place, type or id changed
+    const fresh = (changed: Node<NodeData>[]) => chainSnapshot(structuredClone(changed), edges);
+    const [a, b] = nodes;
+    expect(chainSnapshot([a, b], edges)).toBe(snapshot);
+    for (const changed of [
+        { ...a, position: { x: 11, y: 20 } },
+        { ...a, position: { x: 10, y: 21 } },
+        { ...a, type: 'collapsedNode' },
+        { ...a, id: 'c' },
+    ]) {
+        expect(chainSnapshot([changed, b], edges)).toBe(fresh([changed, b]));
+        expect(chainSnapshot([changed, b], edges)).not.toBe(snapshot);
+    }
+    expect(chainSnapshot([a, b], edges)).toBe(snapshot);
+});
+
 test('every change a save keeps changes the snapshot', () => {
     const changes: [string, Node<NodeData>[], Edge<EdgeData>[]][] = [
         ['moved node', [{ ...nodes[0], position: { x: 11, y: 20 } }, nodes[1]], edges],

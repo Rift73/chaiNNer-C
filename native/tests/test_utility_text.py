@@ -315,9 +315,37 @@ def test_text_slice(text, operation, alignment, start, length, maximum):
             getattr(module.SliceAlignment, alignment, None),
         )
 
+    first = max(start, -len(text))
+    if operation == "START_AND_LENGTH" and first < 0 <= first + length:
+        # A negative start whose length reaches the end slices to the end (2026-10-23);
+        # upstream's start + length wrapped past 0 to the beginning of the text.
+        assert call(NEW["text_slice"]) == text[first:]
+        return
     assert outcome(lambda: call(NEW["text_slice"])) == outcome(
         lambda: call(OLD["text_slice"])
     )
+
+
+def test_text_slice_negative_start_reaches_the_end():
+    # "hello" from -2 for 5 characters gave "" (Python's [-2:3]); the type said "lo".
+    node = NEW["text_slice"]
+    for start, length, expected in [
+        (-2, 5, "lo"),
+        (-2, 2, "lo"),
+        (-2, 1, "l"),
+        (-9, 2, "he"),
+    ]:
+        assert (
+            node.text_slice_node(
+                "hello",
+                node.SliceOperation.START_AND_LENGTH,
+                start,
+                length,
+                0,
+                node.SliceAlignment.START,
+            )
+            == expected
+        )
 
 
 @pytest.mark.parametrize("pattern", [*PATTERNS, "{9}", "{10}"])

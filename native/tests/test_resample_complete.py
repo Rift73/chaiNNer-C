@@ -122,6 +122,21 @@ def test_varied_ratios_and_image_ranges(filter_id, gamma):
         )
 
 
+@pytest.mark.parametrize("filter_id", [1, 2, 5, 11])
+@pytest.mark.parametrize("channels", [1, 3, 4])
+@pytest.mark.parametrize(
+    ("shape", "dimensions"),
+    # The AVX2 horizontal pass's column tiles: many tiles and a row group of fewer than
+    # eight rows; reductions whose single outputs read more columns than a tile holds.
+    [((21, 700), (650, 9)), ((11, 3000), (2, 5)), ((9, 1100), (3, 4))],
+)
+def test_horizontal_tiles_and_wide_reductions(filter_id, channels, shape, dimensions):
+    source = image(channels, shape=shape)
+    source[2, 5:9] = np.nan
+    compare(source, dimensions, filter_id)
+    compare(image(channels, shape=shape), dimensions, filter_id)
+
+
 @pytest.mark.parametrize("filter_id", [-1, 0, *FILTERS])
 @pytest.mark.parametrize("dimensions", [(0, 7), (5, 0), (0, 0)])
 @pytest.mark.parametrize("channels", [0, 2, 4])

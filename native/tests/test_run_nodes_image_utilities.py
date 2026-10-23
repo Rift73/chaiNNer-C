@@ -69,6 +69,8 @@ STACKS = [
     [(8, 3, 1), (8, 3, 1), (2, 9, 1), (5, 5, 1)],
     [(17, 31, 4)],
     [(3, 5, 3), (7, 2, 4)],
+    # RGB beside a wider RGBA image failed with NumPy's broadcast error (upstream's).
+    [(10, 5, 3), (10, 10, 4)],
 ]
 
 

@@ -4,10 +4,12 @@ reference.vpy's lines in vspipe)."""
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import random
 import re
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable, Mapping, Sequence
@@ -673,6 +675,147 @@ def test_any_function_rows(small: dict[str, NodeData]) -> None:
                     rows["Argument 1"]: bad,
                 },
             )
+
+
+# Text a shared chain file may hold in any input: quotes of each kind, backslashes,
+# line breaks (\r and Unicode separators too), f-string braces, a null byte, code
+# after a closing parenthesis, very long and deeply nested text.
+HOSTILE = [
+    "'",
+    '"',
+    "'''",
+    '"""',
+    "\\",
+    "a\\",
+    "\\'",
+    "\n",
+    "\r",
+    "\r\n",
+    "\u2028",
+    "\x85",
+    "\x0b",
+    "\x00",
+    "a\x00b",
+    "{x}",
+    "{__import__('os').getcwd()}",
+    "f'{1}'",
+    "1)\nimport os\n(",
+    "0); __import__('os').system('x') #",
+    "x'+__import__('os').name+'y",
+    '"; import os; "',
+    "__import__('os')",
+    "lambda: 0",
+    "1 if 1 else 2",
+    "1 # c",
+    "1\n2",
+    "1\r2",
+    "1\u20282",
+    "1;2",
+    "1, 2",
+    "a" * 100_000,
+    "[" * 1000 + "]" * 1000,
+    "\ud800",
+    "\ufeff1",
+    "1e309",
+    "nan",
+    "0x10",
+    "\u0661\u0662\u0663",
+    "[0, None]",
+    "{'__class__': 1}",
+    "b'x'",
+    "...",
+    "**{}",
+    "x = __import__('os')",
+    "sigma = 1)\nimport os\n#",
+    "sigma = __import__('os')",
+    "sigma = 1\r\nimport os",
+    "\U0001d526\U0001d52a = 1",
+]
+# Plain values, one of which each input takes: its script is the hostile one's baseline.
+PLAIN = ["{'k': 1}", "1", "0.5", "24000/1001", "0-1", "[0]", "x", "'x'", "sigma = 1"]
+
+
+def code_shape(code: str) -> tuple[Counter[str], int, int]:
+    """The names and attributes in `code` (a literal has none), its calls and lambdas,
+    and its statements."""
+    tree = ast.parse(code)
+    names: Counter[str] = Counter()
+    calls = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names[node.id] += 1
+        elif isinstance(node, ast.Attribute):
+            names[f".{node.attr}"] += 1
+        elif isinstance(node, (ast.Call, ast.Lambda)):
+            calls += 1
+        elif isinstance(node, (ast.JoinedStr, ast.NamedExpr, ast.Starred, ast.IfExp)):
+            names[type(node).__name__] += 1
+    return names, calls, len(tree.body)
+
+
+def script_of(out: VideoClip | VSFilter) -> str:
+    clip = (
+        out
+        if isinstance(out, VideoClip)
+        else VideoClip(
+            "n_use_0",
+            f"n_use_0 = ({out.expr})(n_src_0)",
+            (SRC, out),
+            frozenset(),
+            "use",
+        )
+    )
+    return compile_script([(clip, "Clip 1")], cache_mb=1)
+
+
+def test_hostile_values_stay_literals(small: dict[str, NodeData]) -> None:
+    # A chain file is untrusted: whatever text it puts in an input, the node refuses it
+    # (ValueError) or its script has the names, calls and statements a plain value of
+    # that input gives (a keyword in a filter adds functools.partial), so the text stays
+    # a literal.
+    checked = 0
+    for name, node in small.items():
+        by_id = {i.id: i for i in node.inputs}
+        methods = [o["value"] for o in by_id[METHOD_ID].to_dict()["options"]]
+        for method in methods:
+            for as_filter in (0, 1) if FILTER_ID in by_id else (0,):
+                base = {i.id: default_of(i) for i in node.inputs}
+                base.update({MAIN_ID: SRC, METHOD_ID: method, MODE_ID: "advanced"})
+                if FILTER_ID in by_id:
+                    base[FILTER_ID] = as_filter
+                if name == "Any Function":
+                    base.update({30: SRC, 31: REF, 32: "ref", 33: "other"})
+                for input_id in by_id.keys() - {MAIN_ID}:
+                    plain: str | None = None
+                    for value in PLAIN:
+                        try:
+                            out = run(node, "h", method, raw={**base, input_id: value})
+                        except ValueError:
+                            continue
+                        plain = script_of(out)
+                        break
+                    for value in HOSTILE:
+                        try:
+                            out = run(node, "h", method, raw={**base, input_id: value})
+                        except ValueError:
+                            continue
+                        where = (
+                            name,
+                            method,
+                            as_filter,
+                            by_id[input_id].label,
+                            value[:40],
+                        )
+                        assert plain is not None, where
+                        names, calls, statements = code_shape(script_of(out))
+                        p_names, p_calls, p_statements = code_shape(plain)
+                        extra = set(names - p_names) - {".partial", "functools"}
+                        partial = int(bool(names - p_names))
+                        assert not extra, where
+                        assert calls <= p_calls + partial, where
+                        assert statements <= p_statements + partial, where
+                        checked += 1
+    assert checked > 1000
 
 
 def test_no_methods_no_nodes() -> None:

@@ -153,6 +153,18 @@ def test_wide_median_exact_weighted_reference(channels, shape, radius):
         equal_bits(actual, cv2.medianBlur(bytes_image, 2 * radius + 1))
 
 
+@pytest.mark.parametrize("channels", [1, 3, 4])
+# Stripes of the longer side (several, windows crossing their borders), both orientations.
+@pytest.mark.parametrize("shape", [(200, 37), (37, 200), (517, 23)])
+@pytest.mark.parametrize("radius", [3, 7, 30])
+def test_wide_median_stripes(channels, shape, radius):
+    bytes_image = np.random.default_rng(47).integers(
+        0, 256, (*shape, channels), np.uint8
+    )
+    actual = native.median(bytes_image.astype(np.float32) / 255, radius)
+    equal_bits(actual, cv2.medianBlur(bytes_image, 2 * radius + 1))
+
+
 @pytest.mark.parametrize("radius", [128, 180, 181, 255, 256, 511, 1000])
 @pytest.mark.parametrize("value", [0, 1, 71, 127, 128, 254, 255])
 def test_constant_images_through_maximum_radius(radius, value):

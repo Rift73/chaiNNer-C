@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import ImageFont
 
 from nodes.impl import native_buffers
 
@@ -66,6 +67,13 @@ assert _spec is not None and _spec.loader is not None
 UTILS = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(UTILS)
 ORIGINAL.__dict__.update(normalize=UTILS.normalize, to_uint8=UTILS.to_uint8)
+# chaiNNer-C's contract (ruling of 2026-10-23), not upstream's: a computed font size
+# has a floor of 1, where upstream's Pillow call refuses size 0.
+ORIGINAL.__dict__.update(
+    ImageFont=types.SimpleNamespace(
+        truetype=lambda font, size: ImageFont.truetype(font, size=max(size, 1))
+    )
+)
 
 
 @pytest.mark.parametrize(
@@ -137,15 +145,22 @@ def test_text_contract_and_empty():
         native_buffers.colorize_text(np.zeros((0, 3), np.uint8), (1, 2, 3)),
         np.zeros((0, 3, 4), np.float32),
     )
-    for module in (TEXT, ORIGINAL):
+    def empty_text(module, text):
+        return module.text_as_image_node(
+            text,
+            False,
+            False,
+            module.TextAlignment.CENTER,
+            module.Color.bgr((0, 0, 0)),
+            10,
+            7,
+            module.Anchor.CENTER,
+        )
+
+    # Upstream divides by the empty text's zero width; chaiNNer-C draws nothing.
+    for text in ("", "\n\n"):
         with pytest.raises(ZeroDivisionError):
-            module.text_as_image_node(
-                "",
-                False,
-                False,
-                module.TextAlignment.CENTER,
-                module.Color.bgr((0, 0, 0)),
-                10,
-                10,
-                module.Anchor.CENTER,
-            )
+            empty_text(ORIGINAL, text)
+        np.testing.assert_array_equal(
+            empty_text(TEXT, text), np.zeros((7, 10, 4), np.float32)
+        )

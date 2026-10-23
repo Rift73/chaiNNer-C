@@ -65,6 +65,7 @@ def _api():
                 ct.POINTER(integer),
             ],
             "cn_pixels_normalized_f32": [fp, size, ct.POINTER(integer)],
+            "cn_pixels_gbr_planes_u16": [void, void, size, ct.POINTER(integer)],
             "cn_tile_mix": [fp, fp, fp, fp, size, size, size, integer, size, size],
             "cn_upscale_alpha": [fp, fp, fp, size, size, integer],
             "cn_constant_alpha": [fp, size, ct.POINTER(integer)],
@@ -152,6 +153,29 @@ def converted_pixels(
             {0: 0, 8: 1, 16: 2}[bits],
             1,
             ct.byref(events),
+        )
+    )
+    _report_events(events.value)
+    return out
+
+
+def gbr_planes_u16(image: np.ndarray) -> np.ndarray | None:
+    """A C-contiguous height x width x 3 float32 (BGR) image's G, B and R planes in
+    uint16 (3 x height x width): converted_pixels(image, 16) rearranged, its events
+    included, in one pass. None for any other image."""
+    if (
+        image.dtype != np.float32
+        or image.ndim != 3
+        or image.shape[2] != 3
+        or not image.flags.c_contiguous
+    ):
+        return None
+    height, width, _ = image.shape
+    out = np.empty((3, height, width), np.uint16)
+    events = ct.c_int()
+    check(
+        _api().cn_pixels_gbr_planes_u16(
+            image.ctypes.data, out.ctypes.data, height * width, ct.byref(events)
         )
     )
     _report_events(events.value)

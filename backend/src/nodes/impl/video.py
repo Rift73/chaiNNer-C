@@ -95,9 +95,11 @@ class FrameFormat:
         return sum(rows * row_bytes for rows, row_bytes in self.planes)
 
     @property
-    def input_options(self) -> dict[str, int]:
-        """The CLI reader's input options: frames stay as stored unless `upright`."""
-        return {} if self.upright else {"autorotate": 0}
+    def input_options(self) -> dict[str, None]:
+        """The CLI reader's input options: frames stay as stored unless `upright`, by
+        -noautorotate (a flag, as ffmpeg-python writes a None value), which FFmpeg 5.1.2
+        and 8.1 both take; 8.1's -autorotate takes no value."""
+        return {} if self.upright else {"noautorotate": None}
 
     def unpack(self, data: np.ndarray) -> object:
         """A frame's bytes (uint8) as its values: a BGR uint8 image (bgr24), a BGR float32
@@ -112,23 +114,30 @@ class FrameFormat:
         if self.pix_fmt == "gbrpf32le":
             g, b, r = data.view(np.float32).reshape(3, height, width)
             return planes_to_interleaved((b, g, r))
+        dtype = self.code_dtype
+        codes: list[np.ndarray] = []
+        offset = 0
+        for rows, row_bytes in self.planes:
+            plane = data[offset : offset + rows * row_bytes].view(dtype)
+            codes.append(plane.reshape(rows, row_bytes // dtype.itemsize))
+            offset += rows * row_bytes
+        return self.plane_values(codes)
+
+    @property
+    def code_dtype(self) -> np.dtype:
+        """The planes' code type: uint8 up to 8 bits, else little-endian uint16."""
         colour = self.colour
         assert colour is not None
-        dtype = np.dtype(np.uint8 if colour.bit_depth <= 8 else "<u2")
-        planes: list[np.ndarray] = []
-        offset = 0
-        for index, (rows, row_bytes) in enumerate(self.planes):
-            codes = data[offset : offset + rows * row_bytes].view(dtype)
-            planes.append(
-                code_to_float(
-                    codes.reshape(rows, row_bytes // dtype.itemsize),
-                    colour.bit_depth,
-                    colour.full_range,
-                    chroma=index > 0,
-                )
-            )
-            offset += rows * row_bytes
-        return planes
+        return np.dtype(np.uint8 if colour.bit_depth <= 8 else "<u2")
+
+    def plane_values(self, codes: list[np.ndarray]) -> list[np.ndarray]:
+        """The planes' codes (rows x samples each; Y, U, V) as their float32 values."""
+        colour = self.colour
+        assert colour is not None
+        return [
+            code_to_float(plane, colour.bit_depth, colour.full_range, chroma=index > 0)
+            for index, plane in enumerate(codes)
+        ]
 
 
 class _UseCliReader(Exception):
@@ -233,9 +242,22 @@ def _frame_bytes(frame: VideoFrame, frame_format: FrameFormat) -> np.ndarray:
 
 def _frame_values(frame: VideoFrame, frame_format: FrameFormat) -> object:
     """A converted frame's values, as unpack gives them for the CLI's bytes. A float
-    RGB frame's G, B and R planes go straight into the BGR image, without the bytes."""
-    if frame_format.pix_fmt != "gbrpf32le":
+    RGB frame's G, B and R planes go straight into the BGR image, and Y, U and V codes
+    straight to their values, without the bytes."""
+    if frame_format.pix_fmt == "bgr24":
         return frame_format.unpack(_frame_bytes(frame, frame_format))
+    if frame_format.pix_fmt != "gbrpf32le":
+        dtype = frame_format.code_dtype
+        return frame_format.plane_values(
+            [
+                np.lib.stride_tricks.as_strided(
+                    np.frombuffer(plane, dtype),
+                    (rows, row_bytes // dtype.itemsize),
+                    (plane.line_size, dtype.itemsize),
+                )
+                for plane, (rows, row_bytes) in zip(frame.planes, frame_format.planes)
+            ]
+        )
     width, height = frame_format.size
     green, blue, red = (
         np.lib.stride_tricks.as_strided(
@@ -636,6 +658,8 @@ class VideoLoader:
         self.settings = settings
         self.colour: ColourInfo | None = None
         self.formats: list[FrameFormat] = []
+        # _count's answer, once counted.
+        self._counted: tuple[int, bool] | None = None
         if settings is not None:
             # The video stream video_loader_init probed.
             stream: dict[str, object] = vars(self)["video_stream"]
@@ -836,7 +860,13 @@ class VideoLoader:
         return count if exact else None
 
     def _count(self) -> tuple[int, bool]:
-        """frame_count's number, and whether it is exact."""
+        """frame_count's number, and whether it is exact. Counted once per loader: a
+        count opens the file, and Load Video asks for both."""
+        if self._counted is None:
+            self._counted = self._count_frames()
+        return self._counted
+
+    def _count_frames(self) -> tuple[int, bool]:
         path: Path = vars(self)["path"]
         metadata: VideoMetadata = vars(self)["metadata"]
         av = _reader_pyav()

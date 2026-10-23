@@ -254,6 +254,37 @@ def test_assemble_alpha_one_pass_across_chunks(rgb_kind, alpha_kind, frozen):
         assert normalized_readonly(result) is result
 
 
+@pytest.mark.parametrize("shape", [(1, 1, 3), (1, 9, 3), (7, 1, 3), (131, 257, 3)])
+@pytest.mark.parametrize("values", ["unit", "every bit pattern"])
+def test_recovered_alpha_image_is_the_three_steps(shape, values):
+    # One pass in blocks, chunks starting inside blocks: the bits (NaN payloads,
+    # signalling NaNs and denormals included), layout, flags and warnings of
+    # assemble_alpha(black, denoise_and_flatten_alpha(recover_alpha(white, black))).
+    if values == "unit":
+        rng = np.random.default_rng(76)
+        white, black = (rng.random(shape, np.float32) for _ in range(2))
+    else:
+        white, black = raw_floats(shape, 77), raw_floats(shape, 78)
+    expected, expected_messages = recorded(
+        lambda: native.assemble_alpha(
+            black,
+            integration.denoise_and_flatten_alpha(native.recover_alpha(white, black)),
+            frozen=True,
+        )
+    )
+    actual, actual_messages = recorded(
+        lambda: native.recovered_alpha_image(white, black)
+    )
+    assert actual is not None
+    assert actual.tobytes() == expected.tobytes()
+    assert actual.strides == expected.strides
+    assert not actual.flags.writeable
+    assert actual_messages == expected_messages
+    if shape[1] > 1:
+        assert native.recovered_alpha_image(white[:, ::-1], black[:, ::-1]) is None
+    assert native.recovered_alpha_image(white[:, :, :2], black[:, :, :2]) is None
+
+
 @pytest.mark.parametrize(
     "kind", ["ordinary", "fortran", "reverse", "unaligned", "readonly"]
 )

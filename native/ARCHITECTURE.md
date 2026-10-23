@@ -281,7 +281,13 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
   what it mirrors exactly (Pillow's JPEG marker walk, imdecode's signature order, OpenCV's chunk walks and type
   rules); anything else (a warning, an error, a variant not ported, MPO, APNG) declines to today's Python path, which
   gives the result or the error. `CHAINNER_C_NATIVE_CODECS=0` is the diagnostic switch to today's path (the oracle of
-  `native/tests/test_native_codecs.py` and the git-ignored corpus in `native/local/codec-corpus`).
+  `native/tests/test_native_codecs.py` and the git-ignored corpus in `native/local/codec-corpus`). The PNG decoder's
+  direct path (`png_codec.c`, hunt 2026-10-23) skips libpng's row loop for the common file, 8- or 16-bit grey, RGB
+  or RGBA without tRNS, or indexed at any depth, not interlaced, IDATs with valid CRCs right before an empty IEND, a
+  32 KiB zlib window and a stream that inflates exactly to the filtered rows: libdeflate inflates, C unfilters and
+  stores BGR(A) (16-bit samples little-endian, indices expanded through PLTE and tRNS), the same pixels as libpng
+  (about 40 % less decode time); every other file, an index past the palette, and any failure there, continue in
+  libpng from the first IDAT as before.
 - OpenEXR: the runtime's OpenCV is built without OpenEXR, so `.exr` (by signature, in the `cv` decoder and the engine's
   Load Image) decodes through OpenEXRCore 3.5.2 (`exr_codec.c`; ZIP, PIZ, B44, DWA, HTJ2K, ZSTD and the rest; tiled,
   multipart), even under `CHAINNER_C_NATIVE_CODECS=0`. It gives what OpenCV's ExrDecoder gives under IMREAD_UNCHANGED:
@@ -363,6 +369,21 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   chaiNNer-C neither emits nor parses MemoryData, so that fusion only ever raised, and outside a first layer the
   searches end where upstream's do (`test_corrected_oracle_departs_from_upstream_only_as_recorded` checks the whole
   pass corpus).
+- ONNX to NCNN converter: lines of upstream's `onnx_to_ncnn.py` are corrected before translation and in the tests'
+  oracle (`CORRECTIONS` in `native/tools/generate_onnx_converter.py`). A ConvTranspose without `output_shape` has an
+  empty array there, which upstream compared with 2 (`elif output_shape == 2`); NumPy 2 refuses the truth value of an
+  empty array, so every such ConvTranspose failed to convert (it worked upstream only on NumPy 1, with a
+  DeprecationWarning). The correction tests its size, as the branch before it does; `test_convolution_weights` now
+  requires every Conv and ConvTranspose case to convert. Slice: NCNN's Crop has no step, and upstream's test was
+  inverted (`np.all(steps != 1)`), so every explicit step of 1 (PyTorch's export writes them) was refused and a step
+  of 2 converted as 1 (a silently wrong crop, now refused); its batch-axis filter discarded `np.delete`'s results; and
+  Slice and Squeeze combined their axis tests with `and`, an array's truth value, which fails for more than one axis
+  (each test is now `np.all` of its own). `test_slice_and_squeeze_corrections` and
+  `backend/tests/test_onnx_convert_to_ncnn_slice.py` (ncnn equals ONNX Runtime) cover them. Convert To NCNN's own
+  pre-passes (`put_in_order`,
+  `fill_kernel_shapes` in `packages/chaiNNer_onnx/onnx/utility/convert_to_ncnn.py`) order the graph (a cycle raises
+  instead of hanging upstream's reordering) and give a Conv or ConvTranspose without `kernel_shape` the one its weights
+  have, as ONNX infers it.
 - NCNN param schema: Reduction's `reduce_all` (param 1) defaults to 1, ncnn's own default, where upstream's schema
   says 0 (owner-approved 2026-10-09). Parameters equal to their default are not written, so upstream omitted the `1=0`
   of a per-axis reduction, both when Convert To NCNN made one and when a loaded `.param` (ncnn's tools write `1=0`)
@@ -370,6 +391,12 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   silently wrong models change; `1=1` and an omitted `1=` stay global. The differential tests' oracle reads the
   frozen `param_schema.json` with this default corrected (`SCHEMA_CORRECTIONS` in `native/tests/test_ncnn_graph.py`;
   `backend/tests/test_ncnn_reduction.py` compares a converted model with ONNX Runtime).
+- NCNN broadcast data (`broadcast_data` in `native/src/ncnn_graph.cpp`): a first convolution that is grouped
+  (ConvolutionDepthWise, DeconvolutionDepthWise) holds its input channels divided by its groups in its weights, and
+  only PixelShuffles after the last convolution fold its output channels. Upstream ignored both, so a model that starts
+  with a depthwise convolution or puts a convolution after its PixelShuffle (SwiftSRGAN converted by Convert To NCNN:
+  1 -> 0 channels) was fed grey and failed in Upscale Image. Models without either read as before
+  (`test_model_broadcast_grouped_first_and_convolution_after_the_shuffle`).
 - NCNN models that start with a Reorg (space-to-depth; all 2x MangaJaNai models): the broadcast data divides the
   input channels by stride² and the scale by the stride when a Reorg comes before the first convolution, so these
   models report 2x and 3 channels where upstream reports 4x and 12 and the Upscale Image node refused them (upstream
@@ -601,8 +628,8 @@ another project generated.
   mergian/dpid (BSD-3-Clause, `dpid_ops.c`), zhang_hilbert 0.1.1, avx2_mathfun, CPython 3.11.5 `random.py`, pybind11 2.13.6.
 - Vendored: `native/third_party/pybind11`, `native/third_party/onnxruntime` (C API header, `LICENSE`), and the image
   codecs `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff,openexr,imath,libdeflate,zstd,openjph}`
-  (upstream sources, unchanged but for OpenEXRCore's one recorded line and libdeflate's recorded non-final-piece
-  patch, `PROVENANCE.md` with the release's SHA-256 and signature,
+  (upstream sources, unchanged but for OpenEXRCore's one recorded line, libdeflate's recorded non-final-piece patch
+  and OpenJPH's recorded NLT read fix, `PROVENANCE.md` with the release's SHA-256 and signature,
   `chainner/` configuration headers; notices in `chainner_native.LICENSE.txt`).
 - Ported into `chainner_ext.pyd`: `native/third_party/chainner_ext`, `regex` and `regex-syntax` (MIT OR Apache-2.0) and
   `unicode` (the Unicode 15.0.0 tables' licence), each with its licence texts and `PROVENANCE.md`.

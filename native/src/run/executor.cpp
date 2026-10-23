@@ -450,9 +450,9 @@ struct CellRef {
 struct Hooks {
     py::object post, finish, warn, info, run_node, enforce_input, enforce_output, native_failure,
         regular_outputs, generator_outputs, collector, node_cleanups, chain_cleanups, output_bytes,
-        broadcast, items, describe, materialize, collector_iterate, collector_complete, prepare, begin_loop, iteration,
-        end_loop, window, warn_look_ahead_off, native_generator, file_identity, item_identity, regular_output,
-        memo_bytes, loaded, preview_url, aborted_type, waited;
+        broadcast, items, describe, materialize, item_failure, collector_iterate, collector_complete, prepare,
+        begin_loop, iteration, end_loop, window, warn_look_ahead_off, native_generator, file_identity, item_identity,
+        regular_output, memo_bytes, loaded, preview_url, aborted_type, waited;
 };
 
 struct Event {
@@ -807,6 +807,7 @@ private:
     std::optional<Key> item_key(const GeneratorRun &generator, const py::object &token);
     std::vector<Value> fill_item(const GeneratorRun &generator, std::vector<Value> item);
     std::vector<Value> native_item(const GeneratorRun &generator, int64_t token);
+    PythonError item_failure(const GeneratorRun &generator, const PyRef &error);
     py::list python_inputs(const CellRef &ref, const Gathered &inputs);
     void store(const CellRef &ref, Cell &&result);
     void consume(const CellRef &source);
@@ -951,8 +952,8 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
                    bind("enforce_input"), bind("enforce_output"), bind("native_failure"),
                    bind("regular_outputs"), bind("generator_outputs"), bind("collector"), bind("node_cleanups"),
                    bind("chain_cleanups"), bind("output_bytes"), bind("broadcast"), bind("items"), bind("describe"),
-                   bind("materialize"), bind("collector_iterate"), bind("collector_complete"), bind("prepare"),
-                   bind("begin_loop"), bind("iteration"), bind("end_loop"), bind("window"),
+                   bind("materialize"), bind("item_failure"), bind("collector_iterate"), bind("collector_complete"),
+                   bind("prepare"), bind("begin_loop"), bind("iteration"), bind("end_loop"), bind("window"),
                    bind("warn_look_ahead_off"), bind("native_generator"), bind("file_identity"),
                    bind("item_identity"), bind("regular_output"), bind("memo_bytes"), bind("loaded"), bind("preview_url"),
                    bind("aborted_type"), bind("waited")};
@@ -2294,7 +2295,7 @@ void Run::iterate_group(const GroupPlan &group)
                     if (loop_->active && slot >= 1) {
                         Outcome outcome = take_advance(slot, g);
                         if (outcome.kind == Outcome::ended) throw ItemsEnd{};
-                        if (outcome.kind == Outcome::failed) throw PythonError{outcome.error};
+                        if (outcome.kind == Outcome::failed) throw item_failure(generator, outcome.error);
                         std::lock_guard<std::mutex> locked(mutex_);
                         outputs = cell({generator.node, slot}).outputs;
                     } else if (generator.native) {
@@ -2304,10 +2305,14 @@ void Run::iterate_group(const GroupPlan &group)
                             more = generator.native->describe(token);
                         } catch (const std::exception &error) {
                             PythonSection python;
-                            throw PythonError{py_ref(python_exception(escaped(error)))};
+                            throw item_failure(generator, py_ref(python_exception(escaped(error))));
                         }
                         if (!more) throw ItemsEnd{};
-                        outputs = native_item(generator, token);
+                        try {
+                            outputs = native_item(generator, token);
+                        } catch (const PythonError &failure) {
+                            throw item_failure(generator, failure.error);
+                        }
                         suspend();
                         {
                             std::lock_guard<std::mutex> locked(mutex_);
@@ -2342,7 +2347,7 @@ void Run::iterate_group(const GroupPlan &group)
                                     item = key;
                                 }
                             } catch (py::error_already_set &error) {
-                                throw PythonError{current_error(error)};
+                                throw item_failure(generator, current_error(error));
                             }
                         }
                         if (!more) throw ItemsEnd{};
@@ -2700,6 +2705,9 @@ void Run::read_lazy(EngineLazy &lazy)
     try {
         ensure(lazy.source_);
         std::lock_guard<std::mutex> locked(mutex_);
+        // Stopped while the upstream ran (a worker finishes it): the reader, already running, gets no value, as
+        // process.Executor's lazy wait ends with Aborted; else Save Image would still write its file after Stop.
+        if (aborted_) throw StopRun{};
         Cell &from = cell(lazy.source_);
         if (from.state == State::failed) {
             lazy.upstream_ = from.error;
@@ -2972,6 +2980,19 @@ std::vector<Value> Run::native_item(const GeneratorRun &generator, int64_t token
         throw StopRun{};
     }
     return fill_item(generator, std::move(item));
+}
+
+/* A generator's item error as the run reports it, naming the generator (process.loop_node_error); an error the
+ * hook itself raises is reported instead. */
+PythonError Run::item_failure(const GeneratorRun &generator, const PyRef &error)
+{
+    PythonSection python;
+    try {
+        return PythonError{
+            py_ref(hooks_.item_failure(generator.node, py::handle(static_cast<PyObject *>(error.handle.get()))))};
+    } catch (py::error_already_set &again) {
+        return PythonError{current_error(again)};
+    }
 }
 
 /* A cell's memo key (mutex_ held): from its schema, package settings and inputs (a constant's JSON, a source's key

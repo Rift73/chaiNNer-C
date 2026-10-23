@@ -9,7 +9,8 @@ def horizontal_gradient(img: np.ndarray):
     if fill_gradient(img, 0):
         return
     x = np.arange(img.shape[1])
-    p = x / (img.shape[1] - 1)
+    # A one-pixel axis is position 0 (upstream divides 0 by 0).
+    p = x / max(img.shape[1] - 1, 1)
     img[:, :] = p.reshape((1, -1))
 
 
@@ -17,7 +18,8 @@ def vertical_gradient(img: np.ndarray):
     if fill_gradient(img, 1):
         return
     x = np.arange(img.shape[0])
-    p = x / (img.shape[0] - 1)
+    # A one-pixel axis is position 0 (upstream divides 0 by 0).
+    p = x / max(img.shape[0] - 1, 1)
     img[:, :] = p.reshape((-1, 1))
 
 
@@ -33,7 +35,11 @@ def diagonal_gradient(img: np.ndarray, angle: float, width: float):
         [[(r, c) for r in range(img.shape[0]) for c in range(img.shape[1])]]
     )
     projection = (pixels - start).dot(direction)
-    p = np.clip((projection / width).ravel(), 0, 1)
+    if width == 0:
+        # A zero-width gradient is a step at its edge (upstream divides 0 by 0 there).
+        p = (projection >= 0).ravel()
+    else:
+        p = np.clip((projection / width).ravel(), 0, 1)
     img[:] = p.reshape(img.shape)
 
 
@@ -50,7 +56,12 @@ def radial_gradient(
         [(r, c) for r in range(img.shape[0]) for c in range(img.shape[1])]
     )
     distance = np.sqrt(np.sum((pixels - center) ** 2, axis=1))
-    p = (distance - inner_radius) / (outer_radius - inner_radius)
+    if outer_radius == inner_radius:
+        # A zero-width ring is a step at its radius (upstream divides 0 by 0 there).
+        p = distance >= inner_radius
+    else:
+        # Clamped as the diagonal is: upstream extrapolated past both colours.
+        p = np.clip((distance - inner_radius) / (outer_radius - inner_radius), 0, 1)
     img[:] = p.reshape(img.shape)
 
 

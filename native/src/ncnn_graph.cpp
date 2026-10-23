@@ -766,7 +766,16 @@ O write_param(const O &model,const O &types) {
 }
 
 O param_value(const O &layer,int id) {return layer.attr("params")[py::int_(id)].attr("value");}
+// A weight the .param declares longer than what is left of the .bin (or of negative size)
+// is an error found before the read: read(n) allocates all n bytes first (a tiny .bin with a
+// huge declared size committed gigabytes), and a short read gave a shorter weight that the
+// model then kept (a truncated .bin loaded "fine").
 O read_array(const O &stream,const O &bytes,const O &dtype) {
+    O position=stream.attr("tell")(),end=stream.attr("seek")(0,2);stream.attr("seek")(position);
+    O left=binary(end,position,Op::sub);
+    if(compare(bytes,py::int_(0),Py_LT)||compare(bytes,left,Py_GT))
+        raise(PyExc_ValueError,py::str("The NCNN model's .bin file ends before the weights its .param file declares: {} bytes "
+                                       "needed, {} left. The .bin is truncated or belongs to another .param.").attr("format")(bytes,left));
     O raw=stream.attr("read")(bytes);py::buffer buffer=py::reinterpret_borrow<py::buffer>(raw);
     auto data=buffer.request();py::dtype dt=np().attr("dtype")(dtype);
     py::ssize_t length=data.size*data.itemsize;
@@ -832,6 +841,12 @@ O read_model(const O &parameters,const O &weights,const O &types) {
         layer.attr("weight_data")=load_weights(weights,item(parsed,py::int_(0)),layer,types);
         model.attr("layers").attr("append")(layer);
     }
+    // ncnn refuses a .param with fewer layers than it declares; this reader kept the layers
+    // there were, so a truncated .param loaded as part of its model and failed only when run.
+    py::int_ read(py::len(model.attr("layers")));
+    if(compare(read,model.attr("node_count"),Py_LT))
+        raise(PyExc_ValueError,py::str("The NCNN model's .param file ends before the layers it declares: {} declared, {} read. "
+                                       "The .param is truncated.").attr("format")(model.attr("node_count"),read));
     weights.attr("seek")(0,2);model.attr("bin_length")=weights.attr("tell")();return model;
 }
 O get_nf(const O &layer) {
@@ -840,6 +855,13 @@ O get_nf(const O &layer) {
     O count=param_value(layer,6);
     require(py::isinstance<py::int_>(nf)&&py::isinstance<py::int_>(kw)&&py::isinstance<py::int_>(kh)&&py::isinstance<py::int_>(count),py::str("Out nc, kernel width and height, and weight data size must all be ints"));
     return make_tuple({nf,binary(binary(binary(count,nf,Op::floordiv),kw,Op::floordiv),kh,Op::floordiv)});
+}
+// A grouped (depthwise) convolution's weights hold its input channels divided by its groups: upstream read a
+// model that starts with one (SwiftSRGAN) as 1 input channel, so Upscale Image fed it grey and ncnn failed.
+O grouped_inputs(const O &layer,const O &inputs) {
+    O op=layer.attr("op_type");
+    if(!compare(op,py::str("ConvolutionDepthWise"),Py_EQ)&&!compare(op,py::str("DeconvolutionDepthWise"),Py_EQ))return inputs;
+    return binary(inputs,checked(builtin("int"),param_value(layer,7)),Op::mul);
 }
 O broadcast_data(const O &model,const O &types) {
     O scale=py::float_(1.0),inputs=py::int_(0),outputs=py::int_(0),nf=py::int_(0),fp=py::str("fp32"),shuffle=py::int_(1),reorg=py::int_(1),current=py::none();
@@ -857,12 +879,15 @@ O broadcast_data(const O &model,const O &types) {
         }else if(compare(op,py::str("PixelShuffle"),Py_EQ)){
             scale=binary(scale,checked(builtin("int"),param_value(layer,0)),Op::mul);shuffle=binary(shuffle,checked(builtin("int"),param_value(layer,0)),Op::mul);
         }else if(contains(make_tuple({py::str("Convolution"),py::str("Convolution1D"),py::str("ConvolutionDepthWise")}),op)){
-            if(!found){O dims=get_nf(layer);nf=item(dims,py::int_(0));inputs=item(dims,py::int_(1));
+            if(!found){O dims=get_nf(layer);nf=item(dims,py::int_(0));inputs=grouped_inputs(layer,item(dims,py::int_(1)));
                 if(compare(layer.attr("weight_data")[py::str("weight")].attr("quantize_tag"),types.attr("DTYPE_FP16"),Py_EQ)){fp=py::str("fp16");}found=true;}
-            scale=binary(scale,checked(builtin("int"),param_value(layer,3)),Op::div);current=layer;
+            // Only a PixelShuffle after the last convolution folds its channels: upstream divided by every one, so a
+            // model whose last convolution follows its PixelShuffle (SwiftSRGAN, conv-after-upsample designs) read as
+            // 0 output channels.
+            scale=binary(scale,checked(builtin("int"),param_value(layer,3)),Op::div);current=layer;shuffle=py::int_(1);
         }else if(contains(make_tuple({py::str("Deconvolution"),py::str("DeconvolutionDepthWise")}),op)){
-            if(!found){O dims=get_nf(layer);nf=item(dims,py::int_(0));inputs=item(dims,py::int_(1));found=true;}
-            scale=binary(scale,checked(builtin("int"),param_value(layer,3)),Op::mul);current=layer;
+            if(!found){O dims=get_nf(layer);nf=item(dims,py::int_(0));inputs=grouped_inputs(layer,item(dims,py::int_(1)));found=true;}
+            scale=binary(scale,checked(builtin("int"),param_value(layer,3)),Op::mul);current=layer;shuffle=py::int_(1);
         }
         ++i;
     }

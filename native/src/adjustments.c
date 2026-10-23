@@ -4,6 +4,8 @@
 #include "run_kernels.h"
 #include "numpy_clip_f32.h"
 #include <math.h>
+#include <stdint.h>
+#include <string.h>
 
 /* Readable and writable extents must be disjoint or exactly in-place. A
  * shifted alias would otherwise race across independent pixel work ranges. */
@@ -40,8 +42,10 @@ typedef struct adjustment_job {
 /* Element i of channel c becomes x: parameters have already undergone the
    original Python scalar arithmetic, and individual float operations intentionally
    match NumPy's float32 stages. ALPHA is the same pixel's channel 3, read only by
-   ops 5 and 6. A statement macro, so each loop below compiles as written: an
-   inline function costs the interleaved clamp about 7 %. */
+   ops 5 and 6. Op 6 keeps a zero channel of a zero-alpha pixel at 0, where
+   upstream divides 0 by 0 (NaN in every transparent black pixel; 2026-10-23).
+   A statement macro, so each loop below compiles as written: an inline function
+   costs the interleaved clamp about 7 %. */
 #define ADJUST_ELEMENT(job, x, c, a, b, ALPHA)                                    \
     switch ((job)->op) {                                                        \
     case 0: x += a; break;                                                      \
@@ -56,7 +60,7 @@ typedef struct adjustment_job {
         break;                                                                  \
     case 4: x = cn_numpy_clip_f32(x, a, b); break;                              \
     case 5: if (c < 3) x *= (ALPHA); break;                                     \
-    case 6: if (c < 3) x /= (ALPHA); break;                                     \
+    case 6: if (c < 3 && (x != 0.0f || (ALPHA) != 0.0f)) x /= (ALPHA); break;  \
     case 7: x = (x - a) / b; break;                                             \
     }
 
@@ -141,20 +145,48 @@ typedef struct levels_job {
     float black, span, exponent, out_black, out_span;
 } levels_job;
 
+/* A chunk's powf results by the operand's bits, one table per exponent: an image
+ * decoded from 8 bits holds at most 256 values per channel, so most calls repeat,
+ * and powf is a pure function of its operands, so a stored result is the call's.
+ * A slot holds UINT32_MAX (a NaN's bits, never looked up) while empty. */
+typedef struct pow_cache {
+    uint32_t key[256];
+    float value[256];
+} pow_cache;
+
+static void pow_cache_clear(pow_cache caches[2]) {
+    for (size_t slot = 0; slot < 256; ++slot) caches[0].key[slot] = caches[1].key[slot] = UINT32_MAX;
+}
+
+static float cached_powf(pow_cache *cache, float x, float exponent) {
+    uint32_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    size_t slot = (bits * UINT32_C(0x9E3779B1)) >> 24;
+    if (cache->key[slot] == bits && bits != UINT32_MAX) return cache->value[slot];
+    float value = cn_crt.powf(x, exponent);
+    cache->key[slot] = bits;
+    cache->value[slot] = value;
+    return value;
+}
+
 /* mask uses image memory order B,G,R,A. Grayscale always processes its value.
  * Upstream runs an unselected channel through identity levels (black 0, white 1,
- * gamma 1, output 0 to 1), the same float32 steps: its final + 0 turns -0 into +0. */
-static inline float leveled(const levels_job *job, float x, size_t c) {
+ * gamma 1, output 0 to 1), the same float32 steps: its final + 0 turns -0 into +0.
+ * caches[0] serves the levels' exponent, caches[1] the identity's 1. */
+static inline float leveled(const levels_job *job, pow_cache caches[2], float x, size_t c) {
     if (job->channels == 1 || (job->mask & (1u << c))) {
-        x = (x - job->black) / job->span;
+        /* Equal input black and white is a step at that level, 1 at or above it, where upstream divides 0 by 0
+           for a value exactly at it (NaN; 2026-10-23). */
+        if (job->span == 0.0f && x == job->black) x = 1.0f;
+        else x = (x - job->black) / job->span;
         x = cn_numpy_clip_f32(x, 0.0f, 1.0f);
-        x = cn_crt.powf(x, job->exponent);
+        x = cached_powf(&caches[0], x, job->exponent);
         x *= job->out_span;
         x += job->out_black;
     } else {
         x = (x - 0.0f) / 1.0f;
         x = cn_numpy_clip_f32(x, 0.0f, 1.0f);
-        x = cn_crt.powf(x, 1.0f);
+        x = cached_powf(&caches[1], x, 1.0f);
         x *= 1.0f;
         x += 0.0f;
     }
@@ -163,17 +195,21 @@ static inline float leveled(const levels_job *job, float x, size_t c) {
 
 static void levels_range(void *context, size_t begin, size_t end) {
     const levels_job job = *(const levels_job *)context;
-    for (size_t i = begin; i < end; ++i)
-        job.dst[i] = leveled(&job, job.src[i], i % job.channels);
+    pow_cache caches[2];
+    pow_cache_clear(caches);
+    for (size_t i = begin, c = begin % job.channels; i < end; ++i, c = c + 1 == job.channels ? 0 : c + 1)
+        job.dst[i] = leveled(&job, caches, job.src[i], c);
 }
 
 /* Channel stride above 1 (adjustment_job's comment): one channel per run. */
 static void levels_runs(void *context, size_t begin, size_t end) {
     const levels_job job = *(const levels_job *)context;
+    pow_cache caches[2];
+    pow_cache_clear(caches);
     for (size_t i = begin; i < end;) {
         size_t run = i / job.stride, c = run % job.channels;
         size_t stop = (run + 1) * job.stride < end ? (run + 1) * job.stride : end;
-        for (; i < stop; ++i) job.dst[i] = leveled(&job, job.src[i], c);
+        for (; i < stop; ++i) job.dst[i] = leveled(&job, caches, job.src[i], c);
     }
 }
 

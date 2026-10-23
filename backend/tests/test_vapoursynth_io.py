@@ -688,6 +688,47 @@ def test_frames_to_clip_planes(
         assert tuple(int(frame.props[k]) for k in keys) == props
 
 
+# The local gates' FFmpeg (native/tools/bench_oracle.py), newer than the integrated one.
+NEWER_FFMPEG = Path(r"C:\Executables\ffmpeg-8.1-full_build-shared\bin\ffmpeg.exe")
+
+
+def test_frames_to_clip_planes_keep_their_codes_on_a_newer_ffmpeg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """FFmpeg 8.1 converts frames whose colour tags differ from the output's, where the
+    integrated 5.1.2 leaves them: Frames to Clip gives its input the planes' tags too,
+    so the file holds every code of the planes."""
+    if not NEWER_FFMPEG.exists():
+        pytest.skip("the local gates' FFmpeg is not installed")
+    env = FFMpegEnv(str(NEWER_FFMPEG), str(NEWER_FFMPEG.with_name("ffprobe.exe")))
+    monkeypatch.setattr(FFMpegEnv, "get_integrated", staticmethod(lambda _: env))
+    rng = np.random.default_rng(7)
+    frames = [random_planes(rng, (8, 6), (1, 1), False) for _ in range(3)]
+    colour = ColourInfo(
+        Matrix.BT709,
+        Transfer.BT709,
+        Primaries.BT709,
+        Range.LIMITED,
+        ChromaLocation.LEFT,
+        10,
+        (8, 6),
+        (4, 3),
+    )
+    planes = [(None, *values) for _, values in frames]
+    collect(tmp_path, planes, "planes", colour=colour)
+    (video,) = (tmp_path / "vapoursynth" / "chains" / "collect").glob("frames-*.mkv")
+    command = [str(NEWER_FFMPEG), "-v", "error", "-i", str(video), "-f", "rawvideo"]
+    command += ["-pix_fmt", "yuv420p16le", "-"]
+    decoded = subprocess.run(
+        command,
+        capture_output=True,
+        check=True,
+        stdin=subprocess.DEVNULL,
+    ).stdout
+    expected = b"".join(c.astype("<u2").tobytes() for codes, _ in frames for c in codes)
+    assert decoded == expected
+
+
 def test_frames_to_clip_errors(
     tmp_path: Path, integrated_ffmpeg: FFMpegEnv, monkeypatch: pytest.MonkeyPatch
 ):

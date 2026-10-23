@@ -163,9 +163,12 @@ def test_metadata_unchanged(name):
                     elif definition is a:
                         replacements = {
                             "letmaxChannels=max(Input0.channels,": "letmaxChannels=max(getChannels(Input0),",
-                            "_asi=>int(1..)&round(i.width*maxHeight/i.height)": "_asi=>ifgetChannels(i)<maxChannels{maxWidth}"
+                            # 2026-10-23: only a one-pixel strip broadcasts.
+                            "_asi=>int(1..)&round(i.width*maxHeight/i.height)": "_asi=>ifgetChannels(i)<maxChannels"
+                            "andround(i.width*maxHeight/i.height)==1{maxWidth}"
                             "else{int(1..)&round(i.width*maxHeight/i.height)}",
-                            "_asi=>int(1..)&round(i.height*maxWidth/i.width)": "_asi=>ifgetChannels(i)<maxChannels{maxHeight}"
+                            "_asi=>int(1..)&round(i.height*maxWidth/i.width)": "_asi=>ifgetChannels(i)<maxChannels"
+                            "andround(i.height*maxWidth/i.width)==1{maxHeight}"
                             "else{int(1..)&round(i.height*maxWidth/i.width)}",
                         }
                         for old, approved in replacements.items():
@@ -255,6 +258,14 @@ def test_far_reflection_and_offset_crop(shape, border):
             equal(actual, expected, [data])
 
 
+def promoted(img, channels):
+    """img with Stack Images' channel promotion: grey to RGB, then opaque channels."""
+    if img.ndim == 2 or img.shape[2] == 1:
+        img = np.dstack([img.reshape(img.shape[:2])] * 3)
+    ones = np.ones((*img.shape[:2], channels - img.shape[2]), np.float32)
+    return np.dstack([img, ones])
+
+
 @pytest.mark.parametrize("layout", LAYOUTS)
 @pytest.mark.parametrize("orientation", ["HORIZONTAL", "VERTICAL"])
 @pytest.mark.parametrize("channels", [(1, 1), (3, 3), (4, 4), (1, 3, 4), (2, 4), (3,)])
@@ -273,16 +284,19 @@ def test_stack(layout, orientation, channels, different_sizes):
             getattr(reference.Orientation, orientation), *inputs
         )
     except ValueError as error:
-        with pytest.raises(ValueError, match="broadcast"):
-            current.stack_images_node(
-                getattr(current.Orientation, orientation), *inputs
-            )
+        # Upstream allocates a promoted image at the largest height and width and
+        # fails unless a one-pixel strip broadcasts; chaiNNer-C keeps the image's own
+        # size (2026-10-23), as stacking images promoted beforehand does.
         assert "broadcast" in str(error)
-    else:
-        actual = current.stack_images_node(
-            getattr(current.Orientation, orientation), *inputs
+        widest = max(3 if c == 1 else c for c in channels)
+        expected = reference.stack_images_node(
+            getattr(reference.Orientation, orientation),
+            *(promoted(item, widest) for item in inputs),
         )
-        equal(actual, expected, inputs)
+    actual = current.stack_images_node(
+        getattr(current.Orientation, orientation), *inputs
+    )
+    equal(actual, expected, inputs)
     for item, before in zip(inputs, saved, strict=False):
         np.testing.assert_array_equal(item, before)
 

@@ -78,15 +78,19 @@ def add_noise_node(
     amount: float,
     seed: Seed,
 ) -> np.ndarray:
+    # The generators take non-negative seeds only. A negative seed (a Seed input
+    # accepts any integer) goes through Seed.to_u32() as Create Noise's does; the
+    # others keep their exact noise.
+    value = seed.value if seed.value >= 0 else seed.to_u32()
     if noise_type == NoiseType.GAUSSIAN:
-        return gaussian_noise(img, amount / 100.0, noise_color, seed.value)
+        return gaussian_noise(img, amount / 100.0, noise_color, value)
     elif noise_type == NoiseType.UNIFORM:
-        return uniform_noise(img, amount / 100.0, noise_color, seed.value)
+        return uniform_noise(img, amount / 100.0, noise_color, value)
     elif noise_type == NoiseType.SALT_AND_PEPPER:
-        return salt_and_pepper_noise(img, amount / 100.0, noise_color, seed.value)
+        return salt_and_pepper_noise(img, amount / 100.0, noise_color, value)
     elif noise_type == NoiseType.POISSON:
-        return poisson_noise(img, amount / 100.0, noise_color, seed.value)
+        return poisson_noise(img, amount / 100.0, noise_color, value)
     elif noise_type == NoiseType.SPECKLE:
-        return speckle_noise(img, amount / 100.0, noise_color, seed.value)
+        return speckle_noise(img, amount / 100.0, noise_color, value)
     else:
         raise ValueError(f"Unknown noise type: {noise_type}")

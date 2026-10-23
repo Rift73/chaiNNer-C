@@ -14,15 +14,11 @@ from nodes.impl.color_transfer.linear_histogram import linear_histogram_transfer
 from nodes.impl.color_transfer.principal_color import principal_color_transfer
 
 REFERENCE = Path(__file__).with_name("reference_transfer")
+# The frozen upstream transfers with chaiNNer-C's one-pixel covariance (judged.py).
+JUDGED = run_path(str(REFERENCE / "judged.py"))["load"]
 ALGORITHMS = [
-    (
-        linear_histogram_transfer,
-        run_path(str(REFERENCE / "linear_histogram.py"))["linear_histogram_transfer"],
-    ),
-    (
-        principal_color_transfer,
-        run_path(str(REFERENCE / "principal_color.py"))["principal_color_transfer"],
-    ),
+    (linear_histogram_transfer, JUDGED("linear_histogram")),
+    (principal_color_transfer, JUDGED("principal_color")),
 ]
 
 

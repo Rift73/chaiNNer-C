@@ -408,6 +408,34 @@ WEIGHT_LINES = [
 ]
 
 
+# Per WEIGHT_LINES layer with weights: whether they start with a 4-byte tag, and the
+# bytes after it for float32 and float16 weights (a bias is float32 either way).
+DECLARED = {
+    WEIGHT_LINES[0]: (False, 32, 32),
+    WEIGHT_LINES[1]: (True, 4 * 4 + 8, 4 * 2 + 8),
+    WEIGHT_LINES[2]: (True, 2 * 4 + 8, 2 * 2 + 8),
+    WEIGHT_LINES[3]: (True, 4 * 4 + 8, 4 * 2 + 8),
+    WEIGHT_LINES[4]: (True, 4 * 4 + 8, 4 * 2 + 8),
+    WEIGHT_LINES[5]: (False, 8, 8),
+    WEIGHT_LINES[6]: (True, 2 * 4 + 8, 2 * 2 + 8),
+}
+
+
+def short_of_declared(line: str, tag: bytes, length: int) -> bool:
+    """Whether a .bin of `length` bytes ends before the weights the line declares
+    (after a recognized tag, for a tagged layer): an error since chaiNNer-C's
+    2026-10-23 fix, where upstream's reader allocated the declared size, then failed
+    on a shape or kept a shorter weight."""
+    if line not in DECLARED:
+        return False
+    tagged, fp32, fp16 = DECLARED[line]
+    if not tagged:
+        return length < fp32
+    if length < 4 or tag not in (port.DTYPE_FP32, port.DTYPE_FP16):
+        return False  # the tag's own lookup fails first, as upstream's
+    return length - 4 < (fp32 if tag == port.DTYPE_FP32 else fp16)
+
+
 @pytest.mark.parametrize("line", WEIGHT_LINES)
 @pytest.mark.parametrize("tag", [port.DTYPE_FP32, port.DTYPE_FP16, b"FAIL"])
 @pytest.mark.parametrize("length", [0, 1, 3, 4, 6, 8, 12, 16, 24, 32, 64])
@@ -419,12 +447,71 @@ def test_weight_decoder_and_position(line, tag, length):
     sa, sb = io.BytesIO(binary), io.BytesIO(binary)
     ra = outcome(lambda: a.load_layer_weights(sa, oa, la))
     rb = outcome(lambda: b.load_layer_weights(sb, ob, lb))
+    if short_of_declared(line, tag, length):
+        assert rb[0] == "ValueError" and "ends before the weights" in rb[1]
+        return
     assert sa.tell() == sb.tell()
     if ra[0] == "ok":
         assert rb[0] == "ok"
         assert snapshot(ra[1]) == snapshot(rb[1])
     else:
         assert ra == rb
+
+
+@pytest.mark.parametrize(
+    ("line", "full"),
+    [
+        ("PReLU p 1 1 data out 0=8", 32),
+        ("BatchNorm b 1 1 data out 0=4", 64),
+        ("Scale s 1 1 data out 0=4 1=1", 36),
+        ("InnerProduct i 1 1 data out 0=2 1=1 2=4", 28),
+    ],
+)
+def test_a_truncated_bin_is_refused(tmp_path: Path, line: str, full: int):
+    # Each of these loaded "fine" from a .bin 4 bytes short, with a shorter last weight
+    # than its .param declares.
+    param = tmp_path / "m.param"
+    param.write_text(f"7767517\n2 2\nInput data 0 1 data\n{line}\n", encoding="utf-8")
+    weights = tmp_path / "m.bin"
+    weights.write_bytes(np.arange(full // 4, dtype=np.float32).tobytes())
+    port.NcnnModel.load_from_file(str(param), str(weights))
+    weights.write_bytes(np.arange(full // 4, dtype=np.float32).tobytes()[:-4])
+    with pytest.raises(ValueError, match="ends before the weights"):
+        port.NcnnModel.load_from_file(str(param), str(weights))
+
+
+def test_a_truncated_param_is_refused(tmp_path: Path):
+    # It loaded as the layers before the cut (a 4x model read as 1x), which ncnn then
+    # refused when the model ran.
+    layers = [
+        "Input data 0 1 data",
+        "PReLU p 1 1 data mid 0=2",
+        "PReLU q 1 1 mid out 0=2",
+    ]
+    param, weights = tmp_path / "m.param", tmp_path / "m.bin"
+    weights.write_bytes(np.arange(4, dtype=np.float32).tobytes())
+    text = "7767517\n3 3\n" + "\n".join(layers) + "\n"
+    param.write_text(text, encoding="utf-8")
+    assert len(port.NcnnModel.load_from_file(str(param), str(weights)).layers) == 3
+    param.write_text(text[: text.index("PReLU q")], encoding="utf-8")
+    with pytest.raises(
+        ValueError, match="ends before the layers it declares: 3 declared, 2"
+    ):
+        port.NcnnModel.load_from_file(str(param), str(weights))
+
+
+@pytest.mark.parametrize("size", ["1000000000", "-1"])
+def test_a_huge_declared_size_is_refused_before_it_is_read(tmp_path: Path, size: str):
+    # A 16-byte .bin whose .param declares a billion slopes committed 3.8 GB in the
+    # read; a negative count read the rest of the file.
+    param = tmp_path / "m.param"
+    param.write_text(
+        f"7767517\n2 2\nInput data 0 1 data\nPReLU p 1 1 data out 0={size}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "m.bin").write_bytes(bytes(16))
+    with pytest.raises(ValueError, match="ends before the weights"):
+        port.NcnnModel.load_from_file(str(param), str(tmp_path / "m.bin"))
 
 
 @pytest.mark.parametrize(
@@ -828,6 +915,19 @@ def test_parameter_missing_alias_preserves_explicit_cause(monkeypatch):
     assert exception_tree(lambda: a[11]) == exception_tree(lambda: b[11])
 
 
+def fewer_layers_than_declared(text: str) -> bool:
+    """Whether a .param text whose header parses has fewer layer lines than the header
+    declares: an error since chaiNNer-C's 2026-10-23 fix (as in ncnn itself), where
+    upstream's reader kept the layers there were."""
+    lines = text.split("\n")
+    try:
+        counts = lines[1].strip().split(" ")
+        declared, _ = int(counts[0]), int(counts[1])
+    except IndexError, ValueError:
+        return False
+    return len(lines[2:]) - (lines[-1] == "") < declared
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -848,6 +948,9 @@ def test_file_parser_headers_errors_and_ignored_magic(text, tmp_path):
     binary.write_bytes(b"")
     ra = outcome(lambda: reference.NcnnModel.load_from_file(str(param), str(binary)))
     rb = outcome(lambda: port.NcnnModel.load_from_file(str(param), str(binary)))
+    if fewer_layers_than_declared(text):
+        assert rb[0] == "ValueError" and "ends before the layers" in rb[1]
+        return
     if ra[0] == "ok":
         assert rb[0] == "ok"
         assert snapshot(ra[1]) == snapshot(rb[1])
@@ -914,6 +1017,45 @@ def test_model_broadcast_reorg_first_is_2x_rgb():
     assert reference.NcnnModelWrapper.get_broadcast_data(
         build(reference, specification)
     ) == (4, 12, 3, 48, "fp32")
+
+
+def test_model_broadcast_grouped_first_and_convolution_after_the_shuffle():
+    # SwiftSRGAN's layout: a depthwise 3x3 convolution over the 3 input channels, a 1x1
+    # convolution to 12, PixelShuffle 2 to 3 channels at 2x, then a 1x1 convolution
+    # to 3 channels.
+    specification = [
+        spec(
+            "ConvolutionDepthWise",
+            "dw",
+            ("input",),
+            ("d",),
+            {0: 3, 1: 3, 6: 27, 7: 3},
+            weights(np.float32, shape=(3, 1, 3, 3)),
+        ),
+        spec(
+            "Convolution",
+            "pw",
+            ("d",),
+            ("p",),
+            {0: 12, 1: 1, 6: 36},
+            weights(np.float32, shape=(12, 3, 1, 1)),
+        ),
+        spec("PixelShuffle", "ps", ("p",), ("s",), {0: 2}),
+        spec(
+            "Convolution",
+            "last",
+            ("s",),
+            ("output",),
+            {0: 3, 1: 1, 6: 9},
+            weights(np.float32, shape=(3, 3, 1, 1)),
+        ),
+    ]
+    wrapper = port.NcnnModelWrapper(build(port, specification))
+    assert (wrapper.scale, wrapper.in_nc, wrapper.out_nc) == (2, 3, 3)
+    # The frozen source read it as 1 -> 0 channels, which Upscale Image fed grey.
+    assert reference.NcnnModelWrapper.get_broadcast_data(
+        build(reference, specification)
+    )[:3] == (2, 1, 0)
 
 
 def test_model_broadcast_reorg_after_the_first_convolution_is_unchanged():

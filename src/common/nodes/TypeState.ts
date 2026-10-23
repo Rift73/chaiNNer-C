@@ -1,7 +1,7 @@
 import { EvaluationError, NonNeverType, Type, isSameType } from '@chainner/navi';
 import { EdgeData, InputId, IterOutputId, NodeData, OutputId, SchemaId } from '../common-types';
 import { log } from '../log';
-import { PassthroughMap } from '../PassthroughMap';
+import { PassthroughInfo, PassthroughMap } from '../PassthroughMap';
 import {
     FunctionDefinition,
     FunctionInputAssignmentError,
@@ -67,6 +67,33 @@ const edgeStateEqual = (a: EdgeState, b: EdgeState): boolean =>
     mapEqual(a.byTargetHandle, b.byTargetHandle, connectionEqual) &&
     mapEqual(a.byTarget, b.byTarget, (x, y) => arrayEqual(x, y, connectionEqual));
 
+/** An input that a node's evaluation asked for: the type of its edge, else the node's value. */
+interface InputDependency {
+    readonly id: InputId;
+    readonly edgeType: NonNeverType | undefined;
+    readonly value: unknown;
+}
+/**
+ * What a node's function instance was evaluated from. The evaluation is a function of these, so a
+ * node whose dependencies are the same has the same instance.
+ */
+interface Dependencies {
+    readonly definition: FunctionDefinition;
+    readonly passthrough: PassthroughInfo | undefined;
+    // the narrowing maps change in place (useTypeMap): their entries as they were
+    readonly outputNarrowing: readonly (readonly [OutputId, Type])[];
+    readonly sequenceOutputNarrowing: readonly (readonly [IterOutputId, Type])[];
+    /** In the order the evaluation asked for them. */
+    readonly inputs: readonly InputDependency[];
+}
+const entriesOf = <K, V>(map: ReadonlyMap<K, V> | undefined): readonly (readonly [K, V])[] =>
+    map ? [...map] : [];
+const sameEntries = <K, V>(
+    entries: readonly (readonly [K, V])[],
+    map: ReadonlyMap<K, V> | undefined
+): boolean =>
+    entries.length === (map?.size ?? 0) && entries.every(([key, value]) => map?.get(key) === value);
+
 export class TypeState {
     readonly functions: ReadonlyMap<string, FunctionInstance>;
 
@@ -74,17 +101,21 @@ export class TypeState {
 
     readonly edges: EdgeState;
 
+    private readonly dependencies: ReadonlyMap<string, Dependencies>;
+
     private constructor(
         functions: TypeState['functions'],
         evaluationErrors: TypeState['evaluationErrors'],
-        edges: TypeState['edges']
+        edges: TypeState['edges'],
+        dependencies: TypeState['dependencies']
     ) {
         this.functions = functions;
         this.evaluationErrors = evaluationErrors;
         this.edges = edges;
+        this.dependencies = dependencies;
     }
 
-    static readonly empty = new TypeState(EMPTY_MAP, EMPTY_MAP, EdgeState.empty);
+    static readonly empty = new TypeState(EMPTY_MAP, EMPTY_MAP, EdgeState.empty, EMPTY_MAP);
 
     static create(
         nodesMap: ReadonlyMap<string, Node<NodeData>>,
@@ -99,6 +130,7 @@ export class TypeState {
 
         const functions = new Map<string, FunctionInstance>();
         const evaluationErrors = new Map<string, EvaluationError>();
+        const dependencies = new Map<string, Dependencies>();
 
         const getSourceType = (id: string, inputId: InputId): NonNeverType | undefined => {
             const edge = edges.get(id, inputId);
@@ -125,13 +157,49 @@ export class TypeState {
             const passthroughInfo = n.data.isPassthrough
                 ? passthrough?.get(n.data.schemaId)
                 : undefined;
+            const narrowing = outputNarrowing.get(n.id);
+            const sequenceNarrowing = sequenceOutputNarrowing.get(n.id);
 
+            // Incremental: a node evaluated from the same dependencies as before keeps its
+            // instance (and error) without evaluating it again. Asking for its inputs again in
+            // the same order adds its sources to the state in the same order as an evaluation.
+            // Other node definitions (a backend reload) are other dependencies.
+            const previousInstance = previousTypeState?.functions.get(n.id);
+            const before = previousTypeState?.dependencies.get(n.id);
+            if (
+                previousInstance &&
+                before &&
+                before.definition === definition &&
+                before.passthrough === passthroughInfo &&
+                sameEntries(before.outputNarrowing, narrowing) &&
+                sameEntries(before.sequenceOutputNarrowing, sequenceNarrowing) &&
+                before.inputs.every(({ id, edgeType, value }) => {
+                    const current = getSourceType(n.id, id);
+                    return (
+                        current === edgeType &&
+                        (current !== undefined || n.data.inputData[id] === value)
+                    );
+                })
+            ) {
+                const error = previousTypeState?.evaluationErrors.get(n.id);
+                if (error) evaluationErrors.set(n.id, error);
+                dependencies.set(n.id, before);
+                functions.set(n.id, previousInstance);
+                return previousInstance;
+            }
+
+            const inputs: InputDependency[] = [];
             let instance;
             try {
                 instance = FunctionInstance.fromPartialInputs(
                     definition,
                     (id): NonNeverType | undefined => {
                         const edgeSource = getSourceType(n.id, id);
+                        inputs.push({
+                            id,
+                            edgeType: edgeSource,
+                            value: edgeSource ? undefined : n.data.inputData[id],
+                        });
                         if (edgeSource) {
                             return edgeSource;
                         }
@@ -151,8 +219,8 @@ export class TypeState {
 
                         return undefined;
                     },
-                    outputNarrowing.get(n.id),
-                    sequenceOutputNarrowing.get(n.id),
+                    narrowing,
+                    sequenceNarrowing,
                     passthroughInfo
                 );
             } catch (error) {
@@ -164,11 +232,17 @@ export class TypeState {
                 instance = definition.defaultInstance;
             }
 
-            const previousInstance = previousTypeState?.functions.get(n.id);
             if (previousInstance && instanceEqual(previousInstance, instance)) {
                 instance = previousInstance;
             }
 
+            dependencies.set(n.id, {
+                definition,
+                passthrough: passthroughInfo,
+                outputNarrowing: entriesOf(narrowing),
+                sequenceOutputNarrowing: entriesOf(sequenceNarrowing),
+                inputs,
+            });
             functions.set(n.id, instance);
             return instance;
         };
@@ -192,6 +266,6 @@ export class TypeState {
             return previousTypeState;
         }
 
-        return new TypeState(functions, evaluationErrors, edges);
+        return new TypeState(functions, evaluationErrors, edges, dependencies);
     }
 }

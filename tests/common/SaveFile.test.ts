@@ -119,6 +119,47 @@ test("Load Video's Use limit migrates to a frame range", () => {
     expect(parsed.edges).toEqual([]);
 });
 
+test.each([
+    ['not JSON', 'nodes: []', 'it is not JSON'],
+    ['no chain', { content: 5 }, 'it holds no chain'],
+    ['nodes that are no list', { content: { nodes: 5, edges: [] } }, 'it has no list of nodes'],
+    [
+        'edges that are no list',
+        { content: { nodes: [], edges: {} } },
+        'it has no list of connections',
+    ],
+    [
+        'a node without an id',
+        { content: { nodes: [{ data: {} }], edges: [] } },
+        'its node 1 has no',
+    ],
+    [
+        'a node without a node type',
+        { content: { nodes: [{ id: 'a', data: { schemaId: 5 } }], edges: [] } },
+        'its node 1 has no id or node type',
+    ],
+    ['an edge that is null', { content: { nodes: [], edges: [null] } }, 'its connection 1 is'],
+    // an older file: the migrations fail on it
+    ['an old file without nodes', { content: {}, migration: 20 }, 'damaged: '],
+])('A file with %s is a clear error', (_, file, reason) => {
+    const text =
+        typeof file === 'string'
+            ? file
+            : JSON.stringify({ version: '0.25.1', migration: currentMigration, ...file });
+    expect(() => SaveFile.parse(text)).toThrow(
+        'The file is not a chaiNNer chain, or it is damaged: '
+    );
+    expect(() => SaveFile.parse(text)).toThrow(reason);
+});
+
+test('A file without a view opens with the default view', () => {
+    const content = { nodes: [], edges: [], viewport: { x: 'a', y: 0, zoom: 1 } };
+    const parsed = SaveFile.parse(
+        JSON.stringify({ version: '0.25.1', migration: currentMigration, content })
+    );
+    expect(parsed.viewport).toEqual({ x: 0, y: 0, zoom: 1 });
+});
+
 afterEach(() => {
     vi.restoreAllMocks();
 });

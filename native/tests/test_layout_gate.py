@@ -27,9 +27,10 @@ reason); save_dds_texture runs as a texture array with its default DDS format, B
   strides aside (Consult 11 D-17).
 - The producers in ORACLE_EXACT equal the oracle with their strides, on both
   layouts and, where a case has more than one image, on the mixed ones (Consult 11
-  D-16: a mirror returns the strides upstream's np.clip result has). The oracle
-  gives each of them a permuted result somewhere, so the strides are compared
-  where they matter.
+  D-16: a mirror returns the strides upstream's np.clip result has), with
+  Premultiplied Alpha's approved transparent black (2026-10-23) applied by the
+  oracle worker. The oracle gives each of them a permuted result somewhere, so the
+  strides are compared where they matter.
 - Every other node's permuted result equals its C-layout result:
   - its outputs;
   - its broadcast data;

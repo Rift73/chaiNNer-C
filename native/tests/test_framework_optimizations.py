@@ -27,6 +27,7 @@ from ncnn import ncnn
 
 from api import Generator, NodeContext, NodeId, SettingsParser
 from nodes.impl.pytorch import resource_cache as resources
+from nodes.impl.upscale.bounded_tiler import BoundedTiler
 from nodes.impl.upscale.tiler import Tiler
 from nodes.utils.utils import file_identity, get_h_w_c, list_all_files_sorted
 
@@ -63,6 +64,8 @@ def functions(path, **bindings):
         "os": os,
         # A base class the loaded classes name (NCNN's even-tile wrapper).
         "Tiler": Tiler,
+        # The bound the auto splits put on their tiler (upscale/bounded_tiler.py).
+        "BoundedTiler": BoundedTiler,
         **bindings,
     }
     exec(compile(ast.fix_missing_locations(tree), str(path), "exec"), namespace)

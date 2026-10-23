@@ -65,7 +65,9 @@ class FileInput(BaseInput):
     def enforce(self, value: object) -> Path:
         if isinstance(value, str):
             value = Path(value)
-        assert isinstance(value, Path)
+        assert isinstance(value, Path), (
+            f"The input {self.label} takes a file, not a {type(value).__name__}."
+        )
         assert value.exists(), f"File {value} does not exist"
         assert value.is_file(), f"The path {value} is not a file"
         return value
@@ -151,7 +153,9 @@ class DirectoryInput(BaseInput[Path]):
     def enforce(self, value: object) -> Path:
         if isinstance(value, str):
             value = Path(value)
-        assert isinstance(value, Path)
+        assert isinstance(value, Path), (
+            f"The input {self.label} takes a folder, not a {type(value).__name__}."
+        )
 
         if self.must_exist:
             assert value.exists(), f"Directory {value} does not exist"

@@ -16,26 +16,32 @@ from nodes.impl.color_transfer.linear_histogram import linear_histogram_transfer
 from nodes.impl.color_transfer.principal_color import principal_color_transfer
 
 REFERENCE = Path(__file__).with_name("reference_transfer")
-LINEAR = run_path(str(REFERENCE / "linear_histogram.py"))["linear_histogram_transfer"]
-PRINCIPAL = run_path(str(REFERENCE / "principal_color.py"))["principal_color_transfer"]
+# The frozen upstream transfers with chaiNNer-C's one-pixel covariance (judged.py).
+JUDGED = run_path(str(REFERENCE / "judged.py"))["load"]
+LINEAR = JUDGED("linear_histogram")
+PRINCIPAL = JUDGED("principal_color")
 
 
 def original_parameters(principal):
-    name = "principal_color" if principal else "linear_histogram"
-    source = (REFERENCE / (name + ".py")).read_text()
     if principal:
-        source = source.replace(
-            "    transfer = (content - mu_content).dot(transform.T) + mu_reference",
-            "    return mu_content, mu_reference, transform",
+        return JUDGED(
+            "principal_color",
+            [
+                (
+                    "    transfer = (content - mu_content).dot(transform.T) + mu_reference",
+                    "    return mu_content, mu_reference, transform",
+                )
+            ],
         )
-    else:
-        source = source.replace(
-            "    transfer = transfer.dot((content - mu_content).T).T",
-            "    return mu_content, mu_reference, transfer",
-        )
-    namespace = {}
-    exec(compile(source, name, "exec"), namespace)
-    return namespace[name + "_transfer"]
+    return JUDGED(
+        "linear_histogram",
+        [
+            (
+                "    transfer = transfer.dot((content - mu_content).T).T",
+                "    return mu_content, mu_reference, transfer",
+            )
+        ],
+    )
 
 
 PARAMETERS = [original_parameters(False), original_parameters(True)]
@@ -97,6 +103,17 @@ def test_parameters_and_final_float32(principal, dtype, size, seed, kind):
             expected.astype(np.float32).view(np.uint32),
         )
     np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("principal", [False, True])
+def test_single_pixel_takes_the_reference_mean(principal):
+    # One valid pixel raised "LinAlgError: Array must not contain infs or NaNs" (a 1x1
+    # image, or one opaque pixel).
+    image = np.array([[[0.3, 0.6, 0.9]]], np.float32)
+    reference = np.random.default_rng(5).random((4, 5, 3)).astype(np.float32)
+    mask, reference_mask = np.ones((1, 1), bool), np.ones((4, 5), bool)
+    actual = native.transfer(image, reference, mask, reference_mask, principal)
+    np.testing.assert_allclose(actual, [[reference.mean((0, 1))]], atol=1e-6)
 
 
 @pytest.mark.parametrize("principal", [False, True])

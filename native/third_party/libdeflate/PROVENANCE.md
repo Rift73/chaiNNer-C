@@ -8,8 +8,9 @@ project publishes no signature). OpenEXR 3.5.2 bundles this release.
 The files here are copies of the tarball's `libdeflate.h`, `common_defs.h`, the `lib/` sources and headers of
 upstream's static library for x86-64 (`lib/arm` and `lib/riscv` left out), `COPYING` (MIT) and `NEWS.md`, unmodified
 but for the patch below. Built by `native/cmake/codecs.cmake` as `chainner_deflate` (upstream's default LIB_SOURCES;
-its x86 code paths dispatch on CPUID at run time) for OpenEXRCore's ZIP, ZIPS and the DWA and PXR24 stages, and
-linked into `chainner_native.dll` for the default PNG encoder (`native/src/png_encode.c`).
+its x86 code paths dispatch on CPUID at run time) for OpenEXRCore's ZIP, ZIPS and the DWA and PXR24 stages and the
+PNG decoder's direct path (`native/src/codecs/png_codec.c`: inflate and IDAT CRCs), and linked into
+`chainner_native.dll` for the default PNG encoder (`native/src/png_encode.c`).
 
 ## chaiNNer-C patch: non-final pieces (2026-10-21)
 

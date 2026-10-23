@@ -5,8 +5,10 @@ import {
     InputId,
     NodeGroupId,
     NodeSchema,
+    OutputId,
     SchemaId,
 } from '../../../src/common/common-types';
+import { log } from '../../../src/common/log';
 import { delay } from '../../../src/common/util';
 import { RunArguments } from '../../../src/main/arguments';
 import { OwnedBackendProcess } from '../../../src/main/backend/process';
@@ -197,6 +199,93 @@ describe('runChainInCli', () => {
                 data: [expect.objectContaining({ inputs: [{ type: 'value', value: expected }] })],
             })
         );
+    });
+
+    const passSchema: NodeSchema = {
+        ...schema,
+        schemaId: 'test:pass' as SchemaId,
+        hasSideEffects: false,
+        inputs: [
+            {
+                id: 0 as InputId,
+                type: 'number',
+                conversions: [],
+                kind: 'number',
+                label: 'Value',
+                optional: false,
+                hasHandle: true,
+                hint: false,
+                suggest: false,
+                def: 1,
+                precision: 0,
+                controlsStep: 1,
+                hideTrailingZeros: true,
+                labelStyle: 'default',
+            },
+        ],
+        outputs: [
+            {
+                id: 0 as OutputId,
+                type: 'number',
+                label: 'Value',
+                kind: 'generic',
+                hasHandle: true,
+                suggest: false,
+            },
+        ],
+        groupLayout: [0 as InputId],
+    };
+    // node ids are UUIDs, which handles start with
+    const PASS = '00000000-0000-0000-0000-00000000000a';
+    const regularNode = (id: string, schemaId: SchemaId) => ({
+        id,
+        type: 'regularNode',
+        position: { x: 0, y: 0 },
+        data: { id, schemaId, inputData: {} },
+    });
+
+    test.each([
+        [
+            // e.g. a node of a plugin that is not installed: the run would leave it out as
+            // having no effect, and report success without it
+            'a node it does not know',
+            [regularNode('node', schema.schemaId), regularNode(PASS, 'plugin:save' as SchemaId)],
+            [],
+            'There are 1 unknown node(s) in the chain.',
+        ],
+        [
+            // a crafted file: the type evaluation overflowed its stack
+            'a connection that does not fit its nodes',
+            [regularNode('node', schema.schemaId), regularNode(PASS, passSchema.schemaId)],
+            [
+                {
+                    id: 'loop',
+                    source: PASS,
+                    sourceHandle: `${PASS}-0`,
+                    target: PASS,
+                    targetHandle: `${PASS}-0`,
+                },
+            ],
+            'There are 1 connection(s) in the chain that do not fit their nodes',
+        ],
+    ])('refuses a chain with %s', async (_, nodes, edges, message) => {
+        const backendProcess = createOwnedBackendProcess();
+        mockBackendProcess(backendProcess);
+        readSaveFile.mockResolvedValue({
+            nodes,
+            edges,
+            viewport: { x: 0, y: 0, zoom: 1 },
+            tamperedWith: false,
+        });
+        const run = vi.fn().mockResolvedValue({ type: 'success' });
+        mockBackend({ nodes: () => Promise.resolve({ nodes: [schema, passSchema] }), run });
+        const error = vi.spyOn(log, 'error');
+
+        await expect(runChainInCli(args)).rejects.toMatchObject({ exitCode: 1 });
+
+        expect(run).not.toHaveBeenCalled();
+        expect(error).toHaveBeenCalledWith(expect.stringContaining(message));
+        expect(backendProcess.tryKill).toHaveBeenCalledTimes(1);
     });
 
     test('stops the backend when the chain fails', async () => {

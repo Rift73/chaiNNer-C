@@ -46,6 +46,15 @@ def image_stats(img: np.ndarray):
     return a_mean, a_std, b_mean, b_std, c_mean, c_std
 
 
+def spread_ratio(numerator: float, denominator: float) -> float:
+    """A channel's scale factor. A channel without spread scales by 0, onto the
+    reference's mean, as cn_analysis_transfer's does; upstream divides by 0 (a solid
+    image gave NaN or white)."""
+    if denominator == 0:
+        return 0
+    return numerator / denominator
+
+
 def min_max_scale(
     img: np.ndarray,
     valid_indices: np.ndarray,
@@ -178,14 +187,14 @@ def mean_std_transfer(
 
     if reciprocal_scale:
         # Scale by the standard deviations using reciprocal of paper proposed factor
-        channel_a = (a_std_src / a_std_tar) * channel_a
-        channel_b = (b_std_src / b_std_tar) * channel_b
-        channel_c = (c_std_src / c_std_tar) * channel_c
+        channel_a = spread_ratio(a_std_src, a_std_tar) * channel_a
+        channel_b = spread_ratio(b_std_src, b_std_tar) * channel_b
+        channel_c = spread_ratio(c_std_src, c_std_tar) * channel_c
     else:
         # Scale by the standard deviations using paper proposed factor
-        channel_a = (a_std_tar / a_std_src) * channel_a
-        channel_b = (b_std_tar / b_std_src) * channel_b
-        channel_c = (c_std_tar / c_std_src) * channel_c
+        channel_a = spread_ratio(a_std_tar, a_std_src) * channel_a
+        channel_b = spread_ratio(b_std_tar, b_std_src) * channel_b
+        channel_c = spread_ratio(c_std_tar, c_std_src) * channel_c
 
     # Add in the source mean
     channel_a += a_mean_src

@@ -37,6 +37,8 @@ class Orientation(Enum):
         ),
     ],
     outputs=[
+        # An image with fewer channels than the widest broadcasts a one-pixel strip
+        # to the largest width (height); any other keeps its own scaled size.
         ImageOutput(
             image_type="""
                 def getWidth(img: Image | null) = match img { null => 0, _ as i => i.width };
@@ -100,7 +102,8 @@ class Orientation(Enum):
                 def getAdjustedWidth(img: Image | null) {
                     match img {
                         null => 0,
-                        _ as i => if getChannels(i) < maxChannels {
+                        _ as i => if getChannels(i) < maxChannels
+                            and round(i.width * maxHeight / i.height) == 1 {
                             maxWidth
                         } else {
                             int(1..) & round(i.width * maxHeight / i.height)
@@ -110,7 +113,8 @@ class Orientation(Enum):
                 def getAdjustedHeight(img: Image | null) {
                     match img {
                         null => 0,
-                        _ as i => if getChannels(i) < maxChannels {
+                        _ as i => if getChannels(i) < maxChannels
+                            and round(i.height * maxWidth / i.width) == 1 {
                             maxHeight
                         } else {
                             int(1..) & round(i.height * maxWidth / i.width)

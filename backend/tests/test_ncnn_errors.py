@@ -142,8 +142,10 @@ class Net:
         crop: int = 0,
         scale_x: float = 2,
         scale_y: float = 2,
+        most: int = 2**62,
     ):
         self.code = code
+        self.most = most
         self.limit = limit
         self.crop = crop
         self.scale_x = scale_x
@@ -169,6 +171,7 @@ class Extractor:
     def extract(self, name: str) -> tuple[int, np.ndarray | None]:
         _, h, w = self.image.shape
         self.net.sizes.append((w, h))
+        assert len(self.net.sizes) <= self.net.most, "more extracts than expected"
         if w * h > self.net.limit:
             return self.net.code, None
         c = self.net.crop
@@ -178,6 +181,20 @@ class Extractor:
         # A Mat's rows are contiguous (indexing alone would order them otherwise).
         upscaled = np.ascontiguousarray(self.image[:, rows][:, :, columns])
         return 0, upscaled[:, c : out_h - c, c : out_w - c]
+
+
+def test_out_of_memory_at_the_smallest_tiles_ends():
+    # The split retried 16 px tiles for ever before (the stop keeps a failure here
+    # from hanging the tests).
+    net = Net(code=-100, limit=0, most=1000)
+    image = np.zeros((40, 40, 3), np.float32)
+    with pytest.raises(
+        ValueError, match="tiles smaller than 16x16 px, which still failed 20 more"
+    ):
+        ncnn_auto_split(
+            image, cast(ncnn.Net, net), "data", "out", None, None, MaxTileSize()
+        )
+    assert len(net.sizes) < 60
 
 
 def test_out_of_memory_retries_with_smaller_tiles():

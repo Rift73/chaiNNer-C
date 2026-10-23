@@ -404,6 +404,26 @@ def test_damaged_files_raise(tmp_path: Path, corrupt):
         load_image._read_cv(path)
 
 
+def test_damaged_htj2k_tile_raises(tmp_path: Path):
+    """A tile OpenJPH cannot parse (one bit of rgba_half_lj2k.exr's codestream flipped, found by fuzzing): OpenJPH
+    reports it by throwing from inside its own catch handler, OpenEXRCore turns that into an error, and Load Image
+    raises its error for the file (the sanitizer build cannot run this path: tests/fuzz/CMakeLists.txt)."""
+    data = bytearray((EXR / "rgba_half_lj2k.exr").read_bytes())
+    data[4272] ^= 0x10
+    path = tmp_path / "damaged.exr"
+    path.write_bytes(data)
+    with pytest.raises(RuntimeError, match="Error reading image"):
+        load_image._read_cv(path)
+
+
+def test_htj2k_nlt_marker_raises():
+    """damaged_htj2k_nlt.exr (a fuzzer's damaged HTJ2K chunk) has an NLT marker of one-byte points, which OpenJPH
+    0.32.0 read past its table's allocation (third_party/openjph/PROVENANCE.md's patch): the chunk now fails as a
+    damaged one, and Load Image raises its error for the file."""
+    with pytest.raises(RuntimeError, match="Error reading image"):
+        load_image._read_cv(EXR / "damaged_htj2k_nlt.exr")
+
+
 def test_unknown_channels_raise():
     """No R, G, B, numbered, Y or Z channel: OpenCV reads no image, and neither does Load Image."""
     with pytest.raises(RuntimeError, match="Error reading image"):

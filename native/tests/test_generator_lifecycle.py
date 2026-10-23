@@ -573,11 +573,13 @@ def test_yielded_errors_keep_policy_and_constructor_identity(
         monkeypatch, tmp_path, [[0, failure, 2]], fail_fast=fail_fast, collect=True
     )
     with pytest.raises(
-        ValueError if fail_fast else Exception, match="item failed"
+        process.NodeExecutionError if fail_fast else Exception, match="item failed"
     ) as captured:
         run(scenario)
     if fail_fast:
-        assert captured.value is failure
+        # The error names its generator (process.loop_node_error).
+        assert captured.value.__cause__ is failure
+        assert captured.value.node_id == "g0"
     else:
         assert str(captured.value) == "Errors occurred during iteration:\n- item failed"
     assert scenario.created == scenario.supplied == {"g0": 1}
@@ -847,7 +849,7 @@ def test_zipped_generators_keep_the_per_slot_pattern(
         except Exception as caught:
             error = caught
         if fail_fast and error is not None:
-            assert error is LATE
+            assert error.__cause__ is LATE
         observed.append(
             (
                 dict(scenario.advances),
@@ -993,12 +995,20 @@ def test_no_split_generator_yielding_none_fails_at_its_slot_as_today(
         except Exception as caught:
             error = caught
         observed.append(
-            (scenario.outputs, type(error), str(error), stripped(scenario.events))
+            (
+                scenario.outputs,
+                type(error),
+                type(error.__cause__) if error is not None else None,
+                str(error),
+                stripped(scenario.events),
+            )
         )
     assert observed[0] == observed[1]
-    outputs, kind, message, _ = observed[1]
+    outputs, kind, cause, message, _ = observed[1]
     if fail_fast:
-        assert [x[0] for x in outputs] == [0, 1] and kind is AssertionError
+        # The generator's error (process.loop_node_error), caused by the enforce's.
+        assert [x[0] for x in outputs] == [0, 1]
+        assert kind is process.NodeExecutionError and cause is AssertionError
     else:
         assert [x[0] for x in outputs] == [0, 1, 3, 4]
         assert message == "Errors occurred during iteration:\n- "

@@ -255,9 +255,17 @@ UNCHANGED = {
 
 
 @pytest.mark.parametrize("name", UNCHANGED)
-def test_other_files_load_as_opencv_decodes_them(tmp_path: Path, name: str):
+def test_other_files_load_as_opencv_decodes_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+):
     path = tmp_path / name
     UNCHANGED[name](path)
     expected = _read_cv(path)
     assert expected is not None
+    # No decoder fails on the way (an RGB float TIFF logged "Decoder pil-tiff-alpha
+    # failed" on every load), except on a PNG named .tif, which is no TIFF.
+    warnings: list[str] = []
+    monkeypatch.setattr(load_image.logger, "warning", warnings.append)
     assert_identical(load_image_node(path)[0], expected)
+    misnamed = name == "png-named.tif"
+    assert warnings == (["Decoder pil-tiff-alpha failed"] if misnamed else [])

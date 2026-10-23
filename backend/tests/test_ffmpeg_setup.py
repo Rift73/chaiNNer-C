@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import requests
 
 from nodes.impl import ffmpeg
 from nodes.impl.ffmpeg import FFMpegEnv, get_executable_path
@@ -61,7 +62,8 @@ class Download:
 @pytest.fixture
 def download(monkeypatch: pytest.MonkeyPatch) -> Download:
     fake = Download(archive())
-    monkeypatch.setattr(ffmpeg.requests, "get", fake)
+    # The setup imports requests when it downloads.
+    monkeypatch.setattr(requests, "get", fake)
     monkeypatch.setattr(ffmpeg, "_setup_future", None)
     return fake
 

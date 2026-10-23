@@ -12,6 +12,7 @@ import importlib.util
 import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from runpy import run_path
 
 import numpy as np
 import pytest
@@ -94,8 +95,11 @@ for _name in ("horizontal", "vertical", "diagonal", "radial", "conic"):
     setattr(
         ORIGINAL["create_gradient"],
         _name + "_gradient",
-        getattr(reference_gradients, _name + "_gradient"),
+        reference_gradients.judged(_name + "_gradient"),
     )
+ORIGINAL["premultiplied_alpha"].premultiplied_alpha_node = run_path(
+    str(TESTS / "reference_adjustments/judged.py")
+)["premultiplied_alpha"](ORIGINAL["premultiplied_alpha"])
 
 
 def exact(actual, expected):
@@ -139,7 +143,7 @@ def test_every_ui_angle_exact(angle, shape):
         expected = np.empty_like(actual)
         with np.errstate(all="ignore"):
             getattr(gradients, name)(actual, *args)
-            getattr(reference_gradients, name)(expected, *args)
+            reference_gradients.judged(name)(expected, *args)
         exact(actual, expected)
 
 
@@ -151,7 +155,9 @@ def test_radial_intervals_exact(inner, outer, shape):
     expected = np.empty_like(actual)
     with np.errstate(all="ignore"):
         gradients.radial_gradient(actual, inner / 100, outer / 100)
-        reference_gradients.radial_gradient(expected, inner / 100, outer / 100)
+        reference_gradients.judged("radial_gradient")(
+            expected, inner / 100, outer / 100
+        )
     exact(actual, expected)
 
 
@@ -191,7 +197,7 @@ def test_diagonal_unrepresentable_integer_preserves_error():
 def test_gradient_mutation_foreign_buffers(name, args, layout):
     actual = foreign(np.empty((17, 31), np.float32), layout)
     expected = np.empty_like(actual)
-    assert getattr(reference_gradients, name)(expected, *args) is None
+    assert reference_gradients.judged(name)(expected, *args) is None
     assert getattr(gradients, name)(actual, *args) is None
     exact(actual, expected)
 
@@ -373,7 +379,7 @@ def test_large_gradients_concurrent():
         expected = np.empty((257, 263), np.float32)
         actual = foreign(np.empty_like(expected), "unaligned")
         with np.errstate(all="ignore"):
-            getattr(reference_gradients, name)(expected, *args)
+            reference_gradients.judged(name)(expected, *args)
             getattr(gradients, name)(actual, *args)
         exact(actual, expected)
 

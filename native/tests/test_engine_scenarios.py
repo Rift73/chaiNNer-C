@@ -410,6 +410,11 @@ def generator_deferred(trace: list[object]) -> Chain:
     )
 
 
+def generator_attributed_error(trace: list[object]) -> Chain:
+    # VapourSynth's Clip Frames: a frame fails in the statement of another node of the script.
+    return loop_chain(trace, [1, NodeAttributedError("frame 2 failed", "sink"), 3])
+
+
 def node_error_in_loop(trace: list[object]) -> Chain:
     def middle(x):
         if x == 3:
@@ -742,6 +747,7 @@ SCENARIOS = [
     generator_items,
     generator_fail_fast,
     generator_deferred,
+    generator_attributed_error,
     node_error_in_loop,
     node_error_deferred,
     empty_generator,
@@ -770,6 +776,18 @@ def test_scenario_matches(scenario, tmp_path):
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=[s.__name__ for s in SCENARIOS])
 def test_scenario_matches_without_broadcasts(scenario, tmp_path):
     assert_same(scenario, tmp_path, send_broadcast_data=False)
+
+
+def test_generator_item_errors_name_their_node(tmp_path):
+    # A generator's item error is the generator's (process.loop_node_error), and one that names another node is
+    # moved to that node (on_failing_node), on both executors.
+    for scenario, node_id in (
+        (generator_fail_fast, "numbers"),
+        (generator_attributed_error, "sink"),
+    ):
+        engine = assert_same(scenario, tmp_path)
+        assert isinstance(engine.error, process.NodeExecutionError), engine.error
+        assert engine.error.node_id == node_id
 
 
 def test_nested_look_ahead(tmp_path):

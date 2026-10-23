@@ -95,16 +95,19 @@ def text_as_image_node(
     line_count = len(lines)
     with font_lease(font_path, 100) as font:
         w_ref, h_ref = (get_font_size(font, max_line)[0], get_font_size(font, "[§]")[1])
-    font_size = native_text.fit(width, height, w_ref, h_ref, line_count)
-    with font_lease(font_path, font_size) as font:
-        w_text, h_text = get_font_size(font, max_line)
-        h_text *= line_count
-        ink = tuple(to_uint8(np.array(color.value)))
-        pil_image = Image.new("L", (width, height))
-        drawing = ImageDraw.Draw(pil_image)
-        xy = native_text.anchor(
-            width, height, w_text, h_text, list(Anchor).index(position)
-        )
-        native_text.draw_lines(drawing, xy, lines, font, alignment.value)
+    ink = tuple(to_uint8(np.array(color.value)))
+    pil_image = Image.new("L", (width, height))
+    # Text without width (empty, or blank lines only) draws nothing: a fully transparent
+    # image, where upstream divides by its zero width.
+    if w_ref > 0:
+        font_size = native_text.fit(width, height, w_ref, h_ref, line_count)
+        with font_lease(font_path, font_size) as font:
+            w_text, h_text = get_font_size(font, max_line)
+            h_text *= line_count
+            drawing = ImageDraw.Draw(pil_image)
+            xy = native_text.anchor(
+                width, height, w_text, h_text, list(Anchor).index(position)
+            )
+            native_text.draw_lines(drawing, xy, lines, font, alignment.value)
     img = colorize_text(np.array(pil_image), ink)
     return img

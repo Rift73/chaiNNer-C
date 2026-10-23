@@ -480,9 +480,11 @@ bool writer_open(const py::dict&g,const O&self,const O&width,const O&height,bool
             fmt("The \"{}\" encoder requires an even-number frame resolution.",self.attr("encoder").attr("value")));
     try {
         // Frames are piped as the writer's pipe_format (save_video.py): gbrp16le RGB or the
-        // planes' own format.
-        O stream=global(g,"ffmpeg").attr("input")("pipe:",py::arg("format")="rawvideo",py::arg("pix_fmt")=self.attr("pipe_format"),
-            py::arg("s")=py::str("{}x{}").attr("format")(width,height),py::arg("r")=self.attr("fps"),py::arg("loglevel")="error");
+        // planes' own format, with the planes' colour tags (Writer.input_options).
+        py::dict input=dict({{"format",py::str("rawvideo")},{"pix_fmt",self.attr("pipe_format")},
+            {"s",py::str("{}x{}").attr("format")(width,height)},{"r",self.attr("fps")},{"loglevel",py::str("error")}});
+        for(auto item:py::dict(self.attr("input_options")))input[item.first]=item.second;
+        O stream=call(global(g,"ffmpeg").attr("input"),py::make_tuple("pipe:"),input);
         O output=stream.attr("output");
         py::dict params=keyword_mapping(output,self.attr("output_params"));
         if(params.contains("loglevel")) {

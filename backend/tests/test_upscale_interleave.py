@@ -252,9 +252,7 @@ def old_cast(planes: np.ndarray, **_: object) -> np.ndarray:
     return cast_numpy(planes.transpose(1, 2, 0), np.dtype(np.float32))
 
 
-@pytest.mark.parametrize(
-    ("channels_in", "channels_out"), [(1, 1), (3, 3), (4, 4), (3, 4)]
-)
+@pytest.mark.parametrize(("channels_in", "channels_out"), [(1, 1), (3, 3), (4, 4)])
 @pytest.mark.parametrize("tile_size", [NO_TILING, TileSize(16)])
 @pytest.mark.parametrize("separate_alpha", [False, True])
 def test_ncnn_node_planes_interleaved_as_converted(
@@ -265,7 +263,6 @@ def test_ncnn_node_planes_interleaved_as_converted(
     tile_size: TileSize,
     separate_alpha: bool,
 ):
-    # A 3 -> 4 model keeps the node's cvtColor, which drops the fourth channel.
     model = ncnn_model(tmp_path, channels_in, channels_out)
     net = create_ncnn_net(model, SETTINGS)
     monkeypatch.setattr(ncnn_node, "get_ncnn_net", lambda *_, **__: net)
@@ -316,3 +313,53 @@ def test_ncnn_node_planes_interleaved_as_converted(
             new.shape == old.shape
             and new.tobytes() == np.ascontiguousarray(old).tobytes()
         ), (get_h_w_c(img), channels_in, channels_out)
+
+
+@pytest.mark.parametrize(
+    ("channels_in", "channels_out"), [(1, 3), (3, 1), (3, 4), (4, 3)]
+)
+@pytest.mark.parametrize("tile_size", [NO_TILING, TileSize(16)])
+def test_ncnn_node_returns_the_models_channels_in_bgr_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    channels_in: int,
+    channels_out: int,
+    tile_size: TileSize,
+):
+    # A model whose input and output channels differ (convenient_upscale hands it the
+    # image with its input channels) returns its output channels, a colour result in
+    # BGR(A) order as PyTorch's and ONNX's nodes return it: before, a 1 -> 3 model's
+    # colours came back red and blue swapped, a 3 -> 1 model's grey as three
+    # channels, and a 3 -> 4 model's alpha was dropped.
+    model = ncnn_model(tmp_path, channels_in, channels_out)
+    net = create_ncnn_net(model, SETTINGS)
+    monkeypatch.setattr(ncnn_node, "get_ncnn_net", lambda *_, **__: net)
+    monkeypatch.setattr(ncnn_node, "get_settings", lambda _: SETTINGS)
+    progress = Progress.noop_progress()
+    context = cast(
+        NodeContext,
+        SimpleNamespace(
+            add_cleanup=lambda *_, **__: None,
+            check_aborted=progress.check_aborted,
+            set_progress=progress.set_progress,
+        ),
+    )
+    # Values NCNN's 8-bit input keeps (to a few ulps: its input scales by 1 / 255)
+    rng = np.random.default_rng(23)
+    img = rng.integers(0, 256, (20, 28, channels_in)).astype(np.float32) / 255
+    if channels_in == 1:
+        img = img[:, :, 0]
+    out = ncnn_node.upscale_image_node(context, img, model, tile_size, 0, False)
+
+    # The model sees RGB(A) and its identity convolution keeps the shared channels
+    planes = img.reshape(20, 28, channels_in)
+    if channels_in in (3, 4):
+        planes = planes[:, :, [2, 1, 0, 3][:channels_in]]
+    result = np.zeros((20, 28, channels_out), np.float32)
+    shared = min(channels_in, channels_out)
+    result[:, :, :shared] = planes[:, :, :shared]
+    if channels_out in (3, 4):
+        result = result[:, :, [2, 1, 0, 3][:channels_out]]
+    expected = result.repeat(2, axis=0).repeat(2, axis=1)
+    assert out.shape[:2] == (40, 56) and get_h_w_c(out)[2] == channels_out
+    np.testing.assert_allclose(out.reshape(expected.shape), expected, rtol=0, atol=1e-6)
