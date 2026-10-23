@@ -106,7 +106,7 @@ class PrivateStation:
             function = getattr(library, name)
             function.argtypes, function.restype = arguments, result
         self.station = self.desktop = None
-        self.name = "CodexChaiNNerClipboard-" + uuid.uuid4().hex
+        self.name = "IsolatedChaiNNerClipboard-" + uuid.uuid4().hex
         self.old_station = self.user.GetProcessWindowStation()
         self.old_desktop = self.user.GetThreadDesktop(self.kernel.GetCurrentThreadId())
         self.original_name = self.object_name(self.old_station)

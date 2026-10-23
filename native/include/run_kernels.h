@@ -200,6 +200,10 @@ CN_RUN_KERNEL cn_status cn_lens_power(const float *src, float *out, size_t count
 CN_RUN_KERNEL cn_status cn_lens_compose(const float *f1, const float *f2,
     const float *f3, const float *f4, float *out, size_t count,
     float a, float b, int accumulate);
+/* linear_light_ops.c: transfer is linear_light.h's CN_LIGHT_*; encode 0 linearizes, 1 encodes; skip_alpha leaves the
+ * last channel as is (two or four channels). An empty image is a no-op. */
+CN_RUN_KERNEL cn_status cn_linear_light(float *image, size_t height, size_t width, size_t channels,
+    int transfer, int encode, int skip_alpha);
 /* matting_complete_ops.c */
 CN_RUN_KERNEL cn_status cn_matting_erode_mask_u8(const uint8_t *source, uint8_t *out,
     size_t height, size_t width, size_t radius);

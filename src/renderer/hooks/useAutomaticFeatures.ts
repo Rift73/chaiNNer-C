@@ -24,6 +24,10 @@ export const useAutomaticFeatures = (id: string, schemaId: SchemaId) => {
 
     return {
         isAutomatic: hasSideEffects && !hasIncomingConnections && !hasStaticValueInput,
+        // A node with side effects runs with every chain, connected or not, so the types its last run
+        // reported (while its inputs are unchanged) are its outputs' types: an analysis such as Get
+        // Native Resolution shows its results this way.
+        appliesRunTypes: hasSideEffects && !hasStaticValueInput,
         hasIncomingConnections,
     };
 };

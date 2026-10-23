@@ -31,6 +31,7 @@ import { BrowserWindowWithSafeIpc, ipcMain } from '../safeIpc';
 import { SaveData, SaveFile, openSaveFile } from '../SaveFile';
 import { SettingsWriter } from '../setting-storage';
 import { UiCache, getUiCacheFile } from '../uiCache';
+import { showOpenDialog } from './dialogs';
 import { MenuData, setMainMenu } from './menu';
 
 const version = app.getVersion() as Version;
@@ -125,14 +126,14 @@ const registerEventHandlerPreSetup = (
 
     // dialogs
     ipcMain.handle('dir-select', (event, dirPath) =>
-        dialog.showOpenDialog(mainWindow, {
+        showOpenDialog(mainWindow, {
             defaultPath: dirPath,
             properties: ['openDirectory', 'createDirectory'],
         })
     );
 
     ipcMain.handle('file-select', (event, filters, allowMultiple = false, dirPath = undefined) =>
-        dialog.showOpenDialog(mainWindow, {
+        showOpenDialog(mainWindow, {
             filters: [...filters, { name: 'All Files', extensions: ['*'] }],
             defaultPath: dirPath,
             properties: allowMultiple ? ['openFile', 'multiSelections'] : ['openFile'],
@@ -181,7 +182,11 @@ const registerEventHandlerPreSetup = (
     });
 
     ipcMain.handle('open-url', (event, url) => shell.openExternal(url));
-    ipcMain.handle('open-save-file', async (event, p) => openSaveFile(p));
+    ipcMain.handle('open-save-file', async (event, p) => {
+        // Renderer-to-renderer messages (`ipcRenderer.sendTo`) were removed in Electron 28, so the
+        // main process delivers the result to the window.
+        mainWindow.webContents.send('file-open', await openSaveFile(p));
+    });
 
     // Set the progress bar on the taskbar. 0-1 = progress, > 1 = indeterminate, -1 = none
     ipcMain.on('set-progress-bar', (event, progress) => {

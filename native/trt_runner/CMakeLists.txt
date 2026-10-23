@@ -2,7 +2,7 @@
 # linked into _chainner_trt.pyd (the TensorRT Upscale node's binding) and, when
 # CHAINNER_C_VAPOURSYNTH_INCLUDE names VapourSynth's API 4 headers, chainner_trt_vs.dll (a
 # VapourSynth plugin), both beside nodes/impl/tensorrt. Configured with vosr2_qkv.dll, from the
-# same TensorRT and CUDA roots. kernels.cu is compiled by nvcc as qkv.cu is (the owner's exception
+# same TensorRT and CUDA roots. kernels.cu is compiled by nvcc as qkv.cu is (the exception
 # of 2026-10-13), with the same exact device math, for every GPU generation TensorRT 11 builds
 # for plus compute_120 PTX; the rest uses clang-cl with every option of the parent directory.
 set(chainner_c_nvinfer_plugin_library

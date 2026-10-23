@@ -724,7 +724,7 @@ class VideoLoader:
         if settings.mode is not VideoMode.PLANES:
             chosen = any(choice.value != "auto" for choice in settings.choices)
             if settings.float_rgb or chosen:
-                formats.append(self._rgb_format(metadata, layout, colour, settings))
+                formats.append(self.rgb_format(metadata, layout, colour, settings))
             else:
                 formats.append(self.legacy_format())
         if settings.mode is not VideoMode.RGB:
@@ -771,7 +771,7 @@ class VideoLoader:
         return formats
 
     @staticmethod
-    def _rgb_format(
+    def rgb_format(
         metadata: VideoMetadata,
         layout: PixelLayout,
         colour: ColourInfo,
@@ -833,7 +833,7 @@ class VideoLoader:
         stream: dict[str, object] = vars(self)["video_stream"]
         layout = pixel_layout(str(stream.get("pix_fmt") or ""))
         rgb = ReadSettings(VideoMode.RGB, True, settings.choices)
-        return self._rgb_format(metadata, layout, self.colour, rgb)
+        return self.rgb_format(metadata, layout, self.colour, rgb)
 
     def get_audio_stream(self, duration: float | None = None, start: float = 0.0):
         """The file's audio streams, for Save Video's mux; with a `duration` (seconds),

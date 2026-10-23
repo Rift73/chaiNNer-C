@@ -74,6 +74,24 @@ inline void nonempty(const Image &image)
         throw NodeError("ValueError", "Expected a nonempty two- or three-dimensional image");
 }
 
+/* linear_light.linearize of a nonempty image: a copy whose colour channels went through the LightTransfer value's
+ * curve to linear light (alpha, a fourth channel, as is). */
+inline Image linearize(const Image &image, int64_t transfer)
+{
+    MutableImage linear = MutableImage::allocate(image.height, image.width, image.channels);
+    std::copy_n(image.data, image.values(), linear.data());
+    check(cn_linear_light(linear.data(), size_t(image.height), size_t(image.width), size_t(image.channels),
+                          int(transfer), 0, image.channels == 4));
+    return std::move(linear).publish();
+}
+
+/* linear_light.encode_inplace of an owned linear-light result. */
+inline void encode_light(MutableImage &image, int64_t transfer)
+{
+    check(cn_linear_light(image.data(), size_t(image.height()), size_t(image.width()), size_t(image.channels()),
+                          int(transfer), 1, image.channels() == 4));
+}
+
 /* The image's channels in the given order as a new image (NumPy's img[:, :, i] or img[:, :, a:b] slices, copied as
  * the output enforce copies them); an empty image gives an empty result of the same size. */
 inline Image select_channels(const Image &image, std::initializer_list<int> channels)

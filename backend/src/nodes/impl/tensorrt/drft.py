@@ -112,7 +112,7 @@ def build_engine(
     width) profile (see check_profile), referencing the plugin library's plugins,
     built by chaiNNer-C's TensorRT in drft_engine_worker.py (a child process: the
     library's plugins register there, never in this process). A workspace of 0 is
-    TensorRT's default; the defaults are Codex's build policy (TensorRT's workspace,
+    TensorRT's default; the defaults are the reference build policy (TensorRT's workspace,
     level 3, TF32 off, sparse weights, no tiling optimization); `tiling_optimization`
     is none, fast, moderate or full."""
     library = plugin_library()

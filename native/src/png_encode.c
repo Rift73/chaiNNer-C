@@ -1,4 +1,4 @@
-/* chaiNNer-C's default PNG encoder (owner decision 2026-10-21; GPL-3.0): every row filtered by libpng's MinSum rule
+/* chaiNNer-C's default PNG encoder (decision 2026-10-21; GPL-3.0): every row filtered by libpng's MinSum rule
  * (png_encode_shared.h), the rows cut into bands that libdeflate 1.26 (vendored, third_party/libdeflate) compresses at
  * level 6 in parallel on the native pool, each band's DEFLATE data a piece of one zlib stream: a band ends with an
  * empty non-final stored block (the vendored libdeflate_deflate_compress_nonfinal patch), the last band ends the

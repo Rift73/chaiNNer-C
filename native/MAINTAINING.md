@@ -73,12 +73,12 @@ Checklists for the changes that touch the exactness contract, the build or the p
 5. Check reproducibility (two checkouts give the same hashes), then update the `native/README.md` hash table and the
    prerequisites in both READMEs.
 6. VOSR's TensorRT plugin `vosr2_qkv.dll` is the one exception: nvcc compiles `src/vosr2/qkv.cu` with the pinned
-   toolset's `cl.exe` as its host (owner-approved); the TensorRT (11) and CUDA (13) majors are pinned in
+   toolset's `cl.exe` as its host (approved); the TensorRT (11) and CUDA (13) majors are pinned in
    `CMakeLists.txt`. After a change there (an SDK bump, a GPU architecture, an nvcc flag), build it twice from clean
    directories (same hash), load it (`import tensorrt`, then `ctypes.CDLL`), record its hash and SDK versions in the
    README table and run `native/tests/test_vosr2_trt_rewrite.py`. A new DLL rebuilds the VOSR TensorRT engines once.
    The same exception covers legacy DRFT's plugin library `drft_trt_plugins.dll`: nvcc compiles the four `.cu` files
-   of `src/drft` (Codex's kernels and plugin classes) the same way, with nvcc's default device math (Codex's
+   of `src/drft` (the kernels and plugin classes) the same way, with nvcc's default device math (the
    numerics) and host warnings not fatal (README); the same checks apply, with `native/tests/test_drft_plugins.py`.
    Engines reference its plugins without carrying the DLL (an engine carrying it registers it at every load, and
    TensorRT refuses a second registration in a process); `drft.load_plugins` registers it once per process.
@@ -137,7 +137,7 @@ packaging (section 4, item 6; README Build). VOSR's modules, engine caches, host
    `verified_no_op` (README Package).
 2. Bundle checks (section 5, step 3), `make_oracle.py`, the gates of section 10.
 3. Release zip from source: `npm ci`, the native build (Forge copies `backend/src` with the binaries), then
-   `npm run make`; `forge.config.js` adds the `portable` marker to the zip and deletes `.pyc` files first. Its top
+   `npm run make`, both under Node 24 LTS (`.nvmrc`, `engines.node`); `forge.config.js` adds the `portable` marker to the zip and deletes `.pyc` files first. Its top
    maps cross-zip's `fs.rmdir(..., { recursive })`, which Node 25 removed, to `fs.rm`: keep it while maker-zip uses
    cross-zip.
 4. The `native/README.md` hash table must match the shipped binaries.

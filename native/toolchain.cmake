@@ -1,4 +1,4 @@
-# chaiNNer-C's one toolchain (owner directive 2026-10-06), pinned: clang-cl, lld-link and
+# chaiNNer-C's one toolchain (decision 2026-10-06), pinned: clang-cl, lld-link and
 # llvm-lib of LLVM 23.1.2, with the Build Tools' MSVC 14.44.35207 libraries and the Windows
 # SDK 10.0.26100.0 as clang-cl's headers and libraries (no Developer environment needed).
 # Build.ps1 passes this file. CMakeLists.txt refuses any other clang-cl, and this file any other

@@ -1,9 +1,9 @@
 """Legacy DRFT's TensorRT ONNX (drft.py): a deep copy of the model whose modules are
 swapped for stand-ins that compute the original maths and export as chaiNNer-C's DRFT
-TensorRT plugins (native/src/drft, Codex's LegacyBarrierV1 set; node attributes and
-layouts as in Codex's prepared graph), for every input size from MIN_SIZE up. FP16
+TensorRT plugins (native/src/drft, the LegacyBarrierV1 set; node attributes and
+layouts as in the prepared graph), for every input size from MIN_SIZE up. FP16
 with the attention in BF16 (_attention; the plugins take BF16 too: ONNX files exported in
-BF16 before still build), input and output FP32, opset 20. FP16, not Codex's BF16: on photos a DRFT-L x4 in BF16 was
+BF16 before still build), input and output FP32, opset 20. FP16, not the BF16: on photos a DRFT-L x4 in BF16 was
 25.9-35.7 dB against PyTorch FP32 (PyTorch's own BF16 alike), in FP16 38.7-58.6 dB."""
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ def is_legacy_drft(model: ImageModelDescriptor) -> bool:
 
 def min_size(window_size: int) -> int:
     """The smallest input side: two windows, so the shifted blocks' interior windows
-    exist (and at least Codex's 64)."""
+    exist (and at least the 64)."""
     return max(64, 2 * window_size)
 
 
@@ -91,7 +91,7 @@ class _WindowNeuralBias(torch.autograd.Function):
 
     @staticmethod
     def symbolic(g: Any, bias_q: Any, bias_k: Any) -> Any:
-        # Codex's node carries no attributes.
+        # the node carries no attributes.
         return g.op("DrftWindowNeuralBias_TRT", bias_q, bias_k)
 
 
@@ -273,7 +273,7 @@ Masks = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 class _ACTBlock(nn.Module):
     """ACTBlock with one neural bias per block and the shifted windows split into
     interior, right column, bottom row and corner (each with its constant region mask),
-    so every input size exports (Codex's dynamic route, at the model's window and
+    so every input size exports (the dynamic route, at the model's window and
     shift)."""
 
     def __init__(self, block: legacy.ACTBlock, barrier: bool) -> None:
@@ -500,7 +500,7 @@ def _region_masks(window: int) -> list[torch.Tensor]:
 
 class Deployment(nn.Module):
     """A legacy DRFT (folded, swapped in place) for TensorRT export: the original
-    forward with the stand-ins, identity barriers at Codex's sites, and the precision
+    forward with the stand-ins, identity barriers at the sites, and the precision
     casts (body: `body`; upsampler and last convolution: `tail`)."""
 
     def __init__(

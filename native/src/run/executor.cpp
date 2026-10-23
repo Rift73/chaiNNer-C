@@ -3352,7 +3352,7 @@ void Run::submit_broadcast(int node, const std::vector<Value> &outputs)
 {
     const NodePlan &plan = nodes_[size_t(node)];
     if (!send_broadcast_data_ || plan.outputs.empty()) return;
-    // A /run's LargeImage previews of an item (an iterated node's): rate-limited (hunt-misc 6, Fable R4).
+    // A /run's LargeImage previews of an item (an iterated node's): rate-limited (hunt-misc 6, ruling R4).
     bool limited = mode_ == "run" && preview_interval_ > Clock::duration::zero() && iterated_[size_t(node)] &&
                    std::any_of(plan.outputs.begin(), plan.outputs.end(), [](const OutputPlan &o) { return o.large; });
     {

@@ -3,3 +3,4 @@ backend/src/** -text
 native/tests/reference_*/** -text
 native/tests/oracle/** -text
 native/tests/chainner_ext/** -text
+native/third_party/vernier/** -text

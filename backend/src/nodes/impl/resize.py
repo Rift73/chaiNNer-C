@@ -6,6 +6,7 @@ import numpy as np
 
 from ..utils.utils import get_h_w_c
 from . import native_resample
+from .linear_light import LightTransfer, encode_inplace, linearize
 
 
 class ResizeFilter(Enum):
@@ -33,9 +34,13 @@ def resize(
     separate_alpha: bool = False,
     gamma_correction: bool = False,
     dpid_lambda: float = 1.0,
+    light: LightTransfer | None = None,
 ) -> np.ndarray:
     """dpid_lambda is DPID's detail weight (0: an area average); other filters
-    ignore it."""
+    ignore it. light resizes in linear light with that curve (Nearest Neighbor mixes
+    no pixels and ignores it): the colour channels are linearized before premultiplying
+    and encoded after un-premultiplying (alpha as is), the curve signed and unclipped.
+    Linear Light never uses gamma_correction, the kernels' own correction."""
     h, w, c = get_h_w_c(img)
     new_w, new_h = out_dims
 
@@ -71,6 +76,9 @@ def resize(
             )
         return native_resample.nearest(img, out_dims)
 
+    if light is not None:
+        img = linearize(img, light)
+
     if not separate_alpha and c == 4:
         # pre-multiply alpha
         if img.dtype == np.float32:
@@ -92,5 +100,8 @@ def resize(
     if not separate_alpha and c == 4 and img.size:
         # undo pre-multiply alpha
         img = native_resample.finish_alpha_inplace(img)
+
+    if light is not None:
+        img = encode_inplace(img, light)
 
     return img

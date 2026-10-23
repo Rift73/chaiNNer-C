@@ -10,3 +10,8 @@ resize_group.order = [
     "chainner:image:resize_to_side",
     "chainner:image:descale",
 ]
+utility_group.order = [
+    "chainner:image:get_native_resolution",
+    "chainner:image:get_bbox",
+    "chainner:image:get_dims",
+]

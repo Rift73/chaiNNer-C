@@ -82,10 +82,10 @@ export const NodeOutputs = memo(({ nodeState, animated }: NodeOutputProps) => {
     const currentTypes = stale ? undefined : outputDataEntry?.types;
     const currentSequenceTypes = stale ? undefined : outputDataEntry?.sequenceTypes;
 
-    const { isAutomatic } = useAutomaticFeatures(id, schemaId);
+    const { appliesRunTypes } = useAutomaticFeatures(id, schemaId);
 
     useEffect(() => {
-        if (isAutomatic) {
+        if (appliesRunTypes) {
             for (const output of schema.outputs) {
                 const type = evalExpression(currentTypes?.[output.id]);
                 setManualOutputType(id, output.id, type);
@@ -102,7 +102,7 @@ export const NodeOutputs = memo(({ nodeState, animated }: NodeOutputProps) => {
         schema,
         setManualOutputType,
         setManualSequenceOutputType,
-        isAutomatic,
+        appliesRunTypes,
     ]);
 
     const isCollapsed = useIsCollapsedNode();

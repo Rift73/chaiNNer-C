@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(chainner_native VERSION 1.0.0 LANGUAGES C CXX)
 
-# The one toolchain (owner directive 2026-10-06): clang-cl of LLVM 23.1.2 with lld-link and
+# The one toolchain (decision 2026-10-06): clang-cl of LLVM 23.1.2 with lld-link and
 # llvm-lib under Ninja, against the Build Tools' MSVC libraries and the Windows SDK, all
 # pinned by Build.ps1, which configures every build directory.
 foreach(chainner_c_language C CXX)
@@ -30,7 +30,7 @@ add_compile_options(-flto=thin /fp:strict /clang:-fdenormal-fp-math=dynamic /Bre
 add_link_options(/Brepro)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 # A local-machine option, never for releases: -march=<value> on every target (for example
-# icelake-server on the owner's PC). The binaries then run only on CPUs with that ISA.
+# icelake-server on the development PC). The binaries then run only on CPUs with that ISA.
 set(CHAINNER_C_MARCH "" CACHE STRING
     "Local builds only, never releases: -march=<value> for every target (default: none, any x86-64 CPU)")
 if(CHAINNER_C_MARCH)
@@ -132,7 +132,8 @@ add_library(chainner_native SHARED
     src/canny_ops.cpp src/inpaint_ops.cpp src/pixel_art_ops.cpp
     src/bilateral_ops.c src/denoise_ops.cpp src/onnx_runtime.cpp src/framework_image_ops.cpp src/framework_shared_ops.cpp
     src/clipboard_ops.c src/image_setup_ops.c src/scratch.c src/planar_ops.c src/descale_ops.c
-    src/yuv_planes_ops.c src/plane_resample_ops.c src/dpid_ops.c src/png_encode.c
+    src/yuv_planes_ops.c src/plane_resample_ops.c src/dpid_ops.c src/png_encode.c src/linear_light_ops.c
+    src/getnative_ops.cpp
     # ISA units (SP4 spec 4.3): export-free, one file per kernel family and level, compiled
     # for that level only and reached through a C entry's ISA dispatch, which runs a unit
     # only when the CPU has its level (src/isa.c) or CHAINNER_C_ISA caps it lower.
@@ -141,7 +142,7 @@ add_library(chainner_native SHARED
     src/resample_avx2.c src/spectral_avx2.c src/color_avx2.c src/planar_avx2.c
     src/yuv_planes_avx2.c src/plane_resample_avx2.c src/png_encode_avx2.c src/alpha_gamma_avx2.c
     src/neighborhood_avx2.c src/statistics_avx2.c src/unsharp_avx2.c
-    src/wavelet_avx2.c src/cast_half_avx2.c src/separable_avx512.c src/convolution_avx512.c)
+    src/wavelet_avx2.c src/cast_half_avx2.c src/linear_light_avx2.c src/separable_avx512.c src/convolution_avx512.c)
 # The levels' instruction sets, exactly what src/isa.c checks: AVX2 is AVX2, FMA, BMI1 and
 # BMI2; AVX-512 adds F, DQ, CD, BW and VL.
 set(chainner_c_avx2_options /clang:-mavx2 /clang:-mfma /clang:-mbmi /clang:-mbmi2)
@@ -150,6 +151,7 @@ set_source_files_properties(src/separable_avx2.c src/convolution_avx2.c src/conv
     src/blend_avx2.c src/resample_avx2.c src/spectral_avx2.c src/color_avx2.c
     src/planar_avx2.c src/yuv_planes_avx2.c src/plane_resample_avx2.c src/png_encode_avx2.c src/alpha_gamma_avx2.c
     src/neighborhood_avx2.c src/statistics_avx2.c src/unsharp_avx2.c src/wavelet_avx2.c src/cast_half_avx2.c
+    src/linear_light_avx2.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
 set_source_files_properties(src/separable_avx512.c src/convolution_avx512.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options};/clang:-mavx512f;/clang:-mavx512dq;/clang:-mavx512cd;/clang:-mavx512bw;/clang:-mavx512vl")
@@ -166,6 +168,33 @@ target_compile_options(chainner_descale PRIVATE /W3)
 set_source_files_properties(third_party/descale/src/x86/descale_avx2.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
 target_link_libraries(chainner_native PRIVATE chainner_descale)
+# Vernier 0.2's analysis core (MIT; third_party/vernier/PROVENANCE.md) for Get Native Resolution,
+# built once per ISA level with the session (src/getnative_unit.cpp) and the kernel decision
+# (src/getnative_kernel.cpp). Each build renames the core's namespace on the command line, so both
+# link side by side; src/getnative_ops.cpp picks one per session by cn_isa_current(). Both use
+# Vernier's floating-point model (the compiler's default: /fp:strict's reason, NumPy's flag windows,
+# does not apply to them) with contraction off, so they give bit-identical results. The baseline
+# library links first, so the standard library's inline functions both compile resolve to its
+# baseline copies.
+foreach(level base avx2)
+    set(target chainner_vernier_${level})
+    add_library(${target} STATIC third_party/vernier/src/resample.cpp third_party/vernier/src/analyze.cpp
+        third_party/vernier/src/spectrum.cpp src/getnative_unit.cpp src/getnative_kernel.cpp)
+    target_include_directories(${target} SYSTEM PRIVATE third_party/vernier/include)
+    target_include_directories(${target} PRIVATE include src)
+    target_compile_definitions(${target} PRIVATE native=cn_vernier_${level}
+        CN_GETNATIVE_UNIT=cn_getnative_unit_${level})
+    set_target_properties(${target} PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+    get_target_property(options ${target} COMPILE_OPTIONS)
+    list(REMOVE_ITEM options /fp:strict)
+    set_target_properties(${target} PROPERTIES COMPILE_OPTIONS "${options}")
+    target_compile_options(${target} PRIVATE /EHsc /clang:-ffp-contract=off)
+    target_link_libraries(chainner_native PRIVATE ${target})
+endforeach()
+target_compile_options(chainner_vernier_avx2 PRIVATE ${chainner_c_avx2_options})
+set_source_files_properties(third_party/vernier/src/resample.cpp third_party/vernier/src/analyze.cpp
+    third_party/vernier/src/spectrum.cpp PROPERTIES COMPILE_OPTIONS /W3)
+set_source_files_properties(src/getnative_unit.cpp src/getnative_kernel.cpp PROPERTIES COMPILE_OPTIONS "/W4;/WX")
 # The default PNG encoder (src/png_encode.c) compresses with the vendored libdeflate (chainner_deflate,
 # cmake/codecs.cmake), patched for its band pieces (third_party/libdeflate/PROVENANCE.md).
 target_link_libraries(chainner_native PRIVATE chainner_deflate)
@@ -263,7 +292,7 @@ endif()
 # vosr2_qkv.dll: the VosrQkvPack TensorRT plugin of VOSR's TensorRT path (src/vosr2), beside its
 # loader in nodes/impl/pytorch. Optional: built when both roots below are given (Build.ps1 -Define,
 # on any configure), else skipped with one status line. qkv.cu alone is compiled by nvcc with the
-# pinned toolset's cl.exe as its host compiler (owner-approved exception, 2026-10-13); the plugin
+# pinned toolset's cl.exe as its host compiler (approved exception, 2026-10-13); the plugin
 # interface and the link use clang-cl and lld-link with every option above. nvcc keeps exact device
 # math (no contraction, IEEE division and square root) and emits SASS for sm_80, sm_86, sm_89 and
 # sm_120 plus compute_120 PTX (BF16 needs sm_80 or newer). Configuration refuses any other TensorRT
@@ -358,14 +387,14 @@ if(CHAINNER_C_PDB)
         "/MAP:${CHAINNER_C_OUTPUT_DIR}/pytorch/vosr2_qkv.map")
 endif()
 
-# drft_trt_plugins.dll: the TensorRT plugins of legacy DRFT's engines (src/drft, Codex's
+# drft_trt_plugins.dll: the TensorRT plugins of legacy DRFT's engines (src/drft, the
 # LegacyBarrierV1 library, compile definitions as his), from the same two roots, beside the DRFT
 # loader in nodes/impl/tensorrt. Engines embed it, so it is never loaded to run one. The four .cu
 # files (kernels and their plugin classes) are compiled by nvcc as qkv.cu is, except two points:
 # - device math: nvcc's defaults (contraction on, IEEE division and square root), the numerics
 #   Codex measured;
 # - /W4 without /WX or -Werror: two warning classes remain, C4211 in nvcc's generated stubs of
-#   Codex's kernels in anonymous namespaces, and EDG's #997 on DrftFinalAffineCrop_TRT, the one
+#   the kernels in anonymous namespaces, and EDG's #997 on DrftFinalAffineCrop_TRT, the one
 #   plugin on TensorRT's deprecated IPluginV2DynamicExt (its legacy overloads are private there).
 # DrftAliasedIdentityBarrierPlugin.cpp and the link use clang-cl and lld-link with /W4 /WX.
 set(chainner_c_drft_definitions -DDRFT_ENABLE_OCAB_QKV_PACK_PLUGIN=1

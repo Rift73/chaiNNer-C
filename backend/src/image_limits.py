@@ -1,4 +1,4 @@
-"""The one image-size limit of every decode route (owner, 2026-10-19): 40,000 x 40,000
+"""The one image-size limit of every decode route (2026-10-19): 40,000 x 40,000
 pixels in all. An image up to that area loads without a warning; a larger one is
 refused, and the decoder chain falls through as it does for any refusal.
 

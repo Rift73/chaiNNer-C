@@ -499,7 +499,7 @@ class Writer:
         )
 
     def colour_options(self, params: dict[str, Any], width: int, height: int) -> None:
-        """Save Video's colour options (owner-approved 2026-10-09), in place, before the
+        """Save Video's colour options (approved 2026-10-09), in place, before the
         writer starts: GIF gets a palette made for each frame; YUV output carries all its
         colour tags, -chroma_sample_location included, and is converted to match them
         with filtered chroma, exact rounding and explicit chroma positions (libswscale
@@ -522,6 +522,7 @@ class Writer:
         if coding is not None:
             params["pix_fmt"] = planar_format(coding)
             self._tag(params, coding)
+            _append_frame_tags(params)
             return
         depth = self._bit_depth()
         if depth > 8 and str(params["pix_fmt"]) == "yuv420p":
@@ -534,6 +535,7 @@ class Writer:
         else:
             self._tag(params, colour)
         self._append_conversion(params)
+        _append_frame_tags(params)
 
     def _rgb_colour(self, width: int, height: int) -> ColourInfo | None:
         """The YUV output's colour in RGB mode: the Colour Info input (else the size
@@ -670,6 +672,27 @@ def _append_filter(params: dict[str, Any], chain: str) -> None:
     params["vf"] = ",".join([*filters, chain])
 
 
+def _append_frame_tags(params: dict[str, Any]) -> None:
+    """The matrix, primaries and transfer tags also on the frames (setparams), last in
+    the chain. FFmpeg 7 and later take the tags from the frames: they drop
+    -color_primaries and -color_trc, which a filter or raw input leaves unset, and
+    convert again to a -colorspace the frames do not carry (scale's BT.601 frames carry
+    bt470bg), which loses the chroma siting. FFmpeg 5.1.2 takes the options. Only the
+    names Save Video's own tags use, which setparams takes from FFmpeg 5.1 on."""
+    names = {
+        "colorspace": {m.value for m in Matrix if m is not Matrix.AUTO},
+        "color_primaries": {p.value for p in Primaries if p is not Primaries.AUTO},
+        "color_trc": {t.value for t in Transfer if t is not Transfer.AUTO},
+    }
+    tags = [
+        f"{key}={params[key]}"
+        for key, values in names.items()
+        if str(params.get(key)) in values
+    ]
+    if tags:
+        _append_filter(params, "setparams=" + ":".join(tags))
+
+
 @dataclass
 class VideoCollector(Collector[tuple[np.ndarray | None, ...], None]):
     """Save Video's collector; its commit phase writes prepared frames to `writer`."""
@@ -699,7 +722,7 @@ def frame_collector(
     settings: WriteSettings,
 ) -> FrameCollector:
     """Save Video in a run of the one chosen frame `item` (Load Video's "Run this frame",
-    or In = Out; owner-approved 2026-10-21): the frame goes to `<video name>_f000123.png`
+    or In = Out; approved 2026-10-21): the frame goes to `<video name>_f000123.png`
     next to where the video would go, as the video would hold it (Writer.save_frame).
     FFmpeg never starts, the video's file is never touched and the audio is left out.
     Settings the video would refuse raise as they would for the video (its folder, the

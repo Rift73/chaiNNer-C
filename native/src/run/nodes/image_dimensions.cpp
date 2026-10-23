@@ -266,7 +266,8 @@ void resize_to_side(NodeContext &, std::span<const Value> inputs, std::vector<Va
         int64_t reference = side == "shorter side" ? std::min(h, w) : std::max(h, w);
         if (!keep(reference)) width = scaled(reference, w), height = scaled(reference, h);
     }
-    outputs.push_back(resize(image, width, height, std::get<int64_t>(inputs[4]), false, false, number(inputs[5])));
+    outputs.push_back(
+        resize(image, width, height, std::get<int64_t>(inputs[4]), false, std::nullopt, number(inputs[5])));
 }
 
 /* native_descale._core's factorized one-direction systems, shared like its lru_cache(maxsize=16): the 16 most
@@ -315,7 +316,8 @@ private:
 };
 
 /* chainner:image:descale (resize/descale.py, native_descale.descale): DescaleKernel and DescaleBorder values; a
- * direction whose size, shift and window are unchanged is skipped. A source width or height of 0 means the target's. */
+ * direction whose size, shift and window are unchanged is skipped. A source width or height of 0 means the target's.
+ * Linear Light (13) solves on the Transfer (14) curve's linear copy and encodes the result. */
 void descale(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     static DescaleCores cores;
@@ -343,8 +345,12 @@ void descale(NodeContext &, std::span<const Value> inputs, std::vector<Value> &o
     if (size == 0) throw NodeError("ValueError", "Invalid descale image or parameters");
     std::unique_ptr<uint8_t[]> workspace = std::make_unique_for_overwrite<uint8_t[]>(size);
     MutableImage out = MutableImage::allocate(int32_t(height), int32_t(width), image.channels);
-    check(cn_descale(image.data, size_t(h), size_t(w), channels, core_h.get(), core_v.get(), out.data(),
+    bool linear_light = std::get<bool>(inputs[13]);
+    int64_t transfer = std::get<int64_t>(inputs[14]);
+    Image source = linear_light ? linearize(image, transfer) : image;
+    check(cn_descale(source.data, size_t(h), size_t(w), channels, core_h.get(), core_v.get(), out.data(),
                      workspace.get(), size));
+    if (linear_light) encode_light(out, transfer);
     outputs.push_back(std::move(out).publish());
 }
 

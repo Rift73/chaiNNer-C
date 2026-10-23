@@ -30,7 +30,9 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 | Ownership, cache, events | `backend/src/nodes/impl/native_buffers.py`, `nodes/properties/outputs/numpy_outputs.py`, `chain/cache.py`, `nodes/impl/event_queue.py`, `nodes/impl/numpy_pool.py` (section 6) |
 | Resize and PNG | `backend/src/nodes/impl/native_resample.py`, `native/src/resample_filters.c`, `native/src/dpid_ops.c` (DPID), `native/src/image_io.cpp`, `native/src/png_encode.c` (`png_encode_avx2.c`; the default PNG encoder, with `native/third_party/libdeflate`) |
 | Image codecs and atomic writes (instant-exec lane I) | `native/cmake/codecs.cmake`, `native/src/codecs/*.c` (`native/include/image_codecs.h`), `native/src/image_decode.cpp`, `image_encode.cpp`, `image_preview.cpp`, `native/src/atomic_file.cpp`, `native/src/run/nodes/io.cpp`, `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}`; OpenEXR: `native/src/codecs/exr_codec.c`, `native/third_party/{openexr,imath,libdeflate,zstd,openjph}` |
-| Video | `native/src/video_io.cpp`, `backend/src/nodes/impl/video.py` |
+| Linear Light (Descale, Resize) | `native/include/linear_light.h` (the curves), `native/src/linear_light_ops.c` (`linear_light_avx2.c`), `backend/src/nodes/impl/linear_light.py` |
+| Get Native Resolution | `native/third_party/vernier` (Vernier 0.2's core), `native/src/getnative_ops.cpp` (C entries), `getnative_unit.cpp` (session, reports), `getnative_kernel.cpp` (cross-frame kernel decision), `backend/src/nodes/impl/native_getnative.py`, `getnative_media.py` (sampling and frames) |
+| Video | `native/src/video_io.cpp`, `backend/src/nodes/impl/video.py`, `backend/src/nodes/impl/ffmpeg.py` (the pinned FFmpeg and its update) |
 | Packaging | `native/tools/package_port.py`, `package_files.py`, `package_manifest.py` |
 | UI patches | `native/tools/independent_ui.py`, `native/tools/input-drop.json`, `native/tools/tensorrt-types.json`, `native/tools/tensorrt-clear.json`, `verify_*.cjs` |
 | Benchmark and profile | `native/tools/bench*.py`, `native/tools/bench-data/`; native-call timer `backend/src/nodes/impl/native_profile.py` (`CHAINNER_C_PROFILE`, README Bench) |
@@ -58,10 +60,10 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
   `native/tests/oracle/**` and `native/tests/chainner_ext/**` are `-text` too: frozen copies and corpora keep their
   bytes (CRLF, LF and mixed alike).
 - The two binaries are git-ignored (`.gitignore` names the DLL; `*.py[cod]` covers the `.pyd`): build or copy them.
-- The nightly's GPU lease was removed on 2026-10-05 (owner's decision): its 4 files are gone and every spot it hooked is
-  upstream again. The delta's TF32, ONNX export size 32, `gc.collect()` removals and 8-worker pool stay (owner's choice).
+- The nightly's GPU lease was removed on 2026-10-05 (decision): its 4 files are gone and every spot it hooked is
+  upstream again. The delta's TF32, ONNX export size 32, `gc.collect()` removals and 8-worker pool stay (deliberate choice).
 - UI: the package ships the installed Electron 25 bundles with pinned patches (section 9). `src/`
-  is upstream `d56e507f` (Electron `^25.8.4`) with the two UI patches ported to the TypeScript, its integrated Python
+  is upstream `d56e507f`, moved to Electron `^43.8.3` and Electron Forge 7.11.2, with the two UI patches ported to the TypeScript, its integrated Python
   moved to CPython 3.14.8 (kept at 3.14.8 or newer) and its own root `%APPDATA%\chaiNNer-C`: the run-from-source UI (`npm start`), never part of the package. Do not
   substitute newer frontend, preload or main assets into the installed runtime.
 - The package owns its backend like normal chaiNNer. A `--remote-backend` launch changes ownership
@@ -69,8 +71,9 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 
 ## 3. Native layer
 
-- Sources: 136 files under `native/src` and `native/include` (66 `.c`, 24 `.cpp`, 34 `.h`,
-  11 `.hpp`, 1 `.inc`; 51,362 physical lines including generated tables and attributed adaptations).
+- Sources: 292 files under `native/src` and `native/include`, subfolders included (134 `.c`, 58 `.cpp`, 5 `.cu`,
+  63 `.h`, 30 `.hpp`, 2 `.inc`; 124,547 physical lines including generated tables and attributed adaptations).
+  Vendored libraries are under `native/third_party`.
 - `chainner_native.dll`: C17 image kernels behind a C ABI. `backend/src/nodes/impl/native.py`
   loads it with ctypes and requires `cn_abi_version() == 2`; a load or ABI failure raises, never
   selecting a Python implementation. `cn_status` codes map to `TypeError`/`ValueError`/
@@ -89,7 +92,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
   parity is held by the conformance manifest (`native/tests/chainner_ext/`, `test_chainner_ext_manifest.py`).
 - Generated sources, never run in the application (README Build): `native/include/onnx_converter_passes.hpp`,
   `pixel_art_tables.inc`, `tiling_control.hpp`.
-- Build (owner directive 2026-10-06; Consult 9): clang-cl, lld-link and llvm-lib of LLVM 23.1.2 only, under Ninja,
+- Build (decision 2026-10-06; Consult 9): clang-cl, lld-link and llvm-lib of LLVM 23.1.2 only, under Ninja,
   with the Build Tools' MSVC 14.44 libraries and Windows SDK 10.0.26100 (`toolchain.cmake` pins them;
   `CMakeLists.txt` refuses any other compiler). Every unit is baseline x86-64 code (the ISA units compiled for their level only, the vendored
   libraries' SIMD behind their own CPU checks; `CHAINNER_C_MARCH` adds `-march` to local builds only) with ThinLTO, `/fp:strict`
@@ -98,7 +101,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
   `-fmacro-prefix-map=<native>=.` (clang's MSVC mangling names an anonymous namespace by a hash of the main file's
   path, which reaches RTTI names), so the same sources give the same binaries wherever they are checked out.
   `/W4 /WX` on every first-party target is the strict check. The binaries run on any
-  x86-64-v2 CPU, NumPy 2.5.3's own baseline (owner correction 2026-10-07; no CPU check of ours). LLVM leaves a NaN's sign and payload unspecified, so
+  x86-64-v2 CPU, NumPy 2.5.3's own baseline (correction 2026-10-07; no CPU check of ours). LLVM leaves a NaN's sign and payload unspecified, so
   where upstream's NaN bits are observable they are derived from the operands as integers (the normal output, the
   palette key), never read from the arithmetic. Only Windows x64 is validated and packaged.
 
@@ -234,15 +237,24 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
   SIMD only where bit-identical (elementwise, per-output lane); no FMA contraction, reordered reductions or fast-math
   (`/fp:strict`). ISA dispatch (SP4): engine-mirror parameters (`lanes`, `fused`) choose each output's operations, the
   level only the code that runs them: `scalar`, `avx2` or `avx512`, probed once in `isa.c` (`CHAINNER_C_ISA`
-  caps it), in export-free units compiled for their level only: eleven `*_avx2.c` (conversions, convolution, lens, separable filters,
-  morphology with its exceptional scan, median cut and palette counts, dither, blend, resample, the spectral multiply,
-  the normal output) and the kept `convolution_avx512.c` and `separable_avx512.c` (16-lane groups; spec 4.3's keep rule:
+  caps it), in export-free units compiled for their level only: twenty-two `*_avx2.c` (conversions, convolution, lens,
+  separable filters, morphology with its exceptional scan, median cut and palette counts, dither, blend, resample, the
+  spectral multiply, the normal output, planar to interleaved, YUV plane codes, the plane resampler, PNG row filters,
+  Gamma's approximation, Median Blur's 3x3 and 5x5 interiors, the min/max reduce, Unsharp Mask's weighted sum, Wavelet
+  Color Fix's blur, the float16 cast and Linear Light's curves), the AVX2 build of Get Native Resolution's analysis
+  (below) and the kept `convolution_avx512.c` and `separable_avx512.c` (16-lane groups; spec 4.3's keep rule:
   a timer win, no throughput loss; separable: kept on the 8-CPU timer by controller ruling), which `CHAINNER_C_ISA=avx2`
-  caps on parts that downclock. The multiply (`spectral_avx2.c`) and the normal output (`color_avx2.c`) share their
-  per-element code with the baseline unit through `spectral_shared.h` and `color_shared.h` (static helpers); the
+  caps on parts that downclock. The multiply (`spectral_avx2.c`), the normal output (`color_avx2.c`) and Linear Light
+  (`linear_light_avx2.c`) share their per-element code with the baseline unit through `spectral_shared.h`,
+  `color_shared.h` and `linear_light_shared.h` (static helpers); the
   other SP4b Task 8 tail kernels are baseline row loops. Descale is exempt from cross-level identity (ruling
   2026-10-16): the vendored vapoursynth-descale solver uses FMA on AVX2, so its output equals the VapourSynth
   plugin's on the same CPU; `DESCALE_OPT_NONE` in `descale_api()` (`src/descale_ops.c`) would restore it.
+  Get Native Resolution's vendored Vernier core is built per level with its session units (`getnative_unit.cpp`,
+  `getnative_kernel.cpp`) into `chainner_vernier_base` and `chainner_vernier_avx2`, its namespace renamed per build;
+  `getnative_ops.cpp` picks one per session by `cn_isa_current()`. Both use Vernier's own floating-point model instead
+  of `/fp:strict`, contraction off, so both levels give identical results (`test_getnative.py`); the analysis runs its
+  own `std::thread` workers, not the pool.
 - Never mutate cached graph inputs; never turn a borrowed view writable. Bridges keep every owner
   alive through native calls and asynchronous writes. Keep no-op identities where required.
 - C ABI version and status checks stay; DLL/ABI failure is visible.
@@ -268,7 +280,7 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
 - Video: persistent FFmpeg processes per stream; frame order and shape, partial writes, EOF and
   finalization, audio and codec settings preserved; graceful EOF, then bounded targeted
   termination; owned children reaped. No unconditional hard-shutdown bound is promised.
-- The default PNG encoder (owner decision 2026-10-21; `native/src/png_encode.c`, `cn_png_encode_u8`): every
+- The default PNG encoder (decision 2026-10-21; `native/src/png_encode.c`, `cn_png_encode_u8`): every
   default-option 8-bit PNG (grey, grey + alpha, BGR, BGRA; Save Image, the viewer, the UI previews) is filtered row by
   row by libpng's MinSum rule (scalar and AVX2 units, the same bytes) and compressed by libdeflate level 6 in up to 32
   row bands on the native pool (each band at least 16 KiB and 8 rows), each band an IDAT chunk of one zlib stream
@@ -385,7 +397,7 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   instead of hanging upstream's reordering) and give a Conv or ConvTranspose without `kernel_shape` the one its weights
   have, as ONNX infers it.
 - NCNN param schema: Reduction's `reduce_all` (param 1) defaults to 1, ncnn's own default, where upstream's schema
-  says 0 (owner-approved 2026-10-09). Parameters equal to their default are not written, so upstream omitted the `1=0`
+  says 0 (approved 2026-10-09). Parameters equal to their default are not written, so upstream omitted the `1=0`
   of a per-axis reduction, both when Convert To NCNN made one and when a loaded `.param` (ncnn's tools write `1=0`)
   was handed to ncnn, and ncnn reduced over everything (a converted channel mean was off by 1.26). Only such
   silently wrong models change; `1=1` and an omitted `1=` stay global. The differential tests' oracle reads the
@@ -406,22 +418,22 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   `test_model_broadcast_reorg_*` in `native/tests/test_ncnn_graph.py` and `native/tests/test_ncnn_reorg.py`.
 - Load Image and Load Images decode 8-bit RGBA TIFFs with unassociated alpha (ExtraSamples 2, orientation 1-4) with
   Pillow, keeping straight colour, where upstream's OpenCV path premultiplies it and loses the colour under alpha 0
-  (upstream chaiNNer #409; owner-approved 2026-10-09). 8-bit grey+alpha TIFFs under the same conditions load as BGRA
+  (upstream chaiNNer #409; approved 2026-10-09). 8-bit grey+alpha TIFFs under the same conditions load as BGRA
   with the grey in B, G and R, exactly as a grey+alpha PNG loads, where upstream's OpenCV path drops the alpha and
-  returns one channel (owner-approved 2026-10-09). Every other file, associated alpha included, takes the OpenCV path
+  returns one channel (approved 2026-10-09). Every other file, associated alpha included, takes the OpenCV path
   as before (`backend/tests/test_load_image_tiff_alpha.py`).
 - Load Image and Load Images turn JPEG, PNG, WebP and AVIF files upright as their EXIF Orientation (2-8) asks, as
   `ImageOps.exif_transpose` does (5-8 swap height and width), where upstream ignores it (upstream chaiNNer #1312;
-  owner-approved 2026-10-09). Both read paths (`read_cv`, `read_pil` in `image_io.cpp`) apply one transform that keeps
+  approved 2026-10-09). Both read paths (`read_cv`, `read_pil` in `image_io.cpp`) apply one transform that keeps
   the channel order; `read_cv` finds the tag by walking the file's segments or chunks (a PNG's eXIf before or after
   IDAT), `read_pil` in the metadata Pillow already read. TIFFs, which OpenCV and the #409 path already orient, and
   files without the tag or with Orientation 1 load as before (`backend/tests/test_load_image_orientation.py`).
 - Save Image's RGBA TIFFs (U8, U16, F32) carry ExtraSamples = 2 (unassociated alpha), which TIFF 6.0 requires and
-  OpenCV's encoder omits (upstream chaiNNer #2950; owner-approved 2026-10-09): `add_extra_samples` in `image_io.cpp`
+  OpenCV's encoder omits (upstream chaiNNer #2950; approved 2026-10-09): `add_extra_samples` in `image_io.cpp`
   appends a copy of the first IFD with the tag and points the header at it, so the file is OpenCV's plus one IFD;
   pixels, compression and predictor are unchanged, RGB and grey TIFFs are byte-identical
   (`backend/tests/test_save_image_tiff_extra_samples.py`).
-- Save Image's lossless WebP of an RGBA image is Pillow's with `exact=True` (owner-approved 2026-10-09; side finding
+- Save Image's lossless WebP of an RGBA image is Pillow's with `exact=True` (approved 2026-10-09; side finding
   of upstream chaiNNer #2914), where OpenCV's libwebp call drops the colour under alpha 0; every sample round-trips.
   The file grows only by that colour: +0.1 % when transparent pixels are uniform, +55 % on a synthetic worst case
   (a third transparent with noisy colour). RGB lossless and every lossy WebP stay OpenCV's bytes
@@ -429,11 +441,11 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
 - ONNX Upscale Image pads each tile only to the size requirement it finds by running the model once on a CPU session
   (64x64, then (64+m)x(64+3m) for m = 1, 2, 4, ..., 64; the first exactly scaled result wins; shape inference's answer
   is the fallback; cached per model), where upstream pads to the multiple of 16 that shape inference reports for
-  nearly every model (upstream chaiNNer #3106; owner's stand-in 2026-10-09). Convolution models' edges on images or
+  nearly every model (upstream chaiNNer #3106; stand-in 2026-10-09). Convolution models' edges on images or
   tiles that are not a multiple of 16 now equal PyTorch's and NCNN's, and window-attention exports run at any size
   (`backend/tests/test_onnx_size_probe.py`).
 - PyTorch Upscale Image raises when the model turns a finite image into NaN or Inf (an fp16 overflow; the message
-  says to turn FP16 off), where upstream saves NaN as black and clips Inf (upstream chaiNNer #3071; owner's stand-in
+  says to turn FP16 off), where upstream saves NaN as black and clips Inf (upstream chaiNNer #3071; stand-in
   D15; `backend/tests/test_pytorch_nan_output.py`).
 - NCNN: a failed inference or model load raises (out of memory retries with smaller tiles), where upstream's binding
   ignored ncnn's return codes; a tile whose result is not a whole multiple of its input raises, and without tiling only
@@ -441,40 +453,44 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   (upstream chaiNNer #3011, #2486; `backend/tests/test_ncnn_errors.py`).
 - NCNN Upscale Image on the CPU (no Vulkan GPU), with automatic tile size, tiles an image whose memory estimate
   exceeds 80 % of the available RAM, the budget PyTorch's CPU path uses (`cpu_memory_budget`), where upstream's CPU
-  budget is 1 PiB without a Memory Budget Limit and ncnn aborts the process when an allocation fails (owner's stand-in
+  budget is 1 PiB without a Memory Budget Limit and ncnn aborts the process when an allocation fails (stand-in
   D8, 2026-10-09). An image whose estimate fits is split exactly as before: whole without a limit, as the limit splits
   it with one (`backend/tests/test_ncnn_errors.py`).
 - ONNX sessions raise when the chosen execution provider did not start, where upstream silently ran on CUDA or the CPU
   (upstream chaiNNer #2715; `backend/tests/test_onnx_session_providers.py`). On Windows with NVIDIA, the ONNX package
-  installs `onnxruntime-gpu 1.30.0+trt11` (the owner's fork release `v1.30.0-trt11`: the unmodified v1.30.0 source
+  installs `onnxruntime-gpu 1.30.0+trt11` (the fork release `v1.30.0-trt11`: the unmodified v1.30.0 source
   rebuilt against TensorRT 11, decisions D19/D20), whose TensorRT provider uses the TensorRT package's TensorRT 11
   (loaded through `tensorrt_libs` before the session; without that package the error says to install it). The
   TensorRT session leaves out upstream's `trt_dump_subgraphs`, which wrote two copies of the model per session, and
   `trt_fp16_enable` has no effect with TensorRT 11 (engines follow the model's precision).
 - Save Video fails when FFmpeg exits non-zero at a normal close, naming its exit code and message (as an early exit
   does, upstream chaiNNer #3109), before the audio mux and keeping the file FFmpeg wrote, where upstream leaves the
-  exit code unchecked (owner's stand-in D18; `test_writer_nonzero_exit_code_original_policy`).
-- Save Video's audio mux (owner-approved, upstream chaiNNer #3331): chaiNNer's own FFmpeg muxes the audio after the
+  exit code unchecked (stand-in D18; `test_writer_nonzero_exit_code_original_policy`).
+- Save Video's audio mux (approved, upstream chaiNNer #3331): chaiNNer's own FFmpeg muxes the audio after the
   video, as upstream v0.25.1 does, where the frozen nightly ran the `ffmpeg` on `PATH` with the audio first and only
   logged a failure, so without FFmpeg on `PATH` every saved video was silent. Auto copies the audio and, when the
-  container cannot hold the copy (PCM in MP4 on the integrated FFmpeg 5.1.2), transcodes it with Transcode's options
-  (AAC at 320 kb/s; upstream has no fallback). Audio the mux cannot carry fails the run instead of leaving a silent
+  container cannot hold the copy, transcodes it with Transcode's options (AAC at 320 kb/s; upstream has no fallback).
+  For player compatibility Auto also transcodes PCM and FLAC audio going into an MP4 (decided 2026-10-23): FFmpeg 6.1
+  and later copy them into MP4, which many players cannot play, where FFmpeg 5.1.2 (integrated before 9.0.2) refused
+  the copy, so the output is the AAC it was; Copy copies whatever FFmpeg muxes (oracle departure (o)). Audio the mux cannot carry fails the run instead of leaving a silent
   video, where upstream logs: Copy names the codec and container and suggests Auto or Transcode, a failed transcode
   names its encoder; a WebM Copy still raises before the mux, as in the nightly. WebM's Opus gets
-  min(320 kb/s, 256 kb/s × channels) per stream, libopus's per-channel ceiling (owner-approved 2026-10-09): a mono
+  min(320 kb/s, 256 kb/s × channels) per stream, libopus's per-channel ceiling (approved 2026-10-09): a mono
   stream gets 256 kb/s (`b:a:N`), where upstream's fixed 320 kb/s fails, and streams of two or more channels keep
   320 kb/s, also beside a mono stream. Only a source file without audio saves the video without it.
   The temporary file never stays behind, and `os.replace` swaps the files, so a failed swap keeps the video. Video
   packets are unchanged; the stream order and, where a PATH FFmpeg differed, the audio encoder's build change. The
   tests' oracle is the frozen v0.25.1 mux with these departures (`INTENDED_MUX`, `native/tests/test_video_io.py`), and
   the video verifier compares the oracle's files video stream first (`verify_video_runtime.video_first`).
-- Video colours (owner-approved 2026-10-09, upstream chaiNNer #3053): players disagree on untagged video (FFmpeg
+- Video colours (approved 2026-10-09, upstream chaiNNer #3053): players disagree on untagged video (FFmpeg
   assumes BT.601 at every size, mpv, Media Foundation and browsers BT.709 for HD) and some ignore a matrix tag alone,
   so upstream's untagged BT.601 output showed HD colours up to 40 levels off. Save Video's YUV output carries all four
   tags (matrix, primaries, transfer, range `tv`): BT.601 (`smpte170m`; `bt470bg` primaries at 576 lines) for SD, BT.709
   for HD (width ≥ 1280 or height > 576, mpv's guess), and an explicit `scale` filter with
   `accurate_rnd+full_chroma_int` converts to them, where FFmpeg 5.1.2's default point-sampled chroma and turned grey
-  128 into (125,128,125). Colour tags given in Additional parameters win and the conversion follows the final matrix
+  128 into (125,128,125). A `setparams` after the conversion (and in Planes mode) puts the matrix, primaries and
+  transfer on the frames too (2026-10-23): FFmpeg 7 and later take the tags from the frames, so without it they dropped
+  the primaries and transfer and converted BT.601 output a second time, losing the chroma siting. Colour tags given in Additional parameters win and the conversion follows the final matrix
   and range; a user matrix alone takes its own family's primaries and transfer whatever the size (BT.2020: `bt2020`
   and BT.709's curve, which H.273 makes BT.2020's at 8 bits), while primaries or a transfer without a matrix, or a
   matrix of no family here, add no other tag but the range. A user `-vf` runs before the conversion. RGB output is unchanged; GIF is the next bullet. Load Video honours a
@@ -483,7 +499,7 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   HD sources read up to 28 levels differently (39 for BT.601 data, towards what players show). The tests' oracle adds
   the writer's departure (`INTENDED_COLOURS`, `native/tests/test_video_io.py`); `backend/tests/test_save_video_colours.py`
   checks tags and round trips on the integrated FFmpeg.
-- GIF palette (owner-approved 2026-10-09): FFmpeg cannot encode GIF from the node's `yuv420p` and falls back to
+- GIF palette (approved 2026-10-09): FFmpeg cannot encode GIF from the node's `yuv420p` and falls back to
   `bgr8`, a fixed 3-3-2 palette with no palette generation, so upstream's GIFs came back 43 levels off on grey 128 and
   up to 88 on colour gradients. Save Video writes GIF as `pal8` with
   `split[a][b];[a]palettegen=stats_mode=single[p];[b][p]paletteuse=new=1`: a palette made for each frame, since frames
@@ -507,8 +523,8 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   2026-10-07 (g0 → {a, b} → join → save, 200 runs of 6 items, CPUs 28–31): upstream 1200 of 1200 items `sa fa sb fb`;
   the port at K = 1: 891 `sa sb fa fb`, 296 `sa sb fb fa`, 13 `sa fa sb fb`.
 - The normalize/enforce clamp follows `np.clip` on the tested stack (NumPy 2.5.3 `clip.cpp`: `x<min→min`, `x>max→max`; −0 and NaN payloads pass; under DAZ a denormal becomes the converted zero of its sign). On the 3.11 stack, NumPy 1.24.4 gave +0 for −0 and Task 3b1 (`602146a5`) mirrored that; U2 lane H restored B3's form when the stack moved.
-- Kept for the owner's record: default PNGs are chaiNNer-C's own (MinSum filter, libdeflate level 6 on row bands),
-  pixel-identical to chaiNNer's, 79 % of fpng's size on the owner's six sample frames and faster than fpng's default on
+- Kept for the record: default PNGs are chaiNNer-C's own (MinSum filter, libdeflate level 6 on row bands),
+  pixel-identical to chaiNNer's, 79 % of fpng's size on the six sample frames and faster than fpng's default on
   large images (2026-10-21; fpng, the encoder before, was about 19 % larger than chaiNNer's). Composite's
   full-overlap shortcut (SP4b Task 6) allocates nothing and succeeds where B3's region mallocs failed under memory exhaustion.
 - Widened annotations, annotation-only (Consult 14 D-31): where upstream annotates `ort.InferenceSession`, the
@@ -626,6 +642,8 @@ another project generated.
   2xSaI credit GPL, HQ tables LGPL), colortrans (MIT), OpenCV 4.8.0, Pillow 9.2.0, NumPy 1.24.4 (FreeBSD msun complex
   math in `ncnn_complex_math.hpp`), PyMatting (MIT), PyTorch TensorIterator stride order, resize crate 0.8.3,
   mergian/dpid (BSD-3-Clause, `dpid_ops.c`), zhang_hilbert 0.1.1, avx2_mathfun, CPython 3.11.5 `random.py`, pybind11 2.13.6.
+- Vendored: `native/third_party/vernier` (Vernier 0.2's analysis core, MIT, unchanged, `PROVENANCE.md`; notice in
+  `chainner_native.LICENSE.txt`).
 - Vendored: `native/third_party/pybind11`, `native/third_party/onnxruntime` (C API header, `LICENSE`), and the image
   codecs `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff,openexr,imath,libdeflate,zstd,openjph}`
   (upstream sources, unchanged but for OpenEXRCore's one recorded line, libdeflate's recorded non-final-piece patch
