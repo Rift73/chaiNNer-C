@@ -108,13 +108,14 @@ package = add_package(
             # c3 runs DUAL in fp16; c4 runs HAT and DAT in fp16; c5 lays out their
             # attention for speed (DAT2 2x in PyTorch) and for ONNX export; c6 runs it
             # through scaled_dot_product_attention (cuDNN or memory-efficient attention);
-            # c7 folds DRFT's edge branches without a per-channel Python loop.
-            version="0.4.2+c7",
-            size_estimate=530 * KB,
+            # c7 folds DRFT's edge branches without a per-channel Python loop; c8 adds
+            # WSR, GaterV3, SMoSR, FIGSR and GFISRv2.
+            version="0.4.2+c8",
+            size_estimate=574 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c7/"
-                "spandrel-0.4.2%2Bc7-py3-none-any.whl"
-                "#sha256=030ba1a2458ed40161b6331775374bff8c2bc9ae9ec4048781e28a4476289003"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c8/"
+                "spandrel-0.4.2%2Bc8-py3-none-any.whl"
+                "#sha256=851797e52f2f6cc0406b1dd362edaaf2d682edca39b6b3583f6e0a6dbc55f41e"
             ),
         ),
         Dependency(

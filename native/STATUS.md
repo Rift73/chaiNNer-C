@@ -4,9 +4,14 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- RELEASED 2026-10-24 as **v0.3.8 re-release 2**: the entry below. Fork branch and tag `v0.3.8` at `f426929a` (one
+  publish commit over `89f4b2c8`, tree = main `6087e480`); asset SHA-256 `88918C1C…1F2C` (`npm run make`, Node
+  24.22.1; zip verified against git, 0 mismatches; no `Squirrel.exe` in the zip). D: installs updated with backups;
+  `D:\chaiNNer` has the tuned icelake + ThinLTO + PGO set rebuilt from this tree (DLL `ADA0B089`, graph
+  `67E83E91`, ext `A603F216`, exports identical to the portable DLL); both installs serve 197 nodes.
 - 2026-10-23 **Get Native Resolution, Linear Light, FFmpeg 9.0.2 pin, Electron 43** (five parallel branches and an
-  integration branch, CPU only, 19:38-23:30 GMT+8; local branch `gn/integration`, not pushed or released; the
-  local merge into `chaiNNer-C` follows one review). Design and reports: `native/local/getnative-20261023/`.
+  integration branch, CPU only, 19:38-23:30 GMT+8; merged into `chaiNNer-C` after one review, released above).
+  Design and reports: `native/local/getnative-20261023/`.
   - **Get Native Resolution** (Image Dimensions > Utility): Vernier 0.2's analysis core vendored unchanged
     (`native/third_party/vernier`, MIT), built per ISA level (baseline and AVX2, identical JSON; AVX2 20 % less time
     per frame); Image and Video tabs, the node opens the video itself (even / keyframes / scene midpoints / typed
@@ -561,7 +566,7 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   EXIF orientation; straight-alpha and grey+alpha TIFFs; TIFF ExtraSamples; lossless WebP `exact`; GIF palette per
   frame; CPU-only NCNN tiles by available RAM; a vitest runs the app's schema check over the real node list; CLI ends its
   backend; system-Python option removed; Python download honours the proxy; pip's errors reach the UI; Spandrel
-  `0.4.2+c7` (fork release `v0.4.2-c7`, SHA-256 `030ba1a2…`; c2: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
+  `0.4.2+c8` (fork release `v0.4.2-c8`, SHA-256 `851797e5…`; c2: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
   padding per input for 12; c3, 2026-10-16: DUAL runs in fp16, its last group's dynamic conv in fp32, 1x Light 512²
   343 → 199 ms, 2x 87 → 52 ms vs fp32+TF32; c4, 2026-10-18: HAT and DAT run in fp16, the last group's closing conv
   and the final norm in fp32 (trained 4x HAT-L writes 722k there, DAT2 121k), 70-71 dB from fp32, 256² HAT-L 476 → 250
@@ -573,7 +578,9 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   246.1 → 191.9 ms, DAT2 102.8 → 96.4 ms; Convert To ONNX also pads DAT's qkv heads, TensorRT DAT2 47.40 → 44.51
   ms, all 36 spatial and 84 HAT attention calls in TensorRT's fused kernel; c7, 2026-10-19: DRFT's edge-branch
   fold without a per-channel Python loop, bit-identical, CPU fold of a trained 4x DRFT-XL 2447 → 1652 ms, 4x
-  DRFT-M 628 → 402 ms). PyTorch tries cuDNN attention first (2026-10-16: every model in
+  DRFT-M 628 → 402 ms; c8, 2026-10-24: WSR, GaterV3, SMoSR, FIGSR and GFISRv2, each loaded from its state dict alone,
+  tests from the archs' own weights since none are released; FDAT's DySample loads on CPU-only torch). PyTorch tries
+  cuDNN attention first (2026-10-16: every model in
   fp16, not DUAL only; DUAL fp16 197.5 → 182.0 ms 1x, 52.0 → 47.0 ms 2x; Windows PyTorch has no Flash Attention).
   With the fp16 setting on, DUAL TensorRT exports start from fp16-rounded weights (68.5–88.6 dB vs exact, below the
   engine's bf16 noise; accepted). Deviations: ARCHITECTURE section 7.
