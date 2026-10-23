@@ -12,25 +12,42 @@ import { nullType, withoutNull } from '../../common/types/util';
 import { EMPTY_ARRAY, ParsedSourceHandle, ParsedTargetHandle } from '../../common/util';
 import { VALID, Validity, invalid } from '../../common/Validity';
 
-const canReach = (from: string, to: string, edges: EdgeState): boolean => {
-    // DFS
-    const visited = new Set<string>();
-    const stack = [from];
+/**
+ * The nodes a depth-first search reaches upstream from a node (the node included), by the edges
+ * and the node. While a connection is dragged, every handle checks it against the same source
+ * and edges: one search serves them all.
+ */
+const upstream = new WeakMap<EdgeState, Map<string, ReadonlySet<string>>>();
+const getUpstream = (from: string, edges: EdgeState): ReadonlySet<string> => {
+    let byNode = upstream.get(edges);
+    if (byNode === undefined) {
+        byNode = new Map();
+        upstream.set(edges, byNode);
+    }
+    let visited = byNode.get(from);
+    if (visited === undefined) {
+        const reached = new Set<string>();
+        const stack = [from];
 
-    let current;
-    // eslint-disable-next-line no-cond-assign
-    while ((current = stack.pop())) {
-        if (current === to) return true;
-        if (!visited.has(current)) {
-            visited.add(current);
+        let current;
+        // eslint-disable-next-line no-cond-assign
+        while ((current = stack.pop())) {
+            if (!reached.has(current)) {
+                reached.add(current);
 
-            for (const edge of edges.byTarget.get(current) ?? EMPTY_ARRAY) {
-                stack.push(edge.source);
+                for (const edge of edges.byTarget.get(current) ?? EMPTY_ARRAY) {
+                    stack.push(edge.source);
+                }
             }
         }
+        visited = reached;
+        byNode.set(from, visited);
     }
-    return false;
+    return visited;
 };
+
+const canReach = (from: string, to: string, edges: EdgeState): boolean =>
+    getUpstream(from, edges).has(to);
 
 /**
  * Returns whether the connection made between the two handles is valid,

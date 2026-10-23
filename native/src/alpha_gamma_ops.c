@@ -50,6 +50,8 @@
  */
 #include "chainner.h"
 #include "chainner_ext_kernels.h"
+#include "gamma_shared.h"
+#include "isa.h"
 #include "parallel.h"
 #include <math.h>
 #include <stdlib.h>
@@ -154,12 +156,23 @@ typedef struct gamma_context {
     float *out;
     size_t channels, approximate_count;
     float gamma;
+    cn_isa_level isa;
 } gamma_context;
 
+/* Elements [begin, end): at avx2 and above the approximated ones in groups of 8 through the AVX2 unit (the same bits as
+ * gamma_approx), the rest here. */
 static void gamma_range(void *opaque, size_t begin, size_t end)
 {
     const gamma_context *ctx = opaque;
-    for (size_t i = begin; i < end; ++i) {
+    size_t i = begin;
+#if defined(_MSC_VER) && defined(_M_X64)
+    if (ctx->isa >= CN_ISA_AVX2 && begin < ctx->approximate_count) {
+        size_t groups = ((end < ctx->approximate_count ? end : ctx->approximate_count) - begin) / 8 * 8;
+        cn_gamma_approx_avx2(ctx->src + begin, ctx->out + begin, groups, ctx->gamma);
+        i += groups;
+    }
+#endif
+    for (; i < end; ++i) {
         if (ctx->channels == 4 && i % 4 == 3) ctx->out[i] = ctx->src[i];
         else if (i < ctx->approximate_count) ctx->out[i] = gamma_approx(ctx->src[i], ctx->gamma);
         else ctx->out[i] = powf(ctx->src[i], ctx->gamma);
@@ -183,7 +196,7 @@ CN_EXPORT cn_status cn_alpha_gamma(const float *src, float *out,
     /* Rust chunks at 8192 elements, divisible by eight. Only the final chunk
      * has a scalar tail. RGBA takes its separate all-scalar RGB path. */
     size_t approximate = channels != 4 && cn_gamma_uses_approximation() ? count - count % 8 : 0;
-    gamma_context ctx = {src, out, channels, approximate, gamma};
+    gamma_context ctx = {src, out, channels, approximate, gamma, cn_isa_current()};
     return cn_parallel_for(count, 65536, gamma_range, &ctx);
 }
 

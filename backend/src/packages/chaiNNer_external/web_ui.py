@@ -6,7 +6,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 
-import requests
 from sanic.log import logger
 
 from nodes.impl import numpy_pool
@@ -41,6 +40,10 @@ class Api:
         return f"{self.base_url}{path}"
 
     def get(self, path: str, timeout: float = STABLE_DIFFUSION_REQUEST_TIMEOUT) -> dict:
+        # Imported where used: this package registers at every start, and requests
+        # takes about 80 ms to import.
+        import requests
+
         try:
             response = requests.get(self.get_url(path), timeout=timeout)
             if response.status_code != 200:
@@ -66,6 +69,8 @@ class Api:
         return result
 
     def post(self, path: str, json_data: dict) -> dict:
+        import requests
+
         try:
             response = requests.post(
                 self.get_url(path),

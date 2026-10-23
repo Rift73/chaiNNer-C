@@ -4,6 +4,7 @@ from typing import Literal, Sequence, Tuple, Union
 
 import onnx
 from onnx.onnx_pb import ModelProto, ValueInfoProto
+from sanic.log import logger
 
 from ..native_graph import graph
 
@@ -91,7 +92,16 @@ def get_opset(model: onnx.ModelProto) -> int:
 def safely_optimize_onnx_model(model_proto: ModelProto) -> ModelProto:
     """
     Optimizes the model using onnxoptimizer. If onnxoptimizer is not installed, the model is returned as is.
+    So is a model that is not valid ONNX: onnxoptimizer's native code can end the
+    process on one (a node without the inputs its op needs, an output no node makes).
     """
+    # The checker takes a model in memory up to 2 GiB, as onnxoptimizer does.
+    if model_proto.ByteSize() <= onnx.checker.MAXIMUM_PROTOBUF:
+        try:
+            onnx.checker.check_model(model_proto)
+        except onnx.checker.ValidationError as e:
+            logger.warning(f"Not optimizing the ONNX model, which is not valid: {e}")
+            return model_proto
     try:
         import onnxoptimizer
 

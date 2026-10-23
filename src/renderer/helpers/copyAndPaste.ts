@@ -76,8 +76,11 @@ export const pasteFromClipboard = async (
             // as when a chain is opened: e.g. a chain copied from another chaiNNer may hold nodes
             // this one does not have, or lack inputs that its nodes have here
             const chain = toEditorChain(schemata, clipboardChain.nodes, clipboardChain.edges);
-            if (!chain.complete) {
+            if (chain.droppedNodes.length > 0) {
                 onDroppedNodes(chain.droppedNodes);
+            }
+            if (chain.droppedEdges > 0) {
+                log.warn(`Pasted ${chain.droppedEdges} connection(s) that do not fit their nodes`);
             }
 
             const duplicationId = createUniqueId();

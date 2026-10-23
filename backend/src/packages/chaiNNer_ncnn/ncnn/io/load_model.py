@@ -39,9 +39,20 @@ from .. import io_group
 def load_model_node(
     param_path: Path, bin_path: Path
 ) -> tuple[NcnnModelWrapper, Path, str]:
-    model = NcnnModel.load_from_file(str(param_path), str(bin_path))
-    NcnnOptimizer(model).optimize()
+    try:
+        model = NcnnModel.load_from_file(str(param_path), str(bin_path))
+        NcnnOptimizer(model).optimize()
+        wrapper = NcnnModelWrapper(model)
+    except OSError:
+        raise
+    except Exception as e:
+        # A damaged file fails anywhere in the reading, with the reader's own words.
+        raise ValueError(
+            f"The NCNN model {param_path.name} with {bin_path.name} cannot be read"
+            f" ({type(e).__name__}: {e}). The files may be damaged, belong to"
+            " different models, or hold a model chaiNNer does not support."
+        ) from e
 
     model_dir, model_name, _ = split_file_path(param_path)
 
-    return NcnnModelWrapper(model), model_dir, model_name
+    return wrapper, model_dir, model_name

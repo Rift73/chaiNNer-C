@@ -11,6 +11,7 @@ from nodes.impl.onnx.model import SizeReq
 from ..native_framework_images import planar_to_interleaved, reflect_pad, swap_red_blue
 from ..native_tensors import cast_numpy
 from ..upscale.auto_split import Tiler, auto_split
+from ..upscale.bounded_tiler import BoundedTiler
 from .errors import ort_error_message
 
 if TYPE_CHECKING:
@@ -159,7 +160,7 @@ def onnx_auto_split(
                 raise
 
     try:
-        return auto_split(img, upscale, tiler, progress=progress)
+        return auto_split(img, upscale, BoundedTiler(tiler), progress=progress)
     finally:
         if collect_after:
             gc.collect()

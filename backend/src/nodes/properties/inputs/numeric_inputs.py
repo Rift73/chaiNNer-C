@@ -28,9 +28,16 @@ def clamp_number(
     min_value: float | int | None,
     max_value: float | int | None,
 ) -> float | int:
-    # Convert proper number type
-    if precision != "unlimited":
-        value = round_half_up(value) if precision == 0 else round(value, precision)
+    # Convert proper number type, rounding as the input's conversion does in the frontend
+    # (Navi's round is JavaScript's Math.round), so the types derived from a connected
+    # number are those of the value the node receives
+    if precision == 0:
+        value = round_half_up(value)
+    elif precision != "unlimited":
+        scaled = value * 10**precision
+        # an infinity stays itself, as it does in the conversion
+        if math.isfinite(scaled):
+            value = round_half_up(scaled) / 10**precision
 
     # Clamp to max and min, correcting for max/min not aligning with offset + n * step
     if max_value is not None:
@@ -92,6 +99,11 @@ class NumberInput(BaseInput):
         self.input_type = get_number_type(self.min, self.max, self.precision)
         if self.precision == 0:
             self.input_conversions = [InputConversion("number", "round(Input)")]
+        elif self.precision != "unlimited":
+            scale = 10**self.precision
+            self.input_conversions = [
+                InputConversion("number", f"round(Input * {scale}) / {scale}")
+            ]
 
     def to_dict(self):
         return {
@@ -112,7 +124,9 @@ class NumberInput(BaseInput):
         raise ValueError("NumberInput and SliderInput cannot be made optional")
 
     def enforce(self, value: object):
-        assert isinstance(value, (int, float))
+        assert isinstance(value, (int, float)), (
+            f"The input {self.label} takes a number, not a {type(value).__name__}."
+        )
 
         if math.isnan(value):
             raise ValueError("NaN is not a valid number")

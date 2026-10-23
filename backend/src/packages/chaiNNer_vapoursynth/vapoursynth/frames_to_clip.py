@@ -25,7 +25,7 @@ from nodes.impl.colour_info import (
     subsampling_from_sizes,
 )
 from nodes.impl.ffmpeg import FFMpegEnv
-from nodes.impl.image_utils import to_uint16
+from nodes.impl.image_utils import to_uint16, to_uint16_gbr_planes
 from nodes.impl.vapoursynth.colour_props import CHROMA_LOCATION_NAMES
 from nodes.impl.vapoursynth.script import VideoClip, clip_var
 from nodes.properties.inputs import (
@@ -133,7 +133,10 @@ def frame_rate(fps: float) -> Fraction:
 
 
 class RawVideoWriter:
-    """FFmpeg encoding raw frames of `pix_fmt` from its stdin into `path`."""
+    """FFmpeg encoding raw frames of `pix_fmt` from its stdin into `path`. `tags`, the
+    colour tag options `output` gives the frames, also describe its input: FFmpeg 8.1
+    converts frames whose tags differ from the output's (untagged planes came out with
+    other codes), where the integrated 5.1.2 leaves them."""
 
     def __init__(
         self,
@@ -143,6 +146,7 @@ class RawVideoWriter:
         size: tuple[int, int],
         rate: Fraction,
         output: list[str],
+        tags: list[str],
     ):
         self._stderr = tempfile.TemporaryFile()
         self._process = subprocess.Popen(
@@ -159,6 +163,7 @@ class RawVideoWriter:
                 f"{size[0]}x{size[1]}",
                 "-framerate",
                 f"{rate.numerator}/{rate.denominator}",
+                *tags,
                 "-i",
                 "pipe:",
                 *output,
@@ -334,11 +339,17 @@ def frames_to_clip_node(
     shapes: list[tuple[int, int, int]] = []
     tags: ColourInfo | None = None
 
-    def start(pix_fmt: str, size: tuple[int, int], output: list[str]) -> None:
+    def start(
+        pix_fmt: str,
+        size: tuple[int, int],
+        output: list[str],
+        colour_tags: list[str] | None = None,
+    ) -> None:
         nonlocal writer
         ffmpeg = FFMpegEnv.get_integrated(context.storage_dir).ffmpeg
-        output = [*output, "-pix_fmt", pix_fmt]
-        writer = RawVideoWriter(ffmpeg, path, pix_fmt, size, rate, output)
+        tag_options = colour_tags or []
+        output = [*output, *tag_options, "-pix_fmt", pix_fmt]
+        writer = RawVideoWriter(ffmpeg, path, pix_fmt, size, rate, output, tag_options)
         context.add_cleanup(writer.kill)
 
     def check(current: list[tuple[int, int, int]]) -> None:
@@ -358,7 +369,7 @@ def frames_to_clip_node(
         if tags is None:
             choices = (matrix, transfer, primaries, range_, chroma_location)
             pix_fmt, tags = planes_colour(y, u, v, colour_info, choices)
-            output = ffv1_options(y.shape[1], y.shape[0], 3)
+            colour_tags: list[str] = []
             for option, value in (
                 ("-colorspace", tags.matrix),
                 ("-color_trc", tags.transfer),
@@ -366,8 +377,9 @@ def frames_to_clip_node(
                 ("-color_range", tags.range),
                 ("-chroma_sample_location", tags.chroma_location),
             ):
-                output += [option, option_value(value)]
-            start(pix_fmt, (y.shape[1], y.shape[0]), output)
+                colour_tags += [option, option_value(value)]
+            output = ffv1_options(y.shape[1], y.shape[0], 3)
+            start(pix_fmt, (y.shape[1], y.shape[0]), output, colour_tags)
         assert writer is not None
         for plane, chroma in ((y, False), (u, True), (v, True)):
             writer.write(float_to_code(plane, 16, tags.full_range, chroma))
@@ -393,16 +405,16 @@ def frames_to_clip_node(
                 pix_fmt = "gray16le" if c == 1 else "gbrp16le"
                 start(pix_fmt, (w, h), [*ffv1_options(w, h, c), "-color_range", "pc"])
         assert writer is not None
-        if not float32:
-            # Clipped to 0-1 and rounded.
-            frame = to_uint16(frame)
+        # 16 bits: clipped to 0-1 and rounded.
         if c == 1:
-            planes = frame.reshape(1, h, w)
+            planes = (frame if float32 else to_uint16(frame)).reshape(1, h, w)
             if float32:
                 planes = np.broadcast_to(planes, (3, h, w))
-        else:
+        elif float32:
             # gbrp's plane order: G, B, R of chaiNNer's BGR.
             planes = np.stack((frame[:, :, 1], frame[:, :, 0], frame[:, :, 2]))
+        else:
+            planes = to_uint16_gbr_planes(frame)
         writer.write(planes)
 
     def on_iterate(values: tuple[np.ndarray | None, ...]) -> None:

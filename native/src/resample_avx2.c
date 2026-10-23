@@ -1,8 +1,11 @@
 #if !defined(_M_X64)
 #error "resample_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* Resample's vertical pass, AVX2 unit (/arch:AVX2, spec 4.3): no export, reached only
- * through vertical_range's dispatch on the call's ISA level (SP4b D14). Each lane runs
+/* Resample's two passes, AVX2 unit (/arch:AVX2, spec 4.3): no export, reached only
+ * through horizontal_range's and vertical_range's dispatch on the call's ISA level
+ * (SP4b D14). The horizontal pass runs eight source rows side by side, one per lane, on
+ * columns transposed from them (cn_resample_horizontal_avx2 in resample_shared.h).
+ * In the vertical pass each lane runs
  * its output's vertical_one sequence: acc = 0, then acc = acc + in * w per tap in
  * order (a vmulps, then a vaddps; no fused multiply-add), then B3's clip instructions. Blocks
  * of 64 outputs keep 8 independent sums (a vaddps chain per group: 8 in flight cover
@@ -42,6 +45,111 @@ static int unordered(__m256 a, __m256 b)
 static void redo(const resample_context *ctx, const coefficient_line *line, float *out, size_t x, size_t n)
 {
     for (size_t k = x; k < x + n; ++k) out[k] = vertical_one(ctx, line, k);
+}
+
+/* r[0..7] transposed in place: lane j of r[i] becomes lane i of r[j]. */
+static void transpose8(__m256 r[8])
+{
+    __m256 t0 = _mm256_unpacklo_ps(r[0], r[1]), t1 = _mm256_unpackhi_ps(r[0], r[1]);
+    __m256 t2 = _mm256_unpacklo_ps(r[2], r[3]), t3 = _mm256_unpackhi_ps(r[2], r[3]);
+    __m256 t4 = _mm256_unpacklo_ps(r[4], r[5]), t5 = _mm256_unpackhi_ps(r[4], r[5]);
+    __m256 t6 = _mm256_unpacklo_ps(r[6], r[7]), t7 = _mm256_unpackhi_ps(r[6], r[7]);
+    __m256 u0 = _mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(1, 0, 1, 0));
+    __m256 u1 = _mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(3, 2, 3, 2));
+    __m256 u2 = _mm256_shuffle_ps(t1, t3, _MM_SHUFFLE(1, 0, 1, 0));
+    __m256 u3 = _mm256_shuffle_ps(t1, t3, _MM_SHUFFLE(3, 2, 3, 2));
+    __m256 u4 = _mm256_shuffle_ps(t4, t6, _MM_SHUFFLE(1, 0, 1, 0));
+    __m256 u5 = _mm256_shuffle_ps(t4, t6, _MM_SHUFFLE(3, 2, 3, 2));
+    __m256 u6 = _mm256_shuffle_ps(t5, t7, _MM_SHUFFLE(1, 0, 1, 0));
+    __m256 u7 = _mm256_shuffle_ps(t5, t7, _MM_SHUFFLE(3, 2, 3, 2));
+    r[0] = _mm256_permute2f128_ps(u0, u4, 0x20);
+    r[1] = _mm256_permute2f128_ps(u1, u5, 0x20);
+    r[2] = _mm256_permute2f128_ps(u2, u6, 0x20);
+    r[3] = _mm256_permute2f128_ps(u3, u7, 0x20);
+    r[4] = _mm256_permute2f128_ps(u0, u4, 0x31);
+    r[5] = _mm256_permute2f128_ps(u1, u5, 0x31);
+    r[6] = _mm256_permute2f128_ps(u2, u6, 0x31);
+    r[7] = _mm256_permute2f128_ps(u3, u7, 0x31);
+}
+
+/* A tile's transposed source columns and its sums, in groups of 8 floats (32 KiB on the stack), and its widest
+ * run of outputs. */
+#define TILE_GROUPS 1024
+#define TILE_OUTPUTS 64
+
+/* count samples from each of the 8 rows, starting at sample at, into count groups of 8 (one lane per row). */
+static void transpose_in(const float *const row[8], size_t at, size_t count, float *groups)
+{
+    size_t j = 0, r;
+    for (; count - j >= 8; j += 8) {
+        __m256 v[8];
+        for (r = 0; r < 8; ++r) v[r] = _mm256_loadu_ps(row[r] + at + j);
+        transpose8(v);
+        for (r = 0; r < 8; ++r) _mm256_storeu_ps(groups + (j + r) * 8, v[r]);
+    }
+    for (; j < count; ++j)
+        for (r = 0; r < 8; ++r) groups[j * 8 + r] = row[r][at + j];
+}
+
+/* count groups of 8 back into the first rows of 8 rows, from sample at of each. */
+static void transpose_out(const float *groups, size_t count, float *target, size_t stride, size_t at, size_t rows)
+{
+    size_t j = 0, r;
+    for (; count - j >= 8; j += 8) {
+        __m256 v[8];
+        for (r = 0; r < 8; ++r) v[r] = _mm256_loadu_ps(groups + (j + r) * 8);
+        transpose8(v);
+        for (r = 0; r < rows; ++r) _mm256_storeu_ps(target + r * stride + at + j, v[r]);
+    }
+    for (; j < count; ++j)
+        for (r = 0; r < rows; ++r) target[r * stride + at + j] = groups[j * 8 + r];
+}
+
+int cn_resample_horizontal_avx2(const resample_context *ctx, size_t y, size_t rows)
+{
+    const size_t channels = ctx->channels, width = ctx->target_width, out_count = width * channels;
+    const coefficient_line *lines = ctx->horizontal;
+    float groups[TILE_GROUPS * 8];
+    const float *row[8];
+    for (size_t r = 0; r < 8; ++r)
+        row[r] = ctx->source + (y + (r < rows ? r : rows - 1)) * ctx->source_width * channels;
+    __m256 nan = _mm256_setzero_ps();
+    for (size_t x = 0; x < width;) {
+        /* The tile: outputs [x, last) whose source columns [first, end) and sums fit the groups. */
+        const size_t first = lines[x].start;
+        size_t last = x, end = first;
+        while (last < width && last - x < TILE_OUTPUTS) {
+            const size_t reach = lines[last].start + lines[last].count;
+            const size_t next_end = reach > end ? reach : end;
+            if ((next_end - first + last + 1 - x) * channels > TILE_GROUPS) break;
+            end = next_end;
+            ++last;
+        }
+        if (last == x) return 0;
+        float *columns = groups, *sums = groups + (end - first) * channels * 8;
+        transpose_in(row, first * channels, (end - first) * channels, columns);
+        for (size_t k = x; k < last; ++k) {
+            const float *in = columns + (lines[k].start - first) * channels * 8, *weights = lines[k].weights;
+            __m256 sum0 = _mm256_setzero_ps(), sum1 = sum0, sum2 = sum0, sum3 = sum0;
+            for (size_t i = 0; i < lines[k].count; ++i, in += channels * 8) {
+                __m256 weight = _mm256_set1_ps(weights[i]);
+                sum0 = tap(sum0, in, weight);
+                if (channels > 1) sum1 = tap(sum1, in + 8, weight);
+                if (channels > 2) sum2 = tap(sum2, in + 16, weight);
+                if (channels > 3) sum3 = tap(sum3, in + 24, weight);
+            }
+            float *out = sums + (k - x) * channels * 8;
+            _mm256_storeu_ps(out, sum0);
+            if (channels > 1) _mm256_storeu_ps(out + 8, sum1);
+            if (channels > 2) _mm256_storeu_ps(out + 16, sum2);
+            if (channels > 3) _mm256_storeu_ps(out + 24, sum3);
+            nan = _mm256_or_ps(nan, _mm256_or_ps(_mm256_cmp_ps(sum0, sum1, _CMP_UNORD_Q),
+                                        _mm256_cmp_ps(sum2, sum3, _CMP_UNORD_Q)));
+        }
+        transpose_out(sums, (last - x) * channels, ctx->intermediate + y * out_count, out_count, x * channels, rows);
+        x = last;
+    }
+    return !_mm256_movemask_ps(nan);
 }
 
 void cn_resample_vertical_avx2(const resample_context *ctx, size_t y, size_t first, size_t last)

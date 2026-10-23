@@ -24,16 +24,27 @@ typedef struct nearest_context {
     uint64_t x_step, y_step;
 } nearest_context;
 
+/* Row by row: one division per range and one source row per output row, and a copy of a constant size per
+ * channel count instead of a memcpy call per pixel. */
 static void nearest_range(void *opaque, size_t begin, size_t end)
 {
     const nearest_context *ctx = opaque;
-    for (size_t p = begin; p < end; ++p) {
-        uint64_t y = (uint64_t)(p / ctx->out_w);
-        uint64_t x = (uint64_t)(p % ctx->out_w);
-        size_t sy = (size_t)((y * ctx->y_step + (ctx->y_step >> 1)) >> 32);
-        size_t sx = (size_t)((x * ctx->x_step + (ctx->x_step >> 1)) >> 32);
-        memcpy(ctx->out + p * ctx->c,
-            ctx->src + (sy * ctx->w + sx) * ctx->c, ctx->c * sizeof(float));
+    const size_t c = ctx->c;
+    float *out = ctx->out + begin * c;
+    for (uint64_t y = begin / ctx->out_w, x = begin % ctx->out_w; begin < end; ++y, x = 0) {
+        const size_t sy = (size_t)((y * ctx->y_step + (ctx->y_step >> 1)) >> 32);
+        const float *row = ctx->src + sy * ctx->w * c;
+        const uint64_t stop = end - begin < ctx->out_w - x ? x + (end - begin) : ctx->out_w;
+        begin += (size_t)(stop - x);
+        for (; x < stop; ++x, out += c) {
+            const float *from = row + (size_t)((x * ctx->x_step + (ctx->x_step >> 1)) >> 32) * c;
+            switch (c) {
+            case 1: memcpy(out, from, sizeof(float)); break;
+            case 2: memcpy(out, from, 2 * sizeof(float)); break;
+            case 3: memcpy(out, from, 3 * sizeof(float)); break;
+            default: memcpy(out, from, 4 * sizeof(float)); break;
+            }
+        }
     }
 }
 

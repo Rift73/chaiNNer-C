@@ -10,6 +10,7 @@
 #include "exceptional.h"
 #include "exceptional_shared.h"
 #include "merge_shared.h"
+#include "morph_fold.h"
 #include "morphology_shared.h"
 #include <immintrin.h>
 #include <string.h>
@@ -83,6 +84,65 @@ void cn_morphology_combine_avx2(const morphology_context *ctx, size_t begin, siz
         }
         for (; i < stop; ++i) out[i] = combine_one(ctx, i, y);
     }
+}
+
+/* acc replaced, lane by lane, by v where v ties or beats it. */
+static __m256 later_extremum(__m256 acc, __m256 v, int maximum)
+{
+    return _mm256_blendv_ps(acc, v, maximum ? _mm256_cmp_ps(v, acc, _CMP_GE_OQ) : _mm256_cmp_ps(v, acc, _CMP_LE_OQ));
+}
+
+/* One output of a window of samples at stride step, in index order. */
+static float window_one(const float *first, size_t count, size_t step, int maximum)
+{
+    float acc = first[0];
+    for (size_t k = 1; k < count; ++k) {
+        float v = first[k * step];
+        if (maximum ? v >= acc : v <= acc) acc = v;
+    }
+    return acc;
+}
+
+void cn_morphology_row_avx2(const float *in, float *out, size_t width, size_t channels, size_t radius, int maximum)
+{
+    const size_t row = width * channels, reach = radius * channels;
+    size_t f = 0;
+    for (; f < row; ++f) {
+        const size_t x = f / channels, first = x > radius ? x - radius : 0;
+        const size_t last = radius >= width - 1 - x ? width - 1 : x + radius;
+        /* The interior, whose windows lie inside the row, at least eight samples: groups of 8, the last one
+         * overlapping back. */
+        if (x == radius && width > 2 * radius && row - 2 * reach >= 8) {
+            const size_t end = row - reach;
+            for (size_t at = f; at < end; at += 8) {
+                if (end - at < 8) at = end - 8;
+                const float *p = in + at - reach;
+                __m256 acc = _mm256_loadu_ps(p);
+                for (size_t k = 1; k <= 2 * radius; ++k)
+                    acc = later_extremum(acc, _mm256_loadu_ps(p + k * channels), maximum);
+                _mm256_storeu_ps(out + at, acc);
+            }
+            f = end - 1;
+            continue;
+        }
+        out[f] = window_one(in + first * channels + f % channels, last - first + 1, channels, maximum);
+    }
+}
+
+void cn_morphology_column_avx2(const float *in, float *out, size_t height, size_t row, size_t y, size_t radius,
+                               int maximum)
+{
+    const size_t first = y > radius ? y - radius : 0;
+    const size_t count = (radius >= height - 1 - y ? height - 1 : y + radius) - first + 1;
+    const float *top = in + first * row;
+    float *target = out + y * row;
+    size_t f = 0;
+    for (; row - f >= 8; f += 8) {
+        __m256 acc = _mm256_loadu_ps(top + f);
+        for (size_t k = 1; k < count; ++k) acc = later_extremum(acc, _mm256_loadu_ps(top + k * row + f), maximum);
+        _mm256_storeu_ps(target + f, acc);
+    }
+    for (; f < row; ++f) target[f] = window_one(top + f, count, row, maximum);
 }
 
 /* Groups of 8 as merge_one: vcmpps(a, b, _CMP_GT_OQ) or (_CMP_LT_OQ), ordered like

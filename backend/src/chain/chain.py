@@ -22,7 +22,9 @@ class FunctionNode:
         self.id: NodeId = node_id
         self.schema_id: str = schema_id
         self.data: NodeData = registry.get_node(schema_id)
-        assert self.data.kind == "regularNode"
+        assert self.data.kind == "regularNode", (
+            f"{schema_id} is a {self.data.kind}, not a regular node."
+        )
 
     def has_side_effects(self) -> bool:
         return self.data.side_effects
@@ -33,7 +35,9 @@ class GeneratorNode:
         self.id: NodeId = node_id
         self.schema_id: str = schema_id
         self.data: NodeData = registry.get_node(schema_id)
-        assert self.data.kind == "generator"
+        assert self.data.kind == "generator", (
+            f"{schema_id} is a {self.data.kind}, not a generator."
+        )
 
     def has_side_effects(self) -> bool:
         return self.data.side_effects
@@ -44,7 +48,9 @@ class CollectorNode:
         self.id: NodeId = node_id
         self.schema_id: str = schema_id
         self.data: NodeData = registry.get_node(schema_id)
-        assert self.data.kind == "collector"
+        assert self.data.kind == "collector", (
+            f"{schema_id} is a {self.data.kind}, not a collector."
+        )
 
     def has_side_effects(self) -> bool:
         return self.data.side_effects

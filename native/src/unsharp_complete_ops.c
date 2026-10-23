@@ -8,8 +8,10 @@
  * shared CPU pool.
  */
 #include "chainner.h"
+#include "isa.h"
 #include "parallel.h"
 #include "run_kernels.h"
+#include "unsharp_shared.h"
 #include <math.h>
 
 static cn_status span(const void *pointer, size_t count, uintptr_t *end)
@@ -25,11 +27,20 @@ typedef struct unsharp_context {
     float *output;
     float alpha, beta;
     int fused;
+    cn_isa_level isa;
 } unsharp_context;
 
 static void unsharp_range(void *opaque, size_t begin, size_t end)
 {
     const unsharp_context *ctx = opaque;
+#if defined(_MSC_VER) && defined(_M_X64)
+    /* The fused form at avx2 and above through the AVX2 unit (vfmadd, fmaf's bits). */
+    if (ctx->fused && ctx->isa >= CN_ISA_AVX2) {
+        cn_unsharp_fused_avx2(ctx->source + begin, ctx->blurred + begin, ctx->output + begin, end - begin, ctx->alpha,
+            ctx->beta);
+        return;
+    }
+#endif
     for (size_t i = begin; i < end; ++i) {
         float a = ctx->source[i], b = ctx->blurred[i];
         ctx->output[i] = ctx->fused ? fmaf(a, ctx->alpha, fmaf(b, ctx->beta, 0.0f)) :
@@ -51,6 +62,6 @@ CN_EXPORT cn_status cn_unsharp_weighted(const float *source, const float *blurre
     if (((uintptr_t)source < oe && (uintptr_t)output < se) ||
         ((uintptr_t)blurred < oe && (uintptr_t)output < be)) return CN_INVALID_ARGUMENT;
     unsharp_context ctx = {source, blurred, output, (float)(amount + 1.0), (float)-amount,
-        lanes == 8 && row_width >= (size_t)lanes};
+        lanes == 8 && row_width >= (size_t)lanes, cn_isa_current()};
     return cn_parallel_for(count, 65536, unsharp_range, &ctx);
 }

@@ -15,8 +15,10 @@ static cn_status layout_size(size_t h, size_t w, size_t c)
     return CN_OK;
 }
 
+/* An in-range position is its own reflection (Pixelate's interior samples, without the division). */
 static size_t reflected(size_t position, size_t length)
 {
+    if (position < length) return position;
     if (length == 1) return 0;
     size_t period = (length - 1) * 2;
     position %= period;
@@ -106,6 +108,16 @@ static void paste_range(void *opaque, size_t begin, size_t end)
     }
 }
 
+/* An image pasted at its own size and channel count: the scales are 1 and every
+ * channel_value is the pixel's own, so paste_range copies its rows. */
+static void paste_rows(void *opaque, size_t begin, size_t end)
+{
+    const paste_context *ctx = opaque;
+    for (size_t y = begin; y < end; ++y)
+        memcpy(ctx->out + ((y + ctx->top) * ctx->out_w + ctx->left) * ctx->out_c,
+               ctx->src + y * ctx->w * ctx->c, ctx->w * ctx->c * sizeof(float));
+}
+
 /* Paste a nearest-resampled/promoted image into an already allocated canvas.
  * The checked Python caller creates non-overlapping rectangles covering it. */
 CN_EXPORT cn_status cn_layout_paste(const float *src, float *out,
@@ -123,6 +135,8 @@ CN_EXPORT cn_status cn_layout_paste(const float *src, float *out,
     paste_context ctx = {src, out, h, w, c, out_w, out_c, top, left,
         target_h, target_w, expand_gray, 1.0 / ((double)target_h / (double)h),
         1.0 / ((double)target_w / (double)w)};
+    if (target_h == h && target_w == w && out_c == c)
+        return cn_parallel_for(h, 1 + 65536 / w, paste_rows, &ctx);
     return cn_parallel_for(target_h * target_w, 65536, paste_range, &ctx);
 }
 

@@ -87,6 +87,13 @@ def interpolate_models_node(
     b: OnnxModel,
     amount: int,
 ) -> tuple[OnnxModel, int, int]:
+    # The mix puts the interpolated weights into B's graph; when the two precisions
+    # differ, ONNX Runtime refused the result with a bare type error.
+    if 0 < amount < 100 and a.info.dtype != b.info.dtype:
+        raise ValueError(
+            f"These ONNX models have different precisions ({a.info.dtype} and"
+            f" {b.info.dtype}). Convert them to the same one to interpolate them."
+        )
     return graph().onnx_interpolate_models(
         context,
         a,

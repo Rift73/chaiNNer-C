@@ -6,7 +6,11 @@ from ...utils.utils import get_h_w_c
 from ..image_op import ImageOp, clipped
 from ..image_utils import as_target_channels
 from ..native_buffers import alpha_backgrounds, constant_alpha, flatten_alpha
-from ..native_framework_shared import assemble_alpha, recover_alpha
+from ..native_framework_shared import (
+    assemble_alpha,
+    recover_alpha,
+    recovered_alpha_image,
+)
 
 
 def with_black_and_white_backgrounds(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -93,6 +97,9 @@ def convenient_upscale(
             )
 
             # Interpolate between the alpha values to get a more defined alpha
+            image = recovered_alpha_image(white_up, black_up)
+            if image is not None:
+                return image
             alpha_candidates = recover_alpha(white_up, black_up)
             alpha = denoise_and_flatten_alpha(alpha_candidates)
 

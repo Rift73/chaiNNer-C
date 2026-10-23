@@ -1,8 +1,10 @@
 #include "chainner.h"
 #include "cn_crt_math.h"
+#include "exceptional.h"
 #include "isa.h"
 #include "merge_shared.h"
 #include "morph_entry.h"
+#include "morph_fold.h"
 #include "parallel.h"
 #include "run_kernels.h"
 #include "scratch.h"
@@ -151,6 +153,18 @@ static void morph_lines(void *context, size_t begin, size_t end) {
     }
 }
 
+#if defined(_MSC_VER) && defined(_M_X64)
+/* Rows [begin, end) of a pass through the AVX2 unit (morph_fold.h): along the rows, or down the columns. */
+static void morph_rows(void *context, size_t begin, size_t end) {
+    morph_job *j = (morph_job *)context;
+    size_t row = j->width * j->channels;
+    for (size_t y = begin; y < end; ++y) {
+        if (j->vertical) cn_morphology_column_avx2(j->src, j->out, j->height, row, y, j->radius, j->maximum);
+        else cn_morphology_row_avx2(j->src + y * row, j->out + y * row, j->width, j->channels, j->radius, j->maximum);
+    }
+}
+#endif
+
 /* isa: the level the C entry read once for the call (cn_isa_current). */
 typedef struct morph_merge_job {
     const float *a;
@@ -186,31 +200,51 @@ CN_EXPORT cn_status cn_filter_morphology(const float *src, float *out,
     /* OpenCV's int dimensions (D11), before any allocation. */
     if (height > INT_MAX || width > INT_MAX) return CN_SIZE_OVERFLOW;
     size_t n = width * height * channels;
+    if (!cross) { radius *= iterations; iterations = 1; }
+    cn_isa_level isa = cn_isa_current();
+    /* At avx2 and above, windows of at most CN_MORPH_FOLD_RADIUS on each side over an image without exceptional words
+     * (the extrema of its windows have none either) run as direct folds through the AVX2 unit, row by row, instead
+     * of the deques: the same outputs, without the deques' branches and the columns' strided walk. */
+    int plain = 0;
+#if defined(_MSC_VER) && defined(_M_X64)
+    plain = isa >= CN_ISA_AVX2 && radius <= CN_MORPH_FOLD_RADIUS && !cn_exceptional_scan(src, n, isa);
+#endif
     size_t total = 0, horizontal_at = 0, alternate_at = 0, queue_at = 0;
     int alternates = cross && iterations > 1;
     if (!cn_scratch_carve(&total, n * sizeof(float), &horizontal_at) ||
         (alternates && !cn_scratch_carve(&total, n * sizeof(float), &alternate_at)) ||
-        n > SIZE_MAX / sizeof(struct morph_entry) ||
-        !cn_scratch_carve(&total, n * sizeof(struct morph_entry), &queue_at))
+        (!plain && (n > SIZE_MAX / sizeof(struct morph_entry) ||
+                    !cn_scratch_carve(&total, n * sizeof(struct morph_entry), &queue_at))))
         return CN_ALLOCATION_FAILED;
     cn_scratch scratch;
     cn_status status = cn_scratch_lease(total, &scratch, NULL);
     if (status != CN_OK) return status;
     float *horizontal = (float *)((char *)scratch.data + horizontal_at);
     float *alternate = alternates ? (float *)((char *)scratch.data + alternate_at) : NULL;
-    struct morph_entry *queue = (struct morph_entry *)((char *)scratch.data + queue_at);
-    if (!cross) { radius *= iterations; iterations = 1; }
+    struct morph_entry *queue = plain ? NULL : (struct morph_entry *)((char *)scratch.data + queue_at);
     const float *current = src;
-    cn_isa_level isa = cn_isa_current();
     for (size_t iteration = 0; iteration < iterations; ++iteration) {
         float *destination = (iterations - 1 - iteration) % 2 ? alternate : out;
         morph_job job = {current, horizontal, queue, width, height, channels, radius, 0, maximum};
-        status = cn_parallel_for(height * channels, 1 + 65536 / width, morph_lines, &job);
-        if (status != CN_OK) break;
-        job.src = cross ? current : horizontal;
-        job.out = destination; job.vertical = 1;
-        status = cn_parallel_for(width * channels, 1 + 65536 / height, morph_lines, &job);
-        if (status != CN_OK) break;
+#if defined(_MSC_VER) && defined(_M_X64)
+        if (plain) {
+            size_t grain = 1 + 65536 / (width * channels);
+            status = cn_parallel_for(height, grain, morph_rows, &job);
+            if (status != CN_OK) break;
+            job.src = cross ? current : horizontal;
+            job.out = destination; job.vertical = 1;
+            status = cn_parallel_for(height, grain, morph_rows, &job);
+            if (status != CN_OK) break;
+        }
+#endif
+        if (!plain) {
+            status = cn_parallel_for(height * channels, 1 + 65536 / width, morph_lines, &job);
+            if (status != CN_OK) break;
+            job.src = cross ? current : horizontal;
+            job.out = destination; job.vertical = 1;
+            status = cn_parallel_for(width * channels, 1 + 65536 / height, morph_lines, &job);
+            if (status != CN_OK) break;
+        }
         if (cross) {
             morph_merge_job merge = {horizontal, destination, maximum, isa};
             status = cn_parallel_for(n, 65536, morph_merge, &merge);

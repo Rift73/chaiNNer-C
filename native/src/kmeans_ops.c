@@ -33,6 +33,16 @@ static double random_f64(uint64_t *state) {
  * the four-vector accumulation/reduction order, including the scalar tail.
  */
 static float distance(const float *a, const float *b, size_t channels) {
+    if (channels < 16) {
+        /* No full block: the lanes and their sum are +0, which leaves the first square
+           unchanged, so the tail alone gives the same float. */
+        float result = 0.0f;
+        for (size_t c = 0; c < channels; ++c) {
+            float delta = a[c] - b[c];
+            result += delta * delta;
+        }
+        return result;
+    }
     float sums[4][4] = {{0}};
     size_t c = 0;
     for (; channels - c >= 16; c += 16) {
@@ -55,10 +65,12 @@ static float distance(const float *a, const float *b, size_t channels) {
 
 typedef struct {
     const float *data, *centers, *previous;
+    /* Below 16 channels: the centers by channel, colors rounded up to eight (padded with 0). */
+    const float *transposed;
     float *next;
     double *distances;
     int *labels;
-    size_t channels, colors, candidate;
+    size_t channels, colors, padded_colors, candidate;
     int only_distance;
 } kmeans_job;
 
@@ -83,9 +95,27 @@ static void assign_distances(void *opaque, size_t begin, size_t end) {
         }
         double best = DBL_MAX;
         int label = 0;
-        for (size_t k = 0; k < j->colors; ++k) {
-            double d = distance(point, j->centers + k * j->channels, j->channels);
-            if (best > d) { best = d; label = (int)k; }
+        if (j->channels < 16) {
+            /* distance()'s tail for eight centers side by side, then the same ordered
+               comparisons. */
+            for (size_t first = 0; first < j->colors; first += 8) {
+                float d[8] = {0};
+                for (size_t c = 0; c < j->channels; ++c) {
+                    const float *column = j->transposed + c * j->padded_colors + first;
+                    for (size_t k = 0; k < 8; ++k) {
+                        float delta = point[c] - column[k];
+                        d[k] += delta * delta;
+                    }
+                }
+                size_t count = j->colors - first < 8 ? j->colors - first : 8;
+                for (size_t k = 0; k < count; ++k)
+                    if (best > d[k]) { best = d[k]; label = (int)(first + k); }
+            }
+        } else {
+            for (size_t k = 0; k < j->colors; ++k) {
+                double d = distance(point, j->centers + k * j->channels, j->channels);
+                if (best > d) { best = d; label = (int)k; }
+            }
         }
         j->distances[i] = best;
         j->labels[i] = label;
@@ -157,8 +187,11 @@ CN_EXPORT cn_status cn_palette_kmeans(const float *data, float *out,
     int *labels = malloc(pixels * sizeof(int));
     int *counts = malloc(colors * sizeof(int));
     size_t *seeds = malloc(colors * sizeof(size_t));
+    size_t padded_colors = (colors + 7) / 8 * 8;
+    float *transposed = channels < 16 ? calloc(channels * padded_colors, sizeof(float)) : NULL;
     cn_status status = CN_ALLOCATION_FAILED;
-    if (!storage || !scratch || !temp || !distances || !labels || !counts || !seeds)
+    if (!storage || !scratch || !temp || !distances || !labels || !counts || !seeds ||
+        (channels < 16 && !transposed))
         goto cleanup;
     float *centers = storage, *old = storage + center_values;
     uint64_t rng = UINT64_C(0xffffffff);
@@ -166,6 +199,7 @@ CN_EXPORT cn_status cn_palette_kmeans(const float *data, float *out,
     kmeans_job job = {0};
     job.data = data; job.channels = channels; job.colors = colors;
     job.labels = labels; job.distances = distances;
+    job.transposed = transposed; job.padded_colors = padded_colors;
     int attempts = colors == 1 ? 1 : 10;
     int iterations = colors == 1 ? 2 : 10;
     for (int attempt = 0; attempt < attempts; ++attempt) {
@@ -225,6 +259,10 @@ CN_EXPORT cn_status cn_palette_kmeans(const float *data, float *out,
             ++iteration;
             job.centers = centers;
             job.only_distance = iteration == iterations || max_shift <= 1.0;
+            if (transposed && !job.only_distance)
+                for (size_t k = 0; k < colors; ++k)
+                    for (size_t c = 0; c < channels; ++c)
+                        transposed[c * padded_colors + k] = centers[k * channels + c];
             status = cn_parallel_for(pixels, colors > 16 ? 512 : 4096, assign_distances, &job);
             if (status != CN_OK) goto cleanup;
             if (job.only_distance) {
@@ -243,7 +281,7 @@ CN_EXPORT cn_status cn_palette_kmeans(const float *data, float *out,
     }
     status = best_compactness < DBL_MAX ? CN_OK : CN_KMEANS_NO_CONVERGENCE;
 cleanup:
-    free(seeds); free(counts); free(labels); free(distances);
+    free(transposed); free(seeds); free(counts); free(labels); free(distances);
     free(temp); free(scratch); free(storage);
     return status;
 }

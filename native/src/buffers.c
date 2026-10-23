@@ -3,13 +3,11 @@
 #include "isa.h"
 #include "parallel.h"
 #include "run_kernels.h"
+#include <fenv.h>
 #include <math.h>
 #include <string.h>
 #ifdef _MSC_VER
 #include <intrin.h>
-#endif
-#ifndef CN_CONVERT_SSE
-#include <fenv.h>
 #endif
 
 /* Whether the caller's rounding mode, which the pool's helpers take, is round to
@@ -22,25 +20,65 @@ static int rounds_to_nearest(void) {
 #endif
 }
 
+/* ORs a chunk's event bits into its call's. */
+static void merge_events(volatile long *target, long events) {
+    if (events) {
+#ifdef _MSC_VER
+        _InterlockedOr(target, events);
+#else
+        __atomic_fetch_or(target, events, __ATOMIC_RELAXED);
+#endif
+    }
+}
+
 /* One loop per chunk (convert_shared.h). NumPy 1.24.4's pinned MSVC float->u8/u16
  * cast goes through int32; scaled_integer defines its overflow sentinel. */
 static void convert_range(void *opaque, size_t begin, size_t end) {
     convert_job *j = opaque;
     long events;
 #if defined(_MSC_VER) && defined(_M_X64)
-    if (j->isa >= CN_ISA_AVX2 && ((j->type == 2 && j->output == 0) ||
-                                  (j->type == 0 && j->output <= 1)))
+    if (j->isa >= CN_ISA_AVX2 && ((j->type == 2 && j->output == 0) || j->type == 0))
         events = cn_convert_avx2(j, begin, end);
     else
 #endif
         events = convert_scalar(j, begin, end);
-    if (events) {
-#ifdef _MSC_VER
-        _InterlockedOr(&j->events, events);
-#else
-        __atomic_fetch_or(&j->events, events, __ATOMIC_RELAXED);
+    merge_events(&j->events, events);
+}
+
+typedef struct {
+    const float *src;
+    uint16_t *out;
+    size_t pixels;
+    cn_isa_level isa;
+    volatile long events;
+} gbr_planes_job;
+
+static void gbr_planes_range(void *opaque, size_t begin, size_t end) {
+    gbr_planes_job *j = opaque;
+    long events;
+#if defined(_MSC_VER) && defined(_M_X64)
+    if (j->isa >= CN_ISA_AVX2)
+        events = cn_gbr_planes_avx2(j->src, j->out, j->pixels, begin, end);
+    else
 #endif
-    }
+        events = gbr_planes_scalar(j->src, j->out, j->pixels, begin, end);
+    merge_events(&j->events, events);
+}
+
+/* Save Video's and Frames to Clip's RGB frames (image_utils.to_uint16_gbr_planes):
+ * a C-contiguous BGR float32 image of `pixels` pixels to its G, B and R planes in
+ * uint16, plane after plane in out (3 x pixels), each element and the event bits as
+ * cn_pixels_convert_checked's (type 0, output 2) give them, so the planes equal its
+ * output rearranged; one pass instead of the conversion and a gather. */
+CN_EXPORT cn_status cn_pixels_gbr_planes_u16(const float *src, uint16_t *out, size_t pixels,
+                                            int *events) {
+    if (!src || !out) return CN_INVALID_ARGUMENT;
+    if (pixels > SIZE_MAX / (3 * sizeof(float))) return CN_SIZE_OVERFLOW;
+    gbr_planes_job job = {src, out, pixels, cn_isa_current(), 0};
+    /* cn_pixels_convert_checked's grain of 262,144 elements, in pixels of three. */
+    cn_status status = cn_parallel_for(pixels, 87382, gbr_planes_range, &job);
+    if (events) *events = (int)job.events;
+    return status;
 }
 
 /* src and out may alias exactly (src == out) for (type 0, output 0, normalize 1)
@@ -97,19 +135,28 @@ typedef struct {
     int axis;
 } mix_job;
 
+/* Output elements [begin, end), row by row: the row, pixel and channel of the first
+ * element are divided out once, then counted (no division per element). Each element
+ * is a * (1 - w) + b * w as b * w + a - a * w, three roundings in that order. */
 static void mix_range(void *opaque, size_t begin, size_t end) {
     mix_job *j = opaque;
-    for (size_t i = begin; i < end; ++i) {
-        size_t wi = j->axis == 0 ? i : j->axis == 1
-            ? (i / j->channels) % j->width : i / j->channels / j->width;
-        size_t row_width = j->width * j->channels;
-        size_t y = i / row_width, x = i % row_width;
-        float a = j->a[y * j->a_row + x], b = j->b[y * j->b_row + x];
-        float weight = j->weights[wi];
-        float value = b * weight;
-        value += a;
-        float subtract = a * weight;
-        j->out[i] = value - subtract;
+    const size_t row_width = j->width * j->channels;
+    size_t y = begin / row_width, x = begin % row_width;
+    for (size_t i = begin; i < end; ++y, x = 0) {
+        const float *a = j->a + y * j->a_row, *b = j->b + y * j->b_row;
+        const size_t stop = end - i < row_width - x ? x + (end - i) : row_width;
+        size_t pixel = x / j->channels, channel = x % j->channels;
+        for (; x < stop; ++x, ++i) {
+            float weight = j->weights[j->axis == 0 ? i : j->axis == 1 ? pixel : y];
+            float value = b[x] * weight;
+            value += a[x];
+            float subtract = a[x] * weight;
+            j->out[i] = value - subtract;
+            if (++channel == j->channels) {
+                channel = 0;
+                ++pixel;
+            }
+        }
     }
 }
 
@@ -138,6 +185,30 @@ typedef struct {
     int background;
 } alpha_job;
 
+/* denoise_and_flatten_alpha of one pixel: its channels' min, max and mean, then
+ * max * mean + min * (1 - mean), clipped to [0, 1] (NaN passes). A NaN channel makes
+ * max the last NaN channel, and the result is that NaN, quieted, as this kernel has
+ * always given it; it is set explicitly because which NaN an arithmetic operation
+ * keeps follows the compiler's operand order, which differs between callers. */
+static float flattened_alpha(const float *pixel, size_t channels) {
+    float low = pixel[0], high = pixel[0], sum = -0.0f;
+    for (size_t c = 0; c < channels; ++c) {
+        if (pixel[c] < low || isnan(pixel[c])) low = pixel[c];
+        if (pixel[c] > high || isnan(pixel[c])) high = pixel[c];
+        sum += pixel[c];
+    }
+    float mean = sum / (float)channels;
+    float part = low * (1.0f - mean);
+    float result = high * mean + part;
+    if (isnan(high)) {
+        uint32_t bits;
+        memcpy(&bits, &high, sizeof(bits));
+        bits |= UINT32_C(0x00400000);
+        memcpy(&result, &bits, sizeof(result));
+    }
+    return result <= 0 ? 0 : result >= 1 ? 1 : result;
+}
+
 static void alpha_range(void *opaque, size_t begin, size_t end) {
     alpha_job *j = opaque;
     for (size_t p = begin; p < end; ++p) {
@@ -149,18 +220,76 @@ static void alpha_range(void *opaque, size_t begin, size_t end) {
                 j->white[p * 3 + c] = white + 1.0f;
             }
         } else {
-            float low = pixel[0], high = pixel[0], sum = -0.0f;
-            for (size_t c = 0; c < j->channels; ++c) {
-                if (pixel[c] < low || isnan(pixel[c])) low = pixel[c];
-                if (pixel[c] > high || isnan(pixel[c])) high = pixel[c];
-                sum += pixel[c];
-            }
-            float mean = sum / (float)j->channels;
-            float part = low * (1.0f - mean);
-            float result = high * mean + part;
-            j->out[p] = result <= 0 ? 0 : result >= 1 ? 1 : result;
+            j->out[p] = flattened_alpha(pixel, j->channels);
         }
     }
+}
+
+typedef struct {
+    const float *white, *black;
+    float *out;
+    volatile long events[2];
+} recovered_job;
+
+#define CN_RECOVER_BLOCK 256
+
+/* FP conditions raised since the last call, cleared, in cn_framework_shared's event
+ * bits (1 divide by zero, 2 overflow, 4 underflow, 8 invalid). */
+static long raised_events(void) {
+    int state = fetestexcept(FE_DIVBYZERO | FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID);
+    feclearexcept(FE_ALL_EXCEPT);
+    return ((state & FE_DIVBYZERO) ? 1 : 0) | ((state & FE_OVERFLOW) ? 2 : 0) |
+           ((state & FE_UNDERFLOW) ? 4 : 0) | ((state & FE_INVALID) ? 8 : 0);
+}
+
+/* Pixels [begin, end) in blocks: the candidates 1 - (white - black) (the difference,
+ * then the subtraction from 1, each stage's conditions tested apart as NumPy's two
+ * ufunc calls), then the pixel's black colour and its flattened candidates' alpha.
+ * The flatten reports nothing, as flatten_alpha does. */
+static void recovered_range(void *opaque, size_t begin, size_t end) {
+    recovered_job *j = opaque;
+    float candidates[CN_RECOVER_BLOCK * 3];
+    long events[2] = {0, 0};
+    fenv_t previous;
+    fegetenv(&previous);
+    feclearexcept(FE_ALL_EXCEPT);
+    for (size_t first = begin; first < end; first += CN_RECOVER_BLOCK) {
+        size_t count = end - first < CN_RECOVER_BLOCK ? end - first : CN_RECOVER_BLOCK;
+        const float *white = j->white + first * 3, *black = j->black + first * 3;
+        for (size_t k = 0; k < count * 3; ++k) candidates[k] = white[k] - black[k];
+        events[0] |= raised_events();
+        for (size_t k = 0; k < count * 3; ++k) candidates[k] = 1.0f - candidates[k];
+        events[1] |= raised_events();
+        for (size_t p = 0; p < count; ++p) {
+            float *pixel = j->out + (first + p) * 4;
+            memcpy(pixel, black + p * 3, 3 * sizeof(float));
+            pixel[3] = flattened_alpha(candidates + p * 3, 3);
+        }
+        feclearexcept(FE_ALL_EXCEPT);
+    }
+    fesetenv(&previous);
+    for (size_t stage = 0; stage < 2; ++stage) {
+        if (!events[stage]) continue;
+#ifdef _MSC_VER
+        _InterlockedOr(&j->events[stage], events[stage]);
+#else
+        __atomic_fetch_or(&j->events[stage], events[stage], __ATOMIC_RELAXED);
+#endif
+    }
+}
+
+/* convenient_upscale's transparency path for (pixels, 3) white and black upscales:
+ * out (pixels, 4) is the black colour with the alpha that recover_alpha, then
+ * denoise_and_flatten_alpha give, in one pass; events[0..1]: the two subtractions'. */
+CN_EXPORT cn_status cn_upscale_alpha_recover(const float *white, const float *black,
+                                            float *out, size_t pixels, int *events) {
+    if (!white || !black || !out || !events) return CN_INVALID_ARGUMENT;
+    if (pixels > SIZE_MAX / 4 / sizeof(float)) return CN_SIZE_OVERFLOW;
+    recovered_job job = {white, black, out, {0, 0}};
+    cn_status status = cn_parallel_for(pixels, 16384, recovered_range, &job);
+    events[0] = (int)job.events[0];
+    events[1] = (int)job.events[1];
+    return status;
 }
 
 CN_EXPORT cn_status cn_upscale_alpha(const float *src, float *out, float *white,

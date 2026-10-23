@@ -72,10 +72,11 @@ static cn_status covariance(const void *image, pixel_layout layout,
         const transfer_backend *b, int *error) {
     size_t count = 0;
     for (size_t i = 0; i < pixels; ++i) count += mask[i] != 0;
-    /* np.cov transposes when `not rowvar and m.ndim != 1`, so fewer than two
-     * pixels leave no degrees of freedom: the covariance is 0 * inf = NaN,
-     * which eig rejects as non-finite. */
-    if (count < 2) { *error = 1; return CN_OK; }
+    /* np.cov transposes when `not rowvar and m.ndim != 1`, so one pixel leaves
+     * no degrees of freedom: upstream's covariance is 0 * inf = NaN, which eig
+     * rejects as non-finite. chaiNNer-C gives one pixel zero covariance, a solid
+     * image's (ruling of 2026-10-23); no pixel at all keeps the error. */
+    if (count == 0) { *error = 1; return CN_OK; }
     double *data = malloc(count * 3 * sizeof(double));
     if (!data) return CN_ALLOCATION_FAILED;
     double average[3] = {0, 0, 0};
@@ -96,6 +97,11 @@ static cn_status covariance(const void *image, pixel_layout layout,
          * as weak: the float32 sum divides in float64, then casts back. */
         if (f64) ((double *)mean)[c] = average[c];
         else ((float *)mean)[c] = (float)((double)float_average[c] / (double)count);
+    }
+    if (count == 1) {
+        for (size_t i = 0; i < 9; ++i) cov[i] = 0.0;
+        free(data);
+        return CN_OK;
     }
     for (size_t i = 0; i < count; ++i)
         for (size_t c = 0; c < 3; ++c) data[i * 3 + c] -= average[c];

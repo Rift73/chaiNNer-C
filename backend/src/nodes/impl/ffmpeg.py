@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from subprocess import check_call
 
-import requests
 from sanic.log import logger
 
 from system import is_arm_mac, is_linux, is_mac, is_windows
@@ -108,6 +107,10 @@ def setup_integrated_ffmpeg(base_dir: Path):
     file and is extracted into a temporary folder next to base_dir, which becomes
     base_dir by a rename once both executables are in it. A setup that stops midway
     leaves no base_dir (the next use starts over), never a cut-off ffmpeg that exists."""
+    # Imported here, for the download alone: Load Video and Save Video import this
+    # module among the nodes every start loads first, and requests takes about 80 ms.
+    import requests
+
     url = get_download_url()
     parent = base_dir.parent
     parent.mkdir(exist_ok=True, parents=True)

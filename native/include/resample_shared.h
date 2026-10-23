@@ -94,4 +94,12 @@ static float vertical_one(const resample_context *ctx, const coefficient_line *l
  * redoes a group whose sum holds a NaN (B3's payload where two NaNs meet), unless
  * clip 2 turns it into +0. */
 void cn_resample_vertical_avx2(const resample_context *ctx, size_t y, size_t first, size_t last);
+
+/* resample_avx2.c, for ISA level avx2 or above: horizontal outputs of source rows [y, y + rows) (1 to 8 rows) into
+ * ctx->intermediate. Tile by tile of up to 64 outputs, the source columns a tile reads are transposed onto the stack
+ * so that each lane runs one row's horizontal sequence (acc = 0, then acc = acc + in * w per tap in order, a vmulps
+ * then a vaddps), and the sums are transposed back; a lane past rows repeats the last row. Returns 0 when a sum holds
+ * a NaN, or when one output's columns do not fit a tile (a very large reduction): the caller then redoes the rows in
+ * its scalar code, whose NaN payloads follow its own operand order. */
+int cn_resample_horizontal_avx2(const resample_context *ctx, size_t y, size_t rows);
 #endif

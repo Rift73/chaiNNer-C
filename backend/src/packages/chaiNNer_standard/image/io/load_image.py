@@ -99,6 +99,11 @@ def _read_tiff_straight_alpha(path: Path) -> np.ndarray | None:
             f" save it as RGBA or PNG: {path}"
         )
         return None
+    # Other depths and alpha kinds stay with OpenCV, decided from the tags before Pillow
+    # opens a file it may not parse (an RGB float TIFF failed here with a logged
+    # "Decoder pil-tiff-alpha failed" on every load).
+    if set(tags.get(258, ())) != {8} or tags.get(338) != (2,):
+        return None
     # The plugin class reads only the header; Image.open's size check would also warn
     # on large TIFFs that this decoder leaves to OpenCV.
     with TiffImagePlugin.TiffImageFile(path) as im:

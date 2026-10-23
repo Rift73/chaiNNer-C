@@ -23,15 +23,20 @@ static void gradient_rows(void *opaque, size_t begin, size_t end)
             double value;
             switch (ctx->kind) {
             case 0:
-                value = (double)column / ((double)ctx->width - 1.0);
+                value = ctx->width == 1 ? 0.0 : (double)column / ((double)ctx->width - 1.0);
                 break;
             case 1:
-                value = (double)row / ((double)ctx->height - 1.0);
+                value = ctx->height == 1 ? 0.0 : (double)row / ((double)ctx->height - 1.0);
                 break;
             case 2: {
                 double dr = (double)row - (double)ctx->start_r;
                 double dc = (double)column - (double)ctx->start_c;
-                value = (dr * (double)ctx->direction_r + dc * (double)ctx->direction_c) / ctx->b;
+                double projection = dr * (double)ctx->direction_r + dc * (double)ctx->direction_c;
+                if (ctx->b == 0.0) {
+                    value = projection >= 0.0 ? 1.0 : 0.0;
+                    break;
+                }
+                value = projection / ctx->b;
                 if (value < 0.0) value = 0.0;
                 if (value > 1.0) value = 1.0;
                 break;
@@ -39,7 +44,11 @@ static void gradient_rows(void *opaque, size_t begin, size_t end)
             case 3: {
                 double dr = (double)row - (double)ctx->center_r;
                 double dc = (double)column - (double)ctx->center_c;
-                value = (sqrt(dr * dr + dc * dc) - ctx->inner) / (ctx->outer - ctx->inner);
+                double distance = sqrt(dr * dr + dc * dc) - ctx->inner;
+                if (ctx->outer == ctx->inner) value = distance >= 0.0 ? 1.0 : 0.0;
+                else value = distance / (ctx->outer - ctx->inner);
+                if (value < 0.0) value = 0.0;
+                if (value > 1.0) value = 1.0;
                 break;
             }
             default:
@@ -55,8 +64,12 @@ static void gradient_rows(void *opaque, size_t begin, size_t end)
 }
 
 /* The coordinate math intentionally follows the original NumPy float64
- * projections and float32 centers/directions. In particular, a one-pixel axis
- * and zero-width/radius intervals retain the original NaNs/infinities. */
+ * projections and float32 centers/directions. Where the original divides 0 by 0
+ * (NaN pixels) chaiNNer-C takes the limits instead (ruling of 2026-10-23): a
+ * one-pixel axis is position 0, and a zero-width diagonal or radial interval is a
+ * step, 0 before its edge and 1 at or after it. The radial position is clamped to
+ * 0..1 as the diagonal's is (Fable, 2026-10-23): upstream extrapolated past both
+ * colours inside the inner and beyond the outer radius. */
 CN_EXPORT cn_status cn_gradient(float *out, size_t height, size_t width,
                                 int kind, double a, double b, int wide_start)
 {

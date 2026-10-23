@@ -6,6 +6,7 @@ import { formatExecutionErrorMessage } from '../../common/formatExecutionErrorMe
 import { log } from '../../common/log';
 import { checkNodeValidity } from '../../common/nodes/checkNodeValidity';
 import { getConnectedInputs } from '../../common/nodes/connectedInputs';
+import { formatDroppedNodes, toEditorChain } from '../../common/nodes/editorChain';
 import { ChainLineage } from '../../common/nodes/lineage';
 import { optimizeChain } from '../../common/nodes/optimize';
 import { parseFunctionDefinitions } from '../../common/nodes/parseFunctionDefinitions';
@@ -126,15 +127,6 @@ const ensureStaticCorrectness = (
     functionDefinitions: ReadonlyMap<SchemaId, FunctionDefinition>,
     passthrough: PassthroughMap
 ): void => {
-    const unknown = nodes.filter((n) => !schemata.has(n.data.schemaId));
-    if (unknown.length > 0) {
-        log.error(
-            `There are ${unknown.length} unknown node(s) in the chain.` +
-                ` This means that either (1) the chain was produces by a newer version of chainner, (2) the node was deprecated and has been removed, or (3) a third-party plugin is not installed.`
-        );
-        throw new Exit(1);
-    }
-
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const typeState = TypeState.create(
         byId,
@@ -200,35 +192,36 @@ const runChain = async (
         );
     }
 
-    // Match the editor's saved-chain loading before applying explicit CLI overrides.
-    // Older chains do not contain inputs added in newer node versions.
-    for (const node of saveFile.nodes) {
-        if (schemata.has(node.data.schemaId)) {
-            node.data = {
-                ...node.data,
-                inputData: {
-                    ...schemata.getDefaultInput(node.data.schemaId),
-                    ...Object.fromEntries(
-                        Object.entries(node.data.inputData).filter(([, value]) => value != null)
-                    ),
-                },
-            };
-        }
+    // Load the chain as the editor opens it (e.g. older chains lack inputs added in newer node
+    // versions) before applying explicit CLI overrides. The editor shows what it dropped and
+    // lets the user save the rest; the CLI runs only the whole chain.
+    const chain = toEditorChain(schemata, saveFile.nodes, saveFile.edges);
+    if (chain.droppedNodes.length > 0) {
+        // the run would leave an unknown node out as having no effect
+        log.error(
+            `There are ${chain.droppedNodes.length} unknown node(s) in the chain.` +
+                ` This means that either (1) the chain was produced by a newer version of chaiNNer, (2) the node was deprecated and has been removed, or (3) a third-party plugin is not installed.` +
+                `\n${formatDroppedNodes(chain.droppedNodes)}`
+        );
+        throw new Exit(1);
+    }
+    if (chain.droppedEdges > 0) {
+        log.error(
+            `There are ${chain.droppedEdges} connection(s) in the chain that do not fit their nodes` +
+                ` (a connection to an input or output that its node does not have, a second connection into one input, or a loop).` +
+                ` Open the chain in chaiNNer and save it to remove them.`
+        );
+        throw new Exit(1);
     }
 
     if (args.overrideFile) {
         log.info(`Read override file ${args.overrideFile}`);
         const overrideFile = await readOverrideFile(args.overrideFile);
-        applyOverrides(saveFile.nodes, saveFile.edges, schemata, overrideFile);
+        applyOverrides(chain.nodes, chain.edges, schemata, overrideFile);
     }
 
     const passthrough = PassthroughMap.create(functionDefinitions);
-    const { nodes, edges, report } = optimizeChain(
-        saveFile.nodes,
-        saveFile.edges,
-        schemata,
-        passthrough
-    );
+    const { nodes, edges, report } = optimizeChain(chain.nodes, chain.edges, schemata, passthrough);
 
     // show an error if there are no nodes to run
     if (nodes.length === 0) {

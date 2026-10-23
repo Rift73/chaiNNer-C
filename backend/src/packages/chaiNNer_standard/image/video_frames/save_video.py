@@ -31,7 +31,7 @@ from nodes.impl.colour_info import (
     swscale_matrix,
 )
 from nodes.impl.ffmpeg import FFMpegEnv
-from nodes.impl.image_utils import to_uint8, to_uint16
+from nodes.impl.image_utils import to_uint8, to_uint16, to_uint16_gbr_planes
 from nodes.impl.item_window import Prepared, register_phases
 from nodes.impl.native_graph import graph
 from nodes.impl.native_image_io import cv_save_image
@@ -203,15 +203,24 @@ class WriteSettings:
 def rgb_payload(img: np.ndarray) -> np.ndarray:
     """An RGB frame as Save Video pipes it: gbrp16le, the G, B and R planes in 16 bits,
     so FFmpeg's YUV conversion keeps more than 8 bits of the float image."""
-    return np.ascontiguousarray(
-        to_uint16(img, normalized=True).transpose(2, 0, 1)[[1, 0, 2]]
-    )
+    return to_uint16_gbr_planes(img)
 
 
 def atomic_target(path: str) -> Any:
     """A temporary file in path's folder, renamed onto path by commit()
     (native/include/atomic_file.hpp): Save Video's FFmpeg output and audio mux."""
     return graph().AtomicTarget(path)
+
+
+def colour_tags(colour: ColourInfo) -> dict[str, str]:
+    """`colour` as FFmpeg's colour tag options."""
+    return {
+        "colorspace": option_value(colour.matrix),
+        "color_primaries": option_value(colour.primaries),
+        "color_trc": option_value(colour.transfer),
+        "color_range": option_value(colour.range),
+        "chroma_sample_location": option_value(colour.chroma_location),
+    }
 
 
 def planar_format(colour: ColourInfo) -> str:
@@ -352,6 +361,23 @@ class Writer:
         ):
             return "bgr24"
         return "gbrp16le"
+
+    @property
+    def input_options(self) -> dict[str, str]:
+        """FFmpeg's options for the piped frames besides their format: in Planes mode the
+        colour tags the output gets (_tag: the planes' own, a user's tag winning), as
+        FFmpeg 8.1 converts frames whose tags differ from the output's (untagged BT.709
+        planes came out with other codes) where the integrated 5.1.2 only tags them, so
+        planes are never converted. None for RGB, which the scale filter converts to the
+        output's tags."""
+        if self.coding is None:
+            return {}
+        params = self.output_params
+        user = params if hasattr(params, "get") else {}
+        return {
+            key: str(user.get(key, value))
+            for key, value in colour_tags(self.coding).items()
+        }
 
     def check_frame(self, frame: object, size: tuple[int, int]) -> None:
         """Check the source geometry before writing even a prepared payload."""
@@ -541,15 +567,8 @@ class Writer:
     def _tag(params: dict[str, Any], colour: ColourInfo) -> None:
         """The colour tags, and for H.265 the HDR10 metadata (the mastering display and
         light levels) as x265 writes it; a user's tag or x265 option wins."""
-        tags = {
-            "colorspace": colour.matrix,
-            "color_primaries": colour.primaries,
-            "color_trc": colour.transfer,
-            "color_range": colour.range,
-            "chroma_sample_location": colour.chroma_location,
-        }
-        for key, value in tags.items():
-            params.setdefault(key, option_value(value))
+        for key, value in colour_tags(colour).items():
+            params.setdefault(key, value)
         hdr = colour.hdr
         if hdr is None or params.get("vcodec") != VideoEncoder.H265.value:
             return

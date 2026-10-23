@@ -14,6 +14,7 @@ from api import Aborted, Progress
 
 from ..native_framework_images import planar_to_interleaved_checked
 from ..upscale.auto_split import Split, Tiler, auto_split
+from ..upscale.bounded_tiler import BoundedTiler
 from .offload import offloaded
 from .utils import safe_cuda_cache_empty
 
@@ -237,4 +238,4 @@ def pytorch_auto_split(
         return result
 
     with _stoppable(model.model):
-        return auto_split(img, upscale, tiler)
+        return auto_split(img, upscale, BoundedTiler(tiler))

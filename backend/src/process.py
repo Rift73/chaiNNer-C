@@ -275,15 +275,25 @@ def run_collector_iterate(
                 partial_inputs.append(None)
         return partial_inputs
 
+    def iterated_information(values: list[object]) -> InputsDict:
+        """The iterated inputs' error values, as given. The others are not this
+        call's: their None placeholders would report None for a value they have,
+        and enforcing them would log a traceback each (20 for one wrong frame into
+        Save Video)."""
+        information = collect_input_information(node.data, get_partial_inputs(values))
+        return {
+            key: value
+            for key, value in information.items()
+            if key in iterable_input.inputs
+        }
+
     enforced_inputs: list[object] = []
     try:
         for i in node.data.inputs:
             if i.id in iterable_input.inputs:
                 enforced_inputs.append(i.enforce_(inputs[len(enforced_inputs)]))
     except Exception as e:
-        input_dict = collect_input_information(
-            node.data, get_partial_inputs(inputs), enforced=False
-        )
+        input_dict = iterated_information(inputs)
         raise NodeExecutionError(node.id, node.data, str(e), input_dict) from e
     input_value = (
         enforced_inputs[0] if len(enforced_inputs) == 1 else tuple(enforced_inputs)
@@ -297,10 +307,22 @@ def run_collector_iterate(
             raw_output = collector.on_iterate(input_value)
         assert raw_output is None
     except Exception as e:
-        input_dict = collect_input_information(
-            node.data, get_partial_inputs(enforced_inputs)
-        )
+        input_dict = iterated_information(enforced_inputs)
         raise NodeExecutionError(node.id, node.data, str(e), input_dict) from e
+
+
+def run_collector_complete(
+    node: CollectorNode, collector: Collector, assigned: Sequence[Input]
+) -> RegularOutput:
+    """The collector's output (on_complete's, enforced); its error names the collector
+    (loop_node_error), as on_iterate's does."""
+    try:
+        return enforce_output(collector.on_complete(), node.data)
+    except Exception as error:
+        failure = loop_node_error(node, assigned, error)
+        if failure is error:
+            raise
+        raise failure from error
 
 
 class _Timer:
@@ -389,7 +411,8 @@ class NodeExecutionError(Exception):
 def on_failing_node(error: Exception, nodes: Mapping[NodeId, Node]) -> Exception:
     """The error as the run reports it: a NodeAttributedError goes to the node it names
     (e.g. the node whose statement failed in a script that another node ran). It may
-    arrive wrapped by the node that raised it, or unwrapped from a generator's iteration."""
+    arrive wrapped by the node that raised it, or by the generator whose iteration
+    raised it (loop_node_error)."""
     wrapped = isinstance(error, NodeExecutionError)
     cause = error.__cause__ if wrapped else error
     if not isinstance(cause, NodeAttributedError) or cause.node_id is None:
@@ -400,6 +423,42 @@ def on_failing_node(error: Exception, nodes: Mapping[NodeId, Node]) -> Exception
     moved = NodeExecutionError(node.id, node.data, str(cause), {})
     moved.__cause__ = cause
     return moved
+
+
+def loop_node_error(
+    node: Node, assigned: Sequence[Input], error: Exception, token: object = None
+) -> Exception:
+    """An error a loop's node raises outside its node's run, a generator's item (Load
+    Images' undecodable file, Load Video's In after Out) or a collector's completion
+    (Merge Spritesheet's sprite count), as the run reports it: the node's
+    NodeExecutionError, so the error names the node, with the error as its cause and
+    its message, after the file a split iterator's item token names (Load Images'
+    (path, index)): among thousands of files, the failing one is otherwise unknown. Its
+    inputs are its constants (an edge's value is not kept). A Stop, the end of the
+    items, or an error a node already reports stays as it is."""
+    if isinstance(error, (Aborted, StopIteration, NodeExecutionError)):
+        return error
+    message = str(error)
+    if (
+        isinstance(token, tuple)
+        and len(token) == 2
+        and isinstance(token[0], (str, Path))
+        and isinstance(token[1], int)
+    ):
+        message = f"{token[0]}: {message}"
+    values = [None if isinstance(i, EdgeInput) else i.value for i in assigned]
+    edges = {
+        i.id for i, a in zip(node.data.inputs, assigned) if isinstance(a, EdgeInput)
+    }
+    inputs = collect_input_information(node.data, values)
+    failure = NodeExecutionError(
+        node.id,
+        node.data,
+        message,
+        {key: value for key, value in inputs.items() if key not in edges},
+    )
+    failure.__cause__ = error
+    return failure
 
 
 @dataclass(frozen=True)
@@ -1356,6 +1415,18 @@ class Executor:
         generator_supplier: typing.Iterator[Output | Exception],
         generator_output: GeneratorOutput,
     ) -> RegularOutput | None:
+        if hasattr(generator_supplier, "describe"):
+            # A split iterator's item in its two pieces, as the window and the engine
+            # take it: its error names the item's file (loop_node_error).
+            iterator = typing.cast(_SplitIterator, generator_supplier)
+            described = self.__describe_split(iterator)
+            return (
+                None
+                if described is None
+                else self.__materialize_split(
+                    node, iterator, generator_output, described
+                )
+            )
         token = self.__describe(generator_supplier)
         return (
             None if token is None else self.__materialize(node, generator_output, token)
@@ -1382,7 +1453,7 @@ class Executor:
         """
         values = iterator.materialize(token)
         if isinstance(values, Exception):
-            raise values
+            raise loop_node_error(node, self.inputs.get(node.id), values, token)
         return RegularOutput(
             self.__generator_fill_partial_output(
                 node, generator_output.partial_output, values
@@ -1979,41 +2050,48 @@ class Executor:
                     await self.progress.suspend()
                     generator_output = generator_outputs[node.id]
                     generator_supplier = generator_suppliers[node.id]
-                    if window is not None:
-                        # The producer runs this generator's __advance, or its describe and materialize pieces, so its outcome is what the loop's advance returns.
-                        if native_profile.enabled():
-                            # The commit path's wait for the producer, recorded outside the nesting: other timed calls run on this thread while it waits. It includes take_advance's own _wanted/_pump work and every loop callback run while it is suspended.
-                            started = time.perf_counter_ns()
-                            try:
+                    try:
+                        if window is not None:
+                            # The producer runs this generator's __advance, or its describe and materialize pieces, so its outcome is what the loop's advance returns.
+                            if native_profile.enabled():
+                                # The commit path's wait for the producer, recorded outside the nesting: other timed calls run on this thread while it waits. It includes take_advance's own _wanted/_pump work and every loop callback run while it is suspended.
+                                started = time.perf_counter_ns()
+                                try:
+                                    iter_output = typing.cast(
+                                        RegularOutput | None,
+                                        await window.take_advance(node.id),
+                                    )
+                                finally:
+                                    native_profile.record(
+                                        "window.take_advance",
+                                        time.perf_counter_ns() - started,
+                                    )
+                            else:
                                 iter_output = typing.cast(
                                     RegularOutput | None,
                                     await window.take_advance(node.id),
                                 )
-                            finally:
-                                native_profile.record(
-                                    "window.take_advance",
-                                    time.perf_counter_ns() - started,
-                                )
+                        elif node.data.schema_id == "chainner:utility:range":
+                            iter_output = self.__advance(
+                                node, generator_supplier, generator_output
+                            )
                         else:
-                            iter_output = typing.cast(
-                                RegularOutput | None, await window.take_advance(node.id)
+                            iter_output = await await_owned_node(
+                                self.loop.run_in_executor(
+                                    self.pool,
+                                    functools.partial(
+                                        self.__advance,
+                                        node,
+                                        generator_supplier,
+                                        generator_output,
+                                    ),
+                                )
                             )
-                    elif node.data.schema_id == "chainner:utility:range":
-                        iter_output = self.__advance(
-                            node, generator_supplier, generator_output
-                        )
-                    else:
-                        iter_output = await await_owned_node(
-                            self.loop.run_in_executor(
-                                self.pool,
-                                functools.partial(
-                                    self.__advance,
-                                    node,
-                                    generator_supplier,
-                                    generator_output,
-                                ),
-                            )
-                        )
+                    except Exception as error:
+                        failure = loop_node_error(node, self.inputs.get(node.id), error)
+                        if failure is error:
+                            raise
+                        raise failure from error
                     if iter_output is None:
                         raise StopIteration
                     if self.__item_bytes is not None:  # K is not decided yet
@@ -2112,7 +2190,9 @@ class Executor:
                     collector: Collector = collector,
                     collector_node: CollectorNode = collector_node,
                 ):
-                    return enforce_output(collector.on_complete(), collector_node.data)
+                    return run_collector_complete(
+                        collector_node, collector, self.inputs.get(collector_node.id)
+                    )
 
                 collector_output = await await_owned_node(
                     self.loop.run_in_executor(self.pool, complete)

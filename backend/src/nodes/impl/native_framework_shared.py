@@ -34,7 +34,7 @@ from functools import lru_cache
 import numpy as np
 
 from .native import check, checked_f32, f32, lib
-from .native_buffers import freeze_normalized
+from .native_buffers import converted_pixels, freeze_normalized
 from .native_channels import _assemble
 from .native_framework_images import _report
 from .native_numpy_simd import fma3, loop_target
@@ -69,6 +69,14 @@ def _api():
         ct.c_void_p,
     ]
     library.cn_framework_tile_accumulate.restype = ct.c_int
+    library.cn_upscale_alpha_recover.argtypes = [
+        ct.c_void_p,
+        ct.c_void_p,
+        ct.c_void_p,
+        ct.c_size_t,
+        ct.c_void_p,
+    ]
+    library.cn_upscale_alpha_recover.restype = ct.c_int
     return library
 
 
@@ -197,16 +205,15 @@ def accumulate_tile(
 
 
 def clip_image(image: np.ndarray, *, frozen: bool = False) -> np.ndarray:
-    """np.clip(image, 0, 1). frozen: a float32 result is returned frozen and
-    registered (freeze_normalized), so an output check borrows it: this clip is
-    ImageOutput's normalization bit for bit (cn_numpy_clip_f32 and clamp_unit run
-    the same maxss/minss pair, NaN passes as stored, neither reports an event), and
-    that check borrows only values its clip leaves as they are."""
+    """np.clip(image, 0, 1), run as ImageOutput's normalization itself
+    (converted_pixels: clamp_unit's maxss/minss pair, in 8-float lanes at ISA level
+    avx2, NaN passing as stored, no event, np.clip's layout). frozen: the result is
+    returned frozen and registered (freeze_normalized), so an output check borrows
+    it; that check borrows only values its clip leaves as they are."""
     if type(image) is not np.ndarray or image.dtype != np.float32 or image.ndim == 0:
         return np.clip(image, 0, 1)
-    source = np.require(image.ravel(order="K"), requirements=["C", "A"])
-    out = np.empty_like(image)
-    _run(source, out.ravel(order="K"), 0)
+    out = converted_pixels(image)
+    assert out is not None  # float32 always has a native conversion
     return freeze_normalized(out) if frozen else out
 
 
@@ -307,3 +314,37 @@ def assemble_alpha(
         # One pass writes every output pixel's three colours and its alpha.
         _assemble((rgb, alpha), [(0, 0), (0, 1), (0, 2), (1, 0)], out=out)
     return freeze_normalized(out) if frozen else out
+
+
+def recovered_alpha_image(white: np.ndarray, black: np.ndarray) -> np.ndarray | None:
+    """convenient_upscale's transparency result, assemble_alpha(black,
+    denoise_and_flatten_alpha(recover_alpha(white, black)), frozen=True), in one pass
+    with the same bits, layout and warnings (no candidate or alpha plane is made);
+    None for inputs it does not take: anything but two C-ordered float32 (h, w, 3)
+    images of one shape."""
+    if not (
+        type(white) is np.ndarray
+        and type(black) is np.ndarray
+        and white.dtype == black.dtype == np.float32
+        and white.ndim == 3
+        and white.shape == black.shape
+        and white.shape[2] == 3
+        and white.size
+        and white.flags.c_contiguous
+        and black.flags.c_contiguous
+        and white.flags.aligned
+        and black.flags.aligned
+    ):
+        return None
+    h, w = white.shape[:2]
+    out = np.empty((h, w, 4), np.float32)
+    events = (ct.c_int * 2)()
+    check(
+        _api().cn_upscale_alpha_recover(
+            white.ctypes.data, black.ctypes.data, out.ctypes.data, h * w, events
+        )
+    )
+    # recover_alpha's two subtractions: white - black, then 1 minus that
+    for event in events:
+        _report(event, "subtract")
+    return freeze_normalized(out)

@@ -9,6 +9,8 @@
  */
 #include "chainner.h"
 #include "cn_crt_math.h"
+#include "hue_shared.h"
+#include "isa.h"
 #include "parallel.h"
 #include "run_kernels.h"
 #include <float.h>
@@ -23,6 +25,7 @@ typedef struct color_context {
     float *dst;
     size_t width, scn, dcn;
     int op, blue, lanes, ipp;
+    cn_isa_level isa;
 } color_context;
 
 /* SSE min/max select the second operand on ties and unordered comparisons. */
@@ -240,7 +243,42 @@ static void color_range(void *raw, size_t begin, size_t end)
     if (ctx->op == 10) vector_end = (ctx->width - 1) / ((size_t)ctx->lanes * 2) * ((size_t)ctx->lanes * 2);
     if (ctx->op == 11) vector_end = ctx->width / ((size_t)ctx->lanes * 2) * ((size_t)ctx->lanes * 2);
     for (size_t y = begin; y < end; ++y) {
-        for (size_t x = 0; x < ctx->width; ++x) {
+        size_t x = 0;
+#if defined(_MSC_VER) && defined(_M_X64)
+        /* At avx2 and above, the vector pixels of BGR to and from HSV, HLS, YUV and YCrCb at 8 lanes, and of BGR to
+           grey and to and from Lab, through the AVX2 unit. */
+        if (ctx->isa >= CN_ISA_AVX2 && ctx->lanes == 8 && (ctx->op == 4 || ctx->op == 6)) {
+            cn_rgb_hue_avx2(ctx->src + y * ctx->width * ctx->scn, ctx->dst + y * ctx->width * ctx->dcn, vector_end,
+                ctx->scn, ctx->blue, ctx->op == 6);
+            x = vector_end;
+        } else if (ctx->isa >= CN_ISA_AVX2 && ctx->lanes == 8 && (ctx->op == 5 || ctx->op == 7)) {
+            cn_hue_rgb_avx2(ctx->src + y * ctx->width * ctx->scn, ctx->dst + y * ctx->width * ctx->dcn, vector_end,
+                ctx->dcn, ctx->blue, ctx->op == 7);
+            x = vector_end;
+        } else if (ctx->isa >= CN_ISA_AVX2 && ctx->op == 1 && (ctx->ipp || ctx->lanes == 8)) {
+            /* IPP's 8-pixel blocks, or OpenCV's 8-lane vectors: the same pixels, width / 8 * 8. */
+            x = ctx->width / 8 * 8;
+            cn_bgr_gray_avx2(ctx->src + y * ctx->width * ctx->scn, ctx->dst + y * ctx->width, x, ctx->scn,
+                ctx->blue == 0 ? 0.114f : 0.299f, ctx->blue == 0 ? 0.299f : 0.114f, ctx->ipp);
+        } else if (ctx->isa >= CN_ISA_AVX2 && ctx->lanes == 8 && (ctx->op == 2 || ctx->op == 8)) {
+            cn_bgr_yuv_avx2(ctx->src + y * ctx->width * ctx->scn, ctx->dst + y * ctx->width * ctx->dcn, vector_end,
+                ctx->scn, ctx->blue, ctx->op == 8);
+            x = vector_end;
+        } else if (ctx->isa >= CN_ISA_AVX2 && ctx->lanes == 8 && (ctx->op == 3 || ctx->op == 9)) {
+            cn_yuv_bgr_avx2(ctx->src + y * ctx->width * ctx->scn, ctx->dst + y * ctx->width * ctx->dcn, vector_end,
+                ctx->dcn, ctx->blue, ctx->op == 9);
+            x = vector_end;
+        } else if (ctx->isa >= CN_ISA_AVX2 && ctx->op == 10) {
+            cn_bgr_lab_avx2(ctx->src + y * ctx->width * ctx->scn, ctx->dst + y * ctx->width * ctx->dcn, vector_end,
+                ctx->scn, ctx->blue, lab_lattice);
+            x = vector_end;
+        } else if (ctx->isa >= CN_ISA_AVX2 && ctx->op == 11 && ctx->lanes == 4) {
+            cn_lab_bgr_avx2(ctx->src + y * ctx->width * ctx->scn, ctx->dst + y * ctx->width * ctx->dcn, vector_end,
+                ctx->dcn, ctx->blue, lab_xyz_to_rgb, lab_inverse_gamma);
+            x = vector_end;
+        }
+#endif
+        for (; x < ctx->width; ++x) {
             const float *s = ctx->src + (y * ctx->width + x) * ctx->scn;
             float *d = ctx->dst + (y * ctx->width + x) * ctx->dcn;
             int vector = x < vector_end, fused = vector && ctx->lanes == 8;
@@ -309,6 +347,6 @@ CN_EXPORT cn_status cn_color_convert_f32(const float *src, float *dst,
     if (a % _Alignof(float) || b % _Alignof(float)) return CN_INVALID_ARGUMENT;
     if (a > UINTPTR_MAX - input_bytes || b > UINTPTR_MAX - output_bytes) return CN_SIZE_OVERFLOW;
     if (a < b + output_bytes && b < a + input_bytes) return CN_INVALID_ARGUMENT;
-    color_context ctx = {src, dst, width, scn, dcn, op, blue, lanes, ipp};
+    color_context ctx = {src, dst, width, scn, dcn, op, blue, lanes, ipp, cn_isa_current()};
     return cn_parallel_for(height, 8, color_range, &ctx);
 }

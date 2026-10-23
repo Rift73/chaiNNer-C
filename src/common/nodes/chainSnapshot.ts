@@ -17,6 +17,50 @@ const withSortedKeys = (value: unknown): unknown => {
     return value;
 };
 
+interface NodeText {
+    readonly id: string;
+    readonly type: string | undefined;
+    readonly x: number;
+    readonly y: number;
+    readonly text: string;
+}
+/**
+ * Each node's part of the snapshot, by its node data, with the rest of the node it was made of.
+ * The editor takes a snapshot after every change (twice: for the unsaved mark and the history),
+ * and a change replaces the data of the nodes it changes, never changing data in place: the other
+ * nodes keep their parts.
+ */
+const nodeTexts = new WeakMap<NodeData, NodeText>();
+const nodeText = (n: Node<NodeData>): string => {
+    const { id, type, data } = n;
+    const { x, y } = n.position;
+    const kept = nodeTexts.get(data);
+    if (kept && kept.id === id && kept.type === type && kept.x === x && kept.y === y) {
+        return kept.text;
+    }
+    const text = JSON.stringify(
+        withSortedKeys({
+            id,
+            type,
+            position: { x, y },
+            data: {
+                schemaId: data.schemaId,
+                inputData: data.inputData,
+                inputHeight: data.inputHeight,
+                outputHeight: data.outputHeight,
+                nodeWidth: data.nodeWidth,
+                isDisabled: data.isDisabled,
+                isLocked: data.isLocked,
+                isCollapsed: data.isCollapsed,
+                isPassthrough: data.isPassthrough,
+                nodeName: data.nodeName,
+            },
+        })
+    );
+    nodeTexts.set(data, { id, type, x, y, text });
+    return text;
+};
+
 /**
  * A canonical string of the chain content that a save keeps: two chains have the same snapshot
  * exactly when saving them keeps the same chain.
@@ -31,28 +75,15 @@ export const chainSnapshot = (
     edges: readonly Edge<EdgeData>[]
 ): string => {
     const nodeEntries = nodes
-        .map((n) => ({
-            id: n.id,
-            type: n.type,
-            position: { x: n.position.x, y: n.position.y },
-            data: {
-                schemaId: n.data.schemaId,
-                inputData: n.data.inputData,
-                inputHeight: n.data.inputHeight,
-                outputHeight: n.data.outputHeight,
-                nodeWidth: n.data.nodeWidth,
-                isDisabled: n.data.isDisabled,
-                isLocked: n.data.isLocked,
-                isCollapsed: n.data.isCollapsed,
-                isPassthrough: n.data.isPassthrough,
-                nodeName: n.data.nodeName,
-            },
-        }))
-        .sort((a, b) => binaryCompare(a.id, b.id));
+        .map((n) => [n.id, nodeText(n)] as const)
+        .sort((a, b) => binaryCompare(a[0], b[0]));
     const edgeEntries = edges
         .map((e) =>
             JSON.stringify([e.source, e.sourceHandle ?? null, e.target, e.targetHandle ?? null])
         )
         .sort(binaryCompare);
-    return JSON.stringify(withSortedKeys({ nodes: nodeEntries, edges: edgeEntries }));
+    // JSON.stringify(withSortedKeys({ nodes, edges })) of the entries, whose keys sort as here
+    return `{"edges":${JSON.stringify(edgeEntries)},"nodes":[${nodeEntries
+        .map(([, text]) => text)
+        .join(',')}]}`;
 };

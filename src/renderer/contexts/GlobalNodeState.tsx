@@ -620,10 +620,18 @@ export const GlobalProvider = memo(
                     nodes: validNodes,
                     edges: validEdges,
                     droppedNodes,
+                    droppedEdges,
                     complete,
                 } = toEditorChain(schemata, savedData.nodes, savedData.edges);
 
-                if (!complete) {
+                if (droppedEdges > 0) {
+                    sendAlert({
+                        type: AlertType.WARN,
+                        title: 'File contains invalid connections',
+                        message: `The file you are trying to open contains ${droppedEdges} connection(s) that do not fit their nodes: an input or output that the node does not have, a second connection into one input, or a loop. The file will now be loaded without them and is marked as unsaved, so saving it removes them from the file.`,
+                    });
+                }
+                if (droppedNodes.length > 0) {
                     sendAlert({
                         type: AlertType.WARN,
                         title: 'File contains invalid nodes',
@@ -743,7 +751,7 @@ export const GlobalProvider = memo(
                         removeRecentPath(result.path);
                         sendAlert({
                             type: AlertType.ERROR,
-                            message: `Unable to open file ${result.path}`,
+                            message: `Unable to open file ${result.path}\n\n${result.error}`,
                         });
                     }
                 }
@@ -764,7 +772,7 @@ export const GlobalProvider = memo(
                 return;
             }
 
-            const { nodes, edges, droppedNodes, complete } = toEditorChain(
+            const { nodes, edges, droppedNodes, droppedEdges, complete } = toEditorChain(
                 schemata,
                 getNodes(),
                 getEdges()
@@ -773,15 +781,24 @@ export const GlobalProvider = memo(
                 return;
             }
             if (!complete) {
-                sendAlert({
-                    type: AlertType.WARN,
-                    title: 'Chain contains unavailable nodes',
-                    message: `The chain contains ${
-                        droppedNodes.length
-                    } node(s) that are unavailable on your system now:\n\n${formatDroppedNodes(
-                        droppedNodes
-                    )}\n\nCheck the dependency manager to see if you are missing any dependencies. The chain is now without these nodes and is marked as unsaved, so saving it removes them from the file.`,
-                });
+                if (droppedNodes.length > 0) {
+                    sendAlert({
+                        type: AlertType.WARN,
+                        title: 'Chain contains unavailable nodes',
+                        message: `The chain contains ${
+                            droppedNodes.length
+                        } node(s) that are unavailable on your system now:\n\n${formatDroppedNodes(
+                            droppedNodes
+                        )}\n\nCheck the dependency manager to see if you are missing any dependencies. The chain is now without these nodes and is marked as unsaved, so saving it removes them from the file.`,
+                    });
+                }
+                if (droppedEdges > 0) {
+                    sendAlert({
+                        type: AlertType.WARN,
+                        title: 'Chain contains invalid connections',
+                        message: `The chain contains ${droppedEdges} connection(s) that do not fit their nodes now (an input or output that the node no longer has). The chain is now without them and is marked as unsaved, so saving it removes them from the file.`,
+                    });
+                }
                 setSavedSnapshot(null);
             } else if (!hasRelevantUnsavedChangesRef.current) {
                 // the defaults of inputs that the backend's nodes added are no change by the user
@@ -804,7 +821,7 @@ export const GlobalProvider = memo(
                         removeRecentPath(result.path);
                         sendAlert({
                             type: AlertType.ERROR,
-                            message: `Unable to open file ${result.path}`,
+                            message: `Unable to open file ${result.path}\n\n${result.error}`,
                         });
                     }
                 },

@@ -41,15 +41,29 @@ set(CHAINNER_C_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../backend/src/nodes/impl
     "Output directory of chainner_native.dll and _chainner_graph.pyd")
 # Review and sampling builds: PDBs and linker maps, never over the gate and package binaries.
 option(CHAINNER_C_PDB "Build with PDBs and linker maps (/Zi, /DEBUG, /MAP) outside backend/src" OFF)
-# chainner_ext.pyd's directory. A PDB build places it under CHAINNER_C_OUTPUT_DIR by default.
-if(CHAINNER_C_PDB)
+# Fuzzing builds (tests/fuzz/README.md): every target with AddressSanitizer and libFuzzer's coverage, without
+# ThinLTO, plus the fuzzers; never over the gate and package binaries.
+option(CHAINNER_C_FUZZ "Build with AddressSanitizer and the libFuzzer harnesses of tests/fuzz outside backend/src" OFF)
+if(CHAINNER_C_FUZZ)
+    string(REGEX MATCH "^[0-9]+" chainner_c_clang_major "${CMAKE_C_COMPILER_VERSION}")
+    set(chainner_c_clang_rt "${chainner_c_llvm}/../lib/clang/${chainner_c_clang_major}/lib/windows")
+    # libFuzzer's runtime is built without the STL's container annotations, so they are off here too (lld-link's
+    # /failifmismatch refuses the mix).
+    add_compile_options(-fno-lto /Zi -fsanitize=address -fsanitize=fuzzer-no-link /D_DISABLE_STRING_ANNOTATION
+        /D_DISABLE_VECTOR_ANNOTATION)
+    # CMake links with lld-link itself: the runtime clang-cl's driver would add for /MT.
+    add_link_options(/DEBUG /INCREMENTAL:NO "${chainner_c_clang_rt}/clang_rt.asan_dynamic-x86_64.lib"
+        "/WHOLEARCHIVE:${chainner_c_clang_rt}/clang_rt.asan_static_runtime_thunk-x86_64.lib")
+endif()
+# chainner_ext.pyd's directory. A PDB or fuzzing build places it under CHAINNER_C_OUTPUT_DIR by default.
+if(CHAINNER_C_PDB OR CHAINNER_C_FUZZ)
     set(chainner_c_ext_output_default "${CHAINNER_C_OUTPUT_DIR}/chainner_ext")
 else()
     set(chainner_c_ext_output_default "${CMAKE_CURRENT_SOURCE_DIR}/../backend/src/chainner_ext")
 endif()
 set(CHAINNER_C_EXT_OUTPUT_DIR "${chainner_c_ext_output_default}" CACHE PATH
     "Output directory of chainner_ext.pyd")
-if(CHAINNER_C_PDB)
+if(CHAINNER_C_PDB OR CHAINNER_C_FUZZ)
     # A relative output directory is resolved against the build directory, as the
     # generator resolves the targets' output directories.
     cmake_path(SET chainner_c_backend NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../backend/src")
@@ -60,7 +74,7 @@ if(CHAINNER_C_PDB)
         string(TOLOWER "${chainner_c_output}" chainner_c_output)
         cmake_path(IS_PREFIX chainner_c_backend "${chainner_c_output}" NORMALIZE chainner_c_inside)
         if(chainner_c_inside)
-            message(FATAL_ERROR "CHAINNER_C_PDB needs ${chainner_c_dir_var} outside backend/src "
+            message(FATAL_ERROR "CHAINNER_C_PDB and CHAINNER_C_FUZZ need ${chainner_c_dir_var} outside backend/src "
                 "(${chainner_c_dir_var}=${${chainner_c_dir_var}})")
         endif()
     endforeach()
@@ -125,15 +139,17 @@ add_library(chainner_native SHARED
     src/separable_avx2.c src/convolution_avx2.c src/convert_avx2.c src/lens_avx2.c
     src/morphology_avx2.c src/palette_avx2.c src/dither_avx2.c src/blend_avx2.c
     src/resample_avx2.c src/spectral_avx2.c src/color_avx2.c src/planar_avx2.c
-    src/yuv_planes_avx2.c src/plane_resample_avx2.c src/png_encode_avx2.c
-    src/separable_avx512.c src/convolution_avx512.c)
+    src/yuv_planes_avx2.c src/plane_resample_avx2.c src/png_encode_avx2.c src/alpha_gamma_avx2.c
+    src/neighborhood_avx2.c src/statistics_avx2.c src/unsharp_avx2.c
+    src/wavelet_avx2.c src/cast_half_avx2.c src/separable_avx512.c src/convolution_avx512.c)
 # The levels' instruction sets, exactly what src/isa.c checks: AVX2 is AVX2, FMA, BMI1 and
 # BMI2; AVX-512 adds F, DQ, CD, BW and VL.
 set(chainner_c_avx2_options /clang:-mavx2 /clang:-mfma /clang:-mbmi /clang:-mbmi2)
 set_source_files_properties(src/separable_avx2.c src/convolution_avx2.c src/convert_avx2.c
     src/lens_avx2.c src/morphology_avx2.c src/palette_avx2.c src/dither_avx2.c
     src/blend_avx2.c src/resample_avx2.c src/spectral_avx2.c src/color_avx2.c
-    src/planar_avx2.c src/yuv_planes_avx2.c src/plane_resample_avx2.c src/png_encode_avx2.c
+    src/planar_avx2.c src/yuv_planes_avx2.c src/plane_resample_avx2.c src/png_encode_avx2.c src/alpha_gamma_avx2.c
+    src/neighborhood_avx2.c src/statistics_avx2.c src/unsharp_avx2.c src/wavelet_avx2.c src/cast_half_avx2.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
 set_source_files_properties(src/separable_avx512.c src/convolution_avx512.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options};/clang:-mavx512f;/clang:-mavx512dq;/clang:-mavx512cd;/clang:-mavx512bw;/clang:-mavx512vl")
@@ -240,6 +256,9 @@ foreach(target chainner_ext chainner_ext_c)
             "/MAP:$<TARGET_FILE_DIR:${target}>/${target}.map")
     endif()
 endforeach()
+if(CHAINNER_C_FUZZ)
+    add_subdirectory(tests/fuzz)
+endif()
 
 # vosr2_qkv.dll: the VosrQkvPack TensorRT plugin of VOSR's TensorRT path (src/vosr2), beside its
 # loader in nodes/impl/pytorch. Optional: built when both roots below are given (Build.ps1 -Define,

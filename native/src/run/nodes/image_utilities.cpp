@@ -105,8 +105,9 @@ void pick_color(NodeContext &, std::span<const Value> inputs, std::vector<Value>
 }
 
 /* chainner:image:stack (compositing/stack_images.py, native_layout.stack): images scale (nearest) to the largest
- * height (horizontal) or width (vertical); grey becomes three channels; a narrower channel count broadcasts only a
- * single row or column, as NumPy's assignment into the maxima does. */
+ * height (horizontal) or width (vertical); grey becomes three channels; an image with a narrower channel count
+ * broadcasts a single row or column to the largest height and width, as NumPy's assignment into the maxima does,
+ * and otherwise keeps its own size (upstream failed to broadcast it). */
 void stack(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     bool horizontal = std::get<std::string>(inputs[0]) == "horizontal";
@@ -129,16 +130,7 @@ void stack(NodeContext &, std::span<const Value> inputs, std::vector<Value> &out
             th = int64_t(std::floor(double(h * max_w) / double(w) + 0.5)), tw = max_w;
         }
         int64_t expanded = image->channels == 1 ? 3 : image->channels;
-        if (expanded < max_c) {
-            if ((th != 1 && th != max_h) || (tw != 1 && tw != max_w)) {
-                auto shape = [expanded](int64_t a, int64_t b) {
-                    return "(" + std::to_string(a) + ", " + std::to_string(b) + ", " + std::to_string(expanded) + ")";
-                };
-                throw NodeError("ValueError", "could not broadcast input array from shape " + shape(th, tw) +
-                                                  " into shape " + shape(max_h, max_w));
-            }
-            th = max_h, tw = max_w;
-        }
+        if (expanded < max_c && (th == 1 || th == max_h) && (tw == 1 || tw == max_w)) th = max_h, tw = max_w;
         targets.emplace_back(th, tw);
     }
     int64_t out_h = horizontal ? max_h : 0, out_w = horizontal ? 0 : max_w;

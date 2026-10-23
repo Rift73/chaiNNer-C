@@ -420,21 +420,43 @@ static void horizontal_row4(const float *row, const coefficient_line *lines,
     }
 }
 
+static void horizontal_row(const resample_context *ctx, size_t y)
+{
+    size_t channels = ctx->channels, width = ctx->target_width;
+    const float *row = ctx->source + y * ctx->source_width * channels;
+    float *out = ctx->intermediate + y * width * channels;
+    /* cn_resample_filtered admits 1-4 channels, so default is 4. */
+    switch (channels) {
+    case 1: horizontal_row1(row, ctx->horizontal, width, out); break;
+    case 2: horizontal_row2(row, ctx->horizontal, width, out); break;
+    case 3: horizontal_row3(row, ctx->horizontal, width, out); break;
+    default: horizontal_row4(row, ctx->horizontal, width, out); break;
+    }
+}
+
+/* Whether the horizontal pass runs through the AVX2 unit: at avx2 and above, except RGBA without reduction, whose
+ * per-pixel sums the scalar rows already keep in one 4-wide register and whose few taps do not pay for the
+ * transposes (768 -> 1536 Hermite: 6.3 ms scalar, 8.0 ms through the unit). */
+static int horizontal_avx2(const resample_context *ctx)
+{
+    return ctx->isa >= CN_ISA_AVX2 && (ctx->channels < 4 || ctx->target_width < ctx->source_width);
+}
+
+/* Source rows [begin, end): with horizontal_avx2 eight rows at a time through the AVX2 unit, redoing here in scalar
+ * code a group it declines (a NaN sum, an output too wide for its tile); else each row here. */
 static void horizontal_range(void *opaque, size_t begin, size_t end)
 {
     const resample_context *ctx = opaque;
-    size_t channels = ctx->channels, width = ctx->target_width;
-    size_t source_stride = ctx->source_width * channels, stride = width * channels;
-    for (size_t y = begin; y < end; ++y) {
-        const float *row = ctx->source + y * source_stride;
-        float *out = ctx->intermediate + y * stride;
-        /* cn_resample_filtered admits 1-4 channels, so default is 4. */
-        switch (channels) {
-        case 1: horizontal_row1(row, ctx->horizontal, width, out); break;
-        case 2: horizontal_row2(row, ctx->horizontal, width, out); break;
-        case 3: horizontal_row3(row, ctx->horizontal, width, out); break;
-        default: horizontal_row4(row, ctx->horizontal, width, out); break;
+    for (size_t y = begin; y < end;) {
+        size_t rows = end - y < 8 ? end - y : 8;
+#if defined(_MSC_VER) && defined(_M_X64)
+        if (horizontal_avx2(ctx) && cn_resample_horizontal_avx2(ctx, y, rows)) {
+            y += rows;
+            continue;
         }
+#endif
+        for (size_t r = y; r < y + rows; ++r) horizontal_row(ctx, r);
+        y += rows;
     }
 }
 
@@ -544,7 +566,8 @@ CN_EXPORT cn_status cn_resample_filtered(const float *source, float *out,
         filter == 2 ? 0 : !gamma && vector_clip ? 2 : 1, cn_isa_current()};
     size_t grain = 65536 / target_width / channels;
     if (grain == 0) grain = 1;
-    status = cn_parallel_for(height, grain, horizontal_range, &ctx);
+    /* The AVX2 horizontal pass runs eight rows at a time, so its chunks hold whole groups of eight. */
+    status = cn_parallel_for(height, horizontal_avx2(&ctx) ? (grain + 7) / 8 * 8 : grain, horizontal_range, &ctx);
     if (status != CN_OK) goto cleanup;
     status = cn_parallel_for(target_height, grain, vertical_range, &ctx);
     if (status != CN_OK) goto cleanup;

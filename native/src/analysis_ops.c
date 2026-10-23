@@ -507,6 +507,16 @@ CN_EXPORT cn_status cn_analysis_channel_stats(const float *image, size_t pixels,
     float *squared = (float *)malloc(pixels * sizeof(float));
     if (!squared) return CN_ALLOCATION_FAILED;
     for (size_t c = 0; c < 3; ++c) {
+        /* A channel without spread is its own value with deviation 0, which float32 accumulation can miss (the mean
+           of n copies of 0.2 rounds); Color Transfer then keeps a solid channel solid (ruling of 2026-10-23). */
+        float first = image[c];
+        int constant = 1;
+        for (size_t p = 1; p < pixels && constant; ++p) constant = image[p * 3 + c] == first;
+        if (constant) {
+            out[c * 2] = first;
+            out[c * 2 + 1] = 0.0f;
+            continue;
+        }
         float mean = numpy_mean_f32(cn_numpy_sum_f32(image + c, pixels, 3, block, period), pixels);
         for (size_t p = 0; p < pixels; ++p) {
             float difference = image[p * 3 + c] - mean;
@@ -521,35 +531,43 @@ CN_EXPORT cn_status cn_analysis_channel_stats(const float *image, size_t pixels,
     return CN_OK;
 }
 
+/* The passes over the image: SHIFT_CLIP shifts, scales and clips in one pass (the clip reads back exactly the float
+   the shift stored); with scaling, SHIFT stores the shifted values and RESCALE maps them once the range is known. */
+enum { TRANSFER_SHIFT, TRANSFER_SHIFT_CLIP, TRANSFER_RESCALE };
+
 typedef struct transfer_job {
     const float *image;
     float *out;
     float mean[3], target[3], ratio[3];
     float low[3], high[3], range_low[3], range_high[3];
-    int scale, finish;
+    int pass;
 } transfer_job;
 
 static void transfer_range(void *context, size_t begin, size_t end) {
-    transfer_job *j = (transfer_job *)context;
-    for (size_t p = begin; p < end; ++p) {
+    /* A local copy: the stores to out cannot then alias the job's floats. */
+    const transfer_job j = *(const transfer_job *)context;
+    int rescale[3];
+    for (size_t c = 0; c < 3; ++c)
+        rescale[c] = j.range_low[c] < j.low[c] || j.range_high[c] > j.high[c];
+    for (size_t i = begin * 3; i < end * 3; i += 3) {
         for (size_t c = 0; c < 3; ++c) {
-            size_t i = p * 3 + c;
             float x;
-            if (!j->finish) {
-                x = j->image[i] - j->mean[c];
-                x *= j->ratio[c]; x += j->target[c];
+            if (j.pass != TRANSFER_RESCALE) {
+                x = j.image[i + c] - j.mean[c];
+                x *= j.ratio[c]; x += j.target[c];
+                if (j.pass == TRANSFER_SHIFT_CLIP) {
+                    x = x < j.low[c] ? j.low[c] : x;
+                    x = x > j.high[c] ? j.high[c] : x;
+                }
             } else {
-                x = j->out[i];
-                if (!j->scale) {
-                    x = x < j->low[c] ? j->low[c] : x;
-                    x = x > j->high[c] ? j->high[c] : x;
-                } else if (j->range_low[c] < j->low[c] || j->range_high[c] > j->high[c]) {
-                    float span = j->high[c] - j->low[c];
-                    x -= j->range_low[c]; x *= span;
-                    x /= j->range_high[c] - j->range_low[c]; x += j->low[c];
+                x = j.out[i + c];
+                if (rescale[c]) {
+                    float span = j.high[c] - j.low[c];
+                    x -= j.range_low[c]; x *= span;
+                    x /= j.range_high[c] - j.range_low[c]; x += j.low[c];
                 }
             }
-            j->out[i] = x;
+            j.out[i + c] = x;
         }
     }
 }
@@ -562,32 +580,33 @@ CN_EXPORT cn_status cn_analysis_transfer(const float *image, float *out,
         return CN_INVALID_ARGUMENT;
     if (pixels > SIZE_MAX / sizeof(float) / 3) return CN_SIZE_OVERFLOW;
     transfer_job job = {0};
-    job.image = image; job.out = out; job.scale = scale;
+    job.image = image; job.out = out; job.pass = scale ? TRANSFER_SHIFT : TRANSFER_SHIFT_CLIP;
     for (size_t c = 0; c < 3; ++c) {
         job.mean[c] = stats[c * 2]; job.target[c] = reference_stats[c * 2];
-        job.ratio[c] = reciprocal ? reference_stats[c * 2 + 1] / stats[c * 2 + 1]
-                                 : stats[c * 2 + 1] / reference_stats[c * 2 + 1];
+        float numerator = reciprocal ? reference_stats[c * 2 + 1] : stats[c * 2 + 1];
+        float denominator = reciprocal ? stats[c * 2 + 1] : reference_stats[c * 2 + 1];
+        /* A channel without spread scales by 0, onto the reference's mean, where upstream divides by 0 (a solid
+           image gave NaN or white; ruling of 2026-10-23). */
+        job.ratio[c] = denominator == 0.0f ? 0.0f : numerator / denominator;
         job.low[c] = limits[c * 2]; job.high[c] = limits[c * 2 + 1];
     }
     cn_status status = cn_parallel_for(pixels, 16384, transfer_range, &job);
-    if (status != CN_OK) return status;
-    if (scale) {
-        size_t first = 0;
-        while (first < pixels && !mask[first]) ++first;
-        if (first == pixels) return CN_INVALID_ARGUMENT;
-        for (size_t c = 0; c < 3; ++c) {
-            float low = out[first * 3 + c], high = low;
-            for (size_t p = first + 1; p < pixels; ++p) if (mask[p]) {
-                float x = out[p * 3 + c];
-                if (x < low || isnan(x)) low = x;
-                if (x > high || isnan(x)) high = x;
-            }
-            job.range_low[c] = low; job.range_high[c] = high;
-            /* Python max([nan, bound]) keeps nan, as these comparisons do. */
-            job.low[c] = low < job.low[c] ? job.low[c] : low;
-            job.high[c] = high > job.high[c] ? job.high[c] : high;
+    if (status != CN_OK || !scale) return status;
+    size_t first = 0;
+    while (first < pixels && !mask[first]) ++first;
+    if (first == pixels) return CN_INVALID_ARGUMENT;
+    for (size_t c = 0; c < 3; ++c) {
+        float low = out[first * 3 + c], high = low;
+        for (size_t p = first + 1; p < pixels; ++p) if (mask[p]) {
+            float x = out[p * 3 + c];
+            if (x < low || isnan(x)) low = x;
+            if (x > high || isnan(x)) high = x;
         }
+        job.range_low[c] = low; job.range_high[c] = high;
+        /* Python max([nan, bound]) keeps nan, as these comparisons do. */
+        job.low[c] = low < job.low[c] ? job.low[c] : low;
+        job.high[c] = high > job.high[c] ? job.high[c] : high;
     }
-    job.finish = 1;
+    job.pass = TRANSFER_RESCALE;
     return cn_parallel_for(pixels, 16384, transfer_range, &job);
 }

@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Literal, TypedDict
 
 from events import ExecutionErrorSource
-from process import NodeExecutionError
 
 # A worker's /run or /kill response has this header when the GPU's CUDA context
 # is broken (a sticky error): nothing in it can be freed or run again, so the
@@ -40,6 +39,10 @@ def error_response(
     exception: str | Exception,
     source: ExecutionErrorSource | None = None,
 ) -> ErrorResponse:
+    # Imported here: the host imports this module at its start, and the executor's
+    # module (with NumPy, about 100 ms) is the worker's.
+    from process import NodeExecutionError
+
     if source is None and isinstance(exception, NodeExecutionError):
         source = {
             "nodeId": exception.node_id,

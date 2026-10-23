@@ -33,6 +33,7 @@
 #include "chainner.h"
 #include "exceptional.h"
 #include "morph_entry.h"
+#include "morph_fold.h"
 #include "morphology_shared.h"
 #include "parallel.h"
 #include "run_kernels.h"
@@ -178,6 +179,19 @@ static void ellipse_horizontal(void *raw, size_t begin, size_t end)
     }
 }
 
+#if defined(_MSC_VER) && defined(_M_X64)
+/* Rows [begin, end) of ellipse_horizontal's outputs as direct folds through the AVX2 unit (morph_fold.h), the
+ * deque's outputs. */
+static void ellipse_rows(void *raw, size_t begin, size_t end)
+{
+    const morphology_context *ctx = (const morphology_context *)raw;
+    size_t row = ctx->width * ctx->channels;
+    for (size_t y = begin; y < end; ++y)
+        cn_morphology_row_avx2(ctx->src + y * row, ctx->out + y * row, ctx->width, ctx->channels, ctx->offset,
+                               ctx->maximum);
+}
+#endif
+
 /* The combine over dy in [ctx->offset, ctx->offset_end) (morphology_shared.h): per row
  * segment of the chunk, every output through combine_one, or at ISA level avx2 or
  * above through cn_morphology_combine_avx2. */
@@ -306,8 +320,15 @@ CN_EXPORT cn_status cn_morphology_complete(const float *src, float *out,
                 ctx.zero_from = half ? last + 1 : dy;
                 while (last < limit && ellipse_half(&ctx, last + 1) == 0) ++last;
                 if (half) {
+                    int folds = 0;
                     ctx.src = current; ctx.out = horizontal; ctx.offset = half;
-                    status = cn_parallel_for(height * channels, 1 + 16384 / width, ellipse_horizontal, &ctx);
+#if defined(_MSC_VER) && defined(_M_X64)
+                    folds = ctx.isa >= CN_ISA_AVX2 && half <= CN_MORPH_FOLD_RADIUS;
+                    if (folds)
+                        status = cn_parallel_for(height, 1 + 65536 / (width * channels), ellipse_rows, &ctx);
+#endif
+                    if (!folds)
+                        status = cn_parallel_for(height * channels, 1 + 16384 / width, ellipse_horizontal, &ctx);
                     if (status != CN_OK) break;
                 }
                 ctx.src = horizontal; ctx.current = current; ctx.out = destination;

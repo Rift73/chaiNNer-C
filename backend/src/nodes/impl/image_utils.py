@@ -9,7 +9,7 @@ import numpy as np
 
 from ..utils.utils import Padding, get_h_w_c
 from .color.color import Color
-from .native_buffers import converted_pixels, freeze_normalized
+from .native_buffers import converted_pixels, freeze_normalized, gbr_planes_u16
 from .native_color_complete import cvt_color
 
 MAX_VALUES_BY_DTYPE = {
@@ -145,6 +145,15 @@ def to_uint16(img: np.ndarray, normalized: bool = False) -> np.ndarray:
     img = normalize(img)
 
     return (img * 65535).round().astype(np.uint16)
+
+
+def to_uint16_gbr_planes(img: np.ndarray) -> np.ndarray:
+    """A new uint16 array of a BGR image's G, B and R planes (3 x height x width), the
+    plane order of FFmpeg's gbrp formats, each value as to_uint16 gives it."""
+    planes = gbr_planes_u16(img)
+    if planes is not None:
+        return planes
+    return np.ascontiguousarray(to_uint16(img).transpose(2, 0, 1)[[1, 0, 2]])
 
 
 class ShiftFill(Enum):

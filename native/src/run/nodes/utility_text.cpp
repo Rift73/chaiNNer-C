@@ -169,7 +169,9 @@ void text_slice(NodeContext &, std::span<const Value> inputs, std::vector<Value>
         // Python's start + length is unbounded; any stop past the end slices as the end.
         int64_t stop = start > std::numeric_limits<int64_t>::max() - size ? std::numeric_limits<int64_t>::max()
                                                                          : start + size;
-        outputs.push_back(slice(value, start, stop));
+        // A negative start whose length reaches the end slices to the end (utility_text.cpp text_slice).
+        if (start < 0 && stop >= 0) outputs.push_back(slice(value, start, std::nullopt));
+        else outputs.push_back(slice(value, start, stop));
         return;
     }
     case 2: {

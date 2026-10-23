@@ -18,8 +18,8 @@ namespace {
 using namespace cn::run;
 
 /* chainner:image:add_noise (noise/add_noise.py, nodes/impl/noise.py, native_noise.add_noise): NoiseType values as the
- * kernel's modes, NoiseColor rgb or gray. An empty image takes noise.py's NumPy fallback, so it declines to the
- * Python body. */
+ * kernel's modes, NoiseColor rgb or gray. An empty image takes noise.py's NumPy fallback, and a negative seed
+ * Seed.to_u32() (random.Random), so both decline to the Python body. */
 void add_noise(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     const Image &image = std::get<Image>(inputs[0]);
@@ -28,6 +28,7 @@ void add_noise(NodeContext &, std::span<const Value> inputs, std::vector<Value> 
     double amount = number(inputs[3]) / 100.0;
     int mode = type == "gaussian" ? 0 : type == "uniform" ? 1 : type == "salt_and_pepper" ? 2 : type == "poisson" ? 3 : 4;
     if (image.height == 0 || image.width == 0) throw RunPython{};
+    if (const Seed *seed = std::get_if<Seed>(&inputs[4]); seed && seed->value < 0) throw RunPython{};
     std::vector<uint32_t> words = seed_words(inputs[4]);
     if (std::signbit(amount) && (mode == 0 || mode == 1 || mode == 4))
         throw NodeError("ValueError", mode == 1 ? "high - low < 0" : "scale < 0");
@@ -573,6 +574,12 @@ void color_transfer(NodeContext &, std::span<const Value> inputs, std::vector<Va
     bool scale = std::get<int64_t>(inputs[4]) == 0;
     bool reciprocal = std::get<bool>(inputs[5]);
     std::vector<uint8_t> valid = transfer_mask(image), reference_valid = transfer_mask(reference);
+    // A fully transparent image or reference: the image itself (color_transfer.py).
+    auto none = [](const std::vector<uint8_t> &mask) { return std::find(mask.begin(), mask.end(), 1) == mask.end(); };
+    if (none(valid) || none(reference_valid)) {
+        outputs.push_back(inputs[0]);
+        return;
+    }
     Image source = image.channels == 4 ? select_channels(image, {0, 1, 2}) : image;
     Image target = reference.channels == 4 ? select_channels(reference, {0, 1, 2}) : reference;
     std::array<float, 6> limits{0, 1, 0, 1, 0, 1};

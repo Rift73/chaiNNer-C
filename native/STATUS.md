@@ -4,6 +4,36 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- 2026-10-23 **bug and speed hunt** (6 Opus agents, CPU only, 02:35-07:20 GMT+8; wrapped at 97 % weekly usage):
+  112 commits merged into `chaiNNer-C` (fast-forward to `076a1c67`, not pushed or released). Full gate on the
+  merged tree: 136,026 passed, 0 failed, 492 environmental skips (`test_matting_complete.py` not run: 12-20 GB in
+  one process); `tsc` and 10 frontend test files clean. Native binaries rebuilt (`chainner_native.dll`
+  `94d841ad…`, `_chainner_graph.pyd` `6fdbad47…`; old ones in `native\build\held\pre-hunt-20261023\`).
+  Speed, outputs identical: real CPU chains median 1.90x one image at a time, 2.40x with 16 CPUs; PNG decode
+  5.2 -> 3.1 ms; median 3x3 59-84 -> 1.2-4 ms; morphology ~10x; gamma 21 -> 3 ms; Wavelet Color Fix 140 -> 11 ms;
+  Blue Noise 61 -> 30 s; Save Video frame prep 1080p 8 -> 0.5 ms, 4K 28.5 -> 3.6 ms; startup node load 480 ->
+  386 ms; editor per edit at 501 nodes 23 -> 1.9 ms (Node-measured); upscale CPU glue -13 to -34 %, fp16 cast 7-12x.
+  Bugs fixed: OpenJPH heap overflow via HTJ2K `.exr` (upstream fix backported, PROVENANCE.md), damaged ONNX
+  crashing the backend, three hangs (Blue Noise 1x2, Convert To NCNN cycles, auto-split retries), Stop letting Save
+  Image write, NCNN mismatched-channel models, TensorRT RGBA engines, FFmpeg 8.x planes/CLI-reader bugs (the
+  owner's D: install uses an FFmpeg 8-series build), many NaN/failing nodes, malformed-chain and CLI errors.
+  Intended output changes (stand-in rulings 2-5, 8): Radial gradient clamp, Chroma Key no-key/all-key frames,
+  Color Transfer transparent inputs, connected numbers at a decimal tie round up, plus the NaN and channel fixes.
+  Report: `native/local/hunt-20261023/REPORT.md` (lane reports, `fable-rulings.md`, `integration-trial.md` beside
+  it). RAM incident at 02:52 (agents filled 64 GB, killed the owner's training): see memory rule; the run continued
+  under a process-tree watchdog.
+
+- RELEASED 2026-10-22 as **v0.3.8** (owner: "copy push rebuild release"): the three entries below (reviewed hunt
+  corrections, Claude follow-on decisions, Guided grayscale tiling) plus the version label. Fork branch and tag
+  `v0.3.8` at the replay of main `01042e33..d453ca29`; asset SHA-256 `f8ce4228…a444` (33 entries differ from v0.3.7
+  r8: 31 backend files, the main and renderer bundles; every backend entry equals the release commit, the native
+  binaries equal the README hashes). Release gate: 136,190 passed with 1-2 failures per run, each a different test
+  whose external program crashed at startup (texconv, ffprobe, a child Python: access violation at address 0; git.exe
+  crashed the same way outside the tests); every failing test passes alone and in its whole file. Both D: installs
+  updated (34 files each, backups in the session scratchpad) with a tuned build from the refreshed tree and the
+  existing profile (DLL `45E7487A…`, graph `C4B4B61C…`, ext `A603F216…` unchanged) and serve 196 nodes. Pending: the
+  live UI checks on the installed app: PASSED (owner, 2026-10-22: a typed number kept by Ctrl+S without leaving the
+  field; File > Quit then Cancel leaves the backend running for the next Run).
 - Guided grayscale tiling (2026-10-22, Claude's approved one-line follow-up; not released): the Guided callback now
   applies its existing `_as_3d` helper to each processed tile before assembly. Final grayscale outputs still become
   HxW through ImageOutput; multichannel results are unchanged. The new non-square grayscale CPU regression failed
@@ -528,8 +558,13 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 | Item | Plan |
 | --- | --- |
+| Owner yes/no from the 2026-10-23 hunt (`native/local/hunt-20261023/REPORT.md`, "Your yes/no list"): (1) Save Video FFV1 `-level 3 -slices 16` (14-46 % faster saves, frames identical, bytes change; ruling 7); (2) Save Image PNG compression level 5 (-24 % save time, +0.7 % size); (3) Blue Noise non-identical speedup (prototype 8-19x, 6 of 65,536 ranks differ; ruling 11); (4) upscale run-ahead for PyTorch/ONNX/NCNN (branch `hunt/upscale-runahead`, needs a GPU check of a two-GPU-upscale chain) | The owner's yes or no |
+| 2026-10-23 hunt GPU phase: merged upscale changes bit-identical on TensorRT fp16, PyTorch CUDA fp16 and NCNN Vulkan (TensorRT RGBA 4x -8 %); ONNX's CUDA provider did not start in a plain process ("Could not locate cublasLt64_12.dll", runtime CUDA 13) and the process ended silently | Owner check in the app: ONNX Upscale Image on CUDA |
+| Integrated FFmpeg is 5.1.2 (upstream's unversioned 2024 download link): owner chose option 1 on 2026-10-23: pin a current release by version + SHA-256, update older installed copies at startup, leave user-replaced copies alone | Next session |
+| Node.js 25.2.1 (pinned for `npm run make`) is end-of-life with high-severity advisories (a hook flagged it 2026-10-23) | Owner decision on the next Node pin |
+| 2026-10-23 hunt, found not fixed: Load Video on a truncated file ends early with success; Python executor does not wait for a lazy input on Stop; chains deeper than ~990 nodes hit the recursion limit (depth limit or iterative engine: owner); ncnn `pow` with negative bases; NAFNet conversion KeyError; every node re-renders on edge changes; Denoise / Lens Blur SIMD rewrites; PNG encode is now the largest batch cost; editor speed-ups and the damaged-chain message need an in-app check | Next sessions |
 | Follow-on F01/F17: concurrent Skip Existing writers and concurrent settings writers | Still deferred by Claude. F11/F12 were subsequently approved and implemented in `3a345dee` |
-| Follow-on installed UI checks: numeric field Ctrl+S, real focus/stepper/wheel events and accepted/canceled quit | Claude handles the installed v0.3.8 checks after release/update; no source app launch in this task. Prescribed YUV/model, ONNX/NCNN Stop, background removal and the corrected Guided GPU run passed |
+| Follow-on installed UI checks left: numeric drafts changed by stepper/arrow keys/wheel, and the backend stopping after an accepted quit | Typed numeric Ctrl+S and Quit-then-Cancel PASSED on the installed v0.3.8 (owner, 2026-10-22). Prescribed YUV/model, ONNX/NCNN Stop, background removal and the corrected Guided GPU run passed |
 | Python type check baseline: 30 errors and 44 warnings; test_video_io.py has an existing RUF005 lint warning | Unchanged baseline verified against d846db15; no unrelated repairs in this phase |
 | Hunt O02: cold CFR Matroska/WebM rate detection and frame indexing read packets twice, then cache the result | Deferred unless a long cold load visibly stalls; preserve their different counting rules |
 | Hunt O03: opt-in `CHAINNER_C_TRT_RUNNER=1` retains both Python and C++ TensorRT engine copies | Parked: the cross-boundary ownership change is riskier than the current saving |

@@ -4,6 +4,7 @@
  * uses separate products. The difference is observable for subnormal inputs.
  * Framework device/autograd/reduced-precision modes stay in the adapter. */
 #include "parallel.h"
+#include "wavelet_shared.h"
 #include <math.h>
 #include <stdlib.h>
 
@@ -16,13 +17,6 @@ static cn_status dimensions(size_t batches, size_t height, size_t width, size_t 
     *count = batches * 3 * plane;
     return CN_OK;
 }
-
-typedef struct wavelet_job {
-    const float *source;
-    float *low, *high;
-    size_t height, width, radius;
-    int first, fused;
-} wavelet_job;
 
 static cn_status buffers(const float *source, float *output, size_t count) {
     if (!source || !output || (uintptr_t)source % sizeof(float)
@@ -40,36 +34,56 @@ static size_t sample_position(size_t position, size_t radius, size_t length, siz
     return position;
 }
 
-static void blur_range(void *opaque, size_t begin, size_t end) {
-    wavelet_job *job = opaque;
+static void blur_one(const wavelet_job *job, size_t i) {
     static const float weights[9] = {
         0.0625f, 0.125f, 0.0625f, 0.125f, 0.25f, 0.125f, 0.0625f, 0.125f, 0.0625f
     };
     size_t plane_size = job->height * job->width;
-    for (size_t i = begin; i < end; ++i) {
-        size_t x = i % job->width, y = i / job->width % job->height;
-        size_t plane = (i / plane_size) * plane_size;
-        float value = 0.0f;
-        for (size_t dy = 0; dy < 3; ++dy) {
-            size_t yy = sample_position(y, job->radius, job->height, dy);
-            for (size_t dx = 0; dx < 3; ++dx) {
-                size_t xx = sample_position(x, job->radius, job->width, dx);
-                float sample = job->source[plane + yy * job->width + xx];
-                float weight = weights[dy * 3 + dx];
-                if (job->fused) value = fmaf(sample, weight, value);
-                else {
-                    float product = sample * weight;
-                    value = value + product;
-                }
+    size_t x = i % job->width, y = i / job->width % job->height;
+    size_t plane = (i / plane_size) * plane_size;
+    float value = 0.0f;
+    for (size_t dy = 0; dy < 3; ++dy) {
+        size_t yy = sample_position(y, job->radius, job->height, dy);
+        for (size_t dx = 0; dx < 3; ++dx) {
+            size_t xx = sample_position(x, job->radius, job->width, dx);
+            float sample = job->source[plane + yy * job->width + xx];
+            float weight = weights[dy * 3 + dx];
+            if (job->fused) value = fmaf(sample, weight, value);
+            else {
+                float product = sample * weight;
+                value = value + product;
             }
         }
-        job->low[i] = value;
-        if (job->high) {
-            float difference = job->source[i] - value;
-            float previous = job->first ? 0.0f : job->high[i];
-            job->high[i] = previous + difference;
-        }
     }
+    job->low[i] = value;
+    if (job->high) {
+        float difference = job->source[i] - value;
+        float previous = job->first ? 0.0f : job->high[i];
+        job->high[i] = previous + difference;
+    }
+}
+
+/* Outputs [begin, end). At avx2 and above, each row's interior (every tap inside the row) runs through the AVX2
+   unit, the row's edges here. */
+static void blur_range(void *opaque, size_t begin, size_t end) {
+    const wavelet_job *job = opaque;
+    size_t i = begin;
+#if defined(_MSC_VER) && defined(_M_X64)
+    if (job->isa >= CN_ISA_AVX2 && job->width > 2 * job->radius) {
+        while (i < end) {
+            size_t row = i - i % job->width, stop = end - row < job->width ? end : row + job->width;
+            size_t from = i > row + job->radius ? i : row + job->radius;
+            size_t to = stop < row + job->width - job->radius ? stop : row + job->width - job->radius;
+            if (from > stop) from = stop;
+            if (to < from) to = from;
+            for (; i < from; ++i) blur_one(job, i);
+            if (to > from) cn_wavelet_interior_avx2(job, from, to);
+            for (i = to; i < stop; ++i) blur_one(job, i);
+        }
+        return;
+    }
+#endif
+    for (; i < end; ++i) blur_one(job, i);
 }
 
 CN_EXPORT cn_status cn_wavelet_blur_f32(const float *source, float *output,
@@ -80,7 +94,7 @@ CN_EXPORT cn_status cn_wavelet_blur_f32(const float *source, float *output,
     if (status != CN_OK) return status;
     status = buffers(source, output, count);
     if (status != CN_OK) return status;
-    wavelet_job job = {source, output, NULL, height, width, radius, 0, fused};
+    wavelet_job job = {source, output, NULL, height, width, radius, 0, fused, cn_isa_current()};
     return cn_parallel_for(count, 16384, blur_range, &job);
 }
 
@@ -89,7 +103,8 @@ static cn_status decompose(const float *source, float *high, float *low, float *
     const float *current = source;
     for (int level = 0; level < levels; ++level) {
         float *next = (levels - level) % 2 ? low : scratch;
-        wavelet_job job = {current, next, high, height, width, (size_t)1 << level, level == 0, fused};
+        wavelet_job job = {current, next, high, height, width, (size_t)1 << level, level == 0, fused,
+                           cn_isa_current()};
         cn_status status = cn_parallel_for(count, 16384, blur_range, &job);
         if (status != CN_OK) return status;
         current = next;

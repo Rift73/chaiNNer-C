@@ -74,9 +74,10 @@ from process import (
     collect_input_information,
     compute_broadcast,
     compute_sequence_broadcast,
-    enforce_output,
+    loop_node_error,
     on_failing_node,
     prepare_node,
+    run_collector_complete,
     run_collector_iterate,
     run_node,
 )
@@ -835,10 +836,17 @@ class _Hooks:
         """The item's outputs (process.Executor.__materialize / __materialize_split)."""
         (values,) = token
         if split:
-            values = cast("_SplitIterator", iterator).materialize(values)
+            described = values
+            values = cast("_SplitIterator", iterator).materialize(described)
             if isinstance(values, Exception):
-                raise values
+                node = self.nodes[index]
+                raise loop_node_error(node, self.inputs.get(node.id), values, described)
         return self.fill(index, output, values)
+
+    def item_failure(self, index: int, error: Exception) -> Exception:
+        """A generator's item error as the run reports it (process.loop_node_error)."""
+        node = self.nodes[index]
+        return loop_node_error(node, self.inputs.get(node.id), error)
 
     # Collectors
 
@@ -858,7 +866,9 @@ class _Hooks:
         return prepare_node(self.nodes[index].data, inputs, collector)
 
     def collector_complete(self, index: int, collector: Collector) -> list[object]:
-        return enforce_output(collector.on_complete(), self.nodes[index].data).output
+        node = self.nodes[index]
+        assert isinstance(node, CollectorNode)
+        return run_collector_complete(node, collector, self.inputs.get(node.id)).output
 
     # Iteration views and the item window
 

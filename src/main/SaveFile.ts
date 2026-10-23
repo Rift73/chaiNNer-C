@@ -30,6 +30,41 @@ const hash = (value: string): string => {
     return createHash('md5').update(value).digest('hex');
 };
 
+/** Why a file cannot be opened as a chain, as the user reads it. */
+const notAChain = (reason: string): Error =>
+    new Error(`The file is not a chaiNNer chain, or it is damaged: ${reason}.`);
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * The migrated content with what the editor reads before it checks the chain (toEditorChain):
+ * lists of nodes, each with an id and a node type, and of connections. A view that the file lacks
+ * is the default view.
+ */
+const checkSaveData = (data: unknown): SaveData => {
+    if (!isObject(data)) throw notAChain('it holds no chain');
+    const { nodes, edges, viewport } = data;
+    if (!Array.isArray(nodes)) throw notAChain('it has no list of nodes');
+    if (!Array.isArray(edges)) throw notAChain('it has no list of connections');
+    nodes.forEach((node: unknown, index) => {
+        if (
+            !isObject(node) ||
+            typeof node.id !== 'string' ||
+            !isObject(node.data) ||
+            typeof node.data.schemaId !== 'string'
+        ) {
+            throw notAChain(`its node ${index + 1} has no id or node type`);
+        }
+    });
+    edges.forEach((edge: unknown, index) => {
+        if (!isObject(edge)) throw notAChain(`its connection ${index + 1} is not a connection`);
+    });
+    const isView =
+        isObject(viewport) && [viewport.x, viewport.y, viewport.zoom].every(Number.isFinite);
+    return { ...data, viewport: isView ? viewport : { x: 0, y: 0, zoom: 1 } } as SaveData;
+};
+
 export class SaveFile {
     private static pendingReservation: Promise<void> = Promise.resolve();
 
@@ -42,29 +77,40 @@ export class SaveFile {
             value = Buffer.from(value, 'base64').toString('utf-8');
         }
 
-        const rawData = JSON.parse(value) as RawSaveFile | (SaveData & { version?: never });
+        let rawData: RawSaveFile | (SaveData & { version?: never });
+        try {
+            rawData = JSON.parse(value) as typeof rawData;
+        } catch {
+            throw notAChain('it is not JSON');
+        }
+        if (!isObject(rawData)) throw notAChain('it holds no chain');
 
-        let data: SaveData;
+        let migrated: unknown;
         let tamperedWith = false;
-        if (rawData.version) {
-            const { version, content, checksum, migration } = rawData;
-            if (checksum !== undefined) {
-                // checksum is present
-                tamperedWith = checksum !== hash(JSON.stringify(content));
-            } else {
-                // checksum was added after v0.6.1, so any saves >0.6.1 without a checksum have
-                // been tampered with
-                tamperedWith = versionGt(version, '0.6.1') || (migration ?? 0) > 4;
-            }
+        // A file whose structure the migrations do not expect makes them fail on it.
+        try {
+            if (rawData.version) {
+                const { version, content, checksum, migration } = rawData;
+                if (checksum !== undefined) {
+                    // checksum is present
+                    tamperedWith = checksum !== hash(JSON.stringify(content));
+                } else {
+                    // checksum was added after v0.6.1, so any saves >0.6.1 without a checksum have
+                    // been tampered with
+                    tamperedWith = versionGt(version, '0.6.1') || (migration ?? 0) > 4;
+                }
 
-            data = migrate(version, content, migration) as SaveData;
-        } else {
-            // Legacy files
-            data = migrate(null, rawData) as SaveData;
+                migrated = migrate(version, content, migration);
+            } else {
+                // Legacy files
+                migrated = migrate(null, rawData);
+            }
+        } catch (error) {
+            throw notAChain(error instanceof Error ? error.message : String(error));
         }
 
         return {
-            ...data,
+            ...checkSaveData(migrated),
             tamperedWith,
         };
     }
@@ -178,6 +224,10 @@ export const openSaveFile = async (path: string): Promise<FileOpenResult<ParsedS
         return { kind: 'Success', path, saveData };
     } catch (error) {
         log.error(error);
-        return { kind: 'Error', path, error: String(error) };
+        return {
+            kind: 'Error',
+            path,
+            error: error instanceof Error ? error.message : String(error),
+        };
     }
 };

@@ -2,6 +2,8 @@
  * objects; this translation unit owns every numeric element operation. Separate
  * stages deliberately round at the same ufunc/TensorIterator boundaries.
  * No framework headers, private runtime symbols, model execution or GPU access. */
+#include "cast_half.h"
+#include "isa.h"
 #include "parallel.h"
 #include <atomic>
 #include <bit>
@@ -307,6 +309,7 @@ struct Job {
     const View *a, *b, *out;
     double amount;
     int operation, framework;
+    cn_isa_level isa; // read once per call
     Walk walk;
     std::atomic<int> events{0};
 };
@@ -366,6 +369,20 @@ void run_range(void *opaque, size_t begin, size_t end) noexcept {
             else if (width == 4) copy_run<4>(a, from, out, to, n);
             else if (width == 8) copy_run<8>(a, from, out, to, n);
             else copy_run<16>(a, from, out, to, n);
+        });
+    } else if (j.isa >= CN_ISA_AVX2 && j.operation == 2 &&
+               j.out->type == static_cast<int>(Kind::half) &&
+               j.a->type == static_cast<int>(Kind::single)) {
+        // float32 -> float16: AVX2 lanes for groups of 8 that round without a
+        // condition (cast_half.h), element's rounding for each group that does not.
+        walk(j.walk, begin, end, [&](const char *a, const char *, char *out, size_t n) noexcept {
+            while (n) {
+                size_t done = cn_float_to_half_avx2(a, from, out, to, n);
+                a += static_cast<ptrdiff_t>(done) * from;
+                out += static_cast<ptrdiff_t>(done) * to;
+                n -= done;
+                for (size_t i=0; i<8 && n; ++i, --n, a+=from, out+=to) element(j, a, nullptr, out);
+            }
         });
     } else {
         walk(j.walk, begin, end, [&](const char *a, const char *b, char *out, size_t n) noexcept {
@@ -431,7 +448,7 @@ cn_status execute(const View *a, const View *b, const View *out, double amount,
         span=next*(out->shape[dimension]-1)+span;
         last=next;
     }
-    Job job{a,b,out,amount,operation,framework,{}};
+    Job job{a,b,out,amount,operation,framework,cn_isa_current(),{}};
     fold(views,job.walk);
     status=cn_parallel_for(out->count,65536,run_range,&job);
     if (events) *events=job.events.load(std::memory_order_relaxed);
