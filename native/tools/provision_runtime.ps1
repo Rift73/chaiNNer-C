@@ -154,7 +154,7 @@ if ($Relock) {
         'google-re2',  # oracle/reference only (upstream's onnx/load.py imports re2)
         'Sanic-Cors==2.2.0',  # oracle/reference only (upstream's server imports sanic_cors)
         # spandrel: the fork's build (DRFT, DUAL, SST, WSR, GaterV3, SMoSR, FIGSR, GFISRv2), the wheel on its release
-        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c8/spandrel-0.4.2%2Bc8-py3-none-any.whl#sha256=851797e52f2f6cc0406b1dd362edaaf2d682edca39b6b3583f6e0a6dbc55f41e',
+        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c9/spandrel-0.4.2%2Bc9-py3-none-any.whl#sha256=0e3c202241257be9e0bfbfc1ede161944d829291510768eea97b68bf8bd4094e',
         'spandrel_extra_arches', 'facexlib', 'einops', 'safetensors',
         # onnxruntime-gpu: ONNX Runtime 1.30.0 rebuilt for TensorRT 11, the wheel on its fork's release
         'onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11-cp314-cp314-win_amd64.whl#sha256=443287192cb0add06e1faa7022f1badf9ead0e77b82cd6deb0fc2192af5a96d3',

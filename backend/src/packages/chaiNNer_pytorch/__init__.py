@@ -109,13 +109,14 @@ package = add_package(
             # attention for speed (DAT2 2x in PyTorch) and for ONNX export; c6 runs it
             # through scaled_dot_product_attention (cuDNN or memory-efficient attention);
             # c7 folds DRFT's edge branches without a per-channel Python loop; c8 adds
-            # WSR, GaterV3, SMoSR, FIGSR and GFISRv2.
-            version="0.4.2+c8",
-            size_estimate=574 * KB,
+            # WSR, GaterV3, SMoSR, FIGSR and GFISRv2; c9 loads released GaterV3 models
+            # (no flash buffer, resselt's upsamplers).
+            version="0.4.2+c9",
+            size_estimate=577 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c8/"
-                "spandrel-0.4.2%2Bc8-py3-none-any.whl"
-                "#sha256=851797e52f2f6cc0406b1dd362edaaf2d682edca39b6b3583f6e0a6dbc55f41e"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c9/"
+                "spandrel-0.4.2%2Bc9-py3-none-any.whl"
+                "#sha256=0e3c202241257be9e0bfbfc1ede161944d829291510768eea97b68bf8bd4094e"
             ),
         ),
         Dependency(
