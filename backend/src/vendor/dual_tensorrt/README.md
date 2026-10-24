@@ -14,10 +14,12 @@ Linux source path:
 <traiNNer-redux>/traiNNer/archs/dual_arch.py
 ```
 
-Reviewed source SHA-256:
+Reviewed source SHA-256 (chaiNNer-C, 2026-10-25: the neighborhood-attention source; the
+rest of this guide was written for the earlier `a7c579c5…0abf`, which differs only in
+the context sites' operator, see "chaiNNer-C additions"):
 
 ```text
-a7c579c5cc7179f835b3dcc40f115d64a4faec2adb810bd066160348d1ff0abf
+b73554e5c15a4520fe085b875c5a584107b596ba1e011f6368a94f449fe9fac3
 ```
 
 This is the final **DUAL3X-derived standalone DUAL**: pre-mixed dynamic group convolutions, ordinary FFN/attention pointwise projections, static EDBB reparameterization, RFB spatial attention, regional channel attention (RCA), and XR/XG cross-scale retrieval. It is **not** the earlier DUAL4 consolidation, deleted DUAL5, or the rolled-back training-speed optimization.
@@ -407,4 +409,16 @@ These sources explain API behavior and portability; they do not substitute for l
   nodes keyed by width only, `DualCore_c128_TRT`). It overrides only graph.py's size-dependent parts; see its
   docstring and chaiNNer-C's `nodes/impl/tensorrt/dual_aot.py` (`register_dynamic`) for the plugins.
 - `graph.py`: only the RGB readout moves ahead of its pixel shuffle (`c0de1572`).
+- Neighborhood attention (source `b73554e5…fac3`, every factory, `context_na=True`): a
+  context site (M32/M64) whose trunk exceeds its window on either axis is the source's
+  `_na_core`: QKV projected once over the trunk, then the plugin node
+  `DualNA_<key>_TRT(qkv, bq, bk; window=M)` -> BF16 `[1,H,W,C]` before the unchanged
+  gate and projection. `bq`/`bk` are the site's RFB factors at every union-local
+  coordinate in `[0,M+15)^2` (row-major), `[C/32,(M+15)^2,16]` BF16. A trunk that fits
+  the window keeps the whole-window ops (the source's dispatch); `dynamic.py` emits the
+  node at every context site. The manifest records `"context": "na-v1"` (absent in
+  earlier exports) and lists `DualNA_<key>_TRT` among `plugin_names` when the graph
+  has the node. The node has no C++ plugin: chaiNNer-C's AOT plugin (`dual_aot.py`,
+  kernel `dual_na_kernel.py`) builds it, and `build.py engine` refuses such an export.
+  `cpu_graph_oracle.py` evaluates the node as a dense per-query FP32 reference.
 - This guide: the author's local paths are placeholders (`<traiNNer-redux>`, `<workspace>`, `<research>`).

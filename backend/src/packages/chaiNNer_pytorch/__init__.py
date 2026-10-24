@@ -110,13 +110,14 @@ package = add_package(
             # through scaled_dot_product_attention (cuDNN or memory-efficient attention);
             # c7 folds DRFT's edge branches without a per-channel Python loop; c8 adds
             # WSR, GaterV3, SMoSR, FIGSR and GFISRv2; c9 loads released GaterV3 models
-            # (no flash buffer, resselt's upsamplers).
-            version="0.4.2+c9",
-            size_estimate=577 * KB,
+            # (no flash buffer, resselt's upsamplers); c10 runs DUAL's context layers
+            # as neighborhood attention.
+            version="0.4.2+c10",
+            size_estimate=580 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c9/"
-                "spandrel-0.4.2%2Bc9-py3-none-any.whl"
-                "#sha256=0e3c202241257be9e0bfbfc1ede161944d829291510768eea97b68bf8bd4094e"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c10/"
+                "spandrel-0.4.2%2Bc10-py3-none-any.whl"
+                "#sha256=2496741447f096efa803d01798262ab065d0c4e79b4266f30a32cab4e254b50f"
             ),
         ),
         Dependency(

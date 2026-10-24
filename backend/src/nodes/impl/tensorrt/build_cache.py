@@ -47,6 +47,7 @@ FORMAT_VERSION = 1
 _DUAL_PLUGIN_SOURCES = (
     Path(__file__).with_name("dual_aot.py"),
     Path(__file__).with_name("dual_dynamic_kernels.py"),
+    Path(__file__).with_name("dual_na_kernel.py"),
     Path(__file__).with_name("dual_engine_worker.py"),
     dual.VENDOR / "scripts" / "dual_tensorrt" / "kernels.py",
 )

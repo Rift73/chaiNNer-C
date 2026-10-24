@@ -16,6 +16,17 @@ DUAL(scale=4) retains the original C96/G4x6 DUAL3X state/init contract.
 Factory names now describe new geometries: old consolidated DUAL4 factory
 checkpoints are NOT compatible. Context windows are not in checkpoints;
 set c_windows to the geometry used for training (default32/64).
+All presets default to sliding neighborhood attention (context_na=True) in
+the context layers: each query attends an in-bounds MxM neighborhood, M32/64
+by default. This replaces overlap-add; there is no output blending/filter.
+Widths, depths and checkpoint tensor keys/shapes are unchanged. context_na=False
+restores legacy non-overlap routing. context_overlap is a deprecated alias
+for context_na, NOT a way to select the retired overlap-add implementation.
+Routing is NOT stored in weights; inference/export must select it explicitly.
+Local G16 attention and the regional channel-attention mixer are unchanged.
+NA requires the default RFB positional bias and dot-product attention. Its
+differentiable SDPA path supports training; the separate optimized TensorRT
+NA plugin is inference-only and is not used by this architecture.
 
 Dependencies: PyTorch, optional traiNNer registry, optional Triton/direct
 attention APIs. All model and kernel code is bundled; no other architecture
@@ -434,8 +445,40 @@ class RelativeFourierBias(nn.Module):
         return self.factors(torch.stack((yy, xx), dim=-1).reshape(-1, 2), dtype)
 
 
+def _resolve_context_na(
+    context_na: bool | None, context_overlap: bool | None, *, default: bool
+) -> bool:
+    """Migrate old YAML switches without silently keeping the retired operator."""
+    for name, value in (
+        ("context_na", context_na),
+        ("context_overlap", context_overlap),
+    ):
+        if value is not None and type(value) is not bool:
+            raise ValueError(f"{name} must be a bool")
+    if context_overlap is not None:
+        if context_na is not None and context_na != context_overlap:
+            raise ValueError("context_na and deprecated context_overlap conflict")
+        warnings.warn(
+            "context_overlap is deprecated and now aliases context_na; "
+            "True selects neighborhood attention, not overlap-add",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return context_overlap
+    return default if context_na is None else context_na
+
+
+def _na_coordinates(height: int, width: int, device: torch.device) -> Tensor:
+    yy, xx = torch.meshgrid(
+        torch.arange(height, device=device),
+        torch.arange(width, device=device),
+        indexing="ij",
+    )
+    return torch.stack((yy, xx), dim=-1).reshape(-1, 2)
+
+
 class _SpatialAttention(_WindowAttention):
-    """Reuse v0 attention math, with RFB and exact regular window routing."""
+    """Original projections with optional per-query context neighborhoods."""
 
     def __init__(
         self,
@@ -445,12 +488,15 @@ class _SpatialAttention(_WindowAttention):
         *,
         pos_bias: str = "rfb",
         g_attention_impl: Literal["sdpa", "direct"] = "sdpa",
+        context_na: bool | None = None,
+        context_overlap: bool | None = None,
         **kwargs,
     ) -> None:
         if pos_bias not in ("rfb", "rpb", "rib", "none"):
             raise ValueError("pos_bias must be rfb/rpb/rib/none")
         if g_attention_impl not in ("sdpa", "direct"):
             raise ValueError("g_attention_impl must be sdpa/direct")
+        context_na = _resolve_context_na(context_na, context_overlap, default=False)
         super().__init__(
             channels,
             heads,
@@ -462,7 +508,21 @@ class _SpatialAttention(_WindowAttention):
             self.factored_bias = RelativeFourierBias(heads, kwargs.get("rank", 16))
             self.pos_bias = "rfb"
         self.g_attention_impl = g_attention_impl
+        if context_na and (pos_bias != "rfb" or self.logit_scale is not None):
+            raise ValueError("context_na requires RFB bias and dot-product attention")
+        self.context_na = context_na
         self.direct_fallback_reason: str | None = None
+
+    @property
+    def context_overlap(self) -> bool:
+        """Compatibility attribute for older callers; now selects NA, not blending."""
+        return self.context_na
+
+    @context_overlap.setter
+    def context_overlap(self, enabled: bool) -> None:
+        if type(enabled) is not bool:
+            raise ValueError("context_overlap must be a bool")
+        self.context_na = enabled
 
     def _record_direct_fallback(self, reason: str) -> None:
         if self.direct_fallback_reason is None:
@@ -508,10 +568,114 @@ class _SpatialAttention(_WindowAttention):
         )
         return output.transpose(1, 2).reshape(batch_windows, count, channels)
 
+    def _na_core(self, x: Tensor) -> Tensor:
+        """Differentiable exact neighborhoods, evaluated in small query tiles.
+
+        Query i uses start=clamp(i-floor(K/2), 0, length-K), K=min(M,length).
+        Tiles only batch the calculation; a boolean mask selects each query's
+        own neighborhood, with no tile seam or output blend in the operator.
+        RFB factors use the accepted probe's tile-local coordinate frame to
+        preserve low-precision rounding. QKV is projected once for the image.
+        """
+        if self.pos_bias != "rfb" or self.logit_scale is not None:
+            raise ValueError("context_na requires RFB bias and dot-product attention")
+        batch, channels, height, width = x.shape
+        kh, kw = min(height, self.window), min(width, self.window)
+        tile, chunk_size = 16, 4
+        heads, dim = self.heads, channels // self.heads
+        tokens = x.permute(0, 2, 3, 1).reshape(batch, height * width, channels)
+        qkv = self.qkv(tokens).reshape(batch, height * width, 3, heads, dim)
+        query, key, value = qkv.permute(2, 0, 3, 1, 4).unbind(0)
+        query = query * dim**-0.5
+        dtype = query.dtype
+        output = x.new_empty((batch, channels, height, width), dtype=dtype)
+        uh, uw = min(height, kh + tile - 1), min(width, kw + tile - 1)
+        qlocal = _na_coordinates(tile, tile, x.device)
+        klocal = _na_coordinates(uh, uw, x.device)
+        tiles = [(y, z) for y in range(0, height, tile) for z in range(0, width, tile)]
+
+        def gather(t: Tensor, index: Tensor, count: int) -> Tensor:
+            return (
+                t.index_select(2, index.reshape(-1))
+                .reshape(batch, heads, count, index.shape[1], dim)
+                .permute(0, 2, 1, 3, 4)
+                .reshape(batch * count, heads, index.shape[1], dim)
+            )
+
+        for first in range(0, len(tiles), chunk_size):
+            current = tiles[first : first + chunk_size]
+            count = len(current)
+            origins = torch.tensor(current, device=x.device)
+            qp = origins[:, None, :] + qlocal[None]
+            # Partial tiles repeat a valid query to avoid all-masked softmax;
+            # only the actual image coordinates are written to the output.
+            qp = torch.stack(
+                (qp[..., 0].clamp(max=height - 1), qp[..., 1].clamp(max=width - 1)), -1
+            )
+            ko = origins - torch.tensor((kh // 2, kw // 2), device=x.device)
+            ko = torch.stack(
+                (ko[:, 0].clamp(0, height - uh), ko[:, 1].clamp(0, width - uw)), -1
+            )
+            kp = ko[:, None, :] + klocal[None]
+            qi, ki = qp[..., 0] * width + qp[..., 1], kp[..., 0] * width + kp[..., 1]
+            qt, kt, vt = (
+                gather(query, qi, count),
+                gather(key, ki, count),
+                gather(value, ki, count),
+            )
+            bq, _ = self.factored_bias.factors((qp - ko[:, None]).reshape(-1, 2), dtype)
+            _, bk = self.factored_bias.factors(klocal, dtype)
+            rank = self.factored_bias.rank
+            bq = bq.reshape(heads, count, tile * tile, rank).permute(1, 0, 2, 3)
+            bq = (
+                bq[None]
+                .expand(batch, -1, -1, -1, -1)
+                .reshape(batch * count, heads, tile * tile, rank)
+            )
+            bk = bk[None].expand(batch * count, -1, -1, -1)
+            qt, kt = (
+                torch.cat((qt, bq), -1).contiguous(),
+                torch.cat((kt, bk), -1).contiguous(),
+            )
+            vt = F.pad(vt, (0, rank)).contiguous()
+            sy = (qp[..., 0] - kh // 2).clamp(0, height - kh)
+            sx = (qp[..., 1] - kw // 2).clamp(0, width - kw)
+            ky = ko[:, 0, None] + torch.arange(uh, device=x.device)[None]
+            kx = ko[:, 1, None] + torch.arange(uw, device=x.device)[None]
+            my = (ky[:, None, :] >= sy[..., None]) & (
+                ky[:, None, :] < sy[..., None] + kh
+            )
+            mx = (kx[:, None, :] >= sx[..., None]) & (
+                kx[:, None, :] < sx[..., None] + kw
+            )
+            mask = (my[..., :, None] & mx[..., None, :]).reshape(
+                count, tile * tile, uh * uw
+            )
+            mask = (
+                mask[None]
+                .expand(batch, -1, -1, -1)
+                .reshape(batch * count, 1, tile * tile, uh * uw)
+                .contiguous()
+            )
+            attended = F.scaled_dot_product_attention(
+                qt, kt, vt, attn_mask=mask, dropout_p=0.0, scale=1.0
+            )[..., :dim]
+            attended = (
+                attended.reshape(batch, count, heads, tile, tile, dim)
+                .permute(0, 1, 2, 5, 3, 4)
+                .reshape(batch, count, channels, tile, tile)
+            )
+            for j, (y, z) in enumerate(current):
+                th, tw = min(tile, height - y), min(tile, width - z)
+                output[:, :, y : y + th, z : z + tw] = attended[:, j, :, :th, :tw]
+        return output
+
     def pre_gate_core(self, x: Tensor) -> Tensor:
         if x.ndim != 4 or x.shape[1] != self.channels or min(x.shape[2:]) < 1:
             raise ValueError("expected nonempty BCHW input with matching channels")
         batch, channels, height, width = x.shape
+        if self.context_na and (height > self.window or width > self.window):
+            return self._na_core(x)
         wh, ww = min(height, self.window), min(width, self.window)
         if (
             self.window_mode == "anchored"
@@ -1286,6 +1450,8 @@ class DUAL(nn.Module):
         pixel_unshuffle: bool = False,
         dynamic_experts: int = 4,
         c_windows: tuple[int, int] = (32, 64),
+        context_na: bool | None = None,
+        context_overlap: bool | None = None,
         g_window: int = 16,
         norm: Literal["token"] = "token",
         c_pos_bias: str = "rfb",
@@ -1302,6 +1468,7 @@ class DUAL(nn.Module):
         _check_experts(dynamic_experts)
         if type(pixel_unshuffle) is not bool:
             raise ValueError("pixel_unshuffle must be a bool")
+        context_na = _resolve_context_na(context_na, context_overlap, default=True)
         if scale not in (1, 2, 4) or norm != "token":
             raise ValueError("DUAL requires scale 1/2/4 and token normalization")
         if not isinstance(embed_dim, int) or embed_dim < 32 or embed_dim % 32:
@@ -1341,10 +1508,15 @@ class DUAL(nn.Module):
             raise ValueError("g_window must be a positive even integer")
         if c_pos_bias not in ("rfb", "rib", "none"):
             raise ValueError("c_pos_bias must be rfb/rib/none")
+        if context_na and (c_pos_bias != "rfb" or qk != "dot"):
+            raise ValueError(
+                "context_na requires c_pos_bias='rfb' and qk='dot'; disable context_na for legacy alternatives"
+            )
         if compile_g_attention_impl not in ("sdpa", "direct"):
             raise ValueError("compile_g_attention_impl must be sdpa/direct")
         self.compile_g_attention_impl = compile_g_attention_impl
         self.scale = scale
+        self.context_na = context_na
         self.unshuffle = pixel_unshuffle
         self.internal_scale = scale * (2 if pixel_unshuffle else 1)
         self.selected_original_indices = selected
@@ -1395,6 +1567,7 @@ class DUAL(nn.Module):
                 group.layers[index] = DualContextLayer(
                     group.layers[index], core_checkpoint=dual_core_checkpoint
                 )
+                group.layers[index].attention.context_na = context_na
         for group, indices in zip(self.groups, selected, strict=True):
             group.layers = nn.ModuleList(group.layers[i] for i in indices)
         if self.unshuffle:
@@ -1432,6 +1605,11 @@ class DUAL(nn.Module):
                         self.get_submodule(name), dynamic_experts
                     ),
                 )
+
+    @property
+    def context_overlap(self) -> bool:
+        """Deprecated configuration view; True now means NA, not overlap-add."""
+        return self.context_na
 
     def forward(self, x: Tensor) -> Tensor:
         original_h, original_w = x.shape[-2:]

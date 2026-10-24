@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 import types
 
-from .spec import FACTORIES, SCHEMA, SOURCE, SOURCE_SHA256, from_model, sha256
+from .spec import CONTEXT, FACTORIES, SCHEMA, SOURCE, SOURCE_SHA256, from_model, sha256
 
 
 def load_arch():
@@ -59,6 +59,7 @@ def make_model(factory, scale, *, meta=False):
             dual_core_checkpoint=False,
             g_attention_impl="sdpa",
             compile_g_attention_impl="sdpa",
+            context_na=True,
         )
     return arch, model.eval().requires_grad_(False)
 
@@ -163,12 +164,14 @@ def export_checkpoint(
         "state_key": state_key,
         "checkpoint_folded": folded,
         "specialization": spec.to_dict(),
+        "context": CONTEXT,
         "precision": "FP32_IO_BF16_FP32_BODY",
         "dynamic_sites": graph.dynamic_sites,
         "plugin_names": [
             f"Dual{part}_{spec.plugin_key}_TRT" for part in ("Norm", "Core", "Project")
         ]
-        + ["DualAttentionBarrier_TRT"],
+        + ["DualAttentionBarrier_TRT"]
+        + ([f"DualNA_{spec.plugin_key}_TRT"] if graph.na_sites else []),
         "files": {
             p.name: sha256(p)
             for p in (output / "model.onnx", output / "weights.bin")

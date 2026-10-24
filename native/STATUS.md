@@ -4,6 +4,12 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- RELEASED 2026-10-24 as **v0.3.8 re-release 4**: the worker leaves expandable_segments out of an inherited PyTorch
+  allocator setting (a user's FIGSR and FDAT runs failed `!handles_.at(i)` after one out-of-memory tile), and spandrel
+  0.4.2+c9 (released GaterV3 models load; GaterV3, SMoSR, FIGSR and GFISRv2 checked against resselt). Fork branch and
+  tag `v0.3.8` at `b114b776` (publish commit over `e30ea7b2`, tree = main `63755028`); asset SHA-256 `CA52B08E…B421`
+  (zip verified against git, 0 mismatches). Gate 137,269 passed with c9 installed (matting test skipped while training).
+  `D:\chaiNNer` updated (4 files; tuned binaries kept) with spandrel c9 installed; 197 nodes.
 - RELEASED 2026-10-24 as **v0.3.8 re-release 3**: spandrel 0.4.2+c8 (WSR, GaterV3, SMoSR, FIGSR, GFISRv2; FDAT's
   DySample without CUDA). Fork branch and tag `v0.3.8` at `e30ea7b2` (publish commit over `f426929a`, tree = main
   `a0cfcee2`); asset SHA-256 `82787155…68C0` (zip verified against git, 0 mismatches). `D:\chaiNNer` updated (2 files;
@@ -520,6 +526,17 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   under the BF16 floor, max abs <= 0.0116. The C++ plugin route (CMake + nvcc + MSVC, vendored TensorRT headers,
   TensorRT SDK Path) was removed in the commit after `cb735a43`; reverting that commit restores it (ruling ruling).
   TensorRT loads embedded plugins without `engine_host_code_allowed`, so no trust gate.
+- DUAL neighborhood attention (2026-10-25, the owner's handoff `DUAL_Optimized_NA_chaiNNer_Handoff.md`): the vendored
+  source is traiNNer's `b73554e5…` (context layers = neighborhood attention: each query attends its own clamped 32/64
+  neighborhood; weights unchanged), and spandrel 0.4.2+c10 runs it (bitwise vs the source on CPU FP32; inference
+  batches whole tile rows, capped by mask size). The exporter emits `DualNA_<key>_TRT(qkv, bq, bk; window)` at each
+  context site whose trunk exceeds its window (a dynamic export at every context site); `dual_aot` lowers it to the
+  `na_<key>` / `na_c<C>` AOT plugins running `dual_na_kernel.na_attention` (the research kernel generalized to
+  run-time H/W and small trunks; bitwise vs it where it applies; 28672 B shared on sm 86/89/120). Manifests record
+  `"context": "na-v1"`; an ONNX without it still builds, with a log warning. Build Engine refuses a dynamic maximum
+  beyond the kernels' 32-bit indexing. Research input 512x692 on the 5090: engine vs the owner's accepted NA image
+  MAE 0.30/255, P99 2, max 7 (the research engine's numbers); legacy 18.05 / NA 19.62 / research engine 19.45 ms;
+  PyTorch FP16 67.8 -> 107.3 ms. Records: `native/local/dual-na-20261025/` (design, lane reports, review, bench).
 - DUAL speed (2026-10-09): Light x4 512x512 was ~2x the 2026-10-04 DUAL3 PU2 D16 engine (14.33 ms). Per-layer
   profiles: (1) AOT kernels compiled without Triton's 16-byte pointer-alignment hint (scalar loads; core 2.13 vs
   0.156 ms per layer), fixed in `5ca20024`; (2) the exporter moved every 3x3 after a PixelShuffle ahead of it (4x work
@@ -572,7 +589,7 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   EXIF orientation; straight-alpha and grey+alpha TIFFs; TIFF ExtraSamples; lossless WebP `exact`; GIF palette per
   frame; CPU-only NCNN tiles by available RAM; a vitest runs the app's schema check over the real node list; CLI ends its
   backend; system-Python option removed; Python download honours the proxy; pip's errors reach the UI; Spandrel
-  `0.4.2+c9` (fork release `v0.4.2-c9`, SHA-256 `0e3c2022…`; c2: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
+  `0.4.2+c10` (fork release `v0.4.2-c10`, SHA-256 `24967414…`; c2: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
   padding per input for 12; c3, 2026-10-16: DUAL runs in fp16, its last group's dynamic conv in fp32, 1x Light 512²
   343 → 199 ms, 2x 87 → 52 ms vs fp32+TF32; c4, 2026-10-18: HAT and DAT run in fp16, the last group's closing conv
   and the final norm in fp32 (trained 4x HAT-L writes 722k there, DAT2 121k), 70-71 dB from fp32, 256² HAT-L 476 → 250
@@ -589,7 +606,8 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   GaterV3 checkpoints without the flash buffer load as channel attention (two released 1x models matched the original
   code exactly), GaterV3 gets resselt's upsamplers, SMoSR and GFISRv2 loader fixes; SMoSR, FIGSR and GFISRv2 checked
   against resselt, 245 variants exact; resselt's inference-only differences not adopted, its FIGSR border measured
-  4.8 dB worse at the edges). PyTorch tries
+  4.8 dB worse at the edges; c10, 2026-10-25: DUAL's context layers run neighborhood attention, bitwise vs
+  traiNNer's source on CPU FP32, 2x Light 690x512 fp16 68 -> 107 ms). PyTorch tries
   cuDNN attention first (2026-10-16: every model in
   fp16, not DUAL only; DUAL fp16 197.5 → 182.0 ms 1x, 52.0 → 47.0 ms 2x; Windows PyTorch has no Flash Attention).
   With the fp16 setting on, DUAL TensorRT exports start from fp16-rounded weights (68.5–88.6 dB vs exact, below the
@@ -674,6 +692,11 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 ## Decision log
 
+- 2026-10-25 (DUAL neighborhood attention, owner handoff): every DUAL model runs it in both routes with no switch back
+  (weights carry no routing); non-RFB or cosine variants keep their windows; a fixed export whose trunk fits both
+  windows keeps the whole-window ops (the source's dispatch), dynamic exports always use the NA kernel; ONNX files
+  exported before still build, with a log warning; GPU tests at the research input 512x692 (owner); the remaining
+  0.9 % to the research engine (its NA plugin layers) parked. Records: `native/local/dual-na-20261025/decisions.md`.
 - 2026-10-24 (resselt's GaterV3, SMoSR, FIGSR and GFISRv2): spandrel loads every checkpoint resselt's versions make,
   but keeps its own inference behaviour where it is better or is the trainers' (FIGSR without resselt's 4 px border,
   GFISRv2's even-size padding); GFISR v1 and MoSRv2 not added; shipped with the allocator fix as one re-release.

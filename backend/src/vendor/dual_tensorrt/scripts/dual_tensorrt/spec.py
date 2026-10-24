@@ -7,8 +7,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "traiNNer/archs/dual_arch.py"
 FACTORIES = ("dual_light", "dual_xs", "dual_s", "dual_m", "dual_l", "dual_xl")
-SOURCE_SHA256 = "a7c579c5cc7179f835b3dcc40f115d64a4faec2adb810bd066160348d1ff0abf"
+SOURCE_SHA256 = "b73554e5c15a4520fe085b875c5a584107b596ba1e011f6368a94f449fe9fac3"
 SCHEMA = 1
+# The context sites' operator the exports lower (the manifest's "context"): the source's
+# neighborhood attention, where a trunk that fits the window keeps whole-window
+# attention. Manifests without the key are earlier exports (non-overlapping windows).
+CONTEXT = "na-v1"
 
 
 def sha256(path: Path) -> str:

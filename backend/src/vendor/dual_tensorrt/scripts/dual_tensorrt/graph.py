@@ -52,6 +52,7 @@ class Graph:
         self.c, self.nodes, self.constants = channels, [], []
         self.tag, self.counter = "", 0
         self.mha_count = 0
+        self.na_sites = 0
 
     def name(self, label):
         self.counter += 1
@@ -200,6 +201,45 @@ class Graph:
         return self.op("MatMul", [self.op("Softmax", [score], axis=-1), v])
 
     def attention(self, x, mod, size):
+        """Spatial attention: the source's pre_gate_core, then its gate and projection."""
+        if mod.context_na and self.neighborhoods(mod, size):
+            out = self.neighborhood(x, mod)
+        else:
+            out = self.windows(x, mod, size)
+        gate = self.op(
+            "Sigmoid",
+            [self.pw(self.dw(x, mod.gate_depthwise, size), mod.gate_pointwise)],
+        )
+        return self.pw(self.op("Mul", [out, gate]), mod.project)
+
+    def neighborhoods(self, mod, size):
+        """The source's dispatch: neighborhoods once an axis exceeds the window; a trunk
+        that fits it keeps whole-window attention."""
+        h, w = size
+        return h > mod.window or w > mod.window
+
+    def neighborhood(self, x, mod):
+        """_na_core as one plugin node: QKV projected once over the [1,H,W,C] trunk
+        (bias included), then DualNA(qkv, bq, bk; window=M) -> BF16 [1,H,W,C] (the
+        operator: cpu_graph_oracle.neighborhood_attention). The tables are
+        factors(coordinates, FP32) in BF16 at every union-local (y, x) in [0, M+15)^2,
+        row-major (index y*(M+15)+x), [C/32, (M+15)^2, 16] each: the query and key
+        factors _na_core takes at its tiles' union-local coordinates."""
+        self.na_sites += 1
+        u = mod.window + 15
+        bq, bk = mod.factored_bias(u, u, torch.float32)
+        return self.plugin(
+            f"DualNA_{self.spec.plugin_key}_TRT",
+            [
+                self.pw(x, mod.qkv),
+                self.const(bq, T.BFLOAT16),
+                self.const(bk, T.BFLOAT16),
+            ],
+            window=mod.window,
+        )
+
+    def windows(self, x, mod, size):
+        """Window attention's pre-gate output (BF16 [1,H,W,C])."""
         h, w = size
         c, heads = mod.channels, mod.heads
         rows, cols = (
@@ -264,11 +304,7 @@ class Graph:
         if not regular:
             out = self.op("Gather", [out, self.const(rows.restore, T.INT64)], axis=1)
             out = self.op("Gather", [out, self.const(cols.restore, T.INT64)], axis=2)
-        gate = self.op(
-            "Sigmoid",
-            [self.pw(self.dw(x, mod.gate_depthwise, size), mod.gate_pointwise)],
-        )
-        return self.pw(self.op("Mul", [out, gate]), mod.project)
+        return out
 
     def layer(self, x, mod, size):
         x = self.op(
