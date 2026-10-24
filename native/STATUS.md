@@ -4,6 +4,10 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- RELEASED 2026-10-24 as **v0.3.8 re-release 3**: spandrel 0.4.2+c8 (WSR, GaterV3, SMoSR, FIGSR, GFISRv2; FDAT's
+  DySample without CUDA). Fork branch and tag `v0.3.8` at `e30ea7b2` (publish commit over `f426929a`, tree = main
+  `a0cfcee2`); asset SHA-256 `82787155…68C0` (zip verified against git, 0 mismatches). `D:\chaiNNer` updated (2 files;
+  tuned binaries kept, native code unchanged) with spandrel c8 installed; 197 nodes; the five archs load there.
 - RELEASED 2026-10-24 as **v0.3.8 re-release 2**: the entry below. Fork branch and tag `v0.3.8` at `f426929a` (one
   publish commit over `89f4b2c8`, tree = main `6087e480`); asset SHA-256 `88918C1C…1F2C` (`npm run make`, Node
   24.22.1; zip verified against git, 0 mismatches; no `Squirrel.exe` in the zip). D: installs updated with backups;
@@ -314,8 +318,10 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   activations go to pinned RAM on a copy stream and come back when an op needs them; tensors sharing memory never
   move. The 1x DUAL (C128G4D16), FP16, No Tiling: 2176 px 232.65 s -> 5.96 s first run, 4.95 s warm (4.6 s
   at the fitting rate); 1664 px (fits) 2.71 -> 2.71 s; forced to 14 GiB, 13 GiB moved, output bit-identical. The
-  worker sets PYTORCH_CUDA_ALLOC_CONF to page-lock pinned RAM with 8 threads (about 1 s off a first overflow) unless
-  the user set it. A 1x ESRGAN gains nothing (its peak is one op's working set). The pinned RAM goes back to Windows
+  worker's PYTORCH_CUDA_ALLOC_CONF page-locks pinned RAM with 8 threads (about 1 s off a first overflow) unless the
+  user set those options (`cuda_allocator.py`, 2026-10-24: it keeps the user's other options and leaves out
+  expandable_segments, whose failed mappings broke every later allocation, pytorch/pytorch#188008). A 1x ESRGAN
+  gains nothing (its peak is one op's working set). The pinned RAM goes back to Windows
   when a run ends (option B; torch 2.14's internal `_host_emptyCache`): through the backend, DUAL 2176 px
   moved 14.4 GiB and the worker held 2.3 GiB after the run. Released with the Stop loop fix as v0.3.7 re-release 4 (approval;
   fork tag `bf43dbb6`, zip `923F5467...CE24`); both D: installs updated (196 nodes; the PGO-tuned install kept its binaries).
@@ -566,7 +572,7 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   EXIF orientation; straight-alpha and grey+alpha TIFFs; TIFF ExtraSamples; lossless WebP `exact`; GIF palette per
   frame; CPU-only NCNN tiles by available RAM; a vitest runs the app's schema check over the real node list; CLI ends its
   backend; system-Python option removed; Python download honours the proxy; pip's errors reach the UI; Spandrel
-  `0.4.2+c8` (fork release `v0.4.2-c8`, SHA-256 `851797e5…`; c2: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
+  `0.4.2+c9` (fork release `v0.4.2-c9`, SHA-256 `0e3c2022…`; c2: fp32 LayerNorm statistics in fp16 for 11 archs, ONNX
   padding per input for 12; c3, 2026-10-16: DUAL runs in fp16, its last group's dynamic conv in fp32, 1x Light 512²
   343 → 199 ms, 2x 87 → 52 ms vs fp32+TF32; c4, 2026-10-18: HAT and DAT run in fp16, the last group's closing conv
   and the final norm in fp32 (trained 4x HAT-L writes 722k there, DAT2 121k), 70-71 dB from fp32, 256² HAT-L 476 → 250
@@ -579,7 +585,11 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   ms, all 36 spatial and 84 HAT attention calls in TensorRT's fused kernel; c7, 2026-10-19: DRFT's edge-branch
   fold without a per-channel Python loop, bit-identical, CPU fold of a trained 4x DRFT-XL 2447 → 1652 ms, 4x
   DRFT-M 628 → 402 ms; c8, 2026-10-24: WSR, GaterV3, SMoSR, FIGSR and GFISRv2, each loaded from its state dict alone,
-  tests from the archs' own weights since none are released; FDAT's DySample loads on CPU-only torch). PyTorch tries
+  tests from the archs' own weights since none are released; FDAT's DySample loads on CPU-only torch; c9, 2026-10-24:
+  GaterV3 checkpoints without the flash buffer load as channel attention (two released 1x models matched the original
+  code exactly), GaterV3 gets resselt's upsamplers, SMoSR and GFISRv2 loader fixes; SMoSR, FIGSR and GFISRv2 checked
+  against resselt, 245 variants exact; resselt's inference-only differences not adopted, its FIGSR border measured
+  4.8 dB worse at the edges). PyTorch tries
   cuDNN attention first (2026-10-16: every model in
   fp16, not DUAL only; DUAL fp16 197.5 → 182.0 ms 1x, 52.0 → 47.0 ms 2x; Windows PyTorch has no Flash Attention).
   With the fp16 setting on, DUAL TensorRT exports start from fp16-rounded weights (68.5–88.6 dB vs exact, below the
@@ -664,6 +674,13 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 ## Decision log
 
+- 2026-10-24 (resselt's GaterV3, SMoSR, FIGSR and GFISRv2): spandrel loads every checkpoint resselt's versions make,
+  but keeps its own inference behaviour where it is better or is the trainers' (FIGSR without resselt's 4 px border,
+  GFISRv2's even-size padding); GFISR v1 and MoSRv2 not added; shipped with the allocator fix as one re-release.
+  Records: `native/local/resselt-20261024/` (brief, lane reports).
+- 2026-10-24 (a user's FIGSR and FDAT runs failed `!handles_.at(i)` in PyTorch's allocator): the worker leaves
+  expandable_segments out of an inherited allocator setting rather than keeping the user's value, and keeps the
+  user's other options with the pinned RAM ones (`backend/src/cuda_allocator.py`).
 - 2026-10-23 (Get Native Resolution, Linear Light, FFmpeg pin, Electron): the node opens the video itself; its
   outputs carry the stored (encoded) values, light models are evidence only; an ambiguous kernel carries the
   smallest support in the 8 % band; the kernel rule is the least-squares cross-frame rule (the fold-ratio

@@ -27,6 +27,7 @@ from sanic.request import Request
 from sanic.response import HTTPResponse, json
 
 import api
+import cuda_allocator
 import image_limits
 from api import (
     ExecutionOptions,
@@ -59,12 +60,6 @@ from system import load_system_cpp_runtime
 
 # Pillow's and OpenCV's image size limit, before any module imports cv2 (the node modules load later)
 image_limits.apply()
-# The VRAM offload's pinned RAM (nodes/impl/pytorch/offload.py) page-locked by 8 threads: a
-# first overflow's 15-18 GiB took about 1 s less. CUDA reads it at its start.
-os.environ.setdefault(
-    "PYTORCH_CUDA_ALLOC_CONF",
-    "pinned_use_cuda_host_register:True,pinned_num_register_threads:8",
-)
 
 POOL_SIZE = 8  # executor pool workers, each Executor's pool_size; item window P = max(1, POOL_SIZE - 2)
 
@@ -354,6 +349,9 @@ app = Sanic("chaiNNer_executor", ctx=AppContext(), log_config=LOG_CONFIG)
 app.config.REQUEST_TIMEOUT = sys.maxsize
 app.config.RESPONSE_TIMEOUT = sys.maxsize
 add_cors(app)
+# PyTorch's CUDA allocator settings, before any module imports torch (the node modules
+# load later); after the app, as its warning goes to the app's log
+cuda_allocator.apply()
 
 
 class SSEFilter(logging.Filter):
