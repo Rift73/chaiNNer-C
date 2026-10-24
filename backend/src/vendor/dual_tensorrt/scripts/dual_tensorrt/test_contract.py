@@ -116,6 +116,38 @@ class ContractTests(unittest.TestCase):
             [(factory, 4) for factory in ("dual_s", "dual_m", "dual_l", "dual_xl")]
         )
 
+    def test_neighborhood_lowering(self):
+        # Context sites past their window become DualNA nodes; the oracle's dense
+        # per-query reference of the node matches the source's tiled _na_core.
+        from .cpu_graph_oracle import FP32GraphOracle
+
+        torch.manual_seed(1024)
+        arch, model = make_model("dual_xs", 2)
+        with torch.no_grad():
+            for module in model.modules():
+                if isinstance(module, arch._SpatialAttention) and module.context_na:
+                    module.factored_bias.amplitude_sin.normal_(std=0.3)
+            model.prepare_for_export()
+            for (h, w), windows in (
+                ((48, 40), [32, 32, 32]),  # M32 sites only
+                ((20, 100), [32, 64, 32, 32, 64]),  # one axis past both windows
+            ):
+                with self.subTest(size=(h, w)):
+                    x = torch.randn(1, 3, h, w)
+                    spec = from_model(model, "dual_xs", 2, h, w)
+                    actual = FP32GraphOracle(arch, spec, x).build(model)
+                    torch.testing.assert_close(actual, model(x), rtol=3e-5, atol=3e-6)
+                    graph = Graph(arch, spec).build(model)
+                    na = [
+                        n
+                        for n in graph.graph.node
+                        if n.op_type == f"DualNA_{spec.plugin_key}_TRT"
+                    ]
+                    self.assertEqual(
+                        [a.i for n in na for a in n.attribute if a.name == "window"],
+                        windows,
+                    )
+
     def check_lowerings(self, cases):
         from .cpu_graph_oracle import FP32GraphOracle
         import onnx

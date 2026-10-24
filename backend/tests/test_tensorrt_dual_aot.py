@@ -115,6 +115,63 @@ def test_a_width_only_key_lowers_to_the_dynamic_plugins():
     assert region.inputs == [cell.outputs[0], "tau", "qkv"]
 
 
+def _na_model(key: str):
+    """A neighborhood-attention node as graph.py emits it."""
+    node = helper.make_node(
+        f"DualNA_{key}_TRT",
+        ["qkv", "bq", "bk"],
+        ["na"],
+        name="na",
+        domain="trt",
+        plugin_version="1",
+        plugin_namespace="",
+        window=64,
+    )
+    tables = [
+        numpy_helper.from_array(np.zeros((4, 79 * 79, 16), np.float32), name)
+        for name in ("bq", "bk")
+    ]
+    graph = helper.make_graph(
+        [node],
+        "na",
+        [helper.make_tensor_value_info("qkv", TensorProto.BFLOAT16, [1, 32, 48, 384])],
+        [helper.make_tensor_value_info("na", TensorProto.BFLOAT16, [1, 32, 48, 128])],
+        tables,
+    )
+    return helper.make_model(graph)
+
+
+@pytest.mark.parametrize("key", [KEY, "c128"])
+def test_the_na_node_lowers_to_a_slice_and_its_plugin(key: str):
+    lowered = dual_aot.lower(_na_model(key), key)
+    (plugin,) = lowered.plugins
+    assert (plugin.op, plugin.inputs, plugin.outputs, plugin.attributes) == (
+        f"na_{key}",
+        ["qkv", "bq", "bk"],
+        ["na"],
+        {"window": 64},
+    )
+    graph = lowered.model.graph
+    (stand_in,) = [n for n in graph.node if "na" in n.output]
+    constants = {t.name: numpy_helper.to_array(t) for t in graph.initializer}
+    assert stand_in.op_type == "Slice" and stand_in.input[0] == "qkv"
+    assert [constants[name].tolist() for name in stand_in.input[1:]] == [
+        [0],
+        [128],
+        [3],
+    ]
+    read = {n.input[0] for n in graph.node if n.name in lowered.readers}
+    assert read == {"qkv", "bq", "bk"}
+
+
+@pytest.mark.parametrize("sm", [86, 120])
+@pytest.mark.parametrize("window", [32, 64])
+def test_the_na_kernel_fits_the_aot_plugins_shared_memory(window: int, sm: int):
+    # TensorRT's AOT plugin path launches with at most 48 KiB of shared memory.
+    kernel = dual_aot.na_kernel(128, window, sm)
+    assert kernel.metadata.shared <= dual_aot.MAX_SHARED
+
+
 def test_kernels_load_whole_16_byte_vectors():
     # TensorRT's buffers are 16-byte aligned; unless the compile is told so, Triton loads
     # one element at a time and the core runs about 14x slower.

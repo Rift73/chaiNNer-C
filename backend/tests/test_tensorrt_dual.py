@@ -161,6 +161,65 @@ def test_a_folded_xs_exports_a_fixed_size_tensorrt_onnx(fixed_xs_onnx: bytes):
     assert dual.export_manifest(model) == manifest
 
 
+def _tag(node: onnx.NodeProto) -> str:
+    """The exporter's site of a node: /group<g>/layer<i> for a trunk layer's."""
+    return node.name.rpartition("/")[0]
+
+
+def _windows(nodes: list[onnx.NodeProto]) -> list[int]:
+    return [a.i for n in nodes for a in n.attribute if a.name == "window"]
+
+
+def test_context_sites_past_their_window_export_as_neighborhood_attention(
+    fixed_xs_onnx: bytes,
+):
+    # At 32x64 the M32 sites' trunk is wider than their window; the M64 sites' fits.
+    model = onnx.load_from_string(fixed_xs_onnx)
+    manifest = dual.export_manifest(model)
+    assert manifest is not None
+    assert manifest["context"] == "na-v1"
+    assert "DualNA_c128_h32_w64_TRT" in manifest["plugin_names"]
+    graph = model.graph
+    na = [n for n in graph.node if n.op_type == "DualNA_c128_h32_w64_TRT"]
+    assert _windows(na) == [32, 32, 32]
+    sites = {_tag(n) for n in na}
+    assert sites == {"/group0/layer2", "/group2/layer2", "/group3/layer2"}
+    weights = {i.name for i in graph.initializer}
+    for node in graph.node:
+        if _tag(node) in sites:
+            # No attention is left there: each MatMul is a projection by a weight.
+            assert node.op_type != "Softmax"
+            assert node.op_type != "MatMul" or node.input[1] in weights
+    attention = {_tag(n) for n in graph.node if n.op_type == "Softmax"}
+    assert {"/group1/layer2", "/group3/layer5"} <= attention
+
+
+def test_the_neighborhood_oracle_matches_the_canonical_model(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The DualNA node evaluated densely per query (the exporter's FP32 oracle) against
+    # the source's tiled _na_core, with nonzero RFB sine amplitudes (the bias's signed
+    # term): XS x2 at 48x40, where the three M32 sites are neighborhoods.
+    monkeypatch.syspath_prepend(str(dual.VENDOR))
+    export = importlib.import_module("scripts.dual_tensorrt.export")
+    oracle = importlib.import_module("scripts.dual_tensorrt.cpu_graph_oracle")
+    spec = importlib.import_module("scripts.dual_tensorrt.spec")
+    torch.manual_seed(0)
+    arch, model = export.make_model("dual_xs", 2)
+    with torch.no_grad():
+        for group in model.groups:
+            for layer in group.layers:
+                if layer.attention.context_na:
+                    layer.attention.factored_bias.amplitude_sin.normal_(std=0.3)
+        model.prepare_for_export()
+        x = torch.rand(1, 3, 48, 40)
+        graph = oracle.FP32GraphOracle(
+            arch, spec.from_model(model, "dual_xs", 2, 48, 40), x
+        )
+        torch.testing.assert_close(graph.build(model), model(x), rtol=3e-5, atol=3e-6)
+    assert graph.na_sites == 3
+
+
 def test_chainner_loads_a_dual_onnx_as_mixed_precision(fixed_xs_onnx: bytes):
     # Loading runs in the native backend, which GitHub's checks do not build.
     pytest.importorskip("nodes.impl._chainner_graph")
@@ -181,6 +240,7 @@ def test_a_folded_xs_exports_one_tensorrt_onnx_for_every_size(tmp_path: Path):
     spec = manifest["specialization"]
     assert (spec["factory"], spec["scale"], spec["dynamic"]) == ("dual_xs", 1, True)
     assert (spec["alignment"], spec["plugin_key"]) == (dual.ALIGNMENT, "c128")
+    assert manifest["context"] == "na-v1"
     graph = onnx.load_from_string(onnx_bytes).graph
     dims = graph.input[0].type.tensor_type.shape.dim
     assert [d.dim_value or d.dim_param for d in dims] == [1, 3, "in_height", "in_width"]
@@ -190,7 +250,15 @@ def test_a_folded_xs_exports_one_tensorrt_onnx_for_every_size(tmp_path: Path):
         "DualCore_c128_TRT",
         "DualProject_c128_TRT",
         "DualAttentionBarrier_TRT",
+        "DualNA_c128_TRT",
     }
+    # Every context site, whatever the run-time size (one that fits the window is a
+    # single neighborhood, the whole-window attention).
+    na = [n for n in graph.node if n.op_type == "DualNA_c128_TRT"]
+    assert _windows(na) == [32, 64, 32, 32, 64]
+    sites = {_tag(n) for n in na}
+    assert len(sites) == 5
+    assert not [n for n in graph.node if n.op_type == "Softmax" and _tag(n) in sites]
 
 
 def test_a_dual_engines_input_name_carries_its_alignment():
@@ -215,12 +283,49 @@ def test_a_dynamic_engines_profile_keeps_to_the_onnxs_alignment(
     high: tuple[int, int],
     message: str | None,
 ):
-    manifest = {"specialization": {"dynamic": True, "alignment": 64}}
+    manifest = {
+        "specialization": {
+            "dynamic": True,
+            "alignment": 64,
+            "channels": 128,
+            "unshuffle": False,
+        }
+    }
     if message is None:
         dual.check_profile(manifest, low, opt, high)
     else:
         with pytest.raises(ValueError, match=message):
             dual.check_profile(manifest, low, opt, high)
+
+
+@pytest.mark.parametrize(
+    ("unshuffle", "high", "refused"),
+    [
+        # 3 * H * W * 128 against 2**31: 2304 x 2368 fits, 2304 x 2432 does not
+        (False, (2304, 2368), False),
+        (False, (2304, 2432), True),
+        # with pixel unshuffle the trunk is half the size on each axis
+        (True, (4608, 4736), False),
+        (True, (4608, 4864), True),
+    ],
+)
+def test_a_dynamic_engines_maximum_keeps_to_32_bit_indexing(
+    unshuffle: bool, high: tuple[int, int], refused: bool
+):
+    manifest = {
+        "specialization": {
+            "dynamic": True,
+            "alignment": 64,
+            "channels": 128,
+            "unshuffle": unshuffle,
+        }
+    }
+    low = (64, 64)
+    if refused:
+        with pytest.raises(ValueError, match="32-bit indexing"):
+            dual.check_profile(manifest, low, low, high)
+    else:
+        dual.check_profile(manifest, low, low, high)
 
 
 @pytest.mark.parametrize("dynamic", [False, True])
@@ -254,3 +359,24 @@ def test_the_build_settings_reach_the_engine_worker(
     assert (gpu, plugin) == ("0", key)
     sizes = ["64x64", "256x256", "512x512", "4"] if dynamic else []
     assert rest == ["12.5", "5", "1", "1", "full", *sizes]
+
+
+@pytest.mark.parametrize("context", [None, "na-v1"])
+def test_an_onnx_from_before_neighborhood_attention_builds_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    context: str | None,
+):
+    def child(args: list[str], *_: object) -> str:
+        Path(args[3]).write_bytes(b"engine")
+        return ""
+
+    monkeypatch.setattr(dual, "run_child", child)
+    manifest: dict[str, object] = {
+        "specialization": {"plugin_key": "c128_h256_w256", "alignment": 4}
+    }
+    if context is not None:
+        manifest["context"] = context
+    assert dual.build_engine(b"onnx", manifest, 0) == b"engine"
+    warned = [r for r in caplog.records if "old context windows" in r.getMessage()]
+    assert len(warned) == (context is None)

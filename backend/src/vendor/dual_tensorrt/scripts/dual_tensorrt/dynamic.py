@@ -10,6 +10,9 @@ Shape at run time:
   clamped to [0, L - extent], owner `min((p + o) // w, count - 1)`; a cropped window's
   position bias (RPB table or RFB factors) is gathered from the nominal window's at
   y * w + x (both depend on window coordinates only);
+- context neighborhood attention: every site is the plugin node (DualNA_c128_TRT), which
+  reads the trunk's size at run time; where the trunk fits the window its neighborhoods
+  are the whole trunk, the source's whole-window attention;
 - retrieval: per axis, 96-px blocks and a leftover strip, so four window classes; an
   absent strip is zero windows of a nonzero extent (Myelin rejects zero extents);
 - depthwise shifted sums slice with negative ends; pixel (un)shuffles read their sizes.
@@ -30,7 +33,7 @@ from onnx import TensorProto as T
 
 from .export import make_model, read_state, save_onnx
 from .graph import Graph
-from .spec import FACTORIES, SCHEMA, SOURCE_SHA256, sha256
+from .spec import CONTEXT, FACTORIES, SCHEMA, SOURCE_SHA256, sha256
 
 WINDOW = 96  # retrieval block
 END = np.iinfo(np.int64).max
@@ -125,7 +128,12 @@ class DynamicGraph(Graph):
         restore = self.add(self.mul(owner, self.squeeze(extent)), local)
         return gather, restore, count, extent
 
-    def attention(self, x, mod, size):
+    def neighborhoods(self, mod, size):
+        # Every size: the plugin's neighborhoods of a trunk that fits the window are
+        # the whole trunk, as the source's whole-window attention.
+        return True
+
+    def windows(self, x, mod, size):
         c, heads, window = mod.channels, mod.heads, mod.window
         regular = mod.offset == 0 and self.alignment % window == 0
         if regular:  # graph.py's regular windows: reshapes only
@@ -208,11 +216,7 @@ class DynamicGraph(Graph):
         )
         if not regular:
             out = self.op("Gather", [self.op("Gather", [out, rh], axis=1), rw], axis=2)
-        gate = self.op(
-            "Sigmoid",
-            [self.pw(self.dw(x, mod.gate_depthwise, size), mod.gate_pointwise)],
-        )
-        return self.pw(self.op("Mul", [out, gate]), mod.project)
+        return out
 
     def pack_slots(self, x, scale, h, w):
         heads, d = self.c // 32, 32 // scale**2
@@ -444,12 +448,14 @@ def export_dynamic(
             "internal_scale": model.internal_scale,
             "plugin_key": key,
         },
+        "context": CONTEXT,
         "precision": "FP32_IO_BF16_FP32_BODY",
         "dynamic_sites": graph.dynamic_sites,
         "plugin_names": [
             f"Dual{part}_{key}_TRT" for part in ("Norm", "Core", "Project")
         ]
-        + ["DualAttentionBarrier_TRT"],
+        + ["DualAttentionBarrier_TRT"]
+        + ([f"DualNA_{key}_TRT"] if graph.na_sites else []),
         "files": {
             p.name: sha256(p)
             for p in (output / "model.onnx", output / "weights.bin")

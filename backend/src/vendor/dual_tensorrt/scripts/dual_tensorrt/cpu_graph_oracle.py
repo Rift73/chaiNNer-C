@@ -7,6 +7,52 @@ from onnx import TensorProto as T
 from .graph import Graph
 
 
+def neighborhood_attention(qkv, bq, bk, window):
+    """The DualNA node, densely per query, from its own inputs and contract (not the
+    source's tiled masks): qkv [1,H,W,3C] (all Q, K, V; heads of 32), tables
+    [C/32,(M+15)^2,16] -> [1,H,W,C]. Query (y, x) attends Kh x Kw = min(H, M) x min(W, M)
+    keys from (clamp(y - Kh//2, 0, H - Kh), clamp(x - Kw//2, 0, W - Kw)); its bias with
+    key (ky, kx) is bq[(y - by)*(M+15) + x - bx] . bk[(ky - by)*(M+15) + kx - bx], where
+    (by, bx) = (clamp(ty - Kh//2, 0, H - Uh), clamp(tx - Kw//2, 0, W - Uw)) is the union
+    origin of its 16x16 tile (ty, tx) and Uh = min(H, Kh + 15), Uw = min(W, Kw + 15)."""
+    _, height, width, channels = qkv.shape
+    c = channels // 3
+    heads, stride = c // 32, window + 15
+    q, k, v = (
+        qkv[0, ..., i * c : (i + 1) * c]
+        .reshape(height * width, heads, 32)
+        .transpose(0, 1)
+        for i in range(3)
+    )
+    q = q * 32**-0.5
+    kh, kw = min(height, window), min(width, window)
+    uh, uw = min(height, kh + 15), min(width, kw + 15)
+    xs = torch.arange(width)
+    sx = (xs - kw // 2).clamp(0, width - kw)
+    bx = (xs // 16 * 16 - kw // 2).clamp(0, width - uw)
+    kx = sx[:, None] + torch.arange(kw)  # [W, Kw]
+    local_x = kx - bx[:, None]
+    if local_x.min() < 0 or local_x.max() >= uw:
+        raise AssertionError("A neighborhood leaves its tile's union")
+    out = torch.empty(heads, height, width, 32)
+    for y in range(height):
+        sy = min(max(y - kh // 2, 0), height - kh)
+        by = min(max(y // 16 * 16 - kh // 2, 0), height - uh)
+        ky = sy + torch.arange(kh)
+        if ky[0] < by or ky[-1] >= by + uh:
+            raise AssertionError("A neighborhood leaves its tile's union")
+        keys = (ky[None, :, None] * width + kx[:, None, :]).reshape(width, -1)
+        table = ((ky - by)[None, :, None] * stride + local_x[:, None, :]).reshape(
+            width, -1
+        )
+        query = (y - by) * stride + xs - bx
+        logits = torch.einsum(
+            "hwd,hwnd->hwn", q[:, y * width : (y + 1) * width], k[:, keys]
+        ) + torch.einsum("hwr,hwnr->hwn", bq[:, query], bk[:, table])
+        out[:, y] = torch.einsum("hwn,hwnd->hwd", logits.softmax(-1), v[:, keys])
+    return out.permute(1, 2, 0, 3).reshape(1, height, width, c)
+
+
 class FP32GraphOracle(Graph):
     """Run the same graph construction with FP32 tensors to catch layout/scale bugs.
 
@@ -125,6 +171,8 @@ class FP32GraphOracle(Graph):
             return self.core.mix(*depthwise.chunk(3, 1)).permute(0, 2, 3, 1)
         if kind.startswith("DualProject_"):
             return inputs[0] @ inputs[1] + inputs[2]
+        if kind.startswith("DualNA_"):
+            return neighborhood_attention(*inputs, attrs["window"])
         raise AssertionError(kind)
 
     def build(self, model):

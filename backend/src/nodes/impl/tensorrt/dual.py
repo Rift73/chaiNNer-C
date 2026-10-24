@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import psutil
+from sanic.log import logger
 
 from ..pytorch.vosr2_process import OwnedJob
 
@@ -225,6 +226,16 @@ def check_profile(manifest: dict[str, Any], low: Size, opt: Size, high: Size) ->
         raise ValueError(
             "A dynamic DUAL engine needs minimum <= optimal <= maximum sizes."
         )
+    # The plugins' kernels index the trunk's QKV with 32-bit offsets, as the fixed
+    # exporter's Specialization checks for its one size.
+    spec = manifest["specialization"]
+    divisor = 2 if spec["unshuffle"] else 1
+    h, w = high
+    if 3 * (h // divisor) * (w // divisor) * spec["channels"] >= 2**31:
+        raise ValueError(
+            f"A DUAL engine's maximum size {h}x{w} is too large for its kernels'"
+            " 32-bit indexing; choose a smaller maximum (images are tiled to it)."
+        )
 
 
 def build_engine(
@@ -249,6 +260,12 @@ def build_engine(
     spec = manifest["specialization"]
     if spec.get("dynamic", False) != (profile is not None):
         raise ValueError("Only a dynamic DUAL ONNX takes a size profile.")
+    if "context" not in manifest:
+        # Exported before neighborhood attention: it still builds, as the file holds it.
+        logger.warning(
+            "This DUAL ONNX was exported with the old context windows; its engine keeps"
+            " them. Convert the model to ONNX again for neighborhood attention."
+        )
     settings = [
         str(workspace_gib),
         str(optimization_level),
