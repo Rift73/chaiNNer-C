@@ -262,9 +262,6 @@ class Context:
 
 
 CPU_CONTEXT: dict[str, object] = {"use_cpu": True}
-# Off the CPU override, PyTorch runs on the CPU here (CUDA is hidden), where FP16
-# stays on.
-FP16_CONTEXT: dict[str, object] = {"use_cpu": False, "use_fp16": True}
 
 
 def convert(
@@ -423,9 +420,16 @@ def test_a_dual_rerun_returns_the_kept_export(monkeypatch: pytest.MonkeyPatch):
     assert exports == [None, (512, 512)]
 
 
-# Load Model's settings with PyTorch's FP16 on and off. Off the CPU override, PyTorch
-# runs on the CPU here (CUDA is hidden), where FP16 stays on.
-FP16 = PyTorchSettings(use_cpu=False, use_fp16=True, gpu_index=0, budget_limit=0)
+class GpuSettings(PyTorchSettings):
+    """PyTorch's settings as a GPU has them. The CPU stands in for the GPU here (CUDA
+    is hidden), so FP16 skips the CPU's fallback to FP32."""
+
+    def __post_init__(self) -> None:
+        pass
+
+
+# Load Model's settings with PyTorch's FP16 on and off.
+FP16 = GpuSettings(use_cpu=False, use_fp16=True, gpu_index=0, budget_limit=0)
 FP32 = PyTorchSettings(use_cpu=False, use_fp16=False, gpu_index=0, budget_limit=0)
 
 
@@ -487,13 +491,14 @@ def test_an_fp16_export_does_not_read_the_file_again(
 ):
     reread: list[object] = []
     monkeypatch.setattr(load_model_module, "full_precision", reread.append)
+    monkeypatch.setattr(convert_to_onnx, "get_settings", lambda _: FP16)
     path = model_file(tmp_path, ARCHS["Compact"])
     model = load_model(path, FP16)
     assert isinstance(model, ImageModelDescriptor)
     expected = convert_to_onnx_impl(
         model, torch.device("cpu"), use_half=True, opset_version=20
     )
-    exported = convert(model, OnnxDataType.FP16, settings=FP16_CONTEXT)[0]
+    exported = convert(model, OnnxDataType.FP16)[0]
     assert exported.bytes == expected
     assert reread == []
 
@@ -639,7 +644,7 @@ def to_ncnn(
 ) -> tuple[str, bytes]:
     """PyTorch's Convert To NCNN of `model`: its param and bin."""
     converted, _ = convert_to_ncnn_node(
-        cast(NodeContext, Context(FP16_CONTEXT)), model, is_fp16
+        cast(NodeContext, Context(CPU_CONTEXT)), model, is_fp16
     )
     path = directory / "model.bin"
     converted.model.write_bin(path)

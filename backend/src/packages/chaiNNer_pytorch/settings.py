@@ -59,18 +59,18 @@ package.add_setting(
         key="use_fp16",
         description=(
             "Runs PyTorch in half-precision (FP16) mode for reduced RAM usage but falls"
-            " back to full-precision (FP32) mode when CPU mode is selected."
+            " back to full-precision (FP32) mode when PyTorch runs on the CPU."
             if is_arm_mac
             else (
                 "Runs PyTorch in half-precision (FP16) mode for less VRAM usage. AMD"
                 " GPUs from Vega (gfx9) on also get a speedup. It falls back to"
-                " full-precision (FP32) mode when CPU mode is selected."
+                " full-precision (FP32) mode when PyTorch runs on the CPU."
             )
             if rocm
             else (
                 "Runs PyTorch in half-precision (FP16) mode for less VRAM usage. RTX"
                 " GPUs also get a speedup. It falls back to full-precision (FP32)"
-                " mode when CPU mode is selected."
+                " mode when PyTorch runs on the CPU."
             )
         ),
         default=should_fp16,
@@ -109,11 +109,13 @@ class PyTorchSettings:
     budget_limit: int
     force_cache_wipe: bool = False
 
-    # PyTorch 2.0 does not support FP16 when using CPU
+    # Most CPUs have no FP16 arithmetic, so PyTorch's FP16 convolutions there take a
+    # generic path hundreds of times slower than FP32. That holds in CPU mode and when
+    # no GPU is found alike.
     def __post_init__(self):
-        if self.use_cpu and self.use_fp16:
+        if self.use_fp16 and self.device.type == "cpu":
             object.__setattr__(self, "use_fp16", False)
-            logger.info("Falling back to FP32 mode.")
+            logger.info("Falling back to FP32 mode on the CPU.")
 
     @property
     def device(self) -> torch.device:

@@ -15,7 +15,7 @@ import torch
 from test_convert_to_onnx import ARCHS, FP16, FP32
 from test_onnx_load_once import gain_model
 
-from api import Generator, NodeContext, SettingsParser
+from api import Generator, NodeContext
 from nodes.impl import numpy_pool
 from nodes.impl.read_ahead import from_list_read_ahead
 from nodes.utils.utils import list_all_files_sorted
@@ -26,6 +26,7 @@ from packages.chaiNNer_onnx.onnx.io.load_model import (
     load_model_node as load_onnx_model_node,
 )
 from packages.chaiNNer_pytorch.pytorch.io.load_model import load_model
+from packages.chaiNNer_pytorch.pytorch.iteration import load_models
 from packages.chaiNNer_pytorch.pytorch.iteration.load_models import load_models_node
 from packages.chaiNNer_pytorch.settings import PyTorchSettings
 
@@ -141,15 +142,6 @@ def test_an_empty_list_reads_nothing():
     assert items(from_list_read_ahead([], str, lambda x, r, i: r)) == []
 
 
-class Context:
-    """The NodeContext members PyTorch's Load Models uses."""
-
-    def __init__(self, settings: PyTorchSettings) -> None:
-        self.settings = SettingsParser(
-            {"use_cpu": settings.use_cpu, "use_fp16": settings.use_fp16}
-        )
-
-
 def model_folder(directory: Path) -> None:
     for index, name in enumerate(["Compact", "ESRGAN", "HAT"]):
         torch.manual_seed(index)
@@ -161,13 +153,13 @@ def model_folder(directory: Path) -> None:
 
 @pytest.mark.parametrize("settings", [FP32, FP16], ids=["fp32", "fp16"])
 def test_pytorch_load_models_gives_what_load_model_gives(
-    tmp_path: Path, settings: PyTorchSettings
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settings: PyTorchSettings
 ):
+    # Load Models reads only its settings from the node context.
+    monkeypatch.setattr(load_models, "get_settings", lambda _: settings)
     model_folder(tmp_path)
     paths = list_all_files_sorted(tmp_path, [".pth"])
-    generator, directory = load_models_node(
-        cast(NodeContext, Context(settings)), tmp_path, False
-    )
+    generator, directory = load_models_node(cast(NodeContext, None), tmp_path, False)
     assert directory == tmp_path and generator.expected_length == 4
     result = items(generator)
     for index, (path, item) in enumerate(zip(paths, result, strict=True)):
