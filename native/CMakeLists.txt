@@ -159,9 +159,9 @@ set_source_files_properties(src/separable_avx2.c src/convolution_avx2.c src/conv
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
 set_source_files_properties(src/separable_avx512.c src/convolution_avx512.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options};/clang:-mavx512f;/clang:-mavx512dq;/clang:-mavx512cd;/clang:-mavx512bw;/clang:-mavx512vl")
-# Byte-for-byte vendor source of vapoursynth-descale Release 12 (MIT): its solver core and AVX2
-# unit, without the VapourSynth and AviSynth plugin layers. src/descale_ops.c picks the unit from
-# chaiNNer's ISA level (CHAINNER_C_ISA caps it), never through descale's own CPUID path.
+# Vendor source of vapoursynth-descale Release 12 (MIT) with one patch (third_party/descale/PATCHES):
+# its solver core and AVX2 unit, without the VapourSynth and AviSynth plugin layers. src/descale_ops.c
+# picks the unit from chaiNNer's ISA level (CHAINNER_C_ISA caps it), never through descale's own CPUID path.
 add_library(chainner_descale STATIC third_party/descale/src/descale.c
     third_party/descale/src/x86/cpuinfo_x86.c third_party/descale/src/x86/descale_avx2.c)
 target_include_directories(chainner_descale SYSTEM PUBLIC third_party/descale/include)
@@ -317,6 +317,14 @@ foreach(target chainner_ext chainner_ext_c)
             "/MAP:$<TARGET_FILE_DIR:${target}>/${target}.map")
     endif()
 endforeach()
+# Debug's runtime library defines _DEBUG, for which Python.h links the debug interpreter's
+# import library (pyconfig.h); the runtime has none. (_chainner_graph includes Python.h through
+# pybind11, which takes the release library.)
+if(WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_target_properties(chainner_ext chainner_ext_c PROPERTIES EXCLUDE_FROM_ALL ON)
+    message(STATUS "chainner_ext is not built in Debug: Python.h would link "
+        "python${chainner_c_python_version}_d.lib, which the runtime does not have")
+endif()
 if(CHAINNER_C_FUZZ)
     add_subdirectory(tests/fuzz)
 endif()
@@ -439,14 +447,17 @@ else()
     set(chainner_c_nvcc_tensorrt_include -isystem "${CHAINNER_C_TENSORRT_ROOT}/include")
 endif()
 set(chainner_c_qkv_object "${CMAKE_CURRENT_BINARY_DIR}/vosr2_qkv_cuda${CMAKE_CXX_OUTPUT_EXTENSION}")
+# nvcc lists the headers qkv.cu includes (CUDA's) in a dependency file, so a changed header recompiles it.
 add_custom_command(OUTPUT "${chainner_c_qkv_object}"
     COMMAND ${chainner_c_nvcc_command} -c "${CMAKE_CURRENT_SOURCE_DIR}/src/vosr2/qkv.cu" -o "${chainner_c_qkv_object}"
+        -MD -MT "${chainner_c_qkv_object}" -MF "${chainner_c_qkv_object}.d"
         -ccbin "${chainner_c_nvcc_host}" -O3 -std=c++17
         -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_86,code=sm_86
         -gencode=arch=compute_89,code=sm_89 "-gencode=arch=compute_120,code=[sm_120,compute_120]"
         --fmad=false --prec-div=true --prec-sqrt=true -Werror all-warnings
         -Xcompiler "${chainner_c_nvcc_host_strict}"
     DEPENDS src/vosr2/qkv.cu
+    DEPFILE "${chainner_c_qkv_object}.d"
     COMMENT "Compiling src/vosr2/qkv.cu with nvcc"
     VERBATIM)
 set_source_files_properties("${chainner_c_qkv_object}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)

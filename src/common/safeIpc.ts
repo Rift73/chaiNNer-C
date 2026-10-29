@@ -2,6 +2,7 @@ import { BackendData } from './Backend';
 import { FileOpenResult, FileSaveResult, PythonInfo } from './common-types';
 import { ChainnerSettings } from './settings/settings';
 import { Progress } from './ui/progress';
+import type { ClipboardPaste } from '../main/clipboard';
 import type { ParsedSaveData, SaveData } from '../main/SaveFile';
 // eslint-disable-next-line import/no-nodejs-modules
 import type { FileFilter, OpenDialogReturnValue } from 'electron/common';
@@ -90,23 +91,8 @@ export interface InvokeChannels {
     'shell-showItemInFolder': ChannelInfo<void, [fullPath: string]>;
     'shell-openPath': ChannelInfo<string, [fullPath: string]>;
     'app-quit': ChannelInfo<void>;
-    'clipboard-writeText': ChannelInfo<void, [text: string]>;
-    'clipboard-readText': ChannelInfo<string>;
-    'clipboard-writeBuffer': ChannelInfo<
-        void,
-        [format: string, buffer: Buffer, type?: 'selection' | 'clipboard' | undefined]
-    >;
-    'clipboard-writeBuffer-fromString': ChannelInfo<
-        void,
-        [format: string, json: string, type?: 'selection' | 'clipboard' | undefined]
-    >;
-    'clipboard-readBuffer': ChannelInfo<Buffer, [format: string]>;
-    'clipboard-readBuffer-toString': ChannelInfo<string, [format: string]>;
-    'clipboard-availableFormats': ChannelInfo<string[]>;
-    'clipboard-readHTML': ChannelInfo<string>;
-    'clipboard-readRTF': ChannelInfo<string>;
-    'clipboard-readImage-and-store': ChannelInfo<string>;
-    'clipboard-writeImage': ChannelInfo<void, [image: Electron.NativeImage]>;
+    'clipboard-writeChain': ChannelInfo<void, [json: string]>;
+    'clipboard-readForPaste': ChannelInfo<ClipboardPaste>;
     'clipboard-writeImageFromURL': ChannelInfo<void, [url: string]>;
 
     // File watching

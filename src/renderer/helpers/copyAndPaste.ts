@@ -27,14 +27,7 @@ export const copyToClipboard = (
         nodes: nodes.filter((n) => copyIds.has(n.id)),
         edges: edges.filter((e) => copyIds.has(e.source) && copyIds.has(e.target)),
     };
-    ipcRenderer
-        .invoke(
-            'clipboard-writeBuffer-fromString',
-            'application/chainner.chain',
-            JSON.stringify(data),
-            'clipboard'
-        )
-        .catch(log.error);
+    ipcRenderer.invoke('clipboard-writeChain', JSON.stringify(data)).catch(log.error);
 };
 
 export const cutAndCopyToClipboard = (
@@ -65,14 +58,10 @@ export const pasteFromClipboard = async (
     schemata: SchemaMap,
     onDroppedNodes: (droppedNodes: readonly SchemaId[]) => void
 ) => {
-    const availableFormats = await ipcRenderer.invoke('clipboard-availableFormats');
-    if (availableFormats.length === 0) {
+    const paste = await ipcRenderer.invoke('clipboard-readForPaste');
+    if (paste.kind === 'chain') {
         try {
-            const clipboardData = await ipcRenderer.invoke(
-                'clipboard-readBuffer-toString',
-                'application/chainner.chain'
-            );
-            const clipboardChain = JSON.parse(clipboardData) as ClipboardChain;
+            const clipboardChain = JSON.parse(paste.json) as ClipboardChain;
             // as when a chain is opened: e.g. a chain copied from another chaiNNer may hold nodes
             // this one does not have, or lack inputs that its nodes have here
             const chain = toEditorChain(schemata, clipboardChain.nodes, clipboardChain.edges);
@@ -105,57 +94,28 @@ export const pasteFromClipboard = async (
         } catch (e) {
             log.error('Invalid clipboard data', e);
         }
-    } else {
-        availableFormats.forEach((format) => {
-            log.debug('Clipboard format', format);
-            switch (format) {
-                case 'text/plain':
-                    log.debug('Clipboard text', navigator.clipboard.readText());
-                    break;
-                case 'text/html':
-                    log.debug('Clipboard html', ipcRenderer.invoke('clipboard-readHTML'));
-                    break;
-                case 'text/rtf':
-                    log.debug('Clipboard rtf', ipcRenderer.invoke('clipboard-readRTF'));
-                    break;
-                case 'image/jpeg':
-                case 'image/gif':
-                case 'image/bmp':
-                case 'image/tiff':
-                case 'image/png': {
-                    ipcRenderer
-                        .invoke('clipboard-readImage-and-store')
-                        .then((imgPath) => {
-                            log.debug('Clipboard image', imgPath);
-                            let positionX = 0;
-                            let positionY = 0;
-                            if (reactFlowWrapper.current) {
-                                const { height, width, x, y } =
-                                    reactFlowWrapper.current.getBoundingClientRect();
-                                positionX = (width + x) / 2;
-                                positionY = (height + y) / 2;
-                            }
-                            createNode({
-                                position: screenToFlowPosition({
-                                    x: positionX,
-                                    y: positionY,
-                                }),
-                                data: {
-                                    schemaId: 'chainner:image:load' as SchemaId,
-                                    inputData: {
-                                        [0 as InputId]: imgPath,
-                                    },
-                                },
-                            });
-                        })
-                        .catch((e) => {
-                            log.error('Failed to read clipboard image and save to disk', e);
-                        });
-                    break;
-                }
-                default:
-                    log.debug('Clipboard data', ipcRenderer.invoke('clipboard-readBuffer', format));
-            }
+    } else if (paste.kind === 'image') {
+        log.debug('Clipboard image', paste.path);
+        let positionX = 0;
+        let positionY = 0;
+        if (reactFlowWrapper.current) {
+            const { height, width, x, y } = reactFlowWrapper.current.getBoundingClientRect();
+            positionX = (width + x) / 2;
+            positionY = (height + y) / 2;
+        }
+        createNode({
+            position: screenToFlowPosition({
+                x: positionX,
+                y: positionY,
+            }),
+            data: {
+                schemaId: 'chainner:image:load' as SchemaId,
+                inputData: {
+                    [0 as InputId]: paste.path,
+                },
+            },
         });
+    } else {
+        log.debug('Clipboard types', paste.types);
     }
 };

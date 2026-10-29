@@ -63,7 +63,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 - The nightly's GPU lease was removed on 2026-10-05 (decision): its 4 files are gone and every spot it hooked is
   upstream again. The delta's TF32, ONNX export size 32, `gc.collect()` removals and 8-worker pool stay (deliberate choice).
 - UI: the package ships the installed Electron 25 bundles with pinned patches (section 9). `src/`
-  is upstream `d56e507f`, moved to Electron `^43.8.3` and Electron Forge 7.11.2, with the two UI patches ported to the TypeScript, its integrated Python
+  is upstream `d56e507f`, moved to Electron `^45.1.0` and Electron Forge 7.11.2, with the two UI patches ported to the TypeScript, its integrated Python
   moved to CPython 3.14.8 (kept at 3.14.8 or newer) and its own root `%APPDATA%\chaiNNer-C`: the run-from-source UI (`npm start`), never part of the package. Do not
   substitute newer frontend, preload or main assets into the installed runtime.
 - The package owns its backend like normal chaiNNer. A `--remote-backend` launch changes ownership
@@ -123,6 +123,13 @@ regular node, no side effects, no node context, schema `chainner:image:*` or `ch
 recursively; cached nodes count). `NodeFlights` shares in-flight ancestors; completed values belong to the counted
 cache. `owned_gather` drains every started branch, even on repeated cancellation, and raises the first error in input
 order. A lone eligible input is awaited directly (`owned_gather` with one branch).
+
+Chain depth: `parse_json` (`backend/src/chain/json.py`) refuses a chain of more than `MAX_CHAIN_DEPTH` = 500 nodes in a
+row (its longest path, measured in the cycle check's pass) before either executor runs, since both recurse once per
+node in a row (the engine's `Chain` walks, then `Run::ensure` on its driver thread's stack; `process.Executor`'s node
+calls); `pure_cpu_dependency`, walked per input, keeps its own stack. A connection into a lazy input counts as 5 nodes
+(`LAZY_LINK_DEPTH`): reading it runs its upstream inside the reader's run, about 8 Python frames per link on the
+engine's driver, which runs at most 124 such links in a row (99 are accepted).
 
 SP2 (2026-10-02) replaced the greedy helper reservation, which gave every helper to the first caller and left a
 concurrent one alone on its thread, and a partition that depended on the CPU count and on how many helpers were free.
@@ -249,7 +256,10 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
   `color_shared.h` and `linear_light_shared.h` (static helpers); the
   other SP4b Task 8 tail kernels are baseline row loops. Descale is exempt from cross-level identity (ruling
   2026-10-16): the vendored vapoursynth-descale solver uses FMA on AVX2, so its output equals the VapourSynth
-  plugin's on the same CPU; `DESCALE_OPT_NONE` in `descale_api()` (`src/descale_ops.c`) would restore it.
+  plugin's on the same CPU and the levels agree within 2e-6 (`test_descale.py`); `DESCALE_OPT_NONE` in
+  `descale_api()` (`src/descale_ops.c`) would restore it. Equal wherever the plugin is defined: past one reflection,
+  where the plugin indexed outside its weights, the Mirror border repeats the reflection (2026-10-29,
+  `third_party/descale/PATCHES`).
   Get Native Resolution's vendored Vernier core is built per level with its session units (`getnative_unit.cpp`,
   `getnative_kernel.cpp`) into `chainner_vernier_base` and `chainner_vernier_avx2`, its namespace renamed per build;
   `getnative_ops.cpp` picks one per session by `cn_isa_current()`. Both use Vernier's own floating-point model instead
@@ -316,7 +326,7 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
 | Area | Behavior |
 | --- | --- |
 | Output ownership | Weak, bounded provenance lets proven normalized read-only/native outputs and immutable bytes be borrowed (`normalized_readonly`); unknown writable aliases are still normalized or copied |
-| Counted cache | `OutputCache` reservations are consumed per actual edge, including the first computation; side-effect roots reserved separately; no full GC per expiry (the nightly delta also drops per-run `gc.collect()`) |
+| Counted cache | `OutputCache` reservations are consumed per actual edge, including the first computation; side-effect roots reserved separately; no full GC per expiry (the nightly delta also drops per-run `gc.collect()`). A lazy input its node did not read (a Conditional's untaken branch) gives up its reservation when the node ends (`__drop_unread`; the engine's cells count it ahead of an upstream that has not run yet). A lazy read that Stop ends leaves its node running: the reading node ends after it (`__finish_lazy_reads`) |
 | NumPy pool (SP4c) | `native/src/numpy_pool.cpp` in `_chainner_graph` is a NumPy data-memory handler that keeps freed blocks of 512 KiB or more warm: a request takes the smallest idle block whose capacity is in [size, 2 × size] (best fit), else a fresh `VirtualAlloc` block; smaller requests go to NumPy's default handler. Idle bytes are capped at min(2 GiB, 10 % of RAM), oldest released first (`CHAINNER_C_NUMPY_POOL`, README Bench). NumPy keeps its handler per thread, so `numpy_pool.install` runs on the worker's main thread before `app.run` and as `initializer=` of every worker `ThreadPoolExecutor` (`server.py`, `ffmpeg.py`, `web_ui.py`). Idle blocks are released at the end of `/run`, after an individual run's broadcasts are sent (a deferred task) and on `/clear-cache/individual`, the last two only while `ctx.executor is None`, so a preview or cache clear mid-run never empties the run's warm set. Load Video's frames are read into fresh NumPy buffers, so they pass through the handler too (D8). Only addresses change. A failed `/run` (and a stopped one) schedules one full `gc.collect()` after its handler returns and then releases the pool if no run executes (`collect_failed_run`); successful runs never collect. `await_owned_node` and `NodeFlights.run` drop their `future`/`task` locals in `finally`, so an eagerly read failed input frees by refcount |
 | Events | `LatestBroadcasts`: one active computation and one latest pending preview per node. `LatestEventQueue` coalesces routine queued states, keeping control/error events, final state, acknowledgments, cancellation ownership and sequence metadata. `/run/individual` responds without waiting for its broadcasts, as upstream |
 | Generators, collectors | Blocking reads, writes and finalization run in owned workers; cheap Range/Accumulate paths stay inline |

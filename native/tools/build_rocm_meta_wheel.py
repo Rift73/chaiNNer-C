@@ -122,18 +122,20 @@ def build(sdist: Path, out: Path) -> Path:
 
     out.mkdir(parents=True, exist_ok=True)
     wheel = out / f"rocm-{VERSION}+{LOCAL_LABEL}-py3-none-any.whl"
-    with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as written:
         # RECORD last, as the wheel format recommends.
         for name in [*sorted(n for n in files if n != record), record]:
             info = zipfile.ZipInfo(name, date_time=ZIP_DATE)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16
-            archive.writestr(info, files[name])
+            written.writestr(info, files[name])
     return wheel
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("sdist", type=Path)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args(argv)

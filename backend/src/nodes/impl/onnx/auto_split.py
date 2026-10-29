@@ -12,7 +12,7 @@ from ..native_framework_images import planar_to_interleaved, reflect_pad, swap_r
 from ..native_tensors import cast_numpy
 from ..upscale.auto_split import Tiler, auto_split
 from ..upscale.bounded_tiler import BoundedTiler
-from .errors import ort_error_message
+from .errors import is_out_of_memory, ort_error_message
 
 if TYPE_CHECKING:
     # Annotation only: no new import at runtime.
@@ -145,17 +145,12 @@ def onnx_auto_split(
             output = remove_pad(output)
             return cast_numpy(output, np.dtype(np.float32))
         except Exception as e:
-            message = ort_error_message(e)
-            if "ONNXRuntimeError" in message and (
-                "allocate memory" in message
-                or "out of memory" in message
-                or "cudaMalloc" in message
-            ):
+            if is_out_of_memory(e):
                 raise RuntimeError(
                     "A VRAM out-of-memory error has occurred. Please try using a more extreme tiling mode."
                 ) from e
             elif isinstance(e, UnicodeDecodeError):
-                raise RuntimeError(message) from e
+                raise RuntimeError(ort_error_message(e)) from e
             else:
                 raise
 

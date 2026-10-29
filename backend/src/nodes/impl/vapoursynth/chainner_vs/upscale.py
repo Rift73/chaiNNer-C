@@ -10,6 +10,7 @@ TensorRT) are imported when a script first loads a model of that backend."""
 from __future__ import annotations
 
 import importlib
+import math
 import os
 import threading
 from collections.abc import Callable
@@ -290,6 +291,21 @@ def _write(img: np.ndarray, frame: Any) -> None:
         np.copyto(np.asarray(frame[plane]), img[:, :, channel])
 
 
+def _stretch_sar(props: Any, scale_width: int, scale_height: int) -> None:
+    """The sample aspect ratio of a frame scaled by these factors, so that it keeps its
+    shape on screen: _SARNum/_SARDen times scale_height/scale_width, reduced. A frame
+    without them has square pixels (1/1); one whose SAR is unknown (0) keeps it."""
+    num = props.get("_SARNum", 1)
+    den = props.get("_SARDen", 1)
+    if num <= 0 or den <= 0:
+        return
+    num *= scale_height
+    den *= scale_width
+    divisor = math.gcd(num, den)
+    props["_SARNum"] = num // divisor
+    props["_SARDen"] = den // divisor
+
+
 def _runner_clip(clip: Any, model: str, plugin: Path, streams: int) -> Any:
     """AI Upscale on the native TensorRT runner's VapourSynth filter (`plugin`, see
     nodes/impl/tensorrt/runner.py) with `streams` execution contexts: frames are
@@ -326,7 +342,8 @@ def upscale(
     float clip need not be), so a frame comes out as the Upscale Image node makes it
     from the clipped image. Frame properties carry over; when the model changes the
     colour family (a 1 -> 3 or 3 -> 1 channel model), _Matrix becomes the new family's:
-    0 (RGB) on an RGB result, none on a gray one."""
+    0 (RGB) on an RGB result, none on a gray one; when it scales width and height
+    differently (an ONNX model can), _SARNum/_SARDen change with it (_stretch_sar)."""
     fmt = clip.format
     if fmt.id not in (vs.RGBS, vs.GRAYS):
         # A clip whose format varies has the format id 0 (named "None").
@@ -374,6 +391,7 @@ def upscale(
     core = vs.core
     # A YUV _Matrix on an RGB clip, or RGB's on a gray one, fails the next resize.
     family_changed = out.format.color_family != fmt.color_family
+    stretched = upscaler.scale_width != upscaler.scale_height
 
     def frame(n: int, f: Any) -> Any:
         img = _image(f)  # a copy of the frame's planes, clipped in place
@@ -388,6 +406,8 @@ def upscale(
                 dst.props["_Matrix"] = 0
             else:
                 dst.props.pop("_Matrix", None)
+        if stretched:
+            _stretch_sar(dst.props, upscaler.scale_width, upscaler.scale_height)
         return dst
 
     upscaled_clip = out.std.ModifyFrame(clips=clip, selector=frame)

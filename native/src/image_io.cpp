@@ -11,6 +11,7 @@
 #include "image_encode.hpp"
 #include "image_preview.hpp"
 #include "numpy_pool.hpp"
+#include "save_path.hpp"
 #include <pybind11/numpy.h>
 #include <pybind11/stl/filesystem.h>
 #include <algorithm>
@@ -398,7 +399,26 @@ O load_image(py::dict g,O path) {
     }
     return py::make_tuple(image,index(parts,0),index(parts,1));
 }
-O full_path(O base,O relative,O filename,O format_type) {
+// A writer's Subdirectory Path or file name (its input `label`) that leaves the output directory or names a Windows
+// device: the node's error (save_path.hpp). Encoded with surrogatepass, so any str is checked.
+void refuse(const O& value,const O& node,const O& label) {
+    if(!py::isinstance<py::str>(value))return;
+    const std::string text=value.attr("encode")("utf-8","surrogatepass").cast<std::string>();
+    const cn::save_path::Refusal refusal=cn::save_path::check(text);
+    if(refusal.kind==cn::save_path::Refusal::leaves)
+        raise(PyExc_ValueError,format("{}: the {} \"{}\" leaves the output directory: \"..\" and absolute paths are not"
+            " allowed; give a path inside it.",node,label,value));
+    if(refusal.kind!=cn::save_path::Refusal::reserved)return;
+    if(refusal.part.size()==text.size())
+        raise(PyExc_ValueError,format("{}: the {} \"{}\" is a reserved Windows device name; choose another name.",node,
+            label,value));
+    const O part=py::bytes(refusal.part.data(),refusal.part.size()).attr("decode")("utf-8","surrogatepass");
+    raise(PyExc_ValueError,format("{}: the {} \"{}\" contains the reserved Windows device name \"{}\"; choose another"
+        " name.",node,label,value,part));
+}
+O full_path(O base,O relative,O filename,O format_type,O node,O name_label) {
+    refuse(relative,node,py::str("Subdirectory Path"));
+    refuse(filename,node,name_label);
     O file=format("{}.{}",filename,format_type.attr("extension"));
     if(truth(relative)&&!equal(relative,py::str(".")))base=path_join(base,relative);
     return path_join(base,file).attr("resolve")();

@@ -12,7 +12,8 @@ archived vspreview).
 Install the **VapourSynth** package in the dependency manager: VapourSynth 81, vs-jetpack 2.2.6 with its source,
 deinterlacing, denoising and scaling plugins, MVTools 9, CAS, vszip CUDA (BM3D, NL-Means, DFTTest on NVIDIA GPUs),
 DFTTest2 and vsview 0.13.0, about 1.75 GB. It goes into chaiNNer-C's own Python; a VapourSynth you installed yourself
-is not used, changed or loaded. VapourSynth runs in its own processes (vspipe, its command-line runner, and vsview),
+is not used, changed or loaded. Uninstall removes it with what pip pulled in for it that nothing else installed needs
+(vsview's PySide6, the plugins); NumPy, SciPy and what chaiNNer-C or your user modules need stay. VapourSynth runs in its own processes (vspipe, its command-line runner, and vsview),
 never in chaiNNer's, so a plugin crash costs only that process; the setting **VapourSynth cache (MB)** (default 4096)
 caps each one's frame cache. Below, `<storage>` is the `backend-storage` folder of chaiNNer-C's own folder (where you
 unzipped it; `%APPDATA%\chaiNNer-C` from source).
@@ -46,7 +47,7 @@ statement is reported on its own node with the end of VapourSynth's message, and
 
 | Node | Writes |
 | --- | --- |
-| Preview Clips | `<storage>\vapoursynth\chains\<node id>\preview.vpy`, with `vsview.log` beside it |
+| Preview Clips | `<storage>\vapoursynth\chains\<node id>\preview.vpy`, with `vsview.log` and `vsview.pid` beside it |
 | Clip Frames | `<storage>\vapoursynth\chains\<node id>\frames.vpy` |
 | Frames to Clip | `frames-<id>.mkv` (16-bit) or `.nut` (32-bit float), a temporary video, in the same kind of folder |
 | Save Script | `<Directory>\<Script Name>.vpy` |
@@ -61,9 +62,10 @@ another VapourSynth.
 
 Preview Clips takes Clip 1 and, with the plus button, up to 15 more, each with an optional name. A run writes the
 script, checks it with one trial evaluation, and opens vsview with each clip as an output under its name (a tab). If the
-check fails, the error shows on its node and no window opens. Each Preview Clips node has one window. While it is open
-a run only rewrites the script: press **Reload Script** (Ctrl+R) in vsview. After you close it the next run opens a new
-one (so does a restart of chaiNNer-C). vsview keeps its settings in `%LOCALAPPDATA%\vsview`.
+check fails, the error shows on its node, no window opens, and an open window keeps the last script that worked. Each
+Preview Clips node has one window. While it is open, also after chaiNNer-C restarts, a run only rewrites the script:
+press **Reload Script** (Ctrl+R) in vsview. After you close it the next run opens a new one. If vsview ends within three
+seconds of its start, the node reports it with the end of `vsview.log`. vsview keeps its settings in `%LOCALAPPDATA%\vsview`.
 
 ## Clip Frames and Frames to Clip
 
@@ -91,7 +93,10 @@ it are the picked method's. Functions with a plain name come first under "Common
 is searchable. Node search finds a family by its methods: typing `bm3d`, `scale` or `mc_degrain` offers "Denoise: BM3D"
 and the like, with that method picked. The **Inputs** tabs give **Simple** (the main settings, plainly named) or
 **Advanced** (everything). A setting left at its function's default is not written. A function that exists in many
-variants (every scaling kernel, edge mask or prefilter) is one method with a dropdown ("Kernel").
+variants (every scaling kernel, edge mask or prefilter) is one method with a dropdown ("Kernel"). A setting that takes
+several kinds of value shows the main kind; Advanced adds "<Setting> as a Python value" for the others (`(2, 2)` for a
+yes/no prefilter that also takes a radius pair, `[1, 2, 2]` for per-plane modes), which wins when filled. An expression
+setting takes one expression for every plane or a list with one per plane (`['x 2 *', '']`).
 
 **Use as filter** gives the method itself instead of its result, for a setting of another node that wants a function:
 the Clip input goes away and the output becomes "Clip or filter". Example: Deinterlace > Field match (VFM) has a
@@ -112,6 +117,8 @@ size it meets (the edge tiles' sizes too) without the ONNX settings' program cac
 
 - The clip must be 32-bit float RGB or gray (RGBS or GRAYS) of one size: use Convert Format before it (Convert (Point)
   starts at RGBS) and usually after it. Each frame is clipped to 0-1 before the model, as chaiNNer's images always are.
+- Frame properties carry over. A model that scales width and height differently (some ONNX models) changes the sample
+  aspect ratio (`_SARNum`/`_SARDen`) with them, so the picture keeps its shape.
 - A model loads once per file when the script is evaluated (the output size needs its scale), and nodes share it. Some
   functions read frame properties while the script is built (a linear-light Scale, say), which computes the first
   frame then. So the check, vsview's start and each reload wait for it (over a minute on a CPU with several AI Upscale
@@ -124,10 +131,13 @@ underscore) that returns a clip, or has no return annotation, appears in **User 
 example `def brighten(clip: vs.VideoNode, gain: float = 1.1) -> vs.VideoNode` in `mine.py`. Settings are typed from the
 annotations; one that cannot be typed is a text box taking a Python value. Without annotations, the first parameter
 without a default is the clip: annotate a function whose first parameter is not a clip. Or list pip packages in
-`<storage>\vapoursynth\user_modules.toml`, as `modules = ["vs-colorfix"]`: missing ones are installed when chaiNNer-C
-starts (this one brings about 300 MB of plugins; an install that fails or takes over 15 minutes is skipped) and their
-functions appear the same way; its colour match lands under Colour. pip installs a listed module's own dependencies into
-chaiNNer-C's Python as well, which may change packages that chaiNNer-C uses.
+`<storage>\vapoursynth\user_modules.toml`, as `modules = ["vs-colorfix"]`, each with a version spec if you want one
+(`"vs-colorfix>=2"`, passed to pip as written): missing ones, and ones whose installed version the spec does not allow,
+are installed when chaiNNer-C starts and after an install in the dependency manager (VapourSynth's first), with the
+progress naming each (this one brings about 300 MB of plugins; an install that fails or takes over 15 minutes is
+skipped and tried again at the next start), and their functions appear the same way; its colour match lands under
+Colour. pip installs a listed module's own dependencies into chaiNNer-C's Python as well, which may change packages
+that chaiNNer-C uses.
 
 An optional **overlay** gives a function a plain name and a node. Put a `.toml` in `<storage>\vapoursynth\overlays` (yours
 win over the shipped ones); a function's id is `<file or module>.<function>`, such as `vsdenoise.bm3d`:
@@ -146,7 +156,8 @@ use), like a clip variable (`n_<word>_<number>`), like an installed module or li
 `system`, `api`...); it is skipped with a line in the log. The
 function list is read when chaiNNer-C starts (Settings > Restart chaiNNer) and after a dependency install: it scans
 again (a few seconds) if your files, `user_modules.toml`, the plugins or the VapourSynth or vs-jetpack versions changed,
-and re-reads the overlays.
+and re-reads the overlays. A scan that takes over two minutes is stopped, and the log names the file or module it was
+importing: a file's import must not wait (move slow work into its functions).
 
 ## Linux
 
@@ -171,7 +182,7 @@ The same package works on Linux x86-64; paths read `<storage>/vapoursynth` and t
   do not load.
 - **Preview Clips** needs a desktop session (X11 or Wayland), Qt's `libxcb-cursor0` and glibc 2.34 or newer (vsview).
   Below glibc 2.34 or without a session the node says so; Save Script writes the script for another previewer. If
-  vsview ends within three seconds of its start, the node reports it and `vsview.log` beside the script has Qt's
+  vsview ends within three seconds of its start, the node reports it with the end of `vsview.log`, which has Qt's
   reason. vsview keeps its settings in `~/.config/vsview`.
 
 ## Limits and known gaps
@@ -186,3 +197,7 @@ The same package works on Linux x86-64; paths read `<storage>/vapoursynth` and t
 - Any Function calls a class's method without constructor settings. An error in an import line shows on the node that
   runs the script, a bad filter setting on the node it is wired into.
 - Do not upgrade MVTools: the dependency manager accepts a newer version, but 10 breaks Motion-compensated degrain.
+- What always fails with vs-jetpack 2.2.6 is left out: base classes in Class and kernel dropdowns (Kernel, Scaler,
+  Descaler...), MVTools' compensate, degrain, flow and mask methods (they need an analyze on the same object first; use
+  Motion-compensated degrain), functions that need an object no input gives, and methods that give no clip. Another
+  vs-jetpack version shows them all.

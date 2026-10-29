@@ -19,7 +19,7 @@ import subprocess
 import time
 from bisect import bisect_left
 from collections.abc import Buffer, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -202,13 +202,15 @@ class VideoInfo:
     duration: float
 
 
-def _indexed_duration(path: Path, time_base: Fraction, start: float) -> float:
+def _indexed_duration(
+    path: Path, time_base: Fraction, start: float, check: Callable[[], None] | None
+) -> float:
     """The first video track's duration by its frame index, for a container that records
     none per track (Matroska, whose duration ends with its longest track): from the
     format's start time to the end of the last frame (its timestamp plus the step before
     it). 0 when the packets cannot number the frames, or number fewer than two."""
     try:
-        pts = frame_index(path).pts
+        pts = frame_index(path, check).pts
     except _UseCliReader:
         return 0.0
     if len(pts) < 2:
@@ -216,7 +218,8 @@ def _indexed_duration(path: Path, time_base: Fraction, start: float) -> float:
     return float((2 * pts[-1] - pts[-2]) * time_base) - start
 
 
-def probe(path: Path) -> VideoInfo:
+def probe(path: Path, check: Callable[[], None] | None = None) -> VideoInfo:
+    """The video's VideoInfo; `check` raises to abort a scan of its packets (Stop)."""
     av = _pyav()
     if av is None:
         raise RuntimeError("Get Native Resolution needs PyAV to read videos.")
@@ -229,7 +232,7 @@ def probe(path: Path) -> VideoInfo:
         if stream.duration is not None and stream.time_base is not None:
             duration = float(stream.duration * stream.time_base)
         if not (math.isfinite(duration) and duration > 0) and stream.time_base:
-            duration = _indexed_duration(path, Fraction(stream.time_base), start)
+            duration = _indexed_duration(path, Fraction(stream.time_base), start, check)
         if not (math.isfinite(duration) and duration > 0):
             duration = (container.duration or 0) / 1_000_000
             # Matroska's segment duration is an end timestamp, including any initial gap.
@@ -320,7 +323,7 @@ def discover(
             raise ValueError("Manual timestamps exceed the frame cap")
         points = [SamplePoint(t, REQUESTED) for t in times]
     elif mode == "keyframes":
-        points = _indexed_keyframes(path, info, plan.duration)
+        points = _indexed_keyframes(path, info, plan.duration, check)
         if not points:
             try:
                 points = _listed_keyframes(path, info, plan.duration, tools, check)
@@ -396,14 +399,14 @@ def discover(
 
 
 def _indexed_keyframes(
-    path: Path, info: VideoInfo, duration: float
+    path: Path, info: VideoInfo, duration: float, check: Callable[[], None]
 ) -> list[SamplePoint]:
     """The codec keyframes within the duration by PyAV's frame index, with their frame
     numbers; none when PyAV cannot index the file (logged)."""
     av = _pyav()
     assert av is not None
     try:
-        index = frame_index(path)
+        index = frame_index(path, check)
         with av.open(str(path)) as container:
             time_base = container.streams.video[0].time_base
     except (_UseCliReader, av.error.FFmpegError) as reason:
@@ -533,11 +536,17 @@ def colour_model(
         True,
         (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.AUTO),
     )
-    rgb = VideoLoader.rgb_format(
-        VideoMetadata(info.width, info.height, 0.0, 0),
-        pixel_layout(info.pix_fmt),
-        colour,
-        settings,
+    # As stored, as the stored plane is analyzed: Load Video's upright frames would turn
+    # a display matrix's 90 degrees into a size the reader refuses, and its 180 degrees
+    # into a raster that no longer lines up with the plane.
+    rgb = replace(
+        VideoLoader.rgb_format(
+            VideoMetadata(info.width, info.height, 0.0, 0),
+            pixel_layout(info.pix_fmt),
+            colour,
+            settings,
+        ),
+        upright=False,
     )
     return ColourModel(
         rgb,
@@ -567,7 +576,7 @@ def decode_frame(
     try:
         if av is None:
             raise _UseCliReader("PyAV is unavailable")
-        index = frame_index(path)
+        index = frame_index(path, check)
     except _UseCliReader as reason:
         if rgb is not None:
             raise ValueError(

@@ -32,6 +32,24 @@ class Generator(Generic[I]):
     # Exact lengths may be compared before combining generators. A video reader
     # with only a count estimate (or a Range upper bound) must instead reach EOF.
     length_is_exact: bool = True
+    # The run's warning when the items end early, given how many came, or None for
+    # none: Load Video's names its file and also compares with the frame count in the
+    # file's header. Without it, an exact length warns at any shortfall.
+    shortfall: Callable[[int], str | None] | None = None
+
+    def shortfall_warning(self, name: str, read: int) -> str | None:
+        """The warning the executors send once, at the end of the generator's items,
+        when `read` items came (none when an item's deferred error explains the end):
+        shortfall's, else, when `read` falls short of an exact length, one naming the
+        node (`name`)."""
+        if self.shortfall is not None:
+            return self.shortfall(read)
+        if self.length_is_exact and read < self.expected_length:
+            return (
+                f"{name} ended after {read} of {self.expected_length} items; the items"
+                " read were processed."
+            )
+        return None
 
     def with_fail_fast(self, fail_fast: bool):
         self.fail_fast = fail_fast

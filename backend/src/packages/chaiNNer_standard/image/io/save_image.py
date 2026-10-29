@@ -450,7 +450,7 @@ def dds_inputs() -> list[BaseInput | NestedGroup]:
                     AvifSubsampling.FACTOR_444: "4:4:4 (Best Quality)",
                     AvifSubsampling.FACTOR_422: "4:2:2",
                     AvifSubsampling.FACTOR_420: "4:2:0",
-                    AvifSubsampling.FACTOR_400: "4:0:0 (Best Compression)",
+                    AvifSubsampling.FACTOR_400: "4:0:0 (Grayscale)",
                 },
             ).with_id(17)
         ),
@@ -530,9 +530,14 @@ def get_full_path(
     relative_path: str | None,
     filename: str,
     image_format: ImageFormat,
+    node: str = "Save Image",
+    name_label: str = "Image Name",
 ) -> Path:
+    """The file's path. A Subdirectory Path or file name with a ".." component, an
+    absolute one, or on Windows one with a device name (NUL, CON, ...) is refused with
+    an error naming the node and the input (`name_label` is the file name's)."""
     return graph().image_io_full_path(
-        base_directory, relative_path, filename, image_format
+        base_directory, relative_path, filename, image_format, node, name_label
     )
 
 

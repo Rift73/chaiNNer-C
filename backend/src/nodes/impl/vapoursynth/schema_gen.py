@@ -41,7 +41,7 @@ from ...properties.inputs import (
 from ...properties.outputs import VideoClipOutput
 from .adapters import Adapter, Enums, adapter_for
 from .catalog import CLASS, FAMILIES, input_ids
-from .catalog_types import Method, Param
+from .catalog_types import VARIADIC, Method, Param
 from .script import VideoClip, VSFilter, clip_var
 
 LOAD_CLIP = "Load Clip"
@@ -69,6 +69,8 @@ _CLIP_KINDS = ("clip", "optional_clip")
 _FILTER_CLIP = "clip"
 # The label of a **kwargs parameter.
 _MORE = "More arguments"
+# The input id key suffix of a union parameter's Python value input (Adapter.other).
+_OTHER = "#other"
 
 # Icon and description of each family node.
 FAMILY_TEXT: dict[str, tuple[str, str]] = {
@@ -188,6 +190,9 @@ class _Slot:
     label: str
     # The input may have no value (else chaiNNer always gives it one).
     optional: bool
+    # The Python value input of the union's other values (Adapter.other), which wins
+    # when it is filled.
+    other_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -233,8 +238,9 @@ def _member_params(
     function: limiter(clip_or_func)) with its adapter, and the others: (constructor
     argument, parameter, adapter)."""
     plugin = member.kind == "plugin"
+    names = frozenset(p.name for p in (*member.init_params, *member.params))
     params = [
-        (init, param, adapter_for(param, enums, plugin))
+        (init, param, adapter_for(param, enums, plugin, names))
         for init, group in ((True, member.init_params), (False, member.params))
         for param in group
     ]
@@ -399,6 +405,12 @@ class _Family:
                     (p.method.id, f"{main.name}#{n}") for n in range(2, p.more + 2)
                 )
             wanted.extend((p.method.id, key) for key in p.keys.values())
+            wanted.extend(
+                (p.method.id, p.keys[init, param] + _OTHER)
+                for _, _, _, params in p.members
+                for init, param, adapter in params
+                if adapter.other
+            )
         ids = input_ids(self.family, wanted)
         for p in parsed:
             self.plans[p.method.id] = self._plan(p, ids)
@@ -419,19 +431,27 @@ class _Family:
                     )
                     start = _start_value(member, param, adapter)
                     made = adapter.make_input(label, param, ids[method.id, key], start)
-                    slot = slots[key] = _Slot(made.id, adapter, label, made.optional)
                     doc = member.arg_docs.get(param.name)
                     if doc:
                         made.with_docs(doc)
                     choices = frozenset(parsed.variants[init, param.name][param])
+                    shown = frozenset() if choices == everyone else choices
                     simple = param.name in method.simple or (
                         param.default is None and param.kind != "var_keyword"
                     )
                     (plan.simple if simple else plan.advanced).append(
-                        (
-                            frozenset() if choices == everyone else choices,
-                            _tolerant(made),
+                        (shown, _tolerant(made))
+                    )
+                    other_id = None
+                    if adapter.other:
+                        other = Adapter("extra", name=param.name, optional=True)
+                        other_id = ids[method.id, key + _OTHER]
+                        typed = other.make_input(
+                            f"{label} as a Python value", param, other_id
                         )
+                        plan.advanced.append((shown, _tolerant(typed)))
+                    slot = slots[key] = _Slot(
+                        made.id, adapter, label, made.optional, other_id
                     )
                 by_name[init, param.name] = slot
             plan.members[member.choice] = _Member(member, main, main_adapter, by_name)
@@ -630,6 +650,11 @@ class _Call:
     def add(self, param: Param, source: str, positional: bool) -> None:
         if param.kind == "var_keyword":
             self.keywords.append(f"**{source}")
+        elif param.kind == "var_positional":
+            # A list of clips (*[n_a_0, n_b_0]); positional arguments come first.
+            self.positional.extend(_gap_source(gap) for gap in self.gaps)
+            self.gaps.clear()
+            self.positional.append(f"*{source}")
         elif positional or param.kind == "positional":
             self.positional.extend(_gap_source(gap) for gap in self.gaps)
             self.gaps.clear()
@@ -707,12 +732,17 @@ def _args(
             continue
         slot = member.slots[init, param.name]
         value = run.value(slot.input_id, slot.label, slot.optional)
+        adapter = slot.adapter
+        if slot.other_id is not None:
+            other = run.value(slot.other_id, slot.label, True)
+            if isinstance(other, str) and other.strip():
+                value, adapter = other, Adapter("extra", name=param.name)
         try:
-            source = slot.adapter.to_source(value)
+            source = adapter.to_source(value)
         except ValueError as error:
             raise ValueError(f"{slot.label}: {error}") from error
         if source is None:
-            if param.default is None and param.kind != "var_keyword":
+            if param.default is None and param.kind not in VARIADIC:
                 reason = run.reasons.get(slot.input_id)
                 if reason:
                     raise ValueError(f"{slot.label}: {reason}")
@@ -721,7 +751,7 @@ def _args(
             continue
         if isinstance(value, (VideoClip, VSFilter)):
             call.deps.append(value)
-        call.imports.update(slot.adapter.imports)
+        call.imports.update(adapter.imports)
         call.add(param, source, False)
 
 
@@ -743,6 +773,9 @@ def _main_source(
     else:
         listed, clips = [], [clip, *more]
     if not more:
+        # *clips takes the filter's clip in a list.
+        if member.main is not None and member.main.kind == "var_positional":
+            return f"[{_FILTER_CLIP}]", clips
         return _FILTER_CLIP, clips
     # A list of clips (Shift Clip Multi's) adds all of its clips.
     listed.extend(f"*{c.var}" if c.many else c.var for c in clips)

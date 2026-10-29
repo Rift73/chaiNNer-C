@@ -13,7 +13,8 @@ Apache-2.0). The first upscale downloads its five files, about 7 GB (6.97 GB), i
 `vosr2-model/f24b3061b7f350b81e1907bdcfc27f71fb4ff3f3/` (`args.json`, `checkpoints/`, `Qwen-Image-vae-2d/`,
 `dinov2_vitl14_pretrain.pth`), with progress on the node. A stopped or broken download resumes on the next run; each
 file must match its pinned SHA-256 (a mismatch is deleted and reported). Files already there are hashed once and never
-downloaded again. The first upscale also downloads OpenCV's YuNet face detector (230 KB, MIT licence, `opencv_zoo` at
+downloaded again. On a GPU, the PyTorch backend's first load keeps a BF16 copy of the DiT beside it
+(`checkpoints/ema_model.bf16.safetensors`, 2.8 GB) so later loads skip converting its 5.6 GB of FP32 weights. The first upscale also downloads OpenCV's YuNet face detector (230 KB, MIT licence, `opencv_zoo` at
 `26cc381e`, `face_detection_yunet_2026may.onnx`) into `vosr2-faces/`, the same way.
 
 ## The nodes
@@ -62,7 +63,8 @@ PyTorch (Linux and Windows).
 - **TensorRT** needs an NVIDIA GPU, the TensorRT package (dependency manager) and VOSR's plugin `vosr2_qkv.dll`
   (included when the build made it; otherwise the node says so). The plugin has code for RTX 30, 40 and 50 GPUs; only
   an RTX 5090 is tested. The first run builds ten engines: about 3 minutes, 5.5 GB of free GPU memory, 3.5 GB on disk.
-  A TensorRT, driver, GPU or chaiNNer-C update can rebuild them once.
+  A TensorRT, driver, GPU or chaiNNer-C update can rebuild them once; the replaced engines are deleted once unused for
+  two weeks (another GPU's are kept).
 - **TensorRT FP8** needs an RTX 40 series or newer and the official, unchanged model files. FP8 (8-bit floating point)
   runs the DiT's projections and feed-forward layers and most of DINOv2; DiT attention and the VAE stay BF16/FP32. First
   use downloads the calibrated graphs (3.45 GB from `steropes.feralhosting.com`, SHA-256 checked, resumed after Stop)

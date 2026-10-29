@@ -37,9 +37,26 @@ class JsonNode(TypedDict):
     nodeType: str
 
 
+MAX_CHAIN_DEPTH = 500
+"""The most nodes in a row (the longest series of connected nodes) a run takes. Both
+executors recurse once per node in a row (the native engine's Chain walks and its driver
+thread's stack; process.Executor's demand-driven node calls), so a longer chain would end
+in a recursion error, or a crash on the engine's stack, instead of this one's message. A
+connection into a lazy input counts as LAZY_LINK_DEPTH nodes."""
+
+LAZY_LINK_DEPTH = 5
+"""The nodes in a row a connection into a lazy input (Conditional, Logic Operation)
+counts as: reading it runs its upstream inside the reading node's run, so on the native
+engine's driver each such link nests about 8 Python frames where a node in a row nests
+2. The engine runs at most 124 such links in a row; 99 is the most a chain may have."""
+
+
 class IndexEdge:
+    """A connection as the chain file gives it: parse_json checks from_index (any JSON
+    value) against the source node's outputs."""
+
     def __init__(
-        self, from_id: NodeId, from_index: int, to_id: NodeId, to_index: int
+        self, from_id: NodeId, from_index: object, to_id: NodeId, to_index: int
     ) -> None:
         self.from_id = from_id
         self.from_index = from_index
@@ -49,7 +66,8 @@ class IndexEdge:
 
 def parse_json(json: list[JsonNode]) -> Chain:
     """The chain of a /run request. A chain file is untrusted (people share them): a
-    connection or input the node does not have, or a cycle, is a ValueError naming it."""
+    connection or input the node does not have, or a cycle, is a ValueError naming it, as
+    is a series of more than MAX_CHAIN_DEPTH connected nodes."""
     chain = Chain()
 
     index_edges: list[IndexEdge] = []
@@ -105,18 +123,41 @@ def parse_json(json: list[JsonNode]) -> Chain:
         )
 
     # The editor makes no cycle; a crafted one would recurse without end in the run.
+    # The same pass measures the longest series of connected nodes: the nodes in a row
+    # up to each node (a lazy input's connection weighing LAZY_LINK_DEPTH), and the
+    # first of them.
     waiting = {node_id: len(chain.edges_to(node_id)) for node_id in chain.nodes}
+    lazy = {
+        node_id: {i.id for i in node.data.inputs if i.lazy}
+        for node_id, node in chain.nodes.items()
+    }
+    in_a_row = dict.fromkeys(chain.nodes, 1)
+    first = {node_id: node_id for node_id in chain.nodes}
     ready = [node_id for node_id, count in waiting.items() if count == 0]
     while ready:
-        for edge in chain.edges_from(ready.pop()):
-            waiting[edge.target.id] -= 1
-            if waiting[edge.target.id] == 0:
-                ready.append(edge.target.id)
+        source = ready.pop()
+        for edge in chain.edges_from(source):
+            target = edge.target.id
+            weight = LAZY_LINK_DEPTH if edge.target.input_id in lazy[target] else 1
+            if in_a_row[source] + weight > in_a_row[target]:
+                in_a_row[target] = in_a_row[source] + weight
+                first[target] = first[source]
+            waiting[target] -= 1
+            if waiting[target] == 0:
+                ready.append(target)
     stuck = sorted(node_id for node_id, count in waiting.items() if count > 0)
     if stuck:
         raise ValueError(
             "The chain's connections form a cycle, so these nodes cannot run:"
             f" {', '.join(stuck[:8])}{', ...' if len(stuck) > 8 else ''}."
+        )
+    last = max(chain.nodes, key=in_a_row.__getitem__, default=None)
+    if last is not None and in_a_row[last] > MAX_CHAIN_DEPTH:
+        raise ValueError(
+            f"This chain has {in_a_row[last]} nodes in a row (from"
+            f" {chain.nodes[first[last]].data.name} to {chain.nodes[last].data.name});"
+            f" a run supports at most {MAX_CHAIN_DEPTH}. Split the chain, saving"
+            " intermediate images."
         )
 
     return chain

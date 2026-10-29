@@ -12,6 +12,7 @@ from api import Progress
 from gpu import MemoryUsage, get_vram_usage
 from util import waiting
 
+from . import memory_cap
 from .vosr2 import MemoryPlan, VosrMemoryMode
 
 _BUDGET_LOCK = RLock()
@@ -83,14 +84,14 @@ def vram_budget(
                     )
 
             try:
-                torch.cuda.set_per_process_memory_fraction(cap / total, device)
-                check()
-                yield check
+                # Restored at its end, as is an Upscale Image's VRAM offload cap that
+                # overlaps it; the stages lower it (memory_cap.lower).
+                with memory_cap.capped(device, cap / total, lowerable=True):
+                    check()
+                    yield check
             except torch.OutOfMemoryError as error:
                 raise RuntimeError(
                     f"VOSR exhausted its {mode.value} GPU allocation budget. {advice}"
                 ) from error
-            finally:
-                torch.cuda.set_per_process_memory_fraction(previous, device)
     finally:
         _BUDGET_LOCK.release()

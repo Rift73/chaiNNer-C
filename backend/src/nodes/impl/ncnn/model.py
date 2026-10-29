@@ -358,7 +358,12 @@ class NcnnModelWrapper:
             ):
                 break
             if layer.op_type == "Reorg":
-                multiple *= max(1, int(layer.params[0].value))
+                stride = layer.params[0].value
+                if isinstance(stride, list):
+                    raise ValueError(
+                        f"The Reorg layer {layer.name}'s stride is a list, not a number."
+                    )
+                multiple *= max(1, int(stride))
         return multiple
 
     @staticmethod

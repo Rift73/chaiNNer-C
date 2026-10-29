@@ -267,13 +267,21 @@ inline int diffusion_map(const std::string &value)
     return int(std::find(maps.begin(), maps.end(), value) - maps.begin());
 }
 
-/* An integer input that native_neighborhood checks against [2, 2**32) (a colour count, a Riemersma history length):
- * its value, or ValueError with the message (a Python int beyond int64 is out of range too). */
-inline uint32_t dither_count(const Value &value, const char *message)
+/* An integer input that native_neighborhood checks against [2, maximum] (a colour count: 2**32 - 1; a Riemersma
+ * history length: its MAX_HISTORY_LENGTH): its value, or ValueError with the message (a Python int beyond int64 is
+ * out of range too). */
+inline uint32_t dither_count(const Value &value, int64_t maximum, const char *message)
 {
     const int64_t *count = std::get_if<int64_t>(&value);
-    if (!count || *count < 2 || *count > 0xFFFFFFFF) throw NodeError("ValueError", message);
+    if (!count || *count < 2 || *count > maximum) throw NodeError("ValueError", message);
     return uint32_t(*count);
+}
+
+/* A Riemersma history length as native_neighborhood checks it: [2, MAX_HISTORY_LENGTH], above which the float32
+ * decay base is 1, which the kernel refuses. */
+inline uint32_t history_length(const Value &value)
+{
+    return dither_count(value, 682541919, "History length must be an integer in [2,682541919]");
 }
 
 /* image_utils.to_uint8 of a float32 image: always saturate before quantizing.

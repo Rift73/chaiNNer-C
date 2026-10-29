@@ -48,9 +48,11 @@ from nodes.impl.execution_cleanup import (
     run_cleanup_groups,
 )
 from nodes.impl.execution_scheduler import (
+    LOCKED_DEVICE_NODES,
     LatestBroadcasts,
     NodeFlights,
     advance_iterator,
+    may_go_unread,
     owned_gather,
     pure_cpu_dependency,
     pure_cpu_node,
@@ -218,6 +220,17 @@ def run_node(
     except Exception as e:
         input_dict = collect_input_information(node, enforced_inputs)
         raise NodeExecutionError(node_id, node, str(e), input_dict) from e
+
+
+def with_node_cleanups(job: Callable[[], _T], context: _ExecutorNodeContext) -> _T:
+    """The job (a node's timed run), then the cleanups the node registered in `context`
+    for after itself, outside its time as on the commit path."""
+    try:
+        return job()
+    finally:
+        run_cleanup_functions(
+            context.node_cleanup_fns, preserve_error=sys.exc_info()[0] is not None
+        )
 
 
 def registered_phases(node: NodeData) -> Phases:
@@ -795,6 +808,55 @@ class _ItemView:
 _NOT_SPECULATED: frozenset[str] = frozenset({"chainner:utility:into_directory"})
 
 
+def folder_sources(
+    chain: Chain,
+    inputs: InputMap,
+    writers: Iterable[Node],
+    iterated: set[NodeId],
+    computed: Callable[[NodeId], bool],
+) -> list[NodeId]:
+    """
+    The nodes that compute a loop's writers' folders (the upstream of a regular writer's directory and relative path inputs, as Save Image's gather would run it at its turn) that its item window decision runs first, so that the read-ahead check knows those folders (__writer_directories): not iterated, not computed yet, and pure CPU but not Into Directory, as is every node they need that is not computed yet. In the writers' id order; a collector's folders are known from its construction.
+    """
+    sources: list[NodeId] = []
+    for writer in sorted(writers, key=lambda n: n.id):
+        if not isinstance(writer, FunctionNode):
+            continue
+        assigned = inputs.get(writer.id)
+        for index, i in enumerate(writer.data.inputs):
+            source = assigned[index]
+            if (
+                (i.kind == "directory" or _relative_path_input(i))
+                and isinstance(source, EdgeInput)
+                and source.id not in iterated
+                and source.id not in sources
+                and _computable_folder(chain, inputs, source.id, computed)
+            ):
+                sources.append(source.id)
+    return sources
+
+
+def _computable_folder(
+    chain: Chain, inputs: InputMap, node_id: NodeId, computed: Callable[[NodeId], bool]
+) -> bool:
+    """
+    Whether folder_sources runs the node: it is not computed, and it and every node it needs that is not computed are pure CPU (pure_cpu_node) and not Into Directory.
+    """
+    if computed(node_id):
+        return False
+    pending, seen = [node_id], set()
+    while pending:
+        current = pending.pop()
+        if current in seen or computed(current):
+            continue
+        seen.add(current)
+        data = chain.nodes[current].data
+        if not pure_cpu_node(data) or data.schema_id in _NOT_SPECULATED:
+            return False
+        pending.extend(i.id for i in inputs.get(current) if isinstance(i, EdgeInput))
+    return True
+
+
 class _ItemPlanner:
     """
     Which iterated nodes of a generator group run ahead for a later item, and their jobs (spec 4.4); then the prepare phases of its sinks that registered them (spec 4.7).
@@ -831,6 +893,21 @@ class _ItemPlanner:
                 if edge.source.id not in ancestors:
                     ancestors.add(edge.source.id)
                     pending.append(edge.source.id)
+        # The ancestors the sinks reach without a lazy input their node may leave unread (may_go_unread: a Conditional's other branch, Save Image's image with Skip existing files).
+        eager: set[NodeId] = set()
+        pending = [node.id for node in sinks]
+        while pending:
+            target = pending.pop()
+            data = chain.nodes[target].data
+            unread = {
+                i.id
+                for index, i in enumerate(data.inputs)
+                if i.lazy and may_go_unread(data, inputs.get(target), index)
+            }
+            for edge in chain.edges_to(target):
+                if edge.target.input_id not in unread and edge.source.id not in eager:
+                    eager.add(edge.source.id)
+                    pending.append(edge.source.id)
 
         def depends(sources: Iterable[Input]) -> frozenset[NodeId]:
             return frozenset(
@@ -841,13 +918,19 @@ class _ItemPlanner:
                 and (i.id not in generators)
             )
 
-        # A node that may not run beside others (a GPU or context node) is computed ahead only for a look-ahead, one item at a time in order (serial); never with a lazy input, which a look-ahead could reach before the node ran at the committing item.
+        # A node that may not run beside others (a GPU or context node) is computed ahead only for a look-ahead, one item at a time in order (serial); never with a lazy input, which a look-ahead could reach before the node ran at the committing item. So is a locked-device node that the sinks reach only through lazy inputs their node may leave unread (may_go_unread), and the pure nodes that need it wait for it.
         self.__candidates = [
             Candidate(
                 node_id,
                 depends(inputs.get(node_id)),
-                serial=not pure_cpu_node(chain.nodes[node_id].data)
-                and (not any(i.lazy for i in chain.nodes[node_id].data.inputs)),
+                serial=(
+                    not pure_cpu_node(chain.nodes[node_id].data)
+                    and (not any(i.lazy for i in chain.nodes[node_id].data.inputs))
+                )
+                or (
+                    node_id not in eager
+                    and chain.nodes[node_id].data.schema_id in LOCKED_DEVICE_NODES
+                ),
             )
             for node_id in reversed(chain.topological_order())
             if node_id in ancestors
@@ -992,13 +1075,20 @@ class _ItemPlanner:
                     prepare_node, node.data, inputs, self.__collectors.get(node_id)
                 )
             )
-        context = (
-            self.__ahead_context(typing.cast(FunctionNode, node), slot)
-            if node_id in self.__serial
-            else self.__new_context(node)
-        )
+        if node_id in self.__serial:
+            # Its own cleanups after it, as the commit path runs a node's.
+            context = self.__ahead_context(typing.cast(FunctionNode, node), slot)
+            return functools.partial(
+                with_node_cleanups,
+                timed_supplier(
+                    functools.partial(run_node, node.data, context, inputs, node_id)
+                ),
+                context,
+            )
         return timed_supplier(
-            functools.partial(run_node, node.data, context, inputs, node_id)
+            functools.partial(
+                run_node, node.data, self.__new_context(node), inputs, node_id
+            )
         )
 
     def nbytes(self, value: object) -> int:
@@ -1055,6 +1145,8 @@ class Executor:
             if pool_size is None
             else _lazy_waits.setdefault(pool, _LazyWaits(pool_size))
         )
+        # The lazy reads a starved pool ended whose nodes still run (__wait_lazy).
+        self.__starved_reads: set[Future[typing.Any]] = set()
         self.cache_strategy: dict[NodeId, CacheStrategy] = get_cache_strategies(chain)
         self._storage_dir = storage_dir
         self.__window: ItemWindow | None = None
@@ -1140,11 +1232,18 @@ class Executor:
         assert isinstance(output, RegularOutput)
         return _output_value(output, output_index)
 
-    def __wait_lazy(self, completion: Future[_T]) -> _T:
+    def __wait_lazy(
+        self, unfinished: list[Future[typing.Any]], completion: Future[_T]
+    ) -> _T:
         """
         Waits on a lazy input's value, on the pool thread of the node reading it. Stop ends
         the wait (Aborted), and so does a pool whose every thread waits on a lazy input
-        (an error): nothing would run the nodes the inputs need.
+        (an error): nothing would run the nodes the inputs need. The input's nodes still
+        run then: the read goes to `unfinished`, and the reading node waits for them before
+        it ends (__finish_lazy_reads). Until the reads a starved pool ended have finished,
+        every other wait that times out ends with that error at once: the pool is full
+        again while they drain, and a verdict per node would cost LAZY_STARVED_SECONDS
+        each.
         """
         waits = self.__lazy_waits
         with nullcontext() if waits is None else waits.waiting():
@@ -1153,8 +1252,11 @@ class Executor:
                     return completion.result(timeout=LAZY_POLL_SECONDS)
                 except TimeoutError:
                     if self.progress.aborted:
+                        unfinished.append(completion)
                         raise Aborted() from None
-                    if waits is not None and waits.starved():
+                    if waits is not None and (self.__starved_reads or waits.starved()):
+                        self.__starved_reads.add(completion)
+                        unfinished.append(completion)
                         raise RuntimeError(
                             "This chain's lazy inputs need more worker threads than"
                             f" the pool has: all {waits.threads} wait on a lazy input"
@@ -1162,15 +1264,61 @@ class Executor:
                             " through a long series of such nodes)."
                         ) from None
 
+    async def __finish_lazy_reads(self, unfinished: list[Future[typing.Any]]) -> None:
+        """
+        Waits for the nodes of the lazy inputs whose read ended before their value came
+        (__wait_lazy): the reading node ends after them, as after its own pool job
+        (await_owned_node), so its cleanups, the run's end and the server's release of the
+        run's memory follow them, and a next run cannot start beside them. Their error,
+        other than Stop's, is logged: no read reports it.
+        """
+        if not unfinished:
+            return
+        if not all(completion.done() for completion in unfinished):
+            logger.info(
+                "Waiting for the nodes of a lazy input whose read was stopped..."
+            )
+        # Each read's outcome (Lazy's): the value or the error.
+        outcomes = await await_owned_node(
+            asyncio.gather(*(asyncio.wrap_future(read) for read in unfinished))
+        )
+        self.__starved_reads.difference_update(unfinished)
+        unfinished.clear()
+        for outcome in outcomes:
+            error = outcome.error
+            if error is not None and not isinstance(error, Aborted):
+                logger.error(
+                    "A lazy input's node failed after its read ended: %s",
+                    error,
+                    exc_info=error,
+                )
+
+    def __drop_unread(self, node: Node, inputs: list[object]) -> None:
+        """
+        The node ran without reading some of its lazy inputs (a Conditional's untaken
+        branch, Save Image's existing file): each such edge gives up its read of its
+        source's counted output, which is then freed after its last other read instead
+        of at the run's end. A source not cached at this point keeps the edge's read
+        (the native engine also counts it ahead of the source's run).
+        """
+        for index, value in enumerate(inputs):
+            if isinstance(value, Lazy) and not (value.has_value or value.has_error):
+                assigned = self.inputs.get(node.id)[index]
+                if isinstance(assigned, EdgeInput) and self.node_cache.has(assigned.id):
+                    self.node_cache.get(assigned.id)
+
     async def __resolve_node_input(self, node_input: Input) -> object:
         if isinstance(node_input, EdgeInput):
             return await self.__get_node_output(node_input.id, node_input.index)
         else:
             return node_input.value
 
-    async def __gather_inputs(self, node: Node) -> list[object]:
+    async def __gather_inputs(
+        self, node: Node, unfinished: list[Future[typing.Any]]
+    ) -> list[object]:
         """
-        Returns the list of input values for the given node.
+        Returns the list of input values for the given node. Its lazy inputs' reads that
+        end before their value came go to `unfinished` (__wait_lazy).
         """
         ignore: set[int] = set()
         if isinstance(node, CollectorNode):
@@ -1192,7 +1340,7 @@ class Executor:
                 return Lazy.from_coroutine(
                     self.__resolve_node_input(assigned_inputs[input_index]),
                     self.loop,
-                    self.__wait_lazy,
+                    functools.partial(self.__wait_lazy, unfinished),
                 )
             return await self.__resolve_node_input(node_input)
 
@@ -1272,7 +1420,8 @@ class Executor:
         """
         logger.debug(f"node: {node}")
         logger.debug(f"Running node {node.id}")
-        inputs = await self.__gather_inputs(node)
+        unfinished: list[Future[typing.Any]] = []
+        inputs = await self.__gather_inputs(node, unfinished)
         if isinstance(node, CollectorNode):
             self.__collector_directories[node.id] = {
                 index: inputs[index]
@@ -1311,9 +1460,14 @@ class Executor:
             output, execution_time = await pending
             await self.progress.suspend()
         finally:
-            run_cleanup_functions(
-                context.node_cleanup_fns, preserve_error=sys.exc_info()[0] is not None
-            )
+            try:
+                await self.__finish_lazy_reads(unfinished)
+            finally:
+                run_cleanup_functions(
+                    context.node_cleanup_fns,
+                    preserve_error=sys.exc_info()[0] is not None,
+                )
+        self.__drop_unread(node, inputs)
         lazy_time_after = get_lazy_evaluation_time()
         execution_time -= lazy_time_after - lazy_time_before
         if isinstance(output, RegularOutput):
@@ -1558,7 +1712,7 @@ class Executor:
         """
         Decides the group's item window K at the range's second slot (slot 1 without context items) and logs it (spec 4.2, SP3-P1).
 
-        K = 1 builds no window and resolves no path. Returns the window and the read-ahead blocker that set K = 1, if one did. The window learns the context items (before `first`, from `end` on), where it computes ahead only `context_nodes`.
+        K = 1 builds no window and resolves no path. Else the writers' folder nodes not computed yet run first (folder_sources). Returns the window and the read-ahead blocker that set K = 1, if one did. The window learns the context items (before `first`, from `end` on), where it computes ahead only `context_nodes`.
         """
         # The measurement is kept until the decision is made: a decision that raises (a
         # look-ahead before the range's second slot decides early) is made again there.
@@ -1568,6 +1722,16 @@ class Executor:
         if k > 1 and self.__pool_size is None:
             k, reason = (1, "pool size unknown")
         if k > 1:
+            # A folder its writer's gather would compute at the writer's turn (after a
+            # look-ahead at item 0 decides): computed now, so the check knows it.
+            for source in folder_sources(
+                self.chain,
+                self.inputs,
+                output_nodes,
+                all_iterated_nodes,
+                self.node_cache.has,
+            ):
+                await self.process(source)
             writers: list[Node] = [
                 *output_nodes,
                 *(collector_node for _, _, collector_node in collectors),
@@ -1713,11 +1877,12 @@ class Executor:
 
     def __ahead_context(self, node: FunctionNode, slot: int) -> _ExecutorNodeContext:
         """
-        The context of a serial node computed ahead at a later item: its own context (settings, cleanups) with its iteration view at that item, sharing its state slot.
+        The context of a serial node computed ahead at a later item: its own context (settings, chain cleanups) with its iteration view at that item, sharing its state slot, and node cleanups of its own, which its job runs after it (with_node_cleanups): the commit path's run after the node's commit at its own item.
         """
         context = self.__get_node_context(node)
         view = context.iteration_view
         ahead = copy.copy(context)
+        ahead.node_cleanup_fns = set()
         ahead.iteration_view = None if view is None else view.at(slot, ahead)
         return ahead
 
@@ -2001,6 +2166,8 @@ class Executor:
                 "Expected all connected iterators to have the same length"
             )
         total_stopiters = 0
+        # The generators whose items ran out
+        ended: set[NodeId] = set()
         deferred_errors: list[str] = []
         self.__item_bytes = {}
         # The range's slots: `before` context items come first; with items after it, the
@@ -2093,6 +2260,7 @@ class Executor:
                             raise
                         raise failure from error
                     if iter_output is None:
+                        ended.add(node.id)
                         raise StopIteration
                     if self.__item_bytes is not None:  # K is not decided yet
                         self.__item_bytes[node.id] = output_nbytes(iter_output.output)
@@ -2160,6 +2328,24 @@ class Executor:
                     window.release(slot)
                 total_stopiters = total_stopiters + 1
                 if total_stopiters >= num_generators:
+                    # Items that end early (a truncated video): one warning for each
+                    # generator that ran out
+                    for node in () if deferred_errors else generator_nodes:
+                        if node.id not in ended:
+                            continue
+                        message = generator_outputs[
+                            node.id
+                        ].generator.shortfall_warning(
+                            node.data.name, iter_timers[node.id].iterations
+                        )
+                        if message is not None:
+                            logger.warning(message)
+                            self.queue.put(
+                                {
+                                    "event": "execution-warning",
+                                    "data": {"message": message},
+                                }
+                            )
                     break
             except Exception as e:
                 if generator_output and generator_output.generator.fail_fast:

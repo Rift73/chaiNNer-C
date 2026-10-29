@@ -2,6 +2,8 @@ import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import { app } from 'electron/main';
 import { existsSync } from 'fs';
 import path from 'path';
+import readline from 'readline';
+import { Readable } from 'stream';
 import { getBackend } from '../../common/Backend';
 import { PythonInfo } from '../../common/common-types';
 import { log } from '../../common/log';
@@ -45,6 +47,36 @@ interface BackendExit {
 type ExitListener = (exit: BackendExit) => void;
 
 const STDERR_TAIL_LINES = 12;
+
+// A log line of the backend: "[time] [pid] [LEVEL] text", Sanic's legacy format (server_config.py)
+const BACKEND_LOG_LINE = /^\[[^[\]]*\] (\[\d*\] \[(\w*)\] .*)$/;
+
+/** Calls `onLine` with each line of `stream`, without its line ending, once the line is complete. */
+const readLines = (stream: Readable, onLine: (line: string) => void): void => {
+    readline.createInterface({ input: stream, crlfDelay: Infinity }).on('line', onLine);
+};
+
+/**
+ * Logs a line the backend wrote to stdout. A log line keeps its level and loses its timestamp (the
+ * log has its own); any other line, e.g. a bare `print`, is logged as it is.
+ */
+const logBackendLine = (line: string): void => {
+    const match = BACKEND_LOG_LINE.exec(line);
+    if (!match) {
+        if (line) {
+            log.info(`Backend: ${line}`);
+        }
+        return;
+    }
+    const [, message, level] = match;
+    if (level === 'ERROR' || level === 'CRITICAL') {
+        log.error(`Backend: ${message}`);
+    } else if (level === 'WARNING') {
+        log.warn(`Backend: ${message}`);
+    } else {
+        log.info(`Backend: ${message}`);
+    }
+};
 
 /** How long kill() waits for the backend to shut down by itself. */
 export const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -113,20 +145,10 @@ export class OwnedBackendProcess implements BaseBackendProcess {
             },
         });
 
-        const removedTrailingNewLine = (s: string) => s.replace(/\r?\n$/, '');
-        backend.stdout.on('data', (data) => {
-            const dataString = String(data);
-            // Remove unneeded timestamp
-            const fixedData = dataString.split('] ').slice(1).join('] ');
-            const message = removedTrailingNewLine(fixedData);
-            if (message) {
-                log.info(`Backend: ${message}`);
-            }
-        });
-        backend.stderr.on('data', (data) => {
-            const message = removedTrailingNewLine(String(data));
-            if (message) {
-                log.error(`Backend: ${message}`);
+        readLines(backend.stdout, logBackendLine);
+        readLines(backend.stderr, (line) => {
+            if (line) {
+                log.error(`Backend: ${line}`);
             }
         });
 
@@ -153,11 +175,10 @@ export class OwnedBackendProcess implements BaseBackendProcess {
         this.process = process;
 
         let stderrTail: string[] = [];
-        process.stderr.on('data', (data) => {
-            const lines = String(data)
-                .split(/\r?\n/)
-                .filter((line) => line.trim() !== '');
-            stderrTail = [...stderrTail, ...lines].slice(-STDERR_TAIL_LINES);
+        readLines(process.stderr, (line) => {
+            if (line.trim() !== '') {
+                stderrTail = [...stderrTail, line].slice(-STDERR_TAIL_LINES);
+            }
         });
 
         let exitedOnItsOwn = false;

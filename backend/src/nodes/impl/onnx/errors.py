@@ -15,3 +15,14 @@ def ort_error_message(error: Exception) -> str:
         encoding = "mbcs" if sys.platform == "win32" else "utf-8"
         return error.object.decode(encoding, errors="replace")
     return str(error)
+
+
+def is_out_of_memory(error: Exception) -> bool:
+    """Whether an ONNX Runtime session's error is that it could not allocate memory
+    (on the CPU or the GPU)."""
+    message = ort_error_message(error)
+    return "ONNXRuntimeError" in message and (
+        "allocate memory" in message
+        or "out of memory" in message
+        or "cudaMalloc" in message
+    )

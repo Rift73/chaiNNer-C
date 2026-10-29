@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from io import BufferedReader
 from pathlib import Path
 
 from compression import zstd
+from sanic.log import logger
 
 # Weights leave little to find: level 3 makes plans as small as level 19 does
 # (74-82 %), at about 1 GB/s instead of a few MB/s.
@@ -33,6 +35,19 @@ def stored(directory: Path, manifest: dict, name: str) -> Path:
     if manifest.get("compression") == "zstd":
         return compressed(directory, name)
     return plain(directory, name)
+
+
+def set_aside(directory: Path, label: str) -> None:
+    """Move a corrupt cached set out of its cache's way, so a fresh set can take its
+    place; it stays until one has (vosr2_engine_cache.remove_unused_sets)."""
+    quarantine = directory.with_name(f"quarantine-{directory.name}-{time.time_ns()}")
+    directory.rename(quarantine)
+    logger.warning(
+        "The cached VOSR %s engine set %s is corrupt; moved it to %s.",
+        label,
+        directory,
+        quarantine,
+    )
 
 
 def compress(source: Path, target: Path) -> None:

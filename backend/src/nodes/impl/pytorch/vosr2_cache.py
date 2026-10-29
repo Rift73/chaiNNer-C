@@ -11,6 +11,7 @@ from api import NodeContext, NodeId
 from nodes.impl.tensorrt.cache import SharedCache
 
 from .vosr2 import BundlePaths, VosrBundle
+from .vosr2_download import bf16_dit
 
 _BUNDLES: SharedCache[VosrBundle] = SharedCache(VosrBundle.offload)
 
@@ -30,7 +31,9 @@ def lease_bundle(
     key = (paths.identity(), str(dtype))
 
     def create() -> VosrBundle:
-        bundle = VosrBundle(paths, dtype, context, keep_cpu_weights=True)
+        # A BF16 load reads the DiT's BF16 copy instead of converting the FP32 weights.
+        weights = bf16_dit(context, paths) if dtype == torch.bfloat16 else paths
+        bundle = VosrBundle(weights, dtype, context, keep_cpu_weights=True)
         if (paths.identity(), str(dtype)) != key:
             raise RuntimeError("VOSR bundle changed while loading; run again.")
         return bundle

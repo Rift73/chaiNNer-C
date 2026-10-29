@@ -1,4 +1,4 @@
-import { clipboard, nativeImage, shell } from 'electron/common';
+import { shell } from 'electron/common';
 import {
     BrowserWindow,
     MessageBoxOptions,
@@ -23,14 +23,16 @@ import { OpenArguments, parseArgs } from '../arguments';
 import { BackendProcess, getBackendPath, stopBackendOnQuit } from '../backend/process';
 import { setupBackend } from '../backend/setup';
 import { buildInfo } from '../buildInfo';
-import { readClipboardImageAsPng, storeClipboardPng } from '../clipboardImage';
+import { readClipboardForPaste, writeChainToClipboard } from '../clipboard';
+import { writePngDataUrlToClipboard } from '../clipboardImage';
 import { isArmMac, isMac } from '../env';
 import { addBrowserWindow, addFile, addFiles, removeFile, removeFiles } from '../fileWatcher';
-import { getLogsFolder, getRootDir, installDir } from '../platform';
+import { getRootDir, installDir } from '../platform';
 import { BrowserWindowWithSafeIpc, ipcMain } from '../safeIpc';
 import { SaveData, SaveFile, openSaveFile } from '../SaveFile';
 import { SettingsWriter } from '../setting-storage';
 import { UiCache, getUiCacheFile } from '../uiCache';
+import { exitOnBackendFailure } from './backendFailure';
 import { showOpenDialog } from './dialogs';
 import { MenuData, setMainMenu } from './menu';
 
@@ -279,29 +281,9 @@ const registerEventHandlerPreSetup = (
     ipcMain.handle('shell-showItemInFolder', (event, fullPath) => shell.showItemInFolder(fullPath));
     ipcMain.handle('shell-openPath', (event, fullPath) => shell.openPath(fullPath));
     ipcMain.handle('app-quit', () => app.quit());
-    ipcMain.handle('clipboard-writeText', (event, text) => clipboard.writeText(text));
-    ipcMain.handle('clipboard-readText', () => clipboard.readText());
-    ipcMain.handle('clipboard-writeBuffer', (event, format, buffer, type) =>
-        clipboard.writeBuffer(format, buffer, type)
-    );
-    ipcMain.handle('clipboard-writeBuffer-fromString', (event, format, json, type) =>
-        clipboard.writeBuffer(format, Buffer.from(json), type)
-    );
-    ipcMain.handle('clipboard-readBuffer', (event, format) => clipboard.readBuffer(format));
-    ipcMain.handle('clipboard-readBuffer-toString', (event, format) =>
-        Buffer.from(clipboard.readBuffer(format)).toString()
-    );
-    ipcMain.handle('clipboard-availableFormats', () => clipboard.availableFormats());
-    ipcMain.handle('clipboard-readHTML', () => clipboard.readHTML());
-    ipcMain.handle('clipboard-readRTF', () => clipboard.readRTF());
-    ipcMain.handle('clipboard-readImage-and-store', () =>
-        storeClipboardPng(os.tmpdir(), readClipboardImageAsPng(clipboard))
-    );
-    ipcMain.handle('clipboard-writeImage', (event, image) => clipboard.writeImage(image));
-    ipcMain.handle('clipboard-writeImageFromURL', (event, url) => {
-        const image = nativeImage.createFromDataURL(url);
-        clipboard.writeImage(image);
-    });
+    ipcMain.handle('clipboard-writeChain', (event, json) => writeChainToClipboard(json));
+    ipcMain.handle('clipboard-readForPaste', () => readClipboardForPaste(os.tmpdir()));
+    ipcMain.handle('clipboard-writeImageFromURL', (event, url) => writePngDataUrlToClipboard(url));
 
     // File watching
     addBrowserWindow(mainWindow);
@@ -335,38 +317,7 @@ const registerEventHandlerPostSetup = (
     settingsWriter: SettingsWriter
 ) => {
     if (backend.owned) {
-        backend.addErrorListener((error) => {
-            dialog.showMessageBoxSync({
-                type: 'error',
-                title: 'Unexpected Error',
-                message: `The Python backend encountered an unexpected error. ChaiNNer will now exit. Error: ${String(
-                    error
-                )}`,
-            });
-            app.exit(1);
-        });
-
-        // Until the renderer reports the backend ready, the user sees only the splash screen,
-        // which would wait forever for a backend that has stopped.
-        let backendReady = false;
-        ipcMain.once('backend-ready', () => {
-            backendReady = true;
-        });
-        backend.addExitListener(({ code, signal, stderrTail }) => {
-            if (backendReady) {
-                return;
-            }
-            const exitStatus = code !== null ? `exit code ${code}` : `signal ${String(signal)}`;
-            const lastOutput = stderrTail ? `\n\nIts last output:\n${stderrTail}` : '';
-            dialog.showMessageBoxSync({
-                type: 'error',
-                title: 'Unable to start the backend',
-                message:
-                    `The Python backend stopped while chaiNNer was starting (${exitStatus}). ChaiNNer will now exit.` +
-                    `${lastOutput}\n\nThe full log is in ${getLogsFolder()}.`,
-            });
-            app.exit(1);
-        });
+        exitOnBackendFailure(backend, settingsWriter);
     }
 
     ipcMain.handle('restart-backend', async () => {

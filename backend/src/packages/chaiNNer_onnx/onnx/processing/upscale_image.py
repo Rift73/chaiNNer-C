@@ -7,6 +7,7 @@ from sanic.log import logger
 
 from api import NodeContext, Progress
 from nodes.groups import Condition, if_enum_group, if_group
+from nodes.impl.device_thread import on_device_thread
 from nodes.impl.onnx.auto_split import onnx_auto_split
 from nodes.impl.onnx.model import OnnxGeneric
 from nodes.impl.onnx.session import (
@@ -80,6 +81,14 @@ def upscale_with_session(
 ) -> np.ndarray:
     """The node's upscale of one image with the model's session (also used by
     VapourSynth's AI Upscale, which has no node context)."""
+    input_type = session.get_inputs()[0].type
+    if input_type not in ("tensor(float)", "tensor(float16)"):
+        raise ValueError(
+            f"This ONNX model's input is a {input_type}, but Upscale Image gives a"
+            " model its image as a tensor(float), or a tensor(float16) to an FP16"
+            " model. Use a model that takes an image of floats, such as one from"
+            " Convert To ONNX."
+        )
     input_shape, in_nc, req_width, req_height = get_input_shape(session)
     _, out_nc, _, _ = get_output_shape(session)
     change_shape = input_shape == "BHWC"
@@ -149,24 +158,32 @@ def upscale_image_node(
 ) -> np.ndarray:
     settings = get_settings(context)
     context.add_cleanup(_collect_garbage, after="chain")
-    session = get_onnx_session(
-        model,
-        settings.gpu_index,
-        settings.execution_provider,
-        settings.tensorrt_fp16_mode,
-        settings.tensorrt_cache_path,
-        settings.migraphx_fp16_mode,
-        settings.migraphx_cache_path,
-        settings.migraphx_exhaustive_tune,
-    )
-    return upscale_with_session(
-        img,
-        model,
-        session,
-        TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
-        separate_alpha,
-        progress=context,
-    )
+
+    def run() -> np.ndarray:
+        # Paused or stopped meanwhile (queued behind other upscales): wait, or end here.
+        context.suspend()
+        session = get_onnx_session(
+            model,
+            settings.gpu_index,
+            settings.execution_provider,
+            settings.tensorrt_fp16_mode,
+            settings.tensorrt_cache_path,
+            settings.migraphx_fp16_mode,
+            settings.migraphx_cache_path,
+            settings.migraphx_exhaustive_tune,
+        )
+        return upscale_with_session(
+            img,
+            model,
+            session,
+            TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
+            separate_alpha,
+            progress=context,
+        )
+
+    # Items computed ahead create the session once and run it one at a time, on the
+    # device's thread (ONNX Runtime keeps a GPU context per calling thread).
+    return on_device_thread(settings.execution_provider != "CPUExecutionProvider", run)
 
 
 def _collect_garbage() -> None:

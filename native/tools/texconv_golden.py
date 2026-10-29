@@ -9,6 +9,7 @@ change to the cases, from the repository root with backend/src on the path:
 
 from __future__ import annotations
 
+import importlib
 import json
 import platform
 import sys
@@ -23,11 +24,12 @@ def main() -> int:
         print("texconv_golden.py: texconv.exe runs on Windows only", file=sys.stderr)
         return 1
     sys.path[:0] = [str(ROOT / "backend/src"), str(ROOT / "native/tests")]
-    import test_texconv
+    # Found on the path set just above, as the test suite finds it
+    test_texconv = importlib.import_module("test_texconv")
 
     from nodes.impl.dds import texconv
 
-    vars(texconv)["__TEXCONV_EXE"] = str(test_texconv.TEXCONV)
+    texconv.__dict__["__TEXCONV_EXE"] = str(test_texconv.TEXCONV)
     recorded = {}
     with tempfile.TemporaryDirectory() as directory:
         for name, case in test_texconv.CASES.items():

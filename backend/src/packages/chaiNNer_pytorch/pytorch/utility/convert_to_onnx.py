@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from spandrel import ImageModelDescriptor
 
-from api import NodeContext
+from api import NodeContext, NodeId
 from nodes.groups import Condition, if_group
 from nodes.impl.image_utils import as_target_channels
 from nodes.impl.onnx.autocast import LowPrecision, autocast
@@ -102,24 +102,39 @@ class _Export:
     verified: bool
 
 
-# A model's latest export while it lives, with everything it depends on: a re-run
-# returns the same ONNX model (with the sessions kept for it) without exporting again.
-# One per model: a superseded export's sessions would hold GPU memory.
-_exports: WeakKeyDictionary[ImageModelDescriptor, tuple[Hashable, _Export]] = (
-    WeakKeyDictionary()
-)
+# Each node's latest export of a model while the model lives, with everything it
+# depends on: a re-run returns the same ONNX model (with the sessions kept for it)
+# without exporting again. One per node and model: a superseded export's sessions would
+# hold GPU memory, and two nodes converting one model with different options keep both.
+_exports: WeakKeyDictionary[
+    ImageModelDescriptor, dict[NodeId, tuple[Hashable, _Export]]
+] = WeakKeyDictionary()
 _exports_lock = Lock()
 
 
-def _kept_export(model: ImageModelDescriptor, key: Hashable) -> _Export | None:
+def _kept_export(
+    model: ImageModelDescriptor, node: NodeId, key: Hashable
+) -> _Export | None:
+    """The node's kept export of the model for these options, else another node's (then
+    kept for this node too): nodes with the same options share one ONNX model, so its
+    sessions and engines exist once."""
     with _exports_lock:
-        kept = _exports.get(model)
-    return kept[1] if kept is not None and kept[0] == key else None
+        kept = _exports.get(model, {})
+        own = kept.get(node)
+        if own is not None and own[0] == key:
+            return own[1]
+        for other in kept.values():
+            if other[0] == key:
+                kept[node] = other
+                return other[1]
+    return None
 
 
-def _keep_export(model: ImageModelDescriptor, key: Hashable, export: _Export) -> None:
+def _keep_export(
+    model: ImageModelDescriptor, node: NodeId, key: Hashable, export: _Export
+) -> None:
     with _exports_lock:
-        _exports[model] = key, export
+        _exports.setdefault(model, {})[node] = key, export
 
 
 IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" }')
@@ -292,7 +307,7 @@ def convert_to_onnx_node(
                 )
             size = (dual_height, dual_width)
         key = ("DUAL", model.dtype, size)
-        kept = _kept_export(model, key)
+        kept = _kept_export(model, context.node_id, key)
         if kept is not None:
             return kept.result
         onnx_bytes = dual.export_onnx(
@@ -305,12 +320,12 @@ def convert_to_onnx_node(
         onnx_model = load_onnx_model(onnx_bytes)
         assert onnx_model.sub_type == "Generic"
         result = onnx_model, MIXED, "opset20"
-        _keep_export(model, key, _Export(result, verified=False))
+        _keep_export(model, context.node_id, key, _Export(result, verified=False))
         return result
 
     if drft_export.is_legacy_drft(model):
         key = ("DRFT", model.dtype)
-        kept = _kept_export(model, key)
+        kept = _kept_export(model, context.node_id, key)
         if kept is not None:
             return kept.result
         onnx_model = load_onnx_model(
@@ -320,7 +335,7 @@ def convert_to_onnx_node(
         )
         assert onnx_model.sub_type == "Generic"
         result = onnx_model, MIXED, "opset20"
-        _keep_export(model, key, _Export(result, verified=False))
+        _keep_export(model, context.node_id, key, _Export(result, verified=False))
         return result
 
     assert is_onnx_supported(model), (
@@ -346,7 +361,7 @@ def convert_to_onnx_node(
     if mixed is not None:
         calibration_hash = mixed[1].shape, hashlib.sha256(mixed[1]).digest()
     key = (data_type, opset, device, model.dtype, calibration_hash)
-    kept = _kept_export(model, key)
+    kept = _kept_export(model, context.node_id, key)
     if kept is not None and (kept.verified or not verify):
         return kept.result
 
@@ -362,7 +377,7 @@ def convert_to_onnx_node(
         onnx_model = load_onnx_model(autocast(onnx_model_bytes, low, calibration))
         assert onnx_model.sub_type == "Generic"
         result = onnx_model, f"mixed-{low}", f"opset{opset.value}"
-    _keep_export(model, key, _Export(result, verified=verify))
+    _keep_export(model, context.node_id, key, _Export(result, verified=verify))
     return result
 
 

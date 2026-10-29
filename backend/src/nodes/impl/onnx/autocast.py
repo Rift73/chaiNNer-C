@@ -22,7 +22,8 @@ LowPrecision = Literal["fp16", "bf16"]
 
 def autocast(onnx_bytes: bytes, low: LowPrecision, calibration: np.ndarray) -> bytes:
     """`onnx_bytes` (FP32) in mixed precision, calibrated on `calibration` (NCHW
-    float32, a size the model accepts)."""
+    float32, a size the model accepts), with its metadata (such as the size requirement
+    Convert To ONNX records)."""
     try:
         from modelopt.onnx.autocast import convert_to_mixed_precision
     except ImportError as e:
@@ -31,7 +32,8 @@ def autocast(onnx_bytes: bytes, low: LowPrecision, calibration: np.ndarray) -> b
             " dependency manager."
         ) from e
 
-    name = onnx.load_from_string(onnx_bytes).graph.input[0].name
+    source = onnx.load_from_string(onnx_bytes)
+    name = source.graph.input[0].name
     with tempfile.TemporaryDirectory(prefix="chaiNNer-autocast-") as temporary:
         root = Path(temporary)
         model_path = root / "model.onnx"
@@ -47,6 +49,10 @@ def autocast(onnx_bytes: bytes, low: LowPrecision, calibration: np.ndarray) -> b
             keep_io_types=True,
             calibration_data=str(calibration_path),
         )
+    kept = {entry.key for entry in model.metadata_props}
+    for entry in source.metadata_props:
+        if entry.key not in kept:
+            model.metadata_props.add().CopyFrom(entry)
     entry = model.metadata_props.add()
     entry.key, entry.value = METADATA_KEY, low
     return model.SerializeToString()

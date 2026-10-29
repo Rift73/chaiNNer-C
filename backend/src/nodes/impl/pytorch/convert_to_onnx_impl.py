@@ -1,13 +1,22 @@
 import copy
+import json
 from io import BytesIO
 from typing import TypeVar
 
+import onnx
 import torch
-from spandrel import ImageModelDescriptor, ModelDescriptor
+from spandrel import ImageModelDescriptor, ModelDescriptor, SizeRequirements
 from spandrel.architectures.CRAFT import CRAFT
+from spandrel.architectures.RealCUGAN import (
+    UpCunet2x,
+    UpCunet2x_fast,
+    UpCunet3x,
+    UpCunet4x,
+)
 from spandrel.architectures.SAFMN import SAFMN
 from spandrel.architectures.SCUNet import SCUNet
 
+from ..onnx.model import SIZE_REQ_METADATA_KEY
 from . import attention_export
 
 _Descriptor = TypeVar("_Descriptor", bound=ModelDescriptor)
@@ -47,7 +56,11 @@ def export_onnx(
         input_name: {0: "batch_size", 2: "height", 3: "width"},
         output_name: {0: "batch_size", 2: "height", 3: "width"},
     }
-    size = 32
+    # RealCUGAN pads a size its convolutions do not divide inside its forward, and crops
+    # the output after in a Python branch, which the trace keeps only when the example
+    # takes it: an odd example (over its minimum of 32) keeps the crop for every size.
+    odd = isinstance(model.model, (UpCunet2x, UpCunet2x_fast, UpCunet3x, UpCunet4x))
+    size = 33 if odd else 32
     dummy_input = torch.rand(1, model.input_channels, size, size)
     dummy_input = dummy_input.to(model.device, model.dtype)
 
@@ -111,7 +124,24 @@ def export_onnx(
             dynamo=False,
         )
         f.seek(0)
-        return f.read()
+        onnx_bytes = f.read()
+    if isinstance(model, ImageModelDescriptor):
+        recorded = model.size_requirements
+        if recorded.minimum > 1 or recorded.multiple_of > 1:
+            onnx_bytes = _with_size_requirements(onnx_bytes, recorded)
+    return onnx_bytes
+
+
+def _with_size_requirements(onnx_bytes: bytes, req: SizeRequirements) -> bytes:
+    """The ONNX with its PyTorch model's size requirement in its metadata: ONNX Upscale
+    Image pads each tile to it as PyTorch pads the model's input (onnx/size_probe.py),
+    which the graph does not for a minimum alone (below the example size, see
+    export_onnx)."""
+    model = onnx.load_from_string(onnx_bytes)
+    entry = model.metadata_props.add()
+    entry.key = SIZE_REQ_METADATA_KEY
+    entry.value = json.dumps({"minimum": req.minimum, "multiple_of": req.multiple_of})
+    return model.SerializeToString()
 
 
 def convert_to_onnx_impl(

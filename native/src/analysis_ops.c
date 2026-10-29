@@ -68,23 +68,6 @@ CN_EXPORT cn_status cn_analysis_mean(const float *src, size_t n, size_t block, s
     return CN_OK;
 }
 
-CN_EXPORT cn_status cn_analysis_grayscale(const float *src, size_t pixels,
-                                         size_t channels, float tolerance,
-                                         int *result) {
-    if (!src || !result || !pixels || (channels != 1 && channels < 3))
-        return CN_INVALID_ARGUMENT;
-    if (channels > SIZE_MAX / sizeof(float) ||
-        pixels > SIZE_MAX / sizeof(float) / channels) return CN_SIZE_OVERFLOW;
-    *result = 1;
-    if (channels == 1) return CN_OK;
-    for (size_t p = 0; p < pixels; ++p) {
-        const float *v = src + p * channels;
-        if (!(fabsf(v[0] - v[1]) <= tolerance) ||
-            !(fabsf(v[0] - v[2]) <= tolerance)) { *result = 0; break; }
-    }
-    return CN_OK;
-}
-
 typedef struct binary_job {
     const float *a, *b;
     float *out;

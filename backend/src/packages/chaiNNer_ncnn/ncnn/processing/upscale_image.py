@@ -10,6 +10,7 @@ from sanic.log import logger
 
 from api import Aborted, NodeContext, Progress
 from nodes.groups import Condition, if_enum_group, if_group
+from nodes.impl.device_thread import on_device_thread
 from nodes.impl.ncnn.auto_split import ncnn_auto_split
 from nodes.impl.ncnn.model import NcnnModelWrapper
 from nodes.impl.ncnn.session import get_ncnn_net
@@ -251,7 +252,17 @@ def upscale_image_node(
             progress=context,
         )
 
-    return convenient_upscale(img, model.in_nc, model.out_nc, upscale, separate_alpha)
+    def run() -> np.ndarray:
+        # Paused or stopped meanwhile (queued behind other upscales): wait, or end here.
+        context.suspend()
+        return convenient_upscale(
+            img, model.in_nc, model.out_nc, upscale, separate_alpha
+        )
+
+    # Items computed ahead share the net: one upscale on the device at a time, on the
+    # device's thread, and the automatic tile size estimated from what that one sees
+    # free.
+    return on_device_thread(use_gpu and settings.gpu_index != CPU_DEVICE, run)
 
 
 def _collect_garbage() -> None:

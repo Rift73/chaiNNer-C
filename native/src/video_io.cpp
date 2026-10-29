@@ -1086,6 +1086,9 @@ O load_video(const py::dict&g,const O&context,const O&path,const O&ranged,const 
     O generator=global(g,"Generator").attr("from_iter")(py::arg("supplier")=supplier,py::arg("expected_length")=length)
         .attr("with_metadata")(metadata).attr("with_range")(base,chosen,around);
     generator.attr("length_is_exact")=py::bool_(exact_count);
+    // The run's warning when the frames end early (load_video.py shortfall), by the header's count of the track.
+    generator.attr("shortfall")=global(g,"shortfall")(path.attr("name"),ranged,py::bool_(exact_count),length,
+        loader.attr("header_frame_count")());
     generator.attr("source_paths")=py::tuple(); // Frames come from the FFmpeg pipe.
     return py::make_tuple(generator,parts[py::int_(0)],parts[py::int_(1)],fps,audio,preview,count);
 }

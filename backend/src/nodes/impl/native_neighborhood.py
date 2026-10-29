@@ -60,6 +60,10 @@ for _name in ("median_f32", "median_u8", "dither"):
     getattr(_lib, "cn_neighborhood_" + _name).restype = ct.c_int
 
 DIFFUSION_IDS = {"FS": 0, "JJN": 1, "ST": 2, "A": 3, "B": 4, "S": 5, "S2": 6, "SL": 7}
+# Above this History Length, Riemersma's float32 decay base
+# expf(logf(1 / length) / (length - 1)) rounds to 1, which the C kernel refuses
+# (the same length with the UCRT's and glibc's expf and logf).
+MAX_HISTORY_LENGTH = 682541919
 
 
 def _image(image: np.ndarray) -> tuple[np.ndarray, int]:
@@ -134,8 +138,13 @@ def uniform_dither(
         raise ValueError("Bayer map must have size 2, 4, 8, or 16")
     result = np.empty((*source.shape[:2], channels), dtype=np.float32)
     if mode == 3:
-        if not isinstance(history_length, int) or not 2 <= history_length <= 0xFFFFFFFF:
-            raise ValueError("History length must be an integer in [2,4294967295]")
+        if (
+            not isinstance(history_length, int)
+            or not 2 <= history_length <= MAX_HISTORY_LENGTH
+        ):
+            raise ValueError(
+                f"History length must be an integer in [2,{MAX_HISTORY_LENGTH}]"
+            )
         check(
             _lib.cn_neighborhood_uniform_riemersma(
                 ptr(source),
@@ -239,9 +248,12 @@ def palette_dither(
         raise ValueError("Invalid palette dither mode or diffusion algorithm")
     result = np.empty((*source.shape[:2], channels), dtype=np.float32)
     if mode == 3 and (
-        not isinstance(history_length, int) or not 2 <= history_length <= 0xFFFFFFFF
+        not isinstance(history_length, int)
+        or not 2 <= history_length <= MAX_HISTORY_LENGTH
     ):
-        raise ValueError("History length must be an integer in [2,4294967295]")
+        raise ValueError(
+            f"History length must be an integer in [2,{MAX_HISTORY_LENGTH}]"
+        )
     plan = _prepared_palette(colors, channels)
     apply = _lib.cn_neighborhood_palette_apply
     apply.argtypes = (

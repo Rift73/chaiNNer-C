@@ -22,6 +22,8 @@ from sanic.log import logger
 from torch._ops import OpOverload
 from torch.utils._python_dispatch import TorchDispatchMode
 
+from . import memory_cap
+
 # Left free besides PyTorch's memory: the CUDA context, cuDNN's and cuBLAS's handles, other
 # programs' growth and Windows' own (a forward capped 1.5 GiB below the free memory ran at the
 # speed of an overflow).
@@ -199,12 +201,9 @@ def offloaded(module: torch.nn.Module, x: torch.Tensor) -> Iterator[None]:
         if mode is None:
             yield
         else:
-            torch.cuda.set_per_process_memory_fraction(cap / total, device)
-            with mode:
+            with memory_cap.capped(device, cap / total), mode:
                 yield
     finally:
-        if mode is not None:
-            torch.cuda.set_per_process_memory_fraction(previous, device)
         peak = torch.cuda.max_memory_allocated(device) - allocated
         if mode is None or mode.out_bytes == 0:
             # A forward that moved nothing saw its whole peak.

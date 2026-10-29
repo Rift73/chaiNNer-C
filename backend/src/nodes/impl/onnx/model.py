@@ -45,6 +45,13 @@ class SizeReq:
         return w - width, h - height
 
 
+# The ONNX metadata key of the size requirement Convert To ONNX records from the PyTorch
+# model (spandrel's minimum and multiple_of, as JSON), which ONNX Upscale Image pads
+# each tile to as PyTorch pads the model's input (size_probe.py). A square requirement
+# is not recorded: the export's graph pads to it (spandrel traces that padding).
+SIZE_REQ_METADATA_KEY = "chainner_c.size_requirements"
+
+
 # The dtype of a DUAL or legacy DRFT ONNX from Convert To ONNX (a BF16 or FP16 body, FP32
 # input and output), whose precision is its own (load.py).
 MIXED = "mixed"

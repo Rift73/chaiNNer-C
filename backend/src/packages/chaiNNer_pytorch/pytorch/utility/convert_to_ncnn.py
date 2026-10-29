@@ -3,7 +3,10 @@ from __future__ import annotations
 from sanic.log import logger
 from spandrel import ImageModelDescriptor
 from spandrel.architectures.DAT import DAT
+from spandrel.architectures.DRFT import DRFT
+from spandrel.architectures.DRFT.__arch import legacy_drft_arch as legacy
 from spandrel.architectures.HAT import HAT
+from spandrel.architectures.NAFNet import NAFNet
 from spandrel.architectures.OmniSR import OmniSR
 from spandrel.architectures.SCUNet import SCUNet
 from spandrel.architectures.SPAN import SPAN
@@ -64,8 +67,23 @@ def convert_to_ncnn_node(
                 manager to use this node."
         )
 
+    # NCNN's layers have fixed shapes; DRFT's windows and NAFNet's padding to a multiple
+    # (and its LayerNorm's weight views) take theirs from the image's size as it runs.
     assert is_onnx_supported(model) and not isinstance(
-        model.model, (HAT, DAT, OmniSR, SwinIR, Swin2SR, SCUNet, SPAN, SRFormer)
+        model.model,
+        (
+            HAT,
+            DAT,
+            OmniSR,
+            SwinIR,
+            Swin2SR,
+            SCUNet,
+            SPAN,
+            SRFormer,
+            DRFT,
+            legacy.DRFT,
+            NAFNet,
+        ),
     ), f"{model.architecture.name} is not supported for NCNN conversions at this time."
 
     exec_options = get_settings(context)

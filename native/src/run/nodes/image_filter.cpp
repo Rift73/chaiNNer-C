@@ -167,7 +167,7 @@ void palette_dither(NodeContext &, std::span<const Value> inputs, std::vector<Va
     if (mode == 2) diffusion = diffusion_map(std::get<std::string>(inputs[3]));
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     uint32_t length = 16;
-    if (mode == 3) length = dither_count(inputs[4], "History length must be an integer in [2,4294967295]");
+    if (mode == 3) length = history_length(inputs[4]);
     void *handle = nullptr;
     size_t bytes = 0;
     check(cn_neighborhood_palette_create(top.data, size_t(top.width), size_t(top.channels), &handle, &bytes));

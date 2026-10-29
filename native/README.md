@@ -252,8 +252,9 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
   `Requires-Dist` naming an excluded one. The manifest's `python_stack` records the interpreter
   version, build tag, archive and lock SHA-256, the runtime's path, the exclusions with their
   reasons and chainner-pip's version; a refresh refuses a package copied from another stack.
-  `native_toolchain` records the clang-cl, MSVC toolset and Windows SDK versions the build pins (read from
-  `CMakeLists.txt` and `toolchain.cmake`, each pinned exactly once, or the run fails); a refresh rewrites it with
+  `native_toolchain` records the clang-cl, MSVC toolset and Windows SDK versions the build pins and the TensorRT and
+  CUDA majors of `vosr2_qkv.dll` and the other TensorRT binaries (read from `CMakeLists.txt` and `toolchain.cmake`,
+  each pinned exactly once, or the run fails); a refresh rewrites it with
   the backend's binaries, and a package from before the record gains it at its next refresh. A package copied
   before 2026-10-07 also carries `python_stack.overlay`, a retired key a refresh ignores. Releasing is a manual step.
 - A locked DLL/PYD (a running package) fails the run before any write and names the paths. Close

@@ -281,6 +281,28 @@ public:
         bool operator==(const Key &) const = default;
     };
 
+    /* native_descale._core's message for cn_descale_core_create's refusal reason. */
+    static std::string refusal_message(const Key &key, int refusal)
+    {
+        static constexpr std::array<std::string_view, 7> kernels{"Bilinear", "Bicubic",  "Lanczos", "Spline16",
+                                                                 "Spline36", "Spline64", "Point"};
+        if (refusal == 0) return "Invalid descale parameters";
+        std::string kernel(kernels[size_t(key.mode - 1)]);
+        if (refusal == 1) {
+            char text[32];
+            std::string blur(text, std::to_chars(text, text + sizeof text, key.blur, std::chars_format::general, 6).ptr);
+            return "Descale: Blur " + blur + " is too narrow for the " + kernel +
+                   " kernel at this size: some target pixels get no weight (the result would be black). Use a larger "
+                   "Blur (1 is the kernel's own width).";
+        }
+        if (refusal == 2)
+            return "Descale: with this source window (Source Left, Top, Width, Height) some target pixels get no "
+                   "weight from the " + kernel + " kernel (the result would be black). Use a window that covers the "
+                   "target.";
+        return "Descale: the " + kernel +
+               " kernel's weights are not finite with these parameters (the result would not be finite either).";
+    }
+
     std::shared_ptr<void> get(const Key &key)
     {
         {
@@ -292,17 +314,10 @@ public:
                 }
             }
         }
-        int mirror_outside = 0;
+        int refusal = 0;
         void *handle = cn_descale_core_create(int(key.src), int(key.dst), int(key.mode), int(key.taps), key.b, key.c,
-                                              key.blur, key.shift, key.active, int(key.border), &mirror_outside);
-        if (!handle) {
-            if (mirror_outside)
-                throw NodeError("ValueError",
-                                "Descale: with Border=Mirror the kernel reaches more than the target size past an edge (a "
-                                "large Source Left/Top, or a kernel wider than the target); use the Extend or Zero "
-                                "border, a smaller Source Left/Top, or a larger target.");
-            throw NodeError("ValueError", "Invalid descale parameters");
-        }
+                                              key.blur, key.shift, key.active, int(key.border), &refusal);
+        if (!handle) throw NodeError("ValueError", refusal_message(key, refusal));
         std::shared_ptr<void> core(handle, cn_descale_core_free);
         std::lock_guard lock(mutex_);
         entries_.emplace_front(key, core);

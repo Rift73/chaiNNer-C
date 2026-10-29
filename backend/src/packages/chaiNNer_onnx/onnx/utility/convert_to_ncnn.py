@@ -5,7 +5,13 @@ import heapq
 import onnx
 from onnx.onnx_pb import ModelProto, NodeProto
 
-from nodes.impl.ncnn.model import NcnnModelWrapper
+from nodes.impl.ncnn.model import (
+    BinaryOpTypes,
+    NcnnModel,
+    NcnnModelWrapper,
+    NcnnParamCollection,
+    UnaryOpTypes,
+)
 from nodes.impl.onnx.model import OnnxModel
 from nodes.impl.onnx.onnx_to_ncnn import Onnx2NcnnConverter
 from nodes.impl.onnx.utils import safely_optimize_onnx_model
@@ -91,6 +97,48 @@ def fill_kernel_shapes(model: ModelProto) -> None:
             )
 
 
+def computed_inputs(model: ModelProto) -> dict[str, list[NodeProto]]:
+    """Each tensor a node computes, and the nodes taking it: the converter reads some
+    inputs (a Reshape's shape, a Pad's pads) as constants and failed with a bare
+    KeyError naming a computed one, not the node that needed it."""
+    made = {name for node in model.graph.node for name in node.output if name}
+    takers: dict[str, list[NodeProto]] = {}
+    for node in model.graph.node:
+        for name in dict.fromkeys(node.input):
+            if name in made:
+                takers.setdefault(name, []).append(node)
+    return takers
+
+
+def exact_integer_powers(model: NcnnModel) -> None:
+    """Raise to a scalar integer with ncnn layers that take a negative base as PyTorch
+    and ONNX Runtime do: ncnn's BinaryOp pow goes through the base's logarithm in its
+    SIMD path, so a negative base gave about 2.4e38 (a variance written as
+    (x - mean) ** 2 squares negative values). 2 becomes UnaryOp square (x * x, as
+    PyTorch computes it, also on Vulkan), another integer the Power layer (the C
+    library's pow; ncnn has no Vulkan Power, so a GPU net runs that layer on the CPU).
+    A negative base to a fractional power is NaN in PyTorch, which a working model does
+    not reach, so those keep BinaryOp pow, the faster layer."""
+    for layer in model.layers:
+        if (
+            layer.op_type != "BinaryOp"
+            or layer.params[0].value != BinaryOpTypes.POW
+            or layer.params[1].value != 1
+        ):
+            continue
+        exponent = layer.params[2].value
+        if not isinstance(exponent, (int, float)) or not float(exponent).is_integer():
+            continue
+        if exponent == 2:
+            layer.op_type = "UnaryOp"
+            layer.params = NcnnParamCollection("UnaryOp")
+            layer.params[0] = UnaryOpTypes.SQUARE
+        else:
+            layer.op_type = "Power"
+            layer.params = NcnnParamCollection("Power")
+            layer.params[0] = float(exponent)
+
+
 @utility_group.register(
     schema_id="chainner:onnx:convert_to_ncnn",
     name="Convert To NCNN",
@@ -122,8 +170,21 @@ def convert_to_ncnn_node(
     fill_kernel_shapes(model_proto)
     opt_model = safely_optimize_onnx_model(model_proto)
 
-    converter = Onnx2NcnnConverter(opt_model)
-    converted = converter.convert(fp16, False)
+    # Before the converter, which rewrites the graph's nodes as it fuses them
+    takers = computed_inputs(opt_model)
+    try:
+        converted = Onnx2NcnnConverter(opt_model).convert(fp16, False)
+    except KeyError as e:
+        name = e.args[0] if e.args else None
+        nodes = takers.get(name) if isinstance(name, str) else None
+        if not nodes:
+            raise
+        taken_by = ", ".join(f"{n.op_type} node {n.name or '(unnamed)'}" for n in nodes)
+        raise ValueError(
+            f"This model computes {name} as it runs, where NCNN needs a constant (taken"
+            f" by {taken_by}), so the model cannot be converted to NCNN."
+        ) from e
+    exact_integer_powers(converted)
     # Without its MemoryData layers (chaiNNer writes none) a model that needs a constant
     # tensor (one that no scalar fusion absorbs) names a blob no layer makes, and ncnn
     # refuses the files ("find_blob_index_by_name ... failed").

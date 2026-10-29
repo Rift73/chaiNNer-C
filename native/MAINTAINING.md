@@ -63,8 +63,9 @@ adds to these procedures is in section 11.
 
 ## 4. Change compiler flags or the toolchain
 
-1. Versions are pinned once each: clang-cl in `native/CMakeLists.txt`, the MSVC toolset and Windows SDK in
-   `native/toolchain.cmake`; `package_port.py` reads them into the manifest's `native_toolchain`.
+1. Versions are pinned once each: clang-cl and the TensorRT and CUDA majors in `native/CMakeLists.txt`, the MSVC
+   toolset and Windows SDK in `native/toolchain.cmake`; `package_port.py` reads them into the manifest's
+   `native_toolchain`.
 2. Any codegen change (an LLVM bump, a new flag, PGO, `-mprefer-vector-width=512`): run
    `native/tests/test_spectral_filter.py::test_packed_spectrum_all_parities`, `test_golden_kernels.py` (`-k "tail or
    dither"` at least) and `test_forced_paths.py` under each `CHAINNER_C_ISA` level, then the full suite.

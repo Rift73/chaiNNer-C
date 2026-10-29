@@ -341,7 +341,7 @@ def get_native_resolution_node(
     else:
         if video_path is None:
             raise ValueError("Choose a video file.")
-        info = media.probe(video_path)
+        info = media.probe(video_path, context.check_aborted)
         height = info.height
     low, high = search_bounds(height, min_height, max_height)
     session = Session(

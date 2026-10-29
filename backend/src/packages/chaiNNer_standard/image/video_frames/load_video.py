@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from sanic.log import logger
@@ -66,6 +66,41 @@ class LoadedVideo:
     metadata: VideoMetadata
     mode: VideoMode
     colour: ColourInfo
+
+
+def shortfall(
+    name: str, ranged: bool, exact: bool, expected: int, header: int | None
+) -> Callable[[int], str | None]:
+    """Load Video's warning when its frames end early (Generator.shortfall, which
+    native/src/video_io.cpp load_video sets): a file cut short (an interrupted copy or
+    recording) opens and ends where it was cut, and PyAV's exact count is then the
+    frames left. `expected` is the generator's length: PyAV's count (`exact`), else an
+    estimate; `header` is the track's count by the file's header
+    (VideoLoader.header_frame_count; None where it cannot tell). Fewer frames than an
+    exact count warn at any shortfall; for All, fewer than the header's count (or a
+    smaller estimate) when more than 5 % of it and at least 2 frames are missing. A
+    Range's Out past an estimated end reads to the end by design, so a Range compares
+    with an exact count only."""
+
+    def warning(read: int) -> str | None:
+        if exact and read < expected:
+            return (
+                f"Load Video: {name} ended after {read} of {expected} frames (the file"
+                " may be truncated or damaged); the frames read were processed."
+            )
+        if ranged or header is None:
+            return None
+        estimate = header if exact else min(header, expected)
+        missing = estimate - read
+        if missing <= estimate * 0.05 or missing < 2:
+            return None
+        return (
+            f"Load Video: {name} ended after {read} of about {estimate} frames (an"
+            " estimate from the file's header; the file may be truncated or damaged);"
+            " the frames read were processed."
+        )
+
+    return warning
 
 
 def get_item_types(loaded: LoadedVideo):

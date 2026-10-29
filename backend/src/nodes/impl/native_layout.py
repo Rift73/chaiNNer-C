@@ -159,15 +159,11 @@ def pad(
     return out
 
 
-def stack(
-    images: Sequence[np.ndarray | None], orientation: str, *, sequence: bool = False
-) -> np.ndarray:
+def stack(images: Sequence[np.ndarray | None], orientation: str) -> np.ndarray:
     items = [image for image in images if image is not None]
     if not items:
         raise ValueError("No images in sequence to stack")
     shapes = [_shape(image) for image in items]
-    if sequence and len(items) == 1:
-        return items[0]
     if orientation not in ("horizontal", "vertical"):
         raise AssertionError(f"Invalid orientation '{orientation}'")
     max_h, max_w = max(s[0] for s in shapes), max(s[1] for s in shapes)
@@ -180,7 +176,7 @@ def stack(
         elif orientation == "vertical" and w < max_w:
             th, tw = int(np.floor(h * max_w / w + 0.5)), max_w
         expanded_c = 3 if c == 1 else c
-        if expanded_c < max_c and not sequence:
+        if expanded_c < max_c:
             # Upstream allocates a promoted image at the largest height and width: a
             # one-pixel strip broadcasts to them (kept), any other size failed with
             # NumPy's broadcast error and now keeps its own size (2026-10-23).

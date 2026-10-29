@@ -29,6 +29,8 @@ from .vosr2_engine_cache import (
     ensure_engine_set,
     file_hash,
     forget_hash,
+    remove_tree,
+    remove_unused_sets,
 )
 from .vosr2_trt_models import STAGES
 from .vosr2_trt_plugin import load_plugin, plugin_path
@@ -164,14 +166,6 @@ def fetch_graphs(context: NodeContext, folder: Path, manifest: dict) -> Path:
     return folder
 
 
-def remove_tree(path: Path) -> None:
-    def failed(_function: object, name: str, error: BaseException) -> None:
-        logger.warning("Could not delete %s: %s", name, error)
-
-    if path.exists():
-        shutil.rmtree(path, onexc=failed)
-
-
 @contextmanager
 def unpacked(context: NodeContext, folder: Path, manifest: dict) -> Iterator[Path]:
     """The stage graphs of a fetched set as plain files, each checked against its
@@ -248,6 +242,7 @@ def ensure_fp8_engine(
             with unpacked(context, folder, manifest) as graphs:
                 compile_worker(context, "vosr2_fp8_build.py", graphs, directory, device)
 
-        return ensure_engine_set(
-            context, root, fp8_identity(device), "FP8", compile_into
-        )
+        identity = fp8_identity(device)
+        engine = ensure_engine_set(context, root, identity, "FP8", compile_into)
+        remove_unused_sets(root, engine, identity)
+        return engine

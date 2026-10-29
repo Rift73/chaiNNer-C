@@ -39,6 +39,14 @@ def perform_interp(model_a: dict, model_b: dict, amount: int):
         ) from e
 
 
+def _on(state: dict, device: torch.device) -> dict:
+    """`state` with its tensors on `device`, as a model's `to` moves them."""
+    return {
+        key: value.to(device) if isinstance(value, torch.Tensor) else value
+        for key, value in state.items()
+    }
+
+
 def check_can_interp(model_a: dict, model_b: dict):
     if model_a.keys() != model_b.keys():
         return False
@@ -85,11 +93,12 @@ def interpolate_models_node(
         return (model_a, 100, 0)
     elif amount == 100:
         return (model_b, 0, 100)
-    if model_a.device != model_b.device:
-        model_a.to(pytorch_device)
-        model_b.to(pytorch_device)
     state_a = model_a.model.state_dict()
     state_b = model_b.model.state_dict()
+    if model_a.device != model_b.device:
+        # Their weights on one device, not the models moved: other nodes share them
+        state_a = _on(state_a, pytorch_device)
+        state_b = _on(state_b, pytorch_device)
     logger.debug("Interpolating models...")
     state_dict = None
     if (

@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,10 +25,12 @@ from api import NodeContext
 from gpu import MemoryUsage, get_vram_usage
 
 from ...utils.utils import file_identity
+from ..owned_job import OwnedJob
 from .vosr2 import BundlePaths, VosrBundle, load_weights, read_configs
 from .vosr2_official import FILES
-from .vosr2_plan_file import compress, compressed, plain, stored
-from .vosr2_process import PARENT_PID_VARIABLE, OwnedJob
+from .vosr2_plan_file import compress, compressed, plain, set_aside, stored
+from .vosr2_process import PARENT_PID_VARIABLE
+from .vosr2_stage_cache import migrate_stage_cache, migration_leftover, stage_identity
 from .vosr2_trt_compile import STAGE_LINE
 from .vosr2_trt_plugin import plugin_path
 
@@ -204,21 +207,45 @@ def cache_identity(device: torch.device) -> dict:
     }
 
 
-def report_stages(
-    context: NodeContext, output: bytes, label: str = "TensorRT"
-) -> bytes:
-    """Log each complete stage line of a build worker's output and report its progress;
-    return the unfinished last line."""
-    *lines, rest = output.split(b"\n")
-    for line in lines:
-        stage = STAGE_LINE.fullmatch(line.decode("utf-8", "replace").rstrip("\r"))
-        if stage is not None:
+class StageLog:
+    """A build worker's stages as its output names them (vosr2_trt_compile.report_stage):
+    each stage's start and end are logged, with its duration, and its start is the
+    node's progress."""
+
+    def __init__(self, context: NodeContext, label: str):
+        self.context = context
+        self.label = label
+        self.unread = b""
+        # The running stage: its number, the stage count and when it started
+        self.running: tuple[int, int, float] | None = None
+
+    def read(self, output: bytes) -> None:
+        """Take more of the worker's output; a stage line counts once it is whole."""
+        *lines, self.unread = (self.unread + output).split(b"\n")
+        for line in lines:
+            stage = STAGE_LINE.fullmatch(line.decode("utf-8", "replace").rstrip("\r"))
+            if stage is None:
+                continue
+            self.finish()
             index, total = int(stage[1]), int(stage[2])
             logger.info(
-                "VOSR %s build: stage %d of %d, %s", label, index, total, stage[3]
+                "VOSR %s build: stage %d of %d, %s", self.label, index, total, stage[3]
             )
-            context.set_progress((index - 1) / total)
-    return rest
+            self.context.set_progress((index - 1) / total)
+            self.running = (index, total, time.monotonic())
+
+    def finish(self) -> None:
+        """Log the end of the running stage, if one is."""
+        if self.running is not None:
+            index, total, started = self.running
+            logger.info(
+                "VOSR %s build: stage %d of %d done in %.1f s",
+                self.label,
+                index,
+                total,
+                time.monotonic() - started,
+            )
+            self.running = None
 
 
 def compile_worker(
@@ -279,7 +306,7 @@ def compile_worker(
     logger.info("Compiling VOSR %s once; progress and errors: %s", label, log_path)
     try:
         with log_path.open("wb") as log, log_path.open("rb") as progress:
-            unread = b""
+            stages = StageLog(context, label)
             process = subprocess.Popen(
                 [
                     str(executable),
@@ -306,7 +333,7 @@ def compile_worker(
                 # A build cannot be safely suspended inside CUDA. Keep policing
                 # memory and cancellation while paused; inference waits later.
                 context.check_aborted()
-                unread = report_stages(context, unread + progress.read(), label)
+                stages.read(progress.read())
                 if current_usage().used >= memory - 100_000_000:
                     raise RuntimeError(
                         f"VOSR {label} compilation filled the GPU memory. "
@@ -317,9 +344,13 @@ def compile_worker(
                         f"VOSR {label} compilation exceeded {limit // 60} minutes."
                     )
                 time.sleep(0.05)
+            # What the worker printed after the last look, before it exited
+            stages.read(progress.read())
         if process.returncode:
             tail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
             raise RuntimeError(f"VOSR {label} compilation failed:\n{tail}")
+        stages.finish()
+        logger.info("VOSR %s build: done in %.0f s", label, time.monotonic() - started)
     finally:
         job.close()
         if process is not None:
@@ -373,11 +404,7 @@ def ensure_engine_set(
             if compression and manifest.get("compression") != "zstd":
                 compress_set(destination, manifest, stages)
             return destination
-        quarantine = root / f"quarantine-{key}-{time.time_ns()}"
-        destination.rename(quarantine)
-        logger.warning(
-            "Preserved corrupt %s engine set at %s; rebuilding.", label, quarantine
-        )
+        set_aside(destination, label)
     release_full_session(context.node_id)
     torch.cuda.empty_cache()
     destination.mkdir(exist_ok=True)
@@ -421,6 +448,111 @@ def ensure_engine_set(
     return destination
 
 
+def remove_tree(path: Path) -> None:
+    def failed(_function: object, name: str, error: BaseException) -> None:
+        logger.warning("Could not delete %s: %s", name, error)
+
+    if path.exists():
+        shutil.rmtree(path, onexc=failed)
+
+
+# What another GPU's set differs in (TensorRT: name and capability; MIGraphX: name and
+# gfx target). A machine with two GPUs keeps a set for each.
+GPU_FIELDS = ("gpu", "capability", "gfx")
+# A set's mark of its last use: a file of its own, since the file identities of the
+# manifest and the plans key the sessions loaded from them.
+LAST_USED = "last-used"
+# Another version's set stays this long after its last use: builds that share one
+# storage folder (an installed release, a source checkout, the CLI) keep theirs.
+UNUSED_DAYS = 14
+
+
+def last_used(path: Path) -> float:
+    """When the set at path was last found valid: its LAST_USED mark, or, for a set
+    from before the mark, its newest file."""
+    mark = path / LAST_USED
+    if mark.is_file():
+        return mark.stat().st_mtime
+    return max(
+        (file.stat().st_mtime for file in path.rglob("*") if file.is_file()),
+        default=path.stat().st_mtime,
+    )
+
+
+def unused_reason(path: Path, identity: dict) -> str | None:
+    """Why `path`, an entry of an engine cache root whose current set has `identity`,
+    is no longer needed; None for what this cache did not make or may still use."""
+    if not path.is_dir():
+        return None
+    if path.name.startswith("quarantine-"):
+        return "a set moved aside"
+    if path.name.startswith("building-"):
+        return "an interrupted build"
+    if migration_leftover(path):
+        return "an interrupted migration"
+    try:
+        manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None  # no readable manifest, or not one this cache wrote
+    other = manifest.get("identity") if isinstance(manifest, dict) else None
+    if not isinstance(other, dict) or path.name != identity_key(other):
+        return None
+
+    def engines(value: dict) -> dict:
+        return {key: field for key, field in value.items() if key not in GPU_FIELDS}
+
+    if engines(other) == engines(identity):
+        return None  # the current set, or another GPU's
+    days = (time.time() - last_used(path)) / 86400
+    if days < UNUSED_DAYS:
+        return None  # another version's, which a build sharing this folder may use
+    return f"another version's set, unused for {days:.0f} days"
+
+
+def remove_unused_sets(root: Path, current: Path, identity: dict) -> None:
+    """Caller owns root's cache lock and has just validated `current`, the set of
+    `identity`, which this marks used. Delete the sets of other versions unused for
+    UNUSED_DAYS, sets moved aside and the folders of interrupted builds and migrations;
+    everything else under root stays. Cleanup never fails the run: what cannot be read
+    or deleted now stays for the next check."""
+    try:
+        (current / LAST_USED).touch()
+    except OSError as error:
+        logger.warning("Could not mark %s as used: %s", current, error)
+    freed = 0
+    for path in sorted(root.iterdir()):
+        if path == current:
+            continue
+        try:
+            reason = unused_reason(path, identity)
+            if reason is None:
+                continue
+            size = sum(
+                file.stat().st_size for file in path.rglob("*") if file.is_file()
+            )
+        except OSError as error:
+            logger.warning("Keeping %s for now: %s", path, error)
+            continue
+        # Moved aside first: Windows refuses the move while a file inside is open, and a
+        # deletion that stops halfway is finished by a later check.
+        target = path
+        if not path.name.startswith("quarantine-"):
+            target = path.with_name(f"quarantine-{path.name}-{time.time_ns()}")
+            try:
+                path.rename(target)
+            except OSError as error:
+                logger.info(
+                    "Keeping %s for now, a file in it is in use: %s", path, error
+                )
+                continue
+        logger.info("Deleting %s (%.1f GB), %s", path, size / 1e9, reason)
+        remove_tree(target)
+        if not target.exists():
+            freed += size
+    if freed:
+        logger.info("Freed %.1f GB of unused VOSR engines in %s", freed / 1e9, root)
+
+
 def compress_set(destination: Path, manifest: dict, stages: Sequence[str]) -> None:
     """Compress a verified set of plain plans in place. Its manifest switches only once
     every plan is compressed, and the plain plans go after it, so an interrupted
@@ -448,7 +580,6 @@ def ensure_full_engine(
     context: NodeContext, paths: BundlePaths, device: torch.device
 ) -> Path:
     """Publish the entire BF16 set only after every stage has been validated."""
-    from .vosr2_stage_cache import migrate_stage_cache, stage_identity
     from .vosr2_trt_models import STAGES, profiles
 
     read_configs(paths)
@@ -482,10 +613,12 @@ def ensure_full_engine(
         destination = root / identity_key(identity)
         if not destination.exists():
             migrate_stage_cache(context, root, destination, identity)
-        return ensure_engine_set(
+        engine = ensure_engine_set(
             context,
             root,
             identity,
             "BF16",
             lambda directory: build(context, paths, directory, device),
         )
+        remove_unused_sets(root, engine, identity)
+        return engine

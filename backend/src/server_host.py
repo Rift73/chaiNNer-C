@@ -27,10 +27,15 @@ from dependencies.store import (
     installed_packages,
     replaced,
     uninstall_dependencies,
+    unneeded_dependencies,
 )
 from events import BackendEventBroadcast
 from gpu import amd, nvidia
 from nodes.impl.cors import add_cors
+from nodes.impl.vapoursynth.user_modules import (
+    install_user_modules,
+    missing_user_modules,
+)
 from response import (
     RESTART_WORKER_HEADER,
     error_response,
@@ -216,7 +221,9 @@ async def system_usage(_request: Request):
         except (OSError, ValueError):
             if gpu.index not in _unreadable_amd_gpus:
                 _unreadable_amd_gpus.add(gpu.index)
-                logger.warning("The memory of %s cannot be read.", gpu.name, exc_info=True)
+                logger.warning(
+                    "The memory of %s cannot be read.", gpu.name, exc_info=True
+                )
             continue
         if usage.total > 0:
             stats_list.append(
@@ -367,6 +374,28 @@ async def uninstall_dependencies_request(request: Request):
                 for d in deps_to_dep_info(p.dependencies)
                 if d.distribution not in shared
             )
+        # And what pip pulled in for them that nothing staying installed needs (about
+        # 1.8 GB for VapourSynth: vsview's PySide6, CUDA wheels, plugins). What
+        # chaiNNer-C lists itself stays: the server's packages (run.py has imported
+        # their list), the other packages'.
+        from dependencies.install_server_deps import deps as server_deps
+
+        listed = {
+            distribution_name(d.pypi_name)
+            for p in packages
+            if p.id not in package_ids_to_install
+            for d in p.dependencies
+        }
+        try:
+            deps.extend(
+                await asyncio.to_thread(
+                    unneeded_dependencies,
+                    deps,
+                    listed | {d.distribution for d in server_deps},
+                )
+            )
+        except ValueError as error:
+            logger.warning(f"Uninstalling only the listed dependencies: {error}")
 
         if len(deps) > 0:
             await change_dependencies(
@@ -408,9 +437,16 @@ async def install_dependencies_request(request: Request):
             deps.extend(deps_to_dep_info(p.dependencies))
 
         if len(deps) > 0:
-            await change_dependencies(
-                worker, install_dependencies(deps, progress, logger)
-            )
+
+            async def install() -> None:
+                await install_dependencies(deps, progress, logger)
+                # The VapourSynth user modules that are missing (all of them after
+                # VapourSynth's first install) go in while the worker is stopped.
+                await install_user_modules(
+                    missing_user_modules(ctx.config.storage_dir), progress
+                )
+
+            await change_dependencies(worker, install())
         return json({"status": "ok"})
     except Exception as ex:
         logger.error(f"Error installing dependencies: {ex}", exc_info=True)
@@ -515,6 +551,9 @@ async def import_packages(
 
     try:
         deps_to_install = filter_necessary_to_install(deps_to_dep_info(to_install))
+        # The worker scans the VapourSynth user modules when its nodes load; pip
+        # installs the missing ones here, at each start while one is missing.
+        user_modules = missing_user_modules(config.storage_dir)
 
         restart_flags: list[str] = []
         if config.error_on_failed_node:
@@ -522,14 +561,18 @@ async def import_packages(
         if config.close_after_start:
             restart_flags.append("--close-after-start")
 
-        if len(restart_flags) > 0 or len(deps_to_install) > 0:
+        if len(restart_flags) > 0 or len(deps_to_install) > 0 or user_modules:
             await worker.stop()
             try:
                 await install_dependencies(deps_to_install, update_progress_cb, logger)
             finally:
                 # Also after a failed install, as the dependency manager's routes do:
-                # a stopped worker would fail every route until the next start.
-                await worker.start(restart_flags)
+                # a stopped worker would fail every route until the next start. Each
+                # user module logs its own failure.
+                try:
+                    await install_user_modules(user_modules, update_progress_cb)
+                finally:
+                    await worker.start(restart_flags)
         else:
             logger.info("No dependencies to install. Skipping worker restart.")
     except Exception as ex:

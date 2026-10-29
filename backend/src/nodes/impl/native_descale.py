@@ -49,6 +49,18 @@ _lib.cn_descale.argtypes = [
 _lib.cn_descale.restype = ct.c_int
 
 
+# DescaleMode's names, 1 bilinear .. 7 point.
+_KERNELS = (
+    "Bilinear",
+    "Bicubic",
+    "Lanczos",
+    "Spline16",
+    "Spline36",
+    "Spline64",
+    "Point",
+)
+
+
 class _Core:
     """One direction's factorized system, freed when the cache and every caller drop it."""
 
@@ -73,7 +85,7 @@ def _core(
     border: int,
 ) -> _Core:
     # Building the system costs O(dim^2) (tens of ms for 4K), so a batch reuses it.
-    mirror_outside = ct.c_int(0)
+    refusal = ct.c_int(0)
     handle = _lib.cn_descale_core_create(
         src_dim,
         dst_dim,
@@ -85,15 +97,25 @@ def _core(
         shift,
         active_dim,
         border,
-        ct.byref(mirror_outside),
+        ct.byref(refusal),
     )
     if not handle:
-        if mirror_outside.value:
+        if refusal.value == 1:
             raise ValueError(
-                "Descale: with Border=Mirror the kernel reaches more than the target"
-                " size past an edge (a large Source Left/Top, or a kernel wider than"
-                " the target); use the Extend or Zero border, a smaller Source"
-                " Left/Top, or a larger target."
+                f"Descale: Blur {blur:g} is too narrow for the {_KERNELS[mode - 1]} kernel"
+                " at this size: some target pixels get no weight (the result would be"
+                " black). Use a larger Blur (1 is the kernel's own width)."
+            )
+        if refusal.value == 2:
+            raise ValueError(
+                "Descale: with this source window (Source Left, Top, Width, Height) some"
+                f" target pixels get no weight from the {_KERNELS[mode - 1]} kernel (the"
+                " result would be black). Use a window that covers the target."
+            )
+        if refusal.value == 3:
+            raise ValueError(
+                f"Descale: the {_KERNELS[mode - 1]} kernel's weights are not finite with"
+                " these parameters (the result would not be finite either)."
             )
         raise ValueError("Invalid descale parameters")
     return _Core(handle)

@@ -383,11 +383,7 @@ def gpu_architectures() -> tuple[list[str], list[str]]:
     GPU kernels for, and the others. A GPU whose driver reports no architecture, or a
     small one beside them, is left out; none at all keeps the CPU builds."""
     kernels = WINDOWS_ARCHITECTURES if is_windows else LINUX_KERNEL_WHEEL_SIZES.keys()
-    found = {
-        device.gfx
-        for device in amd.devices
-        if device.gfx and device.eligible
-    }
+    found = {device.gfx for device in amd.devices if device.gfx and device.eligible}
     return sorted(found & kernels), sorted(found - kernels)
 
 

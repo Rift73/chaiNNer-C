@@ -12,7 +12,12 @@ from api import KeyInfo, NodeContext
 from nodes.groups import Condition, if_group
 from nodes.impl.image_utils import to_uint8
 from nodes.impl.pytorch.resource_cache import allow_model_reuse, lease_resource
-from nodes.impl.pytorch.utils import np2tensor, safe_cuda_cache_empty, tensor2np
+from nodes.impl.pytorch.utils import (
+    np2tensor,
+    on_device,
+    safe_cuda_cache_empty,
+    tensor2np,
+)
 from nodes.properties.inputs import FaceModelInput, ImageInput, NumberInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import file_identity, get_h_w_c
@@ -46,10 +51,9 @@ def upscale(
     face_helper.get_face_landmarks_5(only_center_face=False, eye_dist_threshold=5)
     face_helper.align_warp_face()
     should_use_fp16 = exec_options.use_fp16 and face_model.supports_half
-    if should_use_fp16:
-        face_model.model.half()
-    else:
-        face_model.model.float()
+    face_model = on_device(
+        face_model, device, torch.float16 if should_use_fp16 else torch.float32
+    )
     for cropped_face in face_helper.cropped_faces:
         cropped_face_t = np2tensor(
             cropped_face, bgr2rgb=True, change_range=True, add_batch=False

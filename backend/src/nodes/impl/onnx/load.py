@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 from weakref import WeakKeyDictionary
@@ -13,7 +14,15 @@ from ..native_graph import graph
 from ..tensorrt import drft
 from ..tensorrt.dual import export_manifest
 from .autocast import mixed_precision
-from .model import MIXED, OnnxGeneric, OnnxInfo, OnnxModel, OnnxRemBg, SizeReq
+from .model import (
+    MIXED,
+    SIZE_REQ_METADATA_KEY,
+    OnnxGeneric,
+    OnnxInfo,
+    OnnxModel,
+    OnnxRemBg,
+    SizeReq,
+)
 from .utils import (
     ModelShapeInference,
     get_opset,
@@ -36,6 +45,9 @@ class ModelFacts:
     # The exporter's manifest of a legacy DRFT ONNX from Convert To ONNX; None for any
     # other
     drft_manifest: dict[str, Any] | None = None
+    # The PyTorch model's size requirement, which Convert To ONNX records; None for any
+    # other
+    size_req: SizeReq | None = None
 
 
 # The facts load_onnx_model found while it parsed each model, so that its sessions and
@@ -52,7 +64,28 @@ def _facts_of(model: onnx.ModelProto) -> ModelFacts:
         supports_graph(model.graph),
         export_manifest(model),
         drft.export_manifest(model),
+        _recorded_size_req(model),
     )
+
+
+def _recorded_size_req(model: onnx.ModelProto) -> SizeReq | None:
+    """The size requirement Convert To ONNX recorded in `model`'s metadata, if any. An
+    entry it cannot have written (edited, or another tool's) is logged and left out,
+    and the probe alone gives the requirement (onnx/size_probe.py)."""
+    for entry in model.metadata_props:
+        if entry.key == SIZE_REQ_METADATA_KEY:
+            try:
+                req = json.loads(entry.value)
+                # Spandrel's minimum of 0 (none) is a SizeReq's 1
+                return SizeReq(max(1, req["minimum"]), req["multiple_of"])
+            except (ValueError, KeyError, TypeError) as e:
+                logger.warning(
+                    f"The ONNX model {model.graph.name!r} has a malformed {entry.key}"
+                    f" entry {entry.value!r} ({type(e).__name__}: {e}); its size"
+                    " requirement is probed instead."
+                )
+                return None
+    return None
 
 
 def model_facts(model: OnnxModel) -> ModelFacts:
@@ -82,6 +115,15 @@ def load_onnx_model(model_or_bytes: onnx.ModelProto | bytes) -> OnnxModel:
             return MIXED
         return mixed_precision(model) or get_tensor_fp_datatype(model)
 
+    def detect_size_req(infer: ModelShapeInference):
+        """Shape inference's size requirement, except for a legacy DRFT ONNX from
+        Convert To ONNX: ONNX's checker knows none of its TensorRT plugin ops, so every
+        size fails alike (no requirement, no scale) and would log its traceback."""
+        (facts,) = parsed
+        if facts.drft_manifest is not None:
+            return SizeReq(), None
+        return _detect_size_req(infer)
+
     loaded = graph().onnx_load_model(
         model_or_bytes,
         {
@@ -93,7 +135,7 @@ def load_onnx_model(model_or_bytes: onnx.ModelProto | bytes) -> OnnxModel:
             "OnnxRemBg": OnnxRemBg,
             "OnnxGeneric": OnnxGeneric,
             "ModelShapeInference": ModelShapeInference,
-            "_detect_size_req": _detect_size_req,
+            "_detect_size_req": detect_size_req,
         },
     )
     (_facts[loaded],) = parsed
