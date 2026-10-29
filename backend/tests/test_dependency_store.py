@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import importlib
 import json
 import shutil
@@ -299,6 +300,45 @@ def test_the_event_loop_runs_while_pip_is_silent(
     assert str(error).splitlines()[1:] == NO_INDEX[-3:]
 
 
+def test_a_download_is_named_by_its_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    # chainner_pip's output for the PyTorch package on ROCm (shortened): the wheels it
+    # resolved from their metadata files are downloaded after the last Collecting
+    # step, which showed the 1.4 GB torch download as "Downloading tzdata...".
+    r2 = "https://download-r2.pytorch.org/whl"
+    output = [
+        "Collecting torch==2.14.1+rocm7.14",
+        f"  Downloading {r2}/rocm7.14/torch-2.14.1%2Brocm7.14-cp314-cp314-manylinux_2_28_x86_64.whl.metadata (37 kB)",
+        "Collecting tzdata (from python-dateutil>=2.7->matplotlib->filterpy->facexlib==0.3.0)",
+        "  Downloading tzdata-2026.6-py2.py3-none-any.whl (348 kB)",
+        f"Downloading {r2}/rocm7.14/torch-2.14.1%2Brocm7.14-cp314-cp314-manylinux_2_28_x86_64.whl (1393.8 MB)",
+        'Progress: {"current": 10240, "total": 1461506662}',
+        f"Downloading {r2}/triton_rocm-3.8.0-cp314-cp314-linux_x86_64.whl (361.6 MB)",
+        "Installing collected packages: tzdata, triton-rocm, torch",
+    ]
+    run_like_pip(monkeypatch, tmp_path, output, exit_code=0)
+    fake_environment(monkeypatch, {})
+    messages: list[str] = []
+
+    async def record(message: str, *_args: object) -> None:
+        messages.append(message)
+
+    torch = DependencyInfo("torch", "2.14.1+rocm7.14", display_name="PyTorch")
+    asyncio.run(store.install_dependencies([torch], record))
+    assert messages == [
+        "Collecting PyTorch...",
+        "Downloading PyTorch...",
+        "Collecting tzdata...",
+        "Downloading tzdata...",
+        "Downloading PyTorch...",
+        "Downloading PyTorch...",
+        "Downloading triton_rocm...",
+        "Installing collected dependencies...",
+        "Finished installing dependencies...",
+    ]
+
+
 def test_a_failed_uninstall_reports_pips_reason(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -533,16 +573,20 @@ MIGRAPHX = DependencyInfo(
 
 
 def pip_runs(
-    monkeypatch: pytest.MonkeyPatch, environment: dict[str, str]
+    monkeypatch: pytest.MonkeyPatch,
+    environment: dict[str, str],
+    installs: tuple[DependencyInfo, ...] = (MIGRAPHX,),
 ) -> list[list[str]]:
     """Replaces store's pip runs (with and without progress) with ones that print what
-    pip prints, make its change to `environment` (an install adds MIGRAPHX, an uninstall
-    removes the distributions it names) and succeed. Returns each run's arguments."""
+    pip prints, make its change to `environment` (an install adds `installs`, an
+    uninstall removes the distributions it names) and succeed. Returns each run's
+    arguments."""
     runs: list[list[str]] = []
 
     def run(command: list[str]) -> str:
-        runs.append(command[3:])
-        action, *arguments = command[3:]
+        # The arguments after "-m pip", "-m chainner_pip" or the run_chainner_pip script
+        runs.append(command[2 if command[1] == store.run_chainner_pip else 3 :])
+        action, *arguments = runs[-1]
         lines: list[str] = []
         if action == "uninstall":
             for name in arguments[:-1]:
@@ -553,11 +597,11 @@ def pip_runs(
                     f"  Successfully uninstalled {name}-{version}",
                 ]
         else:
-            environment[MIGRAPHX.package_name] = MIGRAPHX.version
-            lines += [
-                f"Collecting {MIGRAPHX.package_name}@ {MIGRAPHX.url}",
-                f"Installing collected packages: {MIGRAPHX.package_name}",
-            ]
+            for dependency in installs:
+                environment[dependency.package_name] = dependency.version
+                lines.append(f"Collecting {pin(dependency)}")
+            names = ", ".join(d.package_name for d in installs)
+            lines.append(f"Installing collected packages: {names}")
         return "".join(f"{line}\n" for line in lines)
 
     def check_call(command: list[str], **_kwargs: object) -> int:
@@ -686,3 +730,112 @@ def test_a_rescan_finds_what_pip_added_and_removed(
     store.scan_installed_packages()
     assert store.installed_packages["chainner-fake-second"] == "2.0"
     assert "chainner-fake-first" not in store.installed_packages
+
+
+# PyTorch's CPU build, which replaces its ROCm build of the same name, the Triton for ROCm
+# that one brought and ROCm's runtime (packages/chaiNNer_pytorch, dependencies/rocm.py)
+CPU_TORCH = DependencyInfo(
+    "torch",
+    "2.14.1",
+    display_name="PyTorch",
+    extra_index_url="https://download.pytorch.org/whl/cpu",
+    replaces=(
+        "torch+rocm",
+        "triton-rocm",
+        "rocm",
+        "rocm-sdk-core",
+        "rocm-sdk-libraries",
+        "rocm-sdk-device-*",
+        "rocm-bootstrap",
+        "amd-torch-device-*",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "version", "result"),
+    [
+        ("torch", "2.14.1+rocm7.14", True),
+        ("torch", "2.12.0+rocm7.14.1", True),
+        ("torch", "2.14.1+cu132", False),
+        ("torch", "2.14.1+cpu", False),
+        ("torch", "2.14.1", False),
+        # A name without a label names every build.
+        ("triton-rocm", "3.8.0", True),
+        ("triton-rocm", "3.8.0+git1", True),
+        ("triton", "3.8.0", False),
+        ("torchvision", "0.29.1+rocm7.14", False),
+        ("rocm", "7.14.1+chainner", True),
+        # A name ending in * names every distribution it starts.
+        ("rocm-sdk-device-gfx1100", "7.14.1", True),
+        ("amd-torch-device-gfx12-0", "2.12.0+rocm7.14.1", True),
+        ("rocm-sdk-devel", "7.14.1", False),
+        ("amd-torch", "2.12.0", False),
+    ],
+)
+def test_a_replaced_build_is_named_by_its_distribution_and_label(
+    name: str, version: str, result: bool
+):
+    assert store.replaced(CPU_TORCH.replaces, name, version) is result
+
+
+@pytest.mark.parametrize(
+    ("installed", "needed"),
+    [
+        ("2.14.1+rocm7.14", True),
+        ("2.14.1+cpu", False),
+        ("2.14.1", False),
+        ("2.14.1+cu132", False),
+    ],
+)
+def test_an_installed_build_the_dependency_replaces_never_satisfies_it(
+    monkeypatch: pytest.MonkeyPatch, installed: str, needed: bool
+):
+    monkeypatch.setattr(store, "installed_packages", {"torch": installed})
+    assert (filter_necessary_to_install([CPU_TORCH]) == [CPU_TORCH]) is needed
+
+
+@pytest.mark.parametrize("progress", [False, True], ids=["sync", "with-progress"])
+def test_an_install_uninstalls_a_replaced_build_of_its_own_distribution_first(
+    monkeypatch: pytest.MonkeyPatch, progress: bool
+):
+    # pip would find torch==2.14.1 met by the ROCm build, 2.14.1+rocm7.14, and keep it;
+    # ROCm's runtime would stay with nothing using it.
+    environment = installed(
+        monkeypatch,
+        {
+            "torch": "2.14.1+rocm7.14",
+            "triton-rocm": "3.8.0",
+            "rocm-sdk-core": "7.14.1",
+            "rocm-sdk-device-gfx1100": "7.14.1",
+            "einops": "0.8.2",
+        },
+    )
+    runs = pip_runs(monkeypatch, environment, (CPU_TORCH,))
+    count = asyncio.run(
+        store.install_dependencies([CPU_TORCH], ignore_progress if progress else None)
+    )
+    assert count == 1
+    assert [run[0] for run in runs] == ["uninstall", "install"]
+    assert runs[0][1:] == [
+        "rocm-sdk-core",
+        "rocm-sdk-device-gfx1100",
+        "torch",
+        "triton-rocm",
+        "-y",
+    ]
+    assert runs[1][1] == "torch==2.14.1"
+    assert store.installed_packages == {"torch": "2.14.1", "einops": "0.8.2"}
+
+
+@pytest.mark.parametrize("torch", ["2.14.1+cpu", "2.14.1+cu126", "2.10.0"])
+def test_an_install_without_amd_builds_uninstalls_nothing_first(
+    monkeypatch: pytest.MonkeyPatch, torch: str
+):
+    # NVIDIA's build in place of CUDA 12.6's, the CPU build's or an older one: pip
+    # replaces it in one run, as before.
+    nvidia_torch = dataclasses.replace(CPU_TORCH, version="2.14.1+cu132")
+    environment = installed(monkeypatch, {"torch": torch, "triton": "3.8.0"})
+    runs = pip_runs(monkeypatch, environment, (nvidia_torch,))
+    assert asyncio.run(store.install_dependencies([nvidia_torch], ignore_progress)) == 1
+    assert [run[0] for run in runs] == ["install"]

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from api import NodeContext
-from nodes.impl.vapoursynth.runner import clip_info, launch_preview
+from nodes.impl.vapoursynth.runner import VSScriptError, clip_info, launch_preview
 from nodes.impl.vapoursynth.script import VideoClip
+from system import glibc_version
 
+from .. import vsview_unavailable_reason
 from ..chains import chain_dir, named_clip_inputs, named_clips, write_script
 from . import clips_group
 
@@ -31,6 +33,9 @@ from . import clips_group
     node_context=True,
 )
 def preview_clips_node(context: NodeContext, *clips: VideoClip | str | None) -> None:
+    unavailable = vsview_unavailable_reason(glibc_version())
+    if unavailable is not None:
+        raise VSScriptError(unavailable)
     script = write_script(
         context, named_clips(clips), chain_dir(context) / "preview.vpy"
     )

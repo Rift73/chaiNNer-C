@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes as ct
 import gc
+import hashlib
 import importlib.util
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -472,7 +473,7 @@ def test_original_non_native_endian_interpretation(dtype):
         current.close()
 
 
-def test_explicit_provider_retention_without_gpu_execution(monkeypatch):
+def test_explicit_provider_retention_without_gpu_execution(monkeypatch, tmp_path):
     calls = []
     sentinel = object()
 
@@ -482,30 +483,33 @@ def test_explicit_provider_retention_without_gpu_execution(monkeypatch):
 
     monkeypatch.setattr(ort, "InferenceSession", capture)
     wrapper = OnnxGeneric(model(), OnnxInfo(13, "fp32"))
+    cache = str(tmp_path)
     for provider in (
         "CUDAExecutionProvider",
         "TensorrtExecutionProvider",
         "DmlExecutionProvider",
     ):
         assert (
-            integration.create_inference_session(
-                wrapper, 2, provider, True, "example-cache"
-            )
+            integration.create_inference_session(wrapper, 2, provider, True, cache)
             is sentinel
         )
         actual = calls.pop()
         assert (
-            REFERENCE.create_inference_session(
-                wrapper, 2, provider, True, "example-cache"
-            )
+            REFERENCE.create_inference_session(wrapper, 2, provider, True, cache)
             is sentinel
         )
         expected = calls.pop()
         # chaiNNer-C's TensorRT session leaves out upstream's trt_dump_subgraphs, which
-        # wrote two copies of the model into the working folder per session.
+        # wrote two copies of the model into the working folder per session, and keeps
+        # the model's engines in a folder of its own (by the model's SHA-256): ORT
+        # names an engine by the graph's tensor names, so models of one architecture
+        # with other weights loaded each other's engines.
         for entry in expected[1]["providers"]:
             if isinstance(entry, tuple) and entry[0] == "TensorrtExecutionProvider":
                 entry[1].pop("trt_dump_subgraphs")
+                entry[1]["trt_engine_cache_path"] = str(
+                    tmp_path / hashlib.sha256(wrapper.bytes).hexdigest()[:32]
+                )
         assert expected == actual
 
 

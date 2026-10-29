@@ -35,7 +35,9 @@ def test_table_rows_are_complete():
 
     assert {e.file for e in entries} >= {"libGL.so.1", "libstdc++.so.6", "xvfb-run"}
     for entry in entries:
-        assert entry.groups <= {"base", "electron", "display", "amd"}, entry.file
+        assert entry.groups <= {"base", "electron", "display", "amd", "vapoursynth"}, (
+            entry.file
+        )
         assert list(entry.packages) == list(linux_libraries.INSTALL_COMMANDS)
         assert ".so" in entry.file or entry.groups == {"display"}, entry.file
         for manager, package in entry.packages.items():
@@ -43,11 +45,12 @@ def test_table_rows_are_complete():
                 assert manager == "apt", entry.file
 
 
-def test_rocms_libraries_are_the_amd_group():
-    # rocm-sdk-core's profiler libraries need libatomic, which a minimal Rocky Linux 8 lacks.
+def test_libatomic_is_in_the_amd_and_vapoursynth_groups():
+    # rocm-sdk-core's profiler libraries and VapourSynth's fmtconv plugin need libatomic,
+    # which a minimal Rocky Linux 8 or Ubuntu 20.04 lacks.
     entries = {e.file: e for e in read_table(TABLE.read_text(encoding="utf-8"))}
 
-    assert entries["libatomic.so.1"].groups == {"amd"}
+    assert entries["libatomic.so.1"].groups == {"amd", "vapoursynth"}
     assert entries["libatomic.so.1"].packages == {
         "apt": "libatomic1",
         "dnf": "libatomic",
@@ -59,14 +62,14 @@ def test_rocms_libraries_are_the_amd_group():
 @pytest.mark.parametrize(
     ("kfd", "nvidia", "groups"),
     [
-        (False, False, {"base"}),
-        (True, False, {"base", "amd"}),
+        (False, False, {"base", "vapoursynth"}),
+        (True, False, {"base", "vapoursynth", "amd"}),
         # PyTorch runs on CUDA where an NVIDIA driver is loaded too (an AMD iGPU beside it).
-        (True, True, {"base"}),
-        (False, True, {"base"}),
+        (True, True, {"base", "vapoursynth"}),
+        (False, True, {"base", "vapoursynth"}),
     ],
 )
-def test_the_amd_group_applies_where_pytorch_runs_on_rocm(
+def test_vapoursynth_applies_everywhere_and_amd_where_pytorch_runs_on_rocm(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     kfd: bool,

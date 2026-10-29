@@ -7,6 +7,8 @@ from sanic.log import logger
 from api import GB, KB, MB, Dependency, add_package
 from dependencies.rocm import (
     PYTORCH_ROCM_INDEX,
+    TORCH_AMD_BUILDS,
+    TORCHVISION_AMD_BUILDS,
     gpu_architectures,
     rocm_runtime,
     triton_rocm,
@@ -152,6 +154,7 @@ def get_pytorch():
                 size_estimate=2 * GB if nvidia.is_available else 140 * MB,
                 extra_index_url=cuda_url,
                 auto_update=False,
+                replaces=TORCH_AMD_BUILDS,
             ),
             Dependency(
                 display_name="TorchVision",
@@ -160,6 +163,7 @@ def get_pytorch():
                 size_estimate=2 * MB if nvidia.is_available else 800 * KB,
                 extra_index_url=cuda_url,
                 auto_update=False,
+                replaces=TORCHVISION_AMD_BUILDS,
             ),
         ]
 

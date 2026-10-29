@@ -1,0 +1,894 @@
+{
+"about": "texconv.exe 2026.5.8.1's results for native/tests/test_texconv.py's cases (SHA-256, first 16 hex digits), from native/tools/texconv_golden.py",
+"cases": {
+"A4B4G4R4_UNORM-mips": {
+"dds": "94f94ddcd7693af4",
+"read": "cefc9dad44d72497",
+"read_mip1": "7662ef109045174f"
+},
+"A4B4G4R4_UNORM-odd": {
+"dds": "03c1a2e1ee7846c8",
+"read": "802686c45b41e386"
+},
+"A8_UNORM-mips": {
+"dds": "8da104373004ecb9",
+"read": "48211d51c15235fa",
+"read_mip1": "c2c6da5ffc72071a"
+},
+"A8_UNORM-odd": {
+"dds": "f97706d7d9b14ecf",
+"read": "05ee91c11ed4305a"
+},
+"ATI1-mips": {
+"dds": "baf78e045bbbe2f3",
+"read": "ecb7594a2b0da379",
+"read_mip1": "b4b7c846f5988e50"
+},
+"ATI1-odd": {
+"dds": "e0871bd6f4b69c45",
+"read": "f23cdcbbc8192bc8"
+},
+"ATI2-mips": {
+"dds": "7eedc5c7f115ad4c",
+"read": "2b9a6fc71068fbd5",
+"read_mip1": "f7050a26fcfba0a7"
+},
+"ATI2-odd": {
+"dds": "bb3e3c1d644334f9",
+"read": "20b32eb237b1535e"
+},
+"B4G4R4A4_UNORM-mips": {
+"dds": "10a0caa45def8d7a",
+"read": "cefc9dad44d72497",
+"read_mip1": "7662ef109045174f"
+},
+"B4G4R4A4_UNORM-odd": {
+"dds": "f8f61680b229eb82",
+"read": "802686c45b41e386"
+},
+"B5G5R5A1_UNORM-mips": {
+"dds": "4c6cee5144f1cd70",
+"read": "e099cb468ae2259a",
+"read_mip1": "8238ef17f864e9c4"
+},
+"B5G5R5A1_UNORM-odd": {
+"dds": "ab0da46fe6afc957",
+"read": "eeaa095c4ef38363"
+},
+"B5G6R5_UNORM-grey": {
+"dds": "3e68e89281fe3f88",
+"read": "c69005392491e24c",
+"read_mip1": "c1eed338c2b94b37"
+},
+"B5G6R5_UNORM-mips": {
+"dds": "c5ddd0c612e9558a",
+"read": "acb62c93fc6ad02a",
+"read_mip1": "b79de8cf6861485b"
+},
+"B5G6R5_UNORM-odd": {
+"dds": "84002bae10b81404",
+"read": "133c6063950847d2"
+},
+"B8G8R8A8_UNORM-mips": {
+"dds": "0c81b7a7d6a76482",
+"read": "1db79b4e7a14d52e",
+"read_mip1": "ca8b03990e272831"
+},
+"B8G8R8A8_UNORM-odd": {
+"dds": "7e3316f45b6e8d8a",
+"read": "c9c9d294626b44e3"
+},
+"B8G8R8A8_UNORM_SRGB-mips": {
+"dds": "04b51373eaeb5fd1",
+"read": "1db79b4e7a14d52e",
+"read_mip1": "4b4abc4cb4777be9"
+},
+"B8G8R8A8_UNORM_SRGB-odd": {
+"dds": "a97e0f863e32c2be",
+"read": "c9c9d294626b44e3"
+},
+"B8G8R8X8_UNORM-mips": {
+"dds": "cf89f6a6fea45fb4",
+"read": "59fa28c132c7cc13",
+"read_mip1": "a86f38908aad0e2d"
+},
+"B8G8R8X8_UNORM-odd": {
+"dds": "b4abe2374ccd1ddf",
+"read": "bf0c21867d8f0ff2"
+},
+"B8G8R8X8_UNORM-rgb": {
+"dds": "cd02a60a4f0b1264",
+"read": "bf0c21867d8f0ff2",
+"read_mip1": "5e7796c9c7995447"
+},
+"B8G8R8X8_UNORM_SRGB-mips": {
+"dds": "a8cd2e55ed47bb52",
+"read": "59fa28c132c7cc13",
+"read_mip1": "946977791d8058f0"
+},
+"B8G8R8X8_UNORM_SRGB-odd": {
+"dds": "dd4421fce1e8d9e1",
+"read": "bf0c21867d8f0ff2"
+},
+"BC1_UNORM-BOX": {
+"dds": "4f63ee1d13168690",
+"read": "09de257d0126bb50",
+"read_mip1": "5e4e57be87080f14"
+},
+"BC1_UNORM-CUBIC": {
+"dds": "2be3160c322e256f",
+"read": "09de257d0126bb50",
+"read_mip1": "929f95f52e663505"
+},
+"BC1_UNORM-FANT": {
+"dds": "4f63ee1d13168690",
+"read": "09de257d0126bb50",
+"read_mip1": "5e4e57be87080f14"
+},
+"BC1_UNORM-LINEAR": {
+"dds": "7979aadfa3c60d06",
+"read": "09de257d0126bb50",
+"read_mip1": "23d4498fe57b6327"
+},
+"BC1_UNORM-POINT": {
+"dds": "19b47b97128f4412",
+"read": "09de257d0126bb50",
+"read_mip1": "2d90ba89f6244ef5"
+},
+"BC1_UNORM-TRIANGLE": {
+"dds": "adcd282817c9ad16",
+"read": "09de257d0126bb50",
+"read_mip1": "9ba52c520b286114"
+},
+"BC1_UNORM-dithering": {
+"dds": "390d2e2a7702fdf8",
+"read": "dcf7102fc9c239f2",
+"read_mip1": "f4c64bdafd29ad70"
+},
+"BC1_UNORM-grey": {
+"dds": "8d3d0361befa0299",
+"read": "663845d1b9a1d49a",
+"read_mip1": "47ecedd516b21d4c"
+},
+"BC1_UNORM-mips": {
+"dds": "4f63ee1d13168690",
+"read": "09de257d0126bb50",
+"read_mip1": "5e4e57be87080f14"
+},
+"BC1_UNORM-odd": {
+"dds": "68b3253945255264",
+"read": "09ca8b259a5fbe6b"
+},
+"BC1_UNORM-rgb": {
+"dds": "babca36f73d50536",
+"read": "3a582202e3974c70",
+"read_mip1": "e45bd8983abe125d"
+},
+"BC1_UNORM-uniform_weighting": {
+"dds": "e7f8cbbab828a169",
+"read": "185cac3937cc4c16",
+"read_mip1": "d06abb3120e6172d"
+},
+"BC1_UNORM_SRGB-mips": {
+"dds": "6d2fc1c8cc5ada6f",
+"read": "09de257d0126bb50",
+"read_mip1": "5e4e57be87080f14"
+},
+"BC1_UNORM_SRGB-odd": {
+"dds": "15e3c607eaed755b",
+"read": "09ca8b259a5fbe6b"
+},
+"BC2_UNORM-mips": {
+"dds": "bd28925bad3f64f6",
+"read": "77786f23589b97b7",
+"read_mip1": "626780aa8e8798a2"
+},
+"BC2_UNORM-odd": {
+"dds": "858e79b21fc599e3",
+"read": "1386b9af2dfc88e3"
+},
+"BC2_UNORM_SRGB-mips": {
+"dds": "ae8e12a49448fcb1",
+"read": "77786f23589b97b7",
+"read_mip1": "626780aa8e8798a2"
+},
+"BC2_UNORM_SRGB-odd": {
+"dds": "603eee0977c7692f",
+"read": "1386b9af2dfc88e3"
+},
+"BC3_UNORM-dithering": {
+"dds": "e5ce0b95253b079f",
+"read": "7f626c9acd383865",
+"read_mip1": "9d37bd7a752990b2"
+},
+"BC3_UNORM-mips": {
+"dds": "8a730f166ca914ed",
+"read": "10514d9ad86d6f51",
+"read_mip1": "28c1462f95b40e70"
+},
+"BC3_UNORM-odd": {
+"dds": "570f94b74db4b426",
+"read": "3f8c527727952177"
+},
+"BC3_UNORM-rgb": {
+"dds": "017567a21ef978f6",
+"read": "3a582202e3974c70",
+"read_mip1": "e45bd8983abe125d"
+},
+"BC3_UNORM-uniform_weighting": {
+"dds": "1f667bea8913730e",
+"read": "831b8e1a9c29720f",
+"read_mip1": "3f7a4d80fa833958"
+},
+"BC3_UNORM_SRGB-mips": {
+"dds": "3089d583e3cdddfd",
+"read": "10514d9ad86d6f51",
+"read_mip1": "28c1462f95b40e70"
+},
+"BC3_UNORM_SRGB-odd": {
+"dds": "beb3f2b01ad4b1a6",
+"read": "3f8c527727952177"
+},
+"BC4_SNORM-mips": {
+"dds": "9c651ef93888a726",
+"read": "7a61998a5b3bde70",
+"read_mip1": "d0c24f71cf1cb343"
+},
+"BC4_SNORM-odd": {
+"dds": "1ec8f0df9856f592",
+"read": "5dfdda4910d3ff29"
+},
+"BC4_UNORM-grey": {
+"dds": "3819d301a69c37d5",
+"read": "562350cb72a45e02",
+"read_mip1": "c2dd3aba689f6594"
+},
+"BC4_UNORM-mips": {
+"dds": "a49085736dcde1b4",
+"read": "ecb7594a2b0da379",
+"read_mip1": "b4b7c846f5988e50"
+},
+"BC4_UNORM-odd": {
+"dds": "668e70d8b058a49e",
+"read": "f23cdcbbc8192bc8"
+},
+"BC5_SNORM-mips": {
+"dds": "dec6a2d481c8681a",
+"read": "cd8b4464ff1280a4",
+"read_mip1": "9e85092821b5ea73"
+},
+"BC5_SNORM-odd": {
+"dds": "fdc363fa26d9bf18",
+"read": "7d8ed2a15fe11cb0"
+},
+"BC5_UNORM-grey": {
+"dds": "b19eec51447558c9",
+"read": "97b0dda10323835a",
+"read_mip1": "0f77bd5af7d60043"
+},
+"BC5_UNORM-mips": {
+"dds": "10b948d8a2a6c417",
+"read": "2b9a6fc71068fbd5",
+"read_mip1": "f7050a26fcfba0a7"
+},
+"BC5_UNORM-odd": {
+"dds": "c591a0a7c26158cc",
+"read": "20b32eb237b1535e"
+},
+"BC6H_SF16-mips": {
+"dds": "3adb9f2176e421d7",
+"read": "a371a87cb55ce3d5",
+"read_mip1": "e89982b8f8af4727"
+},
+"BC6H_SF16-odd": {
+"dds": "9bf4778ac7b45bd4",
+"read": "e168edee6848bad9"
+},
+"BC6H_UF16-mips": {
+"dds": "34d92d713c1715a2",
+"read": "15851a43dee3bf59",
+"read_mip1": "f12fc346fd37cc0c"
+},
+"BC6H_UF16-odd": {
+"dds": "0d512559f02e030e",
+"read": "b9a8411569517956"
+},
+"BC7_UNORM-grey": {
+"dds": "3ed72cd60d37f583",
+"read": "028211b24d19cac8",
+"read_mip1": "80590394db32acfb"
+},
+"BC7_UNORM-maximum_compression": {
+"dds": "e81ad655bf24f240",
+"read": "e46234a88343b4e9",
+"read_mip1": "6775fa1cecd6ec4a"
+},
+"BC7_UNORM-minimal_compression": {
+"dds": "c85fcff64f2d3127",
+"read": "61276888831eb206",
+"read_mip1": "1d46c57498be131d"
+},
+"BC7_UNORM-mips": {
+"dds": "bd373f567118c5f7",
+"read": "c79c9e4f5fc7fb9c",
+"read_mip1": "af013a5b1c53b3a8"
+},
+"BC7_UNORM-odd": {
+"dds": "85c16a382628ef5d",
+"read": "e46234a88343b4e9"
+},
+"BC7_UNORM_SRGB-mips": {
+"dds": "6149f905f16556f1",
+"read": "c79c9e4f5fc7fb9c",
+"read_mip1": "af013a5b1c53b3a8"
+},
+"BC7_UNORM_SRGB-odd": {
+"dds": "2557f2a125daaaae",
+"read": "e46234a88343b4e9"
+},
+"BC7_UNORM_SRGB-rgb": {
+"dds": "1398dcad06a952fc",
+"read": "7df10a9ab9511560",
+"read_mip1": "28b25b3a7de568a1"
+},
+"BC7_UNORM_SRGB-separate_alpha": {
+"dds": "448501dd6398eec5",
+"read": "e46234a88343b4e9",
+"read_mip1": "6c236e933552d048"
+},
+"DXT1-mips": {
+"dds": "da45c45880b9bf08",
+"read": "09de257d0126bb50",
+"read_mip1": "5e4e57be87080f14"
+},
+"DXT1-odd": {
+"dds": "3f192382d860e34f",
+"read": "09ca8b259a5fbe6b"
+},
+"DXT3-mips": {
+"dds": "aa4cc5c4304e4b58",
+"read": "77786f23589b97b7",
+"read_mip1": "626780aa8e8798a2"
+},
+"DXT3-odd": {
+"dds": "5683f9db4d9a0f39",
+"read": "1386b9af2dfc88e3"
+},
+"DXT5-mips": {
+"dds": "0dd020fe02585371",
+"read": "10514d9ad86d6f51",
+"read_mip1": "28c1462f95b40e70"
+},
+"DXT5-odd": {
+"dds": "1792aae5f906eaf0",
+"read": "3f8c527727952177"
+},
+"DXT5-premultiply_alpha": {
+"dds": "43d64aad0dde11b5",
+"read": "695d81a170e26fdb",
+"read_mip1": "f217ab6e8e1af8da"
+},
+"G8R8_G8B8_UNORM-mips": {
+"dds": "8acce628a2563ed5",
+"read": "d51fee53f925fef1",
+"read_mip1": "88066fa50ba61639"
+},
+"G8R8_G8B8_UNORM-odd": {
+"dds": "e12b8d27a0648013",
+"read": "f2204fff76949f6a"
+},
+"R10G10B10A2_UINT-mips": {
+"dds": "a0f67f5cf6bce734",
+"read": "1601b1c357df84e6",
+"read_mip1": "a025e92ab1523932"
+},
+"R10G10B10A2_UINT-odd": {
+"dds": "9f888174356819e1",
+"read": "0c4d38b14ae0c136"
+},
+"R10G10B10A2_UNORM-mips": {
+"dds": "020b02240d644b8c",
+"read": "0677484a5a0cae99",
+"read_mip1": "7f1ecf38f2f98d73"
+},
+"R10G10B10A2_UNORM-odd": {
+"dds": "fb038546e77f2533",
+"read": "7d14da479afb3a5c"
+},
+"R11G11B10_FLOAT-mips": {
+"dds": "4bb1801b69ae1a75",
+"read": "d0eaee7c72b7ad9a",
+"read_mip1": "0b3f9b25b562226f"
+},
+"R11G11B10_FLOAT-odd": {
+"dds": "6b04bc44a305e0aa",
+"read": "33b049c1f4f6d03e"
+},
+"R16G16B16A16_FLOAT-BOX": {
+"error": "Unable to write DDS"
+},
+"R16G16B16A16_FLOAT-CUBIC": {
+"dds": "58a747d263b9dd6e",
+"read": "703c04e2a4213c6a",
+"read_mip1": "d21443c63b7b2faa"
+},
+"R16G16B16A16_FLOAT-FANT": {
+"error": "Unable to write DDS"
+},
+"R16G16B16A16_FLOAT-LINEAR": {
+"dds": "aa8e3de9dd71b3d1",
+"read": "703c04e2a4213c6a",
+"read_mip1": "a522daf2b2e0e388"
+},
+"R16G16B16A16_FLOAT-POINT": {
+"dds": "288b363778813b38",
+"read": "703c04e2a4213c6a",
+"read_mip1": "14eedb988e115503"
+},
+"R16G16B16A16_FLOAT-TRIANGLE": {
+"dds": "e54883d6b3f58677",
+"read": "703c04e2a4213c6a",
+"read_mip1": "2b626f24c69d5981"
+},
+"R16G16B16A16_FLOAT-mips": {
+"dds": "aa8e3de9dd71b3d1",
+"read": "703c04e2a4213c6a",
+"read_mip1": "a522daf2b2e0e388"
+},
+"R16G16B16A16_FLOAT-odd": {
+"dds": "e20b94040c4269dd",
+"read": "c5f315e951be49b6"
+},
+"R16G16B16A16_SINT-mips": {
+"dds": "9b377caad3fe0f98",
+"read": "46700323ef3dd1d3",
+"read_mip1": "1219a2f4a3f7792d"
+},
+"R16G16B16A16_SINT-odd": {
+"dds": "34c84a432880ce7e",
+"read": "8e4fa53d9ef26a18"
+},
+"R16G16B16A16_SNORM-mips": {
+"dds": "e2cbe3234448374a",
+"read": "3dfb527c2877475f",
+"read_mip1": "5366d6b53a9749c0"
+},
+"R16G16B16A16_SNORM-odd": {
+"dds": "a692caaca36b63c8",
+"read": "dafae7c644484f55"
+},
+"R16G16B16A16_UINT-mips": {
+"dds": "e5fdc8ffe7e1adb0",
+"read": "46700323ef3dd1d3",
+"read_mip1": "1219a2f4a3f7792d"
+},
+"R16G16B16A16_UINT-odd": {
+"dds": "109d14f80ec20e74",
+"read": "8e4fa53d9ef26a18"
+},
+"R16G16B16A16_UNORM-mips": {
+"dds": "e80a70af2b5000c2",
+"read": "b479ee9ed504e24a",
+"read_mip1": "33d137ac74300940"
+},
+"R16G16B16A16_UNORM-odd": {
+"dds": "6963a4d8a90649cc",
+"read": "902e7d67b2702096"
+},
+"R16G16_FLOAT-mips": {
+"dds": "cc67f99df52e49f0",
+"read": "b8228cfcb59ed47a",
+"read_mip1": "9715cee6a12c14d7"
+},
+"R16G16_FLOAT-odd": {
+"dds": "3dbaab050a0faa31",
+"read": "a91adc4857f33320"
+},
+"R16G16_SINT-mips": {
+"dds": "7053c9e7750fca40",
+"read": "1d71fc2a2dfa67b0",
+"read_mip1": "57d3a742192ba5d8"
+},
+"R16G16_SINT-odd": {
+"dds": "0241f55fb0b4340d",
+"read": "ae3babeee4d03454"
+},
+"R16G16_SNORM-mips": {
+"dds": "947a15be1c8e14f9",
+"read": "565a58eceb6c5ee9",
+"read_mip1": "86622989b4d398df"
+},
+"R16G16_SNORM-odd": {
+"dds": "7abffc81c1e2047a",
+"read": "e7bbda2a0e3abf98"
+},
+"R16G16_UINT-mips": {
+"dds": "6655aac33b1191ca",
+"read": "1d71fc2a2dfa67b0",
+"read_mip1": "57d3a742192ba5d8"
+},
+"R16G16_UINT-odd": {
+"dds": "bbb6053f6d939c31",
+"read": "ae3babeee4d03454"
+},
+"R16G16_UNORM-mips": {
+"dds": "a8b2dc749e8ec4c4",
+"read": "da530f81228ce312",
+"read_mip1": "c0ee73ba0051bbad"
+},
+"R16G16_UNORM-odd": {
+"dds": "d689580bee6d6231",
+"read": "5a048c93a2da67ba"
+},
+"R16_FLOAT-mips": {
+"dds": "ac2ea7cffe5f4112",
+"read": "144e72f087df680a",
+"read_mip1": "81980656b1cc18b3"
+},
+"R16_FLOAT-odd": {
+"dds": "df068ecf606592da",
+"read": "fd8236c7867be8eb"
+},
+"R16_SINT-mips": {
+"dds": "ff7d4e6a7a5c2fd6",
+"read": "69dc7ed899b5ad7e",
+"read_mip1": "2a6169fea8477b74"
+},
+"R16_SINT-odd": {
+"dds": "4b3431bce6f6f1ea",
+"read": "2b0e75313cb60080"
+},
+"R16_SNORM-mips": {
+"dds": "f306c9d268d63b96",
+"read": "f5f5fb6a7c2d9c30",
+"read_mip1": "166501f52b0f15cc"
+},
+"R16_SNORM-odd": {
+"dds": "6329f0329f81d1d5",
+"read": "4336f6d5107ed8b3"
+},
+"R16_UINT-mips": {
+"dds": "041f98d148475e49",
+"read": "69dc7ed899b5ad7e",
+"read_mip1": "2a6169fea8477b74"
+},
+"R16_UINT-odd": {
+"dds": "1f7c1c9fe5145509",
+"read": "2b0e75313cb60080"
+},
+"R16_UNORM-grey": {
+"dds": "20852910b51ed933",
+"read": "e81dc227d7e8dc7c",
+"read_mip1": "ba460c0cb1fe9685"
+},
+"R16_UNORM-mips": {
+"dds": "c0e83ae4b1897f69",
+"read": "a154f099d1ebc31a",
+"read_mip1": "d4547cc64f7a5c04"
+},
+"R16_UNORM-odd": {
+"dds": "c5a764abd7c47150",
+"read": "9b0ac082f30a0449"
+},
+"R32G32B32A32_FLOAT-mips": {
+"dds": "752b84a4879f2fd7",
+"read": "b42978eb339a49a3",
+"read_mip1": "7bcd1203065ac7b9"
+},
+"R32G32B32A32_FLOAT-odd": {
+"dds": "fec8235051c0529c",
+"read": "b068c8befc89de8a"
+},
+"R32G32B32A32_SINT-mips": {
+"dds": "40214d90750e820f",
+"read": "1601b1c357df84e6",
+"read_mip1": "a025e92ab1523932"
+},
+"R32G32B32A32_SINT-odd": {
+"dds": "6f0821416e5729db",
+"read": "0c4d38b14ae0c136"
+},
+"R32G32B32A32_UINT-mips": {
+"dds": "dd612e3f9a4116ae",
+"read": "1601b1c357df84e6",
+"read_mip1": "a025e92ab1523932"
+},
+"R32G32B32A32_UINT-odd": {
+"dds": "154603b7d2b425e0",
+"read": "0c4d38b14ae0c136"
+},
+"R32G32B32_FLOAT-mips": {
+"dds": "9c9ef5b2b0ecb57a",
+"read": "b2788a877a35878b",
+"read_mip1": "6e7f17a3efce9d33"
+},
+"R32G32B32_FLOAT-odd": {
+"dds": "d07692bbec6676a9",
+"read": "9bf10ae1f4e5e47b"
+},
+"R32G32B32_SINT-mips": {
+"dds": "791797d7dddbc047",
+"read": "ab0dc5cf07b672cb",
+"read_mip1": "b82a129cd257e786"
+},
+"R32G32B32_SINT-odd": {
+"dds": "aa0338e414af0b44",
+"read": "05875243965050b1"
+},
+"R32G32B32_UINT-mips": {
+"dds": "1e9eb3e12614853e",
+"read": "ab0dc5cf07b672cb",
+"read_mip1": "b82a129cd257e786"
+},
+"R32G32B32_UINT-odd": {
+"dds": "f5a30ce8656b4125",
+"read": "05875243965050b1"
+},
+"R32G32_FLOAT-mips": {
+"dds": "79614ae1d1704acf",
+"read": "eda0cc0a79904b8c",
+"read_mip1": "108be3bf69e9385e"
+},
+"R32G32_FLOAT-odd": {
+"dds": "71d7e7ae5abe987a",
+"read": "be5a4d70478ac08a"
+},
+"R32G32_SINT-mips": {
+"dds": "ac6843cbc4965798",
+"read": "5103c5b1e5d578c5",
+"read_mip1": "b82a129cd257e786"
+},
+"R32G32_SINT-odd": {
+"dds": "957384c528c3e899",
+"read": "05875243965050b1"
+},
+"R32G32_UINT-mips": {
+"dds": "20a49cb1b6974b1b",
+"read": "5103c5b1e5d578c5",
+"read_mip1": "b82a129cd257e786"
+},
+"R32G32_UINT-odd": {
+"dds": "168dab7e2561f146",
+"read": "05875243965050b1"
+},
+"R32_FLOAT-grey": {
+"dds": "aa816c98f8495e02",
+"read": "3f177305741c7be9",
+"read_mip1": "d265bc3ceba1dde2"
+},
+"R32_FLOAT-mips": {
+"dds": "756b19b26aaf963f",
+"read": "83c76730fa0da06d",
+"read_mip1": "e5bef153035b472e"
+},
+"R32_FLOAT-odd": {
+"dds": "af6955920542f365",
+"read": "1acfdd2e4add2d88"
+},
+"R32_SINT-mips": {
+"dds": "94993230dd0d4597",
+"read": "69dc7ed899b5ad7e",
+"read_mip1": "2a6169fea8477b74"
+},
+"R32_SINT-odd": {
+"dds": "a0af32744d0f20cb",
+"read": "2b0e75313cb60080"
+},
+"R32_UINT-mips": {
+"dds": "3af0638d271967fb",
+"read": "69dc7ed899b5ad7e",
+"read_mip1": "2a6169fea8477b74"
+},
+"R32_UINT-odd": {
+"dds": "352a177aab7b40b2",
+"read": "2b0e75313cb60080"
+},
+"R8G8B8A8_SINT-mips": {
+"dds": "05b8fc134f93e4c7",
+"read": "62fb94b7e517c793",
+"read_mip1": "0932d7655a117886"
+},
+"R8G8B8A8_SINT-odd": {
+"dds": "3ec85697ef5969dc",
+"read": "e9999ba804137f5a"
+},
+"R8G8B8A8_SNORM-mips": {
+"dds": "dc27be0513997f56",
+"read": "df013f757c9d5e1e",
+"read_mip1": "92158b296aa6f38a"
+},
+"R8G8B8A8_SNORM-odd": {
+"dds": "d50f824bda874426",
+"read": "b34b6b5b968b5e5d"
+},
+"R8G8B8A8_UINT-mips": {
+"dds": "53976a1ccd8c48af",
+"read": "38732f328d84f016",
+"read_mip1": "0932d7655a117886"
+},
+"R8G8B8A8_UINT-odd": {
+"dds": "9fd2a89436d2f071",
+"read": "7708608ce4d83ded"
+},
+"R8G8B8A8_UNORM-BOX": {
+"dds": "515d0184d6f2a6a7",
+"read": "1db79b4e7a14d52e",
+"read_mip1": "ca8b03990e272831"
+},
+"R8G8B8A8_UNORM-CUBIC": {
+"dds": "766674d1efc725b0",
+"read": "1db79b4e7a14d52e",
+"read_mip1": "e7a8bb8d08d5d961"
+},
+"R8G8B8A8_UNORM-FANT": {
+"dds": "515d0184d6f2a6a7",
+"read": "1db79b4e7a14d52e",
+"read_mip1": "ca8b03990e272831"
+},
+"R8G8B8A8_UNORM-LINEAR": {
+"dds": "9da7045eec552b42",
+"read": "1db79b4e7a14d52e",
+"read_mip1": "84cb531a11f5fc64"
+},
+"R8G8B8A8_UNORM-POINT": {
+"dds": "a82d076107a8edba",
+"read": "1db79b4e7a14d52e",
+"read_mip1": "a985a002dff86426"
+},
+"R8G8B8A8_UNORM-TRIANGLE": {
+"dds": "f642f11664205189",
+"read": "1db79b4e7a14d52e",
+"read_mip1": "29c863d54f3e8b3f"
+},
+"R8G8B8A8_UNORM-grey": {
+"dds": "1d082acda753b42d",
+"read": "37e3e87be5bcc0da",
+"read_mip1": "baba6911a5fa35c8"
+},
+"R8G8B8A8_UNORM-mips": {
+"dds": "515d0184d6f2a6a7",
+"read": "1db79b4e7a14d52e",
+"read_mip1": "ca8b03990e272831"
+},
+"R8G8B8A8_UNORM-odd": {
+"dds": "67561e6df55b6581",
+"read": "c9c9d294626b44e3"
+},
+"R8G8B8A8_UNORM-premultiply_alpha": {
+"dds": "7d43cd76fa41deb8",
+"read": "d3db32d12cf9b973",
+"read_mip1": "d3ba590c1681aaaa"
+},
+"R8G8B8A8_UNORM-rgb": {
+"dds": "aab5018edb2ef96b",
+"read": "bf0c21867d8f0ff2",
+"read_mip1": "5e7796c9c7995447"
+},
+"R8G8B8A8_UNORM-separate_alpha": {
+"dds": "4e446042b9de2668",
+"read": "c9c9d294626b44e3",
+"read_mip1": "8ebcd95de81b3a45"
+},
+"R8G8B8A8_UNORM_SRGB-mips": {
+"dds": "474472d2e9719664",
+"read": "1db79b4e7a14d52e",
+"read_mip1": "4b4abc4cb4777be9"
+},
+"R8G8B8A8_UNORM_SRGB-odd": {
+"dds": "b0632b9bcd1619f7",
+"read": "c9c9d294626b44e3"
+},
+"R8G8_B8G8_UNORM-mips": {
+"dds": "e4601c8d953e8854",
+"read": "d51fee53f925fef1",
+"read_mip1": "88066fa50ba61639"
+},
+"R8G8_B8G8_UNORM-odd": {
+"dds": "c58d6f00d4cb88fe",
+"read": "f2204fff76949f6a"
+},
+"R8G8_SINT-mips": {
+"dds": "7088ca6871b57a67",
+"read": "1d71fc2a2dfa67b0",
+"read_mip1": "57d3a742192ba5d8"
+},
+"R8G8_SINT-odd": {
+"dds": "18d3f0386bc03802",
+"read": "ae3babeee4d03454"
+},
+"R8G8_SNORM-mips": {
+"dds": "7a9fe3ae9c83538c",
+"read": "40483d989b2ee927",
+"read_mip1": "62e3860f1e4447b8"
+},
+"R8G8_SNORM-odd": {
+"dds": "e2b8ad76dbcdef06",
+"read": "9410109a94d46a15"
+},
+"R8G8_UINT-mips": {
+"dds": "b5836fe31f85cb57",
+"read": "1d71fc2a2dfa67b0",
+"read_mip1": "57d3a742192ba5d8"
+},
+"R8G8_UINT-odd": {
+"dds": "6665deb29fca392d",
+"read": "ae3babeee4d03454"
+},
+"R8G8_UNORM-mips": {
+"dds": "f13eef93a384591e",
+"read": "746fbe047336f58c",
+"read_mip1": "4c3990350bb67de5"
+},
+"R8G8_UNORM-odd": {
+"dds": "ac3c3b486f30f5b9",
+"read": "7c7c9e3431efda2b"
+},
+"R8_SINT-mips": {
+"dds": "98f3fedf3e2c5b1b",
+"read": "69dc7ed899b5ad7e",
+"read_mip1": "2a6169fea8477b74"
+},
+"R8_SINT-odd": {
+"dds": "c23449109154a5ac",
+"read": "2b0e75313cb60080"
+},
+"R8_SNORM-mips": {
+"dds": "e67e4fd8c0c44bd6",
+"read": "165a0d24fbe71ed0",
+"read_mip1": "ff608171e6eef13e"
+},
+"R8_SNORM-odd": {
+"dds": "da1db3231fa659da",
+"read": "263a40226f608da9"
+},
+"R8_UINT-mips": {
+"dds": "c150d0991663528b",
+"read": "69dc7ed899b5ad7e",
+"read_mip1": "2a6169fea8477b74"
+},
+"R8_UINT-odd": {
+"dds": "7b72415c575a20c0",
+"read": "2b0e75313cb60080"
+},
+"R8_UNORM-grey": {
+"dds": "60f6affd9a3f00e6",
+"read": "37e3e87be5bcc0da",
+"read_mip1": "baba6911a5fa35c8"
+},
+"R8_UNORM-mips": {
+"dds": "15da843229aa4b30",
+"read": "2a7789effd609e90",
+"read_mip1": "6e551940729d2ad5"
+},
+"R8_UNORM-odd": {
+"dds": "e1608aad4571c55c",
+"read": "f72492b1323f9afc"
+},
+"R9G9B9E5_SHAREDEXP-mips": {
+"dds": "434d4cb6127002b6",
+"read": "4fb0f0893d74d2a2",
+"read_mip1": "701255d5988005a2"
+},
+"R9G9B9E5_SHAREDEXP-odd": {
+"dds": "b9d72acfa2d66610",
+"read": "28b0299672372727"
+},
+"array": {
+"dds": "e19e7ab03778fe76",
+"read": "eda56d0b1b394557",
+"read_mip1": "9cfe747f9fb310b5"
+},
+"capped": {
+"dds": "5e3925f3a14fa0f2"
+},
+"cubemap": {
+"dds": "67a082b5ae5a6e05",
+"read": "35db74c0fc87453c",
+"read_mip1": "289a0d6c9ad34ee8"
+},
+"volume": {
+"dds": "6fa8cda21ef0e1e8",
+"read": "01836fcc9852a6d5"
+}
+}
+}

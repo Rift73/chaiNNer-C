@@ -13,7 +13,7 @@ command line, and measures a speed table. The rental time goes to testing: allow
   Radeon RX 7000 or 9000 (the GPUs users have; the RX 9000 also runs FP8), one Instinct MI300X (wave size 64 and its
   own FP8 format), a machine with two or more GPUs (checks the GPU order), and a machine with an integrated plus a
   discrete AMD GPU if one is offered (memory reporting of integrated GPUs).
-- **Image**: plain `ubuntu:24.04` (best: every test runs there), `ubuntu:22.04`, or one of AMD's ROCm images
+- **Image**: plain `ubuntu:24.04` or `ubuntu:22.04`, or one of AMD's ROCm images
   (`rocm/dev-ubuntu-24.04`, `rocm/pytorch`); the kit brings its own ROCm (PyTorch's pip packages), so the image's ROCm
   does not matter. The machine must give the container the GPU (`/dev/kfd` and `/dev/dri`), as vast.ai's AMD and ROCm
   templates do; the kit says so if not.
@@ -30,7 +30,7 @@ command line, and measures a speed table. The rental time goes to testing: allow
 | `hat.pth` | a HAT | your models |
 | `dat2.pth` | a DAT2 | your models |
 | `tests\` | the two small models the VapourSynth tests read, names unchanged | `2x_Waifaux-NL3-SuperLite_latest_G.pth` and `4xLSDIRCompactN-fp32-opset17.onnx` |
-| `chainner_example_migx_ops.so` | MIGraphX's example custom-op library, for the runner's GPU custom-op test (it skips without it) | built beside the runner (`native/migraphx_runner/tests/example_ops.hip`, glibc 2.38: an Ubuntu 24.04 image) |
+| `chainner_example_migx_ops.so` | MIGraphX's example custom-op library, for the runner's GPU custom-op test (it skips without it) | built with the zip's AMD modules (`native/migraphx_runner/tests/example_ops.hip`, glibc 2.28): `native/tools/build_linux_release.sh` with `--rocm` and `--migraphx` leaves it in `<work>/build/migraphx_runner/` |
 
 The model files are renamed on the way (the kit finds them by these names); leave out any to skip its chains and
 speed rows. VOSR needs no file: the app downloads its model on first use. The ONNX Runtime and spandrel wheels need no
@@ -57,7 +57,7 @@ ssh -p <PORT> root@<HOST>
 On the rented machine:
 
 ```
-apt-get update && apt-get install -y git        # skip if git is there
+apt-get update && apt-get install -y git tmux   # skip if both are there
 git clone --depth 1 -b chaiNNer-C https://github.com/Rift73/chaiNNer-C /root/chaiNNer-C
 bash /root/chaiNNer-C/native/tools/amd/kit.sh --zip /root/kit-in/app.zip --models /root/kit-in/models
 ```
@@ -80,7 +80,7 @@ work folder from `/root/amd-kit`.
 | Step | Script | About |
 |---|---|---|
 | Host check: kernel, amdgpu driver, `/dev/kfd` and `/dev/dri` access, groups, the GPUs (gfx), libatomic, libstdc++, `/dev/shm`, disk, RAM. Stops with the reason if no GPU is usable | `host_check.sh` | seconds |
-| Setup: system packages (the launcher's list, libatomic, Mesa's Vulkan driver for NCNN), the app (a zip older than the 2026-10-29 fresh-install fix is refused), a first headless run (it downloads its Python), the copied wheels, then the dependency manager installs PyTorch, ONNX, NCNN, MIGraphX and VapourSynth with the ROCm builds it picks for this GPU | `setup.sh` | 10-15 min |
+| Setup: system packages (the launcher's list, libatomic, Mesa's Vulkan driver for NCNN, a C compiler for the test that launches Triton's own kernels), the app (a zip older than the 2026-10-29 fresh-install fix is refused), a first headless run (it downloads its Python), the copied wheels, then the dependency manager installs PyTorch, ONNX, NCNN, MIGraphX and VapourSynth with the ROCm builds it picks for this GPU | `setup.sh` | 10-15 min |
 | GPU proof (PyTorch on each GPU against the CPU, chaiNNer's GPU list and VRAM gauge against HIP and amd-smi, only this GPU's kernel wheels installed, MIGraphX first in ONNX Runtime, rocminfo, Vulkan devices), then every `amd_gpu` test; with two GPUs the GPU-list test again with the order swapped | `test.sh`, `gpu_proof.py` | 5-15 min |
 | Chains, headless through `chaiNNer.sh run`: PyTorch FP32 and FP16, ONNX Runtime with MIGraphX, MIGraphX Build Program + Upscale Image, NCNN on Vulkan, DUAL, DRFT, HAT, DAT2 and VOSR (also in GPU Memory Low), each output compared with PyTorch FP32 (PSNR) | `chains.sh`, `chains/` | 15-20 min |
 | Speed: each route at 256x256 and 512x512 (HAT, DAT2, VOSR at 256x256), ms per call over 50 calls after a warm-up, PSNR against PyTorch FP32 | `bench.py` | 15-20 min |
@@ -107,7 +107,11 @@ The test files expected to carry `amd_gpu` tests, the wheels' URLs and the fallb
 `native/tools/amd/common.sh`. Before a rental, `native/tools/amd/selftest.sh --zip <LINUX_ZIP>` checks the kit with
 the zip on any Linux machine with Docker, without an AMD GPU: the host check must stop, a dry run must finish, and the
 real steps run on the CPU, where the PyTorch FP32 and NCNN chains must pass (it is also the only check of chaiNNer-C
-with a CPU build of PyTorch). `native/tools/amd/test-ops/` holds MIGraphX's example custom-op library from the native
-build (`migraphx_runner/chainner_example_migx_ops.so`), which one runner test loads and the app does not ship. The kit runs every `amd_gpu` test it finds in `backend/tests` and `native/tests`; the
-list only names files that must contribute. The chains were made for the node versions of this commit; a chain whose
-node changed is rebuilt by saving it from the editor with the same nodes (keep the node IDs the override files name).
+with a CPU build of PyTorch), then beside a fake AMD GPU (`fake_gpu.sh`; `--gpu gfx1100` or `gfx942`): the host check,
+the dependency manager's ROCm builds with that GPU's kernels alone, MIGraphX's nodes, ONNX Runtime's MIGraphX provider
+and ROCm's tools must all work as on a rented machine, short of the GPU's own work. `setup.sh` copies MIGraphX's
+example custom-op library (see the table above) from `--models` to `native/tools/amd/test-ops/`, where one runner
+test loads it; the app does not ship it. The kit runs every `amd_gpu` test it finds in `backend/tests` and
+`native/tests`; the list only names files that must contribute. The chains were made for the node versions of this
+commit; a chain whose node changed is rebuilt by saving it from the editor with the same nodes (keep the node IDs the
+override files name).

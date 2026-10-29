@@ -5,14 +5,18 @@ a GPU: the GPU sessions are stand-ins that report the providers ORT registered."
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import weakref
 from collections.abc import Sequence
+from functools import cache
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import onnxruntime as ort
 import pytest
-from onnx import TensorProto, helper
+from onnx import TensorProto, helper, numpy_helper
 
 from nodes.impl.onnx import session as session_module
 from nodes.impl.onnx.load import ModelFacts
@@ -34,6 +38,36 @@ def identity_model() -> OnnxGeneric:
         graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8
     )
     return OnnxGeneric(model.SerializeToString(), OnnxInfo(13, "fp32"))
+
+
+def conv_model(seed: int) -> OnnxGeneric:
+    """A 3x3 convolution with dynamic height and width, its weights from `seed`."""
+    rng = np.random.default_rng(seed)
+    weight = numpy_helper.from_array(
+        rng.standard_normal((3, 3, 3, 3)).astype(np.float32), "weight"
+    )
+    image = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 3, "h", "w"])
+    output = helper.make_tensor_value_info(
+        "output", TensorProto.FLOAT, [1, 3, "h", "w"]
+    )
+    node = helper.make_node("Conv", ["input", "weight"], ["output"], pads=[1, 1, 1, 1])
+    graph = helper.make_graph([node], "conv", [image], [output], [weight])
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8
+    )
+    return OnnxGeneric(model.SerializeToString(), OnnxInfo(13, "fp32"))
+
+
+@pytest.fixture(autouse=True)
+def cuda_loads(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """The CUDA and cuDNN loads before a CUDA or TensorRT session (_load_cuda), made
+    once per test and recorded instead of made, as where PyTorch is installed."""
+    loads: list[dict[str, object]] = []
+    monkeypatch.setattr(ort, "preload_dlls", lambda **kwargs: loads.append(kwargs))
+    monkeypatch.setattr(session_module, "_pytorch_installed", lambda: True)
+    load_cuda = vars(session_module)["_load_cuda"]
+    monkeypatch.setattr(session_module, "_load_cuda", cache(load_cuda.__wrapped__))
+    return loads
 
 
 class RegisteredSession:
@@ -59,7 +93,9 @@ def tensorrt_package(monkeypatch: pytest.MonkeyPatch, installed: bool) -> list[s
         session_module, "_tensorrt_package_installed", lambda: installed
     )
     monkeypatch.setattr(
-        session_module, "importlib", SimpleNamespace(import_module=imported.append)
+        session_module,
+        "importlib",
+        SimpleNamespace(import_module=imported.append, util=importlib.util),
     )
     return imported
 
@@ -123,6 +159,71 @@ def test_cuda_that_cannot_load_is_reported_not_run_on_the_cpu(
     with pytest.raises(RuntimeError, match=rf"\({CUDA}\).* on {CPU} instead") as raised:
         get_onnx_session(identity_model(), 0, CUDA, False)
     assert "TensorRT" not in str(raised.value)
+
+
+@pytest.mark.parametrize("provider", [CUDA, TENSORRT])
+def test_a_gpu_provider_that_cannot_start_without_pytorch_is_reported(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+):
+    # The PyTorch package installs chaiNNer's only CUDA and cuDNN (on Linux, its NVIDIA
+    # wheels).
+    monkeypatch.setattr(session_module, "_pytorch_installed", lambda: False)
+    tensorrt_package(monkeypatch, installed=True)
+    ort_registers(monkeypatch, [CPU])
+    with pytest.raises(
+        RuntimeError, match=rf"\({provider}\).* on {CPU} instead"
+    ) as raised:
+        get_onnx_session(identity_model(), 0, provider, False)
+    assert "Install the PyTorch package" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("platform", "torch", "loads"),
+    [
+        ("win32", "installed", [{"msvc": False}]),
+        ("win32", "imported", []),
+        ("win32", "absent", []),
+        ("linux", "installed", [{"msvc": False, "directory": ""}]),
+    ],
+)
+def test_cuda_and_cudnn_load_once_before_the_first_gpu_session(
+    monkeypatch: pytest.MonkeyPatch,
+    cuda_loads: list[dict[str, object]],
+    platform: str,
+    torch: str,
+    loads: list[dict[str, object]],
+):
+    # The CUDA and TensorRT providers import CUDA 13 and cuDNN 9 by name. Where torch
+    # was not imported first (a VapourSynth script's process), Windows took them from
+    # PATH, and another CUDA's cuDNN there crashed the process at the first run:
+    # PyTorch's load by full path (ORT's default folder on Windows), unless torch has
+    # loaded them. Without PyTorch, chaiNNer has none to load.
+    modules = {"torch": SimpleNamespace()} if torch == "imported" else {}
+    monkeypatch.setattr(
+        session_module, "sys", SimpleNamespace(platform=platform, modules=modules)
+    )
+    monkeypatch.setattr(session_module, "_pytorch_installed", lambda: torch != "absent")
+    ort_creates(monkeypatch)
+    # Each session's provider, with the loads made before it was created
+    sessions: list[tuple[str, int]] = []
+
+    def session(_model: bytes, providers: list[ProviderDesc]) -> RegisteredSession:
+        names = [p if isinstance(p, str) else p[0] for p in providers]
+        sessions.append((names[0], len(cuda_loads)))
+        return RegisteredSession(names)
+
+    monkeypatch.setattr(ort, "InferenceSession", session)
+    for provider in (CPU, DML, CUDA, TENSORRT, CUDA):
+        get_onnx_session(identity_model(), 0, provider, False)
+    made = len(loads)
+    assert sessions == [
+        (CPU, 0),
+        (DML, 0),
+        (CUDA, made),
+        (TENSORRT, made),
+        (CUDA, made),
+    ]
+    assert cuda_loads == loads
 
 
 def test_a_provider_ort_does_not_have_is_reported():
@@ -200,8 +301,10 @@ Settings = tuple[int, str, bool, str | None]
     ],
 )
 def test_a_changed_setting_gets_a_session_created_from_it(
-    monkeypatch: pytest.MonkeyPatch, before: Settings, after: Settings
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, before: Settings, after: Settings
 ):
+    # The relative TensorRT cache path's engine folder is made in the working folder
+    monkeypatch.chdir(tmp_path)
     created = ort_creates(monkeypatch)
     model = identity_model()
     first = get_onnx_session(model, *before)
@@ -222,6 +325,33 @@ def test_the_tensorrt_fp16_setting_reaches_the_new_session(
     get_onnx_session(model, 0, TENSORRT, True)
     options = [p[1] for p in (created[0][0], created[1][0]) if not isinstance(p, str)]
     assert [o["trt_fp16_enable"] for o in options] == [False, True]
+
+
+def test_tensorrt_engines_are_cached_per_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    # ORT names an engine by the graph's tensor names and the model's file name, which
+    # a model created from bytes has not: two models of one architecture with other
+    # weights need their own folders, or the second runs the first one's engine. The
+    # timing cache (tactic timings by layer) stays shared.
+    created = ort_creates(monkeypatch)
+    cache = str(tmp_path)
+
+    def options(model: OnnxGeneric) -> dict[str, object]:
+        get_onnx_session(model, 0, TENSORRT, False, cache)
+        tensorrt = created[-1][0]
+        assert isinstance(tensorrt, tuple) and tensorrt[0] == TENSORRT
+        return tensorrt[1]
+
+    first = options(conv_model(1))
+    folder = str(first["trt_engine_cache_path"])
+    assert os.path.isdir(folder) and Path(folder).parent == tmp_path
+    # The same bytes in a model loaded again
+    assert options(conv_model(1))["trt_engine_cache_path"] == folder
+    other = options(conv_model(2))
+    assert other["trt_engine_cache_path"] != folder
+    assert os.path.isdir(str(other["trt_engine_cache_path"]))
+    assert first["trt_timing_cache_path"] == other["trt_timing_cache_path"] == cache
 
 
 @pytest.mark.parametrize(

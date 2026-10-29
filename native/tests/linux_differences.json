@@ -8,7 +8,10 @@
   "numpy-nan": "NumPy's Linux wheel (GCC) propagates NaN payloads and signs, and their FP warnings, otherwise than its Windows wheel (MSVC); the kernel gives the Windows wheel's bits",
   "numpy-fft": "NumPy's Linux wheel evaluates pocketfft's twiddle angle in x87 extended precision, its Windows wheel in double; the kernel gives the Windows wheel's bits",
   "libm-and-opencv": "the kernel's C-library math follows glibc's libm on Linux (cn_crt_math.h) and the reference's OpenCV step is the Linux wheel's: neither side has Windows bits here",
-  "libm-and-numpy-fft": "the kernel's twiddles call glibc's sin and cos on Linux (cn_crt_math.h) and NumPy's Linux wheel evaluates their angle in extended precision: neither side has Windows bits here"
+  "libm-and-numpy-fft": "the kernel's twiddles call glibc's sin and cos on Linux (cn_crt_math.h) and NumPy's Linux wheel evaluates their angle in extended precision: neither side has Windows bits here",
+  "texconv-wic-filter": "texconv.exe makes these mip levels with WIC's cubic scaler mode, which the Linux texconv (native/texconv) does not rebuild: it uses DirectXTex's own cubic filter there, and the levels below the top differ by a few steps",
+  "texconv-wic-grey": "texconv.exe turns colour into one channel through WIC (BT.709 luminance in linear light); the Linux texconv rebuilds it to within one step at 8 bits (97.5 % of all colours exact) and three steps at 16 bits",
+  "texconv-wic-float": "texconv.exe scales these formats' mip levels through WIC's float scaler (128bppRGBAFloat); the Linux texconv's rebuild gives a few samples one step apart (SNORM, 4-bit)"
  },
  "files": {
   "native/tests/test_adjustment_complete.py": "opencv",
@@ -565,7 +568,17 @@
   "native/tests/test_onnx_converter_reduce.py::test_special_values[ignore-values1-complex128]": "numpy-nan",
   "native/tests/test_onnx_converter_reduce.py::test_special_values[ignore-values1-complex64]": "numpy-nan",
   "native/tests/test_onnx_converter_reduce.py::test_special_values[warn-values1-complex128]": "numpy-nan",
-  "native/tests/test_onnx_converter_reduce.py::test_special_values[warn-values1-complex64]": "numpy-nan"
+  "native/tests/test_onnx_converter_reduce.py::test_special_values[warn-values1-complex64]": "numpy-nan",
+  "native/tests/test_texconv.py::test_texconv_gives_texconv_exe_results[R8G8B8A8_UNORM-CUBIC]": "texconv-wic-filter",
+  "native/tests/test_texconv.py::test_texconv_gives_texconv_exe_results[BC1_UNORM-CUBIC]": "texconv-wic-filter",
+  "native/tests/test_texconv.py::test_texconv_gives_texconv_exe_results[R8_UNORM-mips]": "texconv-wic-grey",
+  "native/tests/test_texconv.py::test_texconv_gives_texconv_exe_results[R8_UNORM-odd]": "texconv-wic-grey",
+  "native/tests/test_texconv.py::test_texconv_gives_texconv_exe_results[R16_UNORM-mips]": "texconv-wic-grey",
+  "native/tests/test_texconv.py::test_texconv_gives_texconv_exe_results[R16_UNORM-odd]": "texconv-wic-grey",
+  "native/tests/test_texconv.py::test_texconv_gives_texconv_exe_results[R8G8B8A8_SNORM-mips]": "texconv-wic-float",
+  "native/tests/test_texconv.py::test_texconv_gives_texconv_exe_results[R8_SNORM-mips]": "texconv-wic-float",
+  "native/tests/test_texconv.py::test_texconv_gives_texconv_exe_results[B4G4R4A4_UNORM-mips]": "texconv-wic-float",
+  "native/tests/test_texconv.py::test_texconv_gives_texconv_exe_results[A4B4G4R4_UNORM-mips]": "texconv-wic-float"
  },
  "tests": [
   "native/tests/test_adjustment_complete.py::test_unsharp_whole_node[0.3-1.3-4]",

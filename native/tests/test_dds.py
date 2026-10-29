@@ -1,5 +1,6 @@
-"""DDS through the repository's texconv, CPU codecs only (-nogpu): the uncompressed
-intermediates chaiNNer writes and reads in place of PNG."""
+"""DDS through the repository's texconv (texconv.exe on Windows, native/texconv on
+Linux), CPU codecs only (-nogpu): the uncompressed intermediates chaiNNer writes and
+reads in place of PNG."""
 
 from __future__ import annotations
 
@@ -29,12 +30,15 @@ from packages.chaiNNer_standard.image.batch_processing import (
 )
 from packages.chaiNNer_standard.image.io import load_dds, load_image, save_image
 
+WINDOWS = platform.system() == "Windows"
 pytestmark = pytest.mark.skipif(
-    platform.system() != "Windows", reason="texconv runs on Windows only"
+    platform.system() not in ("Windows", "Linux"), reason="texconv: Windows and Linux"
 )
+# Microsoft's texconv.exe; Linux's texconv takes chaiNNer's own options alone.
+texconv_exe = pytest.mark.skipif(not WINDOWS, reason="texconv.exe's other options")
 
 ROOT = Path(__file__).resolve().parents[2]
-TEXCONV = ROOT / "backend/src/texconv/texconv.exe"
+TEXCONV = ROOT / "backend/src/texconv" / ("texconv.exe" if WINDOWS else "texconv")
 # The Load DDS nodes output an 8-bit read as float32 / 255.
 BYTE = np.float32(255)
 # Save Image's formats before full DDS support: 8-bit targets, whose files must not
@@ -153,6 +157,7 @@ def png_path_read(path: Path, scratch: Path) -> np.ndarray:
     return image[..., :3] if (image[..., 3] == 255).all() else image
 
 
+@texconv_exe
 @pytest.mark.parametrize("fmt", PNG_ERA_FORMATS)
 def test_8_bit_targets_are_the_png_path_bytes(tmp_path, runs, fmt):
     # Texconv is handed the to_uint8 pixels the PNG held, so it writes the same file;
@@ -427,6 +432,11 @@ def test_round_trip_and_header_of_every_format(tmp_path, runs, fmt):
     else:
         assert fourcc == b"DX10"
         assert struct.unpack_from("<I", data, 128)[0] == DXGI_CODES[dxgi]
+    info = texconv.read_dds_info(path)
+    assert (info.width, info.height, info.mip_levels) == (24, 16, 1)
+    assert info.format == (fmt if fmt in save_image.LEGACY_TO_DXGI else dxgi)
+    if not WINDOWS:  # texconv.exe's summary (-sx) below
+        return
     command = [
         str(TEXCONV),
         "-nologo",
@@ -894,9 +904,11 @@ def test_skip_existing_dds_is_unchanged(tmp_path, runs):
 def test_a_dds_write_error_names_the_final_path(tmp_path, runs):
     folder = tmp_path / "t.dds"
     folder.mkdir()  # the final name is a folder: the rename fails
-    with pytest.raises(PermissionError) as before:
+    with pytest.raises(OSError) as before:
         open(folder, "wb")
-    with pytest.raises(PermissionError) as raised:
+    with pytest.raises(OSError) as raised:
         texconv.save_as_dds(folder, synthetic(8, 8, 3), "BC1_UNORM", 1)
-    assert str(raised.value) == str(before.value)  # [Errno 13], as open() raises it
+    # as open() raises it: [Errno 13] on Windows, [Errno 21] on Linux
+    assert type(raised.value) is type(before.value)
+    assert str(raised.value) == str(before.value)
     assert list(tmp_path.iterdir()) == [folder]

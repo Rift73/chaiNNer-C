@@ -15,15 +15,14 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
-import numpy as np
 import onnxruntime as ort
 import pytest
-from onnx import TensorProto, helper, numpy_helper
 from test_onnx_session_providers import (
     CPU,
     CUDA,
     DML,
     TENSORRT,
+    conv_model,
     identity_model,
     ort_creates,
     ort_registers,
@@ -33,7 +32,7 @@ import gpu
 import nodes.impl.onnx.session as onnx_session
 from api import CacheSetting, DropdownSetting, SettingsParser, ToggleSetting
 from api.settings import DropdownOption
-from nodes.impl.onnx.model import OnnxGeneric, OnnxInfo
+from nodes.impl.onnx.model import OnnxGeneric
 from nodes.impl.onnx.session import get_onnx_session
 from packages.chaiNNer_onnx import package as onnx_package
 
@@ -41,24 +40,6 @@ MIGRAPHX = "MIGraphXExecutionProvider"
 SETTINGS_FILE = (
     Path(__file__).parents[1] / "src" / "packages" / "chaiNNer_onnx" / "settings.py"
 )
-
-
-def conv_model(seed: int) -> OnnxGeneric:
-    """A 3x3 convolution with dynamic height and width, its weights from `seed`."""
-    rng = np.random.default_rng(seed)
-    weight = numpy_helper.from_array(
-        rng.standard_normal((3, 3, 3, 3)).astype(np.float32), "weight"
-    )
-    image = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 3, "h", "w"])
-    output = helper.make_tensor_value_info(
-        "output", TensorProto.FLOAT, [1, 3, "h", "w"]
-    )
-    node = helper.make_node("Conv", ["input", "weight"], ["output"], pads=[1, 1, 1, 1])
-    graph = helper.make_graph([node], "conv", [image], [output], [weight])
-    model = helper.make_model(
-        graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8
-    )
-    return OnnxGeneric(model.SerializeToString(), OnnxInfo(13, "fp32"))
 
 
 @pytest.fixture(autouse=True)

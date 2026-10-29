@@ -102,24 +102,18 @@ def run(command: list[str | Path], env: dict[str, str]) -> str:
     return result.stdout
 
 
-def test_the_replacing_wheel_alone_stays_listed_and_provides_the_module(
-    tmp_path: Path,
-):
-    wheels = tmp_path / "wheels"
-    wheels.mkdir()
-    build_wheel(wheels, "a", {"__init__.py": 'SOURCE = "a"\n', "old.py": ""})
-    build_wheel(wheels, "b", {"__init__.py": 'SOURCE = "b"\n', "new.py": ""})
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    (scripts / "install_a_then_b.py").write_text(INSTALL_A_THEN_B, encoding="utf-8")
-    (scripts / "listing.py").write_text(LISTING, encoding="utf-8")
-    # This suite's own paths stay out of the new environment and its pip runs.
+def isolated_env() -> dict[str, str]:
+    """The environment of the new environment's processes: this suite's own paths stay
+    out of it and its pip runs."""
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["PYTHONNOUSERSITE"] = "1"
+    return env
 
-    environment = tmp_path / "venv"
-    run([sys.executable, "-m", "venv", environment], env)
-    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+def new_environment(folder: Path, env: dict[str, str]) -> Path:
+    """A new virtual environment in `folder` with chainner_pip: its interpreter."""
+    run([sys.executable, "-m", "venv", folder], env)
+    python = folder / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     run(
         [
             python,
@@ -132,6 +126,22 @@ def test_the_replacing_wheel_alone_stays_listed_and_provides_the_module(
         ],
         env,
     )
+    return python
+
+
+def test_the_replacing_wheel_alone_stays_listed_and_provides_the_module(
+    tmp_path: Path,
+):
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    build_wheel(wheels, "a", {"__init__.py": 'SOURCE = "a"\n', "old.py": ""})
+    build_wheel(wheels, "b", {"__init__.py": 'SOURCE = "b"\n', "new.py": ""})
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "install_a_then_b.py").write_text(INSTALL_A_THEN_B, encoding="utf-8")
+    (scripts / "listing.py").write_text(LISTING, encoding="utf-8")
+    env = isolated_env()
+    python = new_environment(tmp_path / "venv", env)
 
     output = run([python, scripts / "install_a_then_b.py", BACKEND_SRC, wheels], env)
     assert "progress: Uninstalling a..." in output.splitlines()

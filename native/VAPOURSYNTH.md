@@ -153,21 +153,26 @@ and re-reads the overlays.
 The same package works on Linux x86-64; paths read `<storage>/vapoursynth` and the like, and `vspipe` is the file
 `site-packages/vapoursynth/vspipe` of chaiNNer-C's Python (its plugins are `.so` files in `plugins/`).
 
-- **Installing.** The pip wheels of CPython 3.14 exist for everything the package lists, but two of them need a newer C
-  library than the rest of chaiNNer-C: vs-jetpack's `vapoursynth-akarin` wants glibc 2.35 (Ubuntu 22.04, Debian 12,
-  Fedora and newer) and vsview's PySide6 glibc 2.34. On an older distribution (Rocky/Alma/RHEL 8 and 9, Ubuntu 20.04,
-  Debian 10 and 11) the dependency manager shows the VapourSynth package as unavailable, naming the system's glibc and
-  the 2.35 floor; every other package installs there. VapourSynth's own programs also
-  need the system's `libstdc++.so.6`, which every desktop distribution has.
+- **Installing.** The pip wheels of CPython 3.14 exist for everything the package lists, but PyPI's wheels of three
+  of them need a newer C library than the rest of chaiNNer-C: vs-jetpack's `vapoursynth-akarin` wants glibc 2.35
+  (Ubuntu 22.04, Debian 12, Fedora and newer), its `vapoursynth-nlm-ispc` and vsview's PySide6 glibc 2.34. Below
+  those, the dependency manager installs the same releases built for glibc 2.28 (manylinux_2_28) in place of PyPI's:
+  akarin 1.5.0 below glibc 2.35 (release `v1.5.0-glibc2.28` of the fork `Rift73/vapoursynth-akarin`, LLVM 22.1.8 as in
+  PyPI's wheel) and NL-Means ISPC 4.1 below 2.34 (release `v4.1-glibc2.28` of `Rift73/vapoursynth-nlm-ispc`, ISPC
+  1.32.0); their filters give the same frames as PyPI's builds. vsview is left out below glibc 2.34 (Rocky/Alma/RHEL 8,
+  Ubuntu 20.04, Debian 10 and 11): PySide6 6.11 and newer, which it needs, have no wheels there, and the older ones
+  declare Python 3.14 unsupported. VapourSynth's own programs also need the system's `libstdc++.so.6`, which every
+  desktop distribution has.
 - **Configuration.** vspipe needs a line naming the Python it runs scripts in; `vapoursynth config` cannot write it for
   chaiNNer-C's Python (its sysconfig names the machine that built it), so chaiNNer-C writes it itself, in
   `vsconfig/vapoursynth/vapoursynth.toml` inside its Python's folder, and again when the Python is moved or replaced.
   Nothing goes to `~/.config/vapoursynth`.
 - **CUDA plugins.** vszip CUDA and DFTTest2's CUDA and NVRTC need an NVIDIA driver (`libcuda.so.1`); without one they
   do not load.
-- **Preview Clips** needs a desktop session (X11 or Wayland) and Qt's `libxcb-cursor0`. Without a session the node says
-  so; if vsview ends within three seconds of its start, the node reports it and `vsview.log` beside the script has
-  Qt's reason. vsview keeps its settings in `~/.config/vsview`.
+- **Preview Clips** needs a desktop session (X11 or Wayland), Qt's `libxcb-cursor0` and glibc 2.34 or newer (vsview).
+  Below glibc 2.34 or without a session the node says so; Save Script writes the script for another previewer. If
+  vsview ends within three seconds of its start, the node reports it and `vsview.log` beside the script has Qt's
+  reason. vsview keeps its settings in `~/.config/vsview`.
 
 ## Limits and known gaps
 

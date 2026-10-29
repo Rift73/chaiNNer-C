@@ -352,6 +352,29 @@ ORT_MIGRAPHX_WINDOWS_SIZE = 74 * MB
 # (Linux), DirectML's (Windows) and NVIDIA's (a computer whose NVIDIA GPU gave way to an
 # AMD one). The installer uninstalls an installed one first.
 ORT_BUILDS = ("onnxruntime", "onnxruntime-gpu", "onnxruntime-directml")
+# The AMD builds that NVIDIA's and the CPU builds replace in turn (a folder that ran on an
+# AMD GPU, on a computer whose GPU is now an NVIDIA one or none): ONNX Runtime's MIGraphX
+# build; Triton for ROCm, which PyTorch's ROCm build brings on Linux and NVIDIA's PyTorch
+# would install Triton over; PyTorch's ROCm builds, which keep its distributions' names
+# (Dependency.replaces' "+rocm"); and ROCm's runtime, which PyTorch's and ONNX Runtime's
+# ROCm builds run on and nothing else uses (2 GB and more, and on Windows HIP's GPU listing
+# at every start while it is installed): the meta package, the SDK and its GPU kernel
+# wheels, and on Windows AMD's GPU detection helper and PyTorch's GPU kernel wheels
+# (Dependency.replaces' "*"). The PyTorch and ONNX builds each remove the runtime: where
+# the ONNX package changes first, PyTorch's ROCm build no longer loads until the PyTorch
+# package changes too, as the dependency manager asks (it shows PyTorch missing).
+ROCM_RUNTIME_BUILDS = (
+    "rocm",
+    "rocm-sdk-core",
+    "rocm-sdk-libraries",
+    "rocm-sdk-device-*",
+    "rocm-bootstrap",
+    "amd-torch-device-*",
+)
+ORT_AMD_BUILDS = ("onnxruntime-migraphx", *ROCM_RUNTIME_BUILDS)
+TRITON_AMD_BUILDS = ("triton-rocm",)
+TORCH_AMD_BUILDS = ("torch+rocm", *TRITON_AMD_BUILDS, *ROCM_RUNTIME_BUILDS)
+TORCHVISION_AMD_BUILDS = ("torchvision+rocm",)
 
 
 def gpu_architectures() -> tuple[list[str], list[str]]:

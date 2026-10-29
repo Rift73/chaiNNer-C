@@ -138,7 +138,8 @@ def test_run_proxies_without_recycling_the_worker():
         "from typing import Any, Coroutine, Final"
     )
     # VapourSynth: a dependency installed with [extras] (vsjetpack[deinterlace]) is
-    # looked up by the name pip lists it under.
+    # looked up by the name pip lists it under. An installed build a dependency
+    # replaces (PyTorch's ROCm build where NVIDIA's is listed) is not that dependency.
     upstream[
         upstream.index(
             "from dependencies.store import DependencyInfo, filter_necessary_to_install, "
@@ -147,7 +148,7 @@ def test_run_proxies_without_recycling_the_worker():
     ] = (
         "from dependencies.store import DependencyInfo, distribution_name, "
         "filter_necessary_to_install, install_dependencies, installed_packages, "
-        "uninstall_dependencies"
+        "replaced, uninstall_dependencies"
     )
     # Instant startup: main takes the worker run.py started (a subprocess.Popen), and
     # the setup events go to every listener (BackendEventBroadcast, no setup queue).
@@ -179,6 +180,8 @@ def test_run_proxies_without_recycling_the_worker():
     # An uninstall keeps a dependency another installed package also lists (ROCm's
     # wheels, which the PyTorch and ONNX packages share on AMD GPUs).
     functions[0].remove("shared_distributions")
+    # /installed-dependencies leaves out an installed build a dependency replaces.
+    functions[0].remove("installed_versions")
     assert functions[0] == functions[1]
 
 

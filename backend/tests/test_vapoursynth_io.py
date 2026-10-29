@@ -37,6 +37,7 @@ from nodes.impl.vapoursynth import runner
 from nodes.impl.vapoursynth.colour_props import colour_stream
 from nodes.impl.vapoursynth.runner import VSScriptError, clip_info, read_frames
 from nodes.impl.vapoursynth.script import VideoClip, clip_var, compile_script
+from packages.chaiNNer_vapoursynth.vapoursynth import preview_clips
 from packages.chaiNNer_vapoursynth.vapoursynth.preview_clips import (
     preview_clips_node,
 )
@@ -301,6 +302,16 @@ def test_executor_reports_an_attributed_error_on_its_node():
         assert on_failing_node(cause, nodes) is cause
 
 
+def test_preview_without_vsview_for_the_glibc_says_why_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(preview_clips, "glibc_version", lambda: (2, 31))
+
+    with pytest.raises(VSScriptError, match=r"glibc 2\.34 or newer.* glibc 2\.31\."):
+        preview_clips_node(context(tmp_path, "view"), *pairs(clip("src", BLANK)))
+    assert not (tmp_path / "vapoursynth").exists()
+
+
 # VapourSynth from here on: the venv's vspipe renders in child processes.
 
 
@@ -325,8 +336,10 @@ class FakeViewer:
 
 @pytest.fixture
 def viewers(monkeypatch: pytest.MonkeyPatch, vs: Any) -> list[FakeViewer]:
-    """Every vsview the test's runs start; none is a real process. (Preview Clips
-    checks its script in vspipe first.)"""
+    """Every vsview the test's runs start; none is a real process, on a system where
+    vsview installs whatever this one's glibc. (Preview Clips checks its script in
+    vspipe first.)"""
+    monkeypatch.setattr(preview_clips, "glibc_version", lambda: None)
     started: list[FakeViewer] = []
 
     def open_viewer(script: Path) -> FakeViewer:

@@ -28,7 +28,10 @@ __TEXCONV_DIR = os.path.join(
     os.path.dirname(sys.modules["__main__"].__file__),  # type: ignore
     "texconv",  # type: ignore
 )
-__TEXCONV_EXE = os.path.join(__TEXCONV_DIR, "texconv.exe")
+# Microsoft's texconv.exe on Windows; on Linux chaiNNer-C's own (native/texconv)
+__TEXCONV_EXE = os.path.join(
+    __TEXCONV_DIR, "texconv.exe" if platform.system() == "Windows" else "texconv"
+)
 
 ColourConversion = Literal["keep", "srgb_to_linear", "linear_to_srgb"]
 """What happens to the colour values written: an sRGB or linear format is only a tag."""

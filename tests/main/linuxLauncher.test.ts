@@ -187,11 +187,16 @@ describe.skipIf(process.platform !== 'linux')(
     "the launcher's check of the system libraries",
     () => {
         const env = { CHAINNER_SANDBOX: '1' };
-        const libraries = readFileSync(libraryTable, 'utf-8')
+        const rows = readFileSync(libraryTable, 'utf-8')
             .split('\n')
             .filter((line) => line !== '' && !line.startsWith('#'))
-            .map((line) => line.split(/\s+/)[0])
-            .filter((file) => file.includes('.so'));
+            .map((line) => line.split(/\s+/))
+            .filter(([file]) => file.includes('.so'));
+        const libraries = rows.map(([file]) => file);
+        // the libraries without which the launch ends (the others only get the install command)
+        const required = rows
+            .filter(([, groups]) => /(^|,)(base|electron)(,|$)/.test(groups))
+            .map(([file]) => file);
 
         // an ldconfig that lists every library of the table but the missing ones
         const provideLibraries = (missing: string[] = [], abi = '(libc6,x86-64)') => {
@@ -243,7 +248,19 @@ describe.skipIf(process.platform !== 'linux')(
             const { code, stderr } = launch(['chain.chn'], env);
 
             expect(code).toBe(1);
-            expect(stderr).toContain(`this system lacks ${libraries.join(' ')}.\n`);
+            expect(stderr).toContain(`this system lacks ${required.join(' ')}.\n`);
+        });
+
+        test('names a missing library of VapourSynth plugins, and starts the program', async () => {
+            await provideLibraries(['libatomic.so.1']);
+
+            const { code, lines, stderr } = launch(['chain.chn'], env);
+
+            expect(code).toBe(0);
+            expect(lines).toEqual(['chain.chn']);
+            expect(stderr).toMatch(
+                /^chaiNNer-C: some VapourSynth plugins need libatomic\.so\.1, which this system lacks\.\n/
+            );
         });
 
         test('finds a library in a directory of LD_LIBRARY_PATH', async () => {

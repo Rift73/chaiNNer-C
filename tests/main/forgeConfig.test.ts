@@ -18,6 +18,7 @@ beforeEach(async () => {
     const backend = path.join(outputPath, 'resources/src');
     await mkdir(path.join(backend, 'texconv'), { recursive: true });
     await writeFile(path.join(backend, 'texconv/texconv.exe'), '');
+    await writeFile(path.join(backend, 'texconv/texconv'), '');
     await writeFile(path.join(backend, 'texconv/LICENSE'), '');
     await writeFile(path.join(backend, 'server.py'), '');
 });
@@ -27,10 +28,12 @@ afterEach(async () => {
 });
 
 describe('packaging', () => {
-    test('the Linux package has no texconv.exe, a Windows program, and keeps the backend', async () => {
+    test('the Linux package has no texconv.exe, a Windows program, and keeps its own texconv and the backend', async () => {
         await postPackage({}, { platform: 'linux', arch: 'x64', outputPaths: [outputPath] });
 
-        expect(existsSync(path.join(outputPath, 'resources/src/texconv'))).toBe(false);
+        expect(existsSync(path.join(outputPath, 'resources/src/texconv/texconv.exe'))).toBe(false);
+        expect(existsSync(path.join(outputPath, 'resources/src/texconv/texconv'))).toBe(true);
+        expect(existsSync(path.join(outputPath, 'resources/src/texconv/LICENSE'))).toBe(true);
         expect(existsSync(path.join(outputPath, 'resources/src/server.py'))).toBe(true);
     });
 

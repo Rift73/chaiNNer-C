@@ -265,8 +265,11 @@ class Dependency:
     # A wheel to install instead of the PyPI release (a fork's build of version).
     url: str | None = None
     # The distributions that own the same modules under another name (another build of
-    # the package, as onnxruntime-gpu is of onnxruntime): the installer uninstalls those
-    # installed before it installs this one.
+    # the package, as onnxruntime-gpu is of onnxruntime), or "<distribution>+<label>" for
+    # the builds of a distribution whose local version label starts with label
+    # ("torch+rocm"), or "<prefix>*" for every distribution whose name starts with prefix
+    # ("rocm-sdk-device-*"): the installer uninstalls those installed before it installs
+    # this one, and this one counts as not installed while such a build of it is.
     replaces: tuple[str, ...] = ()
 
     import_name: str | None = None

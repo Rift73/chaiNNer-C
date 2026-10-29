@@ -142,17 +142,18 @@ def install_command(
 
 
 def wheel_groups() -> frozenset[str]:
-    """The table's groups the Python wheels need on this system: base, and amd where PyTorch
-    runs on ROCm (an AMD GPU's compute driver, and no NVIDIA driver)."""
+    """The table's groups the Python wheels need on this system: base and vapoursynth, and
+    amd where PyTorch runs on ROCm (an AMD GPU's compute driver, and no NVIDIA driver)."""
     if KFD_TOPOLOGY.is_dir() and not NVIDIA_DRIVER.exists():
-        return frozenset({"base", "amd"})
-    return frozenset({"base"})
+        return frozenset({"base", "vapoursynth", "amd"})
+    return frozenset({"base", "vapoursynth"})
 
 
 def log_missing_libraries() -> None:
-    """Logs the libraries of the Python wheels (the table's base group, and amd where it
-    applies) that this system lacks, and the command that installs them; elsewhere than on
-    Linux, nothing. OpenCV, VapourSynth and ROCm's PyTorch fail to import without them."""
+    """Logs the libraries of the Python wheels (the table's base and vapoursynth groups, and
+    amd where it applies) that this system lacks, and the command that installs them;
+    elsewhere than on Linux, nothing. OpenCV, VapourSynth (or some of its plugins) and ROCm's
+    PyTorch fail to import without them."""
     if sys.platform != "linux":
         return
     cache = read_library_cache()

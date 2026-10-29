@@ -2,11 +2,14 @@
 chaiNNer_tensorrt, dependencies/rocm.py): NVIDIA and CPU selections as before, ROCm's
 wheels for AMD GPUs; the bundled ROCm meta package (native/tools/build_rocm_meta_wheel.py);
 the host's uninstall keeping what another installed package lists; the other builds the
-AMD ones replace. Runs without a GPU: the GPUs are stand-ins."""
+AMD ones replace, and the AMD builds the NVIDIA and CPU ones replace in turn (a folder
+that ran on an AMD GPU, on a computer with an NVIDIA GPU or none). Runs without a GPU:
+the GPUs are stand-ins."""
 
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import importlib
 import sys
@@ -20,7 +23,8 @@ import packages.chaiNNer_onnx as onnx_package
 import packages.chaiNNer_pytorch as pytorch_package
 import packages.chaiNNer_tensorrt as tensorrt_package
 from api import Dependency
-from dependencies import rocm
+from dependencies import rocm, store
+from dependencies.store import filter_necessary_to_install, replaced_distributions
 from gpu import AmdDevice, AmdInfo
 
 NVIDIA = SimpleNamespace(is_available=True, any_needs_legacy_cuda=False, devices=[1])
@@ -63,6 +67,15 @@ def pins(dependencies: list) -> list[tuple[str, str]]:
     return [(d.pypi_name, d.version) for d in dependencies]
 
 
+# ROCm's runtime, which the NVIDIA and CPU builds of PyTorch and ONNX Runtime replace
+RUNTIME_BUILDS = [
+    "rocm",
+    "rocm-sdk-core",
+    "rocm-sdk-libraries",
+    "rocm-sdk-device-*",
+    "rocm-bootstrap",
+    "amd-torch-device-*",
+]
 ROCM_RUNTIME = [
     ("rocm", "7.14.1+chainner"),
     ("rocm-sdk-core", "7.14.1"),
@@ -85,7 +98,7 @@ def test_pytorch_on_nvidia_is_unchanged(
             "autoUpdate": False,
             "findLink": "https://download.pytorch.org/whl/cu132",
             "url": None,
-            "replaces": [],
+            "replaces": ["torch+rocm", "triton-rocm", *RUNTIME_BUILDS],
         },
         {
             "displayName": "TorchVision",
@@ -95,7 +108,7 @@ def test_pytorch_on_nvidia_is_unchanged(
             "autoUpdate": False,
             "findLink": "https://download.pytorch.org/whl/cu132",
             "url": None,
-            "replaces": [],
+            "replaces": ["torchvision+rocm"],
         },
     ]
     monkeypatch.setattr(pytorch_package, "nvidia", NVIDIA_LEGACY)
@@ -121,7 +134,7 @@ def test_pytorch_without_a_gpu_it_runs_on_is_the_cpu_build(
             "autoUpdate": False,
             "findLink": "https://download.pytorch.org/whl/cpu",
             "url": None,
-            "replaces": [],
+            "replaces": ["torch+rocm", "triton-rocm", *RUNTIME_BUILDS],
         },
         {
             "displayName": "TorchVision",
@@ -131,7 +144,7 @@ def test_pytorch_without_a_gpu_it_runs_on_is_the_cpu_build(
             "autoUpdate": False,
             "findLink": "https://download.pytorch.org/whl/cpu",
             "url": None,
-            "replaces": [],
+            "replaces": ["torchvision+rocm"],
         },
     ]
     assert pytorch_package.amd_architectures()[0] == []
@@ -406,7 +419,7 @@ def test_kernel_wheels_are_each_systems_rocm_architectures(
     if system == "windows":
         assert (supported, unsupported) == (["gfx1100"], ["gfx942"])
         assert kernels[0].size_estimate == 179_338_768
-        assert kernels[0].url.startswith(rocm.AMD_INDEX)
+        assert (kernels[0].url or "").startswith(rocm.AMD_INDEX)
     else:
         assert (supported, unsupported) == (["gfx1100", "gfx942"], [])
         assert all(d.extra_index_url == rocm.PYTORCH_ROCM_INDEX for d in kernels)
@@ -549,23 +562,33 @@ def selected_dependencies(
     ]
 
 
-@pytest.mark.parametrize("system", ["linux", "windows"])
-@pytest.mark.parametrize(
+OTHER_COMPUTERS = pytest.mark.parametrize(
     ("nvidia", "gfx"),
     [(NVIDIA, ()), (NVIDIA, ("gfx1100",)), (NO_NVIDIA, ()), (NO_NVIDIA, ("gfx906",))],
     ids=["nvidia", "nvidia-and-amd", "cpu", "amd-without-rocm-kernels"],
 )
-def test_nvidia_and_cpu_dependencies_replace_nothing(
+
+
+@pytest.mark.parametrize("system", ["linux", "windows"])
+@OTHER_COMPUTERS
+def test_nvidia_and_cpu_dependencies_replace_the_amd_builds_alone(
     monkeypatch: pytest.MonkeyPatch,
     system: str,
     nvidia: SimpleNamespace,
     gfx: tuple[str, ...],
 ):
-    # Their installs run as before: nothing is uninstalled first.
     dependencies = selected_dependencies(
         monkeypatch, nvidia=nvidia, gfx=gfx, system=system
     )
-    assert [d.pypi_name for d in dependencies if d.replaces] == []
+    runtime = onnx_package.get_onnx_runtime().pypi_name
+    expected: dict[str, tuple[str, ...]] = {
+        "torch": ("torch+rocm", "triton-rocm", *RUNTIME_BUILDS),
+        "torchvision": ("torchvision+rocm",),
+        runtime: ("onnxruntime-migraphx", *RUNTIME_BUILDS),
+    }
+    if system == "linux":
+        expected["triton"] = ("triton-rocm",)
+    assert {d.pypi_name: d.replaces for d in dependencies if d.replaces} == expected
 
 
 @pytest.mark.parametrize("system", ["linux", "windows"])
@@ -576,7 +599,7 @@ def test_on_amd_onnx_runtime_and_triton_replace_the_other_builds(
         monkeypatch, nvidia=NO_NVIDIA, gfx=("gfx1100",), system=system
     )
     builds = ("onnxruntime", "onnxruntime-gpu", "onnxruntime-directml")
-    expected = {"onnxruntime-migraphx": builds}
+    expected: dict[str, tuple[str, ...]] = {"onnxruntime-migraphx": builds}
     if system == "linux":
         expected["triton-rocm"] = ("triton",)
     assert {d.pypi_name: d.replaces for d in dependencies if d.replaces} == expected
@@ -593,3 +616,113 @@ def test_the_host_installs_with_what_the_workers_dependency_replaces(
     assert Dependency.from_dict(rocm.onnxruntime_migraphx().to_dict()).replaces == (
         rocm.ORT_BUILDS
     )
+
+
+def listing(
+    monkeypatch: pytest.MonkeyPatch, server_host: ModuleType, packages: dict[str, str]
+) -> None:
+    """`packages` (name -> version) as the installed distributions, as the host lists
+    them for the installer and for the dependency manager."""
+    monkeypatch.setattr(store, "installed_packages", packages)
+    monkeypatch.setattr(server_host, "installed_packages", packages)
+
+
+@pytest.mark.parametrize("system", ["linux", "windows"])
+@pytest.mark.parametrize("nvidia", [NVIDIA, NO_NVIDIA], ids=["nvidia", "cpu"])
+def test_a_folder_from_an_amd_computer_swaps_its_amd_builds_for_this_computers(
+    monkeypatch: pytest.MonkeyPatch,
+    server_host: ModuleType,
+    system: str,
+    nvidia: SimpleNamespace,
+):
+    # What the packages installed on an AMD GPU, then what they list on this computer
+    amd_stack = selected_dependencies(
+        monkeypatch, nvidia=NO_NVIDIA, gfx=("gfx1100",), system=system
+    )
+    listing(monkeypatch, server_host, {d.pypi_name: d.version for d in amd_stack})
+    dependencies = selected_dependencies(
+        monkeypatch, nvidia=nvidia, gfx=(), system=system
+    )
+    to_install = filter_necessary_to_install(server_host.deps_to_dep_info(dependencies))
+    # Each is installed, PyTorch's CPU build too where it has the ROCm build's version
+    # (2.14.1 on Linux).
+    assert [d.package_name for d in to_install] == [d.pypi_name for d in dependencies]
+    # First every AMD distribution leaves: the builds that own the same modules, and
+    # ROCm's runtime, which nothing here uses.
+    assert {d.package_name for d in replaced_distributions(to_install)} == {
+        d.pypi_name for d in amd_stack
+    }
+    # The dependency manager shows them missing, not PyTorch installed at the ROCm
+    # build's version.
+    package = SimpleNamespace(dependencies=dependencies)
+    assert server_host.installed_versions([package]) == {}
+
+
+@pytest.mark.parametrize("system", ["linux", "windows"])
+@OTHER_COMPUTERS
+def test_a_computer_without_amd_builds_installs_as_before(
+    monkeypatch: pytest.MonkeyPatch,
+    server_host: ModuleType,
+    system: str,
+    nvidia: SimpleNamespace,
+    gfx: tuple[str, ...],
+):
+    dependencies = selected_dependencies(
+        monkeypatch, nvidia=nvidia, gfx=gfx, system=system
+    )
+    before = [dataclasses.replace(d, replaces=()) for d in dependencies]
+    # Each dependency as pip lists it after an install (PyTorch's CPU builds with +cpu),
+    # at another build of its version (CUDA 12.6's, PyPI's), and older.
+    states = [
+        {
+            d.pypi_name: d.version
+            if "+" in d.version or not d.pypi_name.startswith("torch")
+            else f"{d.version}+cpu"
+            for d in dependencies
+        },
+        {d.pypi_name: f"{d.version.split('+')[0]}+cu126" for d in dependencies},
+        {d.pypi_name: "0.1" for d in dependencies},
+    ]
+    for state in states:
+        listing(monkeypatch, server_host, state)
+        to_install = filter_necessary_to_install(
+            server_host.deps_to_dep_info(dependencies)
+        )
+        assert [d.package_name for d in to_install] == [
+            d.package_name
+            for d in filter_necessary_to_install(server_host.deps_to_dep_info(before))
+        ]
+        assert replaced_distributions(to_install) == []
+        assert server_host.installed_versions(
+            [SimpleNamespace(dependencies=dependencies)]
+        ) == server_host.installed_versions([SimpleNamespace(dependencies=before)])
+
+
+@pytest.mark.parametrize("system", ["linux", "windows"])
+def test_an_amd_computer_keeps_rocms_runtime(
+    monkeypatch: pytest.MonkeyPatch, server_host: ModuleType, system: str
+):
+    dependencies = selected_dependencies(
+        monkeypatch, nvidia=NO_NVIDIA, gfx=("gfx1100",), system=system
+    )
+    runtime = {
+        d.pypi_name
+        for d in dependencies
+        if store.replaced(RUNTIME_BUILDS, d.pypi_name, d.version)
+    }
+    assert {"rocm", "rocm-sdk-core", "rocm-sdk-device-gfx1100"} <= runtime
+    # Installed at their versions, and at older ones (an update of every dependency):
+    # the runtime is never uninstalled first, and counts as installed.
+    for state in [
+        {d.pypi_name: d.version for d in dependencies},
+        {d.pypi_name: "0.1" for d in dependencies},
+    ]:
+        listing(monkeypatch, server_host, state)
+        to_install = filter_necessary_to_install(
+            server_host.deps_to_dep_info(dependencies)
+        )
+        replaced = {d.package_name for d in replaced_distributions(to_install)}
+        assert not runtime & replaced
+        assert runtime <= set(
+            server_host.installed_versions([SimpleNamespace(dependencies=dependencies)])
+        )
