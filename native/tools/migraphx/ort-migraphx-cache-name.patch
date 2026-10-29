@@ -1,0 +1,78 @@
+MIGraphX provider: the compiled-program cache (.mxr) is named after the real input shapes.
+
+make_hash passed the element count of a std::vector<int64_t> to MurmurHash3::x86_128, which takes a length in
+bytes, so only the first bytes of the first dimension were hashed and every input shape got the same file name;
+with migraphx_model_cache_dir set, a second input shape loaded the program compiled for the first one. The hash now
+covers all bytes (string hashes are unchanged). At run time the name is built from every input's name and
+dimensions in name order (the dynamic-shape branch used to hash an empty list, and the two branches visited the
+inputs in different orders).
+
+diff --git a/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc b/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc
+index 8908013..4074b2f 100644
+--- a/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc
++++ b/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc
+@@ -1284,7 +1284,7 @@ std::string to_hex(const uint64_t v) {
+ template <typename T>
+ std::string make_hash(T v) {
+   std::array<std::uint32_t, 4> temp{};
+-  MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size()), temp[0], temp.data());
++  MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size() * sizeof(*v.data())), temp[0], temp.data());
+   return to_hex(temp[0] | static_cast<uint64_t>(temp[1]) << 32);
+ }
+ 
+@@ -1293,6 +1293,20 @@ std::string make_hash(const char* v) {
+   return make_hash(std::string_view{v});
+ }
+ 
++// One string per set of input shapes: each input's name (length-prefixed) and dimensions, in name order, so equal
++// shapes always give the same key whichever order the inputs were visited in.
++std::string make_shape_key(const std::map<std::string, std::vector<std::int64_t>>& input_shapes) {
++  std::string key;
++  for (const auto& [name, dims] : input_shapes) {
++    key += std::to_string(name.size()) + ':' + name;
++    for (auto d : dims) {
++      key += ',' + std::to_string(d);
++    }
++    key += ';';
++  }
++  return key;
++}
++
+ constexpr std::uint64_t MIGraphX_Version =
+     ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
+ 
+@@ -1431,7 +1445,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+       // from input data
+       bool input_shape_match = true;
+       migraphx::program_parameter_shapes param_shapes;
+-      std::vector<std::int64_t> input_shapes;
++      std::map<std::string, std::vector<std::int64_t>> input_shapes;
+ 
+       if (no_input_shape) {
+         LOGS_DEFAULT(VERBOSE) << "Missing input shape setting input parameters again";
+@@ -1444,6 +1458,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+           std::vector<std::size_t> ort_lens(tensor_shape.begin(), tensor_shape.end());
+           cmp_options.set_input_parameter_shape(name, ort_lens);
+           input_shape_match = false;
++          input_shapes[name].assign(tensor_shape.begin(), tensor_shape.end());
+         }
+       } else {
+         LOGS_DEFAULT(VERBOSE) << "Assigning inputs, and parameters from compiled model";
+@@ -1472,7 +1487,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+                 cmp_options.set_input_parameter_shape(name, ort_lens);
+                 input_shape_match = false;
+               }
+-              input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
++              input_shapes[name].assign(tensor_shape.begin(), tensor_shape.end());
+             }
+           }
+         }
+@@ -1484,7 +1499,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+         std::filesystem::path model_cache_file;
+         // empty cache path means the MXR caching is disabled - always compile
+         if (!model_cache_path_.empty()) {
+-          model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
++          model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + make_hash(make_shape_key(input_shapes)) + ".mxr");
+         }
+         if (!load_precompiled_model(prog, model_cache_file)) {
+           LOGS_DEFAULT(VERBOSE) << "Input shape mismatch detected. Recompiling";

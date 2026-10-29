@@ -20,6 +20,14 @@ install_server_deps = importlib.import_module("dependencies.install_server_deps"
 if install_server_deps.missing:
     install_server_deps.install()
 
+# Windows without NVIDIA's driver: the AMD GPUs are listed once, here, and the worker
+# reads the listing from its environment instead of listing them again (hip_devices.py).
+# With NVIDIA's driver, each process decides as gpu.py does.
+if sys.platform == "win32":
+    hip_devices = importlib.import_module("hip_devices")
+    if not hip_devices.nvidia_driver():
+        hip_devices.record()
+
 # The worker starts next: it loads its nodes while this process imports its own modules.
 worker_port = find_free_port()
 worker = spawn_worker([str(worker_port), *ServerConfig.parse_argv().worker_flags()])

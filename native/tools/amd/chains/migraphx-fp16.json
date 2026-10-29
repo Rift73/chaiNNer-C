@@ -1,0 +1,10 @@
+{
+    "inputs": {
+        "#2613dfd3-11a8-5278-a9ab-cf909eddbee5:0": "@IMAGE@",
+        "#a32f241c-2eb6-5782-a70b-5a50a21cd0e6:1": "@OUT@",
+        "#a32f241c-2eb6-5782-a70b-5a50a21cd0e6:3": "@NAME@",
+        "#addf80cb-7398-52ab-b5eb-41505961bcff:0": "@MODEL@",
+        "#355cc003-16d9-595d-be88-eee670c0157d:2": "@SIZE@",
+        "#355cc003-16d9-595d-be88-eee670c0157d:3": "@SIZE@"
+    }
+}

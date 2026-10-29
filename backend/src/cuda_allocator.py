@@ -5,7 +5,9 @@ module imports torch; its child processes inherit them.
 PyTorch reads the first of PYTORCH_CUDA_ALLOC_CONF, PYTORCH_HIP_ALLOC_CONF and
 PYTORCH_ALLOC_CONF that is set, so apply() writes PYTORCH_CUDA_ALLOC_CONF: the options
 of the first one the user set, without expandable_segments, and the VRAM offload's
-pinned RAM options (nodes/impl/pytorch/offload.py) the user did not set.
+pinned RAM options (nodes/impl/pytorch/offload.py) the user did not set. PyTorch's ROCm
+builds read the same variables in the same order and take the same options (the pinned
+RAM one under its CUDA or its HIP name), so AMD GPUs get the same settings.
 
 expandable_segments is left out: in PyTorch 2.14 a mapping that runs out of memory
 after its handles were created (cuMemSetAccess on Windows) keeps them, and from then on

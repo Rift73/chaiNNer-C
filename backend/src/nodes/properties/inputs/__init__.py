@@ -1,6 +1,6 @@
 """The input types of node schemas.
 
-The inputs of a framework's models (NCNN, ONNX, PyTorch, TensorRT, VapourSynth) import
+The inputs of a framework's models (MIGraphX, NCNN, ONNX, PyTorch, TensorRT, VapourSynth) import
 the framework, so their modules load on first use: a node module that uses none of
 them loads without the framework, while the worker imports the frameworks in the
 background.
@@ -19,6 +19,7 @@ from .numeric_inputs import *
 from .numpy_inputs import *
 
 if TYPE_CHECKING:
+    from .migraphx_inputs import *
     from .ncnn_inputs import *
     from .onnx_inputs import *
     from .pytorch_inputs import *
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 
 # Each name the framework modules define, by its module.
 FRAMEWORK_INPUTS: dict[str, str] = {
+    "MIGraphXProgramInput": "migraphx_inputs",
     "NcnnModelInput": "ncnn_inputs",
     "OnnxModelInput": "onnx_inputs",
     "OnnxGenericModelInput": "onnx_inputs",

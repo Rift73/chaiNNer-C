@@ -107,7 +107,8 @@ A function that returns several clips (Shift Clip Multi, SplitPlanes) gives them
 AI Upscale runs a model on every frame inside the script with chaiNNer's own code: PyTorch models, ONNX models and
 TensorRT engines, with Backend, Precision (FP32 or FP16, PyTorch only) and Tile Size as in Upscale Image. A frame comes
 out as Upscale Image would make it (tested identical on the CPU). PyTorch and ONNX use the first NVIDIA GPU if there is
-one, else the CPU.
+one, else the CPU. On AMD GPUs, PyTorch runs on ROCm and ONNX on MIGraphX, which compiles the model for each tile
+size it meets (the edge tiles' sizes too) without the ONNX settings' program cache; TensorRT engines need NVIDIA.
 
 - The clip must be 32-bit float RGB or gray (RGBS or GRAYS) of one size: use Convert Format before it (Convert (Point)
   starts at RGBS) and usually after it. Each frame is clipped to 0-1 before the model, as chaiNNer's images always are.

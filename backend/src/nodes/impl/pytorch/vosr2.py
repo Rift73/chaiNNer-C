@@ -37,6 +37,13 @@ class VosrBackend(Enum):
     PYTORCH = "pytorch"
     TENSORRT = "tensorrt"
     TENSORRT_FP8 = "tensorrt_fp8"
+    MIGRAPHX = "migraphx"
+    MIGRAPHX_FP8 = "migraphx_fp8"
+
+
+TENSORRT_BACKENDS = (VosrBackend.TENSORRT, VosrBackend.TENSORRT_FP8)
+# AMD GPUs on Linux (nodes/impl/migraphx/vosr2_migx.py)
+MIGRAPHX_BACKENDS = (VosrBackend.MIGRAPHX, VosrBackend.MIGRAPHX_FP8)
 
 
 @dataclass(frozen=True)

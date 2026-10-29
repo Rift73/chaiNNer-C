@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import atexit
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Hashable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from weakref import WeakSet
 
 import torch
 
 from api import NodeContext, NodeId
-from gpu import nvidia
+from gpu import get_vram_usage
 from nodes.impl.tensorrt.cache import SharedCache
 
 from .vosr2_export import rotary_tables
@@ -69,8 +69,9 @@ class FullSession:
         if self.budget and reserve != self.reserve:
             self.offload()
             return
-        gpu = next(g for g in nvidia.devices if g.index == self.device.index)
-        usage = gpu.get_current_vram_usage()
+        usage = get_vram_usage(self.device.index)
+        if usage is None:
+            raise RuntimeError("VOSR sessions require working GPU memory monitoring.")
         if usage.used >= usage.total - 1_200_000_000:
             self.offload()
 
@@ -235,17 +236,30 @@ def release_full_session(node_id: NodeId) -> None:
 
 
 @contextmanager
-def lease_full_session(
-    context: NodeContext, directory: Path, device: torch.device, *, reuse: bool
+def lease_session(
+    context: NodeContext,
+    key: Hashable,
+    create: Callable[[], FullSession],
+    *,
+    reuse: bool,
 ) -> Iterator[FullSession]:
+    """The node's session: with `reuse`, kept across runs under `key` (one per node,
+    whichever backend made it); else made for this use and closed after it."""
     if not reuse:
         release_full_session(context.node_id)
-        session = FullSession(directory, device)
+        session = create()
         try:
             yield session
         finally:
             session.close()
         return
+    with _SESSIONS.use(key, context.node_id, create) as session:
+        yield session
+
+
+def lease_full_session(
+    context: NodeContext, directory: Path, device: torch.device, *, reuse: bool
+) -> AbstractContextManager[FullSession]:
     key = (
         tuple(
             (
@@ -257,7 +271,6 @@ def lease_full_session(
         ),
         str(device),
     )
-    with _SESSIONS.use(
-        key, context.node_id, lambda: FullSession(directory, device)
-    ) as session:
-        yield session
+    return lease_session(
+        context, key, lambda: FullSession(directory, device), reuse=reuse
+    )

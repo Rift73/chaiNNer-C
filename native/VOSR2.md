@@ -25,7 +25,7 @@ downloaded again. The first upscale also downloads OpenCV's YuNet face detector 
 | Scale | 1 to 8, default 4 | Exact output size (the input is enlarged with 8-bit bicubic first) |
 | Seed | | Chooses the generated detail; same seed, settings, backend: same output |
 | Color Correction | Wavelet (default), AdaIN, None | Wavelet: the input's coarse colours (Gaussian, sigma 5); AdaIN: channel mean and spread |
-| GPU Memory, Backend | Default, Low (under 7 GB); PyTorch, TensorRT, TensorRT FP8 | Backend hidden with Low |
+| GPU Memory, Backend | Default, Low (under 7 GB); PyTorch, TensorRT, TensorRT FP8, MIGraphX, MIGraphX FP8 | MIGraphX runs Low on PyTorch |
 | Temporal Method, Strength | Three Frames, Persistent Detail; 0 to 100 %, default 65 | Only when Load Video feeds the image; 0 %: each frame alone |
 | Texture Fix | On (default), off | The final grain pass below; off keeps the model's own output in flat areas |
 
@@ -56,7 +56,8 @@ from its first frame, and the log says `using past frames only`.
 ## Backends and memory
 
 Every backend computes in BF16, with FP32 where precision matters (VAE, normalization, residuals); CPU mode uses FP32
-and is very slow. The GPU must support BF16. **PyTorch** needs nothing more.
+and is very slow. The GPU must support BF16. **PyTorch** needs nothing more; on AMD GPUs it runs on the ROCm build of
+PyTorch (Linux and Windows).
 
 - **TensorRT** needs an NVIDIA GPU, the TensorRT package (dependency manager) and VOSR's plugin `vosr2_qkv.dll`
   (included when the build made it; otherwise the node says so). The plugin has code for RTX 30, 40 and 50 GPUs; only
@@ -66,9 +67,21 @@ and is very slow. The GPU must support BF16. **PyTorch** needs nothing more.
   runs the DiT's projections and feed-forward layers and most of DINOv2; DiT attention and the VAE stay BF16/FP32. First
   use downloads the calibrated graphs (3.45 GB from `steropes.feralhosting.com`, SHA-256 checked, resumed after Stop)
   and builds engines; 5.2 GB on disk. Faster, slightly lossy.
+- **MIGraphX** is TensorRT's counterpart for AMD GPUs on Linux and Windows: the ROCm PyTorch, chaiNNer-C's MIGraphX
+  runner and VOSR's op library `vosr2_migx_ops.so` (Windows: `.dll`). DINO and the DiT run as MIGraphX programs
+  built from the same graphs; the VAE runs in PyTorch (its shapes follow the image, and MIGraphX compiles fixed
+  shapes). The first run builds four programs (the DiT twice, once per window width, each with its own weights);
+  every AMD GPU ROCm 7.14 supports, none tested yet.
+- **MIGraphX FP8** has MIGraphX quantize the same graphs where TensorRT FP8 is FP8 (the DiT's projections and
+  feed-forward layers, DINOv2's products) on GPUs with FP8 math (Instinct MI300 and MI350, Radeon RX 9000 series),
+  calibrated on built-in synthetic images (the TensorRT FP8 set's format is one MIGraphX 2.16.1 cannot read). On
+  other GPUs it is MIGraphX, or FP16 where BF16 is slow (Radeon RX 5000 and 6000 series, Instinct MI100). Faster,
+  lossy; nothing to download. Both MIGraphX options show only on Linux and Windows with an AMD GPU and no NVIDIA
+  GPU.
 
 **Default** may use the whole GPU except other programs' use and 800 MB. **Low** keeps the GPU total, other programs
-included, under 7 GB by streaming the DiT weights: slower, always PyTorch. Weights and engines stay loaded until the node
+included, under 7 GB by streaming the DiT weights: slower; TensorRT streams its engines' weights, MIGraphX cannot, so
+MIGraphX runs Low on PyTorch. Weights and engines stay loaded until the node
 is deleted, unless Force CUDA Cache Wipe or a Memory Budget Limit is set (PyTorch settings).
 
 ## Measured speed

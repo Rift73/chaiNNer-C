@@ -60,8 +60,31 @@ package_manager() {
     done
 }
 
+# Prints how to install the packages $1 with the system's package manager $manager.
+print_install() {
+    case $manager in
+        apt) install="apt-get install" ;;
+        dnf) install="dnf install" ;;
+        pacman) install="pacman -S --needed" ;;
+        zypper) install="zypper install" ;;
+    esac
+    if [ -n "$manager" ]; then
+        if [ "$(id -u 2>/dev/null)" != 0 ]; then
+            install="sudo $install"
+        fi
+        echo "Install them with:" >&2
+        echo >&2
+        echo "  $install$1" >&2
+    else
+        echo "Install the packages of this distribution that provide them." >&2
+    fi
+}
+
 # Ends the launch with the install command when a file of the table is missing: the files of
-# the groups base and electron, and of display when $1 is display.
+# the groups base and electron, and of display when $1 is display. The files of amd, where
+# PyTorch may run on ROCm (the AMD kernel driver's compute interface is there and no NVIDIA
+# driver is: with one, PyTorch runs on CUDA), only get the command: a machine whose AMD GPU
+# never runs models (a Ryzen's graphics, CPU PyTorch) starts without them.
 check_system_files() {
     table="$here/resources/src/linux_libraries.txt"
     if [ ! -r "$table" ] || [ -n "${CHAINNER_SKIP_LIBRARY_CHECK:-}" ]; then
@@ -81,18 +104,24 @@ check_system_files() {
     if [ "$minor" != "$glibc" ] && [ "${minor%%.*}" -ge 38 ] 2>/dev/null; then
         suffix=t64
     fi
+    rocm=
+    if [ -d /sys/class/kfd/kfd/topology/nodes ] && [ ! -e /proc/driver/nvidia ]; then
+        rocm=1
+    fi
 
     missing=
     packages=
+    amd_missing=
+    amd_packages=
     while read -r file groups apt dnf pacman zypper; do
         case $file in '' | '#'*) continue ;; esac
         case ",$groups," in
-            *,base,* | *,electron,*) ;;
-            *,display,*) [ "$1" = display ] || continue ;;
+            *,base,* | *,electron,*) required=1 ;;
+            *,display,*) [ "$1" = display ] || continue; required=1 ;;
+            *,amd,*) [ -n "$rocm" ] || continue; required= ;;
             *) continue ;;
         esac
         have_file "$file" && continue
-        missing="$missing $file"
         case $manager in
             apt) package=$apt ;;
             dnf) package=$dnf ;;
@@ -103,30 +132,26 @@ check_system_files() {
         case $package in
             *'(t64)') package=${package%'(t64)'}$suffix ;;
         esac
-        case " $packages " in
-            *" $package "*) ;;
-            *) packages="$packages $package" ;;
-        esac
+        if [ -n "$required" ]; then
+            missing="$missing $file"
+            case " $packages " in
+                *" $package "*) ;;
+                *) packages="$packages $package" ;;
+            esac
+        else
+            amd_missing="$amd_missing $file"
+            amd_packages="$amd_packages $package"
+        fi
     done <"$table"
+    if [ -n "$amd_missing" ]; then
+        echo "chaiNNer-C: PyTorch on an AMD GPU (ROCm) needs$amd_missing, which this system lacks." >&2
+        print_install "$amd_packages"
+        echo >&2
+    fi
     [ -n "$missing" ] || return 0
 
     echo "chaiNNer-C cannot start: this system lacks$missing." >&2
-    case $manager in
-        apt) install="apt-get install" ;;
-        dnf) install="dnf install" ;;
-        pacman) install="pacman -S --needed" ;;
-        zypper) install="zypper install" ;;
-    esac
-    if [ -n "$manager" ]; then
-        if [ "$(id -u 2>/dev/null)" != 0 ]; then
-            install="sudo $install"
-        fi
-        echo "Install them with:" >&2
-        echo >&2
-        echo "  $install$packages" >&2
-    else
-        echo "Install the packages of this distribution that provide them." >&2
-    fi
+    print_install "$packages"
     exit 1
 }
 

@@ -29,6 +29,17 @@ RUNNER_BINARIES = frozenset(
         "nodes/impl/tensorrt/chainner_trt_vs.dll",
     }
 )
+# The AMD GPU parts (native/cmake/rocm.cmake; Build.ps1 -RocmRoot, -MigraphxRoot): the
+# MIGraphX runner and the DRFT and VOSR op libraries ship when built and are never
+# required: without the runner the MIGraphX package is disabled, without an op library
+# that model's MIGraphX route, each saying so.
+AMD_BINARIES = frozenset(
+    {
+        "nodes/impl/migraphx/_chainner_migraphx.pyd",
+        "nodes/impl/migraphx/drft_migx_ops.dll",
+        "nodes/impl/migraphx/vosr2_migx_ops.dll",
+    }
+)
 NATIVE_BINARIES = frozenset(
     {
         "nodes/impl/chainner_native.dll",
@@ -36,6 +47,7 @@ NATIVE_BINARIES = frozenset(
         "chainner_ext/chainner_ext.pyd",
         "nodes/impl/pytorch/vosr2_qkv.dll",
         *RUNNER_BINARIES,
+        *AMD_BINARIES,
     }
 )
 OPTIONAL_NATIVE_BINARIES = frozenset({"nodes/impl/pytorch/vosr2_qkv.dll"})
@@ -346,7 +358,9 @@ def backend_inventory(root: Path, tracked: set[str]) -> dict[str, bytes]:
     found = set(walk(root, cache_skip))
     expected = tracked | NATIVE_BINARIES
     untracked = sorted(found - expected)
-    missing = sorted(expected - found - OPTIONAL_NATIVE_BINARIES - RUNNER_BINARIES)
+    missing = sorted(
+        expected - found - OPTIONAL_NATIVE_BINARIES - RUNNER_BINARIES - AMD_BINARIES
+    )
     if untracked or missing:
         raise ValueError(
             "backend/src must equal git ls-files plus the native binaries; "

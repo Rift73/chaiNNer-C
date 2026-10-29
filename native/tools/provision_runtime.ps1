@@ -13,27 +13,59 @@ then the freeze and a new lock (the freeze under a header with the interpreter, 
 -BuildOnly provisions what native\Build.ps1 needs and nothing else: the lock's CPython, downloaded and checked as
 above, with only the lock's numpy and pybind11 pins (no torch, no pip check or freeze comparison). The full run on the
 same runtime later installs the rest.
+-Rocm provisions the AMD GPU stack from native\python-stack.lock.rocm.txt: AMD's Windows build of torch and torchvision
+(2.12.0+rocm7.14.1) with ROCm's runtime and libraries (rocm-sdk-core, rocm-sdk-libraries) and rocm-bootstrap from AMD's
+index, ROCm's meta package rocm from the backend's bundled wheel (backend\src\dependencies\whls\rocm) and ONNX Runtime
+with DirectML and MIGraphX in onnxruntime-gpu's place, as the app's packages install them on AMD GPUs. -Device gfx<arch> (with
+-Rocm; several are comma-separated) also installs that architecture's GPU kernels, torch[device-gfx<arch>] (PyTorch's
+kernel wheel, its family's flash attention wheel and ROCm's kernel wheel), as the app's PyTorch package does for the
+GPUs it finds; the lock never holds them, so the freeze is compared without them.
+-RuntimeDir (default native\runtime) is where cpython-<version> is extracted, for a second runtime beside the first.
 Usage: powershell -NoProfile -File native\tools\provision_runtime.ps1 [-Relock | -BuildOnly] [-Version 3.14.8] [-Tag 20261003]
+                                                                       [-RuntimeDir DIR] [-Rocm [-Device gfx1100]]
 -Version and -Tag default to the lock's; without -Relock any other value is refused. -Relock needs no readable lock
 header (it writes a new one), only -Version and -Tag when the lock cannot supply them.
 The archive's SHA-256 is recorded beside the runtime it was extracted into (cpython-<version>.archive-sha256), and an
 existing runtime extracted from another archive, or with no record, is refused: remove it to extract this one.
 #>
-param([string]$Version, [string]$Tag, [switch]$Relock, [switch]$BuildOnly)
+param(
+    [string]$Version, [string]$Tag, [switch]$Relock, [switch]$BuildOnly, [string]$RuntimeDir, [switch]$Rocm,
+    [string[]]$Device = @()
+)
 
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 redraws Invoke-WebRequest's progress bar for every chunk it reads, which slows a download
 # many times over.
 $ProgressPreference = 'SilentlyContinue'
 if ($Relock -and $BuildOnly) { throw '-BuildOnly provisions from the lock; it cannot be combined with -Relock' }
+# powershell -File passes a comma-separated list as one string.
+$Device = @($Device | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+if ($Device.Count -and -not $Rocm) { throw '-Device installs ROCm GPU kernels; it needs -Rocm' }
+foreach ($Gfx in $Device) {
+    if ($Gfx -cnotmatch '^gfx[0-9a-f]+$') { throw "-Device $Gfx is not a ROCm architecture (gfx1100, gfx90a, ...)" }
+}
 # Isolated from user state: no user site-packages, no pip user configuration and no PIP_* variables, so
 # every requirement is installed into (and frozen from) the runtime itself.
 $env:PYTHONNOUSERSITE = '1'
 $Pip = @('-s', '-m', 'pip', '--isolated')
 $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$Runtime = Join-Path $Root "native\runtime"
-$LockPath = Join-Path $Root 'native\python-stack.lock.txt'
-$TorchIndex = 'https://download.pytorch.org/whl/cu132'
+$Runtime = if ($RuntimeDir) { $RuntimeDir } else { Join-Path $Root "native\runtime" }
+if ($Rocm) {
+    $LockPath = Join-Path $Root 'native\python-stack.lock.rocm.txt'
+    # AMD's index serves its Windows torch builds, ROCm's wheels and rocm-bootstrap, none of them on PyPI.
+    $TorchIndex = 'https://repo.amd.com/rocm/whl-multi-arch/'
+    $FromTorchIndex = '^(torch|torchvision|rocm-bootstrap|rocm-sdk-[a-z0-9-]+)=='
+    $TorchPins = @('torch==2.12.0+rocm7.14.1', 'torchvision==0.27.0+rocm7.14.1', 'rocm==7.14.1+chainner')
+    # onnxruntime-migraphx: ONNX Runtime 1.30.0 with DirectML and MIGraphX, the wheel on its fork's release
+    $OnnxRuntimePin = 'onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14/onnxruntime_migraphx-1.30.0%2Brocm7.14.dml-cp314-cp314-win_amd64.whl#sha256=9a8c2d1fddfd9a00e429d21fe8f50a32496d0dfe797db1675d3ef299782b870c'
+} else {
+    $LockPath = Join-Path $Root 'native\python-stack.lock.txt'
+    $TorchIndex = 'https://download.pytorch.org/whl/cu132'
+    $FromTorchIndex = '^(torch|torchvision)=='
+    $TorchPins = @('torch==2.14.1', 'torchvision==0.29.1')
+    # onnxruntime-gpu: ONNX Runtime 1.30.0 rebuilt for TensorRT 11.4, the wheel on its fork's release
+    $OnnxRuntimePin = 'onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11.4-cp314-cp314-win_amd64.whl#sha256=3ab12b436d5f6463867b0635366c29fd4a26c3ae489d2b3911c00391411d1ca6'
+}
 # UTF-8 without a BOM (Set-Content -Encoding utf8 writes one in Windows PowerShell 5.1).
 $Utf8 = New-Object Text.UTF8Encoding $false
 
@@ -141,12 +173,16 @@ if ($BuildOnly) {
 
 # chainner-pip from the backend's bundled wheel, which the host would otherwise install into the package at first
 # launch (Consult 6 P2). Resolved by name from that directory only, so the freeze pins its version, not a file path.
+# ROCm's meta package the same way, from its own directory.
 $Wheels = Join-Path $Root 'backend\src\dependencies\whls\chainner-pip'
+$RocmWheels = Join-Path $Root 'backend\src\dependencies\whls\rocm'
 if ($Relock) {
     & $Python @Pip install --upgrade pip
     if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed' }
-    # The backend's dependencies at their latest versions, CUDA torch from the PyTorch index.
-    & $Python @Pip install torch==2.14.1 torchvision==0.29.1 --index-url $TorchIndex
+    # The backend's dependencies at their latest versions, torch from the PyTorch index (CUDA) or AMD's (ROCm, which
+    # also serves ROCm's wheels; the bundled meta package is the one torch's rocm[libraries] requirement then takes).
+    $FindRocm = if ($Rocm) { @('--find-links', $RocmWheels) } else { @() }
+    & $Python @Pip install @TorchPins --index-url $TorchIndex @FindRocm
     if ($LASTEXITCODE -ne 0) { throw 'torch install failed' }
     $Packages = @(
         'numpy==2.5.3', 'opencv-python==5.0.0.93', 'Pillow==12.3.0', 'scipy==1.18.1', 'numba==0.68.0', 'llvmlite==0.50.0',
@@ -154,10 +190,9 @@ if ($Relock) {
         'google-re2',  # oracle/reference only (upstream's onnx/load.py imports re2)
         'Sanic-Cors==2.2.0',  # oracle/reference only (upstream's server imports sanic_cors)
         # spandrel: the fork's build (DRFT, DUAL, SST, WSR, GaterV3, SMoSR, FIGSR, GFISRv2), the wheel on its release
-        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c10/spandrel-0.4.2%2Bc10-py3-none-any.whl#sha256=2496741447f096efa803d01798262ab065d0c4e79b4266f30a32cab4e254b50f',
+        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c11/spandrel-0.4.2%2Bc11-py3-none-any.whl#sha256=77467a3fbd2e915ee83b52ec10546714c6820304c7983d4a55d5185952b08cb2',
         'spandrel_extra_arches', 'facexlib', 'einops', 'safetensors',
-        # onnxruntime-gpu: ONNX Runtime 1.30.0 rebuilt for TensorRT 11.4, the wheel on its fork's release
-        'onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11.4-cp314-cp314-win_amd64.whl#sha256=3ab12b436d5f6463867b0635366c29fd4a26c3ae489d2b3911c00391411d1ca6',
+        $OnnxRuntimePin,
         'onnx', 'onnxoptimizer', 'protobuf', 'ncnn==1.0.20260526',
         'sanic==25.12.1', 'aiofiles', 'html5tagger', 'sanic-routing', 'tracerite', 'websockets', 'typing_extensions',
         'nvidia-ml-py', 'psutil', 'aiohttp',
@@ -172,8 +207,7 @@ if ($Relock) {
     # The lock is a whole freeze, so every pin is installed as it stands (--no-deps), each from its one source.
     & $Python @Pip install "pip==$($Header.pip)"
     if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
-    $FromTorchIndex = '^(torch|torchvision)=='
-    $FromWheel = '^chainner-pip=='
+    $FromWheel = '^(chainner-pip|rocm)=='
     & $Python @Pip install --no-deps --index-url $TorchIndex @($Pins -cmatch $FromTorchIndex)
     if ($LASTEXITCODE -ne 0) { throw 'torch install failed' }
     # The rest from PyPI: the lock less those lines (pip reads the notes after a pin as comments).
@@ -181,16 +215,26 @@ if ($Relock) {
     [IO.File]::WriteAllLines($PypiPins, [string[]]@($LockLines | Where-Object { $_ -cnotmatch $FromTorchIndex -and $_ -cnotmatch $FromWheel }), $Utf8)
     & $Python @Pip install --no-deps -r $PypiPins
     if ($LASTEXITCODE -ne 0) { throw 'package install failed' }
-    & $Python @Pip install --no-deps --no-index --find-links $Wheels @($Pins -cmatch $FromWheel)
-    if ($LASTEXITCODE -ne 0) { throw 'chainner-pip install failed' }
+    & $Python @Pip install --no-deps --no-index --find-links $Wheels --find-links $RocmWheels @($Pins -cmatch $FromWheel)
+    if ($LASTEXITCODE -ne 0) { throw 'bundled wheel install failed' }
     & $Python @Pip check
     if ($LASTEXITCODE -ne 0) { throw 'pip check failed' }
+}
+if ($Device.Count) {
+    # Each GPU's kernels as torch's device extra names them, resolved under the lock's pins (torch is installed).
+    $Constraints = Join-Path $Runtime "constraints-$Version.txt"
+    [IO.File]::WriteAllLines($Constraints, [string[]]@($Pins -cmatch '^[A-Za-z0-9._-]+=='), $Utf8)
+    $TorchPin = @($Pins -cmatch '^torch==')[0]
+    $DeviceExtras = ($Device | ForEach-Object { "device-$_" }) -join ','
+    & $Python @Pip install -c $Constraints --index-url $TorchIndex ($TorchPin -replace '^torch==', "torch[$DeviceExtras]==")
+    if ($LASTEXITCODE -ne 0) { throw 'GPU kernel install failed' }
 }
 & $Python -s -m chainner_pip --version
 if ($LASTEXITCODE -ne 0) { throw 'chainner-pip does not run' }
 $PipVersion = ((& $Python @Pip --version) -split ' ')[1]
 if ($LASTEXITCODE -ne 0) { throw 'pip --version failed' }
-$Freeze = @(& $Python @Pip freeze)
+# The GPU kernel wheels are the machine's, never the lock's.
+$Freeze = @(& $Python @Pip freeze | Where-Object { $_ -cnotmatch '^(rocm-sdk-device-|amd-torch-device-)' })
 if ($LASTEXITCODE -ne 0) { throw 'pip freeze failed' }
 $FreezePath = Join-Path $Runtime "freeze-$Version.txt"
 [IO.File]::WriteAllLines($FreezePath, [string[]]$Freeze, $Utf8)
@@ -208,12 +252,26 @@ if ($Relock) {
         "# Build tag: python-build-standalone $Tag",
         "# Archive: $Name",
         "# Archive SHA-256: $ArchiveSha",
-        "# pip: $PipVersion (installed; pip freeze does not list it)",
-        '# Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.ps1 (torch and',
-        '# torchvision from https://download.pytorch.org/whl/cu132, chainner-pip from the bundled wheel in',
-        '# backend/src/dependencies/whls/chainner-pip/, spandrel and onnxruntime-gpu from their forks'' release',
-        '# wheels (github.com/Rift73/spandrel, github.com/Rift73/onnxruntime), the rest from PyPI).'
+        "# pip: $PipVersion (installed; pip freeze does not list it)"
     )
+    if ($Rocm) {
+        $Lock += @(
+            '# Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.ps1 -Rocm (AMD''s',
+            "# torch and torchvision builds, ROCm's rocm-sdk-core and rocm-sdk-libraries and rocm-bootstrap from",
+            "# $TorchIndex, chainner-pip and ROCm's meta package rocm from the bundled wheels in",
+            '# backend/src/dependencies/whls/, spandrel and onnxruntime-migraphx from their forks'' release wheels',
+            '# (github.com/Rift73/spandrel, github.com/Rift73/onnxruntime), the rest from PyPI). It is the Windows lock''s',
+            '# set for AMD GPUs: ROCm in CUDA''s place and ONNX Runtime with DirectML and MIGraphX. The GPU kernel wheels',
+            '# (torch[device-gfx<arch>]) are a machine''s, never the lock''s: -Device adds them.'
+        )
+    } else {
+        $Lock += @(
+            '# Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.ps1 (torch and',
+            '# torchvision from https://download.pytorch.org/whl/cu132, chainner-pip from the bundled wheel in',
+            '# backend/src/dependencies/whls/chainner-pip/, spandrel and onnxruntime-gpu from their forks'' release',
+            '# wheels (github.com/Rift73/spandrel, github.com/Rift73/onnxruntime), the rest from PyPI).'
+        )
+    }
     foreach ($Pin in $Freeze) {
         $Note = $Notes[($Pin -split '==')[0]]
         $Lock += if ($Note) { "$Pin  # $Note" } else { $Pin }

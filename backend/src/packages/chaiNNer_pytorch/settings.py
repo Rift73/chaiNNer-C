@@ -4,16 +4,21 @@ import torch
 from sanic.log import logger
 
 from api import DropdownSetting, NodeContext, NumberSetting, ToggleSetting
-from gpu import nvidia
+from gpu import amd, nvidia
 from system import is_arm_mac
 
 from . import package
+
+# A ROCm build of PyTorch runs on AMD GPUs, through the same torch.cuda API.
+rocm = torch.version.hip is not None
 
 if not is_arm_mac:
     gpu_list = []
     for i in range(torch.cuda.device_count()):
         device_name = torch.cuda.get_device_properties(i).name
         gpu_list.append(device_name)
+    # On ROCm, the strongest AMD GPU: a Ryzen's small graphics often come first.
+    default_gpu = amd.default_index if rocm and amd.default_index < len(gpu_list) else 0
 
     package.add_setting(
         DropdownSetting(
@@ -24,7 +29,7 @@ if not is_arm_mac:
                 " multiple GPUs."
             ),
             options=[{"label": x, "value": str(i)} for i, x in enumerate(gpu_list)],
-            default="0",
+            default=str(default_gpu),
         )
     )
 
@@ -41,7 +46,9 @@ package.add_setting(
 )
 
 should_fp16 = False
-if nvidia.is_available:
+if rocm:
+    should_fp16 = amd.is_available and amd.all_support_fp16
+elif nvidia.is_available:
     should_fp16 = nvidia.all_support_fp16
 else:
     should_fp16 = is_arm_mac
@@ -54,6 +61,12 @@ package.add_setting(
             "Runs PyTorch in half-precision (FP16) mode for reduced RAM usage but falls"
             " back to full-precision (FP32) mode when CPU mode is selected."
             if is_arm_mac
+            else (
+                "Runs PyTorch in half-precision (FP16) mode for less VRAM usage. AMD"
+                " GPUs from Vega (gfx9) on also get a speedup. It falls back to"
+                " full-precision (FP32) mode when CPU mode is selected."
+            )
+            if rocm
             else (
                 "Runs PyTorch in half-precision (FP16) mode for less VRAM usage. RTX"
                 " GPUs also get a speedup. It falls back to full-precision (FP32)"
@@ -75,12 +88,14 @@ package.add_setting(
     )
 )
 
-if nvidia.is_available:
+if nvidia.is_available or (rocm and amd.is_available):
+    # A ROCm build's torch.cuda cache is HIP's.
+    cache = "GPU memory cache (HIP's, on AMD GPUs)" if rocm else "CUDA cache"
     package.add_setting(
         ToggleSetting(
-            label="Force CUDA Cache Wipe (not recommended)",
+            label=f"Force {'GPU' if rocm else 'CUDA'} Cache Wipe (not recommended)",
             key="force_cache_wipe",
-            description="Clears PyTorch's CUDA cache after each inference. This is NOT recommended, by us or PyTorch's developers, as it basically interferes with how PyTorch is intended to work and can significantly slow down inference time. Only enable this if you're experiencing issues with VRAM allocation.",
+            description=f"Clears PyTorch's {cache} after each inference. This is NOT recommended, by us or PyTorch's developers, as it basically interferes with how PyTorch is intended to work and can significantly slow down inference time. Only enable this if you're experiencing issues with VRAM allocation.",
             default=False,
         )
     )
@@ -105,7 +120,7 @@ class PyTorchSettings:
         # CPU override
         if self.use_cpu:
             device = "cpu"
-        # Check for Nvidia CUDA
+        # Check for Nvidia CUDA (AMD GPUs on a ROCm build)
         elif torch.cuda.is_available() and torch.cuda.device_count() > 0:
             device = f"cuda:{self.gpu_index}"
         # Check for Apple MPS

@@ -17,8 +17,16 @@
 # manager installs on demand (TensorRT, CUDA Python, VapourSynth with its plugins) at the backend's versions, and the
 # test tools (ruff, pyright, viztracer, appdirs), with the lock's pins as constraints. The freeze then has to contain
 # every pin of the lock instead of equalling them.
+# --rocm provisions the AMD GPU stack from native/python-stack.lock.linux-rocm.txt: torch and torchvision with Triton
+# and ROCm's runtime and libraries (rocm-sdk-core, rocm-sdk-libraries) from the PyTorch ROCm index, ROCm's meta package
+# rocm from the backend's bundled wheel (backend/src/dependencies/whls/rocm, made by build_rocm_meta_wheel.py: torch's
+# rocm[device-all] then requires no GPU kernel wheel) and ONNX Runtime with the MIGraphX provider in onnxruntime-gpu's
+# place. Its --with-extras are VapourSynth without its CUDA plugins and the test tools (no TensorRT, no CUDA Python).
+# --device gfx<arch> (repeatable, with --rocm) also installs that architecture's GPU kernel wheel,
+# rocm-sdk-device-gfx<arch>, as the app's PyTorch package does for the GPUs it finds; the lock never holds them, so
+# the freeze is compared without them. Without --device the runtime imports torch and runs it on the CPU.
 # Usage: native/tools/provision_runtime.sh [--relock | --build-only] [--with-extras] [--version 3.14.8] [--tag 20261003]
-#                                          [--runtime-dir DIR] [--lock FILE]
+#                                          [--runtime-dir DIR] [--lock FILE] [--rocm [--device gfx1100]...]
 # --version and --tag default to the lock's; without --relock any other value is refused. --relock needs no readable
 # lock header (it writes a new one), only --version and --tag when the lock cannot supply them. --runtime-dir (default
 # native/runtime) is where cpython-<version> is extracted, for a checkout on a filesystem that cannot hold it.
@@ -29,14 +37,18 @@ set -euo pipefail
 relock=0
 build_only=0
 with_extras=0
+rocm=0
+devices=()
 version=""
 tag=""
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 runtime_dir="$root/native/runtime"
-lock_path="$root/native/python-stack.lock.linux.txt"
-torch_index="https://download.pytorch.org/whl/cu132"
+lock_path=""
 jet_index="https://jaded-encoding-thaumaturgy.github.io/vs-wheels/simple"
-spandrel_pin="spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c10/spandrel-0.4.2%2Bc10-py3-none-any.whl#sha256=2496741447f096efa803d01798262ab065d0c4e79b4266f30a32cab4e254b50f"
+# ROCm's meta package, bundled (see --rocm); the ROCm version its kernel wheels have.
+rocm_pin="rocm==7.14.1+chainner"
+rocm_version="7.14.1"
+spandrel_pin="spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c11/spandrel-0.4.2%2Bc11-py3-none-any.whl#sha256=77467a3fbd2e915ee83b52ec10546714c6820304c7983d4a55d5185952b08cb2"
 
 die() {
     echo "error: $*" >&2
@@ -52,6 +64,8 @@ while [ $# -gt 0 ]; do
         --tag) tag=${2:?--tag needs a value}; shift ;;
         --runtime-dir) runtime_dir=${2:?--runtime-dir needs a value}; shift ;;
         --lock) lock_path=${2:?--lock needs a value}; shift ;;
+        --rocm) rocm=1 ;;
+        --device) devices+=("${2:?--device needs a value}"); shift ;;
         -h | --help) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown argument $1" ;;
     esac
@@ -59,6 +73,20 @@ while [ $# -gt 0 ]; do
 done
 [ "$relock" = 1 ] && [ "$build_only" = 1 ] && die "--build-only provisions from the lock; it cannot be combined with --relock"
 [ "$with_extras" = 1 ] && [ "$build_only$relock" != 00 ] && die "--with-extras cannot be combined with --build-only or --relock"
+[ "${#devices[@]}" = 0 ] || [ "$rocm" = 1 ] || die "--device installs a ROCm kernel wheel; it needs --rocm"
+for device in "${devices[@]}"; do
+    [[ "$device" =~ ^gfx[0-9a-f]+$ ]] || die "--device $device is not a ROCm architecture (gfx1100, gfx90a, ...)"
+done
+if [ "$rocm" = 1 ]; then
+    lock_path=${lock_path:-$root/native/python-stack.lock.linux-rocm.txt}
+    torch_index="https://download.pytorch.org/whl/rocm7.14"
+    # What comes from the PyTorch index: it serves ROCm's wheels and Triton for ROCm too, none of them on PyPI.
+    index_pins_re='^(torch|torchvision|triton-rocm|rocm-sdk-[a-z0-9-]+)=='
+else
+    lock_path=${lock_path:-$root/native/python-stack.lock.linux.txt}
+    torch_index="https://download.pytorch.org/whl/cu132"
+    index_pins_re='^(torch|torchvision)=='
+fi
 
 # Isolated from user state: no user site-packages, no pip user configuration and no PIP_* variables, so every
 # requirement is installed into (and frozen from) the runtime itself.
@@ -157,13 +185,24 @@ if [ "$build_only" = 1 ]; then
 fi
 
 # chainner-pip from the backend's bundled wheel, which the host would otherwise install into the package at first
-# launch. Resolved by name from that directory only, so the freeze pins its version, not a file path.
+# launch. Resolved by name from that directory only, so the freeze pins its version, not a file path. ROCm's meta
+# package the same way, from its own directory.
 wheels="$root/backend/src/dependencies/whls/chainner-pip"
+rocm_wheels="$root/backend/src/dependencies/whls/rocm"
+onnxruntime_pin='onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11.4-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=b67a9a5b03df5fd4687d33d41dc035542d4ec2c4da8da57741749ee21b783778'
+# The ONNX package's ORT_MIGRAPHX_URL: ONNX Runtime with the MIGraphX provider, MIGraphX inside it.
+[ "$rocm" = 0 ] || onnxruntime_pin='onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14/onnxruntime_migraphx-1.30.0%2Brocm7.14-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=d9dc6fbe7acb8d7b4a40cf33bb7345bae92b154bd9da7023e67c66c1d11cf153'
 if [ "$relock" = 1 ]; then
     "${pip[@]}" install --no-cache-dir --upgrade pip
-    # The backend's dependencies at their latest versions, CUDA torch from the PyTorch index (which also serves the CUDA
-    # libraries and Triton it depends on).
-    "${pip[@]}" install --no-cache-dir torch==2.14.1 torchvision==0.29.1 --index-url "$torch_index"
+    # The backend's dependencies at their latest versions, torch from the PyTorch index (which also serves the CUDA
+    # libraries or ROCm's and Triton it depends on). ROCm's meta package is the bundled one, which torch's
+    # rocm[device-all,libraries] requirement then takes.
+    if [ "$rocm" = 1 ]; then
+        "${pip[@]}" install --no-cache-dir torch==2.14.1 torchvision==0.29.1 "$rocm_pin" --index-url "$torch_index" \
+            --find-links "$rocm_wheels"
+    else
+        "${pip[@]}" install --no-cache-dir torch==2.14.1 torchvision==0.29.1 --index-url "$torch_index"
+    fi
     packages=(
         'numpy==2.5.3' 'opencv-python==5.0.0.93' 'Pillow==12.3.0' 'scipy==1.18.1' 'numba==0.68.0' 'llvmlite==0.50.0'
         'PyMatting==1.1.16' 'pillow-avif-plugin' 'ffmpeg-python' 'requests' 'wcmatch'
@@ -171,7 +210,7 @@ if [ "$relock" = 1 ]; then
         'Sanic-Cors==2.2.0'  # oracle/reference only (upstream's server imports sanic_cors)
         "$spandrel_pin"
         'spandrel_extra_arches' 'facexlib' 'einops' 'safetensors'
-        'onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11.4-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=b67a9a5b03df5fd4687d33d41dc035542d4ec2c4da8da57741749ee21b783778'
+        "$onnxruntime_pin"
         'onnx' 'onnxoptimizer' 'protobuf' 'ncnn==1.0.20260526'
         'sanic==25.12.1' 'aiofiles' 'html5tagger' 'sanic-routing' 'tracerite' 'websockets' 'typing_extensions'
         'nvidia-ml-py' 'psutil' 'aiohttp'
@@ -183,32 +222,53 @@ if [ "$relock" = 1 ]; then
 else
     # The lock is a whole freeze, so every pin is installed as it stands (--no-deps), each from its one source.
     "${pip[@]}" install --no-cache-dir "pip==$header_pip"
-    mapfile -t torch_pins < <(printf '%s\n' "${pins[@]}" | grep -E '^(torch|torchvision)==')
+    mapfile -t torch_pins < <(printf '%s\n' "${pins[@]}" | grep -E "$index_pins_re")
     "${pip[@]}" install --no-cache-dir --no-deps --index-url "$torch_index" "${torch_pins[@]}"
-    # The rest from PyPI: the lock less those lines (pip reads the notes after a pin as comments).
+    # The rest from PyPI: the lock less those lines and the bundled wheels' (pip reads the notes after a pin as
+    # comments).
     pypi_pins="$runtime_dir/pypi-$version.txt"
-    grep -vE '^(torch|torchvision|chainner-pip)==' "$lock_path" >"$pypi_pins"
+    grep -vE "$index_pins_re|^(chainner-pip|rocm)==" "$lock_path" >"$pypi_pins"
     "${pip[@]}" install --no-cache-dir --no-deps -r "$pypi_pins"
     "${pip[@]}" install --no-cache-dir --no-deps --no-index --find-links "$wheels" "$(printf '%s\n' "${pins[@]}" | grep -E '^chainner-pip==')"
+    if [ "$rocm" = 1 ]; then
+        "${pip[@]}" install --no-cache-dir --no-deps --no-index --find-links "$rocm_wheels" "$(printf '%s\n' "${pins[@]}" | grep -E '^rocm==')"
+    fi
     if [ "$with_extras" = 1 ]; then
         # What the dependency manager installs on demand and what the tests use, at the backend's versions, resolved with
         # their dependencies under the lock's pins.
         constraints="$runtime_dir/constraints-$version.txt"
         printf '%s\n' "${pins[@]}" | grep -E '^[A-Za-z0-9._-]+==' >"$constraints"
-        extras=(
-            'tensorrt==11.4.0.106' 'cuda-python==13.4.1'
-            'VapourSynth==81' 'vsjetpack[deinterlace]==2.2.6' 'vapoursynth-mvutensils==9' 'vapoursynth-cas==3.0'
-            'vapoursynth-vszipcu==1.2.0' 'dfttest2[cpu,cufft,nvrtc]==11.0.0' 'vsview==0.13.0'
-            'ruff==0.16.10' 'pyright==1.1.414' 'appdirs==1.4.4' 'viztracer==1.1.1'
-        )
+        if [ "$rocm" = 1 ]; then
+            extras=(
+                'VapourSynth==81' 'vsjetpack[deinterlace]==2.2.6' 'vapoursynth-mvutensils==9' 'vapoursynth-cas==3.0'
+                'vsview==0.13.0'
+                'ruff==0.16.10' 'pyright==1.1.414' 'appdirs==1.4.4' 'viztracer==1.1.1'
+            )
+        else
+            extras=(
+                'tensorrt==11.4.0.106' 'cuda-python==13.4.1'
+                'VapourSynth==81' 'vsjetpack[deinterlace]==2.2.6' 'vapoursynth-mvutensils==9' 'vapoursynth-cas==3.0'
+                'vapoursynth-vszipcu==1.2.0' 'dfttest2[cpu,cufft,nvrtc]==11.0.0' 'vsview==0.13.0'
+                'ruff==0.16.10' 'pyright==1.1.414' 'appdirs==1.4.4' 'viztracer==1.1.1'
+            )
+        fi
         "${pip[@]}" install --no-cache-dir -c "$constraints" --extra-index-url "$jet_index" "${extras[@]}"
     fi
     "${pip[@]}" check
 fi
+if [ "${#devices[@]}" -gt 0 ]; then
+    # The kernel wheels overlay rocm-sdk-libraries' tree; each depends on nothing.
+    device_pins=()
+    for device in "${devices[@]}"; do
+        device_pins+=("rocm-sdk-device-$device==$rocm_version")
+    done
+    "${pip[@]}" install --no-cache-dir --no-deps --index-url "$torch_index" "${device_pins[@]}"
+fi
 "$python" -s -m chainner_pip --version || die "chainner-pip does not run"
 pip_version=$("${pip[@]}" --version | cut -d ' ' -f 2)
 freeze_path="$runtime_dir/freeze-$version.txt"
-"${pip[@]}" freeze >"$freeze_path"
+# The kernel wheels are the machine's, never the lock's.
+"${pip[@]}" freeze | grep -v '^rocm-sdk-device-' >"$freeze_path"
 if [ "$relock" = 1 ]; then
     # The lock: the freeze under a header package_port.py reads (python_stack); a pin's note follows it on its line.
     declare -A notes=(
@@ -224,11 +284,21 @@ if [ "$relock" = 1 ]; then
         echo "# Archive: $name"
         echo "# Archive SHA-256: $archive_sha"
         echo "# pip: $pip_version (installed; pip freeze does not list it)"
-        echo "# Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.sh (torch and"
-        echo "# torchvision from $torch_index, chainner-pip from the bundled wheel in"
-        echo "# backend/src/dependencies/whls/chainner-pip/, spandrel and onnxruntime-gpu from their forks' release"
-        echo "# wheels (github.com/Rift73/spandrel, github.com/Rift73/onnxruntime), the rest from PyPI). It is the Windows lock's set with Linux's own"
-        echo "# additions: torch's CUDA libraries and Triton, CUDA bindings, and Sanic's uvloop and ujson."
+        if [ "$rocm" = 1 ]; then
+            echo "# Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.sh --rocm (torch,"
+            echo "# torchvision, Triton and ROCm's rocm-sdk-core and rocm-sdk-libraries from $torch_index,"
+            echo "# chainner-pip and ROCm's meta package rocm from the bundled wheels in backend/src/dependencies/whls/,"
+            echo "# spandrel and onnxruntime-migraphx from their forks' release wheels (github.com/Rift73/spandrel,"
+            echo "# github.com/Rift73/onnxruntime), the rest from PyPI). It is the"
+            echo "# Linux lock's set for AMD GPUs: ROCm in CUDA's place and ONNX Runtime with the MIGraphX provider. The"
+            echo "# GPU kernel wheels (rocm-sdk-device-gfx<arch>) are a machine's, never the lock's: --device adds them."
+        else
+            echo "# Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.sh (torch and"
+            echo "# torchvision from $torch_index, chainner-pip from the bundled wheel in"
+            echo "# backend/src/dependencies/whls/chainner-pip/, spandrel and onnxruntime-gpu from their forks' release"
+            echo "# wheels (github.com/Rift73/spandrel, github.com/Rift73/onnxruntime), the rest from PyPI). It is the Windows lock's set with Linux's own"
+            echo "# additions: torch's CUDA libraries and Triton, CUDA bindings, and Sanic's uvloop and ujson."
+        fi
         while IFS= read -r pin; do
             note=${notes[${pin%%==*}]:-}
             if [ -n "$note" ]; then echo "$pin  # $note"; else echo "$pin"; fi

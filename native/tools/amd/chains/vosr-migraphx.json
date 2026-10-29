@@ -1,0 +1,7 @@
+{
+    "inputs": {
+        "#2613dfd3-11a8-5278-a9ab-cf909eddbee5:0": "@IMAGE@",
+        "#a32f241c-2eb6-5782-a70b-5a50a21cd0e6:1": "@OUT@",
+        "#a32f241c-2eb6-5782-a70b-5a50a21cd0e6:3": "@NAME@"
+    }
+}

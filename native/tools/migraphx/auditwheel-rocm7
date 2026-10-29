@@ -1,0 +1,10 @@
+#!/bin/sh
+# ONNX Runtime 1.30.0's setup.py passes --exclude for the ROCm 5/6 sonames only; add the ROCm 7 ones (AMD's
+# rocm-sdk-core / rocm-sdk-libraries pip packages provide them) and the MIGraphX 2.16 C API soname, so `auditwheel
+# repair` leaves them out exactly as it does for older ROCm. finalize_wheel.py adds MIGraphX.
+exec /usr/local/bin/auditwheel "$@" \
+    --exclude libamdhip64.so.7 --exclude libhiprtc.so.7 --exclude libamd_comgr.so.3 \
+    --exclude libhsa-runtime64.so.1 --exclude libMIOpen.so.1 --exclude librocblas.so.5 \
+    --exclude libhipblaslt.so.1 --exclude libhipblas.so.3 --exclude librocm_smi64.so.1 \
+    --exclude libroctx64.so.4 --exclude libroctracer64.so.4 --exclude librccl.so.1 \
+    --exclude 'libmigraphx*'

@@ -1,8 +1,8 @@
-"""The system libraries the Python wheels need on Linux (OpenCV's Qt, VapourSynth's plugins),
-from linux_libraries.txt beside this module, the table the launcher (chaiNNer.sh) reads for
-Electron's libraries too. A minimal install lacks some, and a wheel then fails to import with
-a loader error that names one library; this names them all, with the command that installs
-them."""
+"""The system libraries the Python wheels need on Linux (OpenCV's Qt, VapourSynth's plugins,
+ROCm's where PyTorch runs on an AMD GPU), from linux_libraries.txt beside this module, the
+table the launcher (chaiNNer.sh) reads for Electron's libraries too. A minimal install lacks
+some, and a wheel then fails to import with a loader error that names one library; this names
+them all, with the command that installs them."""
 
 from __future__ import annotations
 
@@ -51,6 +51,10 @@ STANDARD_DIRECTORIES = (
 )
 # Debian 13 and Ubuntu 24.04 (glibc 2.38 and newer) renamed some packages with a t64 suffix
 T64_GLIBC = (2, 38)
+# The AMD kernel driver's compute interface, which ROCm runs on, and NVIDIA's driver, whose GPU
+# PyTorch runs on instead where both are loaded: as the launcher tells the table's amd group.
+KFD_TOPOLOGY = Path("/sys/class/kfd/kfd/topology/nodes")
+NVIDIA_DRIVER = Path("/proc/driver/nvidia")
 
 
 class Entry(NamedTuple):
@@ -137,17 +141,26 @@ def install_command(
     return " ".join([command if is_root else f"sudo {command}", *packages])
 
 
+def wheel_groups() -> frozenset[str]:
+    """The table's groups the Python wheels need on this system: base, and amd where PyTorch
+    runs on ROCm (an AMD GPU's compute driver, and no NVIDIA driver)."""
+    if KFD_TOPOLOGY.is_dir() and not NVIDIA_DRIVER.exists():
+        return frozenset({"base", "amd"})
+    return frozenset({"base"})
+
+
 def log_missing_libraries() -> None:
-    """Logs the libraries of the Python wheels (the table's base group) that this system lacks,
-    and the command that installs them; elsewhere than on Linux, nothing. OpenCV and
-    VapourSynth fail to import without them."""
+    """Logs the libraries of the Python wheels (the table's base group, and amd where it
+    applies) that this system lacks, and the command that installs them; elsewhere than on
+    Linux, nothing. OpenCV, VapourSynth and ROCm's PyTorch fail to import without them."""
     if sys.platform != "linux":
         return
     cache = read_library_cache()
+    groups = wheel_groups()
     missing = [
         entry
         for entry in read_table(TABLE.read_text(encoding="utf-8"))
-        if "base" in entry.groups and not is_present(entry.file, cache)
+        if entry.groups & groups and not is_present(entry.file, cache)
     ]
     if not missing:
         return
@@ -162,6 +175,6 @@ def log_missing_libraries() -> None:
         command = install_command(missing, manager, glibc_version(), os.geteuid() == 0)
         how = f"Install them with: {command}"
     logger.error(
-        "This system lacks libraries that OpenCV and VapourSynth need: "
+        "This system lacks libraries that OpenCV, VapourSynth or ROCm need: "
         f"{', '.join(entry.file for entry in missing)}. {how}"
     )

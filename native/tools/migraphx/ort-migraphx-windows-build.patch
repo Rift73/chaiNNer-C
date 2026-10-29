@@ -1,0 +1,51 @@
+MIGraphX provider, Windows build only (after ort-migraphx-cache-name.patch and ort-migraphx-shape-programs.patch;
+build-system changes, no code; Linux unchanged).
+
+1. The provider target compiles as C++17 on MSVC. MIGraphX's C++ header migraphx.hpp declares member functions
+   returning `module` at the start of a line (`module get_main_module()`), which a C++20 compiler (MSVC; clang 23
+   too) reads as a C++20 module directive (MSVC error C7586); C++20 is ONNX Runtime's minimum. The provider's own
+   sources need nothing newer than C++17. The linked targets' compile features keep CMake's own flag at /std:c++20,
+   so /std:c++17 is added after it and overrides it (MSVC warning D9025).
+2. The Python package step copies the HIP SDK's hipRTC/comgr DLLs only when there are any. ONNX Runtime looks for
+   them under ROCm 6.2/6.4/7.0 names (hiprtc0602.dll ...); ROCm 7.14 names them hiprtc0714.dll, so the list was
+   empty and `cmake -E copy` without a source failed the build. No ROCm DLL is bundled either way.
+
+diff --git a/cmake/onnxruntime_providers_migraphx.cmake b/cmake/onnxruntime_providers_migraphx.cmake
+index 8cb5dcf..e5c286f 100644
+--- a/cmake/onnxruntime_providers_migraphx.cmake
++++ b/cmake/onnxruntime_providers_migraphx.cmake
+@@ -39,6 +39,10 @@
+   set_target_properties(onnxruntime_providers_migraphx PROPERTIES FOLDER "ONNXRuntime")
+   target_compile_definitions(onnxruntime_providers_migraphx PRIVATE ONNXIFI_BUILD_LIBRARY=1 ONNX_ML=1 ONNX_NAMESPACE=onnx)
+   if(MSVC)
++    # migraphx.hpp declares member functions returning `module` at the start of a line, which MSVC's C++20 mode
++    # reads as a module directive (C7586). The provider's sources need nothing newer than C++17. The linked
++    # targets' compile features keep CMake's own flag at C++20, so this later flag overrides it (warning D9025).
++    target_compile_options(onnxruntime_providers_migraphx PRIVATE /std:c++17)
+     set_property(TARGET onnxruntime_providers_migraphx APPEND_STRING PROPERTY LINK_FLAGS /DEF:${ONNXRUNTIME_ROOT}/core/providers/migraphx/symbols.def)
+     target_link_libraries(onnxruntime_providers_migraphx PRIVATE ws2_32)
+   else()
+diff --git a/cmake/onnxruntime_python.cmake b/cmake/onnxruntime_python.cmake
+index c89f884..0d7a66c 100644
+--- a/cmake/onnxruntime_python.cmake
++++ b/cmake/onnxruntime_python.cmake
+@@ -878,11 +878,14 @@ if (onnxruntime_USE_MIGRAPHX)
+             COMMAND ${CMAKE_COMMAND} -E copy
+             ${MIGRAPHX_LIB_FILES}
+             $<TARGET_FILE_DIR:${build_output_target}>/onnxruntime/capi/)
+-    add_custom_command(
+-            TARGET onnxruntime_pybind11_state POST_BUILD
+-            COMMAND ${CMAKE_COMMAND} -E copy
+-            ${HIPSDK_LIB_FILES}
+-            $<TARGET_FILE_DIR:${build_output_target}>/onnxruntime/capi/)
++    # Empty when the HIP SDK's DLLs carry other version suffixes than the listed ones (ROCm 7.14: hiprtc0714.dll).
++    if (HIPSDK_LIB_FILES)
++      add_custom_command(
++              TARGET onnxruntime_pybind11_state POST_BUILD
++              COMMAND ${CMAKE_COMMAND} -E copy
++              ${HIPSDK_LIB_FILES}
++              $<TARGET_FILE_DIR:${build_output_target}>/onnxruntime/capi/)
++    endif()
+   endif()
+ endif()
+ 

@@ -1,11 +1,18 @@
+from __future__ import annotations
+
 from sanic.log import logger
 
 from api import KB, MB, Dependency, add_package
+from dependencies.rocm import gpu_architectures, onnxruntime_migraphx, rocm_runtime
 from gpu import nvidia
 from system import is_arm_mac, is_linux, is_windows
 
 general = "ONNX uses .onnx models to upscale images."
 conversion = "It also helps to convert between PyTorch and NCNN."
+amd_providers = (
+    "On AMD GPUs it uses MIGraphX on Linux; on Windows DirectML by default, with"
+    " MIGraphX as the other choice."
+)
 
 if is_arm_mac:
     package_description = f"{general} {conversion} However, it does not support CoreML."
@@ -14,8 +21,24 @@ else:
     package_description = (
         f"{general} {conversion} It is fastest when CUDA is supported. With the"
         " TensorRT package installed, it can also be configured to use TensorRT."
+        f" {amd_providers}"
     )
-    inst_hint = f"{general} It does not support AMD GPUs, in linux."
+    inst_hint = f"{general} {amd_providers}"
+
+
+def amd_architectures() -> list[str]:
+    """The AMD GPUs' architectures ONNX Runtime runs on with MIGraphX: on Linux and
+    Windows, where no NVIDIA GPU is found (CUDA is chosen), those ROCm has GPU kernels
+    for."""
+    if nvidia.is_available or not (is_linux or is_windows):
+        return []
+    return gpu_architectures()[0]
+
+
+def get_rocm():
+    """ROCm for the MIGraphX build of ONNX Runtime, which runs on ROCm's pip wheels."""
+    architectures = amd_architectures()
+    return rocm_runtime(architectures) if architectures else []
 
 
 def get_onnx_runtime():
@@ -58,6 +81,8 @@ def get_onnx_runtime():
             size_estimate=120 * MB,
             import_name="onnxruntime",
         )
+    elif amd_architectures():
+        return onnxruntime_migraphx()
     elif is_windows:
         # onnxruntime-directml's last release is 1.24.4; it serves the public API 22
         # that the native session wrapper requests.
@@ -102,6 +127,7 @@ package = add_package(
             version="7.36.2",
             size_estimate=500 * KB,
         ),
+        *get_rocm(),
     ],
     icon="ONNX",
     color="#63B3ED",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from importlib.util import find_spec
 
@@ -8,10 +9,13 @@ import torch
 from sanic.log import logger
 
 from api import NodeContext
+from gpu import amd, nvidia
 from nodes.groups import Condition, if_group
 from nodes.impl.pytorch.resource_cache import allow_model_reuse
 from nodes.impl.pytorch.utils import safe_cuda_cache_empty
 from nodes.impl.pytorch.vosr2 import (
+    MIGRAPHX_BACKENDS,
+    TENSORRT_BACKENDS,
     BundlePaths,
     VosrBackend,
     VosrColorCorrection,
@@ -47,6 +51,15 @@ from ...settings import get_settings
 from .. import processing_group
 
 LOAD_VIDEO = "chainner:image:load_video"
+# MIGraphX's backends are offered only on Linux and Windows with an AMD GPU worth running
+# models on and no NVIDIA GPU, so that the node is unchanged everywhere else
+OFFERS_MIGRAPHX = (
+    sys.platform in ("linux", "win32") and amd.eligible and not nvidia.is_available
+)
+BACKEND_DOCS = (
+    "TensorRT needs an NVIDIA GPU and the TensorRT package. TensorRT FP8 is faster and can slightly change fine detail; it needs an RTX 40 series or newer GPU and the official VOSR 2.0 weights, and downloads its calibrated graphs (about 3.5 GB) on first use.",
+    "MIGraphX is the counterpart for AMD GPUs, with the ROCm build of PyTorch. MIGraphX FP8 is faster and can change fine detail: it quantizes to FP8 on GPUs with FP8 math (Instinct MI300 or MI350, Radeon RX 9000 series), calibrated once on built-in images; on others it runs BF16 as MIGraphX does, or FP16 where BF16 is slow (Radeon RX 5000 and 6000 series, Instinct MI100). MIGraphX keeps every weight on the GPU, so GPU Memory Low runs on PyTorch.",
+)
 TEMPORAL_METHODS = {
     TemporalMode.THREE_FRAMES: "Three Frames",
     TemporalMode.PERSISTENT_DETAIL: "Persistent Detail",
@@ -103,9 +116,12 @@ class _VideoState:
                 VosrBackend.PYTORCH: "PyTorch",
                 VosrBackend.TENSORRT: "TensorRT",
                 VosrBackend.TENSORRT_FP8: "TensorRT FP8",
+                VosrBackend.MIGRAPHX: "MIGraphX",
+                VosrBackend.MIGRAPHX_FP8: "MIGraphX FP8",
             },
+            hidden=() if OFFERS_MIGRAPHX else MIGRAPHX_BACKENDS,
         ).with_docs(
-            "TensorRT needs an NVIDIA GPU and the TensorRT package. TensorRT FP8 is faster and can slightly change fine detail; it needs an RTX 40 series or newer GPU and the official VOSR 2.0 weights, and downloads its calibrated graphs (about 3.5 GB) on first use.",
+            *(BACKEND_DOCS if OFFERS_MIGRAPHX else BACKEND_DOCS[:1]),
             hint=True,
         ),
         if_group(Condition.iterated(0, LOAD_VIDEO))(
@@ -159,7 +175,15 @@ def upscale_image_vosr_node(
     texture: bool,
 ) -> np.ndarray:
     device = get_settings(context).device
-    if backend != VosrBackend.PYTORCH:
+    if backend in TENSORRT_BACKENDS and torch.version.hip:
+        raise ValueError(
+            "VOSR TensorRT requires an NVIDIA GPU, and this PyTorch runs on AMD GPUs (ROCm). Select the MIGraphX or the PyTorch backend."
+        )
+    if backend in MIGRAPHX_BACKENDS:
+        from nodes.impl.migraphx.vosr2_migx import check_usable
+
+        check_usable(device)
+    elif backend != VosrBackend.PYTORCH:
         if device.type != "cuda":
             raise ValueError(
                 "VOSR TensorRT requires an NVIDIA GPU. Turn off CPU mode in the PyTorch settings or select the PyTorch backend."
@@ -223,7 +247,7 @@ def upscale_image_vosr_node(
     if step is None:
         lookahead = view.lookahead(0)
         step = TemporalStep(
-            method, strength / 100, lookahead, backend != VosrBackend.PYTORCH, inputs
+            method, strength / 100, lookahead, _session(backend, memory), inputs
         )
         state.step = step
         if not step.ahead:
@@ -252,6 +276,14 @@ def upscale_image_vosr_node(
     )
 
 
+def _session(backend: VosrBackend, memory: VosrMemoryMode) -> bool:
+    """Whether the backend restores through a session of compiled stages (TensorRT, or
+    MIGraphX in Default memory: it cannot stream weights, so Low runs on PyTorch)."""
+    if backend in MIGRAPHX_BACKENDS:
+        return memory == VosrMemoryMode.DEFAULT
+    return backend != VosrBackend.PYTORCH
+
+
 def _upscale(
     context: NodeContext,
     img: np.ndarray,
@@ -274,11 +306,26 @@ def _upscale(
         device.type, settings.budget_limit, settings.force_cache_wipe
     )
     engine = None
+    migraphx_session = None
     if backend == VosrBackend.TENSORRT_FP8:
         engine = ensure_fp8_engine(context, model, device)
     elif backend == VosrBackend.TENSORRT:
         engine = ensure_full_engine(context, model, device)
+    elif _session(backend, memory):
+        from nodes.impl.migraphx.vosr2_migx import (
+            ensure_migraphx_engine,
+            lease_migraphx_session,
+        )
+
+        engine = ensure_migraphx_engine(
+            context, model, device, reduced=backend == VosrBackend.MIGRAPHX_FP8
+        )
+        migraphx_session = lease_migraphx_session
     else:
+        if backend in MIGRAPHX_BACKENDS:
+            logger.info(
+                "VOSR MIGraphX cannot stream weights: GPU Memory Low runs on PyTorch"
+            )
         release_full_session(context.node_id)
     # After a possible engine build (minutes): the resized image is not held meanwhile.
     image, reference = prepare_image(img, scale)
@@ -287,7 +334,12 @@ def _upscale(
     )
     if engine is not None:
         low = LOW_MEMORY if memory == VosrMemoryMode.LOW else None
-        with lease_full_session(context, engine, device, reuse=reuse) as session:
+        lease = (
+            lease_full_session(context, engine, device, reuse=reuse)
+            if migraphx_session is None
+            else migraphx_session(context, engine, model, device, reuse=reuse)
+        )
+        with lease as session:
             release_bundle(context.node_id)
             statistics = LatentStatistics.load(model)
             with vram_budget(

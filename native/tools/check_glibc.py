@@ -11,7 +11,10 @@ when it needs
 - a GLIBC_ version above the floor, or an unnumbered one (GLIBC_PRIVATE, or
   GLIBC_ABI_DT_RELR, which glibc 2.36 introduced);
 - libstdc++ or libgcc_s: the modules link both statically, so that they need
-  glibc alone;
+  glibc alone, except the MIGraphX runner (SHARED_RUNTIME_MODULES), which links
+  them shared as MIGraphX does and fails instead when it needs a GLIBCXX_,
+  CXXABI_ or GCC_ version above those of the C++ runtime that glibc 2.28's
+  distributions ship (GCC 8's, the sysroot's: RUNTIME_CEILINGS);
 - libpython: the interpreter provides its symbols as a module loads.
 The --third-party files (the Electron runtime's; files also under a PATH are
 left out) are listed with their glibc findings alone, which never fail the
@@ -38,6 +41,13 @@ DT_VERNEEDNUM = 0x6FFFFFFF
 GLIBC_VERSION = re.compile(r"GLIBC_(\d+)\.(\d+)(?:\.(\d+))?")
 # The C++ and compiler runtimes the modules link statically.
 STATIC_RUNTIMES = re.compile(r"(libstdc\+\+|libgcc_s)\.so")
+# Modules that link both runtimes shared: the MIGraphX runner, through which
+# MIGraphX's C++ exceptions unwind (native/migraphx_runner/CMakeLists.txt).
+SHARED_RUNTIME_MODULES = frozenset({"_chainner_migraphx.so"})
+# The newest version of each runtime version family that Rocky Linux 8's GCC 8
+# libstdc++.so.6.0.25 and libgcc_s.so.1 define (the glibc 2.28 sysroot's).
+RUNTIME_VERSION = re.compile(r"(GLIBCXX|CXXABI|GCC)_(\d+(?:\.\d+)*)")
+RUNTIME_CEILINGS = {"GLIBCXX": (3, 4, 25), "CXXABI": (1, 3, 11), "GCC": (7, 0, 0)}
 LIBPYTHON = re.compile(r"libpython\d")
 
 
@@ -111,11 +121,27 @@ def glibc_key(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in match.groups() if part is not None)
 
 
+def runtime_too_new(library: str, version: str) -> bool:
+    """Whether a version a file requires of libstdc++ or libgcc_s is unnumbered
+    or newer than RUNTIME_CEILINGS allows."""
+    if not STATIC_RUNTIMES.match(library):
+        return False
+    match = RUNTIME_VERSION.fullmatch(version)
+    if match is None:
+        return True
+    key = tuple(int(part) for part in match.group(2).split("."))
+    return key > RUNTIME_CEILINGS[match.group(1)]
+
+
 def problems(
-    dependencies: Dependencies, floor: tuple[int, ...], ours: bool
+    dependencies: Dependencies,
+    floor: tuple[int, ...],
+    ours: bool,
+    shared_runtime: bool,
 ) -> list[str]:
     """What keeps a file from loading on every glibc from the floor on (and, for
-    our own files, with glibc alone)."""
+    our own files, with glibc alone, or with glibc and the floor's C++ runtime
+    for a shared_runtime module)."""
     found: list[str] = []
     for library, versions in dependencies.versions.items():
         for version in versions:
@@ -123,8 +149,13 @@ def problems(
                 not GLIBC_VERSION.fullmatch(version) or glibc_key(version) > floor
             ):
                 found.append(f"{library} {version}")
+            elif shared_runtime and runtime_too_new(library, version):
+                found.append(f"{library} {version}")
     for library in dependencies.needed:
-        if ours and (STATIC_RUNTIMES.match(library) or LIBPYTHON.match(library)):
+        if ours and (
+            (STATIC_RUNTIMES.match(library) and not shared_runtime)
+            or LIBPYTHON.match(library)
+        ):
             found.append(f"needs {library}")
     return found
 
@@ -157,7 +188,9 @@ def check(files: list[Path], floor: tuple[int, ...], ours: bool) -> int:
         highest = max(glibc, key=glibc_key) if glibc else "no GLIBC_ version"
         needed = " ".join(dependencies.needed) or "nothing"
         print(f"{file}: {highest}; needs {needed}")
-        found = problems(dependencies, floor, ours)
+        found = problems(
+            dependencies, floor, ours, ours and file.name in SHARED_RUNTIME_MODULES
+        )
         for problem in found:
             print(f"  {'FAIL' if ours else 'note'}: {problem}")
         if ours and found:

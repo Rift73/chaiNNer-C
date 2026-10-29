@@ -8,6 +8,7 @@ to load (a DLL error), costs only the PyTorch nodes, which then fail to import o
 one; the package stays registered, so the dependency manager can install or repair it.
 """
 
+import os
 from functools import cache
 
 from sanic.log import logger
@@ -50,18 +51,29 @@ def configure_torch() -> None:
     # memory-efficient kernel, the calls that add a position bias included. PyTorch's
     # public sdpa_kernel(set_priority=True) restores the order when its block ends;
     # for a lasting order this calls the private setter that block uses.
-    try:
-        from torch._C import _get_sdp_priority_order, _set_sdp_priority_order
-        from torch.nn.attention import SDPBackend
+    #
+    # ROCm has no cuDNN attention: its fused kernels are AOTriton's flash attention
+    # (calls without a mask or bias) and memory-efficient attention (with one), which
+    # PyTorch's own order already tries first, so the order stays as it is. AOTriton
+    # marks some GPUs experimental (in torch 2.14.1's AOTriton 0.13: gfx1101-1103,
+    # gfx1150, gfx1152, gfx1153 and gfx1200) and runs its kernels there only with this
+    # switch, read at the first attention call; without it every attention call on
+    # them takes the unfused math kernel. A value the user set stays.
+    if torch.version.hip:
+        os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+    else:
+        try:
+            from torch._C import _get_sdp_priority_order, _set_sdp_priority_order
+            from torch.nn.attention import SDPBackend
 
-        cudnn = SDPBackend.CUDNN_ATTENTION.value
-        rest = [b for b in _get_sdp_priority_order() if b != cudnn]
-        _set_sdp_priority_order([cudnn, *rest])
-    except Exception:
-        logger.warning(
-            "Failed to prefer cuDNN attention for chaiNNer PyTorch runtime.",
-            exc_info=True,
-        )
+            cudnn = SDPBackend.CUDNN_ATTENTION.value
+            rest = [b for b in _get_sdp_priority_order() if b != cudnn]
+            _set_sdp_priority_order([cudnn, *rest])
+        except Exception:
+            logger.warning(
+                "Failed to prefer cuDNN attention for chaiNNer PyTorch runtime.",
+                exc_info=True,
+            )
 
 
 configure_torch()

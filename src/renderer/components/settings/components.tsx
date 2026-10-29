@@ -125,10 +125,14 @@ const CacheSetting = memo(({ setting, value, setValue }: SettingsProps<'cache'>)
                     visibility={value ? 'visible' : 'hidden'}
                     onClick={() => {
                         (async () => {
+                            // Folders too: the MIGraphX cache keeps a folder per model
                             const files = await ipcRenderer.invoke('fs-readdir', cacheLocation);
                             await Promise.all(
                                 files.map((file) =>
-                                    ipcRenderer.invoke('fs-unlink', path.join(cacheLocation, file))
+                                    ipcRenderer.invoke('fs-rm', path.join(cacheLocation, file), {
+                                        recursive: true,
+                                        force: true,
+                                    })
                                 )
                             );
                         })().catch(log.error);

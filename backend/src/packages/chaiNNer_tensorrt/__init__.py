@@ -3,8 +3,9 @@ from __future__ import annotations
 from sanic.log import logger
 
 from api import GB, MB, Category, Dependency, add_package
+from dependencies.rocm import gpu_architectures, triton_rocm
 from gpu import NvDevice, nvidia
-from system import is_arm_mac, is_windows
+from system import is_arm_mac, is_linux, is_windows
 
 package_description = (
     "TensorRT provides native NVIDIA TensorRT support for optimized GPU inference. "
@@ -19,22 +20,34 @@ install_hint = (
 )
 
 
-def get_triton():
+def get_triton() -> list[Dependency]:
+    # The package is disabled without an NVIDIA GPU. Where PyTorch runs on ROCm instead, the
+    # Triton its ROCm build pins on Linux (NVIDIA's would overwrite its triton module), and
+    # none on Windows (Triton for Windows is not for AMD GPUs).
+    on_rocm = not nvidia.is_available and bool(gpu_architectures()[0])
     if is_windows:
-        return Dependency(
-            display_name="Triton",
-            pypi_name="triton-windows",
-            version="3.5.1.post22",
-            size_estimate=45 * MB,
-            import_name="triton",
-        )
+        if on_rocm:
+            return []
+        return [
+            Dependency(
+                display_name="Triton",
+                pypi_name="triton-windows",
+                version="3.5.1.post22",
+                size_estimate=45 * MB,
+                import_name="triton",
+            )
+        ]
+    if is_linux and on_rocm:
+        return [triton_rocm()]
     # The release PyTorch 2.14.1 pins on Linux, so one Triton serves both packages.
-    return Dependency(
-        display_name="Triton",
-        pypi_name="triton",
-        version="3.8.0",
-        size_estimate=250 * MB,
-    )
+    return [
+        Dependency(
+            display_name="Triton",
+            pypi_name="triton",
+            version="3.8.0",
+            size_estimate=250 * MB,
+        )
+    ]
 
 
 # Always register the package so dependencies are installed in CI
@@ -58,7 +71,7 @@ package = add_package(
             size_estimate=20 * MB,
         ),
         # Compiles DUAL's TensorRT plugin kernels (Build Engine, in a child process).
-        get_triton(),
+        *get_triton(),
     ],
     icon="BsNvidia",
     color="#76B900",
