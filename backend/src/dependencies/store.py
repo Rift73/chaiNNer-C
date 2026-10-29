@@ -35,6 +35,11 @@ UNINSTALLING_REGEX = re.compile(r"Uninstalling ([a-zA-Z0-9-_]+)-+")
 
 DEP_MAX_PROGRESS = 0.8
 
+# Never uninstalled as a dependency nothing needs (unneeded_dependencies): the
+# installer, and NumPy and SciPy, which chaiNNer-C's code imports without a package
+# that lists them.
+KEPT_DISTRIBUTIONS = frozenset({"pip", "setuptools", "wheel", "numpy", "scipy"})
+
 # How many of pip's last output lines a failed run's message can carry.
 PIP_REASON_LINES = 10
 # How an OSError for a full disk reads in pip's output (POSIX; Windows' disk full
@@ -209,6 +214,116 @@ def replaced_distributions(
     return [
         DependencyInfo(package_name=name, version=installed_packages[name])
         for name in names
+    ]
+
+
+def unneeded_dependencies(
+    leaving: Iterable[DependencyInfo], keep: Iterable[str]
+) -> list[DependencyInfo]:
+    """The installed distributions pip pulled in for `leaving` that nothing staying
+    installed needs, for an uninstall to remove with them: their requirements (with
+    the extras `leaving` names), followed through their own, except what a
+    distribution staying installed requires (under any of its extras), what shares a
+    file with one (or has no RECORD), what was installed by name (pip's REQUESTED
+    mark: chaiNNer-C's server packages, the user's own installs), KEPT_DISTRIBUTIONS
+    and `keep` (distribution names: what chaiNNer-C lists itself). Raises ValueError for a requirement that cannot be read: what its
+    distribution needs is unknown."""
+    # pip's own reading of requirements, as pip installed them.
+    from pip._vendor.packaging.requirements import Requirement
+
+    found: dict[str, importlib.metadata.Distribution] = {}
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata["Name"]
+        if name:
+            found.setdefault(distribution_name(name), distribution)
+
+    def required(
+        distribution: importlib.metadata.Distribution, extras: frozenset[str] | None
+    ) -> dict[str, frozenset[str]]:
+        """The installed distributions it requires on this Python, each with the
+        extras it asks for; with the given extras, or under any of its own (None)."""
+        if extras is None:
+            extras = frozenset(distribution.metadata.get_all("Provides-Extra") or ())
+        names: dict[str, frozenset[str]] = {}
+        for text in distribution.requires or ():
+            requirement = Requirement(text)
+            marker = requirement.marker
+            if marker is not None and not any(
+                marker.evaluate({"extra": extra}) for extra in ("", *extras)
+            ):
+                continue
+            name = distribution_name(requirement.name)
+            if name in found:
+                names.setdefault(name, frozenset(requirement.extras))
+        return names
+
+    removing = {dep.distribution for dep in leaving}
+    pulled: dict[str, frozenset[str]] = {}
+    pending = [
+        (dep.distribution, frozenset(Requirement(dep.package_name).extras))
+        for dep in leaving
+        if dep.distribution in found
+    ]
+    while pending:
+        name, extras = pending.pop()
+        for dependency, its_extras in required(found[name], extras).items():
+            if dependency not in removing and dependency not in pulled:
+                pulled[dependency] = its_extras
+                pending.append((dependency, its_extras))
+    needs = {
+        name: set(required(distribution, None))
+        for name, distribution in found.items()
+        if name not in removing
+    }
+
+    def files(distribution: importlib.metadata.Distribution) -> frozenset[str] | None:
+        """The files its RECORD lists, outside metadata folders; None without one."""
+        listed = distribution.files
+        if listed is None:
+            return None
+        return frozenset(
+            os.path.normcase(os.path.normpath(str(path)))
+            for path in listed
+            if not path.parts[0].endswith((".dist-info", ".egg-info"))
+        )
+
+    # The distributions that list each file, but `leaving`.
+    owners: dict[str, set[str]] = {}
+    for name, distribution in found.items():
+        if name not in removing:
+            for path in files(distribution) or ():
+                owners.setdefault(path, set()).add(name)
+    kept = KEPT_DISTRIBUTIONS.union(keep)
+    records = {
+        name: files(found[name])
+        for name in pulled
+        if name not in kept and found[name].read_text("REQUESTED") is None
+    }
+    # Without a RECORD, what an uninstall would delete is unknown: it stays.
+    unneeded = {name for name, record in records.items() if record is not None}
+    # Down to what no distribution that stays (all but these and `leaving`) needs,
+    # and what shares no file with one: pip deletes every file of a RECORD, and
+    # urllib3-future (vs-jetpack's niquests) installs into urllib3's folder, over 30
+    # of urllib3's own files, which requests needs.
+    while needed := {
+        dependency
+        for name, dependencies in needs.items()
+        if name not in unneeded
+        for dependency in dependencies
+        if dependency in unneeded
+    } | {
+        name
+        for name in unneeded
+        if any(
+            owner != name and owner not in unneeded
+            for path in records[name] or ()
+            for owner in owners[path]
+        )
+    }:
+        unneeded -= needed
+    return [
+        DependencyInfo(package_name=name, version=found[name].version)
+        for name in sorted(unneeded)
     ]
 
 

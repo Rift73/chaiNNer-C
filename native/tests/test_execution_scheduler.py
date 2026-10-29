@@ -13,11 +13,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend/src"))
 
+from native_differential import BACKEND, node_data
+
+from api import NodeId
+from chain.input import EdgeInput, ValueInput
 from nodes.impl.event_queue import LatestEventQueue
 from nodes.impl.execution_scheduler import (
     LatestBroadcasts,
     NodeFlights,
     advance_iterator,
+    may_go_unread,
     owned_gather,
 )
 
@@ -513,3 +518,41 @@ def test_iterator_advance_distinguishes_none_from_exhaustion_and_keeps_errors():
     with pytest.raises(ValueError) as caught:
         advance_iterator(broken())
     assert caught.value is failure
+
+
+def test_every_lazy_input_is_classified_read_or_maybe_unread():
+    # The item window computes ahead behind a lazy input only where its node always
+    # reads it (ALWAYS_READ_LAZY_INPUTS): Save Image's image while Skip existing files
+    # is a constant off. A Conditional's branches and Logic Operation's B may go unread.
+    files = sorted(
+        path.relative_to(BACKEND).as_posix()
+        for path in (BACKEND / "packages").rglob("*.py")
+        if "make_lazy()" in path.read_text(encoding="utf-8")
+    )
+    assert files == [
+        "packages/chaiNNer_standard/image/io/save_image.py",
+        "packages/chaiNNer_standard/utility/math/logic_operation.py",
+        "packages/chaiNNer_standard/utility/value/conditional.py",
+    ]
+    edge = EdgeInput(NodeId("source"), 0)
+
+    def unread(schema_id: str, skip: object = None) -> dict[int, bool]:
+        data = node_data(schema_id)
+        sources = [
+            edge if i.id != 1000 or skip is None else ValueInput(skip)
+            for i in data.inputs
+        ]
+        return {
+            int(i.id): may_go_unread(data, sources, index)
+            for index, i in enumerate(data.inputs)
+            if i.lazy
+        }
+
+    save = "chainner:image:save"
+    skip = next(i for i in node_data(save).inputs if i.id == 1000)
+    assert skip.label == "Skip existing files"
+    assert unread(save, False) == {0: False}
+    assert unread(save, True) == {0: True}
+    assert unread(save) == {0: True}  # connected
+    assert unread("chainner:utility:conditional") == {1: True, 2: True}
+    assert unread("chainner:utility:logic_operation") == {2: True}

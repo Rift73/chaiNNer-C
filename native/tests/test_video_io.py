@@ -10,6 +10,7 @@ Save Video's audio mux compares with INTENDED_MUX instead of the installed night
 from __future__ import annotations
 
 import ast
+import collections
 import copy
 import errno
 import gc
@@ -49,6 +50,8 @@ REFERENCE = Path(__file__).with_name("reference_video")
 NODE = "packages/chaiNNer_standard/image/video_frames/"
 API = runpy.run_path(str(REFERENCE / "installed/api/iter.py"))
 MODULES = []
+# video.py's module state for the frame-index scans, which load() keeps with the definitions.
+SCAN_STATE = ("_SCANS", "_SCANS_LOCK", "_SCANS_KEPT", "_PACKETS_PER_CHECK")
 
 
 def snap(value):
@@ -980,6 +983,9 @@ def load(kind, component, env=None):
         g["file_identity"] = file_identity
         g["planes_to_interleaved"] = planes_to_interleaved
         g["replace"] = replace
+        g["OrderedDict"] = collections.OrderedDict
+        g["Lock"] = threading.Lock
+        g["ModuleType"] = types.ModuleType
         g["resolve_colour_info"] = resolve_colour_info
         # Load Video's generator carries its frame range (with_range), which the
         # installed api lacks.
@@ -1012,7 +1018,12 @@ def load(kind, component, env=None):
         elif (
             isinstance(item, ast.AnnAssign)
             and isinstance(item.target, ast.Name)
-            and item.target.id == "PARAMETERS"
+            and item.target.id in ("PARAMETERS", *SCAN_STATE)
+        ) or (
+            isinstance(item, ast.Assign)
+            and len(item.targets) == 1
+            and isinstance(item.targets[0], ast.Name)
+            and item.targets[0].id in SCAN_STATE
         ):
             body.append(item)
     exec(

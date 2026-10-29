@@ -7,9 +7,11 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
 import random
 import socket
 import threading
+import time
 from collections.abc import Iterator
 from compression import zstd
 from dataclasses import dataclass, field
@@ -377,9 +379,23 @@ def test_engines_are_built_once_and_keyed_by_what_determines_them(
     requests = len(host.log)
     assert vosr2_fp8.ensure_fp8_engine(context, bundle, device) == path
     assert len(builds) == 1 and len(host.log) == requests
+    # Another GPU's set of the next version: it stays when that version replaces this one.
+    other_gpu = {**identity, "plugin_sha256": "b", "gpu": "Other GPU"}
+    other = path.parent / vosr2_engine_cache.identity_key(other_gpu)
+    other.mkdir()
+    (other / "manifest.json").write_text(json.dumps({"identity": other_gpu}))
     identity["plugin_sha256"] = "b"
-    assert vosr2_fp8.ensure_fp8_engine(context, bundle, device) != path
+    current = vosr2_fp8.ensure_fp8_engine(context, bundle, device)
+    assert current != path
     assert len(builds) == 2 and len(host.log) == requests
+    # The replaced set stays until it has gone unused for two weeks
+    assert path.is_dir()
+    when = time.time() - 15 * 86400
+    for file in [*path.rglob("*"), path]:
+        os.utime(file, (when, when))
+    assert vosr2_fp8.ensure_fp8_engine(context, bundle, device) == current
+    assert len(builds) == 2
+    assert not path.exists() and current.is_dir() and other.is_dir()
     capability[:] = [8, 6]
     with pytest.raises(ValueError, match="FP8 support"):
         vosr2_fp8.ensure_fp8_engine(context, bundle, device)

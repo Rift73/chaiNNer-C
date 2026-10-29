@@ -1,6 +1,7 @@
 import importlib
 import io
 import sys
+import traceback
 
 from server_config import ServerConfig
 from worker_spawn import find_free_port, spawn_worker
@@ -12,6 +13,8 @@ for stream in (sys.stdout, sys.stderr):
     if isinstance(stream, io.TextIOWrapper):
         stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
+config = ServerConfig.parse_argv()
+
 # The server dependencies: the host can't start without them (the other packages'
 # come later). Installed before the worker starts, as pip can't replace a module a
 # running worker has loaded (NumPy's, psutil's .pyd); none is missing but on a first
@@ -19,6 +22,16 @@ for stream in (sys.stdout, sys.stderr):
 install_server_deps = importlib.import_module("dependencies.install_server_deps")
 if install_server_deps.missing:
     install_server_deps.install()
+
+# What an install or a download that a crash cut short left in chaiNNer's folders,
+# removed before the worker starts (and downloads). After pip: the sweep loads psutil,
+# whose .pyd pip can't replace once loaded (an update raising its pin). Best effort: an
+# error is logged with its traceback, and the backend starts.
+try:
+    leftovers = importlib.import_module("leftovers")
+    leftovers.remove(config.storage_dir, sys.prefix, sys.executable)
+except Exception:
+    traceback.print_exc()
 
 # Windows without NVIDIA's driver: the AMD GPUs are listed once, here, and the worker
 # reads the listing from its environment instead of listing them again (hip_devices.py).
@@ -30,7 +43,7 @@ if sys.platform == "win32":
 
 # The worker starts next: it loads its nodes while this process imports its own modules.
 worker_port = find_free_port()
-worker = spawn_worker([str(worker_port), *ServerConfig.parse_argv().worker_flags()])
+worker = spawn_worker([str(worker_port), *config.worker_flags()])
 
 # Start the host server
 server_host = importlib.import_module("server_host")

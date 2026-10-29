@@ -350,6 +350,6 @@ def test_setup_logs_the_isa_line_after_loading_nodes():
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "setup"
     )
     assert [ast.unparse(s) for s in setup.body] == [
-        "await import_packages(AppContext.get(sanic_app).config)",
+        "await import_packages(AppContext.get(sanic_app))",
         "logger.info(native.isa_line())",
     ]

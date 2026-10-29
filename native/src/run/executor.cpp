@@ -49,6 +49,7 @@
 #include <set>
 #include <stdexcept>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -373,6 +374,7 @@ struct InputPlan {
     PyRef constant;   // a constant's value, as the Python body receives it before enforce
     Value enforced;   // a native node's constant, enforced
     bool lazy = false;
+    bool unread = false;   // lazy, and its node may leave it unread (execution_scheduler.may_go_unread)
     bool ignored = false;  // a collector's iterated input at construction
     bool image = false;    // ImageInput: the engine enforces images
     std::vector<int> channels;  // ImageInput.channels (empty: any)
@@ -405,6 +407,7 @@ struct NodePlan {
     std::string precached_identity;  // a precached Load Image's file identity as its individual run loaded it
     bool phased = false;  // registered prepare and commit phases (item_window.register_phases)
     bool not_speculated = false;  // Into Directory: never computed ahead of its item (process._NOT_SPECULATED)
+    bool device = false;  // a locked-device node (execution_scheduler.LOCKED_DEVICE_NODES)
     bool memo = false;    // its outputs may be memoized (amendment A3's allow-list)
     bool run_keyed = false;  // a generator whose per-run outputs follow from its inputs alone (MEMO_GENERATORS)
     int identity_input = -1;  // Load Image: its file input, whose file identity keys it
@@ -469,9 +472,9 @@ struct CellRef {
 struct Hooks {
     py::object post, finish, warn, info, run_node, enforce_input, enforce_output, native_failure,
         regular_outputs, generator_outputs, collector, node_cleanups, chain_cleanups, output_bytes,
-        broadcast, items, describe, materialize, item_failure, collector_iterate, collector_complete, prepare,
-        begin_loop, iteration, end_loop, window, warn_look_ahead_off, native_generator, file_identity, item_identity,
-        regular_output, memo_bytes, loaded, preview_url, aborted_type, waited;
+        broadcast, items, describe, materialize, item_failure, generator_end, collector_iterate, collector_complete,
+        prepare, begin_loop, iteration, end_loop, folder_sources, window, warn_look_ahead_off, native_generator,
+        file_identity, item_identity, regular_output, memo_bytes, loaded, preview_url, aborted_type, waited;
 };
 
 struct Event {
@@ -687,6 +690,9 @@ public:
     void pause();
     void resume();
     bool aborted() const noexcept { return aborted_.load(); }
+    // What a node's context reports as aborted: Stop, or the run ending with an error, whose nodes still running
+    // (computed ahead, beside the driver) give up at their next check instead of finishing for nothing.
+    bool stopping() const noexcept { return aborted_.load() || failing_.load(); }
     bool paused() const noexcept { return paused_.load(); }
     int64_t commit_slot() const noexcept { return commit_slot_.load(); }
     void flush_broadcasts();
@@ -727,15 +733,20 @@ private:
 
     // Run state
     std::atomic<bool> aborted_{false}, paused_{false};
+    std::atomic<bool> failing_{false};  // the run ends with an error (stopping())
     std::atomic<int64_t> commit_slot_{0};
     double time_paused_ = 0;
     std::string mode_;
     int target_ = -1;
     std::future<void> driver_;
+    std::thread::id driver_thread_;  // the driver's thread, set as drive() starts
     bool started_ = false, closed_ = false;
     // Cleared at close: a lazy input a Python node kept and reads later no longer reaches the run.
     std::shared_ptr<std::atomic<bool>> open_ = std::make_shared<std::atomic<bool>>(true);
     std::string fault_;  // an engine thread's fault (under mutex_): the run's error
+    int fault_node_ = -1;  // the node whose job faulted, when known (under mutex_)
+    int scheduling_ = -1;  // the driver's latest step: the node it runs, iterates or collects (driver thread)
+    std::vector<int8_t> device_needed_;  // needs_device per node: -1 not known yet (mutex_ held)
 
     // Events
     std::mutex events_mutex_;
@@ -786,8 +797,10 @@ private:
     void produce();
     void set_item(int node, int64_t slot, std::vector<Value> outputs, std::optional<Key> key = std::nullopt);
     void want_window(int64_t slot);
+    bool needs_device(int node);
     void run_task(const Task &task);
     PyRef take_prepared(int node, int64_t slot);
+    void compute_folders();
     void decide(int64_t start);
     int64_t item_bytes(const GeneratorRun &generator, const std::vector<Value> &outputs);
     bool measured(const CellRef &ref) const;
@@ -799,7 +812,9 @@ private:
     void take(const CellRef &ref);
     void release_slot(int64_t slot);
     void drain_workers();
-    void fault(std::exception_ptr error) noexcept;
+    void fault(std::exception_ptr error, const char *phase, int node = -1) noexcept;
+    PyRef engine_failure(const std::string &text, int node);
+    std::string driver_fault(const char *what) const;
 
     // Execution
     friend class Engine;
@@ -953,10 +968,10 @@ private:
     Value value_;
 };
 
-bool EngineContext::aborted() const noexcept { return run_.aborted(); }
+bool EngineContext::aborted() const noexcept { return run_.stopping(); }
 void EngineContext::check_aborted() const
 {
-    if (run_.aborted()) throw Aborted{};
+    if (run_.stopping()) throw Aborted{};
 }
 
 Value value_of(py::handle object)
@@ -971,8 +986,9 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
                    bind("enforce_input"), bind("enforce_output"), bind("native_failure"),
                    bind("regular_outputs"), bind("generator_outputs"), bind("collector"), bind("node_cleanups"),
                    bind("chain_cleanups"), bind("output_bytes"), bind("broadcast"), bind("items"), bind("describe"),
-                   bind("materialize"), bind("item_failure"), bind("collector_iterate"), bind("collector_complete"),
-                   bind("prepare"), bind("begin_loop"), bind("iteration"), bind("end_loop"), bind("window"),
+                   bind("materialize"), bind("item_failure"), bind("generator_end"), bind("collector_iterate"),
+                   bind("collector_complete"), bind("prepare"), bind("begin_loop"), bind("iteration"),
+                   bind("end_loop"), bind("folder_sources"), bind("window"),
                    bind("warn_look_ahead_off"), bind("native_generator"), bind("file_identity"),
                    bind("item_identity"), bind("regular_output"), bind("memo_bytes"), bind("loaded"), bind("preview_url"),
                    bind("aborted_type"), bind("waited")};
@@ -1003,6 +1019,7 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
             plan_input.output = input[1].cast<int>();
             plan_input.constant = py_ref(input[2]);
             plan_input.lazy = input[3].cast<bool>();
+            plan_input.unread = input[8].cast<bool>();
             plan_input.ignored = input[4].cast<bool>();
             py::object image = input[5];
             if (!image.is_none()) {
@@ -1037,6 +1054,7 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
         }
         plan_node.phased = node["phased"].cast<bool>();
         plan_node.not_speculated = plan_node.schema == "chainner:utility:into_directory";
+        plan_node.device = node["device"].cast<bool>();
         plan_node.memo = node["memo"].cast<bool>() && Memo::get().enabled();
         plan_node.run_keyed = node["run_keyed"].cast<bool>();
         plan_node.identity_input = node["identity_input"].cast<int>();
@@ -1134,7 +1152,7 @@ void Run::start(const std::string &mode, int target)
         try {
             pump();
         } catch (...) {
-            fault(std::current_exception());
+            fault(std::current_exception(), "while sending its events");
             std::lock_guard<std::mutex> locked(events_mutex_);
             events_failed_ = true;
             events_changed_.notify_all();
@@ -1145,7 +1163,7 @@ void Run::start(const std::string &mode, int target)
         try {
             broadcaster();
         } catch (...) {
-            fault(std::current_exception());
+            fault(std::current_exception(), "while computing previews");
             std::lock_guard<std::mutex> locked(broadcasts_mutex_);
             broadcasts_failed_ = true;
             broadcasts_changed_.notify_all();
@@ -1228,11 +1246,13 @@ void Run::close()
 }
 
 /* An exception escaping an engine thread's job (an engine fault, an allocation outside any node): the run stops
- * and reports it as its error, never a crash or a hang. */
-void Run::fault(std::exception_ptr error) noexcept
+ * and reports it as its error, never a crash or a hang, naming the node whose job it was (its error is that node's,
+ * as a node's own), else the run's phase. */
+void Run::fault(std::exception_ptr error, const char *phase, int node) noexcept
 {
     try {
-        std::string text = "The native run engine failed";
+        std::string text = "The native run engine failed ";
+        text += node >= 0 ? "while running " + nodes_[size_t(node)].name : std::string(phase);
         try {
             std::rethrow_exception(error);
         } catch (const std::exception &raised) {
@@ -1242,7 +1262,10 @@ void Run::fault(std::exception_ptr error) noexcept
         }
         {
             std::lock_guard<std::mutex> locked(mutex_);
-            if (fault_.empty()) fault_ = std::move(text);
+            if (fault_.empty()) {
+                fault_ = std::move(text);
+                fault_node_ = node;
+            }
         }
         kill();
     } catch (...) {
@@ -1301,7 +1324,10 @@ void Run::work_one()
             execute_cell(ref, false);
     } catch (...) {
         faulted = true;
-        fault(std::current_exception());
+        int node = !task                             ? ref.node
+                   : task->kind == Task::materialize ? (*loop_->generators)[size_t(task->index)].node
+                                                     : task->index;
+        fault(std::current_exception(), "while running a job", node);
     }
     {
         std::lock_guard<std::mutex> locked(mutex_);
@@ -1556,6 +1582,7 @@ void Run::consume(const CellRef &source)
 
 PyRef Run::process_regular(int node, int64_t slot)
 {
+    scheduling_ = node;
     CellRef ref{node, slot};
     ensure(ref);
     std::lock_guard<std::mutex> locked(mutex_);
@@ -1568,6 +1595,7 @@ PyRef Run::process_regular(int node, int64_t slot)
 
 PyRef Run::process_generator(int node)
 {
+    scheduling_ = node;
     CellRef ref{node, -1};
     ensure(ref);
     std::lock_guard<std::mutex> locked(mutex_);
@@ -1762,32 +1790,51 @@ void Run::set_item(int node, int64_t slot, std::vector<Value> outputs, std::opti
 }
 
 /* The pure nodes the slot's sinks need, through lazy inputs too (process.Executor's _ItemPlanner candidates), and
- * the prepare phases of its sinks (mutex_ held). A context item's: the pure nodes its temporal nodes need, and no
- * prepare (process.ItemWindow's context slots: nothing else runs for it). */
+ * the prepare phases of its sinks (mutex_ held). Behind a lazy input its node may leave unread (a Conditional's other
+ * branch, Save Image's image with Skip existing files), none that is or needs a locked-device node (process.
+ * _ItemPlanner's serial ones). A context item's: the pure nodes its temporal nodes need, and no prepare (process.
+ * ItemWindow's context slots: nothing else runs for it). */
 void Run::want_window(int64_t slot)
 {
-    std::set<std::pair<int, int64_t>> seen;
-    std::function<void(const CellRef &)> walk = [&](const CellRef &ref) {
-        if (!seen.insert({ref.node, ref.slot}).second) return;
+    std::set<std::tuple<int, int64_t, bool>> seen;
+    std::function<void(const CellRef &, bool)> walk = [&](const CellRef &ref, bool unread) {
+        if (!seen.insert({ref.node, ref.slot, unread}).second) return;
         const NodePlan &node = nodes_[size_t(ref.node)];
         if (cell(ref).state != State::idle) return;
         if (node.pure) {
-            want(ref);
+            if (!unread || !needs_device(ref.node)) want(ref);
             return;
         }
         for (size_t i = 0; i < node.inputs.size(); ++i) {
             const InputPlan &input = node.inputs[i];
-            if (input.source >= 0 && !(input.ignored && node.kind != Kind::collector)) walk(source_of(ref, int(i)));
+            if (input.source >= 0 && !(input.ignored && node.kind != Kind::collector))
+                walk(source_of(ref, int(i)), unread || input.unread);
         }
     };
     if (loop_->context(slot)) {
-        for (int node : loop_->group->temporal) walk({node, slot});
+        for (int node : loop_->group->temporal) walk({node, slot}, false);
         return;
     }
     for (int sink : loop_->sinks) {
-        walk({sink, slot});
+        walk({sink, slot}, false);
         if (nodes_[size_t(sink)].phased) loop_->prepares.try_emplace({sink, slot});
     }
+}
+
+/* A pure node that is a locked-device node, or needs one through the inputs want() wants (mutex_ held). */
+bool Run::needs_device(int node)
+{
+    if (device_needed_.empty()) device_needed_.assign(nodes_.size(), -1);
+    if (device_needed_[size_t(node)] >= 0) return device_needed_[size_t(node)] > 0;
+    const NodePlan &plan = nodes_[size_t(node)];
+    bool needs = plan.device;
+    for (size_t i = 0; !needs && i < plan.inputs.size(); ++i) {
+        const InputPlan &input = plan.inputs[i];
+        if (input.source >= 0 && !input.lazy && !input.ignored && nodes_[size_t(input.source)].pure)
+            needs = needs_device(input.source);
+    }
+    device_needed_[size_t(node)] = needs ? 1 : 0;
+    return needs;
 }
 
 void Run::run_task(const Task &task)
@@ -1895,6 +1942,41 @@ PyRef Run::take_prepared(int node, int64_t slot)
     return value;
 }
 
+/* A loop's writers' folders, before its window decision (process.Executor.__open_window): the folder nodes
+ * hooks.folder_sources names (pure, not computed yet; none when the window cannot read ahead) run on the commit path
+ * now, so the read-ahead check knows a folder that Save Image's gather would compute only at its turn, after a
+ * look-ahead at item 0 decided. One that fails ends the decision with its error, as process.Executor's process
+ * raises it there. */
+void Run::compute_folders()
+{
+    std::vector<int> sources;
+    {
+        PythonSection section;
+        py::list writers, iterated;
+        for (int sink : loop_->group->outputs) writers.append(sink);
+        for (int node : loop_->group->iterated) iterated.append(node);
+        py::cpp_function computed([this](int node) {
+            std::lock_guard<std::mutex> locked(mutex_);
+            State state = static_cells_[size_t(node)].state;
+            return state == State::done || state == State::released;
+        });
+        for (py::handle node : hooks_.folder_sources(writers, iterated, computed)) sources.push_back(node.cast<int>());
+    }
+    // On the driver, its step meanwhile (a fault names the folder's node), and its own again after; a look-ahead's
+    // thread (a worker for a pure node) leaves the driver's step alone.
+    bool driver = std::this_thread::get_id() == driver_thread_;
+    int step = driver ? scheduling_ : -1;
+    for (int node : sources) {
+        if (driver) scheduling_ = node;
+        CellRef ref{node, -1};
+        ensure(ref, true);
+        std::lock_guard<std::mutex> locked(mutex_);
+        const Cell &c = cell(ref);
+        if (c.state == State::failed) throw PythonError{c.error};
+    }
+    if (driver) scheduling_ = step;
+}
+
 /* The window's decision (process.Executor.__open_window): K, the read-ahead blocker and the budget, from the
  * hooks; a window of K > 1 starts its producer at `start`: the range's second slot (slot 1 without context items) at
  * the regular decision, the slot after the committing one at a look-ahead's (the commit path advanced that one). */
@@ -1949,7 +2031,7 @@ void Run::decide(int64_t start)
         try {
             produce();
         } catch (...) {
-            fault(std::current_exception());
+            fault(std::current_exception(), "while reading the loop's next items");
         }
     });
 }
@@ -2051,7 +2133,20 @@ bool Run::servable(int node, int input)
  * (process.Executor.__decide_early); the producer continues from the next slot. */
 void Run::decide_early()
 {
-    if (!loop_->decided) decide(commit_slot_ + 1);
+    if (loop_->decided) return;
+    // On the look-ahead's Python thread: its folders computed without the GIL, a failure raised to the node.
+    try {
+        PythonPause unlocked;
+        compute_folders();
+    } catch (const PythonError &failure) {
+        PyObject *error = static_cast<PyObject *>(failure.error.handle.get());
+        PyErr_SetObject(reinterpret_cast<PyObject *>(Py_TYPE(error)), error);
+        throw py::error_already_set();
+    } catch (const StopRun &) {
+        PyErr_SetNone(hooks_.aborted_type.ptr());
+        throw py::error_already_set();
+    }
+    decide(commit_slot_ + 1);
 }
 
 int Run::lookahead(int node, int input)
@@ -2266,6 +2361,7 @@ void Run::iterate_group(const GroupPlan &group)
         hooks_.begin_loop(generator_nodes, iterated, before, bases.size() == 1 ? *bases.begin() : 0);
     }
     size_t stops = 0;
+    std::set<int> ended;  // the generators whose items ran out
     std::vector<std::string> deferred;
     // process.Executor.__end_loop and __close_window, on every exit of the loop: the producer stopped, views
     // detached, no item's cell left running or kept.
@@ -2300,7 +2396,10 @@ void Run::iterate_group(const GroupPlan &group)
             changed_.notify_all();
             // A context item before the range: it runs the temporal nodes, with the nodes they need, and nothing else.
             bool context = slot < loop_->first;
-            if (slot == loop_->first + 1) decide(slot);
+            if (slot == loop_->first + 1 && !loop_->decided) {
+                compute_folders();
+                decide(slot);
+            }
             const GeneratorRun *current = nullptr;
             // The window's per-item estimate measures the range's first item (the items before it meanwhile, which
             // run their generators' part of it).
@@ -2310,6 +2409,7 @@ void Run::iterate_group(const GroupPlan &group)
                     GeneratorRun &generator = generators[g];
                     suspend();
                     current = &generator;
+                    scheduling_ = generator.node;
                     std::vector<Value> outputs;
                     if (loop_->active && slot >= 1) {
                         Outcome outcome = take_advance(slot, g);
@@ -2408,6 +2508,7 @@ void Run::iterate_group(const GroupPlan &group)
                     for (int output : group.outputs) process_regular(output, slot);
                     for (CollectorRun &collector : collectors) {
                         suspend();
+                        scheduling_ = collector.node;
                         const NodePlan &node = nodes_[size_t(collector.node)];
                         // process.Executor.__gather_collector_inputs: the iterated inputs in order.
                         std::vector<Value> values;
@@ -2468,7 +2569,30 @@ void Run::iterate_group(const GroupPlan &group)
                 suspend();
             } catch (const ItemsEnd &) {
                 release_slot(slot);
-                if (++stops >= generators.size()) break;
+                if (current) ended.insert(current->node);
+                if (++stops >= generators.size()) {
+                    // Items that end early (a truncated video): one warning for each generator that ran out, as
+                    // process.Executor sends, unless an item's deferred error explains the end.
+                    if (deferred.empty()) {
+                        PythonSection python;
+                        for (const GeneratorRun &generator : generators) {
+                            if (!ended.count(generator.node)) continue;
+                            py::object warning;
+                            try {
+                                warning = hooks_.generator_end(
+                                    generator.node, py::handle(static_cast<PyObject *>(generator.output.handle.get())),
+                                    int64_t(generator.times.size()));
+                            } catch (py::error_already_set &error) {
+                                throw PythonError{current_error(error)};
+                            }
+                            if (warning.is_none()) continue;
+                            Event event(Event::raw);
+                            event.payload = py_ref(warning);
+                            emit(std::move(event));
+                        }
+                    }
+                    break;
+                }
             } catch (const PythonError &failure) {
                 if (current && current->fail_fast) throw;
                 {
@@ -2480,6 +2604,8 @@ void Run::iterate_group(const GroupPlan &group)
             }
         }
     } catch (...) {
+        // An error (or Stop) ends the loop: the items computed ahead give up before end_loop waits for them.
+        failing_ = true;
         end_loop();
         throw;
     }
@@ -2507,6 +2633,7 @@ void Run::iterate_group(const GroupPlan &group)
     }
     for (CollectorRun &collector : collectors) {
         suspend();
+        scheduling_ = collector.node;
         Clock::time_point start = Clock::now();
         std::vector<Value> outputs;
         {
@@ -2572,8 +2699,31 @@ void Run::drain_workers()
     changed_.wait(locked, [&] { return running_ == 0; });
 }
 
+/* An engine failure as the run's error (the GIL held): the named node's, as its own error would be (the app shows
+ * the node), else a RuntimeError. */
+PyRef Run::engine_failure(const std::string &text, int node)
+{
+    py::object cause = py::reinterpret_borrow<py::object>(PyExc_RuntimeError)(text);
+    if (node < 0) return py_ref(cause);
+    try {
+        return py_ref(hooks_.native_failure(node, cause, py::list()));
+    } catch (py::error_already_set &again) {
+        return current_error(again);
+    }
+}
+
+/* An exception escaping the driver outside any node's job, named by the driver's latest step. */
+std::string Run::driver_fault(const char *what) const
+{
+    std::string text = "The native run engine failed";
+    if (scheduling_ >= 0) text += " while running " + nodes_[size_t(scheduling_)].name;
+    if (what) text += std::string(": ") + what;
+    return text;
+}
+
 void Run::drive()
 {
+    driver_thread_ = std::this_thread::get_id();
     PyRef error, result;
     bool stopped = false;
     try {
@@ -2624,23 +2774,24 @@ void Run::drive()
         stopped = true;
     } catch (const std::exception &failure) {
         PythonSection python;
-        error = py_ref(py::reinterpret_borrow<py::object>(PyExc_RuntimeError)(failure.what()));
+        error = engine_failure(driver_fault(failure.what()), scheduling_);
     } catch (...) {
         // Whatever ends the run, the request gets its result (and the run its cleanups).
         PythonSection python;
-        error = py_ref(py::reinterpret_borrow<py::object>(PyExc_RuntimeError)("The native run engine failed"));
+        error = engine_failure(driver_fault(nullptr), scheduling_);
     }
+    if (error.handle) failing_ = true;
     drain_workers();
     {
         std::string fault;
+        int node;
         {
             std::lock_guard<std::mutex> locked(mutex_);
             fault = fault_;
+            node = fault_node_;
         }
         PythonSection section;
-        if (stopped)
-            error = fault.empty() ? py_ref(hooks_.aborted_type())
-                                  : py_ref(py::reinterpret_borrow<py::object>(PyExc_RuntimeError)(fault));
+        if (stopped) error = fault.empty() ? py_ref(hooks_.aborted_type()) : engine_failure(fault, node);
     }
     if (mode_ == "run") {
         try {
@@ -3163,6 +3314,14 @@ void Run::execute(const CellRef &ref, bool on_driver)
                 result.error = current_error(error);
             }
         }
+    }
+    if (ok && !inputs.lazies.empty()) {
+        // A lazy input the node did not read (a Conditional's untaken branch, Save Image's existing file) gives up
+        // its read: the upstream is freed after its last other read, not at the run's end, and an upstream that has
+        // not run yet counts it ahead (process.Executor's __drop_unread).
+        std::lock_guard<std::mutex> locked(mutex_);
+        for (const std::shared_ptr<EngineLazy> &lazy : inputs.lazies)
+            if (!lazy->read_) consume(lazy->source_);
     }
     if (ok && on_driver) {
         try {
@@ -3695,7 +3854,8 @@ void Engine::work()
         try {
             run->work_one();
         } catch (...) {
-            run->fault(std::current_exception());  // the job's bookkeeping failed (an engine fault, an allocation)
+            // The job's bookkeeping failed (an engine fault, an allocation).
+            run->fault(std::current_exception(), "while scheduling a job");
         }
         {
             std::lock_guard<std::mutex> locked(mutex_);
@@ -3738,6 +3898,7 @@ void cn_bind_run_executor(py::module_ &module)
         .def("pause", &Run::pause, py::call_guard<py::gil_scoped_release>())
         .def("resume", &Run::resume, py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("aborted", &Run::aborted)
+        .def_property_readonly("stopping", &Run::stopping)
         .def_property_readonly("paused", &Run::paused)
         .def_property_readonly("commit_slot", &Run::commit_slot)
         .def("flush_broadcasts", &Run::flush_broadcasts, py::call_guard<py::gil_scoped_release>())

@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import threading
+import time
 import weakref
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from functools import cache
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import onnxruntime as ort
@@ -387,3 +391,74 @@ def test_the_replaced_session_is_freed_before_its_successor_is_created(
     get_onnx_session(model, 1, CUDA, False)
     assert alive == [False, False]
     assert sessions[0]() is None and sessions[1]() is not None
+
+
+def test_concurrent_first_uses_of_a_model_share_one_session(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Two upscales of one model that start together (a preview beside a run, say)
+    # wait for one session instead of each creating one; another model's session
+    # is created meanwhile.
+    slow, other = conv_model(1), conv_model(2)
+    created: list[bytes] = []
+    creating, release = threading.Event(), threading.Event()
+    entered = threading.Semaphore(0)
+
+    def session(model: bytes, providers: list[ProviderDesc]) -> RegisteredSession:
+        created.append(model)
+        if model == slow.bytes:
+            creating.set()
+            assert release.wait(30)
+        return RegisteredSession([CUDA, CPU])
+
+    settings = vars(session_module)["_session_settings"]
+
+    def entering(*args: Any) -> tuple[object, ...]:
+        entered.release()
+        return settings(*args)
+
+    monkeypatch.setattr(ort, "InferenceSession", session)
+    monkeypatch.setattr(session_module, "_session_settings", entering)
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(get_onnx_session, slow, 0, CUDA, False)
+        assert creating.wait(30) and entered.acquire(timeout=30)
+        second = pool.submit(get_onnx_session, slow, 0, CUDA, False)
+        assert entered.acquire(timeout=30)
+        get_onnx_session(other, 0, CUDA, False)
+        time.sleep(0.1)
+        assert not second.done()
+        release.set()
+        assert first.result(30) is second.result(30)
+    assert created == [slow.bytes, other.bytes]
+
+
+def test_two_loads_of_one_file_share_a_session_that_builds_into_a_cache_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    # Their engines go to one folder, named by the file's content: two sessions would
+    # build into it at once. The second load's first use waits for the first's session.
+    created = ort_creates(monkeypatch)
+    creating, release = threading.Event(), threading.Event()
+    make = ort.InferenceSession
+
+    def session(model: bytes, providers: list[ProviderDesc]) -> object:
+        creating.set()
+        assert release.wait(30)
+        return make(model, providers=providers)
+
+    monkeypatch.setattr(ort, "InferenceSession", session)
+    first, again = conv_model(1), conv_model(1)
+    cache = str(tmp_path)
+    with ThreadPoolExecutor(2) as pool:
+        one = pool.submit(get_onnx_session, first, 0, TENSORRT, False, cache)
+        assert creating.wait(30)
+        other = pool.submit(get_onnx_session, again, 0, TENSORRT, False, cache)
+        time.sleep(0.1)
+        assert not other.done()
+        release.set()
+        assert one.result(30) is other.result(30)
+    assert len(created) == 1
+    # Without a cache folder, each model keeps a session of its own
+    assert get_onnx_session(first, 0, CUDA, False) is not get_onnx_session(
+        again, 0, CUDA, False
+    )

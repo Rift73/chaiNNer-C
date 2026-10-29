@@ -30,6 +30,12 @@ def waiting() -> Iterator[None]:
         _waited.seconds += time.perf_counter() - start
 
 
+def add_waiting(seconds: float) -> None:
+    """Counts `seconds` that another thread spent `waiting` for this thread's call
+    (on_device_thread) as this thread's."""
+    _waited.seconds += seconds
+
+
 def waited_seconds() -> float:
     """The seconds this thread has spent `waiting` so far: the run engine reads it
     around a node's body, as `timed_supplier` does."""

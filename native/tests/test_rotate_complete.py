@@ -27,11 +27,11 @@ def saturated_to_uint8(img, normalized=False):
     return _legacy_to_uint8(img, normalized=False)
 
 
-reference.rotate = types.FunctionType(
+reference.__dict__["rotate"] = types.FunctionType(
     _legacy_rotate.__code__,
     {**_legacy_rotate.__globals__, "to_uint8": saturated_to_uint8},
 )
-reference.rotate_node = types.FunctionType(
+reference.__dict__["rotate_node"] = types.FunctionType(
     _legacy_reference.rotate_node.__code__, reference.__dict__
 )
 

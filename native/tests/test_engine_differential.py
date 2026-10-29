@@ -33,7 +33,7 @@ from verify_runtime import edge, make_node
 
 import api
 import process
-from chain.json import JsonNode, parse_json
+from chain.json import LAZY_LINK_DEPTH, MAX_CHAIN_DEPTH, JsonNode, parse_json
 from chain.optimize import optimize
 from nodes.impl.native_graph import graph
 
@@ -351,6 +351,7 @@ def test_a_generator_item_error_names_its_node_and_file(
     folder.mkdir()
     for index in range(6):
         image = cv2.imread(str(assets / "images" / f"{index:03}.jpg"))
+        assert image is not None
         assert cv2.imwrite(str(folder / f"{index:03}.png"), image)
     broken = folder / "002.png"
     broken.write_bytes(broken.read_bytes()[:200])
@@ -390,7 +391,7 @@ def test_a_generator_item_error_names_its_node_and_file(
         assert isinstance(error, process.NodeExecutionError), repr(error)
         assert error.node_id == "load" and error.__cause__ is not None
         assert str(error) == f"{broken}: {error.__cause__}"
-        assert error.inputs[0] == {"type": "literal", "value": str(folder)}
+        assert error.inputs[api.InputId(0)] == {"type": "literal", "value": str(folder)}
     else:
         # The deferred errors' summary names no node, each line its file.
         assert not isinstance(error, process.NodeExecutionError), repr(error)
@@ -421,7 +422,9 @@ def test_a_collector_completion_error_names_its_node(schemas, assets):
         optimize(chain)
         error = execute(kind, chain, storage=assets / "storage").error
         assert isinstance(error, process.NodeExecutionError), f"{kind}: {error!r}"
-        assert error.inputs[1] == {"type": "literal", "value": 3}, error.inputs
+        assert error.inputs[api.InputId(1)] == {"type": "literal", "value": 3}, (
+            error.inputs
+        )
         errors.append((error.node_id, str(error), type(error.__cause__).__name__))
     assert errors[0] == errors[1] and errors[0][0] == "merge", errors
 
@@ -467,7 +470,7 @@ def test_a_collector_input_error_reports_its_iterated_inputs(
         error = execute(kind, chain, storage=assets / "storage").error
         assert isinstance(error, process.NodeExecutionError), f"{kind}: {error!r}"
         assert error.node_id == "sv"
-        assert error.inputs[0] == {
+        assert error.inputs[api.InputId(0)] == {
             "type": "formatted",
             "formatString": "Grayscale Image 320x180",
         }
@@ -553,6 +556,100 @@ def test_a_malformed_chain_is_a_clear_error(schemas, case, error, message):
     # last output), raised before any node runs.
     with pytest.raises(error, match=re.escape(message)):
         parse_json(cast("list[JsonNode]", malformed_chain(schemas, case)))
+
+
+def deep_chain(schemas, image: Path, in_a_row: int) -> list[dict]:
+    """Load Image, Invert Color nodes, then View Image: `in_a_row` nodes in a row."""
+    nodes = [make_node(schemas, "n0", "chainner:image:load", {0: str(image)})]
+    for index in range(1, in_a_row - 1):
+        nodes.append(
+            make_node(
+                schemas,
+                f"n{index}",
+                "chainner:image:invert",
+                {0: edge(f"n{index - 1}")},
+            )
+        )
+    nodes.append(
+        make_node(schemas, "view", "chainner:image:view", {0: edge(f"n{in_a_row - 2}")})
+    )
+    return nodes
+
+
+def test_a_chain_of_too_many_nodes_in_a_row_is_refused(schemas):
+    # Both executors recurse once per node in a row, so /run refuses the chain before it
+    # picks one: a message instead of a recursion error (before: at about 495 pure nodes
+    # on process.Executor, 990 on the engine, or a crash on the engine's driver stack).
+    message = (
+        "This chain has 501 nodes in a row (from Load Image to View Image); a run"
+        " supports at most 500. Split the chain, saving intermediate images."
+    )
+    with pytest.raises(ValueError, match=re.escape(message)):
+        parse_json(cast("list[JsonNode]", deep_chain(schemas, Path("x.png"), 501)))
+    # The longest series counts, not the nodes: a branch beside it adds none.
+    nodes = deep_chain(schemas, Path("x.png"), MAX_CHAIN_DEPTH)
+    nodes.append(make_node(schemas, "side", "chainner:image:view", {0: edge("n0")}))
+    assert len(parse_json(cast("list[JsonNode]", nodes)).nodes) == MAX_CHAIN_DEPTH + 1
+
+
+def conditional_series(schemas, image: Path, links: int) -> list[dict]:
+    """Load Image, then `links` Conditionals in a row, each reading the previous one
+    through its lazy If True input on a computed condition (Compare: the optimizer folds
+    none), then View Image."""
+    nodes = [
+        make_node(schemas, "load", "chainner:image:load", {0: str(image)}),
+        make_node(schemas, "same", "chainner:utility:compare", {0: 0, 1: 1, 2: 1}),
+    ]
+    previous = "load"
+    for index in range(links):
+        nodes.append(
+            make_node(
+                schemas,
+                f"c{index}",
+                "chainner:utility:conditional",
+                {0: edge("same"), 1: edge(previous), 2: 7},
+            )
+        )
+        previous = f"c{index}"
+    nodes.append(make_node(schemas, "view", "chainner:image:view", {0: edge(previous)}))
+    return nodes
+
+
+def test_a_lazy_connection_counts_as_lazy_link_depth_nodes(schemas, assets):
+    # Each lazy link nests its upstream's run inside the reader's on the engine's driver
+    # (about 8 Python frames): the engine runs at most 124 in a row, so a lazy
+    # connection counts as LAZY_LINK_DEPTH nodes. The deepest accepted series (99) runs
+    # on the engine; one more is refused (before: 170 passed the check and then failed
+    # with a recursion error).
+    image = assets / "images" / "000.jpg"
+    links = (MAX_CHAIN_DEPTH - 2) // LAZY_LINK_DEPTH
+    chain = parse_json(
+        cast("list[JsonNode]", conditional_series(schemas, image, links))
+    )
+    optimize(chain)
+    assert len(chain.nodes) == links + 3
+    assert execute("native", chain, storage=assets / "storage").error is None
+    message = (
+        f"This chain has {2 + (links + 1) * LAZY_LINK_DEPTH} nodes in a row (from Load"
+        " Image to View Image); a run supports at most 500."
+    )
+    with pytest.raises(ValueError, match=re.escape(message)):
+        parse_json(
+            cast("list[JsonNode]", conditional_series(schemas, image, links + 1))
+        )
+
+
+@pytest.mark.parametrize("kind", ["python", "native"])
+def test_a_chain_of_the_most_nodes_in_a_row_runs(schemas, assets, kind):
+    chain = parse_json(
+        cast(
+            "list[JsonNode]",
+            deep_chain(schemas, assets / "images" / "000.jpg", MAX_CHAIN_DEPTH),
+        )
+    )
+    optimize(chain)
+    assert len(chain.nodes) == MAX_CHAIN_DEPTH
+    assert execute(kind, chain, storage=assets / "storage").error is None
 
 
 @pytest.mark.parametrize(

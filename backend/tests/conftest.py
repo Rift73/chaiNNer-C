@@ -1,9 +1,13 @@
 """Process setup shared by every test in this directory."""
 
+from __future__ import annotations
+
 import importlib.util
 import os
 import sys
 from importlib import metadata
+
+import pytest
 
 # Hides every Vulkan driver from ncnn, as native/tests/conftest.py does: the
 # backend's ncnn modules call ncnn.get_gpu_count() on import, which would otherwise
@@ -29,7 +33,7 @@ if importlib.util.find_spec("vapoursynth") is not None and _triton_rocm_installe
     importlib.import_module("vapoursynth").core.plugins()
 
 
-def pytest_collection_modifyitems(items):
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     # The comparisons whose reference library is built otherwise on Linux
     # (native/tools/linux_differences.py)
     if sys.platform == "linux":

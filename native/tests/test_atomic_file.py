@@ -218,6 +218,12 @@ if sys.platform == "win32":
     ]
     KERNEL32.CloseHandle.argtypes = [ctypes.c_void_p]
     KERNEL32.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
+    KERNEL32.GetShortPathNameW.restype = ctypes.c_uint32
+    KERNEL32.GetShortPathNameW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+    ]
     KERNEL32.ReadFile.argtypes = [
         ctypes.c_void_p,
         ctypes.c_void_p,
@@ -301,6 +307,24 @@ def test_a_name_of_another_case_keeps_the_spelling_on_disk(tmp_path: Path):
     for write, data in ((graph().atomic_write, b"one"), (_commit, b"two")):
         assert write(tmp_path / "CASE.BIN", data) is True
         assert os.listdir(tmp_path) == ["case.bin"]
+        assert final.read_bytes() == data
+
+
+@windows("8.3 short names are a Windows file system's")
+def test_a_short_name_keeps_the_long_name_on_disk(tmp_path: Path):
+    # open("LONGFI~1.BIN", "wb") over "long file name.bin" writes the file of that long
+    # name: so do both writers, instead of renaming it to its short name.
+    final = tmp_path / "long file name.bin"
+    final.write_bytes(b"before")
+    size = KERNEL32.GetShortPathNameW(str(final), None, 0)
+    buffer = ctypes.create_unicode_buffer(size)
+    assert KERNEL32.GetShortPathNameW(str(final), buffer, size) == size - 1
+    short = Path(buffer.value)
+    if short.name == final.name:
+        pytest.skip(f"the volume of {tmp_path} makes no 8.3 short names")
+    for write, data in ((graph().atomic_write, b"one"), (_commit, b"two")):
+        assert write(tmp_path / short.name, data) is True
+        assert os.listdir(tmp_path) == ["long file name.bin"]
         assert final.read_bytes() == data
 
 

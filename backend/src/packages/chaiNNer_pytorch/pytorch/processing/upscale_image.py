@@ -10,6 +10,7 @@ from spandrel import ImageModelDescriptor, ModelTiling
 
 from api import KeyInfo, NodeContext, Progress
 from nodes.groups import Condition, if_enum_group, if_group
+from nodes.impl.device_thread import on_device_thread
 from nodes.impl.pytorch.auto_split import pytorch_auto_split
 from nodes.impl.pytorch.utils import safe_cuda_cache_empty
 from nodes.impl.upscale.auto_split_tiles import (
@@ -105,6 +106,7 @@ def upscale(
             use_fp16=use_fp16,
             tiler=parse_tile_size_input(tile_size, estimate),
             progress=progress,
+            use_bf16=options.use_cpu_bf16 and model.supports_bfloat16,
         )
         logger.debug("Done upscaling")
 
@@ -280,18 +282,25 @@ def upscale_image_node(
     if not use_custom_scale or not info.supports_custom_scale:
         custom_scale = model.scale
 
-    return basic_upscale(
-        img,
-        lambda i: upscale(
-            i,
-            model,
-            TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
-            exec_options,
-            context,
-        ),
-        upscale_info=info,
-        scale=custom_scale,
-        separate_alpha=separate_alpha,
-        padding=padding,
-        clip=False,  # pytorch_auto_split already does clipping internally
-    )
+    def run() -> np.ndarray:
+        # Paused or stopped meanwhile (queued behind other upscales): wait, or end here.
+        context.suspend()
+        return basic_upscale(
+            img,
+            lambda i: upscale(
+                i,
+                model,
+                TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
+                exec_options,
+                context,
+            ),
+            upscale_info=info,
+            scale=custom_scale,
+            separate_alpha=separate_alpha,
+            padding=padding,
+            clip=False,  # pytorch_auto_split already does clipping internally
+        )
+
+    # The model is shared by items computed ahead: moved, hooked and run on the
+    # device's thread, one upscale at a time.
+    return on_device_thread(exec_options.device.type != "cpu", run)

@@ -1,11 +1,43 @@
 from __future__ import annotations
 
+import copy
+from threading import Lock
+from typing import TypeVar, cast
+from weakref import WeakKeyDictionary
+
 import numpy as np
 import torch
+from spandrel import ModelDescriptor
 from torch import Tensor
 
 from ..image_utils import as_3d
 from ..onnx.np_tensor_utils import MAX_VALUES_BY_DTYPE, np_denorm
+
+_Descriptor = TypeVar("_Descriptor", bound=ModelDescriptor)
+
+# A model's copy on another device or in another precision while the model lives (one
+# per model: a copy on a new device or in a new precision replaces it).
+_copies: WeakKeyDictionary[ModelDescriptor, ModelDescriptor] = WeakKeyDictionary()
+_copies_lock = Lock()
+
+
+def on_device(
+    model: _Descriptor, device: torch.device, dtype: torch.dtype
+) -> _Descriptor:
+    """`model` on `device` in `dtype`: `model` itself when it is, else its copy there.
+    `model` is not changed: nodes share it (Save Model saves its weights, Convert To
+    ONNX exports them, another upscale may run it in another precision). A copy no
+    longer asked for is dropped (a copy in use is held by its caller)."""
+    with _copies_lock:
+        moved = _copies.pop(model, None)
+        if model.device == device and model.dtype == dtype:
+            return model
+        if moved is None or moved.device != device or moved.dtype != dtype:
+            # The superseded copy goes before the new one is made
+            del moved
+            moved = copy.deepcopy(model).to(device, dtype)
+        _copies[model] = moved
+    return cast(_Descriptor, moved)
 
 
 def bgr_to_rgb(image: Tensor) -> Tensor:

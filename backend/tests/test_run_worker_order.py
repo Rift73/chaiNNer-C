@@ -4,6 +4,11 @@ The worker started first, before the host ran pip: on a first start pip then rep
 modules the worker had loaded (NumPy's, psutil's .pyd), which fails on Windows or
 leaves ~-prefixed folders behind. The installed packages are now checked first (a
 metadata scan, no pip), pip runs when one is missing, and the worker starts after it.
+
+The leftovers of interrupted installs and downloads are swept in between: the sweep
+loads psutil, whose .pyd pip cannot replace once a process has it loaded (Windows), so
+a sweep before pip failed the start of an update that raised psutil's pin. The sweep is
+best effort: an error in it is logged with its traceback, and the start goes on.
 """
 
 from __future__ import annotations
@@ -16,8 +21,9 @@ from pathlib import Path
 
 SRC = Path(__file__).parent.parent / "src"
 
-# run.py with stand-ins for the worker, the host and pip; the environment's installed
-# distributions are a JSON file, which pip's stand-in adds the pins it installs to.
+# run.py with stand-ins for the worker, the host, pip and the leftovers' sweep (which
+# fails when told to); the environment's installed distributions are a JSON file, which
+# pip's stand-in adds the pins it installs to.
 CHECK = """
 import json
 import runpy
@@ -27,7 +33,7 @@ from types import SimpleNamespace
 
 from dependencies import store
 
-ENVIRONMENT = sys.argv[1]
+ENVIRONMENT, SWEEP = sys.argv[1:3]
 sys.argv = ["run.py"]
 events = []
 
@@ -55,6 +61,12 @@ def pip(command, **_kwargs):
     return 0
 
 
+def sweep(_storage_dir, _prefix, _executable):
+    events.append("sweep")
+    if SWEEP == "fails":
+        raise OSError("the storage folder cannot be listed")
+
+
 def spawn_worker(_args):
     events.append("spawn")
     return SimpleNamespace(kill=lambda: events.append("kill"))
@@ -66,6 +78,7 @@ def main(worker):
 
 store.scan_installed_packages = scan
 subprocess.check_call = pip
+sys.modules["leftovers"] = SimpleNamespace(remove=sweep)
 sys.modules["worker_spawn"] = SimpleNamespace(
     find_free_port=lambda: 1, spawn_worker=spawn_worker
 )
@@ -75,9 +88,10 @@ print(json.dumps(events))
 """
 
 
-def start(environment: Path) -> list[object]:
+def start(environment: Path, sweep: str = "works") -> tuple[list[object], str]:
+    """The start's events, and what it wrote to stderr."""
     result = subprocess.run(
-        [sys.executable, "-B", "-c", CHECK, str(environment)],
+        [sys.executable, "-B", "-c", CHECK, str(environment), sweep],
         cwd=SRC,
         env=os.environ,
         stdin=subprocess.DEVNULL,
@@ -86,13 +100,25 @@ def start(environment: Path) -> list[object]:
         timeout=120,
         check=True,
     )
-    return json.loads(result.stdout.strip().splitlines()[-1])
+    return json.loads(result.stdout.strip().splitlines()[-1]), result.stderr
 
 
 def test_the_worker_starts_after_the_first_start_install(tmp_path: Path):
     environment = tmp_path / "installed.json"
     environment.write_text("{}", encoding="utf-8")
-    # A first start: pip runs before any worker exists, which then starts once.
-    assert start(environment) == ["pip", "spawn", ["host", "with worker"]]
-    # The next start finds them installed: no pip, the worker starts at once.
-    assert start(environment) == ["spawn", ["host", "with worker"]]
+    # A first start: pip runs before any worker exists, then the sweep, then the
+    # worker starts once.
+    events, _ = start(environment)
+    assert events == ["pip", "sweep", "spawn", ["host", "with worker"]]
+    # The next start finds them installed: no pip, the sweep and the worker at once.
+    events, _ = start(environment)
+    assert events == ["sweep", "spawn", ["host", "with worker"]]
+
+
+def test_a_failing_sweep_is_logged_and_the_start_goes_on(tmp_path: Path):
+    environment = tmp_path / "installed.json"
+    environment.write_text("{}", encoding="utf-8")
+    events, stderr = start(environment, sweep="fails")
+    assert events == ["pip", "sweep", "spawn", ["host", "with worker"]]
+    assert "Traceback (most recent call last)" in stderr
+    assert "OSError: the storage folder cannot be listed" in stderr

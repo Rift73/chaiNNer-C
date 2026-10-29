@@ -29,6 +29,7 @@ from sanic.response import HTTPResponse, json
 import api
 import cuda_allocator
 import image_limits
+import load_failures
 from api import (
     ExecutionOptions,
     Group,
@@ -39,7 +40,6 @@ from chain.cache import OutputCache
 from chain.chain import Chain, FunctionNode, GeneratorNode
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
-from dependencies.store import installed_packages
 from events import EventConsumer, EventQueue, ExecutionErrorData, event_text
 from linux_libraries import log_missing_libraries
 from native_executor import NativeExecutor, ending_runs, executor_kind
@@ -152,6 +152,8 @@ class NodeLoading:
         }
         # By package id: the node modules that failed to load.
         self.errors: dict[str, list[api.LoadErrorInfo]] = {}
+        # The failures other than a missing dependency of the previous start, by module.
+        self.previous_failures: dict[str, str] = {}
         # Every package has loaded, or the loading failed.
         self.done = threading.Event()
 
@@ -186,21 +188,28 @@ class NodeLoading:
 
     def complete(self) -> bool:
         """Whether every node module loaded, but those whose dependency is not
-        installed. A module that failed otherwise may load at the next start (torch
-        under memory pressure: WinError 1455), so the app does not cache this list."""
-        return not any(
-            not isinstance(error.error, ModuleNotFoundError)
+        installed and those that failed the same way at the previous start. A module
+        that failed otherwise may load at the next start (torch under memory pressure:
+        WinError 1455), so the app does not cache this list; one that fails at every
+        start would keep every start from caching it (load_failures)."""
+        return all(
+            self.previous_failures.get(error.module)
+            == load_failures.failure(error.error)
             for errors in self.errors.values()
             for error in errors
+            if not isinstance(error.error, ModuleNotFoundError)
         )
 
-    def load(self, config: ServerConfig) -> None:
-        """Loads every package's nodes, setting the events as it goes, failures included.
+    def load(self, config: ServerConfig, storage_dir: Path) -> None:
+        """Loads every package's nodes, setting the events as it goes, failures included,
+        and records the failures in storage_dir for the next start (load_failures).
         Raises if config.error_on_failed_node and a node module failed, or if a node
         failed its checks."""
+        self.previous_failures = load_failures.read(storage_dir)
         try:
             load_errors = self._load()
             log_load_errors(load_errors)
+            load_failures.record(storage_dir, load_failures.failures_of(load_errors))
             if len(load_errors) > 0 and config.error_on_failed_node:
                 raise ValueError("Error importing nodes")
         finally:
@@ -1114,18 +1123,6 @@ async def get_packages(request: Request):
             packages.append({**package.to_dict(), "dependencies": []})
             continue
 
-        pkg_dependencies = []
-        for pkg_dep in package.dependencies:
-            installed_version = installed_packages.get(pkg_dep.pypi_name, None)
-            pkg_dep_item = {
-                **pkg_dep.to_dict(),
-            }
-            if installed_version is None:
-                pkg_dep_item["installed"] = None
-            else:
-                pkg_dep_item["installed"] = installed_version
-            pkg_dependencies.append(pkg_dep_item)
-
         packages.append(package.to_dict())
 
     return json(packages)
@@ -1219,15 +1216,15 @@ def log_load_errors(load_errors: list[api.LoadErrorInfo]) -> None:
                     logger.warning(f"{error}  ->  {count} modules ...\n{l}")
 
 
-async def import_packages(config: ServerConfig):
+async def import_packages(ctx: AppContext):
     """Loads every package's nodes in a thread of its own, so the worker serves from its
     start: runs of the nodes that have loaded go ahead, the others wait for theirs
     (wait_for_nodes)."""
-    await asyncio.to_thread(node_loading.load, config)
+    await asyncio.to_thread(node_loading.load, ctx.config, ctx.storage_dir)
 
 
 async def setup(sanic_app: Sanic):
-    await import_packages(AppContext.get(sanic_app).config)
+    await import_packages(AppContext.get(sanic_app))
     logger.info(native.isa_line())
 
 

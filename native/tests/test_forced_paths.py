@@ -265,7 +265,7 @@ def holds_denormal(case):
 def assert_levels_match_b3(found, levels):
     """Each case matches B3 or its independent F26/D-17.1 reference at every level;
     only the cases B3 refused and Consult 8 D-5 dithers remain mismatches."""
-    corrected = [case.id for case, outputs in found if d5_corrected(case)]
+    corrected = [case.id for case, _ in found if d5_corrected(case)]
     for level in levels:
         assert isa_set(level) == level
         mismatched = [

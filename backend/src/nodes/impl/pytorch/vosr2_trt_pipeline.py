@@ -14,6 +14,7 @@ from api import NodeContext, NodeId
 from gpu import get_vram_usage
 from nodes.impl.tensorrt.cache import SharedCache
 
+from . import memory_cap
 from .vosr2_export import rotary_tables
 from .vosr2_plan_file import compressed, plain
 from .vosr2_trt_execution import BoundedQueue, Stage, StageExecution
@@ -102,9 +103,9 @@ class FullSession:
         cap = int(total * previous) - budget
         if cap <= torch.cuda.memory_allocated(self.device) + 512 * 1024**2:
             raise RuntimeError("Insufficient memory to admit VOSR BF16 model stages.")
-        # The enclosing vram_budget restores the fraction. Warm weights are
+        # The enclosing vram_budget's cap, restored at its end. Warm weights are
         # already measured as external allocations on its next admission.
-        torch.cuda.set_per_process_memory_fraction(cap / total, self.device)
+        memory_cap.lower(self.device, cap / total)
         try:
             for stage in self.stages.values():
                 engine = stage.engine

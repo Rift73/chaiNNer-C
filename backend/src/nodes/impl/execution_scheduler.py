@@ -9,7 +9,7 @@ from typing import Literal, Protocol, TypeVar, cast
 
 from api import NodeData, NodeId
 from chain.chain import Chain
-from chain.input import EdgeInput, InputMap
+from chain.input import EdgeInput, Input, InputMap, ValueInput
 
 from .execution_cleanup import await_owned_node
 
@@ -76,10 +76,38 @@ async def owned_gather(coroutines: list[Awaitable[T]]) -> list[T]:
 # Nodes outside the image/utility CPU rule that may still run ahead of earlier items
 # or beside other branches: free of side effects, they use their context only per
 # call (settings, node id, progress) and serialize their device work under their own
-# lock (native/reports/sp3/thread-safety-audit.md, "Locked device nodes").
+# lock (native/reports/sp3/thread-safety-audit.md, "Locked device nodes"; PyTorch,
+# ONNX and NCNN on their device's thread, nodes/impl/device_thread.py).
 LOCKED_DEVICE_NODES: frozenset[str] = frozenset(
-    {"chainner:tensorrt:upscale_image", "chainner:migraphx:upscale_image"}
+    {
+        "chainner:tensorrt:upscale_image",
+        "chainner:migraphx:upscale_image",
+        "chainner:pytorch:upscale_image",
+        "chainner:onnx:upscale_image",
+        "chainner:ncnn:upscale_image",
+    }
 )
+
+# The lazy inputs their node always reads, so the item window computes ahead behind them
+# as behind any input: per schema id, each with the boolean input that, on or
+# connected, may leave it unread. Every other lazy input may go unread (a
+# Conditional's If True and If False, Logic Operation's B), and the window computes no
+# locked-device node behind it for an item that may never read it.
+ALWAYS_READ_LAZY_INPUTS: dict[str, dict[int, int]] = {
+    # The image, unless Skip existing files finds the file
+    "chainner:image:save": {0: 1000},
+}
+
+
+def may_go_unread(data: NodeData, sources: list[Input], index: int) -> bool:
+    """Whether the node may leave its lazy input data.inputs[index] unread for an item:
+    one not in ALWAYS_READ_LAZY_INPUTS, or one whose boolean input is on or connected.
+    sources: the node's inputs (InputMap.get)."""
+    switch = ALWAYS_READ_LAZY_INPUTS.get(data.schema_id, {}).get(data.inputs[index].id)
+    if switch is None:
+        return True
+    source = next(s for i, s in zip(data.inputs, sources) if i.id == switch)
+    return not isinstance(source, ValueInput) or bool(source.value)
 
 
 def pure_cpu_node(data: NodeData) -> bool:
@@ -101,36 +129,61 @@ def pure_cpu_node(data: NodeData) -> bool:
 def pure_cpu_dependency(
     executor: DependencyExecutor, node_id: NodeId, visiting: set[NodeId] | None = None
 ) -> bool:
-    """Parallelize only eager, side-effect-free CPU subgraphs with ready roots."""
+    """Parallelize only eager, side-effect-free CPU subgraphs with ready roots.
+
+    A cached node is ready; an uncached pure node is if all its edge inputs are, read in
+    order up to the first that is not. The walk keeps its own stack: a chain may have up
+    to MAX_CHAIN_DEPTH pure nodes in a row, beyond Python's recursion limit."""
     visiting = set() if visiting is None else visiting
-    return _pure_cpu_dependency(executor, node_id, visiting, {})
+    known: dict[NodeId, bool] = {}
 
+    def settled(current: NodeId) -> bool | None:
+        """The node's answer without walking its inputs, None when they decide it."""
+        if current in known:
+            return known[current]
+        if executor.node_cache.has(current):
+            return True
+        if not pure_cpu_node(executor.chain.nodes[current].data):
+            return False
+        if current in visiting:
+            return False
+        return None
 
-def _pure_cpu_dependency(
-    executor: DependencyExecutor,
-    node_id: NodeId,
-    visiting: set[NodeId],
-    known: dict[NodeId, bool],
-) -> bool:
-    if node_id in known:
-        return known[node_id]
-    if executor.node_cache.has(node_id):
-        return True
-    if not pure_cpu_node(executor.chain.nodes[node_id].data):
-        return False
-    if node_id in visiting:
-        return False
-    visiting.add(node_id)
+    answer = settled(node_id)
+    if answer is not None:
+        return answer
+    # The nodes being walked, each with its inputs not read yet.
+    stack: list[tuple[NodeId, Iterator[Input]]] = []
+
+    def enter(current: NodeId) -> None:
+        visiting.add(current)
+        stack.append((current, iter(executor.inputs.get(current))))
+
+    enter(node_id)
     try:
-        result = all(
-            not isinstance(value, EdgeInput)
-            or _pure_cpu_dependency(executor, value.id, visiting, known)
-            for value in executor.inputs.get(node_id)
-        )
-        known[node_id] = result
-        return result
+        while stack:
+            current, sources = stack[-1]
+            # answer: the last input's, after an input that was walked; a False one
+            # decides the node without its other inputs.
+            if answer is not False:
+                answer = True
+                for value in sources:
+                    if isinstance(value, EdgeInput):
+                        answer = settled(value.id)
+                        if answer is None:
+                            enter(value.id)
+                            break
+                        if not answer:
+                            break
+                if answer is None:
+                    continue
+            known[current] = answer
+            visiting.remove(current)
+            stack.pop()
+        return answer is True
     finally:
-        visiting.remove(node_id)
+        for current, _ in stack:
+            visiting.discard(current)
 
 
 class NodeFlights:

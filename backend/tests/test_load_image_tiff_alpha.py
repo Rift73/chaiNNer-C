@@ -32,10 +32,14 @@ FLOAT = RNG.random((7, 11, 4), dtype=np.float32)
 
 
 def write_tiff(
-    path: Path, samples: np.ndarray, extra: tuple[int, ...], orientation: int = 1
+    path: Path,
+    samples: np.ndarray,
+    extra: tuple[int, ...],
+    orientation: int = 1,
+    more: dict[int, list[int]] | None = None,
 ) -> None:
     """An uncompressed little-endian grey or RGB TIFF in one strip, with exact
-    ExtraSamples."""
+    ExtraSamples and `more` SHORT tags."""
     h, w, c = samples.shape
     data = samples.astype(samples.dtype.newbyteorder("<")).tobytes()
     tags = {
@@ -52,6 +56,7 @@ def write_tiff(
         284: [1],
         338: list(extra),
         339: [3 if samples.dtype.kind == "f" else 1] * c,
+        **(more or {}),
     }
     longs = (273, 279)
     sizes = [len(v) * (4 if t in longs else 2) for t, v in tags.items()]
@@ -203,11 +208,55 @@ def test_16_bit_straight_alpha_tiff_was_already_exact(tmp_path: Path):
 
 
 @pytest.mark.parametrize("extra", [(1,), (2,)])
-def test_16_bit_grey_alpha_tiff_warns_of_the_loss(
+@pytest.mark.parametrize("orientation", range(1, 9))
+def test_16_bit_grey_alpha_tiff_keeps_its_alpha_and_depth(
+    tmp_path: Path, extra: tuple[int, ...], orientation: int
+):
+    # Pillow cannot open it and OpenCV gave 8-bit grey: now its samples as stored, as
+    # 16-bit RGBA loads, the grey in B, G and R, turned as the 8-bit files are.
+    path = tmp_path / "grey-alpha16.tif"
+    samples = np.ascontiguousarray(RGBA16[:, :, [0, 3]])
+    write_tiff(path, samples, extra, orientation)
+    grey, alpha = samples[:, :, 0], samples[:, :, 1]
+    expected = turned(np.dstack([grey] * 3 + [alpha]), orientation)
+    assert_identical(load_image_node(path)[0], np.ascontiguousarray(expected))
+
+
+def test_16_bit_grey_alpha_tiff_above_pillows_default_limit_keeps_its_alpha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # The native decoder takes Pillow's MAX_IMAGE_PIXELS, by default 89,478,485: a
+    # larger file loaded as 8-bit grey without its alpha until the image-size limit
+    # (image_limits.py) replaced that value.
+    side = 9460
+    assert side * side > 89_478_485
+    path = tmp_path / "large-grey-alpha16.tif"
+    ramp = np.arange(side, dtype=np.uint16)
+    samples = np.empty((side, side, 2), np.uint16)
+    samples[:, :, 0], samples[:, :, 1] = ramp, ramp[:, None]
+    write_tiff(path, samples, (2,))
+    del samples
+    warnings: list[str] = []
+    monkeypatch.setattr(load_image.logger, "warning", warnings.append)
+    loaded = load_image_node(path)[0]
+    assert warnings == []
+    assert loaded.dtype == np.uint16 and loaded.shape == (side, side, 4)
+    for channel in range(3):
+        assert np.array_equal(
+            loaded[:, :, channel], np.broadcast_to(ramp, (side, side))
+        )
+    assert np.array_equal(loaded[:, :, 3], np.broadcast_to(ramp[:, None], (side, side)))
+
+
+@pytest.mark.parametrize("extra", [(1,), (2,)])
+def test_16_bit_grey_alpha_tiff_the_native_decoder_declines_warns_of_the_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: tuple[int, ...]
 ):
+    # A tag the native decoder does not take (ImageDepth)
     path = tmp_path / "grey-alpha16.tif"
-    write_tiff(path, np.ascontiguousarray(RGBA16[:, :, [0, 3]]), extra)
+    write_tiff(
+        path, np.ascontiguousarray(RGBA16[:, :, [0, 3]]), extra, more={32997: [1]}
+    )
     warnings: list[str] = []
     monkeypatch.setattr(load_image.logger, "warning", warnings.append)
     loaded = load_image_node(path)[0]

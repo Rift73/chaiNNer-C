@@ -27,6 +27,7 @@ from nodes.impl.tensorrt.memory import (
     get_cuda_device_name,
 )
 from nodes.impl.tensorrt.model import TensorRTEngine, TensorRTEngineInfo
+from nodes.impl.tensorrt.tiling import TILE_OVERLAP
 from nodes.properties.inputs import (
     BoolInput,
     EnumInput,
@@ -76,6 +77,15 @@ TILING_OPTIMIZATION_LABELS = {
     TilingOptimization.MODERATE: "Moderate",
     TilingOptimization.FULL: "Full (slowest build)",
 }
+
+# The smallest engine size Upscale Image tiles a larger image with: neighbouring tiles
+# overlap by 3 * TILE_OVERLAP px (tiling.tile_starts). A smaller engine would only
+# upscale images up to its own size.
+MIN_TILE_SIZE = 3 * TILE_OVERLAP + 1
+TILE_SIZE_DOC = (
+    f"At least {MIN_TILE_SIZE} px, so that Upscale Image can tile a larger image. Below"
+    " 64 px, a large image takes very many tiles and upscales very slowly."
+)
 
 # A Workspace of 0 is TensorRT's default (as much as the GPU's memory), or for a DUAL
 # ONNX its guide's.
@@ -157,33 +167,45 @@ if utility_group is not None:
                 NumberInput(
                     "Max Height",
                     default=2048,
-                    min=16,
+                    min=MIN_TILE_SIZE,
                     max=8192,
                     unit="px",
-                ).with_docs("Maximum input height for dynamic shapes."),
+                ).with_docs(
+                    "Maximum input height for dynamic shapes.",
+                    TILE_SIZE_DOC,
+                ),
                 NumberInput(
                     "Max Width",
                     default=2048,
-                    min=16,
+                    min=MIN_TILE_SIZE,
                     max=8192,
                     unit="px",
-                ).with_docs("Maximum input width for dynamic shapes."),
+                ).with_docs(
+                    "Maximum input width for dynamic shapes.",
+                    TILE_SIZE_DOC,
+                ),
             ),
             if_enum_group(2, ShapeMode.FIXED)(
                 NumberInput(
                     "Height",
                     default=256,
-                    min=16,
+                    min=MIN_TILE_SIZE,
                     max=8192,
                     unit="px",
-                ).with_docs("Fixed input height."),
+                ).with_docs(
+                    "Fixed input height.",
+                    TILE_SIZE_DOC,
+                ),
                 NumberInput(
                     "Width",
                     default=256,
-                    min=16,
+                    min=MIN_TILE_SIZE,
                     max=8192,
                     unit="px",
-                ).with_docs("Fixed input width."),
+                ).with_docs(
+                    "Fixed input width.",
+                    TILE_SIZE_DOC,
+                ),
             ),
             NumberInput(
                 "Workspace (GiB)",

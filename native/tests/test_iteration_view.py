@@ -626,9 +626,9 @@ def test_iterated_by_names_each_input_s_generator(monkeypatch, tmp_path, nodes):
 def test_a_locked_device_node_computed_ahead_sees_no_iteration_and_is_served(
     monkeypatch, tmp_path, schema
 ):
-    # A locked-device node's id (TensorRT's or MIGraphX's upscale: a context, yet
-    # computed ahead). The items look's peeks make the window compute ahead see None;
-    # the commit path's runs see their item's view. look is served its outputs.
+    # A locked-device node's id (an Upscale Image: a context, yet computed ahead). The
+    # items look's peeks make the window compute ahead see None; the commit path's runs
+    # see their item's view. look is served its outputs.
     looking = Looking(monkeypatch, tmp_path, 4, window="3", nodes=("map",), depth=2)
     node = looking.chain.nodes[NodeId("map")]
     set_schema(node, schema)

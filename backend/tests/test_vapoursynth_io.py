@@ -18,6 +18,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+from scratch_storage import NO_FFMPEG, STORAGE
 
 from api import MB, Aborted, NodeAttributedError, NodeContext, SettingsParser
 from nodes.impl.colour_info import (
@@ -312,6 +313,30 @@ def test_preview_without_vsview_for_the_glibc_says_why_and_writes_nothing(
     assert not (tmp_path / "vapoursynth").exists()
 
 
+def test_preview_check_that_fails_keeps_the_open_viewers_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # The check runs on a copy: Reload in the open vsview shows the last script that
+    # worked, not the error.
+    monkeypatch.setattr(preview_clips, "glibc_version", lambda: None)
+    monkeypatch.setattr(preview_clips, "launch_preview", lambda script, key: None)
+
+    def check(script: Path, output: int, context: NodeContext | None = None) -> None:
+        if "Crop(left=-4)" in script.read_text(encoding="utf-8"):
+            raise VSScriptError("Crop: negative corner coordinates", "bad")
+
+    monkeypatch.setattr(preview_clips, "clip_info", check)
+    source = clip("src", BLANK)
+    bad = clip("bad", f"{clip_var('src')}.std.Crop(left=-4)", source)
+    folder = tmp_path / "vapoursynth" / "chains" / "view"
+
+    preview_clips_node(context(tmp_path, "view"), *pairs(source, "Works"))
+    with pytest.raises(VSScriptError, match="negative corner"):
+        preview_clips_node(context(tmp_path, "view"), *pairs(source, None, bad))
+    assert "'Works'" in (folder / "preview.vpy").read_text(encoding="utf-8")
+    assert [path.name for path in folder.iterdir()] == ["preview.vpy"]
+
+
 # VapourSynth from here on: the venv's vspipe renders in child processes.
 
 
@@ -492,20 +517,12 @@ def test_read_frames_with_info_matches_without(tmp_path: Path, vs: Any, output: 
         np.testing.assert_array_equal(a, b)
 
 
-# The FFmpeg the backend downloads to its storage on first use (FFMpegEnv.get_integrated).
-FFMPEG_DIR = (
-    Path(os.environ.get("APPDATA") or Path.home() / ".config")
-    / "chaiNNer"
-    / "backend-storage"
-)
-
-
 @pytest.fixture
 def integrated_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> FFMpegEnv:
-    """The downloaded FFmpeg as the nodes' integrated one (their storage is tmp_path)."""
-    ffmpeg, ffprobe = map(str, get_executable_path(FFMPEG_DIR / "ffmpeg"))
+    """The pinned FFmpeg as the nodes' integrated one (their storage is tmp_path)."""
+    ffmpeg, ffprobe = map(str, get_executable_path(STORAGE / "ffmpeg"))
     if not Path(ffmpeg).exists():
-        pytest.skip("the integrated FFmpeg is not downloaded")
+        pytest.skip(NO_FFMPEG)
     env = FFMpegEnv(ffmpeg, ffprobe)
     monkeypatch.setattr(FFMpegEnv, "get_integrated", staticmethod(lambda _: env))
     return env

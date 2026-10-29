@@ -16,6 +16,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+from scratch_storage import NO_FFMPEG, STORAGE
 
 # The node's modules load the native backend, which GitHub's checks do not build.
 pytest.importorskip("nodes.impl._chainner_graph")
@@ -61,13 +62,10 @@ RGB_AUTO = (
     SitingCorrection.AUTO,
 )
 
-# The FFmpeg the backend downloads to its storage on first use (FFMpegEnv.get_integrated).
-STORAGE = Path(os.environ.get("APPDATA", "")) / "chaiNNer" / "backend-storage"
+# The pinned FFmpeg the backend downloads to a storage folder, in the tests' own one.
 FFMPEG, FFPROBE = map(str, get_executable_path(STORAGE / "ffmpeg"))
 
-pytestmark = pytest.mark.skipif(
-    not Path(FFMPEG).exists(), reason="the integrated FFmpeg is not downloaded"
-)
+pytestmark = pytest.mark.skipif(not Path(FFMPEG).exists(), reason=NO_FFMPEG)
 
 
 class Context:

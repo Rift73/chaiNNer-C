@@ -70,11 +70,12 @@ ABSENT = [
     "vsview",
 ]
 
-# argv: the absent modules as JSON, then the modules whose import raises OSError.
+# argv: the absent modules as JSON, then the modules whose import raises OSError, then
+# the storage folder.
 STARTUP = """
 import asyncio, importlib.abc, json, logging, sys
 
-absent, broken = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+absent, broken, storage = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3]
 
 
 class FreshRuntime(importlib.abc.MetaPathFinder):
@@ -88,7 +89,7 @@ class FreshRuntime(importlib.abc.MetaPathFinder):
 
 
 sys.meta_path.insert(0, FreshRuntime())
-sys.argv = [sys.argv[0]]
+sys.argv = [sys.argv[0], "--storage-dir", storage]
 errors = []
 
 
@@ -103,7 +104,7 @@ import server
 
 # After the imports: each Sanic app applies its logging config when created.
 logging.getLogger("sanic.root").addHandler(Errors())
-asyncio.run(server.import_packages(server.AppContext.get(server.app).config))
+asyncio.run(server.import_packages(server.AppContext.get(server.app)))
 print(json.dumps({
     "packages": sorted(p.id for p in server.api.registry.packages.values()),
     "categories": sorted({sub.category.id for _, sub in server.api.registry.nodes.values()}),
@@ -112,9 +113,17 @@ print(json.dumps({
 """
 
 
-def start(absent: list[str], broken: list[str]) -> dict:
+def start(absent: list[str], broken: list[str], storage: Path) -> dict:
     done = subprocess.run(
-        [sys.executable, "-B", "-c", STARTUP, json.dumps(absent), json.dumps(broken)],
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            STARTUP,
+            json.dumps(absent),
+            json.dumps(broken),
+            str(storage),
+        ],
         cwd=BACKEND,
         capture_output=True,
         text=True,
@@ -139,20 +148,20 @@ PACKAGES = [
 ]
 
 
-def test_the_worker_lists_every_package_without_their_dependencies():
-    started = start(ABSENT, [])
+def test_the_worker_lists_every_package_without_their_dependencies(tmp_path: Path):
+    started = start(ABSENT, [], tmp_path)
     assert started["packages"] == PACKAGES
     # Not installed is not an error: the node modules' imports fail one by one.
     assert started["errors"] == []
 
 
-def test_a_torch_that_fails_to_load_costs_only_the_pytorch_nodes():
+def test_a_torch_that_fails_to_load_costs_only_the_pytorch_nodes(tmp_path: Path):
     # Runs native code, which GitHub's checks do not build.
     pytest.importorskip("nodes.impl._chainner_graph")
     # The standard package's dependencies are installed; the GPU frameworks other
     # than torch are absent, so nothing here loads a GPU runtime.
     gpu = ["ncnn", "onnx", "onnxoptimizer", "onnxruntime", "tensorrt", "cuda", "triton"]
-    started = start(gpu, ["torch"])
+    started = start(gpu, ["torch"], tmp_path)
     assert started["packages"] == PACKAGES
     assert "image" in started["categories"]
     assert "pytorch" not in started["categories"]

@@ -281,7 +281,7 @@ WINDOWS_SHAPES = {
 
 @pytest.mark.parametrize(
     "shape",
-    ["plain", "junction", "directory_symlink", "relative", "drive_relative", "dotdot", "missing_tail", "unicode",
+    ["plain", "junction", "directory_symlink", "relative", "drive_relative", "dot", "missing_tail", "unicode",
      "trailing_dot_space", "case_overwrite"],
 )
 def test_save_image_targets_the_same_file(tmp_path, monkeypatch, shape):
@@ -301,9 +301,9 @@ def test_save_image_targets_the_same_file(tmp_path, monkeypatch, shape):
         base = Path("real")
     elif shape == "drive_relative":
         base = Path(str(real)[2:])
-    elif shape == "dotdot":
-        (tmp_path / "other").mkdir()
-        base, relative = tmp_path / "other", "../real"
+    elif shape == "dot":
+        # A ".." component is refused (test_save_image_paths.py)
+        relative = "a/./b"
     elif shape == "missing_tail":
         relative = "a/b/c"
     elif shape == "unicode":

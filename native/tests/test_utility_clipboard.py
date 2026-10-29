@@ -357,5 +357,6 @@ def test_linux_image_payload_is_a_png_of_the_dib_pixels(channels, pixel_format):
     assert status == 0
     payload = NATIVE.utility_clipboard_image_bytes(array, pixel_format)
     decoded = cv2.imdecode(np.frombuffer(payload, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert decoded is not None
     assert decoded.shape == (height, width, 4) and decoded.dtype == np.uint8
     assert decoded[::-1].tobytes() == pixels.tobytes()

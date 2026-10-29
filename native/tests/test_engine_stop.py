@@ -185,10 +185,6 @@ results = {}
 for kind in ("python", "native"):
     os.environ["CHAINNER_C_EXECUTOR"] = kind
     for where, drop in (("worker", True), ("lazy", True), ("driver", True), ("driver", False)):
-        if (kind, where) == ("python", "lazy"):
-            # process.Executor ends the lazy read at Stop without waiting for the node that computes it: only the
-            # engine's case is checked.
-            continue
         results[f"{kind} {where} {'dropped' if drop else 'kept'}"] = asyncio.run(stop(where, drop))
 print(json.dumps(results))
 """
@@ -224,13 +220,7 @@ CASES = ["worker dropped", "lazy dropped", "driver dropped", "driver kept"]
 
 
 @pytest.mark.parametrize(
-    ("kind", "case"),
-    [
-        (kind, case)
-        for kind in ("native", "python")
-        for case in CASES
-        if (kind, case) != ("python", "lazy dropped")
-    ],
+    ("kind", "case"), [(kind, case) for kind in ("native", "python") for case in CASES]
 )
 def test_stop_during_a_long_node(stops, kind, case):
     stop = stops[f"{kind} {case}"]
@@ -437,6 +427,67 @@ async def self_stopped(delay):
     return await through_server(one_node(body), then, pressed)
 
 
+async def lazy_release():
+    # The Python executor: Stop ends the sink's lazy read while slow, which computes it, runs on. The run says it
+    # waits for slow (its log line releases slow); a run that ends without waiting has the server's memory return
+    # release it.
+    import process
+
+    loop = asyncio.get_running_loop()
+    started, release, done, returned, memory = (threading.Event(), threading.Event(), threading.Event(), [],
+                                                 asyncio.Event())
+    info, return_memory = process.logger.info, server.return_device_memory
+
+    def logged(message, *args, **kwargs):
+        if "lazy input" in message:
+            release.set()
+        info(message, *args, **kwargs)
+
+    def returning(collect=False):
+        gpu.append(("return memory", clock()))
+        release.set()
+        memory.set()
+
+    def slow(x):
+        started.set()
+        release.wait()
+        returned.append(clock())
+        done.set()
+        return x
+
+    b = Builder()
+    b.node("source", lambda x: x)
+    b.value("source", 0, 1)
+    b.node("slow", slow)
+    b.edge("source", 0, "slow", 0)
+    b.node("sink", lambda lazy: lazy.value, outputs=0, side_effects=True, lazy=(0,))
+    b.edge("slow", 0, "sink", 0)
+    os.environ["CHAINNER_C_EXECUTOR"] = "python"
+    process.logger.info, server.return_device_memory = logged, returning
+    gpu.clear()
+    try:
+        ctx = server.app.ctx
+        ctx.__dict__["storage_dir"] = Path(os.environ["WORK"]) / "storage"
+        ctx.__dict__["queue"] = Recorder()
+        server.parse_json = lambda _data: b.chain
+        server.wait_for_nodes = no_wait
+        request = SimpleNamespace(app=server.app, json={"data": [], "options": {}, "sendBroadcastData": True})
+        run = asyncio.ensure_future(server.run(request))
+        await loop.run_in_executor(None, started.wait)
+        run.cancel()
+        await server.kill(SimpleNamespace(app=server.app))
+        try:
+            await run
+        except asyncio.CancelledError:
+            pass
+        await memory.wait()
+        await loop.run_in_executor(None, done.wait)
+    finally:
+        process.logger.info, server.return_device_memory = info, return_memory
+        os.environ["CHAINNER_C_EXECUTOR"] = "native"
+    return {"slow returned": returned[0], "returned memory": [at for name, at in gpu if name == "return memory"]}
+
+
 os.environ["CHAINNER_C_EXECUTOR"] = "native"
 results = {"unstarted kill": asyncio.run(unstarted("kill")), "unstarted cancel": asyncio.run(unstarted("cancel"))}
 results["failing"] = asyncio.run(failing())
@@ -445,6 +496,7 @@ results["gpu"] = asyncio.run(gpu_checks())
 results["hung"] = asyncio.run(hung())
 results["self-stopped within the grace"] = asyncio.run(self_stopped(0.1))
 results["self-stopped after the grace"] = asyncio.run(self_stopped(1.0))
+results["python lazy release"] = asyncio.run(lazy_release())
 print(json.dumps(results))
 """
 
@@ -495,3 +547,11 @@ def test_cuda_checks_wait_for_a_stopped_node(review):
     found = review["gpu"]
     assert found["first_kill"] < KILL_LIMIT, found
     assert found["early"] == [] and "return memory" in found["after"], found
+
+
+def test_python_executor_returns_memory_after_a_stopped_lazy_reads_node(review):
+    # Its run ends after the node computing the lazy input Stop stopped reading, so the server's collection and
+    # memory return come after that node (before: during it, so its memory stayed reserved after it).
+    found = review["python lazy release"]
+    assert len(found["returned memory"]) == 1, found
+    assert found["slow returned"] < found["returned memory"][0], found

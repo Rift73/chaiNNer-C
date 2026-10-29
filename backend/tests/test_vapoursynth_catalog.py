@@ -15,7 +15,6 @@ import random
 import re
 import subprocess
 import sys
-import time
 import zlib
 from pathlib import Path
 from typing import Any
@@ -97,10 +96,9 @@ def scanned(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     """One real scan: vs-jetpack, the plugins, a user folder with a good, a broken and
     a raising file, and user_modules.toml listing vs_colorfix (installed in the venv)."""
     pytest.importorskip("vapoursynth")
-    # The scan pip-installs a listed module that is missing, into the Python running
-    # the tests: only the test venv, which has vs_colorfix, may run it.
+    # The host installs listed modules at a start, not the scan: the test venv has it.
     if importlib.util.find_spec("vs_colorfix") is None:
-        pytest.skip("vs_colorfix is not installed; the scan would install it here")
+        pytest.skip("vs_colorfix is not installed")
     storage = tmp_path_factory.mktemp("vapoursynth")
     user = storage / "user"
     user.mkdir()
@@ -192,6 +190,10 @@ def test_scan_lists_bound_methods(scanned: dict[str, Any]) -> None:
     kernels = entry_named(scanned["enums"], ".KernelLike")
     assert kernels["import"] == ""
     assert {"name": "Mitchell", "expr": "'Mitchell'"} in kernels["members"]
+    # vs-jetpack 2.2.6's bases that always fail are no choice (scan.HIDDEN).
+    assert "Kernel" not in {m["name"] for m in kernels["members"]}
+    assert "vskernels.Kernel.scale" not in functions
+    assert "vsdenoise.MVTools.degrain" not in functions
     # An alias of VapourSynth's and vs-jetpack's enums offers vs-jetpack's.
     field_based = entry_named(scanned["enums"], ".FieldBasedLike")
     assert field_based["import"] == "from vstools import FieldBased"
@@ -287,6 +289,195 @@ def test_plugin_signature_parser() -> None:
     assert scan.plugin_returns("") == "None"
 
 
+# A module in vs-jetpack's shapes (its annotations name VideoNode, which the scan
+# writes as text when it does not resolve, as without VapourSynth here).
+SHAPES_MODULE = '''
+from __future__ import annotations
+
+from typing import Any
+
+
+def merge(*clips: VideoNode, main_idx: int = 0) -> VideoNode:
+    """Merges the clips' properties."""
+
+
+def gather(*values: int, clip: VideoNode) -> VideoNode:
+    """Its *args takes no clips."""
+
+
+class Morph:
+    def bottom(self, clip: VideoNode, radius: int = 1) -> VideoNode:
+        """The bottom hat.
+
+        Args:
+            radius: How far.
+        """
+
+    def black(self, *args: Any, **kwargs: Any) -> VideoNode:
+        """Alias for [bottom][shapes.Morph.bottom]."""
+        return self.bottom(*args, **kwargs)
+
+    def anything(self, *args: Any, **kwargs: Any) -> VideoNode:
+        """Takes anything."""
+'''
+
+
+def test_scan_keeps_clip_args_and_follows_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """*clips is kept (merge_clip_props(*clips) got no clip), other *args are not; an
+    alias that takes *args and **kwargs (Morpho.black_hat) has the parameters and help
+    of the method it names, not just **kwargs."""
+    from nodes.impl.vapoursynth import scan
+
+    path = tmp_path / "vscat_shapes.py"
+    path.write_text(SHAPES_MODULE, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("vscat_shapes", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "vscat_shapes", module)
+    spec.loader.exec_module(module)
+    errors: list[str] = []
+    scanner = scan.Scanner(scan.Paths({"vscat_shapes": module}), errors)
+    scanner.scan_module("vscat_shapes", module, "jetpack")
+    assert errors == []
+    found = {fn["id"]: fn for fn in scanner.functions}
+    assert found["vscat_shapes.merge"]["params"] == [
+        {
+            "name": "clips",
+            "annotation": "VideoNode",
+            "default": None,
+            "kind": "var_positional",
+        },
+        {"name": "main_idx", "annotation": "int", "default": "0", "kind": "keyword"},
+    ]
+    assert [p["name"] for p in found["vscat_shapes.gather"]["params"]] == ["clip"]
+    black = found["vscat_shapes.Morph.black"]
+    bottom = found["vscat_shapes.Morph.bottom"]
+    assert black["call"] == "Morph(...).black"
+    assert black["params"] == bottom["params"]
+    assert [p["name"] for p in black["params"]] == ["clip", "radius"]
+    assert (black["doc"], black["arg_docs"]) == (
+        "The bottom hat.",
+        {"radius": "How far."},
+    )
+    # A method that only takes *args and **kwargs, and names no alias, stays so.
+    assert [p["kind"] for p in found["vscat_shapes.Morph.anything"]["params"]] == [
+        "var_keyword"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("returns", "clips"),
+    [
+        ("VideoNode", True),
+        ("vs.VideoNode", True),
+        ("ConstantFormatVideoNode", True),
+        ("list[VideoNode]", True),
+        ("Sequence[VideoNode]", True),
+        ("tuple[VideoNode, ...]", True),
+        # One clip, or something else for some arguments.
+        ("VideoNode | tuple[VideoNode, MVTools]", True),
+        ("VideoNode | PrefilterPartial", True),
+        ("vs.VideoNode | Callable[P, vs.VideoNode]", True),
+        # No clip: a tuple of a clip and more, of lists, a decorator, no clip at all.
+        ("tuple[VideoNode, MutableMapping[str, VideoNode | None]]", False),
+        ("tuple[VideoNode, int]", False),
+        ("tuple[list[VideoNode], list[VideoNode]]", False),
+        (
+            (
+                "Callable[P, vs.VideoNode]"
+                " | Callable[[Callable[P, vs.VideoNode]], Callable[P, vs.VideoNode]]"
+            ),
+            False,
+        ),
+        ("dict[str, Any]", False),
+        ("None", False),
+    ],
+)
+def test_gives_clips(returns: str, clips: bool) -> None:
+    from nodes.impl.vapoursynth import scan
+
+    assert scan.gives_clips(returns) is clips
+
+
+HIDDEN_MODULE = '''
+from __future__ import annotations
+
+
+class Thing:
+    def run(self, clip: VideoNode) -> VideoNode:
+        """Runs."""
+
+    def twice(self, clip: VideoNode) -> VideoNode:
+        """Runs twice."""
+
+    def split(self, clip: VideoNode) -> tuple[VideoNode, int]:
+        """A clip and a number."""
+
+
+class Base(Thing):
+    pass
+
+
+class NeedsArgs(Thing):
+    def __init__(self, x: int) -> None:
+        self.x = x
+
+
+type ThingLike = str | type[Thing] | Thing
+
+
+def use(clip: VideoNode, thing: ThingLike = "Thing") -> VideoNode:
+    """Uses a thing."""
+'''
+
+
+def test_scan_leaves_out_what_always_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hidden class is no class choice (none of its methods), a hidden by-name
+    choice is not in its alias's choices, a hidden method is not listed, and a method
+    that gives no clip (a tuple of a clip and a number) is not either."""
+    from nodes.impl.vapoursynth import scan
+
+    path = tmp_path / "vscat_hidden.py"
+    path.write_text(HIDDEN_MODULE, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("vscat_hidden", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "vscat_hidden", module)
+    spec.loader.exec_module(module)
+
+    def scanned_ids(hidden: scan.Hidden) -> tuple[set[str], list[str]]:
+        errors: list[str] = []
+        scanner = scan.Scanner(scan.Paths({"vscat_hidden": module}), errors, hidden)
+        scanner.scan_module("vscat_hidden", module, "jetpack")
+        assert errors == []
+        entry = scanner.enums["vscat_hidden.ThingLike"]
+        assert entry is not None
+        names = [m["name"] for m in entry["members"]]
+        return {fn["id"] for fn in scanner.functions}, names
+
+    ids, names = scanned_ids(scan.NOTHING_HIDDEN)
+    assert "vscat_hidden.Base.run" in ids
+    assert "vscat_hidden.Thing.split" not in ids
+    assert names == ["Base", "NeedsArgs", "Thing"]
+    ids, names = scanned_ids(
+        scan.Hidden(
+            classes=frozenset({"vscat_hidden.Base"}),
+            choices={"vscat_hidden.ThingLike": frozenset({"Base", "NeedsArgs"})},
+            methods=frozenset({"vscat_hidden.Thing.twice"}),
+        )
+    )
+    assert not {i for i in ids if i.startswith("vscat_hidden.Base.")}
+    assert "vscat_hidden.Thing.twice" not in ids
+    assert {"vscat_hidden.Thing.run", "vscat_hidden.NeedsArgs.run"} <= ids
+    assert names == ["Thing"]
+    # The table is keyed by the vs-jetpack release it was measured with.
+    assert scan.HIDDEN["2.2.6"].methods >= {"vsdenoise.MVTools.degrain"}
+
+
 @pytest.mark.parametrize(
     ("returns", "many"),
     [
@@ -369,49 +560,6 @@ def test_scan_user_module_vs_colorfix(scanned: dict[str, Any]) -> None:
     )
     assert {"radius", "planes", "fast"} <= {p["name"] for p in average["params"]}
     assert scanned["key"]["user_modules"] == {"vs_colorfix": "2.3.0"}
-
-
-def test_user_module_install_uses_chainner_pip(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    assert catalog.pip_command()[-2:] == ["-m", "chainner_pip"]
-    assert catalog.PIP_TIMEOUT == 900
-    calls = tmp_path / "calls.txt"
-    fake_pip = tmp_path / "fake_pip.py"
-    fake_pip.write_text(
-        "import sys, time\n"
-        "with open(sys.argv[1], 'a', encoding='utf-8') as log:\n"
-        "    log.write(' '.join(sys.argv[2:]) + '\\n')\n"
-        "if 'chainner-test-hangs' in sys.argv:\n"
-        "    time.sleep(60)\n"
-        "sys.exit(1 if 'chainner-test-fails' in sys.argv else 0)\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        catalog, "pip_command", lambda: [sys.executable, str(fake_pip), str(calls)]
-    )
-    monkeypatch.setattr(catalog, "PIP_TIMEOUT", 2)
-    # pytest is installed: no pip run. A failed install, or one that takes longer
-    # than PIP_TIMEOUT, skips only that module.
-    start = time.monotonic()
-    with caplog.at_level(logging.WARNING):
-        catalog.install_user_modules(
-            [
-                "pytest",
-                "chainner-test-hangs",
-                "chainner-test-fails",
-                "chainner-test-new",
-            ]
-        )
-    assert 2 <= time.monotonic() - start < 30
-    runs = [line.split() for line in calls.read_text(encoding="utf-8").splitlines()]
-    # (Without the hanging pip's own line, which a slow start may not reach.)
-    assert [run[:2] for run in runs if run[1] != "chainner-test-hangs"] == [
-        ["install", "chainner-test-fails"],
-        ["install", "chainner-test-new"],
-    ]
-    messages = "\n".join(r.getMessage() for r in caplog.records)
-    assert "chainner-test-hangs took longer than 2 s" in messages
 
 
 def test_family_rules() -> None:
@@ -545,15 +693,16 @@ def test_ensure_catalog_rescans_on_key_change(
     assert catalog.ensure_catalog(storage) is None
 
 
-def test_ensure_catalog_retries_a_missing_user_module(
+def test_ensure_catalog_rescans_once_a_missing_user_module_is_installed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A listed module whose install failed is installed again at the next start, and
-    the catalog is rescanned once that install worked."""
+    """The worker only scans a listed module (the host installs it at a start, with
+    the worker stopped): a missing one is scanned once as missing, and the catalog is
+    rescanned at the start after its install. A version spec is not in its name."""
     storage = tmp_path / "vapoursynth"
     storage.mkdir()
     (storage / "user_modules.toml").write_text(
-        'modules = ["chainner-test-module"]\n', encoding="utf-8"
+        'modules = ["chainner-test-module>=1"]\n', encoding="utf-8"
     )
     plugins = tmp_path / "site" / "vapoursynth" / "plugins"
     plugins.mkdir(parents=True)
@@ -564,37 +713,29 @@ def test_ensure_catalog_retries_a_missing_user_module(
         scans.append(out)
         out.write_text(SMALL.read_text(encoding="utf-8"), encoding="utf-8")
 
+    def no_pip(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the worker runs no pip")
+
     monkeypatch.setattr(catalog, "run_scan", fake_scan)
-    installs: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", no_pip)
     installed: set[str] = set()
-    online = False
-
-    def fake_install(names: list[str]) -> None:
-        installs.append(list(names))
-        if online:
-            installed.update(names)
-
     real_version = importlib.metadata.version
-    monkeypatch.setattr(catalog, "install_user_modules", fake_install)
     monkeypatch.setattr(
         importlib.metadata,
         "version",
         lambda name: "1.0" if name in installed else real_version(name),
     )
     path = storage / "catalog.json"
-    # Offline: the install fails at each start; nothing changed, so no rescan.
     assert catalog.ensure_catalog(storage) == path
     assert catalog.ensure_catalog(storage) == path
-    assert (len(installs), len(scans)) == (2, 1)
-    # Online: the install works and the catalog lists the module.
-    online = True
-    assert catalog.ensure_catalog(storage) == path
-    assert (len(installs), len(scans)) == (3, 2)
+    assert len(scans) == 1
     key = json.loads(path.read_text(encoding="utf-8"))["key"]
-    assert key["user_modules"] == {"chainner-test-module": "1.0"}
-    # Installed: no pip run and no scan.
+    assert key["user_modules"] == {"chainner-test-module>=1": None}
+    installed.add("chainner-test-module")
     assert catalog.ensure_catalog(storage) == path
-    assert (len(installs), len(scans)) == (3, 2)
+    assert len(scans) == 2
+    key = json.loads(path.read_text(encoding="utf-8"))["key"]
+    assert key["user_modules"] == {"chainner-test-module>=1": "1.0"}
 
 
 def methods_of(path: Path, overlays: list[Path]) -> dict[str, Method]:

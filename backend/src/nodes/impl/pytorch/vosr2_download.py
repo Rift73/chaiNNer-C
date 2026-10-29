@@ -1,21 +1,27 @@
 """Pinned downloads: the official VOSR 2.0 model, the YuNet face detector and the
-TensorRT FP8 graph set."""
+TensorRT FP8 graph set; and the BF16 copy of the model's DiT."""
 
 from __future__ import annotations
 
 import errno
+import json
 import os
 import shutil
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import requests
+import torch
+from safetensors import safe_open
+from safetensors.torch import save_file
 from sanic.log import logger
 
 from api import NodeContext
 
+from ...utils.utils import file_identity
 from .vosr2 import BundlePaths
-from .vosr2_engine_cache import file_lock, forget_hash, stored_hash
+from .vosr2_engine_cache import file_lock, forget_hash, stored_hash, write_json
 from .vosr2_official import FILES, REVISION
 
 MODEL_HOST = "https://huggingface.co/CSWRY/VOSR/resolve/"
@@ -226,3 +232,99 @@ def ensure_model(context: NodeContext) -> BundlePaths:
         "the VOSR 2.0 model",
     )
     return BundlePaths(folder)
+
+
+# The BF16 copy's format (bf16_dit): bump it when the conversion changes.
+BF16_FORMAT = 1
+
+
+def partial(target: Path) -> Path:
+    """Where convert_checkpoint writes target until it is complete."""
+    return target.with_name(f"{target.name}.tmp")
+
+
+def convert_checkpoint(source: Path, target: Path, dtype: torch.dtype) -> None:
+    """Write the safetensors checkpoint at source with every tensor converted to dtype
+    (tensor.to, as load_weights converts) into target, which appears only when complete.
+    One source tensor at a time: the converted ones are all that stays in memory."""
+    with safe_open(source, framework="pt") as checkpoint:
+        names = checkpoint.keys()
+        state = {name: checkpoint.get_tensor(name).to(dtype=dtype) for name in names}
+    part = partial(target)
+    try:
+        save_file(state, part)
+        os.replace(part, target)
+    finally:
+        part.unlink(missing_ok=True)
+
+
+def bf16_dit(context: NodeContext, paths: BundlePaths) -> BundlePaths:
+    """paths with the DiT read from its BF16 copy beside the official checkpoint, which
+    loads without converting 5.6 GB of FP32 weights. The first BF16 load makes it; later
+    loads check it by size and SHA-256 (remembered while the file is unchanged, as for
+    the official files: stored_hash) and their sidecar's record of the source and
+    format, and make it again on any difference. Without room for the copy and 1 GB
+    more, paths as they are (the load converts, as before)."""
+    source = paths.dit
+    target = source.with_name("ema_model.bf16.safetensors")
+    sidecar = source.with_name("ema_model.bf16.json")
+    with file_lock(
+        paths.root / "download.lock",
+        context,
+        "another chaiNNer process to convert the VOSR 2.0 model",
+    ):
+        expected = {
+            "format": BF16_FORMAT,
+            "dtype": "bfloat16",
+            "source_sha256": stored_hash(source, paths.root.parent),
+            "source_identity": list(file_identity(source)),
+        }
+        try:
+            record = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            record = None  # never made, or damaged: make the copy again
+        if (
+            isinstance(record, dict)
+            and all(record.get(name) == value for name, value in expected.items())
+            and target.is_file()
+            and target.stat().st_size == record.get("size")
+            and stored_hash(target, paths.root.parent) == record.get("sha256")
+        ):
+            return replace(paths, dit_copy=target)
+        try:
+            # Unusable now: the copy, its sidecar and a killed conversion's part go
+            # before the room for a new copy is counted.
+            forget_hash(target, paths.root.parent)
+            for stale in (sidecar, target, partial(target)):
+                stale.unlink(missing_ok=True)
+            size = source.stat().st_size // 2
+            free = shutil.disk_usage(target.parent).free
+            if free < size + 1_000_000_000:
+                logger.info(
+                    "Not keeping a BF16 copy of the VOSR 2.0 DiT: it needs %.1f GB and "
+                    "1 GB more in %s; %.1f GB are free. Each cold load converts it.",
+                    size / 1e9,
+                    target.parent,
+                    free / 1e9,
+                )
+                return paths
+            logger.info("Converting the VOSR 2.0 DiT to BF16 once: %s", target)
+            convert_checkpoint(source, target, torch.bfloat16)
+            write_json(
+                sidecar,
+                {
+                    **expected,
+                    "sha256": stored_hash(target, paths.root.parent),
+                    "size": target.stat().st_size,
+                },
+            )
+        except OSError:
+            # The upscale goes on as before the copy: this load converts the weights.
+            logger.warning(
+                "Could not keep a BF16 copy of the VOSR 2.0 DiT in %s; this load "
+                "converts the FP32 weights.",
+                target.parent,
+                exc_info=True,
+            )
+            return paths
+    return replace(paths, dit_copy=target)

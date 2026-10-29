@@ -9,6 +9,7 @@ import asyncio
 import json
 import threading
 import time
+import weakref
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -34,6 +35,7 @@ from api import (
     InputId,
     IteratorInputInfo,
     IteratorOutputInfo,
+    Lazy,
     NodeAttributedError,
     NodeData,
     NodeId,
@@ -51,12 +53,14 @@ from chain.chain import (
 )
 from events import EventConsumer
 from native_executor import NativeExecutor
+from nodes.impl.execution_scheduler import ALWAYS_READ_LAZY_INPUTS
 from nodes.impl.item_window import (
     ITEM_WINDOW_VARIABLE,
     SERIAL_PRODUCER_VARIABLE,
     ItemWindow,
     register_phases,
 )
+from nodes.properties.inputs import DirectoryInput
 from process import ExecutionId, Executor, RegularOutput
 
 
@@ -790,6 +794,164 @@ def test_generator_item_errors_name_their_node(tmp_path):
         assert engine.error.node_id == node_id
 
 
+class Held:
+    """An output whose life a test follows."""
+
+
+def lazy_untaken(trace: list[object], *, read_first: bool) -> Chain:
+    """big feeds pick's unread lazy input. read_first: big is also read by `other`, which pick reads, so big runs
+    before pick decides; else pick reads a constant and big runs later, for `late`. `after` (and `after_late`)
+    record whether big's output is alive once pick (and `late`) ran: None before it ran."""
+    b = Builder()
+    alive: list[Any] = []
+
+    def big(x):
+        held = Held()
+        alive.append(weakref.ref(held))
+        return held
+
+    def alive_after(name):
+        return lambda x: (
+            trace.append((name, alive[0]() is not None if alive else None)) or x
+        )
+
+    b.node("big", big)
+    b.value("big", 0, 1)
+    b.node("pick", lambda unread, read: read.value, inputs=2, lazy=(0, 1))
+    b.edge("big", 0, "pick", 0)
+    b.node("after", alive_after("big alive after pick"))
+    b.edge("pick", 0, "after", 0)
+    b.node("sink", lambda x: trace.append(("sink", x)), outputs=0, side_effects=True)
+    b.edge("after", 0, "sink", 0)
+    if read_first:
+        b.node("other", lambda held: 5)
+        b.edge("big", 0, "other", 0)
+        b.edge("other", 0, "pick", 1)
+    else:
+        b.value("pick", 1, 5)
+        b.node("late", lambda held: 5)
+        b.edge("big", 0, "late", 0)
+        b.node("after_late", alive_after("big alive after late"))
+        b.edge("late", 0, "after_late", 0)
+        b.node("later_sink", lambda x: None, outputs=0, side_effects=True)
+        b.edge("after_late", 0, "later_sink", 0)
+    return b.chain
+
+
+def test_an_unread_lazy_input_frees_its_upstream_after_its_other_reads(tmp_path):
+    # A Conditional's untaken branch: its upstream, read by another node too, is freed once pick ran, not at the
+    # run's end (before: alive after pick on both executors).
+    _, oracle, engine, oracle_trace, engine_trace = run_both(
+        lambda trace: lazy_untaken(trace, read_first=True),
+        tmp_path,
+        send_broadcast_data=False,
+    )
+    assert oracle.error is None and engine.error is None
+    assert (
+        oracle_trace == engine_trace == [("big alive after pick", False), ("sink", 5)]
+    )
+
+
+def test_the_engine_counts_an_unread_lazy_input_ahead_of_its_upstreams_run(tmp_path):
+    # big may run after pick decided (for `late`): the engine frees it after its last read all the same.
+    # process.Executor gives up only the reads of a cached output (its counted cache has no entry before the run).
+    trace: list[object] = []
+    result = execute(
+        "native",
+        lazy_untaken(trace, read_first=False),
+        storage=tmp_path / "storage",
+        send_broadcast_data=False,
+    )
+    assert result.error is None
+    found = dict(entry for entry in trace if isinstance(entry, tuple))
+    assert found["sink"] == 5 and found["big alive after late"] is False, trace
+
+
+def folder_look_ahead(trace: list[object], source: Path, folder: Path) -> Chain:
+    """frames (one file per item, in `source`) -> temporal (looks ahead from item 0) -> save, whose directory comes from
+    `folder`, a pure node save's gather would run only after temporal decided the window."""
+    b = Builder()
+    b.node(
+        "frames",
+        lambda: items(list(range(6)), source_paths=(source / "0.png",)),
+        kind="generator",
+        inputs=0,
+    )
+    b.node("folder", lambda: str(folder), inputs=0)
+
+    def temporal(context, frame):
+        view = context.iteration
+        ahead = view.lookahead(0)
+        trace.append(
+            ("temporal", view.index, [view.peek(0, k) for k in range(1, ahead + 1)])
+        )
+        return frame
+
+    b.node("temporal", temporal, context=True)
+    save = b.node(
+        "save",
+        lambda frame, directory: trace.append(("save", frame, str(directory))),
+        inputs=2,
+        outputs=0,
+        side_effects=True,
+    )
+    object.__setattr__(
+        save.data,
+        "inputs",
+        [save.data.inputs[0], DirectoryInput(must_exist=False).with_id(1)],
+    )
+    b.edge("frames", 0, "temporal", 0)
+    b.edge("temporal", 0, "save", 0)
+    b.edge("folder", 0, "save", 1)
+    return b.chain
+
+
+def test_a_folder_node_runs_before_a_look_ahead_decides_at_item_0(
+    tmp_path, monkeypatch
+):
+    # The look-ahead at item 0 decides the window before save's gather would run `folder`: both executors run it
+    # first, so the read-ahead check resolves save's folder and the look-ahead is served (before: unresolved, K = 1
+    # and a warning on both).
+    monkeypatch.setenv(ITEM_WINDOW_VARIABLE, "3")
+    source, folder = tmp_path / "in", tmp_path / "out"
+    chain, oracle, engine, oracle_trace, trace = run_both(
+        lambda trace: folder_look_ahead(trace, source, folder), tmp_path
+    )
+    assert mismatches("folder_look_ahead", chain, oracle, engine, tmp_path) == []
+    assert trace == oracle_trace
+    assert oracle.error is None and engine.error is None
+    assert [e for e in engine.events if e["event"] == "execution-warning"] == []
+    looks = [e for e in trace if isinstance(e, tuple) and e[0] == "temporal"]
+    assert looks == [
+        ("temporal", index, [index + k if index + k < 6 else None for k in (1, 2)])
+        for index in range(6)
+    ]
+    assert [e for e in trace if isinstance(e, tuple) and e[0] == "save"] == [
+        ("save", index, str(folder)) for index in range(6)
+    ]
+
+
+def test_an_engine_fault_outside_a_node_names_the_node_being_scheduled(
+    tmp_path, monkeypatch
+):
+    # An exception escaping the engine's driver outside any node's job (here a hook's malformed answer while the loop
+    # measures its first item) ends the run as the error of the node the driver was running, which the app then
+    # shows (before: a RuntimeError that named no node).
+    monkeypatch.setattr(
+        native_executor._Hooks, "output_bytes", lambda self, values: "not a size"
+    )
+    b = Builder()
+    b.node("numbers", lambda: items([1, 2, 3]), kind="generator", inputs=0)
+    b.node("sink", lambda x: None, outputs=0, side_effects=True)
+    b.edge("numbers", 0, "sink", 0)
+    result = execute("native", b.chain, storage=tmp_path / "storage")
+    assert isinstance(result.error, process.NodeExecutionError), result.error
+    assert result.error.node_id == "numbers"
+    assert str(result.error).startswith(
+        "The native run engine failed while running numbers: "
+    )
+
+
 def test_nested_look_ahead(tmp_path):
     # A stop after a minute turns a hang into a failure.
     timers: list[threading.Timer] = []
@@ -821,7 +983,9 @@ def test_a_node_s_time_leaves_out_its_waits_for_other_work(kind, tmp_path):
     b.node("upscale", upscale, inputs=0, side_effects=True)
     result = execute(kind, b.chain, storage=tmp_path / "storage")
     assert result.error is None, result.error
-    times = [e["data"]["executionTime"] for e in result.events if e["event"] == "node-finish"]
+    times = [
+        e["data"]["executionTime"] for e in result.events if e["event"] == "node-finish"
+    ]
     assert len(times) == 1
     assert times[0] < 0.25
 
@@ -1540,3 +1704,209 @@ def test_python_window_is_decided_after_the_range_s_first_item(monkeypatch, tmp_
         frozenset({"temporal"}),
     )
     assert begun[0] == 4
+
+
+def upscale_node(b: Builder, node_id: str, run: Callable[..., object]) -> None:
+    """A GPU upscale that runs ahead (execution_scheduler.LOCKED_DEVICE_NODES)."""
+    node = b.node(node_id, run, context=True)
+    object.__setattr__(node.data, "schema_id", "chainner:pytorch:upscale_image")
+    node.schema_id = node.data.schema_id
+
+
+@pytest.mark.parametrize("kind", ["python", "native"])
+def test_an_upscale_a_skipping_save_never_reads_is_not_computed_ahead(
+    monkeypatch, tmp_path, kind
+):
+    # Save Image's Skip existing files: the items that exist never read the upscale
+    # behind its lazy input, so the window does not compute it for them.
+    monkeypatch.setenv(ITEM_WINDOW_VARIABLE, "8")
+    upscaled: list[int] = []
+    saved: list[object] = []
+    b = Builder()
+    b.node("numbers", lambda: items(list(range(24))), kind="generator", inputs=0)
+    upscale_node(b, "up", lambda _context, x: upscaled.append(x) or x * 10)
+
+    def save(image: Lazy) -> None:
+        if not saved:
+            saved.append(image.value)
+
+    b.node("save", save, outputs=0, side_effects=True, lazy=(0,))
+    b.edge("numbers", 0, "up", 0)
+    b.edge("up", 0, "save", 0)
+    result = execute(kind, b.chain, storage=tmp_path / "s", pool_size=8)
+    assert result.error is None, result.error
+    assert (upscaled, saved) == ([0], [0])
+
+
+@pytest.mark.parametrize("kind", ["python", "native"])
+def test_a_conditional_s_other_branch_computes_no_upscale_ahead(
+    monkeypatch, tmp_path, kind
+):
+    # The untaken branch: neither its upscale nor a pure node after it runs ahead; the
+    # taken branch's upscale runs for every item, when the Conditional reads it.
+    monkeypatch.setenv(ITEM_WINDOW_VARIABLE, "8")
+    taken: list[int] = []
+    untaken: list[int] = []
+    saved: list[object] = []
+    b = Builder()
+    b.node("numbers", lambda: items(list(range(12))), kind="generator", inputs=0)
+    upscale_node(b, "up_taken", lambda _context, x: taken.append(x) or x)
+    upscale_node(b, "up_other", lambda _context, x: untaken.append(x) or x)
+    b.node("brighten", lambda x: x + 1)
+    b.node("pick", lambda other, read: read.value, inputs=2, lazy=(0, 1))
+    b.node("save", saved.append, outputs=0, side_effects=True)
+    b.edge("numbers", 0, "up_taken", 0)
+    b.edge("numbers", 0, "up_other", 0)
+    b.edge("up_other", 0, "brighten", 0)
+    b.edge("brighten", 0, "pick", 0)
+    b.edge("up_taken", 0, "pick", 1)
+    b.edge("pick", 0, "save", 0)
+    result = execute(kind, b.chain, storage=tmp_path / "s", pool_size=8)
+    assert result.error is None, result.error
+    assert untaken == []
+    assert sorted(taken) == list(range(12)) and saved == list(range(12))
+
+
+def test_a_failed_run_s_items_computed_ahead_give_up(monkeypatch, tmp_path):
+    # A Save Image error ends the run: the upscales computed ahead for later items
+    # see their run stopping (as after Stop) and end at their next check, instead of
+    # holding the error back while each finishes for nothing.
+    monkeypatch.setenv(ITEM_WINDOW_VARIABLE, "8")
+    release = threading.Event()
+    seen: dict[int, bool] = {}
+
+    def upscale(context, x):
+        if x >= 2:
+            release.wait(10)
+            seen[x] = context.aborted
+        return x
+
+    def save(x):
+        if x == 1:
+            threading.Timer(0.3, release.set).start()
+            raise ValueError("disk full")
+
+    b = Builder()
+    b.node("numbers", lambda: items(list(range(12))), kind="generator", inputs=0)
+    upscale_node(b, "up", upscale)
+    b.node("save", save, outputs=0, side_effects=True)
+    b.edge("numbers", 0, "up", 0)
+    b.edge("up", 0, "save", 0)
+    result = execute("native", b.chain, storage=tmp_path / "s", pool_size=10)
+    assert "disk full" in str(result.error)
+    assert seen and all(seen.values()), seen
+
+
+def save_like(
+    monkeypatch, b: Builder, node_id: str, run: Callable[..., object]
+) -> None:
+    """A sink with Save Image's lazy image (input 0, always read unless its boolean input
+    1000, Skip existing files, is on or connected: ALWAYS_READ_LAZY_INPUTS)."""
+    node = b.node(node_id, run, inputs=2, outputs=0, side_effects=True, lazy=(0,))
+    node.data.inputs[1].id = InputId(1000)
+    monkeypatch.setitem(ALWAYS_READ_LAZY_INPUTS, node.data.schema_id, {0: 1000})
+
+
+def ahead_at_item_2(
+    monkeypatch, tmp_path, kind: str, build: Callable[[Builder, Callable], None]
+) -> list[int]:
+    """The upscales done when item 2's sink ends (12 items, K = 8, 30 ms upscales, the
+    sink holding item 2 for 1 s): 10 when the window computes them ahead, 3 when not."""
+    monkeypatch.setenv(ITEM_WINDOW_VARIABLE, "8")
+    upscaled: list[int] = []
+    counts: list[int] = []
+
+    def upscale(_context, x):
+        time.sleep(0.03)
+        upscaled.append(x)
+        return x
+
+    def reached(x: object) -> None:
+        if x == 2:
+            time.sleep(1.0)
+            counts.append(len(upscaled))
+
+    b = Builder()
+    b.node("numbers", lambda: items(list(range(12))), kind="generator", inputs=0)
+    upscale_node(b, "up", upscale)
+    b.edge("numbers", 0, "up", 0)
+    build(b, reached)
+    result = execute(kind, b.chain, storage=tmp_path / "s", pool_size=8)
+    assert result.error is None, result.error
+    return counts
+
+
+@pytest.mark.parametrize("kind", ["python", "native"])
+@pytest.mark.parametrize("sink", ["eager", "lazy, always read"])
+def test_a_sink_that_always_reads_its_lazy_image_keeps_the_upscales_ahead(
+    monkeypatch, tmp_path, kind, sink
+):
+    # Save Image with Skip existing files off: Load Images -> Upscale Image -> Save
+    # Image computes the upscales ahead, as for a sink without a lazy input.
+    def build(b: Builder, reached: Callable) -> None:
+        if sink == "eager":
+            b.node("save", reached, outputs=0, side_effects=True)
+        else:
+            save_like(monkeypatch, b, "save", lambda image, _skip: reached(image.value))
+            b.value("save", 1000, False)
+        b.edge("up", 0, "save", 0)
+
+    assert ahead_at_item_2(monkeypatch, tmp_path, kind, build) == [10]
+
+
+@pytest.mark.parametrize("kind", ["python", "native"])
+@pytest.mark.parametrize("skip", ["on", "connected"])
+def test_skip_existing_files_on_or_connected_computes_no_upscale_ahead(
+    monkeypatch, tmp_path, kind, skip
+):
+    monkeypatch.setenv(ITEM_WINDOW_VARIABLE, "8")
+    upscaled: list[int] = []
+    saved: list[object] = []
+    b = Builder()
+    b.node("numbers", lambda: items(list(range(24))), kind="generator", inputs=0)
+    upscale_node(b, "up", lambda _context, x: upscaled.append(x) or x)
+
+    def save(image: Lazy, _skip: object) -> None:
+        # Every file but the first exists
+        if not saved:
+            saved.append(image.value)
+
+    save_like(monkeypatch, b, "save", save)
+    b.edge("numbers", 0, "up", 0)
+    b.edge("up", 0, "save", 0)
+    if skip == "on":
+        b.value("save", 1000, True)
+    else:
+        b.edge("numbers", 0, "save", 1000)
+    result = execute(kind, b.chain, storage=tmp_path / "s", pool_size=8)
+    assert result.error is None, result.error
+    assert (upscaled, saved) == ([0], [0])
+
+
+@pytest.mark.parametrize("kind", ["python", "native"])
+def test_an_upscale_one_sink_reads_eagerly_stays_ahead_beside_a_lazy_one(
+    monkeypatch, tmp_path, kind
+):
+    # The lazy sink, walked first, may leave it unread; the eager sink still needs it.
+    def build(b: Builder, reached: Callable) -> None:
+        b.node("unread", lambda _image: None, outputs=0, side_effects=True, lazy=(0,))
+        b.node("save", reached, outputs=0, side_effects=True)
+        b.edge("up", 0, "unread", 0)
+        b.edge("up", 0, "save", 0)
+
+    assert ahead_at_item_2(monkeypatch, tmp_path, kind, build) == [10]
+
+
+@pytest.mark.parametrize("kind", ["python", "native"])
+def test_an_upscale_behind_a_driver_node_s_unread_lazy_input_is_not_computed_ahead(
+    monkeypatch, tmp_path, kind
+):
+    # A node on the driver (a context) with a lazy input it may leave unread, before an
+    # eager sink: the upscale runs only when that node reads it, item by item.
+    def build(b: Builder, reached: Callable) -> None:
+        b.node("gate", lambda _context, image: image.value, context=True, lazy=(0,))
+        b.node("save", reached, outputs=0, side_effects=True)
+        b.edge("up", 0, "gate", 0)
+        b.edge("gate", 0, "save", 0)
+
+    assert ahead_at_item_2(monkeypatch, tmp_path, kind, build) == [3]

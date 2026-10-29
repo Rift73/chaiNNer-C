@@ -4,10 +4,12 @@ from __future__ import annotations
 import itertools
 import math
 import os
+import re
 import subprocess as subprocess
 import time
 from bisect import bisect_right
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache, lru_cache
 from io import BufferedIOBase as BufferedIOBase
@@ -316,10 +318,12 @@ def _variable_rate(path: Path, container: InputContainer, av: ModuleType) -> boo
 class FrameIndex:
     """A video's frames as PyAV's reader numbers them: `pts`, every frame's presentation
     timestamp (the first video track's time base) in display order, so frame n is the
-    full read's item n; `keyframes`, the numbers of the frames a decoder can start at."""
+    full read's item n; `keyframes`, the numbers of the frames a decoder can start at;
+    `discarded`, the number of the packets an edit list hides, left out of both."""
 
     pts: tuple[int, ...]
     keyframes: tuple[int, ...]
+    discarded: int = 0
 
 
 @dataclass(frozen=True)
@@ -332,30 +336,50 @@ class _Unindexed:
     packets: int | None = None
 
 
-def frame_index(path: Path) -> FrameIndex:
+def frame_index(path: Path, check: Callable[[], None] | None = None) -> FrameIndex:
     """The first video track's FrameIndex, from its packets demuxed without decoding and
     sorted (B-frames store them out of order). A packet flagged as discarded (the frames
     an MP4's edit list hides) is decoded but never shown, so it is left out. The scan
     reads the whole file, so its index is kept for the file's version (file_identity),
-    as _variable_timestamps keeps its answer. Raises _UseCliReader when the packets
-    cannot number the frames (_scan_frames)."""
+    as _variable_timestamps keeps its answer; `check` raises to abort the scan (Stop),
+    which is then not kept. Raises _UseCliReader when the packets cannot number the
+    frames (_scan_frames)."""
     av = _pyav()
     if av is None:
         raise RuntimeError(f"{path} has no frame index: PyAV is unavailable.")
-    index = _scan_frames(file_identity(path), path, av)
+    index = _scan_frames(file_identity(path), path, av, check)
     if isinstance(index, _Unindexed):
         raise _UseCliReader(index.reason)
     return index
 
 
-@lru_cache(maxsize=64)
+# _scan_frames's scans of the last files, by file version, path and PyAV's module.
+_SCANS: OrderedDict[tuple[tuple, Path, ModuleType], FrameIndex | _Unindexed] = (
+    OrderedDict()
+)
+_SCANS_LOCK = Lock()
+_SCANS_KEPT = 64
+# How many packets the scan reads between two checks for Stop (a few ms).
+_PACKETS_PER_CHECK = 256
+
+
 def _scan_frames(
-    _identity: tuple, path: Path, av: ModuleType
+    identity: tuple,
+    path: Path,
+    av: ModuleType,
+    check: Callable[[], None] | None = None,
 ) -> FrameIndex | _Unindexed:
     """frame_index's scan, or why the packets cannot number the frames: a shown frame's
     packet without a timestamp (MPEG-PS times only some), with the number of the shown
     frames' packets, or packets of which none is shown; either would leave frames out of
-    the index. `_identity` is the file version it is kept for."""
+    the index. Kept for the file version `identity`, once complete: `check`, called
+    every _PACKETS_PER_CHECK packets, raises to abort it."""
+    key = (identity, path, av)
+    with _SCANS_LOCK:
+        kept = _SCANS.get(key)
+        if kept is not None:
+            _SCANS.move_to_end(key)
+            return kept
     frames: list[tuple[int, bool]] = []
     packets = shown = 0
     untimed = False
@@ -366,6 +390,8 @@ def _scan_frames(
             if packet.size == 0:
                 continue
             packets += 1
+            if check is not None and packets % _PACKETS_PER_CHECK == 0:
+                check()
             if packet.is_discard:
                 continue
             shown += 1
@@ -373,15 +399,23 @@ def _scan_frames(
                 untimed = True
             else:
                 frames.append((packet.pts, packet.is_keyframe))
+    scanned: FrameIndex | _Unindexed
     if untimed:
-        return _Unindexed("a frame's packet has no timestamp", shown)
-    if packets and not frames:
-        return _Unindexed("its packets time none of its frames")
-    frames.sort()
-    return FrameIndex(
-        tuple(pts for pts, _ in frames),
-        tuple(n for n, (_, keyframe) in enumerate(frames) if keyframe),
-    )
+        scanned = _Unindexed("a frame's packet has no timestamp", shown)
+    elif packets and not frames:
+        scanned = _Unindexed("its packets time none of its frames")
+    else:
+        frames.sort()
+        scanned = FrameIndex(
+            tuple(pts for pts, _ in frames),
+            tuple(n for n, (_, keyframe) in enumerate(frames) if keyframe),
+            packets - shown,
+        )
+    with _SCANS_LOCK:
+        _SCANS[key] = scanned
+        while len(_SCANS) > _SCANS_KEPT:
+            _SCANS.popitem(last=False)
+    return scanned
 
 
 def _pyav_index(
@@ -851,6 +885,31 @@ class VideoLoader:
         can pass or fall short of: the number of the video packets of a file whose
         packets lack timestamps (_scan_frames), else the probe's (metadata.frame_count)."""
         return self._count()[0]
+
+    def header_frame_count(self) -> int | None:
+        """The video track's frame count as the file's header gives it, an estimate,
+        for Load Video's warning when its frames end early (load_video.py shortfall):
+        the track's frame count (MP4's), which also counts the frames an edit list
+        hides (a stream-copy cut keeps those of its first GOP): less them, as PyAV's
+        index counts their packets, and None where the FFmpeg CLI reads the file, as it
+        cannot tell them apart; else metadata's count by the track's duration, a
+        Matroska or WebM track's own DURATION tag before the container's duration,
+        which a longer audio track lengthens."""
+        stream: dict[str, object] = vars(self)["video_stream"]
+        metadata: VideoMetadata = vars(self)["metadata"]
+        if stream.get("nb_frames") is not None:
+            if self.exact_frame_count() is None:
+                return None
+            return metadata.frame_count - frame_index(vars(self)["path"]).discarded
+        tags = stream.get("tags")
+        tag = tags.get("DURATION") if isinstance(tags, dict) else None
+        if stream.get("duration") is None:
+            match = re.fullmatch(r"(\d+):(\d\d):(\d\d(?:\.\d+)?)", str(tag))
+            if match is not None:
+                hours, minutes, seconds = match.groups()
+                duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+                return int(duration * metadata.fps)
+        return metadata.frame_count
 
     def exact_frame_count(self) -> int | None:
         """The number of frames where PyAV reads the file (its frame_index's), else None:

@@ -238,8 +238,10 @@ def test_dither_edge_cases():
     img = image(5, 6, 7, 3)
     for colors in (2**32 - 1, 2**32, 2**70):
         assert_native_matches("chainner:image:dither", [img, colors, "Ordered", "B4", "FS", 16])
-    for history in (2**32 - 1, 2**32, 2**70):
-        assert_native_matches("chainner:image:dither", [img, 4, "Riemersma", "B4", "FS", history])
+    # Above 682541919 Riemersma's float32 decay base rounds to 1 (native_neighborhood).
+    for history in (682541920, 2**32 - 1, 2**32, 2**70):
+        outcome = assert_native_matches("chainner:image:dither", [img, 4, "Riemersma", "B4", "FS", history])
+        assert outcome == ("error", ("ValueError", "History length must be an integer in [2,682541919]"))
     for shape in EMPTY_SHAPES:
         assert_native_matches("chainner:image:dither", [np.zeros(shape, np.float32), 2**70, "Riemersma", "B4", "FS", 2**70])
 
@@ -335,7 +337,9 @@ def test_color_transfer_solid_images_take_the_reference_mean(overflow, reciproca
         outcome = assert_native_matches(
             "chainner:image:color_transfer", [img, ref, "mean_std", colorspace, overflow, reciprocal]
         )
-        pixels = np.frombuffer(outcome[1][0][-1], np.float32)
+        outputs = outcome[1]
+        assert isinstance(outputs, list)
+        pixels = np.frombuffer(outputs[0][-1], np.float32)
         assert not np.isnan(pixels).any()
         if ref is gray:
             np.testing.assert_allclose(pixels, 0.2, atol=1e-3)
@@ -358,9 +362,9 @@ def test_color_transfer_fully_transparent_returns_the_image(size):
     for img, ref in transparent_pairs(size):
         for colorspace in ("L*a*b*", "RGB"):
             for overflow in (1, 0):
-                inputs = [img, ref, "mean_std", colorspace, overflow, True]
-                outcome = assert_native_matches("chainner:image:color_transfer", inputs)
-                assert outcome[1][0][-1] == img.tobytes()
+                inputs: list[object] = [img, ref, "mean_std", colorspace, overflow, True]
+                outputs = assert_native_matches("chainner:image:color_transfer", inputs)[1]
+                assert isinstance(outputs, list) and outputs[0][-1] == img.tobytes()
         for algorithm in ("linear_histogram", "principal_color"):
             inputs = [img, ref, algorithm, "RGB", 1, True]
             assert_native_matches("chainner:image:color_transfer", inputs, declines=True)

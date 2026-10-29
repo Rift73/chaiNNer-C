@@ -266,7 +266,7 @@ def test_actual_node_method_cleans_node_scope_without_mutating_iteration(
         executor = object.__new__(Executor)
         executor.loop = asyncio.get_running_loop()
 
-        async def gather(_node):
+        async def gather(_node, _unfinished):
             return []
 
         monkeypatch.setattr(executor, "_Executor__gather_inputs", gather)

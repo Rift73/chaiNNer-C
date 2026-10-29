@@ -308,20 +308,28 @@ def test_out_of_range_input_is_clipped_like_the_node():
 
 
 def fake_load(
-    monkeypatch: pytest.MonkeyPatch, input_channels: int, output_channels: int
+    monkeypatch: pytest.MonkeyPatch,
+    input_channels: int,
+    output_channels: int,
+    scale_width: int = 2,
+    scale_height: int = 2,
 ) -> None:
-    """Every model loads as a 2x upscaler with these channel counts that makes black
-    images."""
+    """Every model loads as an upscaler with these channel counts and scales (2x by
+    default) that makes black images."""
 
     def run(img: np.ndarray, tile: int) -> np.ndarray:
         h, w = img.shape[:2]
-        return np.zeros((2 * h, 2 * w, output_channels), np.float32)
+        return np.zeros(
+            (scale_height * h, scale_width * w, output_channels), np.float32
+        )
 
     monkeypatch.setattr(bridge, "loaded", {})
     monkeypatch.setattr(
         bridge,
         "load",
-        lambda *key: bridge.Upscaler(2, 2, input_channels, output_channels, run),
+        lambda *key: bridge.Upscaler(
+            scale_width, scale_height, input_channels, output_channels, run
+        ),
     )
 
 
@@ -345,6 +353,45 @@ def test_colour_props_follow_a_colour_family_change(monkeypatch: pytest.MonkeyPa
     assert "_Matrix" not in frame.props
     assert frame.props["Marker"] == 7
     gray_out.resize.Bicubic(format=vs.RGBS).get_frame(0)
+
+
+def test_sar_follows_a_model_that_scales_width_and_height_differently(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An ONNX model may scale width and height differently: the pixels then change
+    their shape, and the sample aspect ratio with them (times height/width scale), so
+    that the picture keeps its shape on screen."""
+    # The fake loader stands in for such a model (the file only has to exist).
+    fake_load(monkeypatch, 3, 3, scale_width=2, scale_height=1)
+    clip = clip_of(images(1))
+    for props, sar in (
+        ({"_SARNum": 4, "_SARDen": 3}, (2, 3)),
+        ({}, (1, 2)),  # square pixels
+        ({"_SARNum": 0, "_SARDen": 1}, (0, 1)),  # unknown stays unknown
+    ):
+        out = chainner_vs.upscale(
+            clip.std.SetFrameProps(**props), str(ESRGAN_2X), "PyTorch", "fp32", 0
+        )
+        frame = out.get_frame(0)
+        assert (out.width, out.height) == (2 * WIDTH, HEIGHT)
+        assert (frame.props["_SARNum"], frame.props["_SARDen"]) == sar
+    # A model that scales both alike keeps the SAR, or its absence.
+    fake_load(monkeypatch, 3, 3)
+    out = chainner_vs.upscale(
+        clip.std.SetFrameProps(_SARNum=4, _SARDen=3),
+        str(ESRGAN_2X),
+        "PyTorch",
+        "fp32",
+        0,
+    )
+    frame = out.get_frame(0)
+    assert (frame.props["_SARNum"], frame.props["_SARDen"]) == (4, 3)
+    assert (
+        "_SARNum"
+        not in chainner_vs.upscale(clip, str(ESRGAN_2X), "PyTorch", "fp32", 0)
+        .get_frame(0)
+        .props
+    )
 
 
 @pytest.mark.parametrize("build", ["runner", "switched off", "no plugin"])

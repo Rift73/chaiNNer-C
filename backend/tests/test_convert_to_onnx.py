@@ -19,14 +19,16 @@ from spandrel import ImageModelDescriptor, ModelDescriptor, ModelLoader
 from spandrel.architectures.Compact import Compact
 from spandrel.architectures.DAT import DAT
 from spandrel.architectures.DAT.__arch.DAT import Adaptive_Spatial_Attention
+from spandrel.architectures.DRFT.__arch import drft_arch
 from spandrel.architectures.DRFT.__arch import legacy_drft_arch as legacy
 from spandrel.architectures.DUAL.__arch.dual_arch import dual_xs
 from spandrel.architectures.ESRGAN import ESRGAN
 from spandrel.architectures.HAT import HAT
 from spandrel.architectures.HAT.__arch.HAT import OCAB, WindowAttention
 from spandrel.architectures.MixDehazeNet import MixDehazeNet
+from spandrel.architectures.NAFNet import NAFNet
 
-from api import NodeContext, SettingsParser
+from api import NodeContext, NodeId, SettingsParser
 from nodes.impl.ncnn.model import NcnnModelWrapper
 from nodes.impl.onnx.model import OnnxGeneric
 from nodes.impl.onnx.onnx_to_ncnn import Onnx2NcnnConverter
@@ -257,8 +259,9 @@ def test_converting_leaves_trainable_weights_trainable():
 class Context:
     """The NodeContext members Convert To ONNX uses: PyTorch on the CPU."""
 
-    def __init__(self, settings: dict[str, object]) -> None:
+    def __init__(self, settings: dict[str, object], node_id: str = "node") -> None:
         self.settings = SettingsParser(settings)
+        self.node_id = NodeId(node_id)
 
 
 CPU_CONTEXT: dict[str, object] = {"use_cpu": True}
@@ -272,9 +275,10 @@ def convert(
     calibration: np.ndarray | None = None,
     dual_shape: DualShape = DualShape.DYNAMIC,
     settings: dict[str, object] = CPU_CONTEXT,
+    node_id: str = "node",
 ) -> tuple[OnnxGeneric, str, str]:
     return convert_to_onnx_node(
-        cast(NodeContext, Context(settings)),
+        cast(NodeContext, Context(settings, node_id)),
         model,
         data_type,
         opset,
@@ -357,8 +361,34 @@ def test_a_changed_export_input_drops_the_superseded_export(
     assert second() is None
 
 
+def test_two_nodes_converting_one_model_keep_their_exports(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    exports = count_exports(monkeypatch)
+    model = tiny_model("Compact")
+    first = convert(model, node_id="first")
+    second = convert(model, opset=Opset.OPSET_17, node_id="second")
+    for _ in range(2):
+        assert convert(model, node_id="first")[0] is first[0]
+        assert convert(model, opset=Opset.OPSET_17, node_id="second")[0] is second[0]
+    assert exports == [20, 17]
+
+
+def test_two_nodes_with_the_same_options_share_one_export(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # One ONNX model, so one session (and one TensorRT engine) downstream; a node added
+    # in place of a deleted one reuses its export.
+    exports = count_exports(monkeypatch)
+    model = tiny_model("Compact")
+    first = convert(model, node_id="first")
+    assert convert(model, node_id="second")[0] is first[0]
+    assert convert(model, node_id="third")[0] is first[0]
+    assert exports == [20]
+
+
 def test_a_model_changed_in_place_is_exported_again(monkeypatch: pytest.MonkeyPatch):
-    # Upscale Image converts the shared model to its precision in place.
+    # A model's precision can change in place (half()), which its export depends on.
     exports = count_exports(monkeypatch)
     model = tiny_model("Compact")
     first = convert(model)[0]
@@ -673,3 +703,45 @@ def test_an_ncnn_conversion_of_a_model_loaded_in_fp16_uses_its_fp32_weights(
     assert rounded != converted
     assert len(logged) == 1 and logged[0].startswith("Convert To NCNN: ")
     assert "does not come from Load Model" in logged[0]
+
+
+# NCNN's layers have fixed shapes; these models take shapes from the image's size as they
+# run (DRFT's windows, NAFNet's padding to a multiple). Each failed with the
+# converter's bare IndexError or KeyError, or an export error.
+NCNN_REFUSED: dict[str, Callable[[], torch.nn.Module]] = {
+    "NAFNet": lambda: NAFNet(
+        width=8, middle_blk_num=1, enc_blk_nums=[1], dec_blk_nums=[1]
+    ),
+    "DRFT": lambda: drft_arch.DRFT(
+        embed_dim=48,
+        depths=(2,),
+        num_heads=(6,),
+        window_size=8,
+        upscale=2,
+        num_feat=16,
+        rank=8,
+        drop_path_rate=0.0,
+    ),
+    "legacy DRFT": tiny_legacy_drft,
+    "legacy DRFT with i-LN": lambda: legacy.DRFT(
+        embed_dim=48,
+        depths=(2,),
+        num_heads=(6,),
+        window_size=8,
+        upscale=2,
+        num_feat=16,
+        rank=8,
+        drop_path_rate=0.0,
+        use_iln=True,
+    ),
+}
+
+
+@pytest.mark.parametrize("arch", NCNN_REFUSED)
+def test_ncnn_refuses_models_that_take_shapes_from_the_image(arch: str, tmp_path: Path):
+    torch.manual_seed(0)
+    model = ModelLoader().load_from_state_dict(NCNN_REFUSED[arch]().state_dict())
+    assert isinstance(model, ImageModelDescriptor)
+    name = model.architecture.name
+    with pytest.raises(AssertionError, match=f"^{name} is not supported for NCNN"):
+        to_ncnn(model, 0, tmp_path)

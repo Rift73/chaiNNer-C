@@ -124,12 +124,14 @@ class _Loaded(DeserializedEngine):
 
 def _fake_tensorrt() -> ModuleType:
     trt = ModuleType("tensorrt")
-    trt.DataType = SimpleNamespace(FLOAT="FLOAT", HALF="HALF", BF16="BF16")
-    trt.nptype = lambda _dtype: np.float32
-    trt.ExecutionContextAllocationStrategy = SimpleNamespace(USER_MANAGED=1)
-    trt.TensorIOMode = SimpleNamespace(INPUT="INPUT", OUTPUT="OUTPUT")
     severity = SimpleNamespace(INTERNAL_ERROR=0, ERROR=1, WARNING=2, INFO=3, VERBOSE=4)
-    trt.ILogger = type("ILogger", (), {"Severity": severity})
+    trt.__dict__.update(
+        DataType=SimpleNamespace(FLOAT="FLOAT", HALF="HALF", BF16="BF16"),
+        nptype=lambda _dtype: np.float32,
+        ExecutionContextAllocationStrategy=SimpleNamespace(USER_MANAGED=1),
+        TensorIOMode=SimpleNamespace(INPUT="INPUT", OUTPUT="OUTPUT"),
+        ILogger=type("ILogger", (), {"Severity": severity}),
+    )
     return trt
 
 
@@ -142,8 +144,8 @@ def cudart() -> _Cudart:
 def inference(monkeypatch: pytest.MonkeyPatch, cudart: _Cudart) -> ModuleType:
     cuda = ModuleType("cuda")
     bindings = ModuleType("cuda.bindings")
-    cuda.bindings = bindings
-    bindings.runtime = cudart
+    cuda.__dict__["bindings"] = bindings
+    bindings.__dict__["runtime"] = cudart
     for name, module in (
         ("tensorrt", _fake_tensorrt()),
         ("cuda", cuda),

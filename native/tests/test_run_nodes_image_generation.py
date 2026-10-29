@@ -67,8 +67,9 @@ def test_create_gradient_matches(style, pair, reverse, size):
 def test_create_gradient_radial_stays_between_its_colours(inner, outer):
     # Upstream extrapolated past both colours: 0.3 -> 0.6 gave 0.72 in the corners (2026-10-23).
     inputs = [64, 48, Color.gray(0.3), Color.gray(0.6), False, "Radial", 45, 100, inner, outer, 0]
-    outcome = assert_native_matches("chainner:image:create_gradient", inputs)
-    out = np.frombuffer(outcome[1][0][-1], np.float32).reshape(48, 64)
+    outputs = assert_native_matches("chainner:image:create_gradient", inputs)[1]
+    assert isinstance(outputs, list)
+    out = np.frombuffer(outputs[0][-1], np.float32).reshape(48, 64)
     low, high = np.float32(0.3), np.float32(0.6)
     assert low <= out.min() and out.max() <= high
     assert out[0, 0] == out[0, -1] == out[-1, 0] == out[-1, -1] == high
@@ -121,10 +122,11 @@ NOISE = [
 @pytest.mark.parametrize("noise", NOISE)
 def test_create_noise_matches(noise, seed, size):
     width, height = size
-    outcome = assert_native_matches("chainner:image:create_noise", [width, height, seed, *noise])
+    outputs = assert_native_matches("chainner:image:create_noise", [width, height, seed, *noise])[1]
     if noise[0] == "Blue Noise":
         # NaN at 1x1, and it never finished at 1x2 and 2x1.
-        assert not np.isnan(np.frombuffer(outcome[1][0][-1], np.float32)).any()
+        assert isinstance(outputs, list)
+        assert not np.isnan(np.frombuffer(outputs[0][-1], np.float32)).any()
 
 
 # NaN is rejected by the input enforce before the body runs.

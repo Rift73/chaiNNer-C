@@ -1,6 +1,7 @@
 """Temporal VOSR as a per-item step in a Load Video loop (vosr2_temporal_step.py and
-Upscale Image (VOSR)): each output equals the removed Temporal Sequence generator's frame,
-each frame is restored once, and short look-aheads fall back to past frames only."""
+Upscale Image (VOSR)): each output equals the golden recorded from the removed Temporal
+Sequence generators, each frame is restored once, and short look-aheads fall back to past
+frames only."""
 
 import gc
 import logging
@@ -18,6 +19,7 @@ import torch
 from test_generator_lifecycle import make_node
 from test_item_window import Pipeline, set_schema
 from test_iteration_view import Reader
+from vosr2_temporal_golden import assert_close, golden
 
 from api import Aborted, BaseInput, InputId, NodeContext, NodeId
 from api.settings import SettingsParser
@@ -35,7 +37,6 @@ from nodes.impl.pytorch.vosr2_temporal import (
     TemporalObservation,
     motion_pair,
     stabilize,
-    validate_image,
 )
 from nodes.impl.pytorch.vosr2_temporal_state import carry_detail, initialize_detail
 from nodes.impl.pytorch.vosr2_temporal_step import (
@@ -51,17 +52,28 @@ from packages.chaiNNer_pytorch.pytorch.processing import upscale_image_vosr
 INPUTS = ("model", 2, 0)
 STRENGTH = 0.65
 METHODS = [TemporalMode.THREE_FRAMES, TemporalMode.PERSISTENT_DETAIL]
+# The golden outputs' tiny clips (vosr2_temporal_golden.py), restored at 1x, with each
+# method: (length, cut, motion). Cuts at 7 (the last frame) and 2 (inside a scene start);
+# still frames carry detail, moving ones mostly keep fresh detail.
+GOLDEN_SIZE = (32, 40)
+GOLDEN_CLIPS = [(1, None, 0), (3, None, 1), (8, 7, 0), (9, 2, 1)]
 
 
 def noop() -> None:
     pass
 
 
-def video(length: int, cut: int | None = None, motion: int = 1) -> list[np.ndarray]:
-    """Frames of a texture moving `motion` pixels per frame (0: still, each frame a
-    little brighter, so that frames differ); from `cut` on, another scene."""
+def video(
+    length: int,
+    cut: int | None = None,
+    motion: int = 1,
+    size: tuple[int, int] = (48, 64),
+) -> list[np.ndarray]:
+    """Frames (`size`: height, width) of a texture moving `motion` pixels per frame (0:
+    still, each frame a little brighter, so that frames differ); from `cut` on, another
+    scene."""
     rng = np.random.default_rng(31)
-    texture = cv2.GaussianBlur(rng.random((48, 64, 3), dtype=np.float32), (0, 0), 0.8)
+    texture = cv2.GaussianBlur(rng.random((*size, 3), dtype=np.float32), (0, 0), 0.8)
     return [
         np.ascontiguousarray(
             np.roll(
@@ -76,14 +88,18 @@ def video(length: int, cut: int | None = None, motion: int = 1) -> list[np.ndarr
 
 
 class Restorer:
-    """VOSR's stand-in: Lanczos 2x plus the frame's own noise. Records the frame of each
-    call, its thread, and a reference to each restoration."""
+    """VOSR's stand-in: Lanczos to `scale` times the first frame's size plus the frame's
+    own noise. Records the frame of each call, its thread, and a reference to each
+    restoration."""
 
-    def __init__(self, frames: list[np.ndarray]):
+    def __init__(self, frames: list[np.ndarray], scale: int = 2):
         self.frames = frames
+        height, width = frames[0].shape[:2]
+        self.size = (width * scale, height * scale)
         rng = np.random.default_rng(5)
         self.noise = [
-            rng.normal(0, 0.01, (96, 128, 3)).astype(np.float32) for _ in frames
+            rng.normal(0, 0.01, (height * scale, width * scale, 3)).astype(np.float32)
+            for _ in frames
         ]
         self.calls: list[int] = []
         self.threads: list[str] = []
@@ -99,7 +115,7 @@ class Restorer:
         self.calls.append(index)
         self.threads.append(threading.current_thread().name)
         result = (
-            cv2.resize(image, (128, 96), interpolation=cv2.INTER_LANCZOS4)
+            cv2.resize(image, self.size, interpolation=cv2.INTER_LANCZOS4)
             + self.noise[index]
         )
         self.restored.append(weakref.ref(result))
@@ -107,90 +123,6 @@ class Restorer:
 
     def alive(self) -> int:
         return sum(reference() is not None for reference in self.restored)
-
-
-def old_sequence(
-    images: list[np.ndarray],
-    restore: Callable[[np.ndarray], np.ndarray],
-    strength: float,
-    method: TemporalMode,
-) -> list[np.ndarray]:
-    """The removed generators, vosr2_temporal.observations and
-    vosr2_temporal_state._persistent_observations, over images instead of paths."""
-
-    def observations():
-        previous = None
-        current = None
-        previous_match = None
-
-        def read(index: int) -> RestoredFrame:
-            source = images[index]
-            validate_image(source)
-            return RestoredFrame.create(source, restore(source))
-
-        if not images:
-            return
-        current = read(0)
-        for index in range(len(images)):
-            assert current is not None
-            following = read(index + 1) if index + 1 < len(images) else None
-            next_match = None
-            reverse_match = None
-            if following is not None and strength > 0:
-                next_match, reverse_match = motion_pair(
-                    current.source, following.source, noop
-                )
-            neighbors = []
-            if previous is not None and previous_match is not None:
-                neighbors.append((previous, previous_match))
-            if following is not None and next_match is not None:
-                neighbors.append((following, next_match))
-            result = stabilize(current, neighbors, strength, noop)
-            yield TemporalObservation(result, current.source, previous_match)
-            previous, current = current, following
-            previous_match = reverse_match
-
-    frames = observations()
-    if method == TemporalMode.THREE_FRAMES:
-        return [item.image for item in frames]
-    outputs = []
-    pending = None
-    state = None
-    while True:
-        first = pending if pending is not None else next(frames, None)
-        pending = None
-        if first is None:
-            return outputs
-        bootstrap = [first]
-        for _ in range(4):
-            following = next(frames, None)
-            if following is None:
-                break
-            if following.previous_match is not None and not np.any(
-                following.previous_match.confidence
-            ):
-                pending = following
-                break
-            bootstrap.append(following)
-        result, state = initialize_detail(bootstrap, strength, noop)
-        outputs.append(result)
-        for item in bootstrap[1:]:
-            result, state = carry_detail(item, state, strength, noop)
-            outputs.append(result)
-        if pending is not None:
-            state = None
-            continue
-        for item in frames:
-            if item.previous_match is not None and not np.any(
-                item.previous_match.confidence
-            ):
-                pending = item
-                state = None
-                break
-            result, state = carry_detail(item, state, strength, noop)
-            outputs.append(result)
-        else:
-            return outputs
 
 
 def past_only(
@@ -296,6 +228,31 @@ def drive(
     return outputs, peeks
 
 
+def golden_key(method: TemporalMode, clip: tuple[int, int | None, int]) -> str:
+    length, cut, motion = clip
+    return f"step-{method.name.lower()}-{length}-{cut}-{motion}"
+
+
+def golden_run(
+    method: TemporalMode, clip: tuple[int, int | None, int]
+) -> tuple[list[np.ndarray], Restorer, list[tuple[int, int]]]:
+    """The step over a golden clip: its outputs, restorer and peeks."""
+    length, cut, motion = clip
+    frames = video(length, cut, motion, GOLDEN_SIZE)
+    restorer = Restorer(frames, scale=1)
+    outputs, peeks = drive(frames, method, restorer)
+    return outputs, restorer, peeks
+
+
+def golden_outputs() -> dict[str, np.ndarray]:
+    """Every golden clip's outputs, one array per clip and method."""
+    return {
+        golden_key(method, clip): np.stack(golden_run(method, clip)[0])
+        for method in METHODS
+        for clip in GOLDEN_CLIPS
+    }
+
+
 def assert_equal(actual: list[np.ndarray], expected: list[np.ndarray]) -> None:
     assert len(actual) == len(expected)
     for index, (a, b) in enumerate(zip(actual, expected, strict=True)):
@@ -304,31 +261,43 @@ def assert_equal(actual: list[np.ndarray], expected: list[np.ndarray]) -> None:
 
 
 @pytest.mark.parametrize("method", METHODS)
+@pytest.mark.parametrize("clip", GOLDEN_CLIPS)
+def test_each_output_equals_the_golden(method, clip):
+    actual, restorer, peeks = golden_run(method, clip)
+    expected = golden(golden_key(method, clip))
+    assert len(actual) == len(expected) == clip[0]
+    for frame, golden_frame in zip(actual, expected, strict=True):
+        assert_close(frame, golden_frame)
+    assert restorer.calls == list(range(clip[0]))  # each frame once, in order
+    assert max((offset for _, offset in peeks), default=1) <= frames_ahead(method)
+
+
+@pytest.mark.parametrize("method", METHODS)
 @pytest.mark.parametrize("motion", [0, 1])
 @pytest.mark.parametrize(
     ("length", "cut"),
     [(1, None), (2, None), (3, None), (7, None), (12, 6), (9, 2), (8, 7)],
 )
-def test_each_output_equals_the_old_generator(method, motion, length, cut):
-    # Cuts at 6 (after a full scene start), 2 (inside one) and 7 (the last frame). Still
-    # frames carry detail; moving ones (one pixel per frame) mostly keep fresh detail.
+def test_each_frame_is_restored_once_and_peeks_stay_ahead(method, motion, length, cut):
+    # Cuts at 6 (after a full scene start), 2 (inside one) and 7 (the last frame).
     frames = video(length, cut, motion)
-    expected = old_sequence(frames, Restorer(frames), STRENGTH, method)
     restorer = Restorer(frames)
-    actual, peeks = drive(frames, method, restorer)
-    assert_equal(actual, expected)
+    _, peeks = drive(frames, method, restorer)
     assert restorer.calls == list(range(length))  # each frame once, in order
     assert max((offset for _, offset in peeks), default=1) <= frames_ahead(method)
 
 
-def test_the_cut_frames_are_matched_as_cuts():
-    # The cases above exercise scene starts only if the fixture's cut is one.
-    frames = video(2, 1)
+@pytest.mark.parametrize("size", [(48, 64), GOLDEN_SIZE])
+def test_the_cut_frames_are_matched_as_cuts(size):
+    # The cases above exercise scene starts only if the fixture's cut is one, and carry
+    # detail only if still and moving frames match.
+    frames = video(2, 1, size=size)
     _, reverse = motion_pair(frames[0], frames[1], noop)
     assert not reverse.confidence.any()
-    first, second = video(2)
-    _, reverse = motion_pair(first, second, noop)
-    assert reverse.confidence.mean() > 0.5
+    for motion in (0, 1):
+        first, second = video(2, motion=motion, size=size)
+        _, reverse = motion_pair(first, second, noop)
+        assert reverse.confidence.mean() > 0.5
 
 
 @pytest.mark.parametrize("method", METHODS)
@@ -369,11 +338,9 @@ def test_an_item_that_never_reaches_the_node_ends_the_sequence_there(method):
     frames = video(10)
     restorer = Restorer(frames)
     actual, _ = drive(frames, method, restorer, missing=frozenset({4}))
-    head, tail = frames[:4], frames[5:]
-    expected = old_sequence(head, Restorer(frames), STRENGTH, method) + old_sequence(
-        tail, Restorer(frames), STRENGTH, method
-    )
-    assert_equal(actual, expected)
+    head, _ = drive(frames[:4], method, Restorer(frames))
+    tail, _ = drive(frames[5:], method, Restorer(frames))
+    assert_equal(actual, head + tail)
     assert restorer.calls == [0, 1, 2, 3, 5, 6, 7, 8, 9]
 
 
@@ -466,7 +433,7 @@ def test_motion_pairs_run_on_the_cpu_threads_and_settle_with_each_item(
     # are joined, like the restoring worker, before the item's output is returned.
     frames = video(8, 5)
     method = TemporalMode.THREE_FRAMES
-    expected = old_sequence(frames, Restorer(frames), STRENGTH, method)
+    expected, _ = drive(frames, method, Restorer(frames))
     threads = []
     pair = vosr2_temporal_step.motion_pair
 
@@ -672,8 +639,8 @@ def test_in_a_load_video_loop_vosr_reads_frames_ahead(
     monkeypatch, tmp_path, caplog, method
 ):
     # Load Video reads no file per item, so save's folder, computed later, does not stop
-    # the item window: K = 6 serves five frames ahead, and every output equals the old
-    # generator's. At K = 1 the node uses past frames only and says so once.
+    # the item window: K = 6 serves five frames ahead, and every output equals the step's
+    # outside a loop. At K = 1 the node uses past frames only and says so once.
     frames = video(11, 7)
     runs = {}
     for window in ("6", "1"):
@@ -694,7 +661,7 @@ def test_in_a_load_video_loop_vosr_reads_frames_ahead(
         runs[window] = (pipeline.decisions, saved, fallback_logs(caplog))
     decisions, saved, logs = runs["6"]
     assert decisions == ["item window K=6 (override)"] and logs == []
-    assert_equal(saved, old_sequence(frames, Restorer(frames), STRENGTH, method))
+    assert_equal(saved, drive(frames, method, Restorer(frames))[0])
     decisions, saved, logs = runs["1"]
     assert decisions == ["item window K=1 (forced)"]
     label = upscale_image_vosr.TEMPORAL_METHODS[method]

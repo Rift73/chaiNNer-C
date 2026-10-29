@@ -329,12 +329,12 @@ def test_keyframes_are_discovered(three_keyframes):
     assert [p.frame for p in plan.candidates] == [0, 24, 48]
 
 
-def unindexed(_path):
+def unindexed(_path, _check=None):
     raise video._UseCliReader("a frame's packet has no timestamp")
 
 
-def without_keyframes(path):
-    return video.FrameIndex(video.frame_index(path).pts, ())
+def without_keyframes(path, check=None):
+    return video.FrameIndex(video.frame_index(path, check).pts, ())
 
 
 @needs_ffmpeg
@@ -430,7 +430,7 @@ def test_cli_fallback_reads_the_same_planes(three_keyframes, monkeypatch):
         for p in points
     ]
 
-    def unindexed(_path):
+    def unindexed(_path, _check=None):
         raise video._UseCliReader("test")
 
     monkeypatch.setattr(media, "frame_index", unindexed)
@@ -459,6 +459,104 @@ def test_video_light_models(tmp_path, three_keyframes, monkeypatch):
         summary["analyses"][summary["selection"]["analysis_id"]]["light_domain"]
         == "encoded"
     )
+
+
+def many_packets(path: Path, frames: int) -> Path:
+    """A clip of `frames` small MPEG-4 frames written by PyAV, one packet each."""
+    av = video._pyav()
+    assert av is not None
+    with av.open(str(path), "w") as container:
+        stream = container.add_stream("mpeg4", rate=24)
+        stream.width = stream.height = 64
+        stream.pix_fmt = "yuv420p"
+        image = np.zeros((64, 64, 3), np.uint8)
+        for n in range(frames):
+            frame = av.VideoFrame.from_ndarray(image, format="rgb24")
+            frame.pts = n
+            container.mux(stream.encode(frame))
+        container.mux(stream.encode())
+    return path
+
+
+def test_stop_ends_the_packet_index_scan(tmp_path):
+    """Reading one frame (a typed time) indexes the file's packets first, about 7 s for
+    a 1.4 GB file: Stop ends the scan at its next check, and the cut-short scan is not
+    kept."""
+    path = many_packets(tmp_path / "long.mp4", 3000)
+    info = media.probe(path)
+    checks = 0
+
+    def stop() -> None:
+        nonlocal checks
+        checks += 1
+        raise Aborted()
+
+    with pytest.raises(Aborted):
+        media.decode_frame(
+            path, info, media.SamplePoint(60.0, media.REQUESTED), no_tools, stop
+        )
+    # the first check, after 256 of the 3000 packets, ended it
+    assert checks == 1
+    assert len(video.frame_index(path).pts) == 3000
+
+
+def rotated(path: Path, degrees: int) -> Path:
+    """`path`'s stream copied (not re-encoded) with a display matrix of `degrees`."""
+    assert FFMPEG is not None
+    copy = path.with_name(f"{path.stem}-rotated{degrees}.mp4")
+    subprocess.run(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-display_rotation",
+            str(degrees),
+            "-i",
+            str(path),
+            "-c",
+            "copy",
+            str(copy),
+        ],
+        check=True,
+        stdin=subprocess.DEVNULL,
+    )
+    return copy
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("degrees", [90, 180, 270])
+def test_light_models_read_a_rotated_video_as_stored(three_keyframes, degrees):
+    """The display matrix only says how to show the frames: the light models' RGB is the
+    stored raster the As stored plane comes from (a quarter turn was refused, a half
+    turn came upside down)."""
+    point = media.SamplePoint(1.0, media.KEYFRAME, frame=24)
+    decoded = []
+    for path in (three_keyframes, rotated(three_keyframes, degrees)):
+        info = media.probe(path)
+        colour = media.colour_model(path, info, path_tools, lambda: None)
+        decoded.append(
+            media.decode_frame(path, info, point, path_tools, lambda: None, colour.rgb)
+        )
+    (plane, _, rgb), (rotated_plane, _, rotated_rgb) = decoded
+    assert rgb is not None and rotated_rgb is not None
+    assert np.array_equal(rotated_plane, plane)
+    assert np.array_equal(rotated_rgb, rgb)
+
+
+@needs_ffmpeg
+def test_video_light_models_on_a_rotated_video(tmp_path, three_keyframes, monkeypatch):
+    monkeypatch.setattr(node.FFMpegEnv, "get_integrated", lambda _: path_tools())
+    outputs = run(
+        Context(tmp_path),
+        source=S.VIDEO,
+        video_path=rotated(three_keyframes, 90),
+        gamma24=True,
+    )
+    summary = json.loads(outputs[12])
+    domains = [a["light_domain"] for a in summary["analyses"]]
+    assert domains == ["encoded", "linear-gamma24"] * 3
 
 
 @needs_ffmpeg

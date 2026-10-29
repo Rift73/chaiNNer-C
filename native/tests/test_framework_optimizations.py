@@ -26,6 +26,7 @@ import pytest
 from ncnn import ncnn
 
 from api import Generator, NodeContext, NodeId, SettingsParser
+from nodes.impl.device_thread import on_device_thread
 from nodes.impl.pytorch import resource_cache as resources
 from nodes.impl.upscale.bounded_tiler import BoundedTiler
 from nodes.impl.upscale.tiler import Tiler
@@ -113,6 +114,19 @@ class Context(NodeContext):
         callbacks, self.cleanup = self.cleanup, set()
         for callback in callbacks:
             callback()
+
+
+class Running(Context):
+    """A Context whose run is neither stopped nor paused: the upscale nodes suspend
+    before they start."""
+
+    @property
+    def aborted(self) -> bool:
+        return False
+
+    @property
+    def paused(self) -> bool:
+        return False
 
 
 def test_frozen_source_integrity():
@@ -997,8 +1011,11 @@ def test_ncnn_node_hands_its_network_logical_order(side):
         cv2=cv2,
         get_h_w_c=get_h_w_c,
         convenient_upscale=upscale,
-        get_settings=lambda _: None,
+        get_settings=lambda _: SimpleNamespace(gpu_index=0),
         CUSTOM=-1,
+        use_gpu=False,
+        CPU_DEVICE=-1,
+        on_device_thread=on_device_thread,
     ).upscale_image_node
     node.__globals__["upscale_impl"] = upscale_impl
     rng = np.random.default_rng(18)
@@ -1013,7 +1030,7 @@ def test_ncnn_node_hands_its_network_logical_order(side):
                 in_nc=nc, out_nc=nc, model=SimpleNamespace(layers=layers)
             )
             for separate in (False, True):
-                node(Context(), image, model, 0, 0, separate)
+                node(Running(), image, model, 0, 0, separate)
     assert len(reached) == 28
     assert all(np.array_equal(a.ravel(order="K"), a.ravel(order="C")) for a in reached)
 
@@ -1053,10 +1070,15 @@ def test_registered_upscale_defers_collection_and_drains_once(backend, fail):
         get_settings=lambda _: settings,
         convenient_upscale=convenient,
         get_h_w_c=lambda image: image.shape,
-        get_onnx_session=lambda *args: object(),
+        get_onnx_session=lambda *args: SimpleNamespace(
+            get_inputs=lambda: [SimpleNamespace(type="tensor(float)")]
+        ),
         get_input_shape=lambda _: ("BCHW", 1, None, None),
         get_output_shape=lambda _: ("BCHW", 1, None, None),
         CUSTOM=-1,
+        use_gpu=False,
+        CPU_DEVICE=-1,
+        on_device_thread=on_device_thread,
     )
     node = module.upscale_image_node
     node.__globals__["upscale_impl" if backend == "ncnn" else "upscale"] = helper
@@ -1066,7 +1088,7 @@ def test_registered_upscale_defers_collection_and_drains_once(backend, fail):
         model=SimpleNamespace(layers=[SimpleNamespace(outputs=["name"])]),
         info=SimpleNamespace(scale_width=None, scale_height=None),
     )
-    context = Context()
+    context = Running()
     image = np.ones((2, 3, 1), np.float32)
     for _ in range(3):
         if fail:

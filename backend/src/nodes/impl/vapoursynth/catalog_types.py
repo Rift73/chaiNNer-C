@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from typing import Mapping
 
 _FROM_IMPORT = re.compile(r"from ([\w.]+) import (\w+)")
+# Parameter kinds that may get no argument although they have no default.
+VARIADIC = ("var_positional", "var_keyword")
 
 
 @dataclass(frozen=True)
@@ -17,7 +19,7 @@ class Param:
     annotation: str
     # The default's repr, or None when the parameter has no default.
     default: str | None
-    # "positional", "keyword" or "var_keyword".
+    # "positional", "keyword", "var_positional" (*clips) or "var_keyword".
     kind: str
 
 

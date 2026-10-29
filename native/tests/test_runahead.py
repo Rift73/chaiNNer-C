@@ -8,6 +8,7 @@ from test_generator_lifecycle import make_node
 from test_item_window import set_schema
 from test_iteration_view import Looking, assert_served, computed_folder
 
+import process
 from api import InputId, NodeId
 from chain.chain import Edge, EdgeSource, EdgeTarget
 from nodes.properties.inputs import RelativePathInput
@@ -82,6 +83,51 @@ def test_an_error_ahead_surfaces_at_its_own_item(monkeypatch, tmp_path, fail_fas
         assert_served(looking.looks, 3, count=5)
     else:
         assert_served(looking.looks, 0)
+
+
+def test_a_producer_run_ahead_runs_its_node_cleanups_after_itself(
+    monkeypatch, tmp_path
+):
+    # A cleanup the producer registers for after itself (as Upscale Image empties the
+    # CUDA cache) runs when its job for that item ends, once, before the next item's
+    # (before: the item's turn on the commit path ran the ahead jobs' cleanups, later),
+    # and outside the node's time, as on the commit path.
+    looking, ran = producing(monkeypatch, tmp_path, 8, depth=3)
+    node = looking.chain.nodes[NodeId("map")]
+    produce = node.data.run
+    events = []
+    timed_supplier = process.timed_supplier
+
+    def timed(supplier):
+        measured = timed_supplier(supplier)
+        arguments = getattr(supplier, "args", ())
+
+        def wrapper():
+            try:
+                return measured()
+            finally:
+                if arguments and arguments[0] is node.data:
+                    events.append(("timed",))
+
+        return wrapper
+
+    monkeypatch.setattr(process, "timed_supplier", timed)
+
+    def registering(context, value):
+        index = context.iteration.index
+        context.add_cleanup(lambda: events.append(("cleanup", index)), after="node")
+        events.append(("ran", index))
+        return produce(context, value)
+
+    object.__setattr__(node.data, "run", registering)
+    assert looking.run(workers=8) is None
+    assert any(looks < index for index, looks in ran)
+    assert_served(looking.looks, 3)
+    assert events == [
+        event
+        for index in range(8)
+        for event in (("ran", index), ("timed",), ("cleanup", index))
+    ]
 
 
 def test_a_producer_with_side_effects_never_runs_ahead(monkeypatch, tmp_path):
@@ -214,6 +260,33 @@ def test_a_look_ahead_the_read_ahead_check_switches_off_is_a_run_warning(
         assert_served(looking.looks, 0)
         effect = "look runs without its look-ahead: it uses only the current and earlier frames"
         assert run_warnings(looking) == [f"{reason}, so {effect}."]
+
+
+@pytest.mark.parametrize(
+    ("schema", "decision"),
+    [
+        ("chainner:utility:test-folder", "K=3 (override)"),
+        ("chainner:utility:into_directory", "K=1 (output directory unresolved: save)"),
+    ],
+)
+def test_a_folder_node_runs_before_a_look_ahead_decides_at_item_0(
+    monkeypatch, tmp_path, schema, decision
+):
+    # save's folder comes from a node that save's gather runs after look, whose
+    # look-ahead decides K at item 0. A pure CPU folder node now runs before that
+    # decision, so the read-ahead check knows the folder (before: unresolved, K = 1, a
+    # warning); Into Directory, which reads the disk, still waits for save's turn.
+    looking = saving_into(monkeypatch, tmp_path, "computed")
+    set_schema(looking.chain.nodes[NodeId("folder")], schema)
+    assert looking.run(workers=4) is None
+    assert looking.decisions == [f"item window {decision}"]
+    assert looking.saved == [7.0, 17.0, 27.0, 37.0]
+    if decision.startswith("K=3"):
+        assert_served(looking.looks, 2)
+        assert run_warnings(looking) == []
+    else:
+        assert_served(looking.looks, 0)
+        assert len(run_warnings(looking)) == 1
 
 
 @pytest.mark.parametrize(

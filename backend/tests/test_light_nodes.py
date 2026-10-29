@@ -558,3 +558,82 @@ def test_a_node_list_request_given_up_while_the_nodes_load_leaves_the_loading_al
         await asyncio.wait_for(server.nodes_available(), 1)
 
     asyncio.run(scenario())
+
+
+def test_the_package_list_is_each_package_as_registered(
+    server: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    import api
+
+    loading, pytorch = loading_with(server, monkeypatch)
+    pytorch.add_dependency(
+        api.Dependency(
+            display_name="PyTorch",
+            pypi_name="torch",
+            version="2.14.1",
+            size_estimate=2.5e9,
+        )
+    )
+    loading.packages_registered.set()
+    request = SimpleNamespace(args={"waitForNodes": "false"})
+
+    reply = asyncio.run(server.get_packages(request))
+    assert json.loads(reply.body) == [
+        {
+            "id": "chaiNNer_pytorch",
+            "name": "PyTorch",
+            "description": "",
+            "icon": "PyTorch",
+            "color": "#DD6B20",
+            "dependencies": [
+                {
+                    "displayName": "PyTorch",
+                    "pypiName": "torch",
+                    "version": "2.14.1",
+                    "sizeEstimate": 2500000000,
+                    "autoUpdate": True,
+                    "findLink": None,
+                    "url": None,
+                    "replaces": [],
+                }
+            ],
+            "features": [],
+            "settings": [],
+            "disabled": False,
+            "disabledReason": None,
+        }
+    ]
+
+
+def test_a_module_that_fails_the_same_way_at_two_starts_is_settled(
+    server: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A module that fails at every start for a reason other than a missing dependency
+    (a broken install) kept every start's node list out of the app's cache, so every
+    start showed the splash: its second failure in a row is settled."""
+    import api
+
+    def start(*errors: Exception) -> bool:
+        loading, _ = loading_with(server, monkeypatch)
+        failed = [
+            api.LoadErrorInfo("packages.chaiNNer_pytorch.settings", "settings.py", e)
+            for e in errors
+        ]
+        loading.errors["chaiNNer_pytorch"] = failed
+        monkeypatch.setattr(loading, "_load", lambda: failed)
+        loading.load(SimpleNamespace(error_on_failed_node=False), tmp_path)
+        return loading.complete()
+
+    def broken() -> OSError:
+        return OSError("[WinError 126] The specified module could not be found")
+
+    assert start(broken()) is False
+    assert start(broken()) is True
+    # another failure of the module is new again
+    assert start(OSError("[WinError 1455] The paging file is too small")) is False
+    # a start the module loads in forgets its failure
+    assert start() is True
+    assert not (tmp_path / "node-load-failures.json").exists()
+    assert start(broken()) is False
+    # a missing dependency is settled at once, as before
+    assert start(ModuleNotFoundError("No module named 'torch'", name="torch")) is True

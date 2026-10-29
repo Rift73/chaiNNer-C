@@ -231,7 +231,7 @@ DESCALES = [
     (8, 6, 0.0, 0.5, 3, 1.0, 0.0, 0.0, 0.0, 0.0),
     (17, 31, 0.0, 0.5, 3, 1.0, 0.0, 0.0, 0.0, 0.0),
     (5, 9, 1 / 3, 1 / 3, 4, 1.25, 0.25, -0.5, 0.0, 0.0),
-    (12, 20, -0.5, 0.75, 2, 0.8, 0.0, 0.0, 12.5, 19.0),
+    (12, 20, -0.5, 0.75, 2, 0.9, 0.0, 0.0, 12.5, 19.0),
     (16, 30, 0.0, 0.0, 6, 1.0, 1.5, 0.0, 0.0, 30.5),
     (3, 2, 0.0, 0.5, 1, 10.0, 0.0, 0.0, 0.0, 0.0),
 ]
@@ -267,9 +267,24 @@ def test_descale_errors(light):
     cases: list[list[object]] = [
         [img, 13, 10, 1, 0.0, 0.5, 3, 1.0, 0.0, 0.0, 0.0, 0.0, 0],
         [img, 12, 11, 1, 0.0, 0.5, 3, 1.0, 0.0, 0.0, 0.0, 0.0, 0],
-        [img, 2, 2, 3, 0.0, 0.5, 32, 1.0, 0.0, 0.0, 0.0, 0.0, 0],
-        [img, 6, 5, 2, 0.0, 0.5, 3, 1.0, 900.0, 0.0, 0.0, 0.0, 0],
         [np.zeros((0, 5, 3), np.float32), 1, 1, 1, 0.0, 0.5, 3, 1.0, 0.0, 0.0, 0.0, 0.0, 0],
+        # Refused (native_descale._core): target pixels without weight from a narrow Blur, or from the window (Point
+        # at the same width, Source Left 0.5).
+        [img, 6, 5, 1, 0.0, 0.5, 3, 0.01, 0.0, 0.0, 0.0, 0.0, 0],
+        [img, 12, 10, 7, 0.0, 0.5, 3, 1.0, 0.5, 0.0, 0.0, 0.0, 2],
     ]
     for inputs in cases:
-        assert_native_matches("chainner:image:descale", [*inputs, *light])
+        outcome = assert_native_matches("chainner:image:descale", [*inputs, *light])
+        assert outcome[0] == "error"
+
+
+def test_descale_mirror_past_one_reflection_matches():
+    # Lanczos 32 taps onto 2 x 2, and Source Left 900: taps past one reflection, which the Mirror border repeats
+    # (third_party/descale/PATCHES).
+    img = image(3, 10, 12, 3)
+    cases: list[list[object]] = [
+        [img, 2, 2, 3, 0.0, 0.5, 32, 1.0, 0.0, 0.0, 0.0, 0.0, 0],
+        [img, 6, 5, 2, 0.0, 0.5, 3, 1.0, 900.0, 0.0, 0.0, 0.0, 0],
+    ]
+    for inputs in cases:
+        assert assert_native_matches("chainner:image:descale", [*inputs, False, 0])[0] == "outputs"

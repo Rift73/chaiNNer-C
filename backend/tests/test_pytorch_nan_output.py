@@ -107,3 +107,18 @@ def test_tiled_nan_from_the_input_passes_through():
     result = upscale(img, compact(1.0), use_fp16=False, tiler=ExactTileSize((32, 32)))
     assert np.isnan(result).any()
     assert np.isfinite(result[-8:, -8:]).all()  # beyond the receptive field
+
+
+def test_bf16_nan_names_bf16_mode():
+    hint = r"turn off 'Use BF16 Mode \(CPU\)'"
+    with pytest.raises(RuntimeError, match=hint) as error:
+        pytorch_auto_split(
+            image(),
+            compact(float("nan")),
+            CPU,
+            False,
+            NoTiling(),
+            Progress.noop_progress(),
+            use_bf16=True,
+        )
+    assert "FP16" not in str(error.value)

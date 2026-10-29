@@ -97,7 +97,7 @@ for _name in ("horizontal", "vertical", "diagonal", "radial", "conic"):
         _name + "_gradient",
         reference_gradients.judged(_name + "_gradient"),
     )
-ORIGINAL["premultiplied_alpha"].premultiplied_alpha_node = run_path(
+ORIGINAL["premultiplied_alpha"].__dict__["premultiplied_alpha_node"] = run_path(
     str(TESTS / "reference_adjustments/judged.py")
 )["premultiplied_alpha"](ORIGINAL["premultiplied_alpha"])
 

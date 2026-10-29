@@ -165,6 +165,9 @@ _PLACEHOLDERS = {
     "ranges": "e.g. 682-687, 713-717, 721",
     "fraction": "e.g. 24000/1001",
     "sequence": "e.g. 0.35, 0",
+    "texts": "one for all planes, or a list: ['x 2 *', '']",
+    # vsexprtools' ExprLike: a list is one expression, a tuple one per plane.
+    "expressions": "one for all planes, or a tuple: ('x 2 *', '')",
     "extra": "Python value, e.g. 1, 'text', [1, 2] or {'name': 1}",
 }
 
@@ -185,7 +188,12 @@ _RANGES = {
 }
 _PLANES = {"Planes", "PlanesT"}
 _PATHS = {"SPathLike", "SPath", "Path", "PathLike", "PurePath", "StrPath"}
+# vstools' path of any file (HardsubASS' subtitle filename): any file type, whatever
+# the parameter's name.
+_ANY_FILE_PATHS = {"FilePathType"}
 _FORMATS = {"VideoFormatLike", "PresetVideoFormat", "VideoFormat"}
+# vsexprtools' expressions: a text, or one per plane.
+_EXPRESSIONS = {"ExprLike"}
 _COLOUR_NAMES = {
     "matrix": {"MatrixLike", "MatrixT", "Matrix", "MatrixCoefficients"},
     "transfer": {"TransferLike", "TransferT", "Transfer", "TransferCharacteristics"},
@@ -294,8 +302,13 @@ class Adapter:
     default: object = None
     # Dropdown kinds: (label, source) per choice; the value of a choice is its source.
     choices: tuple[tuple[str, str], ...] = ()
-    # sequence: written as a "list" or "tuple"; clip: "list" wraps the clip in a list.
+    # sequence: written as a "list" or "tuple"; clip: "list" wraps the clip in a list;
+    # text: "list" also takes a list of texts ("['x 2 *', '']", an expression per
+    # plane).
     container: str = ""
+    # text "list" (vsexprtools' ExprLike): also a tuple, and None, numbers and lists or
+    # tuples inside, nested ("('x 2 /', None)": a tuple is an expression per plane).
+    nested: bool = False
     # clip: the parameter also takes a list of clips (Shift Clip Multi's output).
     clip_list: bool = False
     # sequence: one value is written as it is (the parameter also takes a single one).
@@ -309,6 +322,9 @@ class Adapter:
     var_keyword: bool = False
     # Import statements the written sources need.
     imports: frozenset[str] = frozenset()
+    # The parameter's union also takes values this input cannot give (bool | float's
+    # numbers, Repair.Mode | bool's False): a Python value input beside it gives them.
+    other: bool = False
 
     def make_input(
         self, label: str, param: Param, input_id: int, value: object = None
@@ -396,7 +412,11 @@ class Adapter:
                 min=None,
                 max=None,
             )
-        placeholder = _PLACEHOLDERS.get(kind)
+        placeholder = _PLACEHOLDERS.get(
+            ("expressions" if self.nested else "texts")
+            if kind == "text" and self.container == "list"
+            else kind
+        )
         if kind == "extra":
             if self.var_keyword:
                 placeholder = "Python dict, e.g. {'name': 1}"
@@ -434,6 +454,9 @@ class Adapter:
         if kind == "path" and isinstance(value, (str, os.PathLike)):
             return repr(os.fspath(value))
         if kind == "text":
+            starts = ("[", "(", "'", '"') if self.nested else ("[", "'", '"')
+            if self.container == "list" and str(value).lstrip()[:1] in starts:
+                return self._texts(str(value))
             return repr(str(value))
         if kind in ("int", "float") and isinstance(value, (int, float)):
             return _number(value, kind == "int", self.name)
@@ -476,6 +499,32 @@ class Adapter:
             return f"({items[0]},)" if len(items) == 1 else f"({', '.join(items)})"
         return f"[{', '.join(items)}]"
 
+    def _texts(self, text: str) -> str:
+        """A list of texts, or one in quotes (as norm_expr's Python-value box took
+        it: no expression starts with a quote). `nested`: also a tuple (no expression
+        starts with "(" either), with None, numbers and lists or tuples inside, as that
+        box took them and norm_expr runs them."""
+        try:
+            value = ast.literal_eval(text)
+        except _LITERAL_ERRORS:
+            value = None
+        if isinstance(value, str):
+            return repr(value)
+        if self.nested:
+            if not (isinstance(value, (list, tuple)) and _expression_parts(value)):
+                raise ValueError(
+                    f"{self.name}: {text.strip()!r} is not a tuple of texts like"
+                    " ('x 2 *', ''), one per plane, or a list (one expression); None,"
+                    " numbers and lists or tuples may be inside."
+                )
+            return repr(value)
+        if not (isinstance(value, list) and all(isinstance(v, str) for v in value)):
+            raise ValueError(
+                f"{self.name}: {text.strip()!r} is not a list of texts like"
+                " ['x 2 *', '']."
+            )
+        return repr(value)
+
     def _extra(self, text: str) -> str:
         try:
             value = ast.literal_eval(text)
@@ -499,15 +548,31 @@ class Adapter:
         return ast.unparse(ast.parse(text, mode="eval"))
 
 
-def adapter_for(param: Param, enums: Enums, plugin: bool = False) -> Adapter:
+def adapter_for(
+    param: Param,
+    enums: Enums,
+    plugin: bool = False,
+    siblings: frozenset[str] = frozenset(),
+) -> Adapter:
     """The adapter of a catalog parameter; `plugin` for a plugin function's. `enums` is
-    the catalog's enums map: key -> {"import", "members": [{"name", "expr"}]}."""
+    the catalog's enums map: key -> {"import", "members": [{"name", "expr"}]}.
+    `siblings`: the names of the function's parameters, which tell what some plugin
+    names mean (`range` is a colour range beside `range_in`, as in resize)."""
     annotation = param.annotation.strip()
     if param.kind == "var_keyword":
         return Adapter("extra", name=param.name, optional=True, var_keyword=True)
+    if param.kind == "var_positional":
+        # *clips (the scan keeps no other *args): written *[...], any number of them.
+        return Adapter(
+            "optional_clip",
+            name=param.name,
+            optional=True,
+            container="list",
+            clip_list=True,
+        )
     signature = _plugin_signature(param) if plugin else None
     if signature is not None:
-        return _plugin_adapter(param, *signature)
+        return _plugin_adapter(param, *signature, siblings)
     if not annotation:
         return _unannotated(param, enums)
     try:
@@ -522,7 +587,47 @@ def adapter_for(param: Param, enums: Enums, plugin: bool = False) -> Adapter:
 
 def _python_adapter(param: Param, members: list[ast.expr], enums: Enums) -> Adapter:
     """The adapter of a vs-jetpack (or user) parameter: the first rule that matches a
-    member of its union annotation wins."""
+    member of its union annotation wins; `other` when the union's other members take
+    plain Python values that its input cannot give."""
+    adapter = _first_rule(param, members, enums)
+    uncovered = _value_kinds(members) - _COVERS.get(adapter.kind, _VALUE_KINDS)
+    return replace(adapter, other=True) if uncovered else adapter
+
+
+# The kinds of plain Python value that union members take, and those each input kind
+# gives (the others give none a Python value could stand for, or all of them).
+_VALUE_KINDS = frozenset({"bool", "number", "numbers", "sequence", "literal", "text"})
+_COVERS = {
+    "bool": {"bool"},
+    "int": {"number"},
+    "float": {"number"},
+    "sequence": {"number", "numbers"},
+    # An enum's numbers and texts are its values and names.
+    "enum": {"literal", "bool", "number", "text"},
+    "text": {"text"},
+}
+
+
+def _value_kinds(members: list[ast.expr]) -> set[str]:
+    kinds: set[str] = set()
+    for member in members:
+        last = _last(member)
+        if isinstance(member, ast.Subscript) and last == "Literal":
+            kinds.add("literal")
+        elif last == "bool":
+            kinds.add("bool")
+        elif last in ("int", "float"):
+            kinds.add("number")
+        elif last in _SEQUENCES:
+            elements = _elements(member)
+            numbers = elements and elements <= {"int", "float", "None"}
+            kinds.add("numbers" if numbers else "sequence")
+        elif last in ("str", "SupportsString"):
+            kinds.add("text")
+    return kinds
+
+
+def _first_rule(param: Param, members: list[ast.expr], enums: Enums) -> Adapter:
     name = param.name
     optional = param.default is not None
     lasts = {_last(m) for m in members}
@@ -555,6 +660,8 @@ def _python_adapter(param: Param, members: list[ast.expr], enums: Enums) -> Adap
         )
     if lasts & _PATHS:
         return _path(param, optional)
+    if lasts & _ANY_FILE_PATHS:
+        return _path(param, optional, video=False)
     for kind, names in _COLOUR_NAMES.items():
         if lasts & names:
             return _choice(param, kind, _colour_choices(kind), optional)
@@ -569,7 +676,9 @@ def _python_adapter(param: Param, members: list[ast.expr], enums: Enums) -> Adap
     ]
     # Literal[False] beside a number or a sequence is only its "off" value.
     if choices or (literals and not numbers and not number_sequences):
-        enum = _choice(param, "enum", _unique(choices + literals), optional)
+        # A bool beside the enum is two more choices (Repair.Mode | bool's False).
+        bools = [("True", "True"), ("False", "False")] if "bool" in lasts else []
+        enum = _choice(param, "enum", _unique(choices + literals + bools), optional)
         return replace(enum, imports=imports)
     if callable_:
         return Adapter("clip_or_filter", name=name, optional=optional)
@@ -593,6 +702,8 @@ def _python_adapter(param: Param, members: list[ast.expr], enums: Enums) -> Adap
     if numbers:
         kind = "float" if "float" in numbers else "int"
         return _number_adapter(param, kind, optional)
+    if lasts & _EXPRESSIONS:
+        return replace(_text(param, optional), container="list", nested=True)
     if lasts & {"str", "SupportsString"}:
         return _text(param, optional)
     return _extra(param)
@@ -610,7 +721,9 @@ def _plugin_signature(param: Param) -> tuple[str, bool] | None:
     return None
 
 
-def _plugin_adapter(param: Param, base: str, array: bool) -> Adapter:
+def _plugin_adapter(
+    param: Param, base: str, array: bool, siblings: frozenset[str]
+) -> Adapter:
     """A parameter of a plugin function, from its signature type."""
     name = param.name
     optional = param.default is not None
@@ -629,7 +742,9 @@ def _plugin_adapter(param: Param, base: str, array: bool) -> Adapter:
         if name == "planes" and optional:
             return _planes(param, optional)
         return _sequence(param, optional, "list", scalar=True, integers=True)
-    if base == "int" and name in _PLUGIN_INTS:
+    # f3kdb's `range` (vszip.Deband) is the banding radius, a number.
+    colour_range = name != "range" or "range_in" in siblings
+    if base == "int" and name in _PLUGIN_INTS and colour_range:
         kind = _PLUGIN_INTS[name]
         if kind == "format":
             choices = _FORMAT_CHOICES
@@ -645,7 +760,8 @@ def _plugin_adapter(param: Param, base: str, array: bool) -> Adapter:
     if base == "data":
         if name in _VIDEO_NAMES and not array:
             return _path(param, optional)
-        return _text(param, optional)
+        # An array (std.Expr's expr) takes one text or a list of them.
+        return replace(_text(param, optional), container="list" if array else "")
     return _extra(param)
 
 
@@ -727,7 +843,8 @@ def _extra(param: Param) -> Adapter:
     )
 
 
-def _path(param: Param, optional: bool) -> Adapter:
+def _path(param: Param, optional: bool, video: bool = True) -> Adapter:
+    """A file to open; `video`: one named like a video source offers video types."""
     if _OUTPUT_PATH.search(param.name):
         # A file the function writes, or a folder: the file input only takes
         # existing files, so a text.
@@ -736,7 +853,7 @@ def _path(param: Param, optional: bool) -> Adapter:
         "path",
         name=param.name,
         optional=optional,
-        file_types=VIDEO_FILE_TYPES if param.name in _VIDEO_NAMES else ("*",),
+        file_types=VIDEO_FILE_TYPES if video and param.name in _VIDEO_NAMES else ("*",),
     )
 
 
@@ -944,6 +1061,19 @@ def _literal(text: str | None) -> object:
 
 def _is_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _expression_parts(parts: list[object] | tuple[object, ...]) -> bool:
+    """Whether each part is a text, None, a finite number, or a list or tuple of those
+    (nested): the parts of a vsexprtools expression (ExprLike)."""
+    return all(
+        part is None
+        or isinstance(part, str)
+        or (isinstance(part, int) and not isinstance(part, bool))
+        or (isinstance(part, float) and math.isfinite(part))
+        or (isinstance(part, (list, tuple)) and _expression_parts(part))
+        for part in parts
+    )
 
 
 def _flatten(node: ast.expr, members: list[ast.expr]) -> None:

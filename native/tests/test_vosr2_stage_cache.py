@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
+import shutil
 from types import SimpleNamespace
 from typing import cast
 
@@ -87,23 +87,40 @@ def test_migration_rejects_other_models_recipes_and_runtimes(tmp_path, field):
     assert not destination.exists()
 
 
-def test_migration_rejects_corrupt_plan_without_publishing(tmp_path):
+def test_migration_sets_a_corrupt_set_aside_so_a_fresh_build_follows(tmp_path):
     old, source = legacy(tmp_path)
     (source / "dino.plan").write_bytes(b"corrupt")
     identity = stage_identity(old)
     destination = tmp_path / key(identity)
-    folder = re.escape(str(source))
-    with pytest.raises(
-        RuntimeError,
-        match=rf"VOSR dino engine in {folder} is corrupt\. Delete {folder} and run again",
-    ):
-        migrate_stage_cache(
-            cast(NodeContext, SimpleNamespace(suspend=lambda: None)),
-            tmp_path,
-            destination,
-            identity,
-        )
-    assert not destination.exists()
+    context = cast(NodeContext, SimpleNamespace(suspend=lambda: None))
+    assert not migrate_stage_cache(context, tmp_path, destination, identity)
+    assert not destination.exists() and not source.exists()
+    (quarantine,) = tmp_path.glob(f"quarantine-{source.name}-*")
+    assert (quarantine / "dino.plan").read_bytes() == b"corrupt"
+    # Nothing is left to migrate: the next run builds instead of failing again.
+    assert not migrate_stage_cache(context, tmp_path, destination, identity)
+
+
+def test_migration_takes_an_intact_copy_after_setting_a_corrupt_one_aside(tmp_path):
+    old, source = legacy(tmp_path)
+    # Another runtime's copy of the same plans
+    sources = {**old["pipeline_sources"], "vosr2_scene.py": "other"}
+    copy = {**old, "pipeline_sources": sources}
+    other = tmp_path / key(copy)
+    shutil.copytree(source, other)
+    manifest = json.loads((other / "manifest.json").read_text())
+    (other / "manifest.json").write_text(json.dumps({**manifest, "identity": copy}))
+    first, second = sorted([source, other], key=lambda path: path.name)
+    (first / "dino.plan").write_bytes(b"corrupt")
+    identity = stage_identity(old)
+    destination = tmp_path / key(identity)
+    context = cast(NodeContext, SimpleNamespace(suspend=lambda: None))
+    assert migrate_stage_cache(context, tmp_path, destination, identity)
+    assert not first.exists() and second.exists()
+    assert len(list(tmp_path.glob("quarantine-*"))) == 1
+    assert (destination / "dino.plan").read_bytes() == b"dino"
+    migrated = json.loads((destination / "manifest.json").read_text())
+    assert migrated["migrated_from"]["directory"] == str(second)
 
 
 def test_contract_bump_cannot_relabel_legacy_plans(tmp_path, monkeypatch):

@@ -63,11 +63,13 @@ MODULES = {
 # divide 0 by 0 (reference_adjustments/judged.py).
 _judged = run_path(str(REFERENCE / "judged.py"))
 _original_premultiplied = MODULES["premultiplied_alpha"][1]
-_original_premultiplied.premultiplied_alpha_node = _judged["premultiplied_alpha"](
-    _original_premultiplied
-)
+_original_premultiplied.__dict__["premultiplied_alpha_node"] = _judged[
+    "premultiplied_alpha"
+](_original_premultiplied)
 _original_levels = MODULES["color_levels"][1]
-_original_levels.color_levels_node = _judged["color_levels"](_original_levels)
+_original_levels.__dict__["color_levels_node"] = _judged["color_levels"](
+    _original_levels
+)
 
 
 def source(channels, layout):

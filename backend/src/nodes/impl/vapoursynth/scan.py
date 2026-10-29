@@ -18,7 +18,9 @@ NNEDI3"; "" for plugins, which the script's `core` reaches). Function kinds:
 members are callable on a clip, `Prefilter.DFTTEST(clip)`; "members" lists their
 names). Parameter kinds:
 "positional" must be passed by position (positional-only), "keyword" may be passed
-by name, "var_keyword" is **kwargs; *args is left out (no value a node could pass).
+by name, "var_keyword" is **kwargs, "var_positional" is *args that takes clips
+(`merge_clip_props(*clips)`, its annotation each clip's); other *args are left out (no
+value a node could pass).
 Annotations are the resolved types as text: classes by their qualified names
 ("VideoNode | None", "Planes"), enums and type aliases with choices by their "enums"
 keys, their dotted paths ("vsdenoise.blockmatch.BM3D.Profile"); the source text when
@@ -31,6 +33,7 @@ function or exported object as its dotted path (vskernels.Catrom), else the repr
 from __future__ import annotations
 
 import argparse
+import ast
 import enum
 import importlib
 import importlib.machinery
@@ -44,7 +47,7 @@ import types
 import typing
 import warnings
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, NamedTuple
 
 import annotationlib
 import tomllib
@@ -53,10 +56,15 @@ SCHEMA = 1
 JETPACK = "vsjetpack"
 # Longest error text kept per failure.
 ERROR_CHARS = 1000
+# The start of the stderr line the scan prints before each step that runs a module's
+# code, so that chaiNNer can name the module or file whose import hangs: STEP +
+# "importing the user file slow.py".
+STEP = "chaiNNer scan step: "
 
 _KINDS = {
     inspect.Parameter.POSITIONAL_ONLY: "positional",
     inspect.Parameter.POSITIONAL_OR_KEYWORD: "keyword",
+    inspect.Parameter.VAR_POSITIONAL: "var_positional",
     inspect.Parameter.KEYWORD_ONLY: "keyword",
     inspect.Parameter.VAR_KEYWORD: "var_keyword",
 }
@@ -89,6 +97,8 @@ _ARG_SECTIONS = {
 }
 _ARG_ENTRY = re.compile(r"^\*{0,2}(\w+)\s*(?:\([^)]*\))?\s*:\s*(.*)$")
 _BULLET = ("-", "*", "•")
+# The project name at the start of a pip requirement (PEP 508).
+_PROJECT = re.compile(r"\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)")
 # Names chaiNNer's scripts bind besides module names (script.py's prologue and outputs,
 # and the clips n_<node>_<output>): a user file must not take them.
 SCRIPT_NAMES = frozenset({"sys", "vs", "core", "set_output"})
@@ -98,9 +108,138 @@ _NODE_VAR = re.compile(r"n_\w+_\d+")
 _BACKEND_SRC = Path(__file__).resolve().parents[3]
 # Most wrappers unwrapped to reach a class's method (inject_self(inject_kwargs_params)).
 _WRAPPER_DEPTH = 4
+# vs-jetpack's aliases name the method they call ("Alias for [bottom_hat][...]").
+_ALIAS = re.compile(r"Alias for \[(\w+)\]")
+_VARIADIC = {inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD}
 # annotationlib's names for the resolved parts of a partly resolved annotation.
 _PLACEHOLDER = "__annotationlib_name_"
 _ADDRESS = re.compile(r" at 0x[0-9A-Fa-f]+")
+
+
+class Hidden(NamedTuple):
+    """What always fails in one vs-jetpack release, left out of the catalog: `classes`
+    as class choices (with every method), `choices` the class names of a by-name
+    dropdown by its alias key, `methods` by catalog id."""
+
+    classes: frozenset[str] = frozenset()
+    choices: Mapping[str, frozenset[str]] = {}
+    methods: frozenset[str] = frozenset()
+
+
+NOTHING_HIDDEN = Hidden()
+_KERNELS = frozenset({"ComplexKernel", "Kernel", "SpecialBicubic", "ZimgComplexKernel"})
+_COMPLEX_KERNELS = _KERNELS - {"Kernel"}
+# By vs-jetpack version, measured by running every class choice and method with real
+# VapourSynth (CPU). Classes: bases vs-jetpack does not mark abstract ("you must
+# implement the kernel radius", "no attribute 'matrices'"), BoundingBox (its size and
+# position go only through *args), the indexers that index no video. Choices: a
+# by-name dropdown makes the class with no arguments, which these cannot take
+# (ClampScaler, PlaceboShader) or cannot run without (CustomPoint's descale needs
+# taps). Methods: MVTools' need analyze() on the same object first, those that need an
+# object no input gives (mv_obj, RegressClips, HardsubMask lists), and the Hardsub
+# masks' apply_mask, which calls get_mask without its ref. Another version hides none.
+HIDDEN: Mapping[str, Hidden] = {
+    "2.2.6": Hidden(
+        classes=frozenset(
+            {
+                *(
+                    f"vskernels.{name}"
+                    for name in (
+                        "Bobber",
+                        "ComplexDescaler",
+                        "ComplexKernel",
+                        "ComplexScaler",
+                        "Descaler",
+                        "KeepArScaler",
+                        "Kernel",
+                        "LinearDescaler",
+                        "LinearScaler",
+                        "MixedScalerProcess",
+                        "Placebo",
+                        "Resampler",
+                        "Scaler",
+                        "ScalerSpecializer",
+                        "ZimgBobber",
+                        "ZimgComplexKernel",
+                    )
+                ),
+                *(
+                    f"vsmasktools.{name}"
+                    for name in (
+                        "BoundingBox",
+                        "EuclideanDistance",
+                        "Max",
+                        "SingleMatrix",
+                    )
+                ),
+                "vsscale.BaseOnnxScaler",
+                "vssource.CacheIndexer",
+                "vssource.Indexer",
+            }
+        ),
+        choices={
+            "vskernels.abstract.base.DescalerLike": _KERNELS
+            | {"ComplexDescaler", "CustomPoint", "Descaler", "LinearDescaler"},
+            "vskernels.abstract.base.KernelLike": _KERNELS,
+            "vskernels.abstract.base.ResamplerLike": _KERNELS | {"Resampler"},
+            "vskernels.abstract.base.ScalerLike": _KERNELS
+            | {
+                "BaseOnnxScaler",
+                "BaseOnnxScalerRGB",
+                "ClampScaler",
+                "ComplexScaler",
+                "ComplexSuperSamplerProcess",
+                "KeepArScaler",
+                "LinearScaler",
+                "MixedScalerProcess",
+                "Placebo",
+                "PlaceboShader",
+                "Scaler",
+                "ScalerSpecializer",
+                "ScalerTwoPasses",
+            },
+            "vskernels.abstract.complex.ComplexDescalerLike": _COMPLEX_KERNELS
+            | {"ComplexDescaler", "CustomPoint"},
+            "vskernels.abstract.complex.ComplexKernelLike": _COMPLEX_KERNELS,
+            "vskernels.abstract.complex.ComplexScalerLike": _COMPLEX_KERNELS
+            | {"ComplexScaler", "ComplexSuperSamplerProcess", "Placebo"},
+            "vsmasktools.edge._abstract.EdgeDetectLike": frozenset(
+                {"EuclideanDistance", "Max", "SingleMatrix"}
+            ),
+        },
+        methods=frozenset(
+            {
+                *(
+                    f"vsdenoise.MVTools.{name}"
+                    for name in (
+                        "compensate",
+                        "degrain",
+                        "flow",
+                        "flow_blur",
+                        "flow_fps",
+                        "flow_interpolate",
+                        "mask",
+                        "sc_detection",
+                    )
+                ),
+                "vsdenoise.mc_clamp",
+                "vsrgtools.reconstruct",
+                "vsmasktools.bounded_dehardsub",
+                "vsmasktools.get_all_sign_masks",
+                *(
+                    f"vsmasktools.{name}.apply_mask"
+                    for name in (
+                        "HardsubASS",
+                        "HardsubLine",
+                        "HardsubLineFade",
+                        "HardsubSign",
+                        "HardsubSignFades",
+                    )
+                ),
+            }
+        ),
+    ),
+}
 
 # Enums every catalog lists, whether or not an annotation names them: the format,
 # matrix, transfer, primaries, range, field order and chroma location choices of the
@@ -222,8 +361,9 @@ def _join_doc_lines(parts: list[str]) -> str:
 
 
 def user_module_names(modules_file: Path) -> list[str]:
-    """The pip names listed in user_modules.toml: `modules = ["vs_colorfix", ...]`.
-    No file means none. Raises ValueError for a file that is not such a list."""
+    """The pip names listed in user_modules.toml: `modules = ["vs_colorfix", ...]`, each
+    with a version spec if it has one ("vs_colorfix>=2"). No file means none. Raises
+    ValueError for a file that is not such a list."""
     if not modules_file.is_file():
         return []
     try:
@@ -243,9 +383,17 @@ def _normalized(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def project_name(requirement: str) -> str:
+    """The project of a pip requirement as user_modules.toml lists it (PEP 508):
+    "vs-colorfix" of "vs-colorfix>=2", "vs-colorfix[extra]" or "vs-colorfix @ <url>"."""
+    match = _PROJECT.match(requirement)
+    return match[1] if match else requirement
+
+
 def import_names(pip_name: str, distributions: Mapping[str, list[str]]) -> list[str]:
     """The top-level modules a pip package installs (its name with "_" for "-" when
-    the metadata does not tell)."""
+    the metadata does not tell); a version spec after the name is left out."""
+    pip_name = project_name(pip_name)
     wanted = _normalized(pip_name)
     tops = sorted(
         top
@@ -390,8 +538,11 @@ class Paths:
 class Scanner:
     """Builds the catalog's functions and enums from imported modules and plugins."""
 
-    def __init__(self, paths: Paths, errors: list[str]) -> None:
+    def __init__(
+        self, paths: Paths, errors: list[str], hidden: Hidden = NOTHING_HIDDEN
+    ) -> None:
         self.paths = paths
+        self.hidden = hidden
         self.functions: list[dict[str, Any]] = []
         # Each enum, alias or preset class's entry by its key; None when it has no
         # choices or no importable name.
@@ -465,7 +616,12 @@ class Scanner:
             elif isinstance(part, type) and issubclass(part, enum.Enum):
                 entry = self._enum(part)
             elif origin is type and str in parts:
-                literals += self._class_names(typing.get_args(part)[0])
+                left_out = self.hidden.choices.get(key, frozenset())
+                literals += [
+                    choice
+                    for choice in self._class_names(typing.get_args(part)[0])
+                    if choice["name"] not in left_out
+                ]
             elif origin is typing.Literal:
                 literals += [
                     {"name": str(arg), "expr": repr(arg)}
@@ -648,6 +804,8 @@ class Scanner:
             annotation = self.annotation(param.annotation, globals_, locals_)
             if annotation == "Never":
                 continue
+            if kind == "var_positional" and "VideoNode" not in annotation:
+                continue
             default = None if kind == "var_keyword" else self.default(param.default)
             params.append(_param(param.name, annotation, default, kind))
         return params
@@ -661,6 +819,8 @@ class Scanner:
         return self._docs[key][1]
 
     def add(self, entry: dict[str, Any]) -> None:
+        if entry["id"] in self.hidden.methods:
+            return
         if entry["id"] in self._ids:
             self.errors.append(f"{entry['id']}: listed twice; the first one is kept")
             return
@@ -690,7 +850,7 @@ class Scanner:
         returns = self.annotation(signature.return_annotation, globals_, {})
         # Library helpers that make no clip are no nodes; a user function without a
         # return annotation is taken at its word.
-        if "VideoNode" not in returns and (source != "user" or returns):
+        if not gives_clips(returns) and (source != "user" or returns):
             return
         doc, arg_docs = self.doc(target)
         self.add(
@@ -728,12 +888,13 @@ class Scanner:
         # Members that take a clip first (not *clips; not vstools' decorators, which
         # take a clip or a function).
         members = [member.name for member in cls]
-        first = params[0]["annotation"] if params else ""
+        first = params[0] if params else {"annotation": "", "kind": ""}
         if (
-            "VideoNode" not in returns
+            not gives_clips(returns)
             or not members
-            or "VideoNode" not in first
-            or "Callable" in first
+            or "VideoNode" not in first["annotation"]
+            or "Callable" in first["annotation"]
+            or first["kind"] == "var_positional"
         ):
             return
         doc, arg_docs = self.doc(function)
@@ -762,6 +923,7 @@ class Scanner:
             return
         if (
             not _owned(cls, top)
+            or f"{top}.{name}" in self.hidden.classes
             or issubclass(cls, (enum.Enum, BaseException))
             or inspect.isabstract(cls)
             or typing.is_typeddict(cls)
@@ -773,19 +935,11 @@ class Scanner:
         for attribute in sorted(dir(cls)):
             if attribute.startswith("_"):
                 continue
-            try:
-                function = inspect.getattr_static(cls, attribute)
-            except AttributeError:
-                continue
-            # jetpytools' inject_self keeps the method on `_function`, and so does an
-            # inject_kwargs_params inside it (the edge detectors' edgemask).
-            for _ in range(_WRAPPER_DEPTH):
-                if inspect.isfunction(function):
-                    break
-                function = getattr(function, "_function", None)
-            if not inspect.isfunction(function):
+            function = _method_function(cls, attribute)
+            if function is None:
                 continue
             try:
+                function = _alias_target(cls, function)
                 if init is None:
                     init, init_docs = self._init(cls)
                 self._scan_method(
@@ -824,7 +978,7 @@ class Scanner:
         )
         globals_ = function.__globals__
         returns = self.annotation(signature.return_annotation, globals_, vars(owner))
-        if "VideoNode" not in returns:
+        if not gives_clips(returns):
             return
         params = self.params(signature, globals_, vars(owner), skip_first=True)
         doc, arg_docs = self.doc(function)
@@ -871,6 +1025,92 @@ class Scanner:
                 self.error(f"plugin {plugin.namespace}", error)
 
 
+def _method_function(cls: type, attribute: str) -> Any:
+    """The function of a class's method, or None: jetpytools' inject_self keeps it on
+    `_function`, and so does an inject_kwargs_params inside it (the edge detectors'
+    edgemask)."""
+    try:
+        function = inspect.getattr_static(cls, attribute)
+    except AttributeError:
+        return None
+    for _ in range(_WRAPPER_DEPTH):
+        if inspect.isfunction(function):
+            return function
+        function = getattr(function, "_function", None)
+    return function if inspect.isfunction(function) else None
+
+
+def _alias_target(cls: type, function: Any) -> Any:
+    """The method an alias calls (Morpho.black_hat, "Alias for [bottom_hat]...",
+    which takes *args and **kwargs and copies bottom_hat's signature for type checkers
+    only): its signature and help are the alias's. Any other method is itself."""
+    match = _ALIAS.match(inspect.getdoc(function) or "")
+    if match is None:
+        return function
+    signature = inspect.signature(
+        function, annotation_format=annotationlib.Format.STRING
+    )
+    params = list(signature.parameters.values())[1:]
+    if not params or any(p.kind not in _VARIADIC for p in params):
+        return function
+    return _method_function(cls, match[1]) or function
+
+
+def gives_clips(returns: str) -> bool:
+    """A return annotation of a clip or clips: a member of its union is a clip
+    ("VideoNode", "vs.VideoNode | PrefilterPartial", mc_degrain's "VideoNode |
+    tuple[...]") or a sequence of clips ("list[VideoNode]"); not a tuple of a clip and
+    something else (transpose's, expect_bits'), of lists (get_progressive_dehardsub's),
+    or a function that makes clips (vstools' decorators)."""
+    try:
+        node = ast.parse(returns, mode="eval").body
+    except SyntaxError:
+        return "VideoNode" in returns
+    return any(
+        _is_clip(member)
+        or (
+            isinstance(member, ast.Subscript)
+            and _last_name(member.value) in _SEQUENCES
+            and all(_is_clip(item) for item in _items(member.slice))
+        )
+        for member in _members(node)
+    )
+
+
+_SEQUENCES = {"list", "List", "Sequence", "tuple", "Tuple", "Iterable"}
+
+
+def _members(node: ast.expr) -> list[ast.expr]:
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return [*_members(node.left), *_members(node.right)]
+    return [node]
+
+
+def _items(node: ast.expr) -> list[ast.expr]:
+    """A subscript's types, each union's members among them; `...` left out."""
+    items = node.elts if isinstance(node, ast.Tuple) else [node]
+    return [
+        member
+        for item in items
+        if not (isinstance(item, ast.Constant) and item.value is Ellipsis)
+        for member in _members(item)
+    ]
+
+
+def _is_clip(node: ast.expr) -> bool:
+    return isinstance(node, (ast.Name, ast.Attribute)) and "VideoNode" in _last_name(
+        node
+    )
+
+
+def _last_name(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
 def _union_parts(value: object) -> list[object]:
     if typing.get_origin(value) is typing.Union:
         return list(typing.get_args(value))
@@ -881,11 +1121,23 @@ def failure(where: str, error: BaseException) -> str:
     return f"{where}: {type(error).__name__}: {error}"[:ERROR_CHARS]
 
 
+def _version(distribution: str) -> str | None:
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _step(text: str) -> None:
+    print(STEP + text, file=sys.stderr, flush=True)
+
+
 def _import_all(
     tops: Iterable[str], label: str, errors: list[str]
 ) -> dict[str, types.ModuleType]:
     modules: dict[str, types.ModuleType] = {}
     for top in tops:
+        _step(f"importing the {label} {top}")
         try:
             modules[top] = importlib.import_module(top)
         except (Exception, SystemExit) as error:
@@ -936,6 +1188,7 @@ def _import_user_files(
     sys.path.append(str(user_dir))
     modules: dict[str, types.ModuleType] = {}
     for path in files:
+        _step(f"importing the user file {path.name}")
         try:
             modules[path.stem] = importlib.import_module(path.stem)
         except (Exception, SystemExit) as error:
@@ -969,9 +1222,12 @@ def scan(user_dir: Path, modules_file: Path) -> dict[str, Any]:
         user_tops.remove(top)
     user_modules = _import_all(dict.fromkeys(user_tops), "user module", errors)
     user_files = _import_user_files(user_dir, errors)
+    _step("listing the functions")
 
     modules = {"vapoursynth": vapoursynth, **jetpack, **user_modules, **user_files}
-    scanner = Scanner(Paths(modules), errors)
+    scanner = Scanner(
+        Paths(modules), errors, HIDDEN.get(_version(JETPACK) or "", NOTHING_HIDDEN)
+    )
     scanner.seed(modules)
     for top, module in jetpack.items():
         scanner.scan_module(top, module, "jetpack")

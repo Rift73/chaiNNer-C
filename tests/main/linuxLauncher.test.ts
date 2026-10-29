@@ -195,7 +195,7 @@ describe.skipIf(process.platform !== 'linux')(
         const libraries = rows.map(([file]) => file);
         // the libraries without which the launch ends (the others only get the install command)
         const required = rows
-            .filter(([, groups]) => /(^|,)(base|electron)(,|$)/.test(groups))
+            .filter(([, groups]) => /(?:^|,)(?:base|electron)(?:,|$)/.test(groups))
             .map(([file]) => file);
 
         // an ldconfig that lists every library of the table but the missing ones

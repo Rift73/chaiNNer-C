@@ -12,6 +12,7 @@ from typing import Any, cast
 import ffmpeg
 import numpy as np
 import pytest
+from scratch_storage import NO_FFMPEG, STORAGE
 
 # The node's modules load the native backend, which GitHub's checks do not build.
 pytest.importorskip("nodes.impl._chainner_graph")
@@ -38,14 +39,11 @@ from packages.chaiNNer_standard.image.video_frames.load_video import (
     load_video_node,
 )
 
-STORAGE = Path(os.environ.get("APPDATA", "")) / "chaiNNer" / "backend-storage"
 FFMPEG, FFPROBE = map(str, get_executable_path(STORAGE / "ffmpeg"))
 # The local gates' FFmpeg (native/tools/bench_oracle.py), newer than the integrated one.
 NEWER_FFMPEG = Path(r"C:\Executables\ffmpeg-8.1-full_build-shared\bin\ffmpeg.exe")
 
-pytestmark = pytest.mark.skipif(
-    not Path(FFMPEG).exists(), reason="the integrated FFmpeg is not downloaded"
-)
+pytestmark = pytest.mark.skipif(not Path(FFMPEG).exists(), reason=NO_FFMPEG)
 AUTO = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.AUTO)
 
 

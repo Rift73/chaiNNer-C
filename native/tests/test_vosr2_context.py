@@ -11,6 +11,8 @@ import torch
 
 from api import Progress
 from nodes.impl.pytorch import (
+    memory_cap,
+    offload,
     vosr2_context,
     vosr2_memory,
     vosr2_scene,
@@ -270,6 +272,76 @@ def test_vram_quota_restores_allocator_after_every_exit(monkeypatch, failure):
         work()
     assert state.fraction == 0.4
     assert len(state.history) == 2
+
+
+class NoOffload:
+    """OffloadMode's surface, moving nothing."""
+
+    out_bytes = back_bytes = 0
+
+    def __init__(self, *_: object) -> None:
+        pass
+
+    def __enter__(self) -> NoOffload:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+
+@pytest.mark.parametrize("vosr_ends_first", [True, False])
+def test_an_upscale_s_vram_offload_overlapping_a_vosr_budget_leaves_no_cap_behind(
+    monkeypatch, vosr_ends_first
+):
+    # Upscale Image's offload (the GPU thread) and VOSR's budget (the driver) cap the
+    # fraction at once: inside both the smaller cap holds, inside one its own, and after
+    # both the fraction from before. Each restoring the fraction it read left VOSR's
+    # cap behind (and lifted the offload's while it ran).
+    state = memory_mock(monkeypatch, previous=1.0)
+    monkeypatch.setattr(
+        torch.cuda,
+        "mem_get_info",
+        lambda _: (3_000_000_000 + offload.HEADROOM, 32_000_000_000),
+    )
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda _: None)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda _: 0)
+    monkeypatch.setattr(offload, "OffloadMode", NoOffload)
+    budget = vosr2_memory.vram_budget(
+        torch.device("cuda:0"), VosrMemoryMode.LOW, Progress.noop_progress()
+    )
+    frame = SimpleNamespace(shape=(1, 3, 2000, 2000), device=torch.device("cuda:0"))
+    upscale = offload.offloaded(torch.nn.Identity(), cast(torch.Tensor, frame))
+    budget.__enter__()
+    vosr = state.fraction
+    assert vosr == pytest.approx(4_200_000_000 / 32_000_000_000)
+    upscale.__enter__()
+    assert state.fraction == pytest.approx(3_000_000_000 / 32_000_000_000)
+    first, second = (budget, upscale) if vosr_ends_first else (upscale, budget)
+    first.__exit__(None, None, None)
+    assert state.fraction == pytest.approx(
+        3_000_000_000 / 32_000_000_000 if vosr_ends_first else vosr
+    )
+    second.__exit__(None, None, None)
+    assert state.fraction == 1.0
+
+
+def test_a_cap_whose_fraction_could_not_be_set_leaves_no_cap_behind(monkeypatch):
+    memory_mock(monkeypatch, previous=1.0)
+    device = torch.device("cuda:0")
+
+    def refuse(value, _device):
+        raise ValueError(f"invalid fraction {value}")
+
+    monkeypatch.setattr(torch.cuda, "set_per_process_memory_fraction", refuse)
+    with pytest.raises(ValueError, match="invalid fraction"):
+        with memory_cap.capped(device, 2.0):
+            pytest.fail("a cap that was never set was entered")
+    assert device not in memory_cap._active
+    monkeypatch.undo()
+    state = memory_mock(monkeypatch, previous=1.0)
+    with memory_cap.capped(device, 0.5):
+        assert state.fraction == 0.5
+    assert state.fraction == 1.0
 
 
 def test_vram_quota_keeps_existing_stricter_limit_and_app_budget(monkeypatch):

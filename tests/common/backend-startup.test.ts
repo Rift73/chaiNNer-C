@@ -1,7 +1,8 @@
 import { ChildProcess, spawn } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'fs';
 import http from 'http';
 import net from 'net';
+import os from 'os';
 import path from 'path';
 import { afterEach, expect, test } from 'vitest';
 
@@ -24,8 +25,15 @@ const delay = (ms: number) =>
     });
 
 let backend: ChildProcess | undefined;
+// The backend's storage folder (--storage-dir): without one, its worker keeps its temporary
+// files in the installed chaiNNer's backend-storage.
+let storage: string | undefined;
 afterEach(() => {
     backend?.kill();
+    if (storage !== undefined) {
+        // the worker exits once it sees its host gone
+        rmSync(storage, { recursive: true, force: true, maxRetries: 50 });
+    }
 });
 
 // The editor's window reaches the backend through Chromium, which opens at most 6 connections to
@@ -42,7 +50,8 @@ test.skipIf(!existsSync(python) || !existsSync(nativeGraph))(
     "A light node's preview at startup does not wait for the frameworks to load",
     async () => {
         const port = await freePort();
-        backend = spawn(python, ['-B', 'run.py', String(port)], {
+        storage = mkdtempSync(path.join(os.tmpdir(), 'chaiNNer-storage-'));
+        backend = spawn(python, ['-B', 'run.py', String(port), '--storage-dir', storage], {
             cwd: path.resolve('backend/src'),
             // starting the backend starts no GPU
             env: {
@@ -135,6 +144,8 @@ test.skipIf(!existsSync(python) || !existsSync(nativeGraph))(
             });
         await connect('/setup-sse');
         await waitUntil(() => events.includes('backend-ready'), 'backend-ready');
+        // the worker's temporary files are in the given folder
+        expect(readdirSync(path.join(storage, 'temp'))).toHaveLength(1);
         stream('/sse').catch(() => {});
 
         // The window holds the previews of the startup chain's PyTorch nodes until PyTorch's

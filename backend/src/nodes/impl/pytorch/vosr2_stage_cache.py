@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
 from api import NodeContext
 
-from .vosr2_plan_file import stored
+from .vosr2_plan_file import compressed, plain, set_aside, stored
 from .vosr2_trt_models import STAGES
 
 # Bump when stage inputs/outputs or preprocessing semantics change.
@@ -25,9 +26,21 @@ _RUNTIME_SOURCES = {
 }
 
 
+# migrate_stage_cache's temporary folder: the prefix and tempfile's eight characters
+MIGRATING = "migrating-"
+_MIGRATING_NAME = re.compile(re.escape(MIGRATING) + "[a-z0-9_]{8}")
+
+
 def _digest(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def intact(context: NodeContext, folder: Path, manifest: dict, name: str) -> bool:
+    """Whether folder holds the stage's plan that manifest records."""
+    context.suspend()
+    source = stored(folder, manifest, name)
+    return source.is_file() and _digest(source) == manifest["engines"][name]
 
 
 def stage_identity(identity: dict, *, legacy: bool = False) -> dict:
@@ -75,19 +88,15 @@ def migrate_stage_cache(
                 "them and run again."
             )
         candidates.append((path, manifest))
-    if not candidates:
+    # A corrupt set goes aside; with none intact, the caller builds a fresh one.
+    for path, manifest in candidates:
+        if all(intact(context, path.parent, manifest, name) for name in STAGES):
+            break
+        set_aside(path.parent, "BF16")
+    else:
         return False
-    path, manifest = candidates[0]
     engines = manifest["engines"]
-    for name in STAGES:
-        context.suspend()
-        source = stored(path.parent, manifest, name)
-        if not source.is_file() or _digest(source) != engines[name]:
-            raise RuntimeError(
-                f"The cached VOSR {name} engine in {path.parent} is corrupt. "
-                f"Delete {path.parent} and run again."
-            )
-    with tempfile.TemporaryDirectory(prefix="migrating-", dir=root) as work:
+    with tempfile.TemporaryDirectory(prefix=MIGRATING, dir=root) as work:
         staged = Path(work) / "cache"
         staged.mkdir()
         for name in STAGES:
@@ -111,3 +120,31 @@ def migrate_stage_cache(
         )
         os.replace(staged, destination)
     return True
+
+
+def migration_leftover(path: Path) -> bool:
+    """Whether path is what a migration killed midway left: migrate_stage_cache's
+    temporary folder, empty or holding only its `cache` folder of stage plans and their
+    manifest."""
+    if not _MIGRATING_NAME.fullmatch(path.name) or not path.is_dir():
+        return False
+    entries = list(path.iterdir())
+    if not entries:
+        return True
+    if len(entries) != 1:
+        return False
+    staged = entries[0]
+    if (
+        staged.name != "cache"
+        or staged.is_symlink()
+        or staged.is_junction()
+        or not staged.is_dir()
+    ):
+        return False
+    names = {"manifest.json"}
+    names.update(plain(staged, name).name for name in STAGES)
+    names.update(compressed(staged, name).name for name in STAGES)
+    return all(
+        file.name in names and file.is_file() and not file.is_symlink()
+        for file in staged.iterdir()
+    )

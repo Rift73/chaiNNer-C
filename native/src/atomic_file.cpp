@@ -308,10 +308,24 @@ void refuse_unwritable(const std::filesystem::path &final) {
     if (attributes != INVALID_FILE_ATTRIBUTES && attributes & refused) throw FileError(EACCES, false, final);
 }
 
-// final with the case its existing file has on disk, which open(final, "wb") keeps, read from a handle on that very
-// file (never a search, to which ? * < > are wildcards); as given when no file has it, or when the handle's name is
-// not the given one in another case (a file another writer replaced meanwhile lives on under its file id in
-// \$Extend\$Deleted).
+// Whether given is the 8.3 short name of the file at path (the long, normalized path a handle on it gave), which a
+// rename to given would make the file's long name. Never a search with given: the short form of path is built from
+// the file's own names.
+bool short_name_of(const std::wstring &given, const std::wstring &path) {
+    const DWORD size = GetShortPathNameW(path.c_str(), nullptr, 0);
+    std::wstring text(size, L'\0');
+    const DWORD written = size ? GetShortPathNameW(path.c_str(), text.data(), size) : 0;
+    if (!written || written >= size) return false;
+    text.resize(written);
+    const std::wstring short_name = std::filesystem::path(text).filename().native();
+    return CompareStringOrdinal(given.c_str(), int(given.size()), short_name.c_str(), int(short_name.size()), TRUE) ==
+           CSTR_EQUAL;
+}
+
+// final with the name its existing file has on disk, which open(final, "wb") keeps: the case, and the long name for
+// an 8.3 short one; read from a handle on that very file (never a search, to which ? * < > are wildcards). As given
+// when no file has it, or when the handle's name is neither the given one in another case nor the long name of a
+// given short one (a file another writer replaced meanwhile lives on under its file id in \$Extend\$Deleted).
 std::filesystem::path on_disk(const std::filesystem::path &final) {
     std::wstring name(MAX_PATH, L'\0');
     const Handle file(CreateFileW(extended(final).c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -326,7 +340,8 @@ std::filesystem::path on_disk(const std::filesystem::path &final) {
     if (!size || size >= name.size()) return final;
     name.resize(size);
     const std::wstring given = final.filename().native(), found = std::filesystem::path(name).filename().native();
-    if (CompareStringOrdinal(given.c_str(), int(given.size()), found.c_str(), int(found.size()), TRUE) != CSTR_EQUAL)
+    if (CompareStringOrdinal(given.c_str(), int(given.size()), found.c_str(), int(found.size()), TRUE) != CSTR_EQUAL &&
+        !short_name_of(given, name))
         return final;
     std::filesystem::path spelled = final;
     spelled.replace_filename(found);

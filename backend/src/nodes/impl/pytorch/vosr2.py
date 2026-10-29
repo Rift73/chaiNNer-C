@@ -69,6 +69,9 @@ class MemoryPlan:
 @dataclass(frozen=True)
 class BundlePaths:
     root: Path
+    # The DiT's weights as a BF16 load reads them: their cached BF16 copy
+    # (vosr2_download.bf16_dit), else the official FP32 checkpoint
+    dit_copy: Path | None = None
 
     @property
     def args(self) -> Path:
@@ -76,7 +79,7 @@ class BundlePaths:
 
     @property
     def dit(self) -> Path:
-        return self.root / "checkpoints/ema_model.safetensors"
+        return self.dit_copy or self.root / "checkpoints/ema_model.safetensors"
 
     @property
     def vae_config(self) -> Path:

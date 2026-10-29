@@ -16,6 +16,10 @@ from nodes.impl.pytorch import auto_split
 from nodes.impl.upscale.tiler import MaxTileSize
 
 
+class Model(SimpleNamespace):
+    """A model's stand-in; weakly referenced, as on_device keeps converted copies."""
+
+
 @pytest.mark.parametrize(
     "error,is_oom",
     [
@@ -59,7 +63,7 @@ def test_only_memory_failures_retry(monkeypatch, error, is_oom):
     monkeypatch.setattr(
         auto_split, "safe_cuda_cache_empty", lambda: cleared.append(True)
     )
-    model = SimpleNamespace(
+    model = Model(
         dtype=torch.float32, device=torch.device("cpu"), model=torch.nn.Identity()
     )
     image = np.ones((8, 8, 3), np.float32)

@@ -124,6 +124,8 @@ NATIVE_TOOLCHAIN = {
     "clang_cl": "23.1.2",
     "msvc_toolset": "14.44.35207",
     "windows_sdk": "10.0.26100.0",
+    "tensorrt_major": "11",
+    "cuda_major": "13",
 }
 PROFILE = {
     "settings.json": b'{"hardwareAcceleration":false}',

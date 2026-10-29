@@ -75,9 +75,11 @@ def _read_tiff_straight_alpha(path: Path) -> np.ndarray | None:
     grey+alpha TIFFs, so Pillow decodes 8-bit RGBA and LA TIFFs that declare it. LA
     loads as BGRA with the grey in B, G and R, as OpenCV loads a grey+alpha PNG. The
     stored pixels are turned once, by the shared orient(), as the Orientation tag says;
-    every other TIFF stays with OpenCV. Pillow cannot open 16-bit grey+alpha, which
-    OpenCV loads as 8-bit grey: a warning says so. The plainest of these files decode
-    natively to the same array (image_io.cpp read_tiff_alpha); None runs Pillow.
+    every other TIFF stays with OpenCV. The plainest of these files decode natively to
+    the same array (image_io.cpp read_tiff_alpha); None runs Pillow. Pillow cannot open
+    16-bit grey+alpha: its plainest files decode natively too, as uint16 with the
+    samples as stored (as OpenCV gives 16-bit RGBA); the others load as OpenCV decodes
+    them, as 8-bit grey without the alpha, and a warning says so.
     """
     native = graph().image_io_read_tiff_alpha(globals(), path)
     if native is not None:

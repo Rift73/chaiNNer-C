@@ -578,6 +578,7 @@ def test_yielded_errors_keep_policy_and_constructor_identity(
         run(scenario)
     if fail_fast:
         # The error names its generator (process.loop_node_error).
+        assert isinstance(captured.value, process.NodeExecutionError)
         assert captured.value.__cause__ is failure
         assert captured.value.node_id == "g0"
     else:

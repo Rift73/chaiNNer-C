@@ -32,7 +32,6 @@ _v = ct.c_void_p
 _signatures = {
     "statistics": [_f, _f, _n, ct.c_double, ct.c_int, _n, _n, ct.c_int, _d],
     "mean": [_f, _n, _n, _n, _f],
-    "grayscale": [_f, _n, _n, ct.c_float, ct.POINTER(ct.c_int)],
     "binary": [_f, _f, _f, _n, ct.c_int, ct.c_float, ct.c_float],
     "ssim": [_f, _f, _f, _f, _f, _f, _n],
     "palette": [_f, _f, _f, _n, _n, _n],
@@ -92,17 +91,6 @@ def mean(image: np.ndarray) -> np.float32:
         )
     )
     return result[0]
-
-
-def is_grayscale(image: np.ndarray, tolerance: float) -> bool:
-    source, channels = _image(image)
-    result = ct.c_int()
-    check(
-        _lib.cn_analysis_grayscale(
-            ptr(source), source.size // channels, channels, tolerance, ct.byref(result)
-        )
-    )
-    return bool(result.value)
 
 
 def binary(

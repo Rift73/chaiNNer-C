@@ -23,7 +23,8 @@ from . import clips_group
         ),
         (
             "Each run first checks the script in VapourSynth: an error shows on the node"
-            " that caused it, and no window opens."
+            " that caused it, no window opens, and an open window keeps the last script"
+            " that worked."
         ),
     ],
     icon="BsEyeFill",
@@ -36,10 +37,15 @@ def preview_clips_node(context: NodeContext, *clips: VideoClip | str | None) -> 
     unavailable = vsview_unavailable_reason(glibc_version())
     if unavailable is not None:
         raise VSScriptError(unavailable)
-    script = write_script(
-        context, named_clips(clips), chain_dir(context) / "preview.vpy"
-    )
+    outputs = named_clips(clips)
+    folder = chain_dir(context)
     # vspipe evaluates the whole script: a failing statement raises its node's error
-    # here, in chaiNNer, instead of only inside vsview.
-    clip_info(script, 0, context)
+    # here, in chaiNNer, instead of only inside vsview. A copy is checked, so that an
+    # open vsview keeps the last script that worked (its Reload would show the error).
+    check = write_script(context, outputs, folder / "preview.check.vpy")
+    try:
+        clip_info(check, 0, context)
+    finally:
+        check.unlink(missing_ok=True)
+    script = write_script(context, outputs, folder / "preview.vpy")
     launch_preview(script, context.node_id)

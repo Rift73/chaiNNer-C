@@ -274,6 +274,7 @@ def test_ncnn_node_planes_interleaved_as_converted(
             add_cleanup=lambda *_, **__: None,
             check_aborted=progress.check_aborted,
             set_progress=progress.set_progress,
+            suspend=progress.suspend,
         ),
     )
     rgba = image((20, 28, 4), 3, exceptional=False)
@@ -342,6 +343,7 @@ def test_ncnn_node_returns_the_models_channels_in_bgr_order(
             add_cleanup=lambda *_, **__: None,
             check_aborted=progress.check_aborted,
             set_progress=progress.set_progress,
+            suspend=progress.suspend,
         ),
     )
     # Values NCNN's 8-bit input keeps (to a few ulps: its input scales by 1 / 255)

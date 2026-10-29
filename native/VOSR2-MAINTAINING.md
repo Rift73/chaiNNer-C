@@ -27,7 +27,7 @@ with FP8). In `backend/src/nodes/impl/pytorch/`:
   seed's grain one still frame later; temporal restorations get no grain, the stabilized output does).
 - `vosr2_trt_models.py` (the ten `STAGES`, profiles), `vosr2_trt_rewrite.py`, `vosr2_export.py`,
   `vosr2_trt_compile.py` (builder settings), `vosr2_trt_build.py`, `vosr2_fp8_build.py` (compile workers in an owned
-  job, `vosr2_process.py`, 20-minute limit).
+  job, `../owned_job.py` and `vosr2_process.py`, 20-minute limit).
 - `vosr2_engine_cache.py`, `vosr2_stage_cache.py`, `vosr2_fp8.py` (engine caches, FP8 download);
   `vosr2_trt_pipeline.py` (`FullSession`), `vosr2_trt_execution.py` (CUDA graphs; outputs are borrowed: copy one before
   calling that stage again), `vosr2_trt_restore.py` (outer tiles above 3840 × 2176), `vosr2_trt_plugin.py`.
@@ -38,13 +38,27 @@ with FP8). In `backend/src/nodes/impl/pytorch/`:
   PyTorch BF16 modules, program cache, `check_usable`).
 
 Policy: BF16 DiT and DINO, FP32 VAE, FP32 on the CPU. Default caps PyTorch at the device total minus other use minus
-800 MB; Low at 7 GB total, streaming DiT blocks.
+800 MB; Low at 7 GB total, streaming DiT blocks. A BF16 bundle reads the DiT from its copy
+(`vosr2_download.bf16_dit`: `checkpoints/ema_model.bf16.safetensors` and the sidecar `ema_model.bf16.json` with the
+format, the source's SHA-256 and file identity, the copy's SHA-256 and size), checked at each cold load (its SHA-256
+remembered by file identity, as the official files' are: `stored_hash`) and made again on any difference, under the
+model folder's `download.lock`; bump `BF16_FORMAT` when the conversion changes.
+`BundlePaths.dit_copy` carries it, so `VosrBundle.__init__` and `load_weights`, whose source keys the BF16 engines, stay
+as they are.
 
 ## Engine caches
 
 In the backend storage folder a set is `<root>/<key>/` (key: SHA-256 of the identity JSON), published by writing
 `manifest.json` after every stage passed its check; a corrupt set moves to `quarantine-*`, `compile.lock` serializes
-builds across processes, and a build needs 5.5 GB of free GPU memory.
+builds across processes, and a build needs 5.5 GB of free GPU memory. Once the current set is valid, still under the
+lock, `remove_unused_sets` touches the set's `last-used` file (never the manifest or plans, whose file identities key
+the sessions) and deletes what the cache made and no longer needs: sets whose manifest identity (keying their folder)
+is another version's and whose `last-used` (or, without one, newest file) is over 14 days old, since builds sharing one
+storage folder (an installed release, a source checkout, the CLI) each keep theirs; `quarantine-*` and `building-*`
+folders; and the `migrating-*` folders of killed migrations (named and filled as `migrate_stage_cache` stages them:
+`migration_leftover`). Each goes to `quarantine-*` first, so a set with an open file stays whole (Windows refuses the
+move) and a deletion stopped halfway is finished by a later check; a folder it cannot read stays. Another GPU's set
+(identity differing only in `gpu`, `capability` or `gfx`), timing caches and anything it does not recognize stay.
 
 - **BF16**, `vosr2-tensorrt-bf16`: the five model files' pinned SHA-256 (not their folder), `vosr2.py`, `vosr2_export.py`, `vendor/vosr2`,
   `vosr2_trt_{models,build,compile,rewrite,plugin}.py` and the plugin DLL; torch, TensorRT, CUDA, driver, GPU,
@@ -62,7 +76,9 @@ builds across processes, and a build needs 5.5 GB of free GPU memory.
   engines' identity: change both together.
 
 Runtime-only sources stay outside the identity: `migrate_stage_cache` hardlinks a compatible set's plans to the new
-key (never edit a plan in place). Bump `RUNTIME_CONTRACT` when stage inputs, outputs or preprocessing change.
+key (never edit a plan in place); a compatible set with a missing or changed plan moves to `quarantine-*` and the next
+one (or a fresh build) takes its place, while two compatible sets with different plans stop the run naming both
+folders. Bump `RUNTIME_CONTRACT` when stage inputs, outputs or preprocessing change.
 
 ## TensorRT plugin
 

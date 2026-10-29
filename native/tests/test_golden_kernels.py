@@ -3266,7 +3266,7 @@ def test_current_dll_matches_the_b3_manifest(kernel, level):
         ]
     finally:
         assert isa_set(effective) == effective
-    assert mismatched == [case.id for case, outputs in cases if d5_corrected(case)]
+    assert mismatched == [case.id for case, _ in cases if d5_corrected(case)]
 
 
 @pytest.mark.parametrize("level", range(len(native.ISA_LEVELS)), ids=native.ISA_LEVELS)

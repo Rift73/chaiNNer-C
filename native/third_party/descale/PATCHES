@@ -1,0 +1,10 @@
+vapoursynth-descale Release 12 (https://github.com/Jaded-Encoding-Thaumaturgy/vapoursynth-descale, MIT),
+vendored with one change; re-apply it on an update (upstream master of 2026-08-20 still has the old lines).
+
+src/descale.c, scaling_weights, the Mirror border. The plugin reflects a tap once:
+    real_pos = -xpos                                       (xpos < 0)
+    real_pos = DSMIN(2.0 * src_dim - xpos, src_dim - 0.5)  (xpos >= src_dim)
+so a tap more than src_dim pixels past an edge (a kernel wider than the target, or a large shift) indexed
+outside its weights row. The patch folds the tap's pixel k = floor(xpos) with period 2 * src_dim, half-sample
+symmetric (numpy.pad's 'symmetric'): k' = k mod 2 * src_dim, then 2 * src_dim - 1 - k' when k' >= src_dim.
+On every tap within one reflection that is the plugin's pixel, so those weights are unchanged.

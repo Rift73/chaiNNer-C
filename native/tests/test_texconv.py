@@ -22,7 +22,8 @@ import numpy as np
 import pytest
 
 from nodes.impl.dds import texconv
-from nodes.impl.dds.format import LEGACY_TO_DXGI, PREFER_DX9, to_dxgi
+from nodes.impl.dds.format import LEGACY_TO_DXGI, PREFER_DX9, DDSFormat, to_dxgi
+from nodes.impl.dds.texconv import TextureKind
 from packages.chaiNNer_standard.image.io.save_image import SUPPORTED_DDS_FORMATS
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,7 +38,7 @@ pytestmark = pytest.mark.skipif(
     platform.system() not in ("Windows", "Linux"), reason="texconv: Windows and Linux"
 )
 
-FORMATS = [f for f, _ in SUPPORTED_DDS_FORMATS]
+FORMATS: list[DDSFormat] = [f for f, _ in SUPPORTED_DDS_FORMATS]
 # The intermediate depth chaiNNer hands texconv (native/src/image_io.cpp, dds_depth).
 UNORM16 = {"R16G16B16A16_UNORM", "R16G16B16A16_SNORM", "R16G16_UNORM", "R16G16_SNORM"}
 UNORM16 |= {"R16_UNORM", "R16_SNORM"}
@@ -52,11 +53,11 @@ def depth(fmt: str) -> str:
 @dataclass(frozen=True)
 class Case:
     name: str
-    fmt: str
+    fmt: DDSFormat
     channels: int = 4
     size: tuple[int, int] = (24, 32)
     mips: int = 0
-    kind: str = "array"
+    kind: TextureKind = "array"
     count: int = 1
     options: dict[str, Any] = field(default_factory=dict)
     # A large grey case: a wrapping uint8 gradient, and no read back.
@@ -97,12 +98,27 @@ def pattern(case: Case, seed: int) -> np.ndarray:
 def cases() -> list[Case]:
     found = [Case(f"{f}-mips", f) for f in FORMATS]
     found += [Case(f"{f}-odd", f, size=(18, 21), mips=1) for f in FORMATS]
-    grey = ["BC1_UNORM", "BC4_UNORM", "BC5_UNORM", "BC7_UNORM", "R8_UNORM"]
-    grey += ["R8G8B8A8_UNORM", "B5G6R5_UNORM", "R16_UNORM", "R32_FLOAT"]
+    grey: list[DDSFormat] = [
+        "BC1_UNORM",
+        "BC4_UNORM",
+        "BC5_UNORM",
+        "BC7_UNORM",
+        "R8_UNORM",
+        "R8G8B8A8_UNORM",
+        "B5G6R5_UNORM",
+        "R16_UNORM",
+        "R32_FLOAT",
+    ]
     found += [Case(f"{f}-grey", f, 1, (18, 21)) for f in grey]
-    opaque = ["BC1_UNORM", "BC3_UNORM", "BC7_UNORM_SRGB", "R8G8B8A8_UNORM"]
-    found += [Case(f"{f}-rgb", f, 3, (18, 21)) for f in [*opaque, "B8G8R8X8_UNORM"]]
-    for fmt, option, value in [
+    opaque: list[DDSFormat] = [
+        "BC1_UNORM",
+        "BC3_UNORM",
+        "BC7_UNORM_SRGB",
+        "R8G8B8A8_UNORM",
+        "B8G8R8X8_UNORM",
+    ]
+    found += [Case(f"{f}-rgb", f, 3, (18, 21)) for f in opaque]
+    options: list[tuple[DDSFormat, str, bool]] = [
         ("BC7_UNORM", "minimal_compression", True),
         ("BC7_UNORM", "maximum_compression", True),
         ("BC1_UNORM", "dithering", True),
@@ -113,7 +129,8 @@ def cases() -> list[Case]:
         ("BC7_UNORM_SRGB", "separate_alpha", True),
         ("R8G8B8A8_UNORM", "premultiply_alpha", True),
         ("DXT5", "premultiply_alpha", True),
-    ]:
+    ]
+    for fmt, option, value in options:
         found.append(
             Case(f"{fmt}-{option}", fmt, size=(18, 21), options={option: value})
         )

@@ -140,6 +140,7 @@ def test_run_proxies_without_recycling_the_worker():
     # VapourSynth: a dependency installed with [extras] (vsjetpack[deinterlace]) is
     # looked up by the name pip lists it under. An installed build a dependency
     # replaces (PyTorch's ROCm build where NVIDIA's is listed) is not that dependency.
+    # An uninstall also takes what pip pulled in that nothing else needs.
     upstream[
         upstream.index(
             "from dependencies.store import DependencyInfo, filter_necessary_to_install, "
@@ -148,7 +149,7 @@ def test_run_proxies_without_recycling_the_worker():
     ] = (
         "from dependencies.store import DependencyInfo, distribution_name, "
         "filter_necessary_to_install, install_dependencies, installed_packages, "
-        "replaced, uninstall_dependencies"
+        "replaced, uninstall_dependencies, unneeded_dependencies"
     )
     # Instant startup: main takes the worker run.py started (a subprocess.Popen), and
     # the setup events go to every listener (BackendEventBroadcast, no setup queue).
@@ -158,6 +159,13 @@ def test_run_proxies_without_recycling_the_worker():
     upstream.remove("from functools import cached_property")
     upstream[upstream.index("from events import EventQueue")] = (
         "from events import BackendEventBroadcast"
+    )
+    # VapourSynth: the host installs the user modules user_modules.toml lists at a
+    # start and after a dependency install (test_startup_install.py).
+    upstream.insert(
+        upstream.index("from nodes.impl.cors import add_cors") + 1,
+        "from nodes.impl.vapoursynth.user_modules import install_user_modules, "
+        "missing_user_modules",
     )
     assert imports[0] == upstream
     # No stop/start-around-run path: the host defines upstream's functions only.

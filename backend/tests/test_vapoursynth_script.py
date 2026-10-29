@@ -349,11 +349,13 @@ def test_vs_env_points_vsscript_at_the_runtime_config(
 
 @pytest.fixture
 def display(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A window system is named; vsview is installed."""
+    """A window system is named; vsview is installed. (A venv's vsscript configuration
+    on Windows would start a process.)"""
     for name in runner.DISPLAY_VARIABLES:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(runner.importlib.util, "find_spec", lambda _: object())
+    monkeypatch.setattr(runner, "vs_env", lambda: dict(os.environ))
 
 
 def viewer_process(
@@ -384,17 +386,21 @@ def test_vsview_needs_a_window_system(
     assert not (tmp_path / "vsview.log").exists()
 
 
-@linux_only
 def test_vsview_that_ends_at_once_is_an_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, display: None
 ) -> None:
-    viewer_process(monkeypatch, "import sys; sys.exit(3)")
+    # Windows too: a vsview that fails to import, or whose Qt has no platform plugin.
+    viewer_process(
+        monkeypatch,
+        "import sys; print('qt.qpa.plugin: no platform plugin', flush=True); sys.exit(3)",
+    )
     with pytest.raises(VSScriptError, match=r"ended right after.*code 3") as error:
         runner.launch_preview(tmp_path / "preview.vpy", "view")
     assert str(tmp_path / "vsview.log") in str(error.value)
+    assert str(error.value).endswith(":\nqt.qpa.plugin: no platform plugin")
+    assert not (tmp_path / "vsview.pid").exists()
 
 
-@linux_only
 def test_vsview_that_stays_up_is_the_window(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, display: None
 ) -> None:
@@ -403,6 +409,41 @@ def test_vsview_that_stays_up_is_the_window(
     try:
         runner.launch_preview(tmp_path / "preview.vpy", "view")
         assert [viewer.poll() for viewer in started] == [None]
+    finally:
+        for viewer in started:
+            viewer.kill()
+            viewer.wait()
+
+
+def test_vsview_of_an_earlier_worker_stays_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, display: None
+) -> None:
+    started = viewer_process(monkeypatch, "import time; time.sleep(60)")
+    monkeypatch.setattr(runner, "VIEWER_GRACE_SECONDS", 0.3)
+    script = tmp_path / "preview.vpy"
+    try:
+        runner.launch_preview(script, "view")
+        # A new worker (a restart) knows no viewer; the window is still open.
+        monkeypatch.setattr(runner, "_viewers", {})
+        runner.launch_preview(script, "view")
+        assert len(started) == 1
+        # Once the user closes it, the next run opens a new one.
+        started[0].kill()
+        started[0].wait()
+        runner.launch_preview(script, "view")
+        assert len(started) == 2
+        # Linux reads the start time against a clock that a step or a resume moves.
+        pid, recorded = (tmp_path / "vsview.pid").read_text(encoding="utf-8").split()
+        moved = float(recorded) + 0.5
+        (tmp_path / "vsview.pid").write_text(f"{pid} {moved!r}", encoding="utf-8")
+        monkeypatch.setattr(runner, "_viewers", {})
+        runner.launch_preview(script, "view")
+        assert len(started) == 2
+        # A process that took a recorded pid later is not the window.
+        (tmp_path / "vsview.pid").write_text(f"{pid} 12.5", encoding="utf-8")
+        monkeypatch.setattr(runner, "_viewers", {})
+        runner.launch_preview(script, "view")
+        assert len(started) == 3
     finally:
         for viewer in started:
             viewer.kill()

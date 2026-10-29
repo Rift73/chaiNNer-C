@@ -1,6 +1,8 @@
 """Runs compiled VapourSynth scripts in child processes: clip info and frames in vspipe,
 previews in vsview. The worker never imports VapourSynth; a plugin crash or a script
-error costs only the child, and its traceback names the node whose statement failed."""
+error costs only the child, and its traceback names the node whose statement failed.
+vspipe ends with the worker, also a worker that is killed (owned_job.worker_child);
+vsview's window stays open after it."""
 
 from __future__ import annotations
 
@@ -21,11 +23,13 @@ from pathlib import Path
 from typing import Callable, Generator, Iterator, TypeVar
 
 import numpy as np
+import psutil
 
 from api import NodeAttributedError, NodeContext
 
 from ..colour_info import high_definition, pixel_layout
 from ..native_framework_images import planes_to_interleaved
+from ..owned_job import worker_child
 from .colour_props import PROPS, vs_pix_fmt
 from .script import node_for_line
 
@@ -35,8 +39,13 @@ T = TypeVar("T")
 STDERR_TAIL_LINES = 20
 # How often a wait for vspipe checks for Stop.
 STOP_POLL_SECONDS = 0.05
-# How long a new vsview (Linux) has to stay up before its window counts as opened.
+# How long a new vsview has to stay up before its window counts as opened.
 VIEWER_GRACE_SECONDS = 3
+# vsview's log beside its script, and how many of its last lines an error keeps.
+VIEWER_LOG = "vsview.log"
+VIEWER_LOG_LINES = 10
+# The pid and start time of the vsview opened for the script beside it.
+VIEWER_PID = "vsview.pid"
 # The environment variables with which vsview (Qt) finds a window system on Linux.
 DISPLAY_VARIABLES = ("DISPLAY", "WAYLAND_DISPLAY", "QT_QPA_PLATFORM")
 # The colour frame properties clip_props reads.
@@ -217,7 +226,7 @@ def _run_vspipe(script: Path, args: list[str], context: NodeContext | None) -> s
     # evaluation can index a long video for minutes; the host restarts a worker that
     # does not stop within seconds).
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-        with subprocess.Popen(
+        with worker_child(
             [str(vspipe()), *args],
             env=vs_env(),
             stdin=subprocess.DEVNULL,
@@ -397,7 +406,7 @@ def _vspipe_frames(
     buffer: np.ndarray | None = None
     count = 0
     with tempfile.TemporaryFile() as stderr:
-        with subprocess.Popen(
+        with worker_child(
             [*command, str(script), "-"],
             env=vs_env(),
             stdin=subprocess.DEVNULL,
@@ -620,7 +629,7 @@ def _open_viewer(script: Path) -> subprocess.Popen[bytes]:
             " set."
         )
     # vsview's output goes to a log beside the script.
-    log_path = script.parent / "vsview.log"
+    log_path = script.parent / VIEWER_LOG
     with open(log_path, "wb") as log:
         viewer = subprocess.Popen(
             [str(vs_python()), "-m", "vsview", str(script)],
@@ -635,25 +644,48 @@ def _open_viewer(script: Path) -> subprocess.Popen[bytes]:
             creationflags=_NO_WINDOW | _NEW_GROUP,
             start_new_session=True,
         )
-    if on_linux:
-        # Qt ends the process within a second or two when it cannot open a window (no
-        # X11 or Wayland connection, libxcb-cursor0 missing).
-        try:
-            returncode = viewer.wait(VIEWER_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            return viewer
-        raise VSScriptError(
-            f"vsview ended right after it started (code {returncode}). Its log,"
-            f" {log_path}, says why; on Linux Qt needs a graphical session and"
-            " libxcb-cursor0."
+    # A vsview that cannot start ends within a second or two: Qt without a window (on
+    # Linux no X11 or Wayland connection, libxcb-cursor0 missing), a failed import.
+    try:
+        returncode = viewer.wait(VIEWER_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        # Not reaped yet, so the pid still names it.
+        started = psutil.Process(viewer.pid).create_time()
+        (script.parent / VIEWER_PID).write_text(
+            f"{viewer.pid} {started!r}", encoding="utf-8"
         )
-    return viewer
+        return viewer
+    log_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    hint = (
+        " On Linux Qt needs a graphical session and libxcb-cursor0." if on_linux else ""
+    )
+    raise VSScriptError(
+        f"vsview ended right after it started (code {returncode}).{hint} The end of"
+        f" its log, {log_path}:\n" + "\n".join(log_lines[-VIEWER_LOG_LINES:]).strip()
+    )
+
+
+def _earlier_viewer(script: Path) -> bool:
+    """Whether the vsview of `script` that an earlier worker opened still runs (vsview
+    outlives a worker restart and chaiNNer-C itself). VIEWER_PID beside the script names
+    it by pid and start time, so a process that took the pid later does not count. On
+    Linux the start time moves with the clock (a step, a resume): a second's slack."""
+    try:
+        pid, started = (script.parent / VIEWER_PID).read_text(encoding="utf-8").split()
+        return abs(psutil.Process(int(pid)).create_time() - float(started)) < 1
+    except (OSError, ValueError, psutil.Error):
+        # No such file, or no such process: the window was closed.
+        return False
 
 
 def launch_preview(script: Path, key: str) -> None:
     """Shows `script` in vsview, one window per key: while the key's window is open, it
-    stays (the user reloads the rewritten script there); once closed, a new one opens."""
+    stays (the user reloads the rewritten script there), also one that an earlier
+    worker opened; once closed, a new one opens."""
     with _viewers_lock:
         viewer = _viewers.get(key)
-        if viewer is None or viewer.poll() is not None:
-            _viewers[key] = _open_viewer(script)
+        if viewer is not None and viewer.poll() is None:
+            return
+        if viewer is None and _earlier_viewer(script):
+            return
+        _viewers[key] = _open_viewer(script)

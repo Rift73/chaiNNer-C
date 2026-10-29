@@ -775,11 +775,11 @@ def test_hostile_values_stay_literals(small: dict[str, NodeData]) -> None:
     # a literal.
     checked = 0
     for name, node in small.items():
-        by_id = {i.id: i for i in node.inputs}
+        by_id: dict[int, BaseInput] = {i.id: i for i in node.inputs}
         methods = [o["value"] for o in by_id[METHOD_ID].to_dict()["options"]]
         for method in methods:
             for as_filter in (0, 1) if FILTER_ID in by_id else (0,):
-                base = {i.id: default_of(i) for i in node.inputs}
+                base: dict[int, object] = {i.id: default_of(i) for i in node.inputs}
                 base.update({MAIN_ID: SRC, METHOD_ID: method, MODE_ID: "advanced"})
                 if FILTER_ID in by_id:
                     base[FILTER_ID] = as_filter
@@ -999,6 +999,110 @@ def test_clips_of_vstools_iterable_take_the_clip_inputs(tmp_path: Path) -> None:
     assert isinstance(out, VSFilter)
     assert out.expr == "lambda clip: vstools.stack_clips([clip, n_ref_0])"
     assert out.deps == (REF,)
+
+
+# vstools.merge_clip_props(*clips, main_idx=0): its clips are *args.
+MERGE_CLIP_PROPS = {
+    "id": "vstools.merge_clip_props",
+    "source": "jetpack",
+    "module": "vstools",
+    "import": "from vstools import merge_clip_props",
+    "call": "merge_clip_props",
+    "kind": "function",
+    "params": [
+        _param("clips", "VideoNode", None, "var_positional"),
+        _param("main_idx", "int", "0"),
+    ],
+    "returns": "VideoNode",
+    "doc": "Merges frame properties.",
+    "arg_docs": {},
+}
+
+
+def test_args_clips_take_the_clip_inputs(tmp_path: Path) -> None:
+    """*clips gets the node's Clip and Clip 2 to Clip 8 as *[...] (it got none)."""
+    nodes = nodes_of(
+        load_catalog(small_catalog(tmp_path, extra=[MERGE_CLIP_PROPS]), SHIPPED)
+    )
+    node = nodes["Clip Properties"]
+    method = "vstools.merge_clip_props"
+    out = run(node, "mp", method, clip=SRC)
+    assert isinstance(out, VideoClip)
+    assert out.stmt == "n_mp_0 = vstools.merge_clip_props(*[n_src_0])"
+    second = input_ids(node.name, [(method, "clips#2"), (method, "main_idx")])
+    raw: dict[int, object] = {int(i.id): default_of(i) for i in node.inputs}
+    raw.update({MAIN_ID: SRC, METHOD_ID: method, MODE_ID: "simple"})
+    raw[second[method, "clips#2"]] = REF
+    raw[second[method, "main_idx"]] = 1
+    out = run(node, "mp", method, raw=raw)
+    assert isinstance(out, VideoClip)
+    assert out.stmt == (
+        "n_mp_0 = vstools.merge_clip_props(*[n_src_0, n_ref_0], main_idx=1)"
+    )
+    # A list of clips (Shift Clip Multi's) goes in as it is.
+    many = VideoClip("n_m_0", "n_m_0 = x", (), frozenset(), "m", many=True)
+    out = run(node, "mp", method, clip=many)
+    assert isinstance(out, VideoClip)
+    assert out.stmt == "n_mp_0 = vstools.merge_clip_props(*n_m_0)"
+    # As a filter, the clip it is given is in the list too.
+    out = run(node, "mp", method, as_filter=True)
+    assert isinstance(out, VSFilter)
+    assert out.expr == "lambda clip: vstools.merge_clip_props(*[clip])"
+    raw[FILTER_ID] = 1
+    out = run(node, "mp", method, raw=raw)
+    assert isinstance(out, VSFilter)
+    assert out.expr == (
+        "lambda clip: vstools.merge_clip_props(*[clip, n_ref_0], main_idx=1)"
+    )
+    # Without a clip it says so.
+    with pytest.raises(ValueError, match="Connect a clip"):
+        run(node, "mp", method)
+
+
+# vsdenoise.decrease_size's prefilter: a checkbox, but also a radius pair or a sigma.
+DECREASE_SIZE = {
+    "id": "vsdenoise.decrease_size",
+    "source": "jetpack",
+    "module": "vsdenoise",
+    "import": "from vsdenoise import decrease_size",
+    "call": "decrease_size",
+    "kind": "function",
+    "params": [
+        _param("clip", "VideoNode", None),
+        _param("prefilter", "bool | tuple[int, int] | float", "True"),
+    ],
+    "returns": "VideoNode",
+    "doc": "Makes a clip smaller.",
+    "arg_docs": {},
+}
+
+
+def test_a_union_takes_its_other_values_as_a_python_value(tmp_path: Path) -> None:
+    """bool wins the input of bool | tuple[int, int] | float; an Advanced Python value
+    input beside it takes the pair or the number, and wins when filled."""
+    nodes = nodes_of(
+        load_catalog(small_catalog(tmp_path, extra=[DECREASE_SIZE]), SHIPPED)
+    )
+    node = nodes["Denoise"]
+    method = "vsdenoise.decrease_size"
+    ids = input_ids(node.name, [(method, "prefilter"), (method, "prefilter#other")])
+    other = next(i for i in node.inputs if i.id == ids[method, "prefilter#other"])
+    assert other.label == "Prefilter as a Python value (bool | tuple[int, int] | float)"
+    assert other.optional
+    group = method_group(node, method)
+    advanced = [g for g in group.items if isinstance(g, Group)]
+    assert ids[method, "prefilter#other"] in ids_in(advanced)
+    out = run(node, "ds", method, {"prefilter": False}, clip=SRC)
+    assert isinstance(out, VideoClip)
+    assert out.stmt == "n_ds_0 = vsdenoise.decrease_size(n_src_0, prefilter=False)"
+    out = run(node, "ds", method, {"prefilter#other": " (2, 3)"}, clip=SRC)
+    assert isinstance(out, VideoClip)
+    assert out.stmt == "n_ds_0 = vsdenoise.decrease_size(n_src_0, prefilter=(2, 3))"
+    out = run(node, "ds", method, {"prefilter#other": "0.5"}, clip=SRC)
+    assert isinstance(out, VideoClip)
+    assert out.stmt == "n_ds_0 = vsdenoise.decrease_size(n_src_0, prefilter=0.5)"
+    with pytest.raises(ValueError, match="not a plain Python value"):
+        run(node, "ds", method, {"prefilter#other": "open('x')"}, clip=SRC)
 
 
 # vstools.limiter takes a clip, or a function it decorates.

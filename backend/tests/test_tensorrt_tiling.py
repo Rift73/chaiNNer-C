@@ -146,7 +146,8 @@ def test_an_engines_alignment_sets_the_padding_and_tile_size():
 
 
 def test_an_engine_too_small_to_tile_still_serves_images_up_to_its_size():
-    # Build Engine allows a 32 px fixed engine; tiles need over 3 * 16 px.
+    # A 32 px fixed engine (from before Build Engine's minimum, or another program);
+    # tiles need over 3 * 16 px.
     bounds = ShapeBounds(32, 32, 32, 32)
     engine = FakeEngine(bounds)
 
@@ -160,6 +161,29 @@ def test_an_engine_too_small_to_tile_still_serves_images_up_to_its_size():
         " tiling it needs an engine input over 48 px. The engine still upscales"
         " images up to 32 px; for larger ones, build it with a size over 48 px."
     )
+
+
+def test_build_engine_sizes_start_where_an_engine_tiles_larger_images():
+    build_engine = pytest.importorskip(
+        "packages.chaiNNer_tensorrt.tensorrt.utility.build_engine"
+    )
+    group = build_engine.utility_group
+    if group is None:
+        pytest.skip("the TensorRT package is not enabled on this machine")
+    (node,) = (
+        n for n in group.nodes if n.schema_id == "chainner:tensorrt:build_engine"
+    )
+    minimum = {i.label: getattr(i, "min", None) for i in node.inputs}
+    sizes = ("Height", "Width", "Max Height", "Max Width")
+    assert {minimum[label] for label in sizes} == {build_engine.MIN_TILE_SIZE}
+    size = build_engine.MIN_TILE_SIZE
+    image = _image()[:100, :100]
+    bounds = ShapeBounds(size, size, size, size)
+    out = tiled_upscale(image, SCALE, bounds, FakeEngine(bounds))
+    assert out.shape == (400, 400, 3)
+    smaller = ShapeBounds(size - 1, size - 1, size - 1, size - 1)
+    with pytest.raises(ValueError, match="needs an engine input over 48 px"):
+        tiled_upscale(image, SCALE, smaller, FakeEngine(smaller))
 
 
 def test_axis_weights_partition_of_unity():

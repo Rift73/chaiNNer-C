@@ -10,6 +10,7 @@
 #include "image_codecs.h"
 #include "image_decode.hpp"
 #include "image_encode.hpp"
+#include "save_path.hpp"
 
 #include <array>
 #include <memory>
@@ -294,9 +295,14 @@ std::filesystem::path utf8_path(const std::string &text)
 std::filesystem::path full_path(std::span<const Value> inputs)
 {
     std::filesystem::path path = std::get<Path>(inputs[1]).value;
-    if (const auto *relative = std::get_if<std::string>(&inputs[2]); relative && !relative->empty() && *relative != ".")
-        path /= utf8_path(*relative);
-    path /= utf8_path(std::get<std::string>(inputs[3]) + "." + std::get<std::string>(inputs[4]));
+    const auto *relative = std::get_if<std::string>(&inputs[2]);
+    const std::string &name = std::get<std::string>(inputs[3]);
+    // A value that leaves the output directory or names a Windows device takes the Python body's error (save_path.hpp).
+    if ((relative && cn::save_path::check(*relative).kind != cn::save_path::Refusal::none) ||
+        cn::save_path::check(name).kind != cn::save_path::Refusal::none)
+        throw RunPython{};
+    if (relative && !relative->empty() && *relative != ".") path /= utf8_path(*relative);
+    path /= utf8_path(name + "." + std::get<std::string>(inputs[4]));
 #ifdef _WIN32
     const std::wstring &text = path.native();
     const DWORD size = GetFullPathNameW(text.c_str(), 0, nullptr, nullptr);

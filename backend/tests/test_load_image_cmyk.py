@@ -22,7 +22,7 @@ RGB8 = np.random.default_rng(4).integers(0, 256, (5, 7, 3), dtype=np.uint8)
 
 
 def write(path: Path, orientation: int | None = None) -> None:
-    options = {"quality": 95}
+    options: dict[str, object] = {"quality": 95}
     if orientation is not None:
         exif = Image.Exif()
         exif[0x0112] = orientation

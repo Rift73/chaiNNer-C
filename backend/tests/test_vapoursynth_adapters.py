@@ -234,7 +234,7 @@ def test_adapter_for_kinds(
         ("int | None", "None", "matrix_in", "matrix"),
         ("int | None", "None", "transfer", "transfer"),
         ("int | None", "None", "primaries", "primaries"),
-        ("int | None", "None", "range", "range"),
+        ("int | None", "None", "range_in", "range"),
         ("str | bytes", None, "source", "path"),
         ("str | bytes | None", "None", "matrix_s", "text"),
         ("str | bytes | Sequence[str | bytes]", None, "expr", "text"),
@@ -249,6 +249,20 @@ def test_plugin_adapter_kinds(
     # The same names in a Python function follow its annotation instead.
     if name in ("format", "matrix_in"):
         assert adapt(annotation, default, name).kind == "int"
+
+
+def test_plugin_range_is_a_colour_range_beside_range_in() -> None:
+    """resize's `range` (beside `range_in`) is the colour range; vszip.Deband's
+    `range` is f3kdb's banding radius, a number (default 15)."""
+    p = param("int | None", "None", "range")
+    resize = adapter_for(p, ENUMS, True, frozenset({"clip", "range", "range_in"}))
+    assert resize.kind == "range"
+    assert resize.to_source("1") == "1"
+    deband = adapter_for(p, ENUMS, True, frozenset({"clip", "range", "thr"}))
+    assert deband.kind == "int"
+    assert deband.to_source("24") == "24"
+    made = deband.make_input("Range", p, 5)
+    assert isinstance(made, TextInput)
 
 
 def test_make_input_takes_the_callers_id() -> None:
@@ -401,6 +415,49 @@ def test_bool() -> None:
     assert a.to_source(DEFAULT) is None
     assert a.to_source("True") == "True"
     assert a.to_source("False") == "False"
+
+
+@pytest.mark.parametrize(
+    ("annotation", "default", "kind", "other"),
+    [
+        # One kind of value: the input takes them all.
+        ("bool", "False", "bool", False),
+        ("float | Sequence[float]", "0.5", "sequence", False),
+        ("vstools.enums.generic.FieldBasedLike | bool | None", "None", "enum", False),
+        ("vskernels.abstract.base.KernelLike", "vskernels.Catrom", "enum", False),
+        ("vs.VideoNode | VSFunctionNoArgs | None", "None", "clip_or_filter", False),
+        ("Any", None, "extra", False),
+        # bool wins over numbers and sequences, a number over Literal[False], an enum
+        # over per-plane lists: a Python value input takes the rest.
+        ("bool | float", "False", "bool", True),
+        ("bool | tuple[int, int] | float", "True", "bool", True),
+        ("bool | Sequence[bool]", "False", "bool", True),
+        ("int | Literal[False]", "5", "int", True),
+        (
+            "int | vsdenoise.prefilters.Prefilter | Sequence[int]",
+            "None",
+            "enum",
+            True,
+        ),
+        ("str | Sequence[str]", None, "text", True),
+    ],
+)
+def test_union_with_values_its_input_cannot_give(
+    annotation: str, default: str | None, kind: str, other: bool
+) -> None:
+    a = adapt(annotation, default, "x")
+    assert (a.kind, a.other) == (kind, other)
+
+
+def test_enum_beside_bool_offers_true_and_false() -> None:
+    """ClampScaler.scale's limit (Repair.Mode | bool = True) could not be False."""
+    names = options(widget("vsdenoise.prefilters.Prefilter | bool", "True", "limit"))
+    assert names["True"] == "True"
+    assert names["False"] == "False"
+    a = adapt("vsdenoise.prefilters.Prefilter | bool", "True", "limit")
+    assert a.to_source("False") == "False"
+    assert a.to_source("True") is None
+    assert a.to_source("vsdenoise.Prefilter.BM3D") == "vsdenoise.Prefilter.BM3D"
 
 
 def test_enum_from_the_catalog() -> None:
@@ -719,6 +776,14 @@ def test_path() -> None:
     assert widget("SPathLike | None", "None", "model").filetypes == ["*"]
     assert adapt("SPathLike | None", "None", "model").to_source(None) is None
     assert isinstance(widget("str | bytes", None, "source", plugin=True), FileInput)
+    # vstools' FilePathType (HardsubASS' subtitle file): a file of any type, also
+    # when it is named like a video source; a folder stays a text.
+    subtitles = adapt("FilePathType", None, "filename")
+    assert subtitles.kind == "path"
+    assert widget("FilePathType", None, "filename").filetypes == ["*"]
+    path = "C:\\subs\\new.ass"
+    assert ast.literal_eval(subtitles.to_source(path) or "") == path
+    assert adapt("FilePathType", None, "folder_path").kind == "text"
 
 
 @pytest.mark.parametrize(
@@ -758,6 +823,61 @@ def test_text() -> None:
     assert expr.to_source("x y +") == "'x y +'"
     matrix_s = adapt("str | bytes | None", "None", "matrix_s", plugin=True)
     assert matrix_s.to_source(None) is None
+
+
+def test_expressions_per_plane() -> None:
+    # A plugin's text array (std.Expr's expr) takes one expression for every plane,
+    # or a list with one per plane ('' copies the plane).
+    exprs = adapt("str | bytes | Sequence[str | bytes]", None, "expr", plugin=True)
+    assert exprs.kind == "text"
+    assert exprs.to_source("x 2 *") == "'x 2 *'"
+    assert exprs.to_source("['x 2 *', '']") == "['x 2 *', '']"
+    assert exprs.to_source(' ["x 2 *",\n "x"] ') == "['x 2 *', 'x']"
+    for bad in ("[1, 2]", "['x' + 'y']", "[x 2 *]"):
+        with pytest.raises(ValueError, match="list of texts"):
+            exprs.to_source(bad)
+    inp = widget("str | bytes | Sequence[str | bytes]", None, "expr", plugin=True)
+    assert isinstance(inp, TextInput)
+    assert "['x 2 *', '']" in (inp.placeholder or "")
+    # One text stays one text, brackets and all.
+    one = adapt("str | bytes", None, "expr", plugin=True)
+    assert one.to_source("['x']") == repr("['x']")
+    # vsexprtools' ExprLike (norm_expr): a plain text, no quotes to type.
+    norm = adapt("ExprLike", None, "expr")
+    assert norm.kind == "text"
+    assert norm.to_source("x 2 /") == "'x 2 /'"
+    assert norm.to_source("['x 2 /', 'x']") == "['x 2 /', 'x']"
+    # A chain saved with the quoted text the Python-value box took still runs.
+    assert norm.to_source("'x 2 /'") == "'x 2 /'"
+
+
+def test_norm_expr_takes_the_literals_its_python_value_box_took() -> None:
+    # ExprLike also takes a tuple (an expression per plane), None and numbers, and
+    # lists or tuples inside: the values the Python-value box saved still run.
+    norm = adapt("ExprLike", None, "expr")
+    for saved in (
+        "('x 2 /', 'x')",
+        "('x 2 /',)",
+        "['x 2 /', None]",
+        "[['x', '2', '/'], 'x']",
+        "(['x', 2, '/'], None, ('x', 0.5, '*'))",
+    ):
+        assert norm.to_source(saved) == saved
+    assert norm.to_source(' ( "x 2 /",\n None ) ') == "('x 2 /', None)"
+    for bad in ("('x' + 'y',)", "[True]", "['x', 1e400]", "[b'x']", "[{'x': 1}]"):
+        with pytest.raises(ValueError, match=r"tuple of texts like \('x 2 \*', ''\)"):
+            norm.to_source(bad)
+    # Its hint shows the tuple, an expression per plane (a list is one expression).
+    inp = widget("ExprLike", None, "expr")
+    assert isinstance(inp, TextInput)
+    assert inp.placeholder == "one for all planes, or a tuple: ('x 2 *', '')"
+    # std.Expr's expr keeps its flat list of texts, and a text in parentheses is
+    # one expression.
+    exprs = adapt("str | bytes | Sequence[str | bytes]", None, "expr", plugin=True)
+    for bad in ("['x 2 *', None]", "[['x'], 'x']"):
+        with pytest.raises(ValueError, match="list of texts"):
+            exprs.to_source(bad)
+    assert exprs.to_source("('x', 'y')") == repr("('x', 'y')")
 
 
 def test_extra() -> None:

@@ -156,3 +156,19 @@ def test_other_models_keep_their_tiler():
     )
     # No multiple: the image is neither padded nor given a wrapped tiler.
     assert calls == [(5, 5)]
+
+
+def test_a_reorg_stride_given_as_a_list_is_refused_by_name():
+    # A param file can give any parameter as an array; the stride is one number (it
+    # failed with int()'s TypeError).
+    model = NcnnModel(2, 2)
+    for op, name, inputs, outputs in (
+        ("Input", "in", (), ("input",)),
+        ("Reorg", "reorg", ("input",), ("output",)),
+    ):
+        model.layers.append(
+            NcnnLayer(op, name, len(inputs), len(outputs), list(inputs), list(outputs))
+        )
+    model.layers[1].params[0] = [2, 2]
+    with pytest.raises(ValueError, match="Reorg layer reorg's stride is a list"):
+        NcnnModelWrapper.get_size_multiple(model)

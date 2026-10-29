@@ -616,6 +616,40 @@ def test_history_bounds(history):
         native.palette_dither(image(), image(3, 1, 7), 3, history_length=history)
 
 
+def test_history_past_the_decay_limit_named_before_c(monkeypatch):
+    # One past the limit, the float32 decay base rounds to 1 and the kernel refuses it
+    # with a generic error; the bridges name the range instead.
+    longest = 682541919
+    p = ct.pointer(ct.c_float())
+    assert (
+        lib().cn_neighborhood_uniform_riemersma(
+            p, p, 1, 1, 1, 7, longest + 1, 1 / (longest + 1)
+        )
+        == 1
+    )
+    calls = []
+    monkeypatch.setattr(
+        lib(),
+        "cn_neighborhood_uniform_riemersma",
+        lambda *args: calls.append(args) or 0,
+    )
+    monkeypatch.setattr(
+        lib(), "cn_neighborhood_palette_apply", lambda *args: calls.append(args) or 0
+    )
+    message = f"^History length must be an integer in \\[2,{longest}\\]$"
+    with pytest.raises(ValueError, match=message):
+        native.uniform_dither(image(), 7, 3, history_length=longest + 1)
+    with pytest.raises(ValueError, match=message):
+        native.palette_dither(image(), image(3, 1, 7), 3, history_length=longest + 1)
+    assert not calls
+    # The limit itself reaches the kernel (its 2.7 GB history is not allocated here).
+    native.uniform_dither(image(), 7, 3, history_length=longest)
+    native.palette_dither(image(), image(3, 1, 7), 3, history_length=longest)
+    # (history, decay) of the uniform kernel; (mode, algorithm, history, decay) of the plan's
+    assert calls[0][6:] == (longest, 1 / longest)
+    assert calls[1][6:10] == (3, 0, longest, 1 / longest)
+
+
 def test_foreign_c_boundaries():
     library = lib()
     value = ct.c_float()

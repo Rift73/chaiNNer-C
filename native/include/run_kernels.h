@@ -128,7 +128,7 @@ CN_RUN_KERNEL cn_status cn_denoise_u8(const uint8_t *src, uint8_t *out,
     int patch, int search);
 /* descale_ops.c */
 CN_RUN_KERNEL void *cn_descale_core_create(int src_dim, int dst_dim, int mode, int taps, double b,
-    double c, double blur, double shift, double active_dim, int border, int *mirror_outside);
+    double c, double blur, double shift, double active_dim, int border, int *refusal);
 CN_RUN_KERNEL void cn_descale_core_free(void *core);
 CN_RUN_KERNEL size_t cn_descale_workspace(size_t h, size_t w, size_t c, void *core_h, void *core_v);
 CN_RUN_KERNEL cn_status cn_descale(const float *src, size_t h, size_t w, size_t c, void *core_h,

@@ -43,6 +43,10 @@ export const includesDirectory = (dataTransfer: DataTransfer): boolean =>
  */
 export const getFilePath = (file: File): string => window.electronFileUtils.getPathForFile(file);
 
+/**
+ * The path of the one dropped file when its extension is allowed; `*` allows any file (a
+ * VapourSynth ONNX model or shader).
+ */
 export const getSingleFileWithExtension = (
     dataTransfer: DataTransfer,
     allowedExtensions: readonly string[]
@@ -50,7 +54,7 @@ export const getSingleFileWithExtension = (
     if (dataTransfer.files.length === 1 && !includesDirectory(dataTransfer)) {
         const path = getFilePath(dataTransfer.files[0]);
         const extension = extname(path).toLowerCase();
-        if (allowedExtensions.includes(extension)) {
+        if (allowedExtensions.includes('*') || allowedExtensions.includes(extension)) {
             return path;
         }
     }

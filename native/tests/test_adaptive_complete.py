@@ -36,7 +36,7 @@ _tree.body = [
     for node in _tree.body
     if isinstance(node, ast.FunctionDef) and node.name == "to_uint8"
 ]
-_globals = {"np": np}
+_globals: dict[str, Any] = {"np": np}
 exec(compile(_tree, str(_path), "exec"), _globals)
 
 

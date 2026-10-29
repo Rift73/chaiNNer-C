@@ -149,7 +149,7 @@ def test_compiler_job_releases_descendant_file_handles_before_cleanup(tmp_path):
 
     import psutil
 
-    from nodes.impl.pytorch.vosr2_process import OwnedJob
+    from nodes.impl.owned_job import OwnedJob
 
     held = tmp_path / "compiler.log"
     ready = tmp_path / "child-ready"
@@ -191,7 +191,7 @@ def test_compiler_job_ends_the_compiler_and_its_descendants(tmp_path):
 
     import psutil
 
-    from nodes.impl.pytorch.vosr2_process import OwnedJob
+    from nodes.impl.owned_job import OwnedJob
 
     started = tmp_path / "descendant.pid"
     child_code = (

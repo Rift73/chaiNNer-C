@@ -4,12 +4,12 @@ implausible tags. Synthetic entries for every rule, and real files FFmpeg tags."
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
 import ffmpeg
 import pytest
+from scratch_storage import NO_FFMPEG, STORAGE
 
 from nodes.impl.colour_info import (
     ChromaLocation,
@@ -23,7 +23,6 @@ from nodes.impl.colour_info import (
     pixel_layout,
 )
 
-STORAGE = Path(os.environ.get("APPDATA", "")) / "chaiNNer" / "backend-storage"
 FFMPEG = STORAGE / "ffmpeg" / "ffmpeg.exe"
 FFPROBE = STORAGE / "ffmpeg" / "ffprobe.exe"
 
@@ -269,9 +268,7 @@ def make_video(path: Path, *arguments: str) -> dict[str, object]:
     return next(s for s in probe["streams"] if s["codec_type"] == "video")
 
 
-@pytest.mark.skipif(
-    not FFMPEG.exists(), reason="the integrated FFmpeg is not downloaded"
-)
+@pytest.mark.skipif(not FFMPEG.exists(), reason=NO_FFMPEG)
 def test_real_files_report_their_tags(tmp_path: Path):
     tagged = make_video(
         tmp_path / "tagged.mkv",

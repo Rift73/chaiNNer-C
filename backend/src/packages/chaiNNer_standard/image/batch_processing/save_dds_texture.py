@@ -101,7 +101,14 @@ def save_dds_texture_node(
             raise ValueError(
                 f"A cubemap has 6 faces (+X, -X, +Y, -Y, +Z, -Z), not {len(images)}."
             )
-        path = get_full_path(base_directory, relative_path, name, ImageFormat.DDS)
+        path = get_full_path(
+            base_directory,
+            relative_path,
+            name,
+            ImageFormat.DDS,
+            "Save DDS Texture",
+            "Texture Name",
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
         options = (
             dds_format,

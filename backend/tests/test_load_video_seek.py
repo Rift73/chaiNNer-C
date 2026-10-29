@@ -24,6 +24,7 @@ import ffmpeg
 import numpy as np
 import psutil
 import pytest
+from scratch_storage import NO_FFMPEG, STORAGE
 
 # The video module loads the native backend, which GitHub's checks do not build.
 pytest.importorskip("nodes.impl._chainner_graph")
@@ -45,13 +46,10 @@ from packages.chaiNNer_standard.image.video_frames.load_video import (
     load_video_node,
 )
 
-STORAGE = Path(os.environ.get("APPDATA", "")) / "chaiNNer" / "backend-storage"
 FFMPEG, FFPROBE = map(str, get_executable_path(STORAGE / "ffmpeg"))
 ENV = FFMpegEnv(ffmpeg=FFMPEG, ffprobe=FFPROBE)
 
-pytestmark = pytest.mark.skipif(
-    not Path(FFMPEG).exists(), reason="the integrated FFmpeg is not downloaded"
-)
+pytestmark = pytest.mark.skipif(not Path(FFMPEG).exists(), reason=NO_FFMPEG)
 AUTO = (Matrix.AUTO, Transfer.AUTO, Primaries.AUTO, Range.AUTO, ChromaLocation.AUTO)
 SOURCE = ("-f", "lavfi", "-i", "testsrc2=size=192x108:rate=30", "-frames:v", "150")
 H264 = "h264-bframes.mp4"
@@ -275,7 +273,8 @@ def test_the_index_numbers_only_the_frames_it_can_time(
     # one (MPEG-PS times only some), or packets of which none is shown, would give a
     # short or empty index, so such a file is read through the FFmpeg CLI
     # (_UseCliReader, the reason its message). A discarded packet (never shown) needs no
-    # timestamp; the empty packet that ends the demux (it flushes the decoder) is none.
+    # timestamp, and is counted; the empty packet that ends the demux (it flushes the
+    # decoder) is none.
     def packet(
         pts: int | None, keyframe: bool = False, discard: bool = False, size: int = 100
     ):
@@ -301,7 +300,7 @@ def test_the_index_numbers_only_the_frames_it_can_time(
     cases: list[tuple[list[SimpleNamespace], video.FrameIndex | str]] = [
         (
             [packet(None, discard=True), packet(3, True), packet(1), packet(2), flush],
-            video.FrameIndex((1, 2, 3), (2,)),
+            video.FrameIndex((1, 2, 3), (2,), 1),
         ),
         ([flush], video.FrameIndex((), ())),
         (

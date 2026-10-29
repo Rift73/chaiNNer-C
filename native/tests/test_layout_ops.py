@@ -150,6 +150,7 @@ def test_metadata_unchanged(name):
                     isinstance(expression, ast.keyword)
                     and expression.arg == "image_type"
                     and isinstance(expression.value, ast.Constant)
+                    and isinstance(expression.value.value, str)
                 ):
                     text = "".join(expression.value.value.split())
                     if name == "pad":

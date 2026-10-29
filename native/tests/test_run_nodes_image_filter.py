@@ -208,9 +208,10 @@ def test_palette_dither_empty_error(image_shape, palette_shape):
     assert outcome[0] == "error"
 
 
-@pytest.mark.parametrize("history", [2**32, 2**40, 2**70])
+@pytest.mark.parametrize("history", [682541920, 2**32, 2**40, 2**70])
 def test_palette_dither_history_range_error(history):
+    # Above 682541919 Riemersma's float32 decay base rounds to 1 (native_neighborhood).
     img, colors = image(1, 4, 5, 3), palette(2, 1, 4, 3, False)
     outcome = assert_native_matches(DITHER, [img, colors, "Riemersma", "FS", history])
-    message = "History length must be an integer in [2,4294967295]"
+    message = "History length must be an integer in [2,682541919]"
     assert outcome == ("error", ("ValueError", message))

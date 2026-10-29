@@ -9,6 +9,7 @@ as a crash and keeps a clone of the process that locks its DLLs.
 import ctypes as ct
 import importlib
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +26,7 @@ pytestmark = pytest.mark.skipif(
 # it loads the system copy by its path first, then the light node modules (Pillow's
 # users among them), then the frameworks.
 WORKER_IMPORTS = """
-import asyncio, ctypes, sys
+import asyncio, ctypes, os, pathlib, sys, types
 import server
 from server_config import ServerConfig
 
@@ -52,7 +53,8 @@ config = ServerConfig(
     storage_dir=None,
     trace=False,
 )
-asyncio.run(server.import_packages(config))
+context = types.SimpleNamespace(config=config, storage_dir=pathlib.Path(os.environ["STORAGE_DIR"]))
+asyncio.run(server.import_packages(context))
 print("pillow", "PIL._imaging" in sys.modules)
 print("torch", "torch._C" in sys.modules)
 print("runtime", runtime())
@@ -80,13 +82,16 @@ def test_pillow_runs_on_the_system_cpp_runtime(system_runtime):
     assert runtime.samefile(system_runtime)
 
 
-def test_worker_loads_the_system_cpp_runtime_before_any_node_module(system_runtime):
+def test_worker_loads_the_system_cpp_runtime_before_any_node_module(
+    system_runtime, tmp_path
+):
     # Nothing up to `import server` loads Pillow or a C++ runtime, and the node loading
     # loads the system copy by its path before any node module: the light node modules
     # import Pillow before the frameworks, which then load against the system copy.
     has_torch = importlib.util.find_spec("torch") is not None
     done = subprocess.run(
         [sys.executable, "-B", "-c", WORKER_IMPORTS],
+        env={**os.environ, "STORAGE_DIR": str(tmp_path)},
         cwd=BACKEND,
         capture_output=True,
         text=True,

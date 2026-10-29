@@ -610,7 +610,6 @@ def test_malformed_image_buffers(shape):
     image = np.empty(shape, dtype=np.float32)
     for call in (
         lambda: native.statistics(image, 50),
-        lambda: native.is_grayscale(image, 0),
         lambda: native.binary(image, image, 0),
         lambda: native.distinct_colors(image),
         lambda: native.apply_palette(image, source(3)),

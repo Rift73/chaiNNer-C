@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import Counter
 
 import onnx
@@ -210,7 +211,19 @@ def test_other_models_are_refused():
         drft_export.export_onnx(descriptor)
 
 
-def test_chainner_loads_the_onnx(plugin_onnx: bytes):
+def test_chainner_loads_the_onnx(plugin_onnx: bytes, caplog: pytest.LogCaptureFixture):
     from nodes.impl.onnx.load import load_onnx_model
+    from nodes.impl.onnx.model import SizeReq
 
-    assert load_onnx_model(plugin_onnx).sub_type == "Generic"
+    # ONNX's checker knows none of the plugin ops, so shape inference is not tried at
+    # each size (each failure logged its traceback).
+    with caplog.at_level(logging.DEBUG, logger="sanic.root"):
+        loaded = load_onnx_model(plugin_onnx)
+    assert loaded.sub_type == "Generic"
+    assert [r.getMessage() for r in caplog.records if r.exc_info] == []
+    info = loaded.info
+    assert (info.scale_width, info.scale_height, info.size_req) == (
+        None,
+        None,
+        SizeReq(),
+    )

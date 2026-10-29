@@ -91,6 +91,81 @@ test('a backend that stops on its own is reported with its exit code and last ou
     });
 });
 
+test('the last output of a backend that stops on its own has whole lines', async () => {
+    // a line written in two pieces, e.g. a traceback line from a buffered stream
+    const backend = await spawnBackend(`
+        process.stderr.write('Traceback (most recent call last):\\n  File "run.py", ');
+        setTimeout(() => {
+            process.stderr.write('line 1\\nModuleNotFoundError: No module named \\'numpy\\'');
+            process.exitCode = 1;
+        }, 100);
+    `);
+
+    const exit = await new Promise((resolve) => {
+        backend.addExitListener(resolve);
+    });
+
+    expect(exit).toEqual({
+        code: 1,
+        signal: null,
+        stderrTail: [
+            'Traceback (most recent call last):',
+            '  File "run.py", line 1',
+            "ModuleNotFoundError: No module named 'numpy'",
+        ].join('\n'),
+    });
+}, 30_000);
+
+test("the backend's output is logged line by line, each log line at its level", async () => {
+    // the module instance the backend process logs with (modules are reset after each test)
+    const { log } = await import('../../src/common/log');
+    const logged = {
+        info: vi.spyOn(log, 'info'),
+        warn: vi.spyOn(log, 'warn'),
+        error: vi.spyOn(log, 'error'),
+    };
+
+    // output arrives in pieces that end anywhere, even inside a line or a character
+    const backend = await spawnBackend(`
+        const pieces = [
+            [process.stdout, '[2026-10-29 21:00:00 +0800] [1234] [INFO] Starting\\na bare print\\n[2026-10-29 21:00:00 +0800] [1234] [WAR'],
+            [process.stdout, 'NING] Low on memory\\n[2026-10-29 21:00:01 +0800] [1234] [ERROR] Failed\\n\\n'],
+            [process.stdout, Buffer.from('a print of 画像')],
+            [process.stderr, 'Traceback (most recent call last):\\r\\n  File "x.py"'],
+            [process.stderr, ', line 1\\r\\n'],
+        ];
+        let next = 0;
+        const timer = setInterval(() => {
+            const [stream, piece] = pieces[next];
+            if (Buffer.isBuffer(piece)) {
+                stream.write(piece.subarray(0, 12));
+                setTimeout(() => stream.write(piece.subarray(12)), 20);
+            } else {
+                stream.write(piece);
+            }
+            next += 1;
+            if (next === pieces.length) clearInterval(timer);
+        }, 50);
+    `);
+    await new Promise((resolve) => {
+        backend.addExitListener(resolve);
+    });
+
+    const backendLines = (spy: typeof logged.info) =>
+        spy.mock.calls.map(([message]) => message).filter((m) => String(m).startsWith('Backend:'));
+    expect(backendLines(logged.info)).toEqual([
+        'Backend: [1234] [INFO] Starting',
+        'Backend: a bare print',
+        'Backend: a print of 画像',
+    ]);
+    expect(backendLines(logged.warn)).toEqual(['Backend: [1234] [WARNING] Low on memory']);
+    expect(backendLines(logged.error)).toEqual([
+        'Backend: [1234] [ERROR] Failed',
+        'Backend: Traceback (most recent call last):',
+        'Backend:   File "x.py", line 1',
+    ]);
+}, 30_000);
+
 test('a backend stopped by kill() is not reported, even if it exits during the shutdown request', async () => {
     // like the real backend, the process exits by itself while kill() waits for /shutdown
     shutdown.mockImplementation(() => delay(1000));

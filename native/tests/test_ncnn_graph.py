@@ -959,7 +959,7 @@ def test_file_parser_headers_errors_and_ignored_magic(text, tmp_path):
     ra = outcome(lambda: reference.NcnnModel.load_from_file(str(param), str(binary)))
     rb = outcome(lambda: port.NcnnModel.load_from_file(str(param), str(binary)))
     if fewer_layers_than_declared(text):
-        assert rb[0] == "ValueError" and "ends before the layers" in rb[1]
+        assert rb[0] == "ValueError" and "ends before the layers" in str(rb[1])
         return
     if ra[0] == "ok":
         assert rb[0] == "ok"

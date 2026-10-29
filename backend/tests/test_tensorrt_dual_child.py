@@ -15,10 +15,12 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import psutil
 import pytest
 
+from api import NodeContext
 from nodes.impl.pytorch.vosr2_process import PARENT_PID_VARIABLE
 from nodes.impl.tensorrt import dual
 from progress_controller import Aborted
@@ -59,7 +61,10 @@ def test_stop_kills_the_child(tmp_path: Path):
     started = time.monotonic()
     with pytest.raises(Aborted):
         dual.run_child(
-            ["-c", sleeper(pid_file)], "stub", tmp_path, StopOnceStarted(pid_file)
+            ["-c", sleeper(pid_file)],
+            "stub",
+            tmp_path,
+            cast(NodeContext, StopOnceStarted(pid_file)),
         )
     assert time.monotonic() - started < 30
     assert not psutil.pid_exists(int(pid_file.read_text()))

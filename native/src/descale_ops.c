@@ -50,43 +50,8 @@ static struct DescaleAPI descale_api(void) {
     return get_descale_api(cn_isa_current() >= CN_ISA_AVX2 ? DESCALE_OPT_AVX2 : DESCALE_OPT_NONE);
 }
 
-/* descale.c's round_halfup (from zimg). */
-static double round_halfup(double x) { return x < 0 ? floor(x + 0.5) : floor(x + 0.49999999999999994); }
-
-/* descale's mirror reflects a tap once, so a tap more than dst_dim beyond an edge (a kernel
- * wider than the target, or a shift past an edge) would index outside its weights row and
- * corrupt the heap. Replays scaling_weights' tap positions (descale.c) to refuse those. */
-static int mirror_fits(int src_dim, int dst_dim, int mode, int taps, double blur, double shift, double active_dim) {
-    static const int mode_taps[] = {0, 1, 2, 0, 2, 3, 4, 0};
-    int support = (int)ceil((mode == DESCALE_MODE_LANCZOS ? taps : mode_taps[mode]) * blur);
-    int filter_size = support > 0 ? 2 * support : 1;
-    double ratio = (double)src_dim / active_dim;
-    for (int i = 0; i < src_dim; ++i) {
-        double pos = (i + 0.5) / ratio + shift;
-        double first = round_halfup(pos - filter_size / 2.0) + 0.5, last = first + (filter_size - 1);
-        if (-first >= dst_dim || 2.0 * dst_dim - last < 0.0) return 0;
-    }
-    return 1;
-}
-
-/* One direction's solver for a src_dim -> dst_dim descale; NULL on invalid parameters, and
- * then *mirror_outside is 1 when the mirror's reach (mirror_fits) was the reason, else 0.
- * mode is DescaleMode (1 bilinear .. 7 point), border DescaleBorder. */
-CN_EXPORT void *cn_descale_core_create(int src_dim, int dst_dim, int mode, int taps, double b, double c,
-                                       double blur, double shift, double active_dim, int border,
-                                       int *mirror_outside) {
-    if (mirror_outside) *mirror_outside = 0;
-    /* descale indexes its src_dim x dst_dim matrices with int products; the float weights
-     * take ceil_n(dst_dim, 8) rows of up to src_dim columns. */
-    if (src_dim < 1 || dst_dim < 1 || dst_dim > src_dim || ((int64_t)dst_dim + 7) * src_dim > INT_MAX ||
-        mode < DESCALE_MODE_BILINEAR || mode > DESCALE_MODE_POINT ||
-        !(blur > 0.0) || !(active_dim > 0.0) || border < DESCALE_BORDER_MIRROR || border > DESCALE_BORDER_REPEAT ||
-        (mode == DESCALE_MODE_LANCZOS && taps < 1))
-        return NULL;
-    if (border == DESCALE_BORDER_MIRROR && !mirror_fits(src_dim, dst_dim, mode, taps, blur, shift, active_dim)) {
-        if (mirror_outside) *mirror_outside = 1;
-        return NULL;
-    }
+static struct DescaleCore *build_core(int src_dim, int dst_dim, int mode, int taps, double b, double c, double blur,
+                                      double shift, double active_dim, int border) {
     struct DescaleParams params = {0};
     params.mode = (enum DescaleMode)mode;
     params.taps = taps;
@@ -97,6 +62,69 @@ CN_EXPORT void *cn_descale_core_create(int src_dim, int dst_dim, int mode, int t
     params.active_dim = active_dim;
     params.border_handling = (enum DescaleBorder)border;
     return descale_api().create_core(src_dim, dst_dim, &params);
+}
+
+/* 1 when a target pixel takes no weight from any source pixel: descale pads that pixel's zero
+ * normal equation with DBL_EPSILON and solves it to 0 (black). A weight below 1e-12 counts as
+ * none: Lanczos's sinc leaves about 1e-17 at a whole-number distance (sin(k * PI) is not 0). */
+static int unweighted(const struct DescaleCore *core) {
+    for (int i = 0; i < core->dst_dim; ++i) {
+        const float *row = core->weights + (size_t)i * (size_t)core->weights_columns;
+        int width = core->weights_right_idx[i] - core->weights_left_idx[i], j = 0;
+        while (j < width && fabsf(row[j]) < 1e-12f) ++j;
+        if (j == width) return 1;
+    }
+    return 0;
+}
+
+/* 1 when the weights or the factorization the solve reads hold an infinity or a NaN. */
+static int nonfinite(const struct DescaleCore *core) {
+    size_t rows = round_up((size_t)core->dst_dim, 8);
+    for (size_t i = 0; i < rows * (size_t)core->weights_columns; ++i)
+        if (!isfinite(core->weights[i])) return 1;
+    for (size_t i = 0; i < rows; ++i) {
+        if (!isfinite(core->diagonal[i])) return 1;
+        for (int k = 0; k < core->bandwidth / 2; ++k)
+            if (!isfinite(core->lower[k][i]) || !isfinite(core->upper[k][i])) return 1;
+    }
+    return 0;
+}
+
+/* One direction's solver for a src_dim -> dst_dim descale; NULL on invalid parameters, and then
+ * *refusal (when given) says why: 0 invalid; 1 a target pixel takes no weight (black) where at
+ * Blur 1 every one does; 2 one takes none at Blur 1 too (the source window; Point ignores Blur);
+ * 3 non-finite weights. mode is DescaleMode (1 bilinear .. 7 point), border DescaleBorder. The
+ * Mirror border repeats its reflection past the target's size (third_party/descale/PATCHES). */
+CN_EXPORT void *cn_descale_core_create(int src_dim, int dst_dim, int mode, int taps, double b, double c,
+                                       double blur, double shift, double active_dim, int border, int *refusal) {
+    if (refusal) *refusal = 0;
+    /* descale indexes its src_dim x dst_dim matrices with int products; the float weights
+     * take ceil_n(dst_dim, 8) rows of up to src_dim columns. */
+    if (src_dim < 1 || dst_dim < 1 || dst_dim > src_dim || ((int64_t)dst_dim + 7) * src_dim > INT_MAX ||
+        mode < DESCALE_MODE_BILINEAR || mode > DESCALE_MODE_POINT || !(blur > 0.0) || !(active_dim > 0.0) ||
+        border < DESCALE_BORDER_MIRROR || border > DESCALE_BORDER_REPEAT || (mode == DESCALE_MODE_LANCZOS && taps < 1))
+        return NULL;
+    /* Its support, ceil(taps * blur) (create_core's taps per mode), sizes an int bandwidth of
+     * 4 * support - 1. A tap position that is not finite (a NaN or infinite shift or window, or
+     * a finite pair whose sum overflows) gives a NaN pixel index outside the weights; positions
+     * grow with the source pixel, so the first and the last decide. */
+    static const int mode_taps[] = {0, 1, 2, 0, 2, 3, 4, 0};
+    double ratio = (double)src_dim / active_dim;
+    if (!((mode == DESCALE_MODE_LANCZOS ? taps : mode_taps[mode]) * blur <= INT_MAX / 8) ||
+        !isfinite(0.5 / ratio + shift) || !isfinite((src_dim - 0.5) / ratio + shift))
+        return NULL;
+    struct DescaleCore *core = build_core(src_dim, dst_dim, mode, taps, b, c, blur, shift, active_dim, border);
+    if (!core) return NULL;
+    int reason = unweighted(core) ? 2 : nonfinite(core) ? 3 : 0;
+    if (!reason) return core;
+    descale_api().free_core(core);
+    if (reason == 2 && blur < 1.0) {
+        struct DescaleCore *wide = build_core(src_dim, dst_dim, mode, taps, b, c, 1.0, shift, active_dim, border);
+        if (wide && !unweighted(wide)) reason = 1;
+        if (wide) descale_api().free_core(wide);
+    }
+    if (refusal) *refusal = reason;
+    return NULL;
 }
 
 CN_EXPORT void cn_descale_core_free(void *core) {

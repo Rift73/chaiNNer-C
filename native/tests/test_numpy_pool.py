@@ -1162,6 +1162,8 @@ def test_every_worker_executor_installs_the_handler():
             )
     expected = ([["numpy_pool.install"]], "nodes.impl.numpy_pool")
     assert found == {
+        # The device threads PyTorch, ONNX and NCNN Upscale Image run on.
+        "nodes/impl/device_thread.py": expected,
         "nodes/impl/ffmpeg.py": expected,
         # The restoring worker and the CPU work's threads.
         "nodes/impl/pytorch/vosr2_temporal_step.py": (
@@ -1169,6 +1171,9 @@ def test_every_worker_executor_installs_the_handler():
             "nodes.impl.numpy_pool",
         ),
         "nodes/impl/pytorch/vosr2_texture.py": expected,
+        # Linux: the thread that starts the worker's children (worker_child) only runs
+        # subprocess.Popen, no NumPy.
+        "nodes/impl/owned_job.py": ([[]], None),
         # Load Models' reader of the next model
         "nodes/impl/read_ahead.py": expected,
         "packages/chaiNNer_external/web_ui.py": expected,

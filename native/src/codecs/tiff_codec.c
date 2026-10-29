@@ -660,7 +660,8 @@ cn_codec_status cn_tiff_decode_pillow_alpha(const uint8_t *data, size_t size, cn
     if (!straight_alpha_ifd(&r, tags)) return CN_CODEC_FALLBACK;
     const ifd_entry *t = tags;
     /* The image: 8-bit RGBA or grey+alpha with ExtraSamples (2,) (Pillow's modes RGBA and LA, raw modes RGBA and
-     * LA), contiguous strips, a compression Pillow and libtiff decode losslessly. */
+     * LA), or 16-bit grey+alpha with (1,) or (2,); contiguous strips, a compression Pillow and libtiff decode
+     * losslessly. */
     if (!ifd_is(&t[TAG_WIDTH], TYPE_INTEGER, 1) || !ifd_is(&t[TAG_LENGTH], TYPE_INTEGER, 1) ||
         !ifd_is(&t[TAG_SAMPLES], TYPE_SHORT, 1) || !ifd_is(&t[TAG_PHOTOMETRIC], TYPE_SHORT, 1) ||
         !ifd_is(&t[TAG_EXTRA], TYPE_SHORT, 1) || !ifd_is(&t[TAG_ROWS], TYPE_INTEGER, 1) ||
@@ -668,11 +669,14 @@ cn_codec_status cn_tiff_decode_pillow_alpha(const uint8_t *data, size_t size, cn
         return CN_CODEC_FALLBACK;
     const uint64_t width = ifd_value(&r, &t[TAG_WIDTH], 0), height = ifd_value(&r, &t[TAG_LENGTH], 0);
     const uint64_t samples = ifd_value(&r, &t[TAG_SAMPLES], 0), photometric = ifd_value(&r, &t[TAG_PHOTOMETRIC], 0);
-    const uint64_t rows = ifd_value(&r, &t[TAG_ROWS], 0);
+    const uint64_t rows = ifd_value(&r, &t[TAG_ROWS], 0), extra = ifd_value(&r, &t[TAG_EXTRA], 0);
+    /* 16-bit grey+alpha, which Pillow cannot open and OpenCV reads as 8-bit grey: its samples as stored (associated
+     * alpha too, as OpenCV keeps a 16-bit RGBA's), through libtiff. */
+    const int wide = photometric == PHOTOMETRIC_MINISBLACK && samples == 2 && ifd_value(&r, &t[TAG_BITS], 0) == 16;
     if (!width || !height || width > INT32_MAX || height > INT32_MAX || !rows ||
         !((photometric == PHOTOMETRIC_RGB && samples == 4) || (photometric == PHOTOMETRIC_MINISBLACK && samples == 2)) ||
-        ifd_value(&r, &t[TAG_EXTRA], 0) != EXTRASAMPLE_UNASSALPHA ||
-        (t[TAG_BITS].count != 1 && t[TAG_BITS].count != samples) || !ifd_all(&r, &t[TAG_BITS], 8))
+        !(extra == EXTRASAMPLE_UNASSALPHA || (wide && extra == EXTRASAMPLE_ASSOCALPHA)) ||
+        (t[TAG_BITS].count != 1 && t[TAG_BITS].count != samples) || !ifd_all(&r, &t[TAG_BITS], wide ? 16 : 8))
         return CN_CODEC_FALLBACK;
     const uint64_t compression = t[TAG_COMPRESSION].count ? ifd_value(&r, &t[TAG_COMPRESSION], 0) : COMPRESSION_NONE;
     if ((t[TAG_COMPRESSION].count && !ifd_is(&t[TAG_COMPRESSION], TYPE_SHORT, 1)) ||
@@ -701,12 +705,12 @@ cn_codec_status cn_tiff_decode_pillow_alpha(const uint8_t *data, size_t size, cn
     const uint64_t strips = (height + rows - 1) / rows;
     if (!ifd_is(&t[TAG_OFFSETS], TYPE_OFFSET, strips) || !ifd_is(&t[TAG_COUNTS], TYPE_OFFSET, strips))
         return CN_CODEC_FALLBACK;
-    const size_t row_bytes = (size_t)width * samples;
+    const size_t row_bytes = (size_t)width * samples * (wide ? 2 : 1);
     const uint64_t value = t[TAG_ORIENTATION].count ? ifd_value(&r, &t[TAG_ORIENTATION], 0)
                            : t[TAG_XMP].count       ? xmp_orientation(&r, &t[TAG_XMP])
                                                     : 1;
     *orientation = value >= 2 && value <= 8 ? (int)value : 1; /* image_io_orient's range, exif_transpose's */
-    uint8_t *const out = allocate(context, (uint32_t)height, (uint32_t)width, 4, CN_SAMPLE_U8);
+    uint8_t *const out = allocate(context, (uint32_t)height, (uint32_t)width, 4, wide ? CN_SAMPLE_U16 : CN_SAMPLE_U8);
     if (!out) return CN_CODEC_FALLBACK;
     /* Rows as Pillow gives them after convert("RGBA") (grey copied to R, G and B) and cvtColor's RGBA2BGRA. */
 #define STRAIGHT_ALPHA_ROWS(source, count, first)                                                                  \
@@ -720,7 +724,7 @@ cn_codec_status cn_tiff_decode_pillow_alpha(const uint8_t *data, size_t size, cn
             to[3] = in[samples - 1];                                                                               \
         }                                                                                                          \
     }
-    if (compression == COMPRESSION_NONE) {
+    if (compression == COMPRESSION_NONE && !wide) {
         /* Pillow's raw decoder: each strip's rows from its offset (StripByteCounts unused), truncation an error */
         for (uint64_t i = 0; i < strips; ++i) {
             const uint64_t first = i * rows, count = rows < height - first ? rows : height - first;
@@ -730,7 +734,8 @@ cn_codec_status cn_tiff_decode_pillow_alpha(const uint8_t *data, size_t size, cn
         }
         return CN_CODEC_OK;
     }
-    /* Pillow's libtiff decoder (TiffDecode.c _decodeStrip): TIFFReadEncodedStrip strip by strip. */
+    /* Pillow's libtiff decoder (TiffDecode.c _decodeStrip): TIFFReadEncodedStrip strip by strip; 16-bit samples come
+     * in the machine's byte order, the grey copied to B, G and R. */
     tiff_source source = {data, size, 0};
     int failed = 0;
     TIFF *tif = tiff_open("r", &source, source_read, source_write, source_seek, source_close, source_size,
@@ -748,7 +753,18 @@ cn_codec_status cn_tiff_decode_pillow_alpha(const uint8_t *data, size_t size, cn
         const uint64_t first = i * rows, count = rows < height - first ? rows : height - first;
         const tmsize_t read = TIFFReadEncodedStrip(tif, (uint32_t)i, buffer, strip_size);
         ok = read >= 0 && (uint64_t)read >= count * row_bytes && !failed;
-        if (ok) STRAIGHT_ALPHA_ROWS(buffer, count, first)
+        if (ok && wide) {
+            for (uint64_t y = 0; y < count; ++y) {
+                const uint16_t *in = (const uint16_t *)(buffer + y * row_bytes);
+                uint16_t *to = (uint16_t *)out + (first + y) * width * 4;
+                for (uint64_t x = 0; x < width; ++x, in += 2, to += 4) {
+                    to[0] = to[1] = to[2] = in[0];
+                    to[3] = in[1];
+                }
+            }
+        } else if (ok) {
+            STRAIGHT_ALPHA_ROWS(buffer, count, first)
+        }
     }
 #undef STRAIGHT_ALPHA_ROWS
     free(buffer);

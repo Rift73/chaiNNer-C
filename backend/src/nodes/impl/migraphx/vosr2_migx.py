@@ -32,6 +32,7 @@ from api import NodeContext
 from gpu import AmdDevice, amd, get_vram_usage
 from vendor.vosr2.qwenimage_vae2d import AttentionBlock2D, AutoencoderKLQwenImage2D
 
+from ..pytorch import memory_cap
 from ..pytorch.vosr2 import BundlePaths, load_weights, read_configs
 from ..pytorch.vosr2_engine_cache import (
     architecture,
@@ -39,6 +40,7 @@ from ..pytorch.vosr2_engine_cache import (
     compile_worker,
     ensure_engine_set,
     file_hash,
+    remove_unused_sets,
 )
 from ..pytorch.vosr2_official import FILES
 from ..pytorch.vosr2_plan_file import plain
@@ -219,9 +221,9 @@ class MigraphxSession(FullSession):
                 raise RuntimeError(
                     "Insufficient memory to admit VOSR MIGraphX programs."
                 )
-            # The enclosing vram_budget restores the fraction; on its next admission the
-            # programs count as another program's memory.
-            torch.cuda.set_per_process_memory_fraction(cap / total, self.device)
+            # The enclosing vram_budget's cap, restored at its end; on its next admission
+            # the programs count as another program's memory.
+            memory_cap.lower(self.device, cap / total)
             for module in self.modules.values():
                 module.to(self.device)
             check()
@@ -374,7 +376,7 @@ def ensure_migraphx_engine(
         }
         # Tuples as JSON has them, so a manifest reads back with the same identity
         identity = json.loads(json.dumps(identity))
-        return ensure_engine_set(
+        engine = ensure_engine_set(
             context,
             root,
             identity,
@@ -392,3 +394,5 @@ def ensure_migraphx_engine(
             stages=tuple(PROGRAMS),
             compression=False,
         )
+        remove_unused_sets(root, engine, identity)
+        return engine

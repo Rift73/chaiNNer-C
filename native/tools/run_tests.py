@@ -6,7 +6,8 @@ its own pytest process with the environment of README Test. Every process loads 
 suite's conftest.py as the one-process run does, so a shard runs exactly like the suite.
 Each shard reports every test phase as a JSON line (the shard_report.py plugin), which
 gives one summary, the failures, and each file's duration for the next run's balance,
-kept in the git-ignored native/local/test-durations.json.
+kept in the git-ignored native/local/test-durations.json. The pinned FFmpeg the video
+tests run is set up in their storage folder first (scratch_storage.py).
 
 usage: python -B native/tools/run_tests.py [--workers N] [PYTEST_ARG ...]
 
@@ -110,6 +111,23 @@ def environment(threads: int | None, report: Path) -> dict[str, str]:
     return env
 
 
+def set_up_ffmpeg() -> None:
+    """Once, before the shards: the video tests' pinned FFmpeg in their storage folder
+    (scratch_storage.py). A setup that fails (no network) is reported, and the run goes
+    on without it: the tests that run that FFmpeg skip."""
+    done = subprocess.run(
+        [sys.executable, "-B", str(ROOT / "native" / "tools" / "scratch_storage.py")],
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    if done.returncode != 0:
+        print(
+            f"The pinned FFmpeg could not be set up (exit {done.returncode}, its error"
+            " above): the tests that run it skip."
+        )
+
+
 def read_report(report: Path, totals: Totals) -> None:
     phases: dict[str, dict[str, str]] = {}
     for line in report.read_text(encoding="utf-8").splitlines():
@@ -139,6 +157,7 @@ def main() -> int:
         help="pytest processes (default: half the logical CPUs)",
     )
     args, pytest_args = parser.parse_known_args()
+    set_up_ffmpeg()
     durations: dict[str, float] = (
         json.loads(DURATIONS.read_text(encoding="utf-8")) if DURATIONS.exists() else {}
     )

@@ -1,13 +1,12 @@
 """Temporal reduction must not come from losing motion, history leaks or blur."""
 
-from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import numpy as np
 import pytest
+from vosr2_temporal_golden import assert_close, golden
 
-from nodes.impl.native_threshold import channel_mean
 from nodes.impl.pytorch.vosr2_temporal import (
     Correspondence,
     RestoredFrame,
@@ -22,9 +21,9 @@ def noop() -> None:
     pass
 
 
-def texture() -> np.ndarray:
+def texture(size: tuple[int, int] = (96, 128)) -> np.ndarray:
     rng = np.random.default_rng(8)
-    return cv2.GaussianBlur(rng.random((96, 128, 3), dtype=np.float32), (0, 0), 0.8)
+    return cv2.GaussianBlur(rng.random((*size, 3), dtype=np.float32), (0, 0), 0.8)
 
 
 def identity(shape: tuple[int, int]) -> Correspondence:
@@ -244,149 +243,25 @@ def test_tiny_strength_remains_close_to_independent_output():
     np.testing.assert_allclose(output, current.restored, atol=1e-6)
 
 
-# The one-thread stabilize as it was before its work was spread over threads (vosr/integ
-# c8a4f267), copied verbatim as the oracle of the threaded one.
-def original_stabilize(
-    current: RestoredFrame,
-    neighbors: Sequence[tuple[RestoredFrame, Correspondence]],
-    strength: float,
-    check: Callable[[], None],
-) -> np.ndarray:
-    """Keep the current observation; blend only aligned restoration residuals.
-
-    Coarse residuals retain conservative weights. Fine residuals get stronger
-    consensus, with bounded local contrast recovery to avoid averaging away
-    detail. Invalid matches contribute nothing. Inputs are independently restored
-    frames, never earlier stabilized outputs; support stays at three frames.
-    """
-    if not np.isfinite(strength) or not 0 <= strength <= 1:
-        raise ValueError("Temporal strength must be between 0 and 1.")
-    if len(neighbors) > 2:
-        raise ValueError("Temporal stabilization accepts at most two neighbors.")
-    check()
-    if strength == 0 or not neighbors:
-        return current.restored
-    height, width = current.restored.shape[:2]
-    low = cv2.GaussianBlur(current.residual, (0, 0), 1)
-    high = current.residual - low
-    delta = np.zeros_like(current.restored)
-    denominator = np.ones((height, width, 1), dtype=np.float32)
-    low_delta = np.zeros_like(delta)
-    high_delta = np.zeros_like(delta)
-    high_denominator = np.ones_like(denominator)
-    stable_support = np.ones((height, width), dtype=np.float32)
-    for neighbor, match in neighbors:
-        check()
-        if (
-            neighbor.source.shape != current.source.shape
-            or neighbor.restored.shape != current.restored.shape
-        ):
-            raise ValueError(
-                "All temporal sequence frames must have identical dimensions."
-            )
-        if not np.any(match.confidence):
-            continue
-        flow = cv2.resize(match.flow, (width, height), interpolation=cv2.INTER_LINEAR)
-        flow *= np.array(
-            [width / match.flow.shape[1], height / match.flow.shape[0]],
-            dtype=np.float32,
-        )
-        aligned = remap(neighbor.residual, flow, cv2.INTER_LANCZOS4)
-        aligned_low = remap(
-            cv2.GaussianBlur(neighbor.residual, (0, 0), 1),
-            flow,
-            cv2.INTER_LANCZOS4,
-        )
-        aligned_high = aligned - aligned_low
-        disagreement = cv2.GaussianBlur(
-            channel_mean(np.abs(aligned - current.residual)), (0, 0), 1
-        )
-        confidence = cv2.resize(
-            match.confidence, (width, height), interpolation=cv2.INTER_LINEAR
-        )
-        # Fine texture is sensitive to fractional-pixel warping. Use the stronger
-        # consensus only on nearly stationary, reliable correspondences; moving
-        # regions retain the original conservative fusion. Erosion also protects
-        # the neighborhood of an occlusion from the contrast window.
-        stable = match.confidence * np.exp(
-            -((np.linalg.norm(match.flow, axis=2) / 0.20) ** 4)
-        )
-        stable = cv2.erode(stable, np.ones((5, 5), np.uint8))
-        stable_support = np.minimum(
-            stable_support,
-            cv2.resize(stable, (width, height), interpolation=cv2.INTER_LINEAR),
-        )
-        weight = (
-            confidence * np.exp(-((disagreement / 0.10) ** 2)) * (strength * 0.5)
-        )[:, :, None]
-        delta += (aligned - current.residual) * weight
-        low_delta += (aligned_low - low) * weight
-        denominator += weight
-        coarse_disagreement = cv2.GaussianBlur(
-            channel_mean(np.abs(aligned_low - low)), (0, 0), 1
-        )
-        fine_weight = (
-            confidence * np.exp(-((coarse_disagreement / 0.03) ** 2)) * strength * 3
-        )[:, :, None]
-        high_delta += (aligned_high - high) * fine_weight
-        high_denominator += fine_weight
-    check()
-    if not np.any(delta) and not np.any(high_delta) and not np.any(low_delta):
-        return current.restored
-    fine = high + high_delta / high_denominator
-    coarse = current.restored - high + low_delta / denominator
-    legacy = current.restored + delta / denominator
-    support = stable_support[:, :, None]
-    coarse = legacy + (coarse - legacy) * support
-
-    def high_pass(image: np.ndarray) -> np.ndarray:
-        return image - cv2.GaussianBlur(image, (0, 0), 0.7)
-
-    def local_mean(image: np.ndarray) -> np.ndarray:
-        return cv2.GaussianBlur(channel_mean(image), (0, 0), 4)
-
-    # Solve E[(coarse + gain*fine)^2] = target in the detail band. Include
-    # the cross term: normalizing residual energy alone can soften input detail.
-    # Spatially varying gains make this a local estimate, not an exact bound.
-    fine_band = high_pass(fine * support)
-    coarse_band = high_pass(coarse)
-    a = local_mean(fine_band * fine_band)
-    b = local_mean(fine_band * coarse_band)
-    c = local_mean(coarse_band * coarse_band)
-    target = np.minimum(
-        local_mean(high_pass(legacy) ** 2),
-        local_mean(high_pass(current.restored) ** 2),
-    )
-    gain = np.clip(
-        (-b + np.sqrt(np.maximum(b * b + a * (target - c), 0))) / np.maximum(a, 1e-12),
-        0,
-        1.6,
-    )
-    gain[a < 1e-10] = 1
-    correction = low_delta / denominator + fine * gain[:, :, None] - high
-    correction[high_denominator[:, :, 0] == 1] = 0
-    conservative = delta / denominator
-    correction = conservative + (correction - conservative) * support
-    check()
-    return np.ascontiguousarray(np.clip(current.restored + correction, 0, 1))
-
-
 def moving_frames(
-    cut: bool = False,
+    cut: bool = False, size: tuple[int, int] = (96, 128), scale: int = 4
 ) -> tuple[list[RestoredFrame], list[Correspondence]]:
-    """Three frames of a texture moving one pixel per frame, restored at 4x with each
-    frame's own noise (the last one another scene with `cut`), and their matches:
-    frame 1 to frame 0, then frame 1 to frame 2."""
+    """Three frames (`size`: height, width) of a texture moving one pixel per frame,
+    restored at `scale` with each frame's own noise (the last one another scene with
+    `cut`), and their matches: frame 1 to frame 0, then frame 1 to frame 2."""
     rng = np.random.default_rng(12)
-    sources = [np.ascontiguousarray(np.roll(texture(), i, axis=1)) for i in range(3)]
+    sources = [
+        np.ascontiguousarray(np.roll(texture(size), i, axis=1)) for i in range(3)
+    ]
     if cut:
         sources[2] = np.ascontiguousarray(1 - sources[2])
+    height, width = size[0] * scale, size[1] * scale
     frames = [
         RestoredFrame.create(
             source,
             np.clip(
-                cv2.resize(source, (512, 384), interpolation=cv2.INTER_LANCZOS4)
-                + rng.normal(0, 0.02, (384, 512, 3)).astype(np.float32),
+                cv2.resize(source, (width, height), interpolation=cv2.INTER_LANCZOS4)
+                + rng.normal(0, 0.02, (height, width, 3)).astype(np.float32),
                 0,
                 1,
             ),
@@ -398,9 +273,39 @@ def moving_frames(
     return frames, [previous, following]
 
 
+# The golden outputs' cases (vosr2_temporal_golden.py) on three tiny frames restored at
+# 2x: (strength, cut, the neighbours used).
+GOLDEN_SIZE = (32, 40)
+GOLDEN_CASES = [(1, False, "both"), (0.2, True, "both"), (0.65, False, "previous")]
+
+
+def golden_key(case: tuple[float, bool, str]) -> str:
+    strength, cut, used = case
+    return f"stabilize-{strength}-{cut}-{used}"
+
+
+def golden_run(case: tuple[float, bool, str]) -> np.ndarray:
+    strength, cut, used = case
+    frames, (previous, following) = moving_frames(cut, GOLDEN_SIZE, 2)
+    neighbors = {
+        "both": [(frames[0], previous), (frames[2], following)],
+        "previous": [(frames[0], previous)],
+    }[used]
+    return stabilize(frames[1], neighbors, strength, noop)
+
+
+def golden_outputs() -> dict[str, np.ndarray]:
+    return {golden_key(case): golden_run(case) for case in GOLDEN_CASES}
+
+
+@pytest.mark.parametrize("case", GOLDEN_CASES)
+def test_stabilize_equals_the_golden(case):
+    assert_close(golden_run(case), golden(golden_key(case)))
+
+
 @pytest.mark.parametrize("strength", [1, 0.65, 0.2])
 @pytest.mark.parametrize("cut", [False, True])
-def test_threaded_stabilize_equals_the_one_thread_original_bit_for_bit(strength, cut):
+def test_threaded_stabilize_equals_one_thread_bit_for_bit(strength, cut):
     frames, (previous, following) = moving_frames(cut)
     with ThreadPoolExecutor(max_workers=2) as pool:
         for neighbors in (
@@ -408,10 +313,7 @@ def test_threaded_stabilize_equals_the_one_thread_original_bit_for_bit(strength,
             [(frames[0], previous)],
             [(frames[2], following)],
         ):
-            expected = original_stabilize(frames[1], neighbors, strength, noop)
-            for actual in (
-                stabilize(frames[1], neighbors, strength, noop),
-                stabilize(frames[1], neighbors, strength, noop, pool),
-            ):
-                assert actual.dtype == expected.dtype == np.float32
-                np.testing.assert_array_equal(actual, expected)
+            expected = stabilize(frames[1], neighbors, strength, noop)
+            actual = stabilize(frames[1], neighbors, strength, noop, pool)
+            assert actual.dtype == expected.dtype == np.float32
+            np.testing.assert_array_equal(actual, expected)

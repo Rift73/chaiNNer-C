@@ -7,7 +7,9 @@ import hashlib
 import inspect
 import json
 import logging
+import os
 import sys
+import time
 from compression import zstd
 from pathlib import Path
 from types import SimpleNamespace
@@ -116,7 +118,7 @@ def test_engine_input_order_is_semantic_for_equal_shape_keys_and_values():
 
 
 def test_partial_bf16_set_is_never_published_and_corruption_rebuilds(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, caplog
 ):
     context = cast(
         NodeContext,
@@ -162,19 +164,196 @@ def test_partial_bf16_set_is_never_published_and_corruption_rebuilds(
     assert vosr2_engine_cache.ensure_full_engine(*args) == path
     assert len(attempts) == 2
     compressed(path, "decoder_post").write_bytes(b"corrupt")
-    assert vosr2_engine_cache.ensure_full_engine(*args) == path
+    with caplog.at_level(logging.INFO, logger="sanic.root"):
+        assert vosr2_engine_cache.ensure_full_engine(*args) == path
     assert zstd.decompress(compressed(path, "decoder_post").read_bytes()) == (
         b"decoder_post"
     )
     assert len(attempts) == 3
-    assert len(list(path.parent.glob("quarantine-*"))) == 1
+    # Moved aside, then deleted once the fresh set was published
+    assert "is corrupt; moved it to" in caplog.text
+    assert "a set moved aside" in caplog.text
+    assert not list(path.parent.glob("quarantine-*"))
     (path / "manifest.json").write_text("[]")
     assert vosr2_engine_cache.ensure_full_engine(*args) == path
     assert len(attempts) == 4
-    assert len(list(path.parent.glob("quarantine-*/manifest.json"))) == 2
+    assert not list(path.parent.glob("quarantine-*"))
     plugin.write_bytes(b"changed-plugin")
-    assert vosr2_engine_cache.ensure_full_engine(*args) != path
+    current = vosr2_engine_cache.ensure_full_engine(*args)
+    assert current != path
     assert len(attempts) == 5
+    # The other version's set stays while a build sharing the folder may use it
+    assert path.is_dir()
+    unused_for(path, 15)
+    with caplog.at_level(logging.INFO, logger="sanic.root"):
+        assert vosr2_engine_cache.ensure_full_engine(*args) == current
+    assert not path.exists() and "unused for 15 days" in caplog.text
+
+
+def unused_for(path: Path, days: float) -> None:
+    """Make the set at path, its last-used mark included, look unused for `days`."""
+    when = time.time() - days * 86400
+    for file in [*path.rglob("*"), path]:
+        os.utime(file, (when, when))
+
+
+def engine_set(root: Path, identity: dict, name: str | None = None) -> Path:
+    path = root / (name or vosr2_engine_cache.identity_key(identity))
+    path.mkdir()
+    (path / "manifest.json").write_text(json.dumps({"identity": identity}))
+    (path / "dit.plan.zst").write_bytes(b"x" * 1000)
+    return path
+
+
+def migration(path: Path, staged: list[str] | None) -> Path:
+    """A migration's temporary folder: empty (staged None) or with its `cache` folder
+    holding the named files."""
+    path.mkdir()
+    if staged is not None:
+        (path / "cache").mkdir()
+        for name in staged:
+            (path / "cache" / name).write_bytes(b"0")
+    return path
+
+
+def test_only_unused_sets_this_cache_made_are_removed(tmp_path, caplog):
+    identity = {
+        "architecture": "new",
+        "tensorrt": "11.4",
+        "gpu": "NVIDIA GeForce RTX 5090",
+        "capability": [12, 0],
+    }
+    current = engine_set(tmp_path, identity)
+    # Another version's sets: one last used 20 days ago, one from before the mark
+    # whose files are 30 days old, and one a build sharing the folder used just now
+    earlier = engine_set(tmp_path, {**identity, "architecture": "old"})
+    (earlier / vosr2_engine_cache.LAST_USED).touch()
+    unused_for(earlier, 20)
+    another_gpu = engine_set(
+        tmp_path, {**identity, "gpu": "NVIDIA GeForce RTX 4090", "capability": [8, 9]}
+    )
+    earlier_other_gpu = engine_set(
+        tmp_path, {**identity, "architecture": "old", "gpu": "RTX 4090"}
+    )
+    unused_for(earlier_other_gpu, 30)
+    shared = engine_set(tmp_path, {**identity, "architecture": "newer"})
+    (shared / vosr2_engine_cache.LAST_USED).touch()
+    unused_for(shared, 13)
+    # A manifest that cannot be read (here a folder)
+    unreadable = tmp_path / ("1" * 64)
+    (unreadable / "manifest.json").mkdir(parents=True)
+    # MIGraphX names the GPU's target "gfx"
+    amd = {**identity, "gpu": "AMD Radeon RX 9070 XT", "gfx": "gfx1201"}
+    amd.pop("capability")
+    another_amd = engine_set(tmp_path, amd)
+    quarantine = engine_set(tmp_path, identity, f"quarantine-{current.name}-1")
+    building = tmp_path / "building-abc"
+    building.mkdir()
+    (building / "dit.plan").write_bytes(b"partial")
+    misnamed = engine_set(tmp_path, {**identity, "architecture": "old"}, "renamed")
+    unknown = tmp_path / "notes"
+    unknown.mkdir()
+    (unknown / "manifest.json").write_bytes(b"\xff\xfe not a manifest")
+    empty = tmp_path / ("0" * 64)
+    empty.mkdir()
+    files = [tmp_path / "compile.lock", tmp_path / "timing-0123456789abcdef.cache"]
+    for file in files:
+        file.write_bytes(b"0")
+    # What a migration killed midway leaves, and folders that only look like it
+    migrations = {
+        name: migration(tmp_path / name, staged)
+        for name, staged in (
+            ("migrating-ab_cd123", None),
+            (
+                "migrating-0a1b2c3d",
+                ["dit_cached.plan.zst", "dino.plan", "manifest.json"],
+            ),
+            ("migrating-e4f5g6h7", ["dit_cached.plan.zst", "notes.txt"]),
+            ("migrating-abc", []),
+            ("migrating-i8j9k0l1-old", []),
+        )
+    }
+    other_content = migration(tmp_path / "migrating-m2n3o4p5", [])
+    (other_content / "build.log").write_bytes(b"0")
+    with caplog.at_level(logging.INFO, logger="sanic.root"):
+        vosr2_engine_cache.remove_unused_sets(tmp_path, current, identity)
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(
+        path.name
+        for path in (
+            current,
+            another_gpu,
+            another_amd,
+            shared,
+            unreadable,
+            misnamed,
+            unknown,
+            empty,
+            *files,
+            other_content,
+            *(migrations[name] for name in list(migrations)[2:]),
+        )
+    )
+    assert (current / "dit.plan.zst").read_bytes() == b"x" * 1000
+    assert time.time() - (current / vosr2_engine_cache.LAST_USED).stat().st_mtime < 60
+    removed = [earlier, earlier_other_gpu, quarantine, building]
+    removed += [migrations["migrating-ab_cd123"], migrations["migrating-0a1b2c3d"]]
+    messages = [record.getMessage() for record in caplog.records]
+    for path in removed:
+        assert any(
+            message.startswith(f"Deleting {path} (0.0 GB), ") for message in messages
+        )
+    assert (
+        f"Deleting {earlier} (0.0 GB), another version's set, unused for 20 days"
+        in (messages)
+    )
+    assert any(message.endswith("unused for 30 days") for message in messages)
+    assert messages[-1] == f"Freed 0.0 GB of unused VOSR engines in {tmp_path}"
+    assert len(messages) == len(removed) + 1
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="sanic.root"):
+        vosr2_engine_cache.remove_unused_sets(tmp_path, current, identity)
+    assert not caplog.records
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Windows refuses to move a folder while a file in it is open",
+)
+def test_a_set_in_use_stays_whole_until_a_later_check(tmp_path, caplog):
+    identity = {"architecture": "new"}
+    current = engine_set(tmp_path, identity)
+    earlier = engine_set(tmp_path, {"architecture": "old"})
+    unused_for(earlier, 20)
+    with (earlier / "dit.plan.zst").open("rb"):
+        with caplog.at_level(logging.INFO, logger="sanic.root"):
+            vosr2_engine_cache.remove_unused_sets(tmp_path, current, identity)
+        assert {path.name for path in earlier.iterdir()} == {
+            "manifest.json",
+            "dit.plan.zst",
+        }
+        assert "a file in it is in use" in caplog.text
+    vosr2_engine_cache.remove_unused_sets(tmp_path, current, identity)
+    assert [path.name for path in tmp_path.iterdir()] == [current.name]
+
+
+def test_a_deletion_that_stops_halfway_is_finished_later(monkeypatch, tmp_path):
+    identity = {"architecture": "new"}
+    current = engine_set(tmp_path, identity)
+    earlier = engine_set(tmp_path, {"architecture": "old"})
+    unused_for(earlier, 20)
+    remove_tree = vosr2_engine_cache.remove_tree
+    # The manifest goes, then a plan cannot be deleted
+    monkeypatch.setattr(
+        vosr2_engine_cache,
+        "remove_tree",
+        lambda path: (path / "manifest.json").unlink(),
+    )
+    vosr2_engine_cache.remove_unused_sets(tmp_path, current, identity)
+    (left,) = tmp_path.glob(f"quarantine-{earlier.name}-*")
+    assert [path.name for path in left.iterdir()] == ["dit.plan.zst"]
+    monkeypatch.setattr(vosr2_engine_cache, "remove_tree", remove_tree)
+    vosr2_engine_cache.remove_unused_sets(tmp_path, current, identity)
+    assert [path.name for path in tmp_path.iterdir()] == [current.name]
 
 
 class TimingConfig:
@@ -232,14 +411,85 @@ def test_build_stages_are_logged_and_reported_as_the_worker_prints_them(capsys, 
     printed = capsys.readouterr().out.replace("\n", "\r\n").encode()
     progress = []
     context = cast(NodeContext, SimpleNamespace(set_progress=progress.append))
+    stages = vosr2_engine_cache.StageLog(context, "TensorRT")
     # The worker's output arrives in pieces; only whole lines count.
     head, tail = printed[:45], printed[45:]
     with caplog.at_level(logging.INFO):
-        unread = vosr2_engine_cache.report_stages(context, b"Exporting\n" + head)
-        assert progress == [0] and unread == head[head.rindex(b"\n") + 1 :]
-        assert vosr2_engine_cache.report_stages(context, unread + tail) == b""
+        stages.read(b"Exporting\n" + head)
+        assert progress == [0] and stages.unread == head[head.rindex(b"\n") + 1 :]
+        stages.read(tail)
+        assert stages.unread == b""
     assert progress == [0, 1 / 3, 2 / 3]
     assert "VOSR TensorRT build: stage 3 of 3, Compiling BF16 stage 3" in caplog.text
+    # A stage ends where the next one starts
+    assert "VOSR TensorRT build: stage 2 of 3 done in " in caplog.text
+    assert "stage 3 of 3 done" not in caplog.text
+
+
+def build_with(monkeypatch, tmp_path: Path, worker: str) -> list[float]:
+    """Run compile_worker on a worker script, the GPU's memory faked; its progress."""
+    monkeypatch.setattr(torch.cuda, "device", lambda _: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(
+        vosr2_engine_cache,
+        "get_vram_usage",
+        lambda index: MemoryUsage(32_000_000_000, 1_000_000_000, 31_000_000_000),
+    )
+    script = tmp_path / "scratch_worker.py"
+    script.write_text(worker)
+    progress = []
+    context = cast(
+        NodeContext,
+        SimpleNamespace(check_aborted=lambda: None, set_progress=progress.append),
+    )
+    vosr2_engine_cache.compile_worker(
+        context, script, tmp_path, tmp_path, torch.device("cuda:0"), label="FP8"
+    )
+    return progress
+
+
+STAGED_WORKER = """import time
+for index, task in enumerate(["Exporting", "Compiling", "Checking"], 1):
+    print(f"Stage {index} of 3: {task}", flush=True)
+    time.sleep(0.2)
+"""
+
+
+def test_a_build_logs_each_stage_start_end_and_its_total(monkeypatch, tmp_path, caplog):
+    with caplog.at_level(logging.INFO, logger="sanic.root"):
+        progress = build_with(monkeypatch, tmp_path, STAGED_WORKER)
+    assert progress == [0, 1 / 3, 2 / 3]
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("VOSR FP8 build:")
+    ]
+    assert [message.rsplit(" in ", 1)[0] for message in messages] == [
+        "VOSR FP8 build: stage 1 of 3, Exporting",
+        "VOSR FP8 build: stage 1 of 3 done",
+        "VOSR FP8 build: stage 2 of 3, Compiling",
+        "VOSR FP8 build: stage 2 of 3 done",
+        "VOSR FP8 build: stage 3 of 3, Checking",
+        "VOSR FP8 build: stage 3 of 3 done",
+        "VOSR FP8 build: done",
+    ]
+    # Each stage slept 0.2 s
+    assert all(
+        float(message.rsplit(" in ", 1)[1].removesuffix(" s")) >= 0.1
+        for message in messages[1:6:2]
+    )
+
+
+def test_a_failed_build_reports_no_end(monkeypatch, tmp_path, caplog):
+    worker = STAGED_WORKER + "raise SystemExit(3)\n"
+    with (
+        caplog.at_level(logging.INFO, logger="sanic.root"),
+        pytest.raises(RuntimeError, match="VOSR FP8 compilation failed"),
+    ):
+        build_with(monkeypatch, tmp_path, worker)
+    assert "VOSR FP8 build: stage 3 of 3, Checking" in caplog.text
+    assert "stage 3 of 3 done" not in caplog.text
+    assert "VOSR FP8 build: done" not in caplog.text
 
 
 def test_a_build_without_gpu_memory_monitoring_says_so(monkeypatch, tmp_path):

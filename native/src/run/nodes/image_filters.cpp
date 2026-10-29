@@ -433,11 +433,11 @@ void dither(NodeContext &, std::span<const Value> inputs, std::vector<Value> &ou
     int map = 0;
     if (mode == 2) map = diffusion_map(std::get<std::string>(inputs[4]));
     neighborhood_image(image);
-    uint32_t colors = dither_count(inputs[1], "Dither colors must be an integer in [2,4294967295]");
+    uint32_t colors = dither_count(inputs[1], 0xFFFFFFFF, "Dither colors must be an integer in [2,4294967295]");
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     size_t height = size_t(image.height), width = size_t(image.width), channels = size_t(image.channels);
     if (mode == 3) {
-        uint32_t history = dither_count(inputs[5], "History length must be an integer in [2,4294967295]");
+        uint32_t history = history_length(inputs[5]);
         check(cn_neighborhood_uniform_riemersma(image.data, out.data(), height, width, channels, colors, history,
                                                 float(1.0 / history)));
     } else {

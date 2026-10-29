@@ -204,9 +204,10 @@ export class UiCache {
 
     /**
      * Keeps the live node list for the next start. Writes only when the file would change, and
-     * never a list from a start in which a package failed to load (it may load at the next start,
-     * which would then show the list without its nodes); the promise never rejects (a failure is
-     * logged).
+     * never a list from a start in which a package failed to load for the first time (it may load
+     * at the next start, which would then show the list without its nodes; a failure the same as
+     * at the previous start is settled, as the backend's `complete` says); the promise never
+     * rejects (a failure is logged).
      */
     write(data: BackendData): Promise<void> {
         this.writing = this.writing

@@ -11,7 +11,7 @@ Layout (keys are written sorted, so equal content is byte-identical):
   python_stack {interpreter_version, build_tag, archive_sha256, lock_sha256,
                 runtime, excluded {distribution: reason}, chainner_pip_version,
                 bytecode},
-  native_toolchain {clang_cl, msvc_toolset, windows_sdk}.
+  native_toolchain {clang_cl, msvc_toolset, windows_sdk, tensorrt_major, cuda_major}.
 The runtime is recorded at the initial copy, with the .pyc that build compiles
 into its Lib (package_port.BYTECODE; that build verifies them), and is carried
 forward unverified: portable dependency installs legitimately change it.
@@ -73,6 +73,16 @@ TOOLCHAIN_PINS = {
     "windows_sdk": (
         "native/toolchain.cmake",
         re.compile(r'set\(chainner_c_windows_sdk_version "([^"]+)"\)'),
+    ),
+    # The TensorRT and CUDA majors of the GPU plugins and the TensorRT runner
+    # (vosr2_qkv.dll first): the configure refuses SDKs of any other major.
+    "tensorrt_major": (
+        "native/CMakeLists.txt",
+        re.compile(r"set\(chainner_c_tensorrt_major ([^)\s]+)\)"),
+    ),
+    "cuda_major": (
+        "native/CMakeLists.txt",
+        re.compile(r"set\(chainner_c_cuda_major ([^)\s]+)\)"),
     ),
 }
 

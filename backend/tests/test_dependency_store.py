@@ -77,6 +77,27 @@ def test_a_plain_version_is_a_floor(
     assert (filter_necessary_to_install([dependency]) == [dependency]) is needed
 
 
+def test_no_pip_runs_when_every_pin_is_installed(monkeypatch: pytest.MonkeyPatch):
+    # A start where the installed packages' metadata, read in this process, meets every
+    # pin: neither install path starts pip (a pip process takes 0.4-0.6 s).
+    fake_environment(monkeypatch, {"einops": "0.9.0", "spandrel": "0.4.2+c2"})
+    monkeypatch.setattr(store, "installed_packages", {})
+    store.scan_installed_packages()
+
+    def pip(*arguments: Any, **_options: Any):
+        raise AssertionError(f"pip ran: {arguments}")
+
+    monkeypatch.setattr(store.subprocess, "check_call", pip)
+    monkeypatch.setattr(store.subprocess, "Popen", pip)
+
+    async def progress(*_arguments: Any) -> None:
+        raise AssertionError("progress reported")
+
+    dependencies = [DependencyInfo(package_name="einops", version="0.8.2"), FORK]
+    assert store.install_dependencies_sync(dependencies) == 0
+    assert asyncio.run(store.install_dependencies(dependencies, progress)) == 0
+
+
 def test_a_package_with_extras_is_listed_by_its_name(monkeypatch: pytest.MonkeyPatch):
     # pip installs "vsjetpack[deinterlace]" but lists (and uninstalls) "vsjetpack".
     jetpack = DependencyInfo("vsjetpack[deinterlace]", "2.2.6")
@@ -839,3 +860,144 @@ def test_an_install_without_amd_builds_uninstalls_nothing_first(
     runs = pip_runs(monkeypatch, environment, (nvidia_torch,))
     assert asyncio.run(store.install_dependencies([nvidia_torch], ignore_progress)) == 1
     assert [run[0] for run in runs] == ["install"]
+
+
+def dist_info(
+    site: Path,
+    name: str,
+    requires: tuple[str, ...] = (),
+    extras: tuple[str, ...] = (),
+    requested: bool = False,
+    files: tuple[str, ...] | None = None,
+) -> None:
+    """An installed distribution's metadata; `requested`: installed by name (pip's
+    REQUESTED mark), not pulled in as a dependency. Its RECORD lists `files` (by
+    default, None, a module of its own name; no RECORD for ())."""
+    folder = site / f"{name.replace('-', '_')}-1.0.dist-info"
+    folder.mkdir(parents=True)
+    if files != ():
+        module = name.lower().replace("-", "_")
+        listed = [*(files or (f"{module}/__init__.py",)), f"{folder.name}/METADATA"]
+        # importlib.metadata lists only the files that exist.
+        for path in listed[:-1]:
+            (site / path).parent.mkdir(parents=True, exist_ok=True)
+            (site / path).write_text("", encoding="utf-8")
+        (folder / "RECORD").write_text(
+            "".join(f"{path},,\n" for path in listed), encoding="utf-8"
+        )
+    lines = [
+        "Metadata-Version: 2.1",
+        f"Name: {name}",
+        "Version: 1.0",
+        *[f"Provides-Extra: {extra}" for extra in extras],
+        *[f"Requires-Dist: {requirement}" for requirement in requires],
+    ]
+    (folder / "METADATA").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if requested:
+        (folder / "REQUESTED").write_text("", encoding="utf-8")
+
+
+def test_an_uninstall_takes_the_dependencies_nothing_else_needs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Uninstalling only the listed distributions of the VapourSynth package left about
+    # 1.8 GB behind: vsview's PySide6, CUDA wheels, the extras' plugins.
+    site = tmp_path / "site"
+    dist_info(site, "VapourSynth", requested=True)
+    dist_info(
+        site,
+        "vsjetpack",
+        (
+            "typing_extensions>=4",
+            "jetpack-helper",
+            'deinterlace-plugin; extra == "deinterlace"',
+            'other-plugin; extra == "other"',
+        ),
+        ("deinterlace", "other"),
+        requested=True,
+    )
+    dist_info(
+        site,
+        "vsview",
+        ("PySide6>=6.10", "numpy", "my-tool", 'old-dep; python_version < "3.0"'),
+        requested=True,
+    )
+    dist_info(site, "dfttest2", ('nvidia-cufft; extra == "cufft"',), ("cufft",))
+    dist_info(site, "PySide6", ("shiboken6==6.10", "PySide6_Addons"))
+    for name in ("shiboken6", "PySide6_Addons", "other-plugin", "old-dep", "numpy"):
+        dist_info(site, name)
+    dist_info(site, "typing_extensions")
+    dist_info(site, "deinterlace-plugin", ("shared-lib",))
+    dist_info(site, "shared-lib")
+    dist_info(site, "jetpack-helper")
+    dist_info(site, "nvidia-cufft")
+    # Staying: a package of the user's that needs shared-lib, a user module that
+    # needs jetpack-helper, one that needs the CUDA wheel under an extra, and a tool
+    # the user installed by name.
+    dist_info(site, "chainner-thing", ("shared-lib",), requested=True)
+    dist_info(site, "vs-colorfix", ("jetpack-helper",), requested=True)
+    dist_info(
+        site, "torchlike", ('nvidia-cufft; extra == "gpu"',), ("gpu",), requested=True
+    )
+    dist_info(site, "my-tool", requested=True)
+    distributions = store.importlib.metadata.distributions
+    monkeypatch.setattr(
+        store.importlib.metadata,
+        "distributions",
+        lambda: distributions(path=[str(site)]),
+    )
+    leaving = [
+        DependencyInfo(package_name=name, version="1.0")
+        for name in (
+            "VapourSynth",
+            "vsjetpack[deinterlace]",
+            "vsview",
+            "dfttest2[cufft]",
+        )
+    ]
+    # The server lists typing_extensions; numpy is always kept.
+    unneeded = store.unneeded_dependencies(leaving, {"typing-extensions"})
+    assert [(dep.package_name, dep.version) for dep in unneeded] == [
+        ("deinterlace-plugin", "1.0"),
+        ("pyside6", "1.0"),
+        ("pyside6-addons", "1.0"),
+        ("shiboken6", "1.0"),
+    ]
+
+    # What a distribution needs is unknown when its requirements cannot be read.
+    dist_info(site, "broken", ("not a requirement !",))
+    with pytest.raises(ValueError):
+        store.unneeded_dependencies(leaving, {"typing-extensions"})
+
+
+def test_an_uninstall_keeps_a_dependency_that_shares_files_with_one_that_stays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # vs-jetpack's niquests needs urllib3-future, whose wheel installs into urllib3/
+    # over urllib3's own files: pip would delete urllib3/__init__.py with it, and
+    # `import requests` (downloads, Align Image, the web UI) would fail.
+    site = tmp_path / "site"
+    dist_info(site, "vsjetpack", ("niquests", "no-record"), requested=True)
+    dist_info(site, "niquests", ("urllib3-future", "wassima"))
+    dist_info(
+        site,
+        "urllib3-future",
+        ("h11",),
+        files=("urllib3/__init__.py", "urllib3/contrib/hface/__init__.py"),
+    )
+    dist_info(site, "urllib3", files=("urllib3/__init__.py", "urllib3/util/retry.py"))
+    dist_info(site, "requests", ("urllib3",), requested=True)
+    for name in ("wassima", "h11"):
+        dist_info(site, name)
+    dist_info(site, "no-record", files=())
+    distributions = store.importlib.metadata.distributions
+    monkeypatch.setattr(
+        store.importlib.metadata,
+        "distributions",
+        lambda: distributions(path=[str(site)]),
+    )
+    leaving = [DependencyInfo(package_name="vsjetpack", version="1.0")]
+    # urllib3-future stays, and so does what it needs (h11); a dependency without a
+    # RECORD stays too: what pip would delete with it is unknown.
+    unneeded = store.unneeded_dependencies(leaving, set())
+    assert [dep.package_name for dep in unneeded] == ["niquests", "wassima"]

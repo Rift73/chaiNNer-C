@@ -277,11 +277,11 @@ static void scaling_weights(enum DescaleMode mode, int support, int taps, int sr
                         real_pos = 0.0;
                     else if (xpos >= src_dim)
                         real_pos = src_dim - 0.5;
-                } else {    // Mirror
-                    if (xpos < 0.0)
-                        real_pos = -xpos;
-                    else if (xpos >= src_dim)
-                        real_pos = DSMIN(2.0 * src_dim - xpos, src_dim - 0.5);
+                } else {    // Mirror, repeated: the tap's pixel folded with period 2 * src_dim (PATCHES)
+                    double k = fmod(floor(xpos), 2.0 * src_dim);
+                    if (k < 0.0)
+                        k += 2.0 * src_dim;
+                    real_pos = (k < src_dim ? k : 2.0 * src_dim - 1.0 - k) + 0.5;
                 }
             }
 

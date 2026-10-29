@@ -897,7 +897,8 @@ def test_cv_decoder_fallback_cause_and_order(fail_first, second):
     assert run(False) == run(True)
 
 
-@pytest.mark.parametrize("relative", [None, "", ".", "sub/folder", "sub/../folder"])
+# A ".." component is refused (test_save_image_paths.py), where the installed app joins it.
+@pytest.mark.parametrize("relative", [None, "", ".", "sub/folder", "sub/./folder"])
 def test_full_path_and_repeat_skip(tmp_path, relative):
     value = image()
     for current in [False, True]:
@@ -930,6 +931,11 @@ ADDED_SAVE_INPUTS = {
     22: "dds_mip_levels",
     23: "dds_mip_filter",
 }
+
+
+# Save Image's labels this port changed, to the installed ones: AVIF's 4:0:0 keeps the
+# luma alone, which "Best Compression" hid.
+CHANGED_LABELS = {"4:0:0 (Grayscale)": "4:0:0 (Best Compression)"}
 
 
 class StripAddedInputs(ast.NodeTransformer):
@@ -1001,6 +1007,11 @@ def test_frozen_hashes_and_metadata():
             node = StripAddedInputs().visit(node)
             added = set(ADDED_SAVE_INPUTS.values())
             node.args.args = [a for a in node.args.args if a.arg not in added]
+            for constant in ast.walk(node):
+                if isinstance(constant, ast.Constant) and isinstance(
+                    constant.value, str
+                ):
+                    constant.value = CHANGED_LABELS.get(constant.value, constant.value)
         return ast.dump(node)
 
     for name in ["load_image", "save_image", "view_image_external"]:

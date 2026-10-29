@@ -17,6 +17,7 @@ from typing import cast
 
 import numpy as np
 import pytest
+from scratch_storage import NO_FFMPEG, STORAGE
 
 # The node's modules load the native backend, which GitHub's checks do not build.
 pytest.importorskip("nodes.impl._chainner_graph")
@@ -44,12 +45,9 @@ from packages.chaiNNer_standard.image.video_frames.save_video import (
     save_video_node,
 )
 
-STORAGE = Path(os.environ.get("APPDATA", "")) / "chaiNNer" / "backend-storage"
 FFMPEG = str(get_executable_path(STORAGE / "ffmpeg")[0])
 
-pytestmark = pytest.mark.skipif(
-    not Path(FFMPEG).exists(), reason="the integrated FFmpeg is not downloaded"
-)
+pytestmark = pytest.mark.skipif(not Path(FFMPEG).exists(), reason=NO_FFMPEG)
 
 OLD = 1_000_000_000  # An mtime (2001) no write of this test can produce.
 # Random muxer IDs and dates differ run to run; bitexact leaves the bytes the options give.

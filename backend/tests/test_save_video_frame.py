@@ -324,7 +324,10 @@ def test_a_second_frame_is_an_error(tmp_path: Path):
 
 
 def failure(
-    context: Context, folder: Path, frame: tuple[object, ...], **options: Any
+    context: Context,
+    folder: Path,
+    frame: tuple[np.ndarray | None, ...],
+    **options: Any,
 ) -> tuple[str, str] | None:
     """The error (type, message) of Save Video given one frame, None without one."""
     try:
@@ -360,7 +363,7 @@ def test_a_one_frame_run_fails_as_the_video_would(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     options: dict[str, Any],
-    frame: tuple[object, ...],
+    frame: tuple[np.ndarray | None, ...],
 ):
     chosen = failure(Context(), tmp_path / "frame", frame, **options)
     assert not list((tmp_path / "frame").glob("*.png"))

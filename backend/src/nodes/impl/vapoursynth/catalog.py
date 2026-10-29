@@ -1,10 +1,11 @@
 """The VapourSynth catalog in chaiNNer's worker: keeps `<storage>\\vapoursynth\\catalog.json`
-current (scan.py rescans in a child process when what it lists changed), installs the
-user's listed modules first, and turns the catalog and the overlays into Methods with
-their families and stable input ids. VapourSynth itself is never imported here.
+current (scan.py rescans in a child process when what it lists changed; the host has
+installed the user's listed modules, user_modules.py), and turns the catalog and the
+overlays into Methods with their families and stable input ids. VapourSynth itself is
+never imported here.
 
 Storage folder (`<storage>\\vapoursynth`, from CHAINNER_VS_DIR): catalog.json, user\\*.py
-(user functions), user_modules.toml (`modules = ["vs_colorfix"]`, pip names) and
+(user functions), user_modules.toml (`modules = ["vs_colorfix"]`, pip requirements) and
 overlays\\*.toml. Overlays are TOML tables `[method."<id>"]` with `label`, `family`,
 `simple` (parameter names), `labels` (parameter -> plain name), `help`, `hidden`
 (parameters left out, keeping their defaults), `annotations` (parameter -> annotation
@@ -32,6 +33,7 @@ import importlib.metadata
 import json
 import os
 import subprocess
+import tempfile
 import zlib
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -40,10 +42,8 @@ from typing import Any, Iterable, Mapping, Sequence
 import tomllib
 from sanic.log import logger
 
-from dependencies.store import ENV as PIP_ENV
-from dependencies.store import PIP_REASON_LINES
-
-from .catalog_types import Method, Param, qualified
+from ..owned_job import worker_child
+from .catalog_types import VARIADIC, Method, Param, qualified
 from .runner import (
     _API3_NOTICE,
     STDERR_TAIL_LINES,
@@ -52,16 +52,14 @@ from .runner import (
     vs_python,
     vspipe,
 )
-from .scan import SCHEMA, user_module_names
+from .scan import SCHEMA, STEP, project_name, user_module_names
+from .user_modules import MODULES_FILE
 
 SCAN_PY = Path(__file__).with_name("scan.py")
 SCAN_TIMEOUT = 120
-# The longest a user module's pip install may take at startup (s).
-PIP_TIMEOUT = 900
 SHIPPED_OVERLAYS = Path(__file__).with_name("overlays")
 CATALOG = "catalog.json"
 USER_DIR = "user"
-MODULES_FILE = "user_modules.toml"
 OVERLAY_DIR = "overlays"
 
 # Input ids below this are the family nodes' fixed inputs (0 main clip, 1 Method,
@@ -266,66 +264,11 @@ def storage_dir() -> Path | None:
     return Path(value) if value else None
 
 
-def pip_command() -> list[str]:
-    """chaiNNer's own pip, as the dependency manager runs it."""
-    return [str(vs_python()), "-m", "chainner_pip"]
-
-
 def _version(distribution: str) -> str | None:
     try:
         return importlib.metadata.version(distribution)
     except importlib.metadata.PackageNotFoundError:
         return None
-
-
-def install_user_modules(names: Iterable[str]) -> None:
-    """Installs the listed pip packages that are missing. A failed install, or one that
-    takes longer than PIP_TIMEOUT, is logged and skips that module only (the scan
-    lists it under errors)."""
-    for name in names:
-        if _version(name) is not None:
-            continue
-        logger.info("Installing the VapourSynth user module %s with pip.", name)
-        try:
-            done = subprocess.run(
-                [
-                    *pip_command(),
-                    "install",
-                    name,
-                    "--disable-chainner_pip-version-check",
-                    "--no-warn-script-location",
-                    "--no-cache-dir",
-                ],
-                env=PIP_ENV,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=PIP_TIMEOUT,
-                check=False,
-                creationflags=_NO_WINDOW,
-            )
-        except OSError as error:
-            logger.warning("Could not run pip to install %s: %s", name, error)
-            continue
-        except subprocess.TimeoutExpired:
-            logger.warning(
-                "Installing the VapourSynth user module %s took longer than %d s;"
-                " pip was stopped and its functions are skipped.",
-                name,
-                PIP_TIMEOUT,
-            )
-            continue
-        if done.returncode == 0:
-            logger.info("Installed the VapourSynth user module %s.", name)
-            continue
-        lines = (done.stdout + done.stderr).strip().splitlines()
-        logger.warning(
-            "Could not install the VapourSynth user module %s; its functions are"
-            " skipped. pip said:\n%s",
-            name,
-            "\n".join(lines[-PIP_REASON_LINES:]),
-        )
 
 
 def _digest(data: bytes) -> str:
@@ -363,7 +306,7 @@ def catalog_key(storage: Path, modules: Sequence[str]) -> dict[str, Any]:
         "vsjetpack": _version("vsjetpack"),
         "plugins": _plugins_digest(),
         "user_files": user_files,
-        "user_modules": {name: _version(name) for name in modules},
+        "user_modules": {name: _version(project_name(name)) for name in modules},
         "user_modules_file": (
             _digest(modules_file.read_bytes()) if modules_file.is_file() else None
         ),
@@ -381,8 +324,10 @@ def _stored_key(catalog: Path) -> dict[str, Any] | None:
 
 
 def run_scan(out: Path, user_dir: Path, modules_file: Path) -> None:
-    """Runs scan.py in a child process of VapourSynth's Python; raises RuntimeError
-    with the end of its stderr when it fails or takes longer than SCAN_TIMEOUT s."""
+    """Runs scan.py in a child process of VapourSynth's Python, which ends with the
+    worker; raises RuntimeError with the end of its stderr when it fails, or naming
+    the import it was in (a user file that hangs) when it takes longer than
+    SCAN_TIMEOUT s."""
     command = [
         str(vs_python()),
         "-I",
@@ -395,30 +340,49 @@ def run_scan(out: Path, user_dir: Path, modules_file: Path) -> None:
         "--modules-file",
         str(modules_file),
     ]
-    try:
-        done = subprocess.run(
+    # A file, not a pipe: a process that a user file started may keep the scan's stderr
+    # open after the scan ended, and a pipe's reader would wait for it.
+    with tempfile.TemporaryFile() as log:
+        with worker_child(
             command,
             env=vs_env(),
             stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=SCAN_TIMEOUT,
-            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=log,
             creationflags=_NO_WINDOW,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise RuntimeError(f"The scan took longer than {SCAN_TIMEOUT} s.") from error
-    if done.returncode != 0:
-        stderr = done.stderr.decode("utf-8", "replace").splitlines()
-        lines = [line for line in stderr if not _API3_NOTICE.match(line)]
+        ) as process:
+            try:
+                process.wait(timeout=SCAN_TIMEOUT)
+            except subprocess.TimeoutExpired as error:
+                process.kill()
+                process.wait()
+                log.seek(0)
+                steps = [
+                    line.partition(STEP)[2]
+                    for line in log.read().decode("utf-8", "replace").splitlines()
+                    if STEP in line
+                ]
+                where = f"; it was still {steps[-1]}" if steps else ""
+                raise RuntimeError(
+                    f"The scan took longer than {SCAN_TIMEOUT} s{where}."
+                ) from error
+        log.seek(0)
+        stderr = log.read().decode("utf-8", "replace")
+    if process.returncode != 0:
+        lines = [
+            line
+            for line in stderr.splitlines()
+            if not _API3_NOTICE.match(line) and STEP not in line
+        ]
         tail = "\n".join(lines[-STDERR_TAIL_LINES:]).strip()
-        raise RuntimeError(tail or f"The scan exited with code {done.returncode}.")
+        raise RuntimeError(tail or f"The scan exited with code {process.returncode}.")
 
 
 def ensure_catalog(storage: Path) -> Path | None:
     """`<storage>\\catalog.json`, rescanned first when its key changed (VapourSynth or
     vs-jetpack versions, the plugin folder, the user files, user_modules.toml and the
-    listed modules' versions); missing user modules are installed first, at each
-    start while one is missing.
+    listed modules' versions: the host installs a missing module before the worker
+    starts, user_modules.py).
     None when VapourSynth is not installed, or when the scan failed and there is no
     earlier catalog (a failed scan keeps the earlier one)."""
     try:
@@ -434,15 +398,7 @@ def ensure_catalog(storage: Path) -> Path | None:
         logger.warning("VapourSynth user modules: %s", error)
         modules = []
     key = catalog_key(storage, modules)
-    stored = _stored_key(catalog)
-    # A listed module that is not installed (its install failed) is tried again at
-    # each start; the catalog is rescanned when that changed the key.
-    if stored == key and None not in key["user_modules"].values():
-        return catalog
-
-    install_user_modules(modules)
-    key = catalog_key(storage, modules)
-    if stored == key:
+    if _stored_key(catalog) == key:
         return catalog
     storage.mkdir(parents=True, exist_ok=True)
     scanned = catalog.with_name(CATALOG + ".scan")
@@ -587,7 +543,7 @@ def _params(
             entry["kind"],
         )
         if name in hidden:
-            if param.default is not None or param.kind == "var_keyword":
+            if param.default is not None or param.kind in VARIADIC:
                 continue
             logger.warning(
                 "The overlay hides %s of %s, which has no default; it stays.",

@@ -54,8 +54,8 @@ bool decode_pillow_jpeg(std::span<const uint8_t> file, uint64_t max_pixels, cons
 bool decode_opencv(std::span<const uint8_t> file, const Allocator &allocate, bool ported = true);
 
 /* Today's `pil-tiff-alpha` decoder (load_image.py's _read_tiff_straight_alpha) for the plain 8-bit RGBA and
- * grey+alpha TIFFs cn_tiff_decode_pillow_alpha takes: BGRA, turned as its Orientation tag (or, without one, its XMP
- * packet's tiff:Orientation, which Pillow turns by) says. max_pixels is
+ * grey+alpha TIFFs cn_tiff_decode_pillow_alpha takes, and 16-bit grey+alpha (uint16): BGRA, turned as its
+ * Orientation tag (or, without one, its XMP packet's tiff:Orientation, which Pillow turns by) says. max_pixels is
  * Image.MAX_IMAGE_PIXELS (0 for None), as for decode_pillow_jpeg: larger images decline (Pillow warns or refuses at
  * load). Other files decline and the Python decoder runs. */
 bool decode_pillow_tiff_alpha(std::span<const uint8_t> file, uint64_t max_pixels, const Allocator &allocate);

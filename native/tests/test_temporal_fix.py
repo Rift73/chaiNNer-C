@@ -5,7 +5,6 @@ weight download, and the node in a real executor loop (CPU, random weights)."""
 import hashlib
 import http.server
 import logging
-import os
 import subprocess
 import threading
 from collections import OrderedDict
@@ -19,6 +18,7 @@ import numpy as np
 import pytest
 import torch
 from engine_differential import execute
+from scratch_storage import NO_FFMPEG, STORAGE
 from test_engine_scenarios import Builder
 from test_generator_lifecycle import make_node
 from test_item_window import Pipeline, set_schema
@@ -419,13 +419,10 @@ def test_a_range_gives_the_outputs_of_a_full_run_on_each_executor(
         np.testing.assert_array_equal(got, want)
 
 
-STORAGE = Path(os.environ.get("APPDATA", "")) / "chaiNNer" / "backend-storage"
 FFMPEG, FFPROBE = map(str, get_executable_path(STORAGE / "ffmpeg"))
 
 
-@pytest.mark.skipif(
-    not Path(FFMPEG).exists(), reason="the integrated FFmpeg is not downloaded"
-)
+@pytest.mark.skipif(not Path(FFMPEG).exists(), reason=NO_FFMPEG)
 @pytest.mark.parametrize("kind", ["native", "python"])
 def test_a_load_video_range_gives_the_outputs_of_a_full_run(
     monkeypatch, tmp_path, kind
@@ -490,7 +487,14 @@ def test_a_load_video_range_gives_the_outputs_of_a_full_run(
         )
         b.chain.add_node(load)
         values = {item.id: item.to_dict().get("def") for item in loader_data.inputs}
-        values.update({0: str(clip), 10: frames, 11: first, 12: last})
+        values.update(
+            {
+                InputId(0): str(clip),
+                InputId(10): frames,
+                InputId(11): first,
+                InputId(12): last,
+            }
+        )
         for input_id, value in values.items():
             b.value("frames", input_id, value)
         fix = b.node(

@@ -18,7 +18,8 @@ from typing import TYPE_CHECKING, Any
 import psutil
 from sanic.log import logger
 
-from ..pytorch.vosr2_process import PARENT_PID_VARIABLE, OwnedJob
+from ..owned_job import OwnedJob
+from ..pytorch.vosr2_process import PARENT_PID_VARIABLE
 
 if TYPE_CHECKING:
     import onnx
@@ -85,7 +86,7 @@ def run_child(
     (drft.py) runs here too.
 
     The child ends with the call on any exit: Stop (context.check_aborted(), polled
-    while it runs) or an error kills it with its descendants (vosr2_process.OwnedJob),
+    while it runs) or an error kills it with its descendants (owned_job.OwnedJob),
     and a worker that dies takes it along: on Windows its kill-on-close job, on Linux
     the engine builds' end_with_parent, which they call before their slow imports and
     which also ends a build whose worker died before that (the host's /kill restarts a
