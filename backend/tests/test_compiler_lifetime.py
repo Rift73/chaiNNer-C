@@ -131,13 +131,13 @@ def test_the_vosr_compiler_is_given_its_parents_pid_outside_windows(
     from nodes.impl.pytorch.vosr2 import BundlePaths
 
     launched = {}
-    gpu = SimpleNamespace(
-        index=0,
-        get_current_vram_usage=lambda: SimpleNamespace(used=0, total=32_000_000_000),
-    )
     monkeypatch.setattr(torch.cuda, "device", lambda _: nullcontext())
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
-    monkeypatch.setattr(cache, "nvidia", SimpleNamespace(devices=[gpu]))
+    monkeypatch.setattr(
+        cache,
+        "get_vram_usage",
+        lambda index: SimpleNamespace(used=0, total=32_000_000_000),
+    )
     monkeypatch.setattr(
         cache,
         "OwnedJob",

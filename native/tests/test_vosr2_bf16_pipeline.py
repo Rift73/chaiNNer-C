@@ -17,6 +17,7 @@ import pytest
 import torch
 
 from api import NodeContext
+from gpu import MemoryUsage
 from nodes.impl.pytorch import (
     vosr2_engine_cache,
     vosr2_plan_file,
@@ -241,17 +242,38 @@ def test_build_stages_are_logged_and_reported_as_the_worker_prints_them(capsys, 
     assert "VOSR TensorRT build: stage 3 of 3, Compiling BF16 stage 3" in caplog.text
 
 
-def test_a_build_without_nvidia_memory_monitoring_says_so(monkeypatch, tmp_path):
-    # NVML lists no device for the CUDA index (NVML failed to start): the build refuses
+def test_a_build_without_gpu_memory_monitoring_says_so(monkeypatch, tmp_path):
+    # No memory reading for the device's index (NVML failed to start): the build refuses
     # with the message vram_budget gives, not a bare StopIteration, whose empty text
     # would be the node's whole error.
     monkeypatch.setattr(torch.cuda, "device", lambda _: contextlib.nullcontext())
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
-    monkeypatch.setattr(vosr2_engine_cache, "nvidia", SimpleNamespace(devices=[]))
+    monkeypatch.setattr(vosr2_engine_cache, "get_vram_usage", lambda index: None)
     context = cast(NodeContext, SimpleNamespace())
-    with pytest.raises(RuntimeError, match="NVIDIA memory monitoring"):
+    with pytest.raises(RuntimeError, match="GPU memory monitoring"):
         vosr2_engine_cache.compile_worker(
             context, "unused.py", tmp_path, tmp_path, torch.device("cuda:0")
+        )
+
+
+def test_a_build_that_outlasts_its_limit_is_stopped(monkeypatch, tmp_path):
+    # The limit is in seconds; the memory check beside it reads bytes.
+    monkeypatch.setattr(torch.cuda, "device", lambda _: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(
+        vosr2_engine_cache,
+        "get_vram_usage",
+        lambda index: MemoryUsage(32_000_000_000, 1_000_000_000, 31_000_000_000),
+    )
+    worker = tmp_path / "scratch_hang.py"
+    worker.write_text("import time\ntime.sleep(60)\n")
+    context = cast(
+        NodeContext,
+        SimpleNamespace(check_aborted=lambda: None, set_progress=lambda _: None),
+    )
+    with pytest.raises(TimeoutError, match="exceeded 0 minutes"):
+        vosr2_engine_cache.compile_worker(
+            context, worker, tmp_path, tmp_path, torch.device("cuda:0"), limit=1
         )
 
 
@@ -455,11 +477,13 @@ def test_warm_session_is_released_only_when_the_device_is_nearly_full(
     session.device = torch.device("cuda:0")
     session.budget = 0
     monkeypatch.setattr(session, "offload", lambda: calls.append(True))
-    gpu = SimpleNamespace(
-        index=0,
-        get_current_vram_usage=lambda: SimpleNamespace(used=used, total=32_000_000_000),
+    monkeypatch.setattr(
+        vosr2_trt_pipeline,
+        "get_vram_usage",
+        lambda index: (
+            SimpleNamespace(used=used, total=32_000_000_000) if index == 0 else None
+        ),
     )
-    monkeypatch.setattr(vosr2_trt_pipeline, "nvidia", SimpleNamespace(devices=[gpu]))
     session.prepare()
     assert len(calls) == expected
 
@@ -549,12 +573,14 @@ def test_a_warm_session_admitted_for_another_memory_mode_is_released(
     session.budget = 1000
     session.reserve = admitted
     monkeypatch.setattr(session, "offload", lambda: calls.append(True))
-    gpu = SimpleNamespace(
-        index=0,
-        get_current_vram_usage=lambda: SimpleNamespace(
-            used=2 * 1024**3, total=32 * 1024**3
+    monkeypatch.setattr(
+        vosr2_trt_pipeline,
+        "get_vram_usage",
+        lambda index: (
+            SimpleNamespace(used=2 * 1024**3, total=32 * 1024**3)
+            if index == 0
+            else None
         ),
     )
-    monkeypatch.setattr(vosr2_trt_pipeline, "nvidia", SimpleNamespace(devices=[gpu]))
     session.prepare(requested)
     assert bool(calls) == offloaded

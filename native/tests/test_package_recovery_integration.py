@@ -736,6 +736,23 @@ def test_the_tensorrt_runner_ships_when_built_and_is_never_required(package_case
     assert case.run()["result"] == "verified_no_op"
 
 
+def test_the_amd_gpu_binaries_ship_when_built_and_are_never_required(package_case):
+    case = package_case
+    case.run()
+    for name in package_files.AMD_BINARIES:
+        write(case.backend, name, b"AMD GPU binary fixture")
+    result = case.run()
+    assert (result["result"], result["written_files"]) == ("refreshed", 3)
+    backend = package_manifest.load(case.manifest)["backend"]
+    assert all(packaged(name) in backend for name in package_files.AMD_BINARIES)
+    for name in package_files.AMD_BINARIES:
+        (case.backend / name).unlink()
+    assert case.run()["result"] == "refreshed"
+    backend = package_manifest.load(case.manifest)["backend"]
+    assert not any(packaged(name) in backend for name in package_files.AMD_BINARIES)
+    assert case.run()["result"] == "verified_no_op"
+
+
 def test_removed_backend_file_differing_from_its_record_is_kept(package_case):
     case = package_case
     case.run()
@@ -1096,9 +1113,8 @@ def test_a_relock_installs_the_locks_url_pins_as_they_are():
     # The forks' wheels (spandrel, onnxruntime-gpu) are direct-URL pins: a -Relock installs them only
     # from its $Packages list, so each must be the lock's line, or a relock quietly swaps the wheel.
     script = REPOSITORY / "native/tools/provision_runtime.ps1"
-    block = re.search(
-        r"\$Packages = @\(\n(.*?)\n\s*\)", script.read_text(encoding="utf-8"), re.S
-    )
+    text = script.read_text(encoding="utf-8")
+    block = re.search(r"\$Packages = @\(\n(.*?)\n\s*\)", text, re.S)
     assert block, "provision_runtime.ps1 has no $Packages block"
     relock = {
         name
@@ -1106,6 +1122,8 @@ def test_a_relock_installs_the_locks_url_pins_as_they_are():
         if not line.lstrip().startswith("#")
         for name in re.findall(r"'([^']+)'", line.split("  #")[0])
     }
+    # ONNX Runtime's pin is the block's $OnnxRuntimePin, set per GPU stack (-Rocm or not).
+    relock.update(re.findall(r"\$OnnxRuntimePin = '([^']+)'", text))
     lock = (REPOSITORY / "native/python-stack.lock.txt").read_text(encoding="utf-8")
     url_pins = [
         line.split("  #")[0]

@@ -4,6 +4,36 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- 2026-10-29 **AMD GPUs: ROCm 7.14.1 and MIGraphX 2.16.1** (branch `amd` over `chaiNNer-C` `ebf96abd`; not released:
+  it ships after tests on rented AMD GPUs, `native/AMD.md`). Design, decisions and the per-area reports:
+  `native/local/amd-20261029/`. No AMD GPU ran any of it yet: what needs one is an `amd_gpu` test the kit runs.
+  - **What.** Where an AMD GPU with 8 or more compute units is found and no NVIDIA GPU (`gpu.amd`: KFD topology on
+    Linux, HIP in a child process on Windows, HIP's device order and visibility variables), the packages install AMD
+    builds: PyTorch 2.14.1+rocm7.14 (Linux) or AMD's 2.12.0 (Windows) with only that GPU's kernel wheels (the bundled
+    `rocm 7.14.1+chainner` meta package needs none of the others), and ONNX Runtime 1.30.0 with MIGraphX (fork release
+    `v1.30.0-rocm7.14`; Windows adds DirectML, the default there). New: the MIGraphX package (Build, Save and Load
+    Program, Upscale Image, Get Program Info) on the native runner `_chainner_migraphx` (`native/migraphx_runner/`,
+    MIGraphX unpatched; nodes of domain `chainner` reach custom ops through `custom_op.h`), with DRFT's kernels and
+    VOSR's qkv ported to HIP (`native/src/drft_hip`, `vosr2_hip`) and DUAL's Triton kernels compiled for the GPU as
+    MIGraphX ops (`native/src/dual_hip`, Linux only: no Triton for AMD on Windows); VOSR's MIGraphX backends (FP8 by
+    MIGraphX's own quantisation on gfx942/gfx950/gfx12xx); HAT's and DAT's attention in PyTorch's fused AMD kernels
+    and, exported on a ROCm torch, in the layout MIGraphX fuses (spandrel `0.4.2+c11`); an installer that uninstalls
+    the builds an AMD dependency replaces (`Dependency.replaces`). NVIDIA and CPU machines choose, install and show
+    what they did before.
+  - **How built.** `native/cmake/rocm.cmake` with `CHAINNER_C_ROCM_ROOT` and `CHAINNER_C_MIGRAPHX_ROOT`
+    (`build_linux.sh`, or `Build.ps1 -RocmRoot -MigraphxRoot`): HIP code for every target ROCm 7.14.1 ships (25 on
+    Linux, 22 on Windows). MIGraphX and the ONNX Runtime wheels: `native/tools/migraphx/` (Linux; `windows/`), the
+    release build's `--migraphx` must be that build. `native/tools/build_linux_release.sh --rocm --migraphx` adds the
+    four AMD modules to the zip.
+  - **Verified.** HIP kernels built through HIP's NVIDIA path equal the CUDA originals on the RTX 5090 (runner kernels
+    byte for byte in 1884 cases, DUAL's ops bit for bit, DRFT within one BF16 step, VOSR's qkv bit for bit); MIGraphX's
+    CPU reference target compiles DRFT's whole graph with its 21 custom nodes and round-trips programs; NVIDIA's HAT-L
+    and DAT2 outputs and exports byte-identical to before; the existing Windows binaries byte-identical with the AMD
+    parts on or off. Full suites: Windows 137,809 passed and Linux 135,384 passed (failures were test-side only and
+    fixed, reruns clean); the ROCm runtime's AMD-side tests pass on the CPU. Fixed on the way: a fresh install's first
+    start (`dependencies/store.py` imported `packaging` before installing it) and CPU-only PyTorch (`offload.py`
+    imported a GPU-only torch call).
+
 - 2026-10-29 **Linux x86-64** (branch `linux` over `chaiNNer-C` `225e1765`; not released: Linux zips ship with the next
   release). Design, decisions and the per-area reports: `native/local/linux-20261029/`.
   - **What.** A portable zip (`chaiNNer-linux-x64/`, started by `chaiNNer.sh`) for x86-64 Linux with glibc 2.28 or
@@ -14,7 +44,7 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
     the install command of the distribution (`CHAINNER_SKIP_LIBRARY_CHECK`), and gives `run` a virtual display
     (`xvfb-run`) when there is none. Copy To Clipboard calls `wl-copy` or `xclip`. Limits: DDS conversion needs
     texconv, so the Linux zip carries none and the DDS nodes keep their Windows-only error; the VapourSynth package
-    installs only with glibc 2.35 or newer; ONNX Runtime has no AMD or Intel GPU provider there (CPU); C-library math
+    installs only with glibc 2.35 or newer; ONNX Runtime has no Intel GPU provider there (CPU; AMD: above); C-library math
     follows the system's libm, so a few results can differ from Windows in the last bit (Linux twins of the golden
     manifests, `native/tests/golden/linux/`).
   - **How built.** `native/build_linux.sh` configures `native/toolchain-linux.cmake` and `native/cmake/linux.cmake`:

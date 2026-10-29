@@ -321,6 +321,9 @@ if(CHAINNER_C_FUZZ)
     add_subdirectory(tests/fuzz)
 endif()
 
+# The AMD GPU parts (cmake/rocm.cmake): optional, built when CHAINNER_C_ROCM_ROOT is given.
+include(cmake/rocm.cmake)
+
 # vosr2_qkv.dll: the VosrQkvPack TensorRT plugin of VOSR's TensorRT path (src/vosr2), beside its
 # loader in nodes/impl/pytorch. Optional: built when both roots below are given (Build.ps1 -Define,
 # on any configure), else skipped with one status line. qkv.cu alone is compiled by nvcc with the

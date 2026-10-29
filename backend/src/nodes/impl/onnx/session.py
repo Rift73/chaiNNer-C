@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.util
+import os
 import sys
 import warnings
 from functools import cache
@@ -64,12 +66,42 @@ def _load_cuda() -> None:
     ort.preload_dlls(msvc=False, directory="")
 
 
+@cache
+def _load_migraphx() -> None:
+    """On Windows, ORT's MIGraphX provider imports HIP by name and MIGraphX loads its
+    GPU target by name, which only the DLLs loaded first resolve to the right files
+    (the AMD driver puts another HIP in System32): MIGraphX's DLLs and ROCm's load as the
+    MIGraphX package loads them, once. Linux's find theirs through their run paths."""
+    from ..migraphx.runner import load_migraphx_libraries
+
+    load_migraphx_libraries()
+
+
+def _migraphx_program_dir(
+    model: OnnxModel, cache_path: str, fp16: bool, exhaustive_tune: bool
+) -> str:
+    """The folder of `model`'s compiled MIGraphX programs in the cache at
+    `cache_path`. MIGraphX names a program by the graph's tensor names and shapes, the
+    GPU architecture and the input shape only: two models of one architecture with
+    other weights, or one model compiled in another precision or tuning, would load
+    each other's programs from one folder."""
+    digest = hashlib.sha256(model.bytes).hexdigest()[:32]
+    precision = "fp16" if fp16 else "fp32"
+    tuning = "-exhaustive" if exhaustive_tune else ""
+    path = os.path.join(cache_path, f"{digest}-{precision}{tuning}")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def create_inference_session(
     model: OnnxModel,
     gpu_index: int,
     execution_provider: str,
     should_tensorrt_fp16: bool = False,
     tensorrt_cache_path: str | None = None,
+    should_migraphx_fp16: bool = False,
+    migraphx_cache_path: str | None = None,
+    migraphx_exhaustive_tune: bool = False,
 ) -> NativeSession | ort.InferenceSession:
     if (
         execution_provider == "CPUExecutionProvider"
@@ -122,6 +154,24 @@ def create_inference_session(
         providers = [cuda, cpu]
     elif execution_provider == "DmlExecutionProvider":
         providers = [dml, cpu]
+    elif execution_provider == "MIGraphXExecutionProvider":
+        if sys.platform == "win32":
+            _load_migraphx()
+        # MIGraphX compiles the graph for each input shape it runs at; without a
+        # cache folder it keeps no program across sessions.
+        migraphx_options: dict[str, object] = {
+            "device_id": gpu_index,
+            "migraphx_fp16_enable": should_migraphx_fp16,
+            "migraphx_exhaustive_tune": migraphx_exhaustive_tune,
+        }
+        if migraphx_cache_path is not None:
+            migraphx_options["migraphx_model_cache_dir"] = _migraphx_program_dir(
+                model,
+                migraphx_cache_path,
+                should_migraphx_fp16,
+                migraphx_exhaustive_tune,
+            )
+        providers = [("MIGraphXExecutionProvider", migraphx_options), cpu]
     else:
         providers = [execution_provider, cpu]
 
@@ -137,6 +187,9 @@ def _session_settings(
     execution_provider: str,
     should_tensorrt_fp16: bool,
     tensorrt_cache_path: str | None,
+    should_migraphx_fp16: bool,
+    migraphx_cache_path: str | None,
+    migraphx_exhaustive_tune: bool,
 ) -> tuple[object, ...]:
     """The settings `create_inference_session` builds a session of
     `execution_provider` from."""
@@ -146,6 +199,14 @@ def _session_settings(
             gpu_index,
             should_tensorrt_fp16,
             tensorrt_cache_path,
+        )
+    if execution_provider == "MIGraphXExecutionProvider":
+        return (
+            execution_provider,
+            gpu_index,
+            should_migraphx_fp16,
+            migraphx_cache_path,
+            migraphx_exhaustive_tune,
         )
     if execution_provider in ("CUDAExecutionProvider", "DmlExecutionProvider"):
         return (execution_provider, gpu_index)
@@ -165,9 +226,18 @@ def get_onnx_session(
     execution_provider: str,
     should_tensorrt_fp16: bool,
     tensorrt_cache_path: str | None = None,
+    should_migraphx_fp16: bool = False,
+    migraphx_cache_path: str | None = None,
+    migraphx_exhaustive_tune: bool = False,
 ) -> OnnxSession:
     key = _session_settings(
-        gpu_index, execution_provider, should_tensorrt_fp16, tensorrt_cache_path
+        gpu_index,
+        execution_provider,
+        should_tensorrt_fp16,
+        tensorrt_cache_path,
+        should_migraphx_fp16,
+        migraphx_cache_path,
+        migraphx_exhaustive_tune,
     )
     cached = __session_cache.get(model)
     if cached is not None and cached[0] != key:
@@ -180,6 +250,9 @@ def get_onnx_session(
             execution_provider,
             should_tensorrt_fp16,
             tensorrt_cache_path,
+            should_migraphx_fp16,
+            migraphx_cache_path,
+            migraphx_exhaustive_tune,
         )
         providers = session.get_providers()
         if execution_provider not in providers:

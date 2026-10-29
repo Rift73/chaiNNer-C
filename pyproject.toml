@@ -95,3 +95,6 @@ ignore-names = ["*Input", "*Output", "*Dropdown"]
 [tool.pytest.ini_options]
 filterwarnings = ["ignore::DeprecationWarning", "ignore::UserWarning"]
 pythonpath = ["backend/src", "native/tools"]
+markers = [
+    "amd_gpu: needs an AMD GPU and is skipped without one; the AMD kit runs these (native/AMD.md)",
+]

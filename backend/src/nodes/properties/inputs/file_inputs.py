@@ -15,6 +15,7 @@ from .label import LabelStyle
 FileInputKind = Union[
     Literal["bin"],
     Literal["image"],
+    Literal["migraphx"],
     Literal["onnx"],
     Literal["param"],
     Literal["pt"],
@@ -203,6 +204,19 @@ def TensorRTFileInput(primary_input: bool = False) -> FileInput:
     ).with_docs(
         "TensorRT engine files (.engine, .trt, .plan) are pre-built for a specific GPU architecture.",
         "Engines built on one GPU may not work on a different GPU architecture.",
+    )
+
+
+def MIGraphXFileInput(primary_input: bool = False) -> FileInput:
+    """Input for submitting a local MIGraphX program file"""
+    return FileInput(
+        label="MIGraphX Program File",
+        file_kind="migraphx",
+        filetypes=[".mxr"],
+        primary_input=primary_input,
+    ).with_docs(
+        "MIGraphX program files (.mxr) from Save Program are compiled for one GPU target"
+        " (gfx) and MIGraphX version; another GPU target needs a program built for it.",
     )
 
 

@@ -8,9 +8,9 @@ import subprocess
 import sys
 from collections import deque
 from dataclasses import dataclass
+from functools import cache
+from types import ModuleType
 from typing import TYPE_CHECKING, Iterable
-
-from packaging.version import InvalidVersion, Version
 
 from custom_types import UpdateProgressFn
 
@@ -53,6 +53,8 @@ class DependencyInfo:
     from_file: str | None = None
     extra_index_url: str | None = None
     url: str | None = None
+    # The distributions it replaces (api.Dependency.replaces)
+    replaces: tuple[str, ...] = ()
 
     @property
     def distribution(self) -> str:
@@ -67,12 +69,24 @@ def distribution_name(package_name: str) -> str:
     return re.sub(r"[-_.]+", "-", package_name.split("[", 1)[0]).lower()
 
 
+@cache
+def _version_module() -> ModuleType:
+    """packaging's version module. A fresh Python has no packaging until the server's
+    dependencies are installed, and the installed packages are listed before that: the
+    pip every Python chaiNNer-C runs has carries the same module."""
+    try:
+        return importlib.import_module("packaging.version")
+    except ModuleNotFoundError:
+        return importlib.import_module("pip._vendor.packaging.version")
+
+
 def listed_version(version: str) -> str:
     """The version as pip lists it: in packaging's canonical form, so "v17.1" is 17.1
     and "1.0RC1" is 1.0rc1. A version that is not one stays as the metadata has it."""
+    versions = _version_module()
     try:
-        return str(Version(version))
-    except InvalidVersion:
+        return str(versions.Version(version))
+    except versions.InvalidVersion:
         return version
 
 
@@ -146,6 +160,23 @@ def filter_necessary_to_install(dependencies: Iterable[DependencyInfo]):
     return dependencies_to_install
 
 
+def replaced_distributions(
+    dependencies: Iterable[DependencyInfo],
+) -> list[DependencyInfo]:
+    """The installed distributions the dependencies replace: other builds of their
+    modules under another name (onnxruntime-gpu for onnxruntime-migraphx). pip would
+    install over their files and keep both listed, and a later uninstall of either would
+    delete files the other needs, so the installer uninstalls them first."""
+    names = sorted(
+        {distribution_name(name) for dep in dependencies for name in dep.replaces}
+    )
+    return [
+        DependencyInfo(package_name=name, version=installed_packages[name])
+        for name in names
+        if name in installed_packages
+    ]
+
+
 def extra_index_args(dependencies: Iterable[DependencyInfo]) -> list[str]:
     """pip's --extra-index-url arguments, one per URL: pip takes a comma-joined
     list as a single URL, which matches nothing."""
@@ -189,6 +220,7 @@ def install_dependencies_sync(
     if len(dependencies_to_install) == 0:
         return 0
 
+    uninstall_dependencies_sync(replaced_distributions(dependencies_to_install))
     try:
         subprocess.check_call(
             [
@@ -224,6 +256,10 @@ async def install_dependencies(
     dependencies_to_install = filter_necessary_to_install(dependencies)
     if len(dependencies_to_install) == 0:
         return 0
+
+    await uninstall_dependencies(
+        replaced_distributions(dependencies_to_install), update_progress_cb, logger
+    )
 
     dependency_name_map = {
         dep_info.distribution: dep_info.display_name or dep_info.package_name

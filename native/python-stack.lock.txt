@@ -80,7 +80,7 @@ sanic-routing==23.12.0
 scipy==1.18.1
 setuptools==78.1.0
 six==1.17.0
-spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c10/spandrel-0.4.2%2Bc10-py3-none-any.whl#sha256=2496741447f096efa803d01798262ab065d0c4e79b4266f30a32cab4e254b50f
+spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c11/spandrel-0.4.2%2Bc11-py3-none-any.whl#sha256=77467a3fbd2e915ee83b52ec10546714c6820304c7983d4a55d5185952b08cb2
 spandrel_extra_arches==0.2.0
 sympy==1.14.0
 torch==2.14.1+cu132

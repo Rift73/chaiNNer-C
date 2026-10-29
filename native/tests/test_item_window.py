@@ -1633,9 +1633,10 @@ def test_dependents_of_a_stored_error_meet_it_at_the_nesting_point(
     assert stripped(runs["3"].events) == stripped(runs["1"].events)
 
 
-# The 117 schema ids admitted by pure_cpu_dependency's per-node conditions, each
+# The 118 schema ids admitted by pure_cpu_dependency's per-node conditions, each
 # audited in native/reports/sp3/thread-safety-audit.md (SP3 Task 4; the locked device
-# node, 2026-10-08; Descale, 2026-10-16; Planes to RGB and RGB to Planes, 2026-10-18).
+# node, 2026-10-08; Descale, 2026-10-16; Planes to RGB and RGB to Planes, 2026-10-18;
+# MIGraphX's Upscale Image, the TensorRT runner's counterpart, 2026-10-29).
 AUDITED_SPECULATION_IDS: frozenset[str] = frozenset(
     [
         f"chainner:image:{name}"
@@ -1668,7 +1669,7 @@ AUDITED_SPECULATION_IDS: frozenset[str] = frozenset(
         text_pattern text_replace text_slice
         """.split()
     ]
-    + ["chainner:tensorrt:upscale_image"]
+    + ["chainner:tensorrt:upscale_image", "chainner:migraphx:upscale_image"]
 )
 
 

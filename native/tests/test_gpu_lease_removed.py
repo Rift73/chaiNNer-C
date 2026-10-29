@@ -117,6 +117,8 @@ def test_run_proxies_without_recycling_the_worker():
         upstream.index("from gpu import nvidia") + 1,
         "from nodes.impl.cors import add_cors",
     )
+    # The VRAM line shows AMD GPUs on a machine without an NVIDIA GPU (test_amd_gpu.py).
+    upstream[upstream.index("from gpu import nvidia")] = "from gpu import amd, nvidia"
     upstream[upstream.index("from server_config import ServerConfig")] = (
         "from server_config import LOG_CONFIG, ServerConfig"
     )
@@ -174,6 +176,9 @@ def test_run_proxies_without_recycling_the_worker():
     # Instant startup: the host tells the app which nodes the worker has registered
     # while it loads them, so previews never wait in the worker for their framework.
     functions[0].remove("announce_registered_nodes")
+    # An uninstall keeps a dependency another installed package also lists (ROCm's
+    # wheels, which the PyTorch and ONNX packages share on AMD GPUs).
+    functions[0].remove("shared_distributions")
     assert functions[0] == functions[1]
 
 

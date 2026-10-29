@@ -213,13 +213,15 @@ def test_context_preserves_local_pixels_noise_and_dino_view(monkeypatch):
 
 def memory_mock(monkeypatch, used=2_000_000_000, previous=0.4):
     state = SimpleNamespace(used=used, fraction=previous, history=[])
-    gpu = SimpleNamespace(
-        index=0,
-        get_current_vram_usage=lambda: SimpleNamespace(
-            total=32_000_000_000, used=state.used
+    monkeypatch.setattr(
+        vosr2_memory,
+        "get_vram_usage",
+        lambda index: (
+            SimpleNamespace(total=32_000_000_000, used=state.used)
+            if index == 0
+            else None
         ),
     )
-    monkeypatch.setattr(vosr2_memory, "nvidia", SimpleNamespace(devices=[gpu]))
     monkeypatch.setattr(torch.cuda, "device", lambda _: nullcontext())
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)

@@ -28,7 +28,7 @@ from dependencies.store import (
     uninstall_dependencies,
 )
 from events import BackendEventBroadcast
-from gpu import nvidia
+from gpu import amd, nvidia
 from nodes.impl.cors import add_cors
 from response import (
     RESTART_WORKER_HEADER,
@@ -204,7 +204,31 @@ async def system_usage(_request: Request):
                 usage.used / usage.total * 100,
             )
         )
+    # AMD GPUs show without an NVIDIA GPU, those that run models: a GeForce laptop's Radeon
+    # graphics and a Ryzen's small graphics stay out. A GPU whose counters cannot be read (no
+    # sysfs folder in a sandbox, a missing Windows counter) is left out, logged once, so the
+    # CPU and RAM stats still show.
+    amd_gpus = [] if nvidia.devices else [gpu for gpu in amd.devices if gpu.eligible]
+    for gpu in amd_gpus:
+        try:
+            usage = gpu.get_current_vram_usage()
+        except (OSError, ValueError):
+            if gpu.index not in _unreadable_amd_gpus:
+                _unreadable_amd_gpus.add(gpu.index)
+                logger.warning("The memory of %s cannot be read.", gpu.name, exc_info=True)
+            continue
+        if usage.total > 0:
+            stats_list.append(
+                SystemStat(
+                    f"VRAM {gpu.index}" if len(amd_gpus) > 1 else "VRAM",
+                    usage.used / usage.total * 100,
+                )
+            )
     return json([asdict(x) for x in stats_list])
+
+
+# The AMD GPUs whose memory could not be read, by HIP index: logged once each.
+_unreadable_amd_gpus: set[int] = set()
 
 
 @app.route("/packages", methods=["GET"])
@@ -243,6 +267,7 @@ def deps_to_dep_info(deps: list[api.Dependency]) -> list[DependencyInfo]:
             version=dep.version,
             extra_index_url=dep.extra_index_url,
             url=dep.url,
+            replaces=dep.replaces,
         )
         for dep in deps
     ]
@@ -282,6 +307,27 @@ async def change_dependencies(
         await worker.start()
 
 
+def shared_distributions(
+    uninstalling: list[api.Package], packages: list[api.Package]
+) -> set[str]:
+    """The distributions of the packages to uninstall that a package staying installed
+    lists too, as the PyTorch, ONNX and MIGraphX packages list the same ROCm wheels on AMD
+    GPUs: uninstalling them would break it. A package stays installed while a
+    dependency that only it lists is installed."""
+    leaving_ids = {p.id for p in uninstalling}
+    leaving = {
+        distribution_name(d.pypi_name) for p in uninstalling for d in p.dependencies
+    }
+    shared: set[str] = set()
+    for package in packages:
+        if package.id in leaving_ids:
+            continue
+        own = {distribution_name(d.pypi_name) for d in package.dependencies}
+        if any(name in installed_packages for name in own - leaving):
+            shared |= own & leaving
+    return shared
+
+
 @app.route("/packages/uninstall", methods=["POST"])
 async def uninstall_dependencies_request(request: Request):
     package_ids_to_install: list[str] = request.json["packages"]
@@ -306,9 +352,14 @@ async def uninstall_dependencies_request(request: Request):
 
     try:
         progress = create_update_progress(ctx)
+        shared = shared_distributions(packages_to_install, packages)
         deps: list[DependencyInfo] = []
         for p in packages_to_install:
-            deps.extend(deps_to_dep_info(p.dependencies))
+            deps.extend(
+                d
+                for d in deps_to_dep_info(p.dependencies)
+                if d.distribution not in shared
+            )
 
         if len(deps) > 0:
             await change_dependencies(

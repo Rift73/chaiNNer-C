@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal, TypedDict, TypeVar
@@ -221,6 +222,7 @@ class EnumInput(DropDownInput[E]):
     All of those defaults can be overridden.
 
     Options will be ordered by declaration order in the python enum definition.
+    Variants in `hidden` get no option and no type, as if the enum lacked them.
 
     ### Requirements
 
@@ -242,6 +244,7 @@ class EnumInput(DropDownInput[E]):
         categories: list[DropDownGroup] | None = None,
         conditions: dict[E, Condition] | None = None,
         icons: dict[E, str] | None = None,
+        hidden: Iterable[E] = (),
     ):
         if type_name is None:
             type_name = enum.__name__
@@ -256,7 +259,10 @@ class EnumInput(DropDownInput[E]):
 
         options: list[DropDownOption] = []
         variant_types: list[str] = []
+        skipped = set(hidden)
         for variant in enum:
+            if variant in skipped:
+                continue
             value = variant.value
             assert isinstance(value, (int, str))
 

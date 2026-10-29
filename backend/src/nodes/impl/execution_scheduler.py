@@ -77,7 +77,9 @@ async def owned_gather(coroutines: list[Awaitable[T]]) -> list[T]:
 # or beside other branches: free of side effects, they use their context only per
 # call (settings, node id, progress) and serialize their device work under their own
 # lock (native/reports/sp3/thread-safety-audit.md, "Locked device nodes").
-LOCKED_DEVICE_NODES: frozenset[str] = frozenset({"chainner:tensorrt:upscale_image"})
+LOCKED_DEVICE_NODES: frozenset[str] = frozenset(
+    {"chainner:tensorrt:upscale_image", "chainner:migraphx:upscale_image"}
+)
 
 
 def pure_cpu_node(data: NodeData) -> bool:

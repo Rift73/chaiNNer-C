@@ -94,8 +94,9 @@ class AiUpscalePrecision(Enum):
         )
         .with_id(2)
         .with_docs(
-            "PyTorch and ONNX run on the first NVIDIA GPU when there is one, else on"
-            " the CPU. TensorRT engines need an NVIDIA GPU.",
+            "PyTorch and ONNX run on the first NVIDIA GPU when there is one (on AMD"
+            " GPUs: PyTorch on ROCm, ONNX on MIGraphX), else on the CPU. TensorRT"
+            " engines need an NVIDIA GPU.",
             "TensorRT engines run on chaiNNer-C's native TensorRT runner by default,"
             " which converts, tiles and blends frames on the GPU. They tile by the engine's"
             " shape range (the sizes it was built for), so there is no tile size for"

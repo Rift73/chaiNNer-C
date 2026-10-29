@@ -21,12 +21,12 @@ import torch
 from sanic.log import logger
 
 from api import NodeContext
-from gpu import nvidia
+from gpu import MemoryUsage, get_vram_usage
 
 from ...utils.utils import file_identity
 from .vosr2 import BundlePaths, VosrBundle, load_weights, read_configs
 from .vosr2_official import FILES
-from .vosr2_plan_file import compress, compressed, stored
+from .vosr2_plan_file import compress, compressed, plain, stored
 from .vosr2_process import PARENT_PID_VARIABLE, OwnedJob
 from .vosr2_trt_compile import STAGE_LINE
 from .vosr2_trt_plugin import plugin_path
@@ -161,25 +161,22 @@ def identity_key(identity: dict) -> str:
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
 
-def cache_identity(device: torch.device) -> dict:
-    """The model code the BF16 graphs are exported from, and what exports and builds them.
+def architecture(*builder: Path) -> str:
+    """The SHA-256 of the model code the BF16 graphs are exported from, then of the
+    `builder` files that compile them.
 
     Of vosr2.py only the bundle's construction and weight loading count; its other
-    definitions (options, image preparation, messages) never reach an engine. The
-    driver and torch's CUDA build do not decide an engine either.
+    definitions (options, image preparation, messages) never reach an engine.
     """
-    import tensorrt as trt
-
     sources = [
         *sorted((Path(__file__).resolve().parents[3] / "vendor/vosr2").glob("*.py")),
         Path(__file__).with_name("vosr2_export.py"),
-        # The builder's configuration (as the FP8 set's identity has it)
-        Path(__file__).with_name("vosr2_trt_compile.py"),
+        *builder,
     ]
     model = "".join(
         inspect.getsource(code) for code in (VosrBundle.__init__, load_weights)
     )
-    architecture = hashlib.sha256(
+    return hashlib.sha256(
         "".join(
             [
                 *(file_hash(path) for path in sources),
@@ -187,9 +184,18 @@ def cache_identity(device: torch.device) -> dict:
             ]
         ).encode()
     ).hexdigest()
+
+
+def cache_identity(device: torch.device) -> dict:
+    """The model code the BF16 graphs are exported from, and what exports and builds them.
+    The driver and torch's CUDA build do not decide an engine.
+    """
+    import tensorrt as trt
+
     properties = torch.cuda.get_device_properties(device)
     return {
-        "architecture": architecture,
+        # With the builder's configuration (as the FP8 set's identity has it)
+        "architecture": architecture(Path(__file__).with_name("vosr2_trt_compile.py")),
         "torch": str(torch.__version__),
         "onnx": metadata.version("onnx"),
         "tensorrt": trt.__version__,
@@ -198,7 +204,9 @@ def cache_identity(device: torch.device) -> dict:
     }
 
 
-def report_stages(context: NodeContext, output: bytes) -> bytes:
+def report_stages(
+    context: NodeContext, output: bytes, label: str = "TensorRT"
+) -> bytes:
     """Log each complete stage line of a build worker's output and report its progress;
     return the unfinished last line."""
     *lines, rest = output.split(b"\n")
@@ -207,7 +215,7 @@ def report_stages(context: NodeContext, output: bytes) -> bytes:
         if stage is not None:
             index, total = int(stage[1]), int(stage[2])
             logger.info(
-                "VOSR TensorRT build: stage %d of %d, %s", index, total, stage[3]
+                "VOSR %s build: stage %d of %d, %s", label, index, total, stage[3]
             )
             context.set_progress((index - 1) / total)
     return rest
@@ -215,29 +223,39 @@ def report_stages(context: NodeContext, output: bytes) -> bytes:
 
 def compile_worker(
     context: NodeContext,
-    worker: str,
+    worker: str | Path,
     source: Path,
     directory: Path,
     device: torch.device,
+    *,
+    label: str = "TensorRT",
+    limit: int = 1200,
+    arguments: Sequence[str] = (),
 ) -> None:
-    """Run a stage compiler next to this module: worker <source> <directory> <gpu>
-    <cache>. The cache folder, the parent of every building-* directory, keeps the
-    worker's TensorRT timing cache (vosr2_trt_compile.timing_cache), which only builds
-    that hold the folder's lock read or write."""
+    """Run a stage compiler, a file next to this module or at a given path: worker
+    <source> <directory> <gpu> <cache> [arguments], for at most `limit` seconds. The
+    cache folder, the parent of every building-* directory, keeps the worker's TensorRT
+    timing cache (vosr2_trt_compile.timing_cache), which only builds that hold the
+    folder's lock read or write. `label` names the compiler in messages."""
+    script = worker if isinstance(worker, Path) else Path(__file__).with_name(worker)
     with torch.cuda.device(device):
         index = torch.cuda.current_device()
-    gpu = next((gpu for gpu in nvidia.devices if gpu.index == index), None)
-    if gpu is None:
-        raise RuntimeError(
-            "VOSR TensorRT compilation requires working NVIDIA memory monitoring."
-        )
-    usage = gpu.get_current_vram_usage()
-    limit = usage.total
+
+    def current_usage() -> MemoryUsage:
+        usage = get_vram_usage(index)
+        if usage is None:
+            raise RuntimeError(
+                f"VOSR {label} compilation requires working GPU memory monitoring."
+            )
+        return usage
+
+    usage = current_usage()
+    memory = usage.total
     # Compilation creates a second CUDA context and temporarily resident weights.
     # Refuse insufficient headroom before a large non-torch allocation can happen.
-    if usage.used + 5_500_000_000 >= limit:
+    if usage.used + 5_500_000_000 >= memory:
         raise RuntimeError(
-            "Not enough free GPU memory to compile VOSR TensorRT. "
+            f"Not enough free GPU memory to compile VOSR {label}. "
             "Close other GPU workloads and run again."
         )
     environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
@@ -258,7 +276,7 @@ def compile_worker(
     process = None
     started = time.monotonic()
     log_path = directory / "build.log"
-    logger.info("Compiling VOSR TensorRT once; progress and errors: %s", log_path)
+    logger.info("Compiling VOSR %s once; progress and errors: %s", label, log_path)
     try:
         with log_path.open("wb") as log, log_path.open("rb") as progress:
             unread = b""
@@ -266,11 +284,12 @@ def compile_worker(
                 [
                     str(executable),
                     "-B",
-                    str(Path(__file__).with_name(worker)),
+                    str(script),
                     str(source),
                     str(directory),
                     str(index),
                     str(directory.parent),
+                    *arguments,
                 ],
                 env=environment,
                 stdin=subprocess.DEVNULL,
@@ -287,18 +306,20 @@ def compile_worker(
                 # A build cannot be safely suspended inside CUDA. Keep policing
                 # memory and cancellation while paused; inference waits later.
                 context.check_aborted()
-                unread = report_stages(context, unread + progress.read())
-                if gpu.get_current_vram_usage().used >= limit - 100_000_000:
+                unread = report_stages(context, unread + progress.read(), label)
+                if current_usage().used >= memory - 100_000_000:
                     raise RuntimeError(
-                        "VOSR TensorRT compilation filled the GPU memory. "
+                        f"VOSR {label} compilation filled the GPU memory. "
                         "Close other GPU workloads and run again."
                     )
-                if time.monotonic() - started > 1200:
-                    raise TimeoutError("VOSR TensorRT compilation exceeded 20 minutes.")
+                if time.monotonic() - started > limit:
+                    raise TimeoutError(
+                        f"VOSR {label} compilation exceeded {limit // 60} minutes."
+                    )
                 time.sleep(0.05)
         if process.returncode:
             tail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
-            raise RuntimeError(f"VOSR TensorRT compilation failed:\n{tail}")
+            raise RuntimeError(f"VOSR {label} compilation failed:\n{tail}")
     finally:
         job.close()
         if process is not None:
@@ -317,11 +338,18 @@ def ensure_engine_set(
     identity: dict,
     label: str,
     compile_into: Callable[[Path], None],
+    *,
+    stages: Sequence[str] | None = None,
+    compression: bool = True,
 ) -> Path:
-    """Caller owns the cache lock. Publish a set only after every stage is validated."""
+    """Caller owns the cache lock. Publish a set only after every stage is validated.
+    `stages` names the set's plans (default: the TensorRT engines' STAGES), which it
+    keeps compressed unless `compression` is off (a plan loaded from its file)."""
     from .vosr2_trt_models import STAGES
     from .vosr2_trt_pipeline import release_full_session
 
+    if stages is None:
+        stages = STAGES
     key = identity_key(identity)
     destination = root / key
     manifest_path = destination / "manifest.json"
@@ -332,18 +360,18 @@ def ensure_engine_set(
                 isinstance(manifest, dict)
                 and manifest.get("identity") == identity
                 and isinstance(manifest.get("engines"), dict)
-                and set(manifest["engines"]) == set(STAGES)
+                and set(manifest["engines"]) == set(stages)
                 and all(
                     manifest["engines"][name]
                     == file_hash(stored(destination, manifest, name))
-                    for name in STAGES
+                    for name in stages
                 )
             )
         except (FileNotFoundError, json.JSONDecodeError):
             valid = False
         if valid:
-            if manifest.get("compression") != "zstd":
-                compress_set(destination, manifest, STAGES)
+            if compression and manifest.get("compression") != "zstd":
+                compress_set(destination, manifest, stages)
             return destination
         quarantine = root / f"quarantine-{key}-{time.time_ns()}"
         destination.rename(quarantine)
@@ -362,13 +390,18 @@ def ensure_engine_set(
             validation = json.loads(
                 (directory / "validation.json").read_text(encoding="utf-8")
             )
-            if set(validation["engines"]) != set(STAGES) or any(
+            if set(validation["engines"]) != set(stages) or any(
                 validation["engines"][name] != file_hash(directory / f"{name}.plan")
-                for name in STAGES
+                for name in stages
             ):
                 raise RuntimeError(f"VOSR {label} stages changed after validation.")
+            if not compression:
+                for name in stages:
+                    os.replace(plain(directory, name), plain(destination, name))
+                write_json(manifest_path, {"identity": identity, **validation})
+                return destination
             engines = {}
-            for name in STAGES:
+            for name in stages:
                 target = compressed(destination, name)
                 compress(directory / f"{name}.plan", target)
                 engines[name] = file_hash(target)

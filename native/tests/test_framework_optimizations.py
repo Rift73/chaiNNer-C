@@ -1042,6 +1042,9 @@ def test_registered_upscale_defers_collection_and_drains_once(backend, fail):
         execution_provider="CPUExecutionProvider",
         tensorrt_fp16_mode=False,
         tensorrt_cache_path="",
+        migraphx_fp16_mode=False,
+        migraphx_cache_path=None,
+        migraphx_exhaustive_tune=False,
     )
     path = f"packages/chaiNNer_{backend}/{backend}/processing/upscale_image.py"
     module = functions(

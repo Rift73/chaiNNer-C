@@ -9,15 +9,20 @@ HAT looks up and DAT computes from constants on every call, become constants. Wi
 spandrel 0.4.2+c6's channels-last windows, at 256x256 in fp16 on TensorRT 11.4
 (optimization level 3), a 4x HAT-L runs in 72 ms instead of 89 ms and a 4x DAT2 in 45 ms
 instead of 58 ms. The loaded model is not changed: the rewrite works on a copy, so Save
-Model keeps the original weights."""
+Model keeps the original weights.
+
+On PyTorch for AMD GPUs (ROCm), the export lays the attention out for MIGraphX
+(attention_layout)."""
 
 from __future__ import annotations
 
 import copy
+from contextlib import AbstractContextManager, nullcontext
 from typing import TypeVar
 
 import torch
 from spandrel import ModelDescriptor
+from spandrel.architectures.__arch_helpers.attention import migraphx_export
 from spandrel.architectures.DAT.__arch.DAT import (
     Adaptive_Spatial_Attention,
     Spatial_Attention,
@@ -89,6 +94,19 @@ def for_export(model: _Descriptor) -> _Descriptor:
                 bias = module.relative_position_bias()
                 net.set_submodule(name, _ConstantBiasSpatialAttention(module, bias))
     return model
+
+
+def attention_layout() -> AbstractContextManager[None]:
+    """The layout of HAT's and DAT's attention in an export for the GPUs this PyTorch
+    runs on; both layouts compute the same values. On ROCm, MIGraphX's (spandrel's
+    migraphx_export): the default adds the shifted windows' masks through a
+    five-dimensional view of the scores, which leaves every shifted block's attention
+    unfused in MIGraphX, with bias and mask summed into an FP32 constant as large as the
+    block's scores; and MIGraphX fuses DAT's channel attention (a head's 30 channels
+    attending over every pixel) into a kernel that rocMLIR's first configuration for
+    gfx942 does not compile. Elsewhere: the default, which TensorRT's export was measured
+    with."""
+    return migraphx_export() if torch.version.hip else nullcontext()
 
 
 def _pad_heads(

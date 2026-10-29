@@ -155,6 +155,9 @@ def upscale_image_node(
         settings.execution_provider,
         settings.tensorrt_fp16_mode,
         settings.tensorrt_cache_path,
+        settings.migraphx_fp16_mode,
+        settings.migraphx_cache_path,
+        settings.migraphx_exhaustive_tune,
     )
     return upscale_with_session(
         img,

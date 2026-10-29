@@ -272,7 +272,7 @@ const registerEventHandlerPreSetup = (
     });
     ipcMain.handle('fs-mkdir', async (event, p, options) => fs.mkdir(p, options));
     ipcMain.handle('fs-readdir', async (event, p) => fs.readdir(p));
-    ipcMain.handle('fs-unlink', async (event, p) => fs.unlink(p));
+    ipcMain.handle('fs-rm', async (event, p, options) => fs.rm(p, options));
     ipcMain.handle('fs-access', async (event, p) => fs.access(p));
 
     // Handle electron

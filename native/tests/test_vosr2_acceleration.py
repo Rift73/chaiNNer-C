@@ -240,11 +240,13 @@ def test_compiler_owns_real_interpreter_and_preserves_virtual_environment(
     monkeypatch.setattr(cache.sys, "_base_executable", str(base))
     monkeypatch.setattr(torch.cuda, "device", lambda _: nullcontext())
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
-    gpu = SimpleNamespace(
-        index=0,
-        get_current_vram_usage=lambda: SimpleNamespace(used=0, total=32_000_000_000),
+    monkeypatch.setattr(
+        cache,
+        "get_vram_usage",
+        lambda index: (
+            SimpleNamespace(used=0, total=32_000_000_000) if index == 0 else None
+        ),
     )
-    monkeypatch.setattr(cache, "nvidia", SimpleNamespace(devices=[gpu]))
 
     class Job:
         def assign(self, process):

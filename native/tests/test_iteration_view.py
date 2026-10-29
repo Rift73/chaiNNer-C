@@ -622,15 +622,15 @@ def test_iterated_by_names_each_input_s_generator(monkeypatch, tmp_path, nodes):
     assert seen == [(G0, None, G0)] * 3
 
 
+@pytest.mark.parametrize("schema", sorted(LOCKED_DEVICE_NODES))
 def test_a_locked_device_node_computed_ahead_sees_no_iteration_and_is_served(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, schema
 ):
-    # The TensorRT upscale id (a locked-device node: a context, yet computed ahead).
-    # The items look's peeks make the window compute ahead see None; the commit path's
-    # runs see their item's view. look is served its outputs.
+    # A locked-device node's id (TensorRT's or MIGraphX's upscale: a context, yet
+    # computed ahead). The items look's peeks make the window compute ahead see None;
+    # the commit path's runs see their item's view. look is served its outputs.
     looking = Looking(monkeypatch, tmp_path, 4, window="3", nodes=("map",), depth=2)
     node = looking.chain.nodes[NodeId("map")]
-    [schema] = LOCKED_DEVICE_NODES
     set_schema(node, schema)
     object.__setattr__(node.data, "node_context", True)
     seen = {}

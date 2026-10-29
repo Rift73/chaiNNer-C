@@ -124,6 +124,42 @@ def test_floor_and_static_runtimes(tmp_path, capsys):
         assert (f"  note: {problem}\n" in out) == (not problem.startswith("needs"))
 
 
+def test_shared_runtime_module(tmp_path, capsys):
+    """The MIGraphX runner may need libstdc++ and libgcc_s up to GCC 8's versions;
+    any other module still may not."""
+    runner = tmp_path / "ok" / "_chainner_migraphx.so"
+    runner.parent.mkdir()
+    runtime = {
+        "libstdc++.so.6": ["GLIBCXX_3.4", "GLIBCXX_3.4.25", "CXXABI_1.3.11"],
+        "libgcc_s.so.1": ["GCC_3.0", "GCC_7.0.0"],
+        **GLIBC_OK,
+    }
+    needed = ["libstdc++.so.6", "libgcc_s.so.1", "libm.so.6", "libc.so.6"]
+    runner.write_bytes(shared_object(needed, runtime))
+    assert check_glibc.main([str(runner)]) == 0
+    capsys.readouterr()
+
+    cases = {
+        "libstdc++.so.6": ("GLIBCXX_3.4.26", "CXXABI_1.3.12", "CXXABI_TM_1"),
+        "libgcc_s.so.1": ("GCC_12.0.0",),
+    }
+    for library, versions in cases.items():
+        for version in versions:
+            newer = tmp_path / version / "_chainner_migraphx.so"
+            newer.parent.mkdir()
+            newer.write_bytes(shared_object(needed, {**runtime, library: [version]}))
+            assert check_glibc.main([str(newer)]) == 1
+            assert f"  FAIL: {library} {version}\n" in capsys.readouterr().out
+
+    other = tmp_path / "other" / "chainner_native.so"
+    other.parent.mkdir()
+    other.write_bytes(shared_object(needed, runtime))
+    assert check_glibc.main([str(other)]) == 1
+    out = capsys.readouterr().out
+    assert "  FAIL: needs libstdc++.so.6\n" in out
+    assert "  FAIL: needs libgcc_s.so.1\n" in out
+
+
 def test_third_party_leaves_out_our_files(tmp_path, capsys):
     ours = tmp_path / "app" / "resources" / "module.so"
     ours.parent.mkdir(parents=True)

@@ -18,9 +18,12 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
+import onnxruntime as ort
 import pytest
+import torch
 from spandrel import ImageModelDescriptor
 
+import gpu
 from api import NodeContext, SettingsParser
 from gpu import cuda_pci_addresses
 from nodes.impl.onnx.model import OnnxGeneric, OnnxInfo
@@ -137,11 +140,26 @@ def gpu_visible() -> bool:
     return bool(cuda_pci_addresses())
 
 
-def pytorch_reference(imgs: list[np.ndarray], tile_size: TileSize, custom: int):
+def pytorch_reference(
+    imgs: list[np.ndarray],
+    tile_size: TileSize,
+    custom: int,
+    use_cpu: bool | None = None,
+):
     """PyTorch's Upscale Image node on `imgs`, on the bridge's device (chaiNNer's CPU
-    mode when CUDA sees no GPU)."""
+    mode when CUDA sees no GPU), or on the GPU or the CPU as `use_cpu` says."""
+    if use_cpu is None:
+        use_cpu = not gpu_visible()
+    # The bridge's GPU: CUDA's first, or the strongest AMD GPU where there is no NVIDIA
     context = cast(
-        NodeContext, Context({"use_cpu": not gpu_visible(), "use_fp16": False})
+        NodeContext,
+        Context(
+            {
+                "use_cpu": use_cpu,
+                "use_fp16": False,
+                "gpu_index": str(bridge.gpu_index()),
+            }
+        ),
     )
     model = load_pytorch_model_node(context, ESRGAN_2X)[0]
     assert isinstance(model, ImageModelDescriptor)
@@ -198,6 +216,63 @@ def test_onnx_bridge_matches_upscale_node():
     assert (out.width, out.height, out.format.id) == (4 * WIDTH, 4 * HEIGHT, vs.RGBS)
     for n, want in enumerate(expected):
         assert np.array_equal(image_of(out.get_frame(n)), want)
+
+
+@pytest.mark.amd_gpu
+@pytest.mark.skipif(
+    torch.version.hip is None or not torch.cuda.is_available(),
+    reason="needs an AMD GPU and a ROCm build of PyTorch",
+)
+def test_bridge_runs_pytorch_on_an_amd_gpu(monkeypatch: pytest.MonkeyPatch):
+    # ROCm's PyTorch takes HIP's devices as CUDA's: the bridge runs on the first.
+    monkeypatch.setattr(bridge, "loaded", {})
+    imgs = images(2)
+    expected = pytorch_reference(imgs, ESTIMATE, 0, use_cpu=False)
+
+    out = chainner_vs.upscale(
+        clip_of(imgs), str(ESRGAN_2X), "PyTorch", "fp32", ESTIMATE
+    )
+
+    for n, want in enumerate(expected):
+        np.testing.assert_allclose(image_of(out.get_frame(n)), want, rtol=0, atol=1e-5)
+
+
+@pytest.mark.amd_gpu
+@pytest.mark.skipif(not COMPACT_4X_ONNX.is_file(), reason="no ONNX test model")
+@pytest.mark.skipif(
+    "MIGraphXExecutionProvider" not in ort.get_available_providers()
+    or not gpu.amd.is_available,
+    reason="needs an AMD GPU and ONNX Runtime's MIGraphX provider",
+)
+def test_bridge_runs_onnx_on_migraphx(monkeypatch: pytest.MonkeyPatch):
+    from packages.chaiNNer_onnx.settings import default_provider
+
+    assert default_provider == "MIGraphXExecutionProvider"
+    monkeypatch.setattr(bridge, "loaded", {})
+    imgs = images(2)
+    # The node in the bridge's settings: MIGraphX in FP32, without the program cache
+    context = cast(
+        NodeContext,
+        Context(
+            {
+                "execution_provider": default_provider,
+                "gpu_index": str(gpu.amd.default_index),
+            }
+        ),
+    )
+    model = load_onnx_model_node(COMPACT_4X_ONNX)[0]
+    assert isinstance(model, OnnxGeneric)
+    expected = [
+        onnx_upscale_image_node(context, img, model, TILE_SIZE_256, 0, False)
+        for img in imgs
+    ]
+
+    out = chainner_vs.upscale(
+        clip_of(imgs), str(COMPACT_4X_ONNX), "ONNX", "fp32", ESTIMATE
+    )
+
+    for n, want in enumerate(expected):
+        np.testing.assert_allclose(image_of(out.get_frame(n)), want, rtol=0, atol=1e-4)
 
 
 def test_gray_clip_roundtrip():

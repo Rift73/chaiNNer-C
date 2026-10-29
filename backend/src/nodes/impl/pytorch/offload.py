@@ -19,7 +19,6 @@ from contextlib import contextmanager
 import torch
 import torch.utils._pytree as pytree
 from sanic.log import logger
-from torch._C import _host_emptyCache
 from torch._ops import OpOverload
 from torch.utils._python_dispatch import TorchDispatchMode
 
@@ -227,4 +226,7 @@ def release_pinned_memory() -> None:
     global _pinned
     if _pinned:
         _pinned = False
+        # Only GPU builds of torch have it, and only a GPU forward pins.
+        from torch._C import _host_emptyCache
+
         _host_emptyCache()

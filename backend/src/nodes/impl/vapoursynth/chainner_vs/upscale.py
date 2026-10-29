@@ -32,8 +32,17 @@ BACKENDS: dict[str, tuple[str, ...]] = {
 }
 PRECISIONS = ("fp32", "fp16")
 
-# chaiNNer's default GPU setting: the first CUDA device.
+# chaiNNer's default GPU setting for TensorRT: the first CUDA device.
 GPU_INDEX = 0
+
+
+def gpu_index() -> int:
+    """chaiNNer's default GPU setting for PyTorch and ONNX: CUDA's first device; where
+    no NVIDIA GPU is detected, HIP's strongest AMD GPU (a Ryzen's graphics often come
+    first in HIP's order), which PyTorch on ROCm and MIGraphX take."""
+    from gpu import amd, nvidia
+
+    return amd.default_index if amd.is_available and not nvidia.is_available else 0
 
 
 @dataclass(frozen=True)
@@ -73,11 +82,12 @@ def _pytorch(path: str, precision: str) -> Upscaler:
     )
     from packages.chaiNNer_pytorch.settings import PyTorchSettings
 
-    # chaiNNer's CPU mode when CUDA has no GPU (FP16 then falls back to FP32).
+    # chaiNNer's CPU mode when CUDA (HIP in a ROCm build of PyTorch) has no GPU
+    # (FP16 then falls back to FP32).
     settings = PyTorchSettings(
         use_cpu=not torch.cuda.is_available(),
         use_fp16=precision == "fp16",
-        gpu_index=GPU_INDEX,
+        gpu_index=gpu_index(),
         budget_limit=0,
     )
     model = load_model(Path(path), settings)
@@ -120,7 +130,7 @@ def _onnx(path: str) -> Upscaler:
     from packages.chaiNNer_onnx.onnx.processing.upscale_image import (
         upscale_with_session,
     )
-    from packages.chaiNNer_onnx.settings import default_provider
+    from packages.chaiNNer_onnx.settings import default_provider, provider_device
 
     model = load_model_node(Path(path))[0]
     if not isinstance(model, OnnxGeneric):
@@ -134,11 +144,16 @@ def _onnx(path: str) -> Upscaler:
             f"chaiNNer cannot tell the scale of {Path(path).name}, so AI Upscale"
             " cannot size its clip."
         )
-    # chaiNNer's default execution provider; the CPU when CUDA has no GPU.
+    # chaiNNer's default execution provider (MIGraphX only where there is an AMD
+    # GPU, DirectML on Windows there), on the device it numbers the GPU by; the CPU
+    # when CUDA has no GPU. MIGraphX runs the model in its own precision, without the
+    # ONNX settings' program cache.
     provider = default_provider
     if provider == "CUDAExecutionProvider" and not cuda_pci_addresses():
         provider = "CPUExecutionProvider"
-    session = get_onnx_session(model, GPU_INDEX, provider, False)
+    session = get_onnx_session(
+        model, provider_device(provider, gpu_index()), provider, False
+    )
 
     def run(img: np.ndarray, tile: int) -> np.ndarray:
         # ONNX has no tile estimate: Auto is the ONNX node's default tile size.

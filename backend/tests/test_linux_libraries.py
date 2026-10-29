@@ -35,12 +35,54 @@ def test_table_rows_are_complete():
 
     assert {e.file for e in entries} >= {"libGL.so.1", "libstdc++.so.6", "xvfb-run"}
     for entry in entries:
-        assert entry.groups <= {"base", "electron", "display"}, entry.file
+        assert entry.groups <= {"base", "electron", "display", "amd"}, entry.file
         assert list(entry.packages) == list(linux_libraries.INSTALL_COMMANDS)
         assert ".so" in entry.file or entry.groups == {"display"}, entry.file
         for manager, package in entry.packages.items():
             if package.endswith("(t64)"):
                 assert manager == "apt", entry.file
+
+
+def test_rocms_libraries_are_the_amd_group():
+    # rocm-sdk-core's profiler libraries need libatomic, which a minimal Rocky Linux 8 lacks.
+    entries = {e.file: e for e in read_table(TABLE.read_text(encoding="utf-8"))}
+
+    assert entries["libatomic.so.1"].groups == {"amd"}
+    assert entries["libatomic.so.1"].packages == {
+        "apt": "libatomic1",
+        "dnf": "libatomic",
+        "pacman": "gcc-libs",
+        "zypper": "libatomic1",
+    }
+
+
+@pytest.mark.parametrize(
+    ("kfd", "nvidia", "groups"),
+    [
+        (False, False, {"base"}),
+        (True, False, {"base", "amd"}),
+        # PyTorch runs on CUDA where an NVIDIA driver is loaded too (an AMD iGPU beside it).
+        (True, True, {"base"}),
+        (False, True, {"base"}),
+    ],
+)
+def test_the_amd_group_applies_where_pytorch_runs_on_rocm(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kfd: bool,
+    nvidia: bool,
+    groups: set[str],
+):
+    topology = tmp_path / "kfd/topology/nodes"
+    driver = tmp_path / "driver/nvidia"
+    if kfd:
+        topology.mkdir(parents=True)
+    if nvidia:
+        driver.mkdir(parents=True)
+    monkeypatch.setattr(linux_libraries, "KFD_TOPOLOGY", topology)
+    monkeypatch.setattr(linux_libraries, "NVIDIA_DRIVER", driver)
+
+    assert linux_libraries.wheel_groups() == groups
 
 
 def test_read_table_skips_comments_and_blank_lines():

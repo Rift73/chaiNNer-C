@@ -1,6 +1,6 @@
 """The output types of node schemas.
 
-The outputs of a framework's models (NCNN, ONNX, PyTorch, TensorRT, VapourSynth) import
+The outputs of a framework's models (MIGraphX, NCNN, ONNX, PyTorch, TensorRT, VapourSynth) import
 the framework, so their modules load on first use, as nodes.properties.inputs' do.
 """
 
@@ -14,6 +14,7 @@ from .generic_outputs import *
 from .numpy_outputs import *
 
 if TYPE_CHECKING:
+    from .migraphx_outputs import *
     from .ncnn_outputs import *
     from .onnx_outputs import *
     from .pytorch_outputs import *
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 
 # Each name the framework modules define, by its module.
 FRAMEWORK_OUTPUTS: dict[str, str] = {
+    "MIGraphXProgramOutput": "migraphx_outputs",
     "NcnnModelOutput": "ncnn_outputs",
     "OnnxModelOutput": "onnx_outputs",
     "ModelOutput": "pytorch_outputs",

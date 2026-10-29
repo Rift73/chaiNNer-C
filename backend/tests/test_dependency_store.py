@@ -501,6 +501,168 @@ def test_the_installed_versions_are_listed_in_their_canonical_form(
     }
 
 
+def test_a_fresh_python_without_packaging_lists_its_packages():
+    # The integrated Python has no packaging until the server's dependencies are
+    # installed; run.py lists the installed packages before installing them.
+    script = (
+        "import sys\n"
+        "sys.modules['packaging'] = None\n"
+        "from dependencies import store\n"
+        "store.scan_installed_packages()\n"
+        "assert 'pip' in store.installed_packages, store.installed_packages\n"
+        "print(store.listed_version('1.0RC1'), store.listed_version('2.0-custom'))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(store.__file__).parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["1.0rc1", "2.0-custom"]
+
+
+MIGRAPHX = DependencyInfo(
+    "onnxruntime-migraphx",
+    "1.30.0+rocm7.14",
+    display_name="ONNX Runtime (MIGraphX)",
+    url="https://example.invalid/onnxruntime_migraphx-1.30.0%2Brocm7.14-py3-none-any.whl",
+    replaces=("onnxruntime", "onnxruntime-gpu", "onnxruntime-directml"),
+)
+
+
+def pip_runs(
+    monkeypatch: pytest.MonkeyPatch, environment: dict[str, str]
+) -> list[list[str]]:
+    """Replaces store's pip runs (with and without progress) with ones that print what
+    pip prints, make its change to `environment` (an install adds MIGRAPHX, an uninstall
+    removes the distributions it names) and succeed. Returns each run's arguments."""
+    runs: list[list[str]] = []
+
+    def run(command: list[str]) -> str:
+        runs.append(command[3:])
+        action, *arguments = command[3:]
+        lines: list[str] = []
+        if action == "uninstall":
+            for name in arguments[:-1]:
+                version = environment.pop(name)
+                lines += [
+                    f"Found existing installation: {name} {version}",
+                    f"Uninstalling {name}-{version}:",
+                    f"  Successfully uninstalled {name}-{version}",
+                ]
+        else:
+            environment[MIGRAPHX.package_name] = MIGRAPHX.version
+            lines += [
+                f"Collecting {MIGRAPHX.package_name}@ {MIGRAPHX.url}",
+                f"Installing collected packages: {MIGRAPHX.package_name}",
+            ]
+        return "".join(f"{line}\n" for line in lines)
+
+    def check_call(command: list[str], **_kwargs: object) -> int:
+        run(command)
+        return 0
+
+    popen = subprocess.Popen
+
+    def fake_popen(command: list[str], **kwargs: Any) -> subprocess.Popen[str]:
+        printing = "import sys; sys.stdout.write(sys.argv[1])"
+        return popen([sys.executable, "-c", printing, run(command)], **kwargs)
+
+    monkeypatch.setattr(store.subprocess, "check_call", check_call)
+    monkeypatch.setattr(store.subprocess, "Popen", fake_popen)
+    return runs
+
+
+def installed(
+    monkeypatch: pytest.MonkeyPatch, packages: dict[str, str]
+) -> dict[str, str]:
+    """`packages` as this Python's distributions, listed as the host lists them."""
+    environment = fake_environment(monkeypatch, packages)
+    monkeypatch.setattr(store, "installed_packages", {})
+    store.scan_installed_packages()
+    return environment
+
+
+@pytest.mark.parametrize("progress", [False, True], ids=["sync", "with-progress"])
+def test_an_install_uninstalls_the_builds_it_replaces_first(
+    monkeypatch: pytest.MonkeyPatch, progress: bool
+):
+    # pip would install the MIGraphX build over DirectML's files and list both; an
+    # uninstall of either would then delete files the other needs.
+    environment = installed(
+        monkeypatch, {"onnxruntime-directml": "1.24.4", "onnx": "1.23.2"}
+    )
+    runs = pip_runs(monkeypatch, environment)
+    messages: list[str] = []
+
+    async def record(message: str, *_args: object) -> None:
+        messages.append(message)
+
+    count = asyncio.run(
+        store.install_dependencies([MIGRAPHX], record if progress else None)
+    )
+    assert count == 1
+    assert [run[0] for run in runs] == ["uninstall", "install"]
+    assert runs[0][1:] == ["onnxruntime-directml", "-y"]
+    assert store.installed_packages == {
+        "onnx": "1.23.2",
+        "onnxruntime-migraphx": "1.30.0+rocm7.14",
+    }
+    if progress:
+        assert messages.index("Uninstalling onnxruntime-directml...") < (
+            messages.index("Collecting ONNX Runtime (MIGraphX)...")
+        )
+
+
+@pytest.mark.parametrize("progress", [False, True], ids=["sync", "with-progress"])
+def test_an_install_uninstalls_nothing_when_no_replaced_build_is_installed(
+    monkeypatch: pytest.MonkeyPatch, progress: bool
+):
+    environment = installed(monkeypatch, {"onnx": "1.23.2"})
+    runs = pip_runs(monkeypatch, environment)
+    asyncio.run(
+        store.install_dependencies([MIGRAPHX], ignore_progress if progress else None)
+    )
+    assert [run[0] for run in runs] == ["install"]
+
+
+def test_an_installed_dependency_uninstalls_nothing(monkeypatch: pytest.MonkeyPatch):
+    # Already at its version: no pip run at all. The other build listed beside it
+    # shares its files, so uninstalling that would break the installed one.
+    environment = installed(
+        monkeypatch,
+        {"onnxruntime-migraphx": "1.30.0+rocm7.14", "onnxruntime": "1.30.0"},
+    )
+    runs = pip_runs(monkeypatch, environment)
+    assert asyncio.run(store.install_dependencies([MIGRAPHX], ignore_progress)) == 0
+    assert store.install_dependencies_sync([MIGRAPHX]) == 0
+    assert runs == []
+
+
+def test_a_failed_uninstall_of_a_replaced_build_stops_the_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    # Reported as any failed uninstall, and the old build stays usable.
+    run_like_pip(monkeypatch, tmp_path, UNINSTALL_LOCKED)
+    actions: list[str] = []
+    popen = store.subprocess.Popen
+
+    def recording_popen(command: list[str], **kwargs: Any) -> subprocess.Popen[str]:
+        actions.append(command[3])
+        return popen(command, **kwargs)
+
+    monkeypatch.setattr(store.subprocess, "Popen", recording_popen)
+    installed(monkeypatch, {"onnxruntime-gpu": "1.30.0+trt11.4"})
+    with pytest.raises(ValueError) as error:
+        asyncio.run(store.install_dependencies([MIGRAPHX], ignore_progress))
+    assert str(error.value).splitlines()[0] == (
+        "An error occurred while uninstalling dependencies."
+    )
+    assert actions == ["uninstall"]
+
+
 def test_a_rescan_finds_what_pip_added_and_removed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

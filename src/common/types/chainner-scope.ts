@@ -113,6 +113,15 @@ struct TensorRTEngine {
 enum TrtPrecision { fp32, fp16 }
 enum TrtShapeMode { fixed, dynamic }
 
+struct MIGraphXProgram {
+    scale: int(1..),
+    inputChannels: int(1..),
+    outputChannels: int(1..),
+    precision: string,
+    height: int(1..),
+    width: int(1..),
+}
+
 def pytorchToOnnx(model: PyTorchModel): OnnxModel {
     OnnxModel {
         scaleHeight: model.scale,
@@ -148,7 +157,7 @@ def FpMode::toString(mode: FpMode) {
     }
 }
 
-def convenientUpscale(model: PyTorchModel | NcnnNetwork, image: Image) {
+def convenientUpscale(model: PyTorchModel | NcnnNetwork | MIGraphXProgram, image: Image) {
     Image {
         width: model.scale * image.width,
         height: model.scale * image.height,

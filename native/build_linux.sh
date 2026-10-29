@@ -10,7 +10,9 @@
 #            CHAINNER_C_OUTPUT_DIR=<dir>, CHAINNER_C_EXT_OUTPUT_DIR=<dir>, CHAINNER_C_PDB=ON, CHAINNER_C_REGEX_ONLY=ON
 #            or, for local builds only, CHAINNER_C_MARCH=<cpu> (never for releases); on a directory's first configure,
 #            toolchain-linux.cmake's chainner_c_llvm=<LLVM 23.1.2's bin>; CHAINNER_C_TENSORRT_ROOT with
-#            CHAINNER_C_CUDA_ROOT also builds the TensorRT parts (without them they are skipped).
+#            CHAINNER_C_CUDA_ROOT also builds the TensorRT parts (without them they are skipped); CHAINNER_C_ROCM_ROOT
+#            (ROCm 7.14) builds the AMD GPU parts (the HIP custom-op libraries), and CHAINNER_C_MIGRAPHX_ROOT
+#            (MIGraphX 2.16) with it the MIGraphX runner (cmake/rocm.cmake).
 #   -j       parallel build jobs (default: Ninja's).
 #   --ninja  ninja (default: ninja on PATH); it must exist.
 set -euo pipefail

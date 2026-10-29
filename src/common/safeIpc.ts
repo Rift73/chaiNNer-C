@@ -6,7 +6,7 @@ import type { ParsedSaveData, SaveData } from '../main/SaveFile';
 // eslint-disable-next-line import/no-nodejs-modules
 import type { FileFilter, OpenDialogReturnValue } from 'electron/common';
 // eslint-disable-next-line import/no-nodejs-modules
-import type { MakeDirectoryOptions } from 'fs';
+import type { MakeDirectoryOptions, RmOptions } from 'fs';
 import type { Mode, ObjectEncodingOptions, OpenMode, PathLike } from 'original-fs';
 
 interface ChannelInfo<ReturnType, Args extends unknown[] = []> {
@@ -83,7 +83,7 @@ export interface InvokeChannels {
     'fs-exists': ChannelInfo<boolean, [path: string]>;
     'fs-mkdir': ChannelInfo<string | undefined, [path: string, options: MakeDirectoryOptions]>;
     'fs-readdir': ChannelInfo<string[], [path: string]>;
-    'fs-unlink': ChannelInfo<void, [path: string]>;
+    'fs-rm': ChannelInfo<void, [path: string, options: RmOptions]>;
     'fs-access': ChannelInfo<void, [path: string]>;
 
     // Electron

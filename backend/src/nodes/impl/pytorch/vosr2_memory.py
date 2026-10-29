@@ -9,7 +9,7 @@ from threading import RLock
 import torch
 
 from api import Progress
-from gpu import nvidia
+from gpu import MemoryUsage, get_vram_usage
 from util import waiting
 
 from .vosr2 import MemoryPlan, VosrMemoryMode
@@ -45,14 +45,18 @@ def vram_budget(
             prepare()
         with torch.cuda.device(device):
             index = torch.cuda.current_device()
-        gpu = next((gpu for gpu in nvidia.devices if gpu.index == index), None)
-        if gpu is None:
-            raise RuntimeError(
-                "VOSR memory profiles require working NVIDIA memory monitoring."
-            )
+
+        def current_usage() -> MemoryUsage:
+            usage = get_vram_usage(index)
+            if usage is None:
+                raise RuntimeError(
+                    "VOSR memory profiles require working GPU memory monitoring."
+                )
+            return usage
+
         with torch.cuda.device(device):
             torch.cuda.empty_cache()
-            usage = gpu.get_current_vram_usage()
+            usage = current_usage()
             profile = MemoryPlan.for_mode(mode).limit_bytes
             limit = usage.total if profile is None else min(profile, usage.total)
             external = max(0, usage.used - torch.cuda.memory_reserved(device))
@@ -73,7 +77,7 @@ def vram_budget(
 
             def check() -> None:
                 progress.suspend()
-                if gpu.get_current_vram_usage().used >= limit - 100_000_000:
+                if current_usage().used >= limit - 100_000_000:
                     raise RuntimeError(
                         f"GPU memory reached the VOSR {mode.value} safety boundary. {advice}"
                     )

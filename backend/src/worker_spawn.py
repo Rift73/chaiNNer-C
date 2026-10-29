@@ -1,7 +1,8 @@
 """How the host starts its worker process.
 
-The standard library only: run.py starts the worker with it first, before the host
-checks its own dependencies and imports Sanic, so the two processes start side by side.
+The standard library only, as hip_devices.py: run.py starts the worker with it first,
+before the host checks its own dependencies and imports Sanic, so the two processes
+start side by side.
 """
 
 from __future__ import annotations
@@ -10,6 +11,8 @@ import os
 import socket
 import subprocess
 import sys
+
+from hip_devices import ENVIRONMENT as AMD_GPUS
 
 # backslashreplace: a log line with a lone surrogate (an undecodable Windows file
 # name) is written escaped instead of being dropped.
@@ -31,6 +34,9 @@ def spawn_worker(args: list[str]) -> subprocess.Popen[str]:
     """Starts server.py with `args` (its port, then its flags), its output piped."""
     server_file = os.path.join(os.path.dirname(__file__), "server.py")
     python_location = sys.executable
+    # Windows: the host's AMD GPU listing, made after ENV (hip_devices.py), so that the
+    # worker does not list them again
+    env = ENV if AMD_GPUS not in os.environ else {**ENV, AMD_GPUS: os.environ[AMD_GPUS]}
 
     return subprocess.Popen(
         # A host that is killed or crashes stops nothing: the worker watches it.
@@ -43,5 +49,5 @@ def spawn_worker(args: list[str]) -> subprocess.Popen[str]:
         # A byte that is not UTF-8 (native code, a tool the worker runs) is shown
         # escaped instead of ending the reader threads.
         errors="backslashreplace",
-        env=ENV,
+        env=env,
     )

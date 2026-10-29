@@ -34,6 +34,8 @@ def use_device(monkeypatch, node, device):
     )
     monkeypatch.setattr(torch.cuda, "device", lambda _: nullcontext())
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    # TensorRT's routes are an NVIDIA PyTorch's, in a ROCm runtime's run too
+    monkeypatch.setattr(torch.version, "hip", None)
 
 
 @pytest.mark.parametrize(

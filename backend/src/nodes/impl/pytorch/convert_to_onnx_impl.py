@@ -93,7 +93,8 @@ def export_onnx(
 
         m = FakeModel(model)
 
-    with BytesIO() as f:
+    # HAT's and DAT's attention laid out for the GPUs' runtime (same values)
+    with BytesIO() as f, attention_export.attention_layout():
         # The TorchScript exporter, which the opsets and dynamic_axes here are written
         # for. Torch's default exporter (dynamo, since torch 2.9) needs onnxscript,
         # which chaiNNer does not install.

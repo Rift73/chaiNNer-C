@@ -68,7 +68,7 @@ def test_the_cap_is_restored(monkeypatch: pytest.MonkeyPatch):
 def test_the_pinned_ram_is_released_once_after_moves(monkeypatch: pytest.MonkeyPatch):
     offload.release_pinned_memory()  # what earlier tests moved
     released: list[int] = []
-    monkeypatch.setattr(offload, "_host_emptyCache", lambda: released.append(1))
+    monkeypatch.setattr("torch._C._host_emptyCache", lambda: released.append(1))
     model, x = model_and_input()
     model(x)
     offload.release_pinned_memory()

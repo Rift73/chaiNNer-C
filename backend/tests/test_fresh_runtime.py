@@ -128,6 +128,7 @@ def start(absent: list[str], broken: list[str]) -> dict:
 
 PACKAGES = [
     "chaiNNer_external",
+    "chaiNNer_migraphx",
     "chaiNNer_modelopt",
     "chaiNNer_ncnn",
     "chaiNNer_onnx",

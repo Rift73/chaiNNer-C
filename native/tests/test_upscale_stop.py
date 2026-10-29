@@ -92,6 +92,9 @@ def test_stop_after_first_tile_propagates(monkeypatch, tiling, backend):
                 execution_provider="CPUExecutionProvider",
                 tensorrt_fp16_mode=False,
                 tensorrt_cache_path="",
+                migraphx_fp16_mode=False,
+                migraphx_cache_path=None,
+                migraphx_exhaustive_tune=False,
             ),
         )
         monkeypatch.setattr(node, "get_onnx_session", lambda *args: Session())

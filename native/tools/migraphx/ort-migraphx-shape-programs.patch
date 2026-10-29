@@ -1,0 +1,96 @@
+MIGraphX provider: one compiled program per input shape, reused within the session (apply after
+ort-migraphx-cache-name.patch).
+
+The provider kept one program per fused node and re-parsed and recompiled the model whenever the input shape
+changed, so tiled inference (full tiles alternating with edge tiles) recompiled at almost every tile. Each node now
+keeps the programs of its 4 most recently used input-shape sets (each program holds its own GPU copy of the
+weights), keyed like the disk cache, and switches to a kept program instead of recompiling.
+
+diff --git a/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc b/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc
+index 4074b2f..2927fe4 100644
+--- a/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc
++++ b/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc
+@@ -1307,6 +1307,22 @@ std::string make_shape_key(const std::map<std::string, std::vector<std::int64_t>
+   return key;
+ }
+ 
++// A fused node keeps the compiled programs of its most recently used input shapes, so inputs that alternate between
++// a few shapes (tiles and their edge tiles) compile each shape once per session. Every program holds its own copy of
++// the weights on the GPU, hence the bound; the least recently used program is dropped first.
++constexpr std::size_t kMaxProgramsPerNode = 4;
++
++void remember_program(MIGraphXFuncState& state, const std::string& shape_key, const migraphx::program& prog) {
++  auto& order = state.program_order;
++  order.erase(std::remove(order.begin(), order.end(), shape_key), order.end());
++  order.push_back(shape_key);
++  state.programs_by_shape.insert_or_assign(shape_key, prog);
++  if (order.size() > kMaxProgramsPerNode) {
++    state.programs_by_shape.erase(order.front());
++    order.erase(order.begin());
++  }
++}
++
+ constexpr std::uint64_t MIGraphX_Version =
+     ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
+ 
+@@ -1446,6 +1462,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+       bool input_shape_match = true;
+       migraphx::program_parameter_shapes param_shapes;
+       std::map<std::string, std::vector<std::int64_t>> input_shapes;
++      std::map<std::string, std::vector<std::int64_t>> current_shapes;
+ 
+       if (no_input_shape) {
+         LOGS_DEFAULT(VERBOSE) << "Missing input shape setting input parameters again";
+@@ -1482,6 +1499,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+                   mgx_strides.size() == 1 && mgx_strides[0] == 0) {
+                 mgx_lens.clear();
+               }
++              current_shapes[name].assign(mgx_lens.begin(), mgx_lens.end());
+ 
+               if (mgx_lens != ort_lens) {
+                 cmp_options.set_input_parameter_shape(name, ort_lens);
+@@ -1496,12 +1514,20 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+       // input shapes are different, needs to re-parse onnx and
+       // re-compile the program
+       if (!input_shape_match) {
++        const auto shape_key = make_shape_key(input_shapes);
+         std::filesystem::path model_cache_file;
+         // empty cache path means the MXR caching is disabled - always compile
+         if (!model_cache_path_.empty()) {
+-          model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + make_hash(make_shape_key(input_shapes)) + ".mxr");
++          model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + make_hash(shape_key) + ".mxr");
++        }
++        if (!current_shapes.empty()) {
++          remember_program(*mgx_state, make_shape_key(current_shapes), prog);
+         }
+-        if (!load_precompiled_model(prog, model_cache_file)) {
++        const auto known = mgx_state->programs_by_shape.find(shape_key);
++        if (known != mgx_state->programs_by_shape.end()) {
++          LOGS_DEFAULT(VERBOSE) << "Input shapes seen before: reusing their compiled program";
++          prog = known->second;
++        } else if (!load_precompiled_model(prog, model_cache_file)) {
+           LOGS_DEFAULT(VERBOSE) << "Input shape mismatch detected. Recompiling";
+ #ifndef ENABLE_TRAINING_CORE
+ #ifdef HAVE_MIGRAPHX_API_ONNX_OPTIONS_SET_EXTERNAL_DATA_PATH
+@@ -1537,6 +1563,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+           compile_program(prog, t, exhaustive_tune_);
+           save_compiled_model(prog, model_cache_file);
+         }
++        remember_program(*mgx_state, shape_key, prog);
+ 
+         mgx_state->prog = prog;
+         param_shapes = prog.get_parameter_shapes();
+diff --git a/onnxruntime/core/providers/migraphx/migraphx_execution_provider.h b/onnxruntime/core/providers/migraphx/migraphx_execution_provider.h
+index 99f790b..d5ed523 100644
+--- a/onnxruntime/core/providers/migraphx/migraphx_execution_provider.h
++++ b/onnxruntime/core/providers/migraphx/migraphx_execution_provider.h
+@@ -56,6 +56,9 @@ struct MIGraphXFuncState {
+   std::filesystem::path model_cache_dir;
+   bool dump_model_ops = false;
+   bool exhaustive_tune = false;
++  // Compiled programs by input shapes, and the shape keys from least to most recently used.
++  std::unordered_map<std::string, migraphx::program> programs_by_shape;
++  std::vector<std::string> program_order;
+ };
+ 
+ // Logical device representation.
