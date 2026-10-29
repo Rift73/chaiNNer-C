@@ -8,6 +8,10 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#elif defined(__linux__)
+#include <dlfcn.h>
+#include <stdio.h>
+#include <stdlib.h>
 #endif
 
 /* The static CRT's functions behind the two entries whose export is not their name. */
@@ -106,6 +110,36 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
         memcpy((char *)&cn_crt + entries[i].offset, &address, sizeof address);
     }
     return TRUE;
+}
+#elif defined(__linux__)
+/* Linux: NumPy, SciPy and CPython call the process's one glibc libm.so.6, which this module
+ * also links, so the loader has it in place before this constructor runs. The table takes
+ * the exports dlsym finds there (glibc names _cabs and _hypotf without the underscore),
+ * never a second copy (no load).
+ * A constructor cannot refuse its module's load: a missing module or export ends the
+ * process with "chainner_native.so: <reason><name>" on stderr. */
+cn_crt_table cn_crt;
+
+static void refuse(const char *reason, const char *name)
+{
+    fprintf(stderr, "chainner_native.so: %s%s\n", reason, name);
+    fflush(stderr);
+    abort();
+}
+
+__attribute__((constructor)) static void load_crt(void)
+{
+    void *module = dlopen("libm.so.6", RTLD_NOW | RTLD_NOLOAD);
+    if (!module) refuse("libm.so.6 is not loaded in this process", "");
+    for (size_t i = 0; i < CN_CRT_ENTRIES; ++i) {
+        const char *name = entries[i].export_name;
+        if (name[0] == '_') ++name;
+        void *address = dlsym(module, name);
+        if (!address) refuse("libm.so.6 has no export ", name);
+        _Static_assert(sizeof address == sizeof(crt_function), "function pointer size");
+        memcpy((char *)&cn_crt + entries[i].offset, &address, sizeof address);
+    }
+    dlclose(module);
 }
 #else
 cn_crt_table cn_crt = {cos, sin, exp, log, log1p, log2, atan2, hypot, pow, static_cabs,

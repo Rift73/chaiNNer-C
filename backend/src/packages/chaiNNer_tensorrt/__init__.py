@@ -4,7 +4,7 @@ from sanic.log import logger
 
 from api import GB, MB, Category, Dependency, add_package
 from gpu import NvDevice, nvidia
-from system import is_arm_mac
+from system import is_arm_mac, is_windows
 
 package_description = (
     "TensorRT provides native NVIDIA TensorRT support for optimized GPU inference. "
@@ -18,6 +18,25 @@ install_hint = (
     "Requires an NVIDIA GPU with CUDA support."
 )
 
+
+def get_triton():
+    if is_windows:
+        return Dependency(
+            display_name="Triton",
+            pypi_name="triton-windows",
+            version="3.5.1.post22",
+            size_estimate=45 * MB,
+            import_name="triton",
+        )
+    # The release PyTorch 2.14.1 pins on Linux, so one Triton serves both packages.
+    return Dependency(
+        display_name="Triton",
+        pypi_name="triton",
+        version="3.8.0",
+        size_estimate=250 * MB,
+    )
+
+
 # Always register the package so dependencies are installed in CI
 package = add_package(
     __file__,
@@ -29,7 +48,8 @@ package = add_package(
             display_name="TensorRT",
             pypi_name="tensorrt",
             version="11.4.0.106",
-            size_estimate=int(1.2 * GB),
+            # The Linux libraries wheel is 3.8 GB.
+            size_estimate=int((1.2 if is_windows else 3.8) * GB),
         ),
         Dependency(
             display_name="CUDA Python",
@@ -38,13 +58,7 @@ package = add_package(
             size_estimate=20 * MB,
         ),
         # Compiles DUAL's TensorRT plugin kernels (Build Engine, in a child process).
-        Dependency(
-            display_name="Triton",
-            pypi_name="triton-windows",
-            version="3.5.1.post22",
-            size_estimate=45 * MB,
-            import_name="triton",
-        ),
+        get_triton(),
     ],
     icon="BsNvidia",
     color="#76B900",

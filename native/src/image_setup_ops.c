@@ -44,7 +44,7 @@ static __m128i exceptional_words(__m128i words, __m128i bound) {
 int cn_exceptional_scan(const float *src, size_t count, cn_isa_level isa) {
     int daz = (cn_image_fp_state() & 0x40u) != 0;
     size_t i = 0;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (isa >= CN_ISA_AVX2) return cn_exceptional_scan_avx2(src, count, daz);
 #else
     (void)isa;

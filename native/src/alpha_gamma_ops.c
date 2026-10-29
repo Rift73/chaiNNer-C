@@ -165,7 +165,7 @@ static void gamma_range(void *opaque, size_t begin, size_t end)
 {
     const gamma_context *ctx = opaque;
     size_t i = begin;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (ctx->isa >= CN_ISA_AVX2 && begin < ctx->approximate_count) {
         size_t groups = ((end < ctx->approximate_count ? end : ctx->approximate_count) - begin) / 8 * 8;
         cn_gamma_approx_avx2(ctx->src + begin, ctx->out + begin, groups, ctx->gamma);

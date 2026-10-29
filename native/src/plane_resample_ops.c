@@ -6,7 +6,7 @@
 static void resample_range(void *context, size_t begin, size_t end)
 {
     const plane_resample_job *job = context;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (job->isa >= CN_ISA_AVX2) {
         cn_plane_resample_rows_avx2(job, begin, end);
         return;

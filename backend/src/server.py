@@ -41,6 +41,7 @@ from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
 from dependencies.store import installed_packages
 from events import EventConsumer, EventQueue, ExecutionErrorData, event_text
+from linux_libraries import log_missing_libraries
 from native_executor import NativeExecutor, ending_runs, executor_kind
 from nodes.impl import native, native_profile, numpy_pool
 from nodes.impl.cors import add_cors
@@ -216,6 +217,7 @@ class NodeLoading:
                 f"Could not load the system C++ runtime (msvcp140.dll): {error}."
                 " PyTorch and ONNX Runtime may fail to load."
             )
+        log_missing_libraries()
         light, rest = register_packages()
         self.packages_registered.set()
         load_errors: list[api.LoadErrorInfo] = []

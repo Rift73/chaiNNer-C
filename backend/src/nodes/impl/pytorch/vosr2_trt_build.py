@@ -48,6 +48,9 @@ def main() -> None:
     if os.name == "nt":
         ctypes.WinDLL("C:/Windows/System32/msvcp140.dll")
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from nodes.impl.pytorch.vosr2_process import end_with_parent
+
+    end_with_parent()
     import onnx
     import tensorrt as trt
     import torch

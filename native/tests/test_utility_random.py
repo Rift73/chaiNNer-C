@@ -17,7 +17,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from fractions import Fraction
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import numpy as np
@@ -378,7 +378,11 @@ def test_metadata_and_seed_helper_unchanged():
     ) == (REFERENCE / "source/seed.py").read_bytes().replace(b"\r\n", b"\n")
     for record in json.loads((REFERENCE / "manifest.json").read_text())["files"]:
         assert (
-            hashlib.sha256((REFERENCE / record["snapshot"]).read_bytes()).hexdigest()
+            hashlib.sha256(
+                (
+                    REFERENCE / PureWindowsPath(record["snapshot"]).as_posix()
+                ).read_bytes()
+            ).hexdigest()
             == record["sha256"]
         )
 

@@ -874,6 +874,12 @@ def test_the_hosts_server_dependencies_ship_at_the_locks_pins():
     assert not {canonicalize_name(name) for name in declared} & excluded
 
 
+# The tools build the Windows package, whose markers they evaluate where they run
+WINDOWS_PACKAGE = pytest.mark.skipif(
+    sys.platform != "win32", reason="the package tools build the Windows package"
+)
+
+
 def refused(case, message):
     """The run fails with message in both modes, before anything is written."""
     for mode in (("--validate-only",), ()):
@@ -899,7 +905,11 @@ def test_every_excluded_distribution_must_be_in_the_runtime(package_case, name):
     ("requires", "requiring"),
     [
         (["pytest>=8"], "colorama: pytest>=8"),
-        (["coverage; sys_platform == 'win32'"], "colorama: coverage"),
+        pytest.param(
+            ["coverage; sys_platform == 'win32'"],
+            "colorama: coverage",
+            marks=WINDOWS_PACKAGE,
+        ),
         # The extra typing-extensions declares for tests becomes active once a
         # shipped distribution asks for it.
         (["typing-extensions[test]"], "typing-extensions: pytest; extra == 'test'"),
@@ -1116,6 +1126,7 @@ def test_the_runtime_is_read_as_it_is_now(package_case):
         assert f"late-{index}" in package_files.runtime_distributions(case.python)
 
 
+@WINDOWS_PACKAGE
 def test_the_version_probe_asks_the_interpreter_itself():
     python = Path(sys.executable).parent
     assert package_port.interpreter_version(python) == (

@@ -480,7 +480,11 @@ def test_read_frames_with_info_matches_without(tmp_path: Path, vs: Any, output: 
 
 
 # The FFmpeg the backend downloads to its storage on first use (FFMpegEnv.get_integrated).
-FFMPEG_DIR = Path(os.environ.get("APPDATA", "")) / "chaiNNer" / "backend-storage"
+FFMPEG_DIR = (
+    Path(os.environ.get("APPDATA") or Path.home() / ".config")
+    / "chaiNNer"
+    / "backend-storage"
+)
 
 
 @pytest.fixture

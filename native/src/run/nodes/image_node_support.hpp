@@ -18,6 +18,10 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#ifndef _WIN32
+#include <cerrno>
+#include <cstring>
+#endif
 
 namespace cn::run {
 
@@ -232,7 +236,13 @@ inline double python_pow(double base, double exponent)
     }
     if (base == 1.0) return negate ? -1.0 : 1.0;
     double result = cn_crt.pow(base, exponent);
+#ifdef _WIN32
     if (std::isinf(result)) throw NodeError("OverflowError", "(34, 'Result too large')");
+#else
+    // CPython raises float pow's ERANGE with the C library's text for it
+    if (std::isinf(result))
+        throw NodeError("OverflowError", "(" + std::to_string(ERANGE) + ", '" + std::strerror(ERANGE) + "')");
+#endif
     return negate ? -result : result;
 }
 

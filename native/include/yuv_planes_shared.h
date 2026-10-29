@@ -130,7 +130,7 @@ static void bgr_to_yuv_row(const yuv_matrix_job *job, size_t row, size_t first)
     }
 }
 
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
 /* yuv_planes_avx2.c: the segment functions above for ISA level avx2 or above, 8
  * elements at a time with the same operations per lane (the rounding is vroundps
  * to nearest even, independent of MXCSR; vmaxps(scaled, 0) sends NaN to 0); the

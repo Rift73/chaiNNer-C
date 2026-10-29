@@ -24,6 +24,12 @@ import numpy as np
 import pytest
 from bench_fixtures import Fixtures
 
+# bench_backend starts and accounts its hosts as Windows processes
+windows_hosts = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="bench_backend starts Windows hosts (CREATE_NO_WINDOW, job accounting)",
+)
+
 
 def test_require_identical_rejects_different_trees():
     with pytest.raises(ValueError, match=r"nodes/x\.py"):
@@ -831,6 +837,7 @@ def png_trials(tmp_path, sides: dict[str, dict], states: dict[str, dict] | None 
     return make_record
 
 
+@windows_hosts
 def test_python_version_reports_the_interpreters_major_and_minor():
     assert bench.python_version(Path(sys.executable)) == sys.version_info[:2]
 
@@ -876,6 +883,7 @@ def test_cross_stack_refuses_interpreters_of_one_python_version(
     assert created() == set()
 
 
+@windows_hosts
 def test_cross_stack_refuses_a_python_exe_it_cannot_probe(tmp_path, monkeypatch):
     created = refused_start(tmp_path, monkeypatch)
     # The default interpreter is a file named python.exe that Windows cannot run;
@@ -1010,6 +1018,7 @@ def test_cross_stack_records_sides_equal_when_decoded_and_labels_the_run(
     )
 
 
+@windows_hosts
 def test_cross_stack_records_differing_sides_and_flags_the_final_state(
     tmp_path, monkeypatch
 ):
@@ -1311,6 +1320,7 @@ def never_ready(port, path, data=None, timeout=15):
     raise json.JSONDecodeError("Expecting value", "", 0)
 
 
+@windows_hosts
 def test_startup_timeout_names_last_poll_error_and_log(tmp_path, monkeypatch):
     backend = fake_backend(tmp_path, monkeypatch, never_ready)
     monkeypatch.setattr(bench_backend.subprocess, "Popen", FakeProcess)
@@ -1363,6 +1373,7 @@ def test_exit_removes_its_ffmpeg_copy(tmp_path, monkeypatch):
     assert "ffmpeg_cleanup_error" not in info
 
 
+@windows_hosts
 def test_cpu_seconds_reads_owned_job_accounting(tmp_path, monkeypatch):
     # A real job object with no member process: accounting starts at zero.
     backend = fake_backend(
@@ -1377,6 +1388,7 @@ def test_cpu_seconds_reads_owned_job_accounting(tmp_path, monkeypatch):
         backend.cpu_seconds()
 
 
+@windows_hosts
 def test_page_faults_reads_owned_job_accounting(tmp_path, monkeypatch):
     backend = fake_backend(
         tmp_path, monkeypatch, never_ready, job=bench_backend.OwnedJob
@@ -1573,6 +1585,7 @@ def test_log_matches_reads_after_the_offset_and_polls_until_a_match(
     assert clock.sleeps == [0.1, 0.1, 0.1]
 
 
+@windows_hosts
 def test_backend_applies_its_side_environment_last_and_records_it(
     tmp_path, monkeypatch
 ):
@@ -1601,6 +1614,7 @@ def test_backend_applies_its_side_environment_last_and_records_it(
 
 
 @pytest.mark.parametrize("given", [False, True], ids=["default", "given"])
+@windows_hosts
 def test_backend_starts_its_tree_under_its_interpreter_and_records_it(
     tmp_path, monkeypatch, given
 ):
@@ -1651,6 +1665,7 @@ def test_backend_starts_its_tree_under_its_interpreter_and_records_it(
 
 
 @pytest.mark.parametrize("written", [False, True], ids=["unchanged", "installed"])
+@windows_hosts
 def test_backend_records_whether_its_interpreter_was_written(
     tmp_path, monkeypatch, written
 ):
@@ -1749,6 +1764,7 @@ def logging_popen(lines: bytes):
         ),
     ],
 )
+@windows_hosts
 def test_backend_records_native_isa_or_none(
     tmp_path, monkeypatch, env, logged, error, expected
 ):

@@ -16,6 +16,7 @@ import ast
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import textwrap
@@ -69,6 +70,7 @@ KEYS = {
 ALWAYS = {"held_bytes", "release_failures", "cap_bytes", "threshold_bytes"}
 PRELUDE = """
 import json
+import mmap
 
 import numpy as np
 from numpy._core.multiarray import get_handler_name
@@ -79,6 +81,8 @@ g = graph()
 HANDLER = "chainner_c_numpy_pool"
 MIB = 1 << 20
 THRESHOLD = MIB // 2
+# Where a fresh pool block starts: VirtualAlloc's 64 KiB, or mmap's page
+GRANULARITY = mmap.ALLOCATIONGRANULARITY
 """
 BOTH = pytest.mark.parametrize("profile", [False, True], ids=["plain", "profile"])
 
@@ -136,7 +140,7 @@ def test_alloc_and_free_route_across_the_threshold(profile):
         small = np.empty(THRESHOLD - 1, np.uint8)     # below: NumPy's default handler
         big = np.empty(THRESHOLD, np.uint8)           # at the threshold: a fresh pool block
         address = big.ctypes.data
-        assert address % 65536 == 0
+        assert address % GRANULARITY == 0
         s = g.numpy_pool_stats()
         if PROFILE:
             assert (s["requests"], s["misses_cold"], s["fresh"], s["fresh_bytes"]) == (
@@ -226,7 +230,7 @@ def test_realloc_grows_from_below_to_above_and_shrinks_back(profile):
         # A pool block shrunk below the threshold moves to the default handler, contents kept.
         b = np.arange(300_000, dtype=np.float64)        # 2.4 MB, a pool block
         address = b.ctypes.data
-        assert address % 65536 == 0
+        assert address % GRANULARITY == 0
         b.resize(1000, refcheck=False)
         assert b.ctypes.data != address and np.array_equal(b, np.arange(1000.0))
         assert [block[0] for block in g.numpy_pool_idle_blocks()] == [address]
@@ -241,7 +245,7 @@ def test_realloc_grows_from_below_to_above_and_shrinks_back(profile):
         c.resize(600_000, refcheck=False)
         assert np.array_equal(c[:300_000], np.arange(300_000.0)) and not c[300_000:].any()
         moved = c.ctypes.data
-        assert moved != address and moved % 65536 == 0
+        assert moved != address and moved % GRANULARITY == 0
         # Shrunk within [capacity / 2, capacity] and above the threshold: in place.
         c.resize(400_000, refcheck=False)
         assert c.ctypes.data == moved
@@ -359,7 +363,7 @@ def test_per_thread_install_through_the_initializer_only(profile):
 
         def work():
             array = np.empty(2 * MIB, np.uint8)
-            return get_handler_name(), get_handler_name(array), array.ctypes.data % 65536 == 0
+            return get_handler_name(), get_handler_name(array), array.ctypes.data % GRANULARITY == 0
 
         with ThreadPoolExecutor(1, initializer=g.numpy_pool_install) as pool:
             with_initializer = pool.submit(work).result()
@@ -417,20 +421,25 @@ def test_variable_is_read_as_specified():
         """
         import ctypes
         import os
+        import sys
 
         class Status(ctypes.Structure):
             _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [
                 (name, ctypes.c_ulonglong) for name in
                 ("total", "available", "page_total", "page_available", "virtual_total",
                  "virtual_available", "extended")]
-        status = Status()
-        status.length = ctypes.sizeof(Status)
-        assert ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+        if sys.platform == "win32":
+            status = Status()
+            status.length = ctypes.sizeof(Status)
+            assert ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+            total = status.total
+        else:
+            total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
         first = g.numpy_pool_install()
         os.environ["CHAINNER_C_NUMPY_POOL"] = "0"       # read once per process
         again = g.numpy_pool_install()
         s = g.numpy_pool_stats()
-        result = {"total": status.total, "statuses": [first, again],
+        result = {"total": total, "statuses": [first, again],
                   "cap": s["cap_bytes"], "threshold": s["threshold_bytes"]}
         """
     )
@@ -895,10 +904,12 @@ def test_video_frames_are_served_by_the_pool(profile):
 
 DOUBLE_FREE = """
 import ctypes
+import sys
 
 SEM_FAILCRITICALERRORS = 0x0001
 SEM_NOGPFAULTERRORBOX = 0x0002
-ctypes.windll.kernel32.SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)
+if sys.platform == "win32":
+    ctypes.windll.kernel32.SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)
 assert g.numpy_pool_install() == ("installed", "")
 array = np.empty(2 * MIB, np.uint8)
 del array
@@ -930,7 +941,9 @@ print("survived", flush=True)
 
 def test_double_free_writes_one_line_then_aborts():
     done = launch(PRELUDE + DOUBLE_FREE)
-    assert done.returncode in {3, 0xC0000409}, (done.returncode, done.stderr)
+    # abort(): the CRT's exit code or a fail-fast on Windows, SIGABRT elsewhere
+    aborted = {3, 0xC0000409} if sys.platform == "win32" else {-signal.SIGABRT}
+    assert done.returncode in aborted, (done.returncode, done.stderr)
     lines = done.stdout.splitlines()
     assert lines and lines[-1].startswith("freeing "), done.stdout
     address = int(lines[-1].removeprefix("freeing "))
@@ -1049,7 +1062,7 @@ def test_release_returns_the_bytes_and_warns_once_on_virtualfree_failures(
     assert released == [3 * MIB, MIB, 0]
     [(level, text)] = sanic_records(caplog)
     assert level == logging.WARNING
-    assert "VirtualFree failed 2 time(s)" in text
+    assert f"{numpy_pool.RELEASE_CALL} failed 2 time(s)" in text
 
 
 # /run's order: the release, then native_profile's line.

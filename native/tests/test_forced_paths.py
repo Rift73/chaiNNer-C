@@ -30,7 +30,7 @@ import torch
 from golden_kernels import (
     MXCSR_STATES,
     digest,
-    load_manifest,
+    load_expected,
     make_array,
     matrix,
     run_case,
@@ -247,7 +247,8 @@ def test_sp4b_levels_equal_scalar(kernel, case, levels):
 
 
 def manifest_cases(kernel):
-    return load_manifest(GOLDEN / f"{kernel}.json")[1]
+    # On Linux with the C-library-math cases of the Linux twins
+    return load_expected(GOLDEN / f"{kernel}.json")[1]
 
 
 def holds_denormal(case):

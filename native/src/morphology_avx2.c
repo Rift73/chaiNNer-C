@@ -1,4 +1,4 @@
-#if !defined(_M_X64)
+#if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "morphology_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
 /* Morphology's AVX2 unit (/arch:AVX2, spec 4.3; SP4b D11): no export, reached only

@@ -23,7 +23,7 @@ import pytest
 
 from nodes.impl.colour_info import code_to_float, float_to_code
 from nodes.impl.tensorrt.bfloat16 import bf16_bits_to_float32, float32_to_bf16_bits
-from nodes.impl.tensorrt.runner import RUNNER_VARIABLE, runner_enabled
+from nodes.impl.tensorrt.runner import PLUGIN, RUNNER_VARIABLE, runner_enabled
 from nodes.impl.tensorrt.tiling import (
     ShapeBounds,
     _pad_tile,
@@ -494,8 +494,13 @@ try:
     trt.Runner(b"", 0, 1)
 except ValueError:
     pass
-names = {{m.path.lower().rsplit(chr(92), 1)[-1] for m in psutil.Process().memory_maps()}}
-print(sorted(n for n in names if n.startswith(("nvcuda", "nvinfer", "cudart", "nvrtc"))))
+separator, prefixes = (
+    (chr(92), ("nvcuda", "nvinfer", "cudart", "nvrtc"))
+    if sys.platform == "win32"
+    else ("/", ("libcuda", "libnvinfer", "libcudart", "libnvrtc"))
+)
+names = {{m.path.lower().rsplit(separator, 1)[-1] for m in psutil.Process().memory_maps()}}
+print(sorted(n for n in names if n.startswith(prefixes)))
 """
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": "-1"}
     result = subprocess.run(
@@ -556,12 +561,9 @@ def test_node_session_matches_python_session(
         assert np.array_equal(convenient_upscale(img, 3, 3, session.upscale), expected)
 
 
-PLUGIN = BACKEND_SRC / "nodes" / "impl" / "tensorrt" / "chainner_trt_vs.dll"
-
-
 @pytest.mark.skipif(
     find_spec("vapoursynth") is None or not PLUGIN.is_file(),
-    reason="needs VapourSynth (run under its venv, as the VapourSynth tests) and chainner_trt_vs.dll",
+    reason=f"needs VapourSynth (run under its venv, as the VapourSynth tests) and {PLUGIN.name}",
 )
 def test_vapoursynth_plugin_loads_and_checks_its_arguments(tmp_path: Path):
     """The plugin registers chainner_trt.Upscale (API 4) and refuses bad clips, stream
@@ -638,7 +640,7 @@ def test_runner_is_ai_upscales_default_and_the_nodes_opt_in(
     the Upscale Image node only when it is "1"."""
     from nodes.impl.tensorrt import runner as runner_module
 
-    plugin = tmp_path / "chainner_trt_vs.dll"
+    plugin = tmp_path / runner_module.PLUGIN_FILE
     plugin.write_bytes(b"")
     monkeypatch.setattr(runner_module, "PLUGIN", plugin)
     monkeypatch.setattr(runner_module, "MODULE", "nodes.impl.tensorrt.tiling")
@@ -664,7 +666,7 @@ def test_a_build_without_the_runner_uses_the_python_paths(
         SimpleNamespace(warning=lambda message, *args: warnings.append(message % args)),
     )
     monkeypatch.setattr(runner_module, "_reported", set())
-    monkeypatch.setattr(runner_module, "PLUGIN", tmp_path / "chainner_trt_vs.dll")
+    monkeypatch.setattr(runner_module, "PLUGIN", tmp_path / runner_module.PLUGIN_FILE)
     monkeypatch.setattr(runner_module, "MODULE", "nodes.impl.tensorrt._missing_runner")
     monkeypatch.setenv(RUNNER_VARIABLE, "1")
     for _ in range(2):
@@ -674,8 +676,8 @@ def test_a_build_without_the_runner_uses_the_python_paths(
         f"The TensorRT runner's {name} is not in this build: TensorRT runs on the"
         " Python path."
         for name in (
-            "VapourSynth plugin chainner_trt_vs.dll",
-            "module _chainner_trt.pyd",
+            f"VapourSynth plugin {runner_module.PLUGIN_FILE}",
+            f"module {runner_module.MODULE_FILE}",
         )
     ]
 

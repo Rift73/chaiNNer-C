@@ -118,6 +118,88 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
 - The runtime's `Lib` is precompiled with hash-based bytecode (`unchecked-hash`), so two builds are byte-identical.
 - A `portable` marker keeps the profile inside the package; run `chaiNNer.exe` from its folder.
 
+## Linux
+
+x86-64 only. The same sources build into `.so` modules with the Windows modules' names and directories under
+`backend/src`: `chainner_native.so`, `_chainner_graph.so`, `chainner_ext/chainner_ext.so` and, with the TensorRT parts,
+`nodes/impl/pytorch/vosr2_qkv.so`, `nodes/impl/tensorrt/_chainner_trt.so`, `chainner_trt_vs.so` and
+`drft_trt_plugins.so`. Linux code sits in `#else` branches and `if(NOT WIN32)` blocks, so the Windows build is the one
+above, unchanged. Run every command from the repository root in bash.
+
+**Develop.** Prerequisites: LLVM 23.1.2's official Linux release (`clang`, `clang++`, `ld.lld`, `llvm-ar`,
+`llvm-ranlib`); its binaries need glibc 2.34 or newer, and `ld.lld` needs ICU 70 (`libicuuc.so.70`, `libicui18n.so.70`,
+`libicudata.so.70`), so on a distribution with another ICU put Ubuntu 22.04's `libicu70` libraries in the release's
+`lib` folder, which `ld.lld`'s run path covers; NASM 3.01 on `PATH` (or `-D CHAINNER_C_NASM=<nasm>`; distributions ship
+older ones, so build it from nasm.us's 3.01 source release); CMake 3.20 or newer; Ninja; Node.js with npm. Optional, for
+the TensorRT parts: CUDA 13.4.92 (`nvcc`, whose host compiler is GCC's `g++` 16 or older, since nvcc 13 refuses clang
+23; `-D CHAINNER_C_NVCC_HOST=<g++>` if it is not the `g++` on `PATH`), TensorRT 11.4.0.106 (its headers and
+`libnvinfer.so.11`, the one library the modules link; the app loads the `tensorrt` package's) and, for the runner's
+VapourSynth plugin, VapourSynth R81's `VapourSynth4.h` (`-D CHAINNER_C_VAPOURSYNTH_INCLUDE=<its folder>`).
+
+1. Provision the build's Python: `native/tools/provision_runtime.sh --build-only` downloads the Linux lock's CPython
+   3.14.8 (python-build-standalone `20261003`) into `native/runtime/cpython-3.14.8`, checked against the lock's SHA-256,
+   and installs only the lock's NumPy and pybind11.
+2. Build with `native/build_linux.sh` (`Build.ps1`'s counterpart; the binaries land in `backend/src`). Options: `-c
+   Release|Debug`, `-B <build directory>` (default `native/build-linux`), `-D NAME=VALUE`, `-j <jobs>`, `--ninja
+   <ninja>`. LLVM is the cache entry `chainner_c_llvm` (default `~/chainner-linux/toolchains/llvm-23.1.2/bin`), set
+   with `-D` on a build directory's first configure. The TensorRT parts are built when `CHAINNER_C_TENSORRT_ROOT=<SDK>`
+   and `CHAINNER_C_CUDA_ROOT=<toolkit>` are given together, and skipped when neither is:
+
+   ```bash
+   native/tools/provision_runtime.sh --build-only
+   native/build_linux.sh -j 12 -D chainner_c_llvm=<LLVM 23.1.2>/bin \
+     -D CHAINNER_C_TENSORRT_ROOT=<TensorRT 11.4.0.106> -D CHAINNER_C_CUDA_ROOT=<CUDA 13.4.92>
+   ```
+
+3. The tested stack: `native/tools/provision_runtime.sh` (no option) provisions it from
+   [`python-stack.lock.linux.txt`](python-stack.lock.linux.txt), the Windows stack plus what Linux adds (PyTorch's CUDA
+   libraries and Triton, `cuda-bindings`, Sanic's `uvloop` and `ujson`). As on Windows it installs the pins as
+   they stand (PyTorch and torchvision from the PyTorch CUDA 13.2 index, `chainner-pip` from the backend's bundled
+   wheel, spandrel from its fork's release wheel, the rest from PyPI), fails unless `pip check` is clean and `pip
+   freeze` equals the lock, and never writes the lock (`--relock` is the upgrade step). `--with-extras` also installs
+   what the dependency manager installs on demand (TensorRT, CUDA Python, VapourSynth with its plugins) and the test and
+   lint tools; `--runtime-dir <directory>` extracts the runtime elsewhere, for a checkout on a file system that cannot
+   hold it. Tests: [`MAINTAINING.md`](MAINTAINING.md), section 11.
+
+**The toolchain** is pinned in `native/toolchain-linux.cmake` and `native/cmake/linux.cmake`: clang 23.1.2 with `ld.lld`
+and `llvm-ar` (configuration refuses any other clang), baseline x86-64 code with per-file AVX2 and AVX-512 targets for
+the ISA units, ThinLTO, `-ffp-model=strict`, dynamic denormals, and `-Wall -Wextra -Werror` for first-party code. These
+are the Windows options in clang's spelling: `native/cmake/linux.cmake` rewrites them at the end of configuration and
+stops on one it does not know. `libstdc++` and `libgcc` link statically, so each module needs only glibc; run paths are
+`$ORIGIN`-relative. The image codecs build from the same vendored sources (libjpeg-turbo's SIMD assembles as ELF64,
+libtiff uses `tif_unix.c`). ELF objects and `ld.lld` carry no timestamps and the source-path map keeps build paths out
+of the binaries, so builds are reproducible. `-D CHAINNER_C_MARCH=<cpu>` works as on Windows: never for releases.
+
+**Package from a development build.** After the native build, `npm ci` and `npm run make-linux-zip` (Node 24, Info-ZIP's
+`zip` on `PATH`, on a Linux file system: a Windows drive mounted into WSL gives every file mode 777). A zip is made on
+Linux, because the `portable` marker follows the build host. Forge's `prePackage` refuses a package without
+`chainner_native.so`, `_chainner_graph.so`, `chainner_ext.so` or VOSR's `vosr2_qkv.so` (set
+`CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1` to waive the last, as on Windows), `postPackage` removes `texconv` (a Windows
+program), and `postMake` adds the `portable` marker and the launcher `chaiNNer.sh` (`src/public/linux/chaiNNer.sh`).
+The result is `out/make/zip/linux/x64/chaiNNer-linux-x64-<version>.zip`, holding `chaiNNer-linux-x64/` with `chainner`
+(Electron), `chaiNNer.sh`, `portable` and `resources/src`.
+
+**Release build (glibc 2.28 or newer).** `native/tools/build_linux_release.sh [--repo <git repository>] [--ref <commit>]
+[--work <directory>] [--no-package]` on a Linux machine with Docker builds the image `cnl-build`
+(`native/linux/Dockerfile`), then, in a container of it (`--memory=16g`), the native binaries with the TensorRT and CUDA
+parts, the zip, and the glibc check. It reads one commit of the repository (`git archive`), never a working tree's
+changes or ignored files, so no Windows `.dll` or `.pyd` can reach the zip. Binaries and zip are in
+`<work>/src` (default work directory `~/chainner-linux/build/release`; the zip in `out/make/zip/linux/x64/`), and the
+script prints the SHA-256 of the zip and of every module. The first run downloads about 3.3 GB for the image.
+
+- LLVM 23.1.2's binaries need glibc 2.34, so the image is Ubuntu 22.04, and clang compiles and links against a glibc
+  2.28 sysroot instead of the image's own glibc: Rocky Linux 8.10's glibc, kernel headers, and GCC Toolset 14's
+  `libstdc++` and `libgcc` (`clang.cfg` and `clang++.cfg` pass `--sysroot` and `--gcc-install-dir` on every call).
+  nvcc's host compiler is the same toolset's `g++`.
+- The image also holds CMake 3.31.6, Ninja 1.12.1, NASM 3.01, CUDA 13.4.92 (`nvcc` and the static runtime), the
+  TensorRT 11.4.0.106 headers with a link stub of `libnvinfer.so.11`, VapourSynth R81's header, CPython 3.14.8 with
+  NumPy 2.5.3, and Node 24.22.1. Every download is pinned by SHA-256 (`native/linux/fetch.sh`), the base image by
+  digest, and Ubuntu's packages by a snapshot date.
+- `native/tools/check_glibc.py [--floor 2.28] PATH... [--third-party PATH...]` reads the ELF files' dynamic sections
+  and fails a file of PATH that needs a `GLIBC_` version above the floor or an unnumbered one (`GLIBC_PRIVATE`,
+  `GLIBC_ABI_DT_RELR`), or that needs `libstdc++`, `libgcc_s` or `libpython`. The release script runs it over
+  `backend/src` and over the packaged app; the Electron runtime's files (`--third-party`) are listed, never failed.
+
 ## Checks and CI
 
 Hosted CI (`.github/workflows/lint-backend.yml`) runs `ruff format --check` and `ruff check` on `ubuntu-latest`, and

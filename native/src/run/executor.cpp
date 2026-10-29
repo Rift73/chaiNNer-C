@@ -50,6 +50,7 @@
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -57,6 +58,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#else
+#include "cn_platform.h"
+#endif
 
 namespace py = pybind11;
 
@@ -72,11 +76,17 @@ double seconds_since(Clock::time_point start)
 
 int environment_count(const char *name, int fallback)
 {
+#ifdef _WIN32
     char *value = nullptr;
     size_t size = 0;
     if (_dupenv_s(&value, &size, name) != 0 || !value) return fallback;
     std::string text(value);
     free(value);
+#else
+    const char *value = std::getenv(name);
+    if (!value) return fallback;
+    std::string text(value);
+#endif
     if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos || text.size() > 4) return fallback;
     int count = std::stoi(text);
     return count >= 1 ? count : fallback;
@@ -312,15 +322,24 @@ public:
 private:
     Memo()
     {
+#ifdef _WIN32
         MEMORYSTATUSEX memory = {};
         memory.dwLength = sizeof(memory);
         int64_t total = GlobalMemoryStatusEx(&memory) ? int64_t(memory.ullTotalPhys) : 0;
+#else
+        int64_t total = int64_t(cn_physical_memory());
+#endif
         budget_ = std::min<int64_t>(int64_t(2) << 30, total / 10);
+#ifdef _WIN32
         char *value = nullptr;
         size_t size = 0;
         if (_dupenv_s(&value, &size, "CHAINNER_C_MEMO_BUDGET_MIB") == 0 && value) {
             std::string text(value);
             free(value);
+#else
+        if (const char *value = std::getenv("CHAINNER_C_MEMO_BUDGET_MIB")) {
+            std::string text(value);
+#endif
             if (!text.empty() && text.size() <= 9 && text.find_first_not_of("0123456789") == std::string::npos) {
                 budget_ = int64_t(std::stoll(text)) << 20;
                 overridden_ = true;
@@ -3606,9 +3625,13 @@ void Run::flush_broadcasts()
 Engine::Engine()
 {
     unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
+#ifdef _WIN32
     DWORD_PTR process_mask = 0, system_mask = 0;
     if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask) && process_mask)
         cpus = unsigned(std::popcount(uint64_t(process_mask)));
+#else
+    if (unsigned affinity = cn_affinity_cpus()) cpus = affinity;
+#endif
     workers_ = environment_count("CHAINNER_C_ENGINE_THREADS", int(std::max(2u, cpus)));
     idle_time_ = std::chrono::seconds(environment_count("CHAINNER_C_ENGINE_IDLE_SECONDS", 30));
     for (int i = 0; i < workers_; ++i) std::thread([this] { work(); }).detach();

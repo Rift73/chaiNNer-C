@@ -39,6 +39,15 @@ const makerOptions = {
         'A node-based image processing GUI aimed at making chaining image processing tasks easy and customizable. Born as an AI upscaling application, chaiNNer has grown into an extremely flexible and powerful programmatic image processing application.\n\nChaiNNer gives you a level of customization of your image processing workflow that very few others do. Not only do you have full control over your processing pipeline, you can do incredibly complex tasks just by connecting a few nodes together.',
 };
 
+// The native layer's Linux binaries (relative to backend/src) that every package needs, and VOSR's
+// TensorRT plugin, which only a package meant to lack the VOSR TensorRT backends may do without.
+const linuxNativeBinaries = [
+    'nodes/impl/chainner_native.so',
+    'nodes/impl/_chainner_graph.so',
+    'chainner_ext/chainner_ext.so',
+];
+const linuxVosrPlugin = 'nodes/impl/pytorch/vosr2_qkv.so';
+
 const deletePycFiles = async (directory) => {
     try {
         const files = await fs.readdir(directory, { withFileTypes: true });
@@ -194,9 +203,44 @@ const config = {
                         'CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1 to package without it.'
                 );
             }
+            if (platform === 'linux') {
+                const backendSrc = path.join(__dirname, 'backend/src');
+                const required =
+                    process.env.CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN === '1'
+                        ? linuxNativeBinaries
+                        : [...linuxNativeBinaries, linuxVosrPlugin];
+                const missing = required.filter(
+                    (binary) => !nodeFs.existsSync(path.join(backendSrc, binary))
+                );
+                if (missing.length > 0) {
+                    throw new Error(
+                        `${backendSrc} lacks ${missing.join(', ')}: the native layer was not ` +
+                            'built for Linux (native/README.md, Build). A package without ' +
+                            "VOSR's TensorRT plugin has no VOSR TensorRT backends: set " +
+                            'CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1 to package without it.'
+                    );
+                }
+            }
             // delete all .pyc files from backend folder, recursively
             const backendPath = path.join(__dirname, 'backend/src');
             await deletePycFiles(backendPath);
+        },
+        postPackage: async (forgeConfig, { platform, outputPaths }) => {
+            if (platform === 'linux') {
+                await Promise.all(
+                    outputPaths.map(async (outputPath) => {
+                        // texconv.exe, which reads and writes DDS, is a Windows program; the DDS
+                        // nodes report that on other systems
+                        await fs.rm(path.join(outputPath, 'resources/src/texconv'), {
+                            recursive: true,
+                            force: true,
+                        });
+                        // The packager makes the folder readable by its owner only, and a zip
+                        // carries that to the folder it is unzipped to
+                        await fs.chmod(outputPath, 0o755);
+                    })
+                );
+            }
         },
         postMake: async (forgeConfig, makeResults) => {
             const justArtifacts = makeResults.map((m) => m.artifacts).reduce((a, b) => a.concat(b));
@@ -216,6 +260,16 @@ const config = {
                         break;
                     case 'linux':
                         zip.addFile('chaiNNer-linux-x64/portable', Buffer.alloc(0));
+                        // The launcher starts chainner (CLI mode too) and decides whether
+                        // Chromium's sandbox can start; a file added here needs its mode set
+                        zip.addFile(
+                            `chaiNNer-linux-x64/${packageJson.productName}.sh`,
+                            nodeFs.readFileSync(
+                                path.join(__dirname, 'src/public/linux/chaiNNer.sh')
+                            ),
+                            '',
+                            0o755
+                        );
                         break;
                     default:
                         break;

@@ -165,6 +165,22 @@ def host(monkeypatch, tmp_path) -> Iterator[Host]:
         thread.join()
 
 
+@pytest.fixture(params=["as_is", "reused"])
+def identities(request, monkeypatch) -> None:
+    """The file system as it is, or as ext4 can be: it hands a deleted file's inode to
+    the next file at once and stamps files with coarse times, so only a file's size tells
+    it from the file it replaces."""
+    if request.param == "reused":
+
+        def identity(path: Path) -> tuple:
+            try:
+                return (str(path.absolute()), path.stat().st_size)
+            except FileNotFoundError:
+                return (str(path.absolute()), None)
+
+        monkeypatch.setattr(vosr2_engine_cache, "file_identity", identity)
+
+
 def context_for(tmp_path: Path, progress: list[float], abort_after: int = -1):
     calls = [0]
 
@@ -234,6 +250,7 @@ def test_a_broken_download_resumes_or_restarts_by_server_support(
     assert progress[-1] == pytest.approx(1.0)
 
 
+@pytest.mark.usefixtures("identities")
 def test_a_hash_mismatch_is_deleted_and_reported(host, tmp_path):
     host.corrupt.add("dino.onnx.data.zst")
     with pytest.raises(
@@ -472,6 +489,7 @@ def test_a_broken_model_download_resumes(model_host, tmp_path):
     assert ("ema_model.safetensors", f"bytes={partial}-") in model_host.log
 
 
+@pytest.mark.usefixtures("identities")
 def test_a_model_file_that_does_not_match_its_pin_is_deleted(model_host, tmp_path):
     model_host.corrupt.add("dinov2_vitl14_pretrain.pth")
     with pytest.raises(

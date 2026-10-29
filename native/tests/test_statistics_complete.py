@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import worker_spawn
 from nodes.impl.native import lib, ptr
 from nodes.impl.native_analysis import mean, statistics
 from nodes.impl.native_numpy_reduce import numpy_sum_block
@@ -223,6 +224,12 @@ def test_lower_numpy_simd_dispatch(disabled):
     # NumPy 2.5's MSVC wheels dispatch X86_V3 only; disabling it runs X86_V2.
     environment = os.environ.copy()
     environment["NPY_DISABLE_CPU_FEATURES"] = disabled
+    if sys.platform == "linux":
+        # With what the worker disables there (worker_spawn.py): the Linux wheels'
+        # AVX-512 loops, which the C mirrors do not follow
+        environment["NPY_DISABLE_CPU_FEATURES"] += (
+            " " + worker_spawn.ENV["NPY_DISABLE_CPU_FEATURES"]
+        )
     script = """
 import sys
 sys.path.insert(0, 'backend/src')

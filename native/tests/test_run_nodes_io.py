@@ -272,6 +272,13 @@ def symlink(link: Path, target: Path, directory: bool) -> Path:
     return link
 
 
+# Path shapes that exist on Windows alone
+WINDOWS_SHAPES = {
+    "junction": "junctions are an NTFS feature",
+    "drive_relative": "a drive-relative path (\\folder) is a Windows form",
+}
+
+
 @pytest.mark.parametrize(
     "shape",
     ["plain", "junction", "directory_symlink", "relative", "drive_relative", "dotdot", "missing_tail", "unicode",
@@ -280,6 +287,8 @@ def symlink(link: Path, target: Path, directory: bool) -> Path:
 def test_save_image_targets_the_same_file(tmp_path, monkeypatch, shape):
     # The native entry point's lexical target names the same file as today's Path.resolve(): same bytes, the same
     # file, and the same names in the folder (ruling, lane I Q3).
+    if sys.platform != "win32" and shape in WINDOWS_SHAPES:
+        pytest.skip(WINDOWS_SHAPES[shape])
     real = tmp_path / "real"
     real.mkdir()
     monkeypatch.chdir(tmp_path)
@@ -308,7 +317,13 @@ def test_save_image_targets_the_same_file(tmp_path, monkeypatch, shape):
             (real / "IMAGE.png").write_bytes(b"existing")
         run_save(save_inputs(float_image(3), base, filename, relative=relative), native)
         files = sorted(path for path in real.rglob("*") if path.is_file())
-        assert len(files) == 1 and os.path.samefile(files[0], expected)
+        if shape == "case_overwrite" and sys.platform != "win32":
+            # A case-sensitive file system keeps the other spelling beside the new file
+            assert [path.name for path in files] == ["IMAGE.png", "image.png"]
+            assert files[0].read_bytes() == b"existing"
+            assert os.path.samefile(files[1], expected)
+        else:
+            assert len(files) == 1 and os.path.samefile(files[0], expected)
         outcomes.append([(str(path.relative_to(real)), path.read_bytes()) for path in files])
         for path in files:
             path.unlink()

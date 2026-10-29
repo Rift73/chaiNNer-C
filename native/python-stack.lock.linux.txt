@@ -1,0 +1,115 @@
+# The tested set, not a ceiling: the stack chaiNNer-C is tested on. The backend's Dependency
+# pins are set at these versions and act as floors; newer versions are not excluded.
+# Interpreter: CPython 3.14.8 (standard build, not free-threaded).
+# Build tag: python-build-standalone 20261003
+# Archive: cpython-3.14.8+20261003-x86_64-unknown-linux-gnu-install_only.tar.gz
+# Archive SHA-256: 371b6c281bbb09b29279e9e3a2996bab4ae2ea03cca52bf869f8bd89286b0ae8
+# pip: 26.2.1 (installed; pip freeze does not list it)
+# Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.sh (torch and
+# torchvision from https://download.pytorch.org/whl/cu132, chainner-pip from the bundled wheel in
+# backend/src/dependencies/whls/chainner-pip/, spandrel and onnxruntime-gpu from their forks' release
+# wheels (github.com/Rift73/spandrel, github.com/Rift73/onnxruntime), the rest from PyPI). It is the Windows lock's set with Linux's own
+# additions: torch's CUDA libraries and Triton, CUDA bindings, and Sanic's uvloop and ujson.
+aiofiles==25.1.0
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.4
+aiosignal==1.4.0
+attrs==26.1.0
+av==19.0.1
+bracex==3.0.1
+certifi==2026.7.22
+chainner-pip==23.2.0
+charset-normalizer==3.5.2
+contourpy==1.4.0
+coverage==7.16.2
+cuda-bindings==13.4.4
+cuda-pathfinder==1.8.4
+cuda-toolkit==13.2.2
+cycler==0.12.1
+einops==0.8.2
+facexlib==0.3.0
+ffmpeg-python==0.2.0
+filelock==3.32.3
+filterpy==1.4.5
+flatbuffers==25.12.19
+fonttools==4.66.1
+frozenlist==1.8.0
+fsspec==2026.7.0
+future==1.0.0
+google-re2==1.1.20251105  # oracle/reference only (upstream's onnx/load.py imports re2)
+html5tagger==2.0.0
+httptools==0.8.0
+idna==3.20
+iniconfig==2.3.0
+Jinja2==3.1.6
+kiwisolver==1.5.1
+llvmlite==0.50.0
+MarkupSafe==3.0.3
+matplotlib==3.11.2
+ml_dtypes==0.6.0
+mpmath==1.3.0
+multidict==6.9.1
+ncnn==1.0.20260526
+networkx==3.6.1
+numba==0.68.0
+numpy==2.5.3
+nvidia-cublas==13.4.1.3
+nvidia-cuda-cupti==13.2.86
+nvidia-cuda-nvrtc==13.2.86
+nvidia-cuda-runtime==13.2.86
+nvidia-cudnn-cu13==9.24.0.43
+nvidia-cufft==12.2.0.57
+nvidia-cufile==1.17.1.22
+nvidia-curand==10.4.2.66
+nvidia-cusolver==12.2.0.11
+nvidia-cusparse==12.7.10.12
+nvidia-cusparselt-cu13==0.8.1
+nvidia-ml-py==13.615.71
+nvidia-nccl-cu13==2.30.7
+nvidia-nvjitlink==13.4.92
+nvidia-nvshmem-cu13==3.4.5
+nvidia-nvtx==13.2.86
+onnx==1.23.2
+onnxoptimizer==0.4.2
+onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11.4-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=b67a9a5b03df5fd4687d33d41dc035542d4ec2c4da8da57741749ee21b783778
+opencv-python==5.0.0.93
+packaging==26.3
+pillow==12.3.0
+pillow-avif-plugin==1.6.0
+pluggy==1.6.0
+portalocker==4.4.0
+propcache==0.5.4
+protobuf==7.36.2
+psutil==7.2.2
+pybind11==3.1.0
+Pygments==2.21.0
+PyMatting==1.1.16
+pynvml==13.0.1  # oracle/reference only (upstream's server declares it; nvidia-ml-py provides the module)
+pyparsing==3.3.3
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+python-dateutil==2.9.0.post0
+requests==2.34.2
+safetensors==0.8.0
+sanic==25.12.1
+Sanic-Cors==2.2.0  # oracle/reference only (upstream's server imports sanic_cors)
+sanic-routing==23.12.0
+scipy==1.18.1
+setuptools==78.1.0
+six==1.17.0
+spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c10/spandrel-0.4.2%2Bc10-py3-none-any.whl#sha256=2496741447f096efa803d01798262ab065d0c4e79b4266f30a32cab4e254b50f
+spandrel_extra_arches==0.2.0
+sympy==1.14.0
+torch==2.14.1+cu132
+torchvision==0.29.1+cu132
+tqdm==4.70.1
+tracerite==2.6.5
+triton==3.8.0
+typing_extensions==4.16.0
+ujson==6.0.0
+urllib3==2.8.0
+uvloop==0.23.0
+wcmatch==11.0.1
+websockets==17.2
+yarl==1.25.1

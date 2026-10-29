@@ -335,7 +335,11 @@ Json axis(const AxisFit &f) {
 std::string utcNow() {
     const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     std::tm utc{};
+#ifdef _WIN32
     gmtime_s(&utc, &now);
+#else
+    gmtime_r(&now, &utc);
+#endif
     char text[32];
     std::strftime(text, sizeof text, "%Y-%m-%dT%H:%M:%SZ", &utc);
     return text;

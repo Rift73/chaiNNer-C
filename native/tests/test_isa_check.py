@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import struct
+import sys
 from pathlib import Path
 
 import isa_check
+import pytest
 
 DLL = Path(__file__).resolve().parents[2] / "backend/src/nodes/impl/chainner_native.dll"
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32", reason="isa_check compares PE files, the Windows build's"
+)
 
 
 def test_text_section_ignores_headers_and_sees_code(tmp_path, capsys):

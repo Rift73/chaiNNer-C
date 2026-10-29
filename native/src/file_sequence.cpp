@@ -6,7 +6,8 @@
  * Directory walking, pattern application, deduplication, natural-key assembly,
  * snapshot/limit policy and lazy per-file iterator state execute in C++. Load Images'
  * own expressions (non-recursive and recursive) list with FindFirstFileExW, without
- * the GIL.
+ * the GIL. On Linux every expression takes the walker over os.scandir (WCMatch's POSIX
+ * rules: case-sensitive names, no drives), so the natural sort alone orders the list.
  */
 #include "graph_python.hpp"
 #include "graph_unpack.hpp"
@@ -20,6 +21,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -27,6 +29,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#endif
 
 namespace py = pybind11;
 namespace {
@@ -47,6 +50,7 @@ std::wstring to_wide(const O &text) {
 
 // Directory identities: os.path.normcase(os.path.realpath(path)) as UTF-16.
 using Visited = std::unordered_set<std::wstring>;
+#ifdef _WIN32
 // Below the classic limit for a directory path, Windows opens a path without the
 // long-path setting, so realpath returns the final path without its \\?\ prefix.
 constexpr size_t short_directory_path = MAX_PATH - 12;
@@ -89,6 +93,18 @@ std::optional<std::wstring> child_identity(const std::wstring &parent, std::wstr
         return std::nullopt;
     return result;
 }
+#else
+// The identity of a folder that is not a link, named `name` in the folder whose identity
+// is `parent`: realpath keeps such a name as it is, and normcase changes nothing on
+// POSIX. Any path length (posixpath.realpath has no limit); `path` is not needed.
+std::optional<std::wstring> child_identity(const std::wstring &parent, std::wstring_view name, size_t) {
+    if (parent.empty()) return std::nullopt;
+    std::wstring result = parent;
+    if (result.back() != L'/') result += L'/';
+    result += name;
+    return result;
+}
+#endif
 [[noreturn]] void exhausted() {
     PyErr_SetNone(PyExc_StopIteration);
     throw py::error_already_set();
@@ -198,11 +214,16 @@ class Walker {
                         }
                         bool directory = graphpy::truth(entry.attr("is_dir")());
                         bool link = directory && graphpy::truth(entry.attr("is_symlink")());
+#ifdef _WIN32
                         // The entry's own attributes: its cached lstat, no system call.
                         bool reparse = directory &&
                             (entry.attr("stat")(py::arg("follow_symlinks") = false)
                                  .attr("st_file_attributes").cast<unsigned long>() &
                              FILE_ATTRIBUTE_REPARSE_POINT);
+#else
+                        // POSIX has no junctions: a link is the one folder realpath renames.
+                        bool reparse = link;
+#endif
                         if (!directory_only || directory)
                             result.push_back({filename, directory, hidden, link, reparse});
                     } catch (const py::error_already_set &error) {
@@ -387,6 +408,7 @@ O flags(const O &glob) {
     return value;
 }
 
+#ifdef _WIN32
 // ---- Load Images' own expressions ("*" and "**/*") without WCMatch ----
 // The Walker above with those patterns' flags (DOTGLOB: nothing hidden, no FOLLOW, no
 // MARK, unique results; "*" matches every name but a drive-like "X:..."), then
@@ -679,10 +701,13 @@ std::optional<py::list> plain_listing(const py::dict &globals, const O &director
     for (size_t index : order) result.append(path_type(paths[index]));
     return result;
 }
+#endif
 
 O list_glob(const py::dict &globals, const O &directory, const O &expression, const O &extensions) {
     O extension_expression = extension_filter(extensions);
+#ifdef _WIN32
     if (auto listed = plain_listing(globals, directory, expression, extensions)) return std::move(*listed);
+#endif
     O glob = name(globals, "glob");
     O glob_flags = flags(glob);
     py::list discovered;

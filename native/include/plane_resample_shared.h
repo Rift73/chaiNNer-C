@@ -60,7 +60,7 @@ static void resample_row_vertical(const plane_resample_job *job, size_t y, size_
         for (size_t x = first; x < job->width; ++x) out[x] = out[x] + job->bias_out;
 }
 
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
 /* plane_resample_avx2.c: output rows [begin, end) for ISA level avx2 or above, 8
  * columns at a time with the scalar rows' operations per lane (horizontal: the
  * inputs by vgatherdps); each row's last columns run the scalar row. */

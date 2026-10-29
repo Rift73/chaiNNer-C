@@ -8,6 +8,14 @@
 #include <cstring>
 #include <string>
 
+#ifndef _WIN32
+#include <cerrno>
+#include <cstdlib>
+#include <cwchar>
+#include <fcntl.h>
+#include <sys/stat.h>
+#endif
+
 namespace cn::image_decode {
 namespace {
 
@@ -259,6 +267,7 @@ OpenCvCodec opencv_codec(std::span<const uint8_t> f) {
 // import): unset is the default, a plain decimal integer (what image_limits.py sets) is its value. False for every
 // other value, whose reading by OpenCV is not reproduced here, and the file declines.
 bool opencv_limit(const wchar_t *name, uint64_t fallback, uint64_t &limit) {
+#ifdef _WIN32
     wchar_t value[64];
     SetLastError(ERROR_SUCCESS);
     const DWORD length = GetEnvironmentVariableW(name, value, DWORD(std::size(value)));
@@ -267,6 +276,16 @@ bool opencv_limit(const wchar_t *name, uint64_t fallback, uint64_t &limit) {
         return true;
     }
     if (length == 0 || length >= std::size(value)) return false;
+#else
+    // The names are ASCII, narrowed for getenv; a value as long as the Windows buffer declines there too.
+    const char *value = std::getenv(std::string(name, name + std::wcslen(name)).c_str());
+    if (!value) {
+        limit = fallback;
+        return true;
+    }
+    const size_t length = std::strlen(value);
+    if (length == 0 || length >= 64) return false;
+#endif
     size_t digits = 0;
     uint64_t v = 0;
     for (; digits < length && value[digits] >= L'0' && value[digits] <= L'9'; ++digits) {
@@ -281,6 +300,7 @@ bool opencv_limit(const wchar_t *name, uint64_t fallback, uint64_t &limit) {
 
 } // namespace
 
+#ifdef _WIN32
 bool enabled() {
     wchar_t value[4];
     const DWORD length = GetEnvironmentVariableW(L"CHAINNER_C_NATIVE_CODECS", value, 4);
@@ -304,6 +324,32 @@ bool read_file(const std::filesystem::path &path, std::vector<uint8_t> &data) {
     }
     return ok;
 }
+#else
+bool enabled() {
+    const char *value = std::getenv("CHAINNER_C_NATIVE_CODECS");
+    return !(value && std::strcmp(value, "0") == 0);
+}
+
+// A regular file only (opened without blocking, so a FIFO cannot stall the read): a folder, device or FIFO declines
+// to the Python path, as CreateFileW refuses a folder on Windows.
+bool read_file(const std::filesystem::path &path, std::vector<uint8_t> &data) {
+    const cn::files::Handle file(open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK));
+    if (!file.valid()) return false;
+    struct stat status;
+    bool ok = fstat(file.handle, &status) == 0 && S_ISREG(status.st_mode) && status.st_size >= 0 &&
+              uint64_t(status.st_size) <= SIZE_MAX;
+    if (ok) {
+        data.resize(size_t(status.st_size));
+        for (size_t done = 0; ok && done < data.size();) {
+            const ssize_t got = read(file.handle, data.data() + done, std::min<size_t>(data.size() - done, 1u << 30));
+            if (got < 0 && errno == EINTR) continue;
+            ok = got > 0;
+            if (ok) done += size_t(got);
+        }
+    }
+    return ok;
+}
+#endif
 
 bool decode_pillow_jpeg(std::span<const uint8_t> file, uint64_t max_pixels, const Allocator &allocate) {
     PillowJpeg header;

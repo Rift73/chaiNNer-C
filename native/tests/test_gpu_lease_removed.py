@@ -150,6 +150,8 @@ def test_run_proxies_without_recycling_the_worker():
     # Instant startup: main takes the worker run.py started (a subprocess.Popen), and
     # the setup events go to every listener (BackendEventBroadcast, no setup queue).
     upstream.insert(upstream.index("import sys"), "import subprocess")
+    # Linux: close_server gives SIGTERM its default action back (test_host_shutdown.py).
+    upstream.insert(upstream.index("import subprocess"), "import signal")
     upstream.remove("from functools import cached_property")
     upstream[upstream.index("from events import EventQueue")] = (
         "from events import BackendEventBroadcast"
@@ -229,6 +231,17 @@ def test_host_and_worker_close_as_upstream():
                 stop,
                 "\n    while not sanic_app.state.is_running:"
                 "\n        await asyncio.sleep(0.01)" + stop,
+            )
+            # Linux: the host's SIGTERM takes its default action from here on, so the
+            # app's SIGTERM after the shutdown answer ends it at once, as Windows'
+            # TerminateProcess does, instead of cutting Sanic's shutdown short.
+            closing = "\n    logger.info('Closing server...')"
+            upstream = replace_once(
+                upstream,
+                closing,
+                closing
+                + "\n    if sys.platform == 'linux':"
+                "\n        signal.signal(signal.SIGTERM, signal.SIG_DFL)",
             )
         assert here == upstream, path
 

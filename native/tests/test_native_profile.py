@@ -144,7 +144,6 @@ print(json.dumps({
 # checks; three 32-chunk no-op dispatches then show in the line's pool deltas.
 POOL_CHILD = """
 import ctypes, json, sys
-from pathlib import Path
 
 from nodes.impl import native, native_profile
 
@@ -155,7 +154,7 @@ noop.argtypes = [ctypes.c_size_t]
 noop.restype = ctypes.c_int
 statuses = [noop(32) for _ in range(3)]
 line = native_profile.log_line()
-path = Path(native.__file__).with_name("chainner_native.dll")
+path = native.library_path()
 capacity = ctypes.CDLL(str(path))["cn_parallel_capacity"]  # untimed
 capacity.restype = ctypes.c_uint
 print(json.dumps({
@@ -281,7 +280,7 @@ def test_record_adds_elapsed_without_nesting(monkeypatch):
 
 
 def test_profiled_cdll_times_calls_and_keeps_ctypes_behaviour():
-    path = Path(native.__file__).with_name("chainner_native.dll")
+    path = native.library_path()
     dll = native_profile.ProfiledCDLL(str(path))
     assert isinstance(dll, ctypes.CDLL)
     dll.cn_abi_version.argtypes = []

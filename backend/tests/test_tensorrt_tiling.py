@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import sys
 import warnings
 from collections import deque
 from collections.abc import Callable, Iterator
@@ -236,8 +237,19 @@ def test_native_blend_is_numpys_bit_for_bit(
 
 @contextlib.contextmanager
 def flushed(flush: bool) -> Iterator[None]:
-    """DAZ and FTZ on the calling thread (the CRT's _DN_FLUSH) when flush, which the
-    native pool's helpers take; the default afterwards."""
+    """DAZ and FTZ on the calling thread (the CRT's _DN_FLUSH; on Linux, which has no
+    such call, torch.set_flush_denormal) when flush, which the native pool's helpers
+    take; the default afterwards."""
+    if sys.platform != "win32":
+        import torch
+
+        if flush:
+            assert torch.set_flush_denormal(True)
+        try:
+            yield
+        finally:
+            assert torch.set_flush_denormal(False)
+        return
     control = ctypes.CDLL("ucrtbase.dll")["_controlfp_s"]
     control.argtypes = [ctypes.POINTER(ctypes.c_uint), ctypes.c_uint, ctypes.c_uint]
     word = ctypes.c_uint()

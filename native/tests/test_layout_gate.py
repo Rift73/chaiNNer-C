@@ -64,6 +64,11 @@ from layout_gate_worker import (
 from package_files import hash_file
 from verify_runtime import CHAINNER_EXT, ORACLE, oracle_tree
 
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="the oracle is make_oracle.py's tree on the Windows runtime's python.exe",
+)
+
 PROJECT = Path(__file__).resolve().parents[2]
 BACKEND = PROJECT / "backend/src"
 WORKER = Path(__file__).with_name("layout_gate_worker.py")

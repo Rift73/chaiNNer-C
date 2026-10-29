@@ -38,7 +38,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
-#include <stdatomic.h>
+#include <pthread.h>
 #endif
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
 #include <xmmintrin.h>
@@ -91,15 +91,10 @@ static SRWLOCK workspace_lock = SRWLOCK_INIT;
 static void lock_workspaces(void) { AcquireSRWLockExclusive(&workspace_lock); }
 static void unlock_workspaces(void) { ReleaseSRWLockExclusive(&workspace_lock); }
 #else
-static atomic_flag workspace_lock = ATOMIC_FLAG_INIT;
-static void lock_workspaces(void)
-{
-    while (atomic_flag_test_and_set_explicit(&workspace_lock, memory_order_acquire)) {}
-}
-static void unlock_workspaces(void)
-{
-    atomic_flag_clear_explicit(&workspace_lock, memory_order_release);
-}
+/* The SRW lock's counterpart: a sleeping, non-recursive mutex. */
+static pthread_mutex_t workspace_lock = PTHREAD_MUTEX_INITIALIZER;
+static void lock_workspaces(void) { pthread_mutex_lock(&workspace_lock); }
+static void unlock_workspaces(void) { pthread_mutex_unlock(&workspace_lock); }
 #endif
 
 static unsigned int float_controls(void)
@@ -449,7 +444,7 @@ static void horizontal_range(void *opaque, size_t begin, size_t end)
     const resample_context *ctx = opaque;
     for (size_t y = begin; y < end;) {
         size_t rows = end - y < 8 ? end - y : 8;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
         if (horizontal_avx2(ctx) && cn_resample_horizontal_avx2(ctx, y, rows)) {
             y += rows;
             continue;
@@ -467,7 +462,7 @@ static void vertical_range(void *opaque, size_t begin, size_t end)
     const resample_context *ctx = opaque;
     size_t stride = ctx->target_width * ctx->channels;
     for (size_t y = begin; y < end; ++y) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
         if (ctx->isa >= CN_ISA_AVX2) {
             cn_resample_vertical_avx2(ctx, y, 0, stride);
             continue;

@@ -5,9 +5,13 @@
  */
 #include "onnx_runtime.h"
 #include "../third_party/onnxruntime/onnxruntime_c_api.h"
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 #include <algorithm>
 #include <cstring>
 #include <memory>
@@ -61,13 +65,21 @@ template<class T> struct Owned {
     Owned &operator=(const Owned &) = delete;
 };
 struct Runtime {
+#ifdef _WIN32
     HMODULE module = nullptr;
+#else
+    void *module = nullptr;
+#endif
     const OrtApi *api = nullptr;
     OrtEnv *env = nullptr;
     std::string version;
     ~Runtime() {
         if (env) api->ReleaseEnv(env);
+#ifdef _WIN32
         if (module) FreeLibrary(module);
+#else
+        if (module) dlclose(module);
+#endif
     }
 };
 struct Session {
@@ -102,19 +114,47 @@ Registry &registry() {
     static Registry *value = new Registry;
     return *value;
 }
+#ifndef _WIN32
+// The path's bytes, as Python's os.fsencode gives them from the str ctypes passed: UTF-8, with
+// the lone surrogates U+DC80-U+DCFF of undecodable bytes (surrogateescape) back as those bytes.
+std::string path_bytes(const std::wstring &path) {
+    constexpr uint32_t lead[] = {0x00, 0xC0, 0xE0, 0xF0};
+    std::string bytes;
+    for (wchar_t c : path) {
+        auto u = static_cast<uint32_t>(c);
+        if (u >= 0xDC80 && u <= 0xDCFF) { bytes += static_cast<char>(u - 0xDC00); continue; }
+        ensure(u <= 0x10FFFF && (u < 0xD800 || u > 0xDFFF), "ONNX Runtime library path is not valid text");
+        int tail = u < 0x80 ? 0 : (u < 0x800 ? 1 : (u < 0x10000 ? 2 : 3));
+        bytes += static_cast<char>(lead[tail] | (u >> (6*tail)));
+        for (int i = tail-1; i >= 0; --i) bytes += static_cast<char>(0x80 | ((u >> (6*i)) & 0x3F));
+    }
+    return bytes;
+}
+#endif
 std::shared_ptr<Runtime> runtime(const wchar_t *path) {
     ensure(path && *path, "ONNX Runtime library path is required");
     std::wstring key(path);
+#ifdef _WIN32
     ensure((key.size() >= 3 && key[1] == L':' && (key[2] == L'\\' || key[2] == L'/')) ||
         (key.size() >= 2 && key[0] == L'\\' && key[1] == L'\\'), "ONNX Runtime library path must be absolute");
+#else
+    ensure(key[0] == L'/', "ONNX Runtime library path must be absolute");
+#endif
     auto &r = registry();
     std::lock_guard lock(r.runtime_mutex);
     if (auto previous = r.runtimes[key].lock()) return previous;
     auto result = std::make_shared<Runtime>();
+#ifdef _WIN32
     result->module = LoadLibraryExW(path,nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (!result->module) throw Failure(ORT_FAIL,"Cannot load ONNX Runtime library (Windows error " + std::to_string(GetLastError()) + ")");
     using GetBase = const OrtApiBase *(ORT_API_CALL *)(void);
     FARPROC address = GetProcAddress(result->module,"OrtGetApiBase");
+#else
+    result->module = dlopen(path_bytes(key).c_str(),RTLD_NOW|RTLD_LOCAL);
+    if (!result->module) throw Failure(ORT_FAIL,std::string("Cannot load ONNX Runtime library (") + dlerror() + ")");
+    using GetBase = const OrtApiBase *(ORT_API_CALL *)(void);
+    void *address = dlsym(result->module,"OrtGetApiBase");
+#endif
     ensure(address != nullptr, "ONNX Runtime does not export OrtGetApiBase");
     GetBase get_base;
     static_assert(sizeof(get_base) == sizeof(address));

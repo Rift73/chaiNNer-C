@@ -18,7 +18,11 @@ static_assert(sizeof(cn_ncnn_tensor_view) == 48);
 static_assert(offsetof(cn_ncnn_tensor_view, type) == 40);
 static_assert(offsetof(cn_ncnn_tensor_view, strides) == 32);
 #ifdef CN_TENSOR_IMPORTS
+#ifdef _WIN32
 #define CN_NCNN_TENSOR_API __declspec(dllimport)
+#else
+#define CN_NCNN_TENSOR_API
+#endif
 #else
 #define CN_NCNN_TENSOR_API
 #endif

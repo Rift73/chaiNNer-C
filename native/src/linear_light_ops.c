@@ -87,7 +87,7 @@ static void light_rows(void *opaque, size_t begin, size_t end)
     const light_context *ctx = opaque;
     float *values = ctx->image + begin * ctx->row;
     size_t count = (end - begin) * ctx->row, done = 0;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (ctx->isa >= CN_ISA_AVX2) {
         done = count / 4 * 4;
         cn_light_values_avx2(values, done, ctx->channels, ctx->skip_alpha, ctx->transfer, ctx->encode);

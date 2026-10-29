@@ -10,6 +10,11 @@ needs (the library sources of upstream's `JPEG_SOURCES`, the arithmetic codec, t
 `simd/x86_64/jsimd.c`, and every header they include). `LICENSE.md` (Modified BSD and zlib licences) and
 `README.ijg` (the IJG licence) hold the licence terms.
 
+`chainner/linux/jconfigint.h` is the same template with the values upstream's CMake writes for the GNU driver on
+Linux: HIDDEN `__attribute__((visibility("hidden")))`, INLINE `__inline__ __attribute__((always_inline))`,
+THREAD_LOCAL `__thread`, HAVE_BUILTIN_CTZL, no HAVE_INTRIN_H. The Linux build puts it ahead of `chainner/` and
+assembles the SIMD with `-felf64 -DELF -DPIC -D__x86_64__ --reproducible` (upstream's ELF flags).
+
 `chainner/` is chaiNNer-C's: `jconfig.h`, `jconfigint.h` and `jversion.h` are upstream's `src/*.h.in` templates with
 the values upstream's CMake writes for Pillow 12.3.0's Windows build (`WITH_JPEG8=TRUE`, static, SIMD):
 JPEG_LIB_VERSION 80, arithmetic encoding and decoding, MEM_SRCDST, WITH_SIMD, INLINE `__forceinline`, THREAD_LOCAL

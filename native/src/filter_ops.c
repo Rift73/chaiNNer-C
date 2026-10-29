@@ -153,7 +153,7 @@ static void morph_lines(void *context, size_t begin, size_t end) {
     }
 }
 
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
 /* Rows [begin, end) of a pass through the AVX2 unit (morph_fold.h): along the rows, or down the columns. */
 static void morph_rows(void *context, size_t begin, size_t end) {
     morph_job *j = (morph_job *)context;
@@ -175,7 +175,7 @@ typedef struct morph_merge_job {
 
 static void morph_merge(void *context, size_t begin, size_t end) {
     morph_merge_job *j = (morph_merge_job *)context;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (j->isa >= CN_ISA_AVX2) {
         cn_morphology_merge_avx2(j->a, j->b, begin, end, j->maximum);
         return;
@@ -206,7 +206,7 @@ CN_EXPORT cn_status cn_filter_morphology(const float *src, float *out,
      * (the extrema of its windows have none either) run as direct folds through the AVX2 unit, row by row, instead
      * of the deques: the same outputs, without the deques' branches and the columns' strided walk. */
     int plain = 0;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     plain = isa >= CN_ISA_AVX2 && radius <= CN_MORPH_FOLD_RADIUS && !cn_exceptional_scan(src, n, isa);
 #endif
     size_t total = 0, horizontal_at = 0, alternate_at = 0, queue_at = 0;
@@ -226,7 +226,7 @@ CN_EXPORT cn_status cn_filter_morphology(const float *src, float *out,
     for (size_t iteration = 0; iteration < iterations; ++iteration) {
         float *destination = (iterations - 1 - iteration) % 2 ? alternate : out;
         morph_job job = {current, horizontal, queue, width, height, channels, radius, 0, maximum};
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
         if (plain) {
             size_t grain = 1 + 65536 / (width * channels);
             status = cn_parallel_for(height, grain, morph_rows, &job);

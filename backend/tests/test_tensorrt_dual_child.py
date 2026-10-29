@@ -19,6 +19,7 @@ from pathlib import Path
 import psutil
 import pytest
 
+from nodes.impl.pytorch.vosr2_process import PARENT_PID_VARIABLE
 from nodes.impl.tensorrt import dual
 from progress_controller import Aborted
 
@@ -91,6 +92,82 @@ def test_a_parent_that_dies_takes_the_child_along(tmp_path: Path):
         except subprocess.TimeoutExpired:
             top.kill()
             top.wait(timeout=10)
+
+
+def late_compiler(started: Path, go: Path, worked: Path) -> str:
+    """A child that records its pid, waits for `go` (the seconds that a compiler's slow
+    imports take), then asks for the parent-death signal as the compilers do and
+    records that it still worked."""
+    return (
+        "import os, sys, time\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {str(SRC)!r})\n"
+        "from nodes.impl.pytorch.vosr2_process import end_with_parent\n"
+        f"Path({str(started)!r}).write_text(str(os.getpid()))\n"
+        f"while not Path({str(go)!r}).exists():\n"
+        "    time.sleep(0.01)\n"
+        "end_with_parent()\n"
+        f"Path({str(worked)!r}).write_text('worked')\n"
+        "time.sleep(60)\n"
+    )
+
+
+def has_ended(pid: int) -> bool:
+    """Gone, or a zombie that nothing reaped (an init that does not wait)."""
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="the parent-death signal is Linux only"
+)
+def test_a_child_whose_parent_died_before_it_asked_for_the_signal_exits(tmp_path: Path):
+    """The kernel signals a child only for a parent that ends after the child asked, so
+    end_with_parent also checks the parent that run_child names in the environment."""
+    parent_file = tmp_path / "parent.pid"
+    started = tmp_path / "started.pid"
+    go = tmp_path / "go"
+    worked = tmp_path / "worked"
+    parent_code = (
+        "import os, sys; from pathlib import Path; "
+        f"sys.path.insert(0, {str(SRC)!r}); "
+        "from nodes.impl.tensorrt import dual; "
+        f"Path({str(parent_file)!r}).write_text(str(os.getpid())); "
+        f"dual.run_child(['-c', {late_compiler(started, go, worked)!r}], 'stub', Path({str(tmp_path)!r}))"
+    )
+    child = None
+    top = subprocess.Popen(
+        [sys.executable, "-B", "-c", parent_code], stdin=subprocess.DEVNULL
+    )
+    try:
+        assert wait_for(lambda: started.exists() and started.read_text())
+        child = int(started.read_text())
+        # As a host's /kill restart or a crash ends the worker: no cleanup runs.
+        psutil.Process(int(parent_file.read_text())).kill()
+        top.wait(timeout=10)
+        assert not has_ended(child)
+        go.write_text("go")
+        assert wait_for(lambda: has_ended(child), timeout=10)
+        assert not worked.exists()
+    finally:
+        try:
+            top.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            top.kill()
+            top.wait(timeout=10)
+        if child is not None and not has_ended(child):
+            psutil.Process(child).kill()
+
+
+def test_the_child_is_given_its_parents_pid_outside_windows(tmp_path: Path):
+    output = dual.run_child(
+        ["-c", f"import os; print(os.environ.get({PARENT_PID_VARIABLE!r}, 'none'))"],
+        "stub",
+        tmp_path,
+    )
+    assert output.strip() == ("none" if os.name == "nt" else str(os.getpid()))
 
 
 def test_the_childs_output_and_failure_come_back(tmp_path: Path):

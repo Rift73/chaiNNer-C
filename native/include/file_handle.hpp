@@ -1,6 +1,7 @@
-/* Scoped Windows file handle ownership (GPL-3.0). */
+/* Scoped Windows file handle ownership (GPL-3.0); a file descriptor on Linux. */
 #pragma once
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -19,3 +20,21 @@ struct Handle {
 };
 
 } // namespace cn::files
+#else
+#include <unistd.h>
+
+namespace cn::files {
+
+struct Handle {
+    int handle;
+    explicit Handle(int opened) : handle(opened) {}
+    Handle(const Handle &) = delete;
+    Handle &operator=(const Handle &) = delete;
+    ~Handle() {
+        if (valid()) close(handle);
+    }
+    bool valid() const { return handle >= 0; }
+};
+
+} // namespace cn::files
+#endif

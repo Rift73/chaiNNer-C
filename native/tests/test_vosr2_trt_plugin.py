@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from nodes.impl.pytorch import vosr2_trt_plugin
@@ -13,13 +15,14 @@ def test_a_missing_plugin_names_itself_the_build_option_and_the_alternative(
     monkeypatch.setattr(
         vosr2_trt_plugin, "__file__", str(tmp_path / "vosr2_trt_plugin.py")
     )
-    plugin = tmp_path / "vosr2_qkv.dll"
+    windows = sys.platform == "win32"
+    plugin = tmp_path / ("vosr2_qkv.dll" if windows else "vosr2_qkv.so")
     with pytest.raises(RuntimeError) as error:
         vosr2_trt_plugin.plugin_path()
     for part in (
         str(plugin),
         "PyTorch backend",
-        "native/Build.ps1",
+        "native/Build.ps1" if windows else "native/build_linux.sh",
         "CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>",
         "CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit>",
     ):

@@ -4,6 +4,52 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- 2026-10-29 **Linux x86-64** (branch `linux` over `chaiNNer-C` `225e1765`; not released: Linux zips ship with the next
+  release). Design, decisions and the per-area reports: `native/local/linux-20261029/`.
+  - **What.** A portable zip (`chaiNNer-linux-x64/`, started by `chaiNNer.sh`) for x86-64 Linux with glibc 2.28 or
+    newer. Every node and package that works on Windows works there, on the CPU, on NVIDIA GPUs (PyTorch, TensorRT
+    with the DUAL, DRFT and VOSR plugins, ONNX Runtime with its TensorRT provider) and on Vulkan (NCNN, defaulting to the CPU where every Vulkan
+    device is software). The launcher probes whether Chromium's sandbox can start and starts without it only where it
+    cannot (`CHAINNER_SANDBOX`), checks the system libraries Electron, OpenCV and VapourSynth link against and prints
+    the install command of the distribution (`CHAINNER_SKIP_LIBRARY_CHECK`), and gives `run` a virtual display
+    (`xvfb-run`) when there is none. Copy To Clipboard calls `wl-copy` or `xclip`. Limits: DDS conversion needs
+    texconv, so the Linux zip carries none and the DDS nodes keep their Windows-only error; the VapourSynth package
+    installs only with glibc 2.35 or newer; ONNX Runtime has no AMD or Intel GPU provider there (CPU); C-library math
+    follows the system's libm, so a few results can differ from Windows in the last bit (Linux twins of the golden
+    manifests, `native/tests/golden/linux/`).
+  - **How built.** `native/build_linux.sh` configures `native/toolchain-linux.cmake` and `native/cmake/linux.cmake`:
+    clang and `ld.lld` 23.1.2 with the Windows build's options in clang's spelling (ThinLTO, `-ffp-model=strict`,
+    dynamic denormals, `-Wall -Wextra -Werror`), `libstdc++` and `libgcc` static, seven modules (`.so`, same directories
+    as the Windows ones). Windows code is untouched: Linux code sits in `#else` branches and `if(NOT WIN32)` blocks.
+    `native/tools/build_linux_release.sh` builds one commit in the image `cnl-build` (Ubuntu 22.04 with a Rocky 8.10
+    glibc 2.28 sysroot, since LLVM's binaries need glibc 2.34; every download pinned by SHA-256), checks the modules
+    with `native/tools/check_glibc.py`, and makes the zip with `npm run make-linux-zip`. The Linux Python stack is
+    `native/python-stack.lock.linux.txt`, provisioned by `native/tools/provision_runtime.sh`. ONNX Runtime is the fork
+    release `v1.30.0-trt11`'s `1.30.0+trt11.4` on both systems now (TensorRT 11.4.0.106; the Linux wheel is
+    manylinux_2_28 and adds Hopper's architecture).
+  - **Verified.** Per change: the Linux build and the tests naming the touched files, and for a shared file the Windows
+    build and its tests (rebuilt binaries byte-identical to the base's, bar the nvcc-built plugin DLLs, whose bytes
+    follow the checkout path). On an RTX 5090 under WSL, against PyTorch: a PyTorch ESRGAN equals the CPU at 92 dB, DUAL
+    through TensorRT matches at 63 dB, a small DRFT engine at 59.6 dB and the native TensorRT runner at 101.6 dB; NCNN
+    on Vulkan (software) and on the CPU equals NumPy exactly. The release build's modules need at most GLIBC_2.28 and
+    load in `rockylinux:8` (glibc 2.28) and `ubuntu:20.04`; the launcher's check ran against ten bare distribution
+    images (Ubuntu 20.04 and 24.04, Debian 12 and 13, Rocky 8, Fedora, Arch, openSUSE Leap 15.6 and 16.0, Tumbleweed).
+    Untested: a VOSR TensorRT build end to end, NCNN on a real Vulkan GPU, AMD and Intel GPUs, the desktop clipboard and
+    drag and drop outside WSLg. Full suites: Linux 135,092 passed, 0 failed (2,876 skipped, each with its reason:
+    Windows-only behaviour, or a Linux NumPy or OpenCV build that rounds differently from the Windows one, listed in
+    `native/tests/linux_differences.json`, where the native result was checked equal to Windows'); Windows 137,329
+    passed (the unseeded VOSR2 streaming test failed once and passes alone), and all seven Windows binaries rebuilt
+    byte-identical. The release zip ran a Load Image, Resize, Save Image chain headless on Ubuntu 20.04 and 24.04,
+    Debian 12, Rocky 8, Fedora, Arch and Tumbleweed with byte-identical output, and started under WSLg; through
+    chaiNNer-C's session code ONNX Runtime's CUDA and TensorRT providers match the CPU on the 5090. Open: DDS through a DirectXTex-based texconv replacement, VapourSynth on glibc 2.28 to
+    2.34 (a glibc 2.28 build of `vapoursynth-akarin` and a PySide6 override).
+- RELEASED 2026-10-25 as **v0.3.8 re-release 5**: DUAL neighborhood attention in both routes (spandrel 0.4.2+c10,
+  wheel SHA-256 `24967414…b50f`, release commit `5b4ed67`; the TensorRT exporter's `DualNA` node and AOT kernel). Fork
+  branch and tag `v0.3.8` at `b5ffdf03` (publish commit over `b114b776`, tree = main `bbe9ce60`); asset SHA-256
+  `9B3BB1D3…1317` (zip verified against git, 0 mismatches). Gate 137,277 passed with c10 installed (matting test
+  skipped; the first run's one failure, `test_streamed_full_vae_matches_direct_encode_decode`, is an unseeded test that
+  fails by shard order, passed 8/8 alone and in the repeat). `D:\chaiNNer` updated (15 files; tuned binaries kept) with
+  spandrel c10 installed; 197 nodes.
 - RELEASED 2026-10-24 as **v0.3.8 re-release 4**: the worker leaves expandable_segments out of an inherited PyTorch
   allocator setting (a user's FIGSR and FDAT runs failed `!handles_.at(i)` after one out-of-memory tile), and spandrel
   0.4.2+c9 (released GaterV3 models load; GaterV3, SMoSR, FIGSR and GFISRv2 checked against resselt). Fork branch and
@@ -692,6 +738,13 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 ## Decision log
 
+- 2026-10-29 (Linux x86-64): Windows code stays verbatim and Linux code goes in `#else` / `if(NOT WIN32)` blocks and
+  `native/toolchain-linux.cmake`; the glibc 2.28 floor comes from a Rocky 8.10 sysroot inside an Ubuntu 22.04 image;
+  C-library math follows the system's libm (Linux twins of the golden manifests) except `sqrt` and `sqrtf`, which
+  reproduce the static UCRT; Linux workers switch off NumPy's AVX-512 dispatch; DDS keeps its error and the zip carries
+  no texconv; VapourSynth is unavailable below glibc 2.35; NCNN defaults to the CPU when every Vulkan device is
+  software; Copy To Clipboard calls wl-clipboard or xclip; the sandbox is probed and `CHAINNER_SANDBOX` overrides it; no
+  separate Linux release, the zips ship with the next one. Records: `native/local/linux-20261029/` (decisions.md).
 - 2026-10-25 (DUAL neighborhood attention, owner handoff): every DUAL model runs it in both routes with no switch back
   (weights carry no routing); non-RFB or cosine variants keep their windows; a fixed export whose trunk fits both
   windows keeps the whole-window ops (the source's dispatch), dynamic exports always use the NA kernel; ONNX files

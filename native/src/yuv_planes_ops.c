@@ -22,7 +22,7 @@ static void codes_range(const plane_codes_job *job, segment_fn segment, size_t b
 static void codes_to_f32_range(void *context, size_t begin, size_t end)
 {
     const plane_codes_job *job = context;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (job->isa >= CN_ISA_AVX2) {
         codes_range(job, cn_codes_to_f32_segment_avx2, begin, end);
         return;
@@ -34,7 +34,7 @@ static void codes_to_f32_range(void *context, size_t begin, size_t end)
 static void f32_to_codes_range(void *context, size_t begin, size_t end)
 {
     const plane_codes_job *job = context;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (job->isa >= CN_ISA_AVX2) {
         codes_range(job, cn_f32_to_codes_segment_avx2, begin, end);
         return;
@@ -47,7 +47,7 @@ static void yuv_to_bgr_range(void *context, size_t begin, size_t end)
 {
     const yuv_matrix_job *job = context;
     for (size_t row = begin; row < end; ++row) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
         if (job->isa >= CN_ISA_AVX2) {
             cn_yuv_to_bgr_row_avx2(job, row);
             continue;
@@ -61,7 +61,7 @@ static void bgr_to_yuv_range(void *context, size_t begin, size_t end)
 {
     const yuv_matrix_job *job = context;
     for (size_t row = begin; row < end; ++row) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
         if (job->isa >= CN_ISA_AVX2) {
             cn_bgr_to_yuv_row_avx2(job, row);
             continue;

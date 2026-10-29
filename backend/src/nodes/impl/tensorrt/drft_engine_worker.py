@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import sys
 
+from ..pytorch.vosr2_process import end_with_parent
+
 
 def main(
     onnx_path: str,
@@ -86,4 +88,5 @@ def main(
 
 
 if __name__ == "__main__":
+    end_with_parent()
     main(*sys.argv[1:])

@@ -16,8 +16,8 @@ interface PythonDownload {
     path: string;
 }
 
-// python-build-standalone 20261003, CPython 3.14.8: the interpreter of native/python-stack.lock.txt,
-// whose header records the Windows archive's SHA-256.
+// python-build-standalone 20261003, CPython 3.14.8: the interpreter of native/python-stack.lock.txt
+// (Windows) and native/python-stack.lock.linux.txt, whose headers record the archives' SHA-256.
 const downloads: Record<SupportedPlatform, PythonDownload> = {
     linux: {
         url: 'https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.14.8+20261003-x86_64-unknown-linux-gnu-install_only.tar.gz',
@@ -126,6 +126,23 @@ const download = async (
     await file.close();
 };
 
+/** The archive's entries are written as decompress reads them, which has a symlink's target too. */
+type ArchiveFile = decompress.File & { linkname?: string };
+
+/**
+ * Writes one entry of the archive. On Linux and macOS the archive has symbolic links (python3 ->
+ * python3.14) and executables, which keep their link and mode; the Windows archive has neither.
+ */
+const writeEntry = async (filePath: string, file: ArchiveFile) => {
+    if (getPlatform() === 'win32') {
+        await fs.writeFile(filePath, file.data);
+    } else if (file.type === 'symlink' && file.linkname) {
+        await fs.symlink(file.linkname, filePath);
+    } else {
+        await fs.writeFile(filePath, file.data, { mode: file.mode });
+    }
+};
+
 const extractPython = async (
     directory: string,
     tarPath: string,
@@ -139,7 +156,7 @@ const extractPython = async (
         files.map(async (file) => {
             const filePath = path.join(directory, file.path);
             await fs.mkdir(path.dirname(filePath), { recursive: true });
-            await fs.writeFile(filePath, file.data);
+            await writeEntry(filePath, file);
             const percentageComplete = (doneCounter / totalFiles) * 100;
             doneCounter += 1;
             onProgress(percentageComplete);
@@ -237,15 +254,6 @@ export const getIntegratedPython = async (
 
     log.info('Removing downloaded files...');
     await fs.rm(tarPath);
-
-    if (platform === 'linux' || platform === 'darwin') {
-        log.info('Granting permissions for integrated python...');
-        try {
-            await fs.chmod(pythonPath, 0o7777);
-        } catch (error) {
-            log.warn(error);
-        }
-    }
 
     return checkPythonPaths([pythonPath]);
 };

@@ -8,6 +8,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import inspect
+import os
 import subprocess
 import threading
 import time
@@ -61,11 +62,11 @@ pytest.importorskip("nodes.impl._chainner_graph")
 chainner_vs = importlib.import_module("nodes.impl.vapoursynth.chainner_vs")
 bridge = importlib.import_module("nodes.impl.vapoursynth.chainner_vs.upscale")
 
-# A 2x ESRGAN (7 MB) and a 4x Compact ONNX (2.5 MB) from the local model folder.
-ESRGAN_2X = Path(r"C:\Executables\models\ESRGAN\2x_Waifaux-NL3-SuperLite_latest_G.pth")
-COMPACT_4X_ONNX = Path(
-    r"C:\Executables\models\ESRGAN\4xLSDIRCompactN-fp32-opset17.onnx"
-)
+# A 2x ESRGAN (7 MB) and a 4x Compact ONNX (2.5 MB) from the local model folder
+# (CHAINNER_C_TEST_MODELS on a machine where it is elsewhere).
+MODELS = Path(os.environ.get("CHAINNER_C_TEST_MODELS", r"C:\Executables\models\ESRGAN"))
+ESRGAN_2X = MODELS / "2x_Waifaux-NL3-SuperLite_latest_G.pth"
+COMPACT_4X_ONNX = MODELS / "4xLSDIRCompactN-fp32-opset17.onnx"
 
 pytestmark = pytest.mark.skipif(
     not ESRGAN_2X.is_file(), reason=f"{ESRGAN_2X} is not on this machine"
@@ -126,6 +127,9 @@ class Context:
         pass
 
     def suspend(self) -> None:
+        pass
+
+    def set_progress(self, progress: float) -> None:
         pass
 
 

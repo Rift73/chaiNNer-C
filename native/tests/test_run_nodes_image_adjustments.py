@@ -1,5 +1,8 @@
 """Native image_adjustment entry points (native/src/run/nodes/image_adjustments.cpp) against their Python bodies."""
 
+import errno
+import os
+
 import numpy as np
 import pytest
 from native_differential import assert_native_matches
@@ -113,7 +116,9 @@ def test_noop_returns_the_input_itself(schema, values, channels):
 def test_log_to_linear_errors():
     img = image(2, 5, 7, 3)
     overflow = assert_native_matches("chainner:image:log2lin", [img, 1023.0, 0.0, 0.0001, False])
-    assert overflow == ("error", ("OverflowError", "(34, 'Result too large')"))
+    # CPython's text for ERANGE is the C library's
+    range_error = f"({errno.ERANGE}, {os.strerror(errno.ERANGE)!r})"
+    assert overflow == ("error", ("OverflowError", range_error))
     # Equal Black and White was "division by zero" (2026-10-23).
     zero = assert_native_matches("chainner:image:log2lin", [img, 300.0, 300.0, 0.25, True])
     assert zero == ("error", ("ValueError", "Black and White must differ"))

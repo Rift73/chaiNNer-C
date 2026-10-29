@@ -6,9 +6,13 @@ entry with the build SDK's static UCRT, with the CRT's FMA3 path on and off, is
 informational (STATUS's SP5a item): a difference means this machine's ucrtbase.dll moved
 away from the static UCRT, so the tracked goldens may lag the live oracle. The
 live-NumPy assertions are the contract.
+
+On Linux chainner_native.so fills the table from the process's libm.so.6, the one libm
+NumPy calls; glibc has no FMA3 switch and no second, static copy to compare with.
 """
 
 import ctypes as ct
+import sys
 import warnings
 
 import numpy as np
@@ -61,6 +65,13 @@ SPECIALS = (
     -3e38,
 )
 DOUBLES = ct.POINTER(ct.c_double)
+windows = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="ucrtbase.dll and its FMA3 switch are the Windows CRT's",
+)
+linux = pytest.mark.skipif(
+    sys.platform != "linux", reason="libm.so.6 is the Linux table's source"
+)
 
 
 class UcrtMovedWarning(RuntimeWarning):
@@ -164,6 +175,7 @@ def probe_set(index: int):
     return member, x, y
 
 
+@windows
 def test_table_holds_the_process_ucrtbase_exports(probe_function, probe):
     table = (ct.c_void_p * len(ENTRIES)).in_dll(lib(), "cn_crt")
     ucrtbase = ct.CDLL("ucrtbase")
@@ -178,6 +190,27 @@ def test_table_holds_the_process_ucrtbase_exports(probe_function, probe):
     assert probe_function(b"sqrt", -1, pointer, pointer, 1, pointer, pointer, used) == 1
 
 
+@linux
+def test_table_holds_the_process_libm_exports(probe_function, probe):
+    table = (ct.c_void_p * len(ENTRIES)).in_dll(lib(), "cn_crt")
+    libm = ct.CDLL("libm.so.6")
+    for (member, export, _, _), address in zip(ENTRIES, table, strict=True):
+        # glibc names _cabs and _hypotf without the underscore
+        assert address == ct.cast(libm[export.lstrip("_")], ct.c_void_p).value, member
+    for member, *_ in ENTRIES:
+        assert probe(member, -1, np.ones(1), np.ones(1))[2] == (-1, -1)
+    empty = np.empty(1)
+    pointer = empty.ctypes.data_as(DOUBLES)
+    used = (ct.c_int * 2)()
+    assert probe_function(b"sqrt", -1, pointer, pointer, 1, pointer, pointer, used) == 1
+    # No FMA3 switch to set
+    for fma3 in (0, 1):
+        assert (
+            probe_function(b"exp", fma3, pointer, None, 1, pointer, pointer, used) == 1
+        )
+
+
+@windows
 def test_probe_restores_the_fma3_states(probe):
     x = np.ones(1)
     before = probe("exp", -1, x, None)[2]
@@ -187,6 +220,7 @@ def test_probe_restores_the_fma3_states(probe):
         assert probe("exp", -1, x, None)[2] == before
 
 
+@windows
 @pytest.mark.parametrize(
     "index", range(len(ENTRIES)), ids=[entry[0] for entry in ENTRIES]
 )
@@ -225,20 +259,22 @@ def test_load_failure_names_the_library_error(monkeypatch, tmp_path):
     """A library that does not load: the message carries the loader's error and points to
     the line the library writes to stderr when it refuses to initialize (a missing
     ucrtbase.dll export), not to a rebuild alone. Uncached, so lib() keeps its DLL."""
-    broken = tmp_path / "chainner_native.dll"
+    broken = tmp_path / native.library_path().name
     broken.write_bytes(b"not a library")
     monkeypatch.setattr(native, "library_path", lambda: broken)
-    # Unless the error mode fails critical errors (SEM_FAILCRITICALERRORS, 1), Windows
-    # answers the corrupt image with a modal "Bad Image" box and the load waits for it: a
-    # run started without that mode hung.
-    kernel32 = ct.WinDLL("kernel32", use_last_error=True)
-    previous = ct.c_uint()
-    assert kernel32.SetThreadErrorMode(1, ct.byref(previous))
+    if sys.platform == "win32":
+        # Unless the error mode fails critical errors (SEM_FAILCRITICALERRORS, 1),
+        # Windows answers the corrupt image with a modal "Bad Image" box and the load
+        # waits for it: a run started without that mode hung.
+        kernel32 = ct.WinDLL("kernel32", use_last_error=True)
+        previous = ct.c_uint()
+        assert kernel32.SetThreadErrorMode(1, ct.byref(previous))
     try:
         with pytest.raises(RuntimeError) as raised:
             native.lib.__wrapped__()
     finally:
-        kernel32.SetThreadErrorMode(previous.value, None)
+        if sys.platform == "win32":
+            kernel32.SetThreadErrorMode(previous.value, None)
     message = str(raised.value)
     assert isinstance(raised.value.__cause__, OSError)
     assert str(broken) in message

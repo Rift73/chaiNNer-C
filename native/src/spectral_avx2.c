@@ -1,4 +1,4 @@
-#if !defined(_M_X64)
+#if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "spectral_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
 /* The spectral filter's packed-spectrum product, AVX2 unit (/arch:AVX2, spec 4.3): no

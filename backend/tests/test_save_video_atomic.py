@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes
 import os
 import subprocess
+import sys
 import threading
 from collections.abc import Callable
 from contextlib import suppress
@@ -242,18 +243,25 @@ def test_a_failed_encoder_leaves_the_file_before(tmp_path: Path):
     assert path.stat().st_mtime == OLD
 
 
-KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
-KERNEL32.CreateFileW.restype = ctypes.c_void_p
-KERNEL32.CreateFileW.argtypes = [
-    ctypes.c_wchar_p,
-    ctypes.c_uint32,
-    ctypes.c_uint32,
-    ctypes.c_void_p,
-    ctypes.c_uint32,
-    ctypes.c_uint32,
-    ctypes.c_void_p,
-]
-KERNEL32.CloseHandle.argtypes = [ctypes.c_void_p]
+# Windows file handles, whose sharing modes can keep a rename from a file
+if sys.platform == "win32":
+    KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    KERNEL32.CreateFileW.restype = ctypes.c_void_p
+    KERNEL32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    KERNEL32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+held_files = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="a file another program holds blocks a rename on Windows alone",
+)
 
 
 def hold(path: Path) -> int:
@@ -267,6 +275,7 @@ def hold(path: Path) -> int:
     return handle
 
 
+@held_files
 def test_a_target_the_rename_cannot_replace_fails_before_encoding(tmp_path: Path):
     # The node checks the path before FFmpeg starts, so no encode is lost to a file
     # another program holds: the error open(path, "wb") style names the path.
@@ -286,6 +295,7 @@ def test_a_target_the_rename_cannot_replace_fails_before_encoding(tmp_path: Path
 
 
 @pytest.mark.parametrize("released", [True, False])
+@held_files
 def test_a_rename_failing_at_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, released: bool
 ):

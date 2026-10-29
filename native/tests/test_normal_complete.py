@@ -18,6 +18,7 @@ import reference_normals_addition as original
 import reference_normals_util as original_util
 from numpy._core._multiarray_umath import __cpu_dispatch__
 
+import worker_spawn
 from nodes.impl import native_geometry
 from nodes.impl.image_utils import NormalMapType
 from nodes.impl.native import ptr
@@ -135,6 +136,12 @@ def test_numpy_cpu_dispatch_in_fresh_process(disabled):
     root = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
     env["NPY_DISABLE_CPU_FEATURES"] = disabled
+    if sys.platform == "linux":
+        # With what the worker disables there (worker_spawn.py): the Linux wheels'
+        # AVX-512 loops, which the C mirrors do not follow
+        env["NPY_DISABLE_CPU_FEATURES"] += (
+            " " + worker_spawn.ENV["NPY_DISABLE_CPU_FEATURES"]
+        )
     env["CUDA_VISIBLE_DEVICES"] = "-1"
     env["PYTHONPATH"] = os.pathsep.join(
         [str(root / "backend" / "src"), str(root / "native" / "tests")]

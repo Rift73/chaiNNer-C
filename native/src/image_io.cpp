@@ -51,7 +51,12 @@ template<typename... A> O format(const char* text, A&&... args) { return py::str
 std::filesystem::path file_path(const O& path) {
     const py::str text(path);
     if(PyUnicode_FindChar(text.ptr(),0,0,PyUnicode_GET_LENGTH(text.ptr()),1)>=0)
+#ifdef _WIN32
         raise(PyExc_ValueError,py::str("embedded null character"));
+#else
+        // open() encodes a path to the file system's bytes there
+        raise(PyExc_ValueError,py::str("embedded null byte"));
+#endif
     return text.cast<std::filesystem::path>();
 }
 [[noreturn]] void rethrow_value(const O& error) { PyErr_SetObject(reinterpret_cast<PyObject*>(Py_TYPE(error.ptr())),error.ptr()); throw py::error_already_set(); }

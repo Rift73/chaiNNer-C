@@ -46,3 +46,11 @@ if sys.platform == "win32":
 @pytest.fixture(scope="session")
 def system_runtime():
     return system_cpp_runtime()
+
+
+def pytest_collection_modifyitems(items):
+    # The comparisons whose reference library is built otherwise on Linux
+    if sys.platform == "linux":
+        import linux_differences
+
+        linux_differences.skip_listed(items)

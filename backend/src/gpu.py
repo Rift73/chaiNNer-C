@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Callable, Sequence
 import pynvml as nv
 from sanic.log import logger
 
+from system import is_windows
+
 if TYPE_CHECKING:
     from ctypes import _Pointer
 
@@ -26,6 +28,9 @@ _FP16_ARCH_ABILITY_MAP = {
 # CUdevice_attribute values (cuda.h) CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID, _PCI_BUS_ID and
 # _PCI_DEVICE_ID: the device's PCI domain, bus and device (slot), as NVML's PCI info.
 _CU_PCI_ADDRESS_ATTRIBUTES = (50, 33, 34)
+
+# The NVIDIA driver's CUDA library. pynvml finds the driver's NVML library itself.
+_CUDA_DRIVER_LIBRARY = "nvcuda.dll" if is_windows else "libcuda.so.1"
 
 
 @dataclass
@@ -156,7 +161,7 @@ def cuda_pci_addresses() -> list[tuple[int, int, int]]:
     """The PCI address (domain, bus, device) of each CUDA device, by CUDA index.
     Empty when the CUDA driver is missing or fails."""
     try:
-        cuda = ctypes.CDLL("nvcuda.dll")
+        cuda = ctypes.CDLL(_CUDA_DRIVER_LIBRARY)
     except OSError:
         return []
     count = ctypes.c_int()

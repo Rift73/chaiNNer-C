@@ -1,4 +1,4 @@
-#if !defined(_M_X64)
+#if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "dither_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
 /* The palette dither's AVX2 unit (/arch:AVX2, spec 4.3; SP4b D12): no export, reached
@@ -7,7 +7,9 @@
 #include "dither_shared.h"
 #include "numeric.h"
 #include <immintrin.h>
+#ifdef _MSC_VER
 #include <intrin.h>
+#endif
 #include <math.h>
 
 #define DITHER_GROUPS (DITHER_SOA_ENTRIES / 8)
@@ -69,8 +71,12 @@ size_t cn_dither_nearest_avx2(const dither_job *job, const float *color)
         __m256 equal = _mm256_cmp_ps(distance[g], minimum, _CMP_EQ_OQ);
         int lanes = _mm256_movemask_ps(_mm256_and_ps(group_lanes(count, g), equal));
         if (lanes) {
+#ifdef _MSC_VER
             unsigned long first;
             _BitScanForward(&first, (unsigned long)lanes);
+#else
+            unsigned long first = (unsigned long)__builtin_ctz((unsigned)lanes);
+#endif
             return 8 * g + first;
         }
     }

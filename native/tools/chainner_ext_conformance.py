@@ -11,6 +11,7 @@ it runs directly and its exit status is real):
   python -B native/tools/chainner_ext_conformance.py images [--candidate real|c]
       [--only PREFIX]
   python -B native/tools/chainner_ext_conformance.py tie-proof [--processes N]
+  python -B native/tools/chainner_ext_conformance.py twin   (on Linux, see below)
 
 record-regex runs every candidate case of extract_regex_corpus.build_cases() on the
 real module and writes, under native/tests/chainner_ext/:
@@ -48,6 +49,16 @@ Clipboard cases run under ClipboardCapture (the import table of
 the binary that calls the Win32 clipboard is redirected; the live clipboard is never
 touched) and add the captured payload hashes and calls.
 
+twin writes the manifest's Linux twin (native/tests/chainner_ext/linux/manifest.json).
+The outputs of a few cases come from the C library's math (resize filters, gamma,
+anti-aliased thresholds), which the manifest recorded from ucrtbase.dll; on Linux it
+is glibc's libm, and the original module's outputs there differ in those cases. twin
+runs, on Linux, on a CPython 3.11 with the original chainner_ext 0.3.10 (PyPI's
+manylinux wheel) and the NumPy of "reference", every "compare" case but the Windows
+clipboard ones, and keeps the rows whose outcome differs from the manifest's. Linux
+reads those rows' outcomes in place of the manifest's (load_manifest()); Windows
+reads the manifest alone.
+
 images runs every manifest case on the real module (drift against the manifest) and
 on the candidate, which must equal the manifest for "compare" and give equal results
 twice for the others. tie-proof runs the tie and corrected cases on the real module
@@ -63,6 +74,7 @@ import importlib
 import json
 import math
 import os
+import platform
 import random
 import subprocess
 import sys
@@ -70,6 +82,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -2147,6 +2160,8 @@ def surface_probe(module: ModuleType) -> Json:
 
 SCHEMA = "chaiNNer-C/chainner_ext-conformance/v1"
 MANIFEST = OUT_DIR / "manifest.json"
+# The rows of MANIFEST whose outcome differs on Linux (twin())
+TWIN = OUT_DIR / "linux" / "manifest.json"
 
 
 def sha256_file(path: Path) -> str:
@@ -2171,13 +2186,13 @@ def regex_summary() -> Json:
     }
 
 
-def _write_manifest(manifest: dict[str, Json], rows: list[Json]) -> None:
+def _write_manifest(path: Path, manifest: dict[str, Json], rows: list[Json]) -> None:
     """The manifest as JSON with one image case per line."""
     head = json.dumps(manifest, indent=1, ensure_ascii=False)
     assert head.endswith("\n}")
     body = ",\n".join("  " + json.dumps(r, ensure_ascii=False) for r in rows)
     text = head[:-2] + ',\n "cases": [\n' + body + "\n ]\n}\n"
-    MANIFEST.write_text(text, encoding="utf-8", newline="\n")
+    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def record() -> int:
@@ -2230,7 +2245,7 @@ def record() -> int:
         },
         "exclusions": exclusions,
     }
-    _write_manifest(manifest, rows)
+    _write_manifest(MANIFEST, manifest, rows)
     totals = Counter[str]()
     for count in cells.values():
         totals.update(count)
@@ -2240,7 +2255,70 @@ def record() -> int:
 
 
 def load_manifest() -> Json:
-    return json.loads(MANIFEST.read_text(encoding="utf-8"))
+    """The manifest; on Linux, with the outcomes of its Linux twin (twin()) in place of
+    its own for the cases the twin holds. Windows reads the manifest alone."""
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    if sys.platform != "linux" or not TWIN.is_file():
+        return manifest
+    linux = {
+        row["id"]: row for row in json.loads(TWIN.read_text(encoding="utf-8"))["cases"]
+    }
+    for row in manifest["cases"]:
+        held = linux.pop(row["id"], None)
+        if held is None:
+            continue
+        if {k: v for k, v in held.items() if k != "outcome"} != {
+            k: v for k, v in row.items() if k != "outcome"
+        }:
+            raise ValueError(f"{TWIN}: {row['id']} is not its case in {MANIFEST}")
+        row["outcome"] = held["outcome"]
+    if linux:
+        raise ValueError(f"{TWIN}: not cases of {MANIFEST}: {sorted(linux)[:10]}")
+    return manifest
+
+
+def twin() -> int:
+    """Writes the Linux twin (TWIN) of the manifest from the original chainner_ext on
+    Linux: the "compare" cases, the Windows clipboard ones apart, whose outcome there
+    is not the manifest's."""
+    if sys.platform != "linux":
+        raise RuntimeError("a Linux twin is written on Linux, with the original module")
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    version = metadata.version("chainner_ext")
+    if f"chainner_ext {version}" != manifest["reference"]["module"]:
+        raise RuntimeError(
+            f"chainner_ext {version} is installed; the manifest recorded "
+            f"{manifest['reference']['module']}"
+        )
+    real = load_real()
+    rows: list[Json] = []
+    cells: Counter[str] = Counter()
+    for row in manifest["cases"]:
+        if row["class"] != "compare" or row["call"].startswith("Clipboard."):
+            continue
+        have = run_image_case(real, case_from_json(row), None)
+        if not _same_image_outcome(have, row["outcome"]):
+            rows.append(row | {"outcome": have})
+            cells[row["cell"]] += 1
+    _, libc = platform.libc_ver()
+    twin_manifest = {
+        "schema": SCHEMA,
+        "expectation": (
+            f"Linux, the original chainner_ext's outputs with glibc {libc}'s libm where "
+            f"{MANIFEST.name} recorded the Windows module's with ucrtbase.dll's math; "
+            "Windows reads that manifest alone"
+        ),
+        "reference": {
+            "module": manifest["reference"]["module"],
+            "python": sys.version.split()[0],
+            "numpy": np.__version__,
+        },
+        "cells": dict(sorted(cells.items())),
+    }
+    TWIN.parent.mkdir(exist_ok=True)
+    _write_manifest(TWIN, twin_manifest, rows)
+    print(f"twin: {len(rows)} cases differ on Linux, in {len(cells)} cells")
+    return 0
 
 
 def _same_image_outcome(a: Json, b: Json) -> bool:
@@ -2381,6 +2459,11 @@ def pin_cpus(mask: int) -> None:
     """Pins this process (and so its children, the probe included) to mask, so the
     tool runs directly and its exit status stays real (a `start /affinity` wrapper
     reports 0)."""
+    if sys.platform == "linux":
+        os.sched_setaffinity(
+            0, {cpu for cpu in range(mask.bit_length()) if mask >> cpu & 1}
+        )
+        return
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.GetCurrentProcess.restype = ctypes.c_void_p
     kernel.SetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
@@ -2414,6 +2497,7 @@ def main() -> int:
     proof = sub.add_parser("tie-proof")
     proof.add_argument("--processes", type=int, default=3)
     sub.add_parser("tie-run")
+    sub.add_parser("twin")
     args = parser.parse_args()
     pin_cpus(args.affinity)
     if args.command == "record-regex":
@@ -2433,6 +2517,8 @@ def main() -> int:
         return images(args.candidate, args.only)
     if args.command == "tie-proof":
         return tie_proof(args.processes)
+    if args.command == "twin":
+        return twin()
     return tie_run()
 
 

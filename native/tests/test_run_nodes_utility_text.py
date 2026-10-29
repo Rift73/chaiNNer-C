@@ -4,6 +4,7 @@ A str holding a lone surrogate and an int beyond int64 cross as Python objects a
 do Parse Number's errors and non-ASCII text; each test derives which cases decline and asserts both paths occur."""
 
 import itertools
+import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -140,10 +141,16 @@ def test_text_pattern_errors(pattern, message):
     assert assert_native_matches("chainner:utility:text_pattern", inputs) == ("error", ("ValueError", message))
 
 
+def directory_declines(enforced: list[object]) -> bool:
+    """A lone surrogate, which UTF-8 cannot hold; on Linux, whose path is bytes, any name that is not ASCII."""
+    text = str(enforced[0])
+    return surrogate(text) if sys.platform == "win32" else not text.isascii()
+
+
 def test_directory_to_text_matches(counts):
     for directory in ["C:/a/b", "C:\\a\\.\\b\\", "relative\\x", "\\\\server\\share\\x", "C:", ".", "\u00e9\u4e16/x",
                       "D:/\U0001f600/y", "C:/\udc80bad", "C:/\ud83d", Path("D:/x/y")]:
-        check("chainner:utility:directory_to_text", [directory], lambda enforced: surrogate(str(enforced[0])), counts)
+        check("chainner:utility:directory_to_text", [directory], directory_declines, counts)
 
 
 PARSE_TEXTS = ["0", "-0", "+5", "  42  ", "\t-17\n", "\x0b\x0c\r7", "1_000", "1__0", "_1", "1_", "0x1f", "0X_1F",

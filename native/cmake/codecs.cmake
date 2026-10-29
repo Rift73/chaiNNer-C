@@ -45,13 +45,27 @@ if(NOT chainner_c_nasm_result EQUAL 0 OR NOT chainner_c_nasm_version MATCHES "^N
     message(FATAL_ERROR "chaiNNer-C assembles with NASM 3.01 only, not '${chainner_c_nasm_version}' (${CHAINNER_C_NASM})")
 endif()
 file(GLOB chainner_c_jpeg_simd_includes "${chainner_c_jpeg}/simd/nasm/*.inc" "${chainner_c_jpeg}/simd/x86_64/*ext-*.asm")
+# The object format and defines upstream's simd/CMakeLists.txt gives NASM: Win64, or on Linux ELF64 with
+# position-independent code (ELF also marks the stack non-executable).
+if(WIN32)
+    set(chainner_c_nasm_format -fwin64 -DWIN64)
+    set(chainner_c_nasm_input "${chainner_c_jpeg}/simd/x86_64/")
+    set(chainner_c_nasm_directory "")
+else()
+    set(chainner_c_nasm_format -felf64 -DELF -DPIC)
+    # An ELF object's symbol table names NASM's input as given: from the units' directory, by a relative name, so
+    # no build machine path reaches the binaries.
+    set(chainner_c_nasm_input "")
+    set(chainner_c_nasm_directory WORKING_DIRECTORY "${chainner_c_jpeg}/simd/x86_64")
+endif()
 set(chainner_c_jpeg_objects "")
 foreach(chainner_c_unit IN LISTS chainner_c_jpeg_simd)
     set(chainner_c_object "${CMAKE_CURRENT_BINARY_DIR}/jpeg-simd/${chainner_c_unit}.obj")
     add_custom_command(OUTPUT "${chainner_c_object}"
-        COMMAND "${CHAINNER_C_NASM}" -fwin64 -DWIN64 -D__x86_64__ --reproducible
+        COMMAND "${CHAINNER_C_NASM}" ${chainner_c_nasm_format} -D__x86_64__ --reproducible
             "-I${chainner_c_jpeg}/simd/nasm/" "-I${chainner_c_jpeg}/simd/x86_64/"
-            -o "${chainner_c_object}" "${chainner_c_jpeg}/simd/x86_64/${chainner_c_unit}.asm"
+            -o "${chainner_c_object}" "${chainner_c_nasm_input}${chainner_c_unit}.asm"
+        ${chainner_c_nasm_directory}
         DEPENDS "${chainner_c_jpeg}/simd/x86_64/${chainner_c_unit}.asm" ${chainner_c_jpeg_simd_includes}
         COMMENT "Assembling libjpeg-turbo simd/x86_64/${chainner_c_unit}.asm"
         VERBATIM)
@@ -60,6 +74,10 @@ endforeach()
 set_source_files_properties(${chainner_c_jpeg_objects} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
 add_library(chainner_jpeg STATIC ${chainner_c_jpeg_sources} "${chainner_c_jpeg}/simd/x86_64/jsimd.c"
     ${chainner_c_jpeg_objects})
+if(NOT WIN32)
+    # The jconfigint.h upstream's CMake writes for the GNU driver, ahead of the Windows one.
+    target_include_directories(chainner_jpeg SYSTEM PRIVATE "${chainner_c_jpeg}/chainner/linux")
+endif()
 target_include_directories(chainner_jpeg SYSTEM PUBLIC "${chainner_c_jpeg}/chainner" "${chainner_c_jpeg}/src")
 target_compile_definitions(chainner_jpeg PRIVATE _CRT_NONSTDC_NO_WARNINGS)
 
@@ -154,8 +172,15 @@ set(chainner_c_tiff_sources
     tif_hash_set.c tif_jpeg.c tif_luv.c tif_lzw.c tif_next.c tif_open.c tif_packbits.c tif_predict.c tif_print.c
     tif_read.c tif_strip.c tif_swab.c tif_thunder.c tif_tile.c tif_version.c tif_warning.c tif_win32.c tif_write.c
     tif_zip.c)
+if(NOT WIN32)
+    # OpenCV's Linux build: POSIX I/O, with the tif_config.h and tiffconf.h its CMake writes there.
+    list(TRANSFORM chainner_c_tiff_sources REPLACE "^tif_win32[.]c$" "tif_unix.c")
+endif()
 list(TRANSFORM chainner_c_tiff_sources PREPEND "${chainner_c_tiff}/")
 add_library(chainner_tiff STATIC ${chainner_c_tiff_sources})
+if(NOT WIN32)
+    target_include_directories(chainner_tiff SYSTEM PUBLIC "${chainner_c_tiff}/chainner/linux")
+endif()
 target_include_directories(chainner_tiff SYSTEM PUBLIC "${chainner_c_tiff}/chainner" "${chainner_c_tiff}")
 target_compile_definitions(chainner_tiff PRIVATE _CRT_SECURE_NO_DEPRECATE _CRT_NONSTDC_NO_DEPRECATE)
 target_link_libraries(chainner_tiff PUBLIC chainner_zlib PRIVATE chainner_jpeg)

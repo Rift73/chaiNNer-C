@@ -475,9 +475,11 @@ void regex_replace(NodeContext &, std::span<const Value> inputs, std::vector<Val
 }
 
 /* chainner:utility:directory_to_text (directory/directory_to_text.py): str(directory), the path's UTF-16 as UTF-8;
- * a lone surrogate (which UTF-8 cannot hold) declines. */
+ * a lone surrogate (which UTF-8 cannot hold) declines. On Linux the path is bytes that str() decodes with the file
+ * system encoding: ASCII names are their bytes in any such encoding, and any other byte declines. */
 void directory_to_text(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
+#ifdef _WIN32
     const std::wstring &wide = std::get<Path>(inputs[0]).value.native();
     std::string result;
     result.reserve(wide.size());
@@ -505,6 +507,13 @@ void directory_to_text(NodeContext &, std::span<const Value> inputs, std::vector
         }
     }
     outputs.push_back(std::move(result));
+#else
+    const std::string &bytes = std::get<Path>(inputs[0]).value.native();
+    for (char byte : bytes) {
+        if (static_cast<unsigned char>(byte) >= 0x80) throw RunPython{};
+    }
+    outputs.push_back(bytes);
+#endif
 }
 
 /* chainner:utility:parse_number (utility_scalar.cpp parse_number): int(text, base)'s success path for ASCII text

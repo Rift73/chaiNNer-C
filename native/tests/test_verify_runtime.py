@@ -339,6 +339,13 @@ def test_the_port_side_runs_on_the_packages_runtime(
     ]
 
 
+# The verifiers own their hosts as Windows processes (OwnedJob, CREATE_NO_WINDOW)
+windows_hosts = pytest.mark.skipif(
+    sys.platform != "win32", reason="the runtime verifiers run Windows hosts"
+)
+
+
+@windows_hosts
 @pytest.mark.parametrize(
     "module",
     [verify_runtime, verify_framework_runtime, verify_video_runtime],
@@ -1178,6 +1185,7 @@ def test_the_repeat_rules_name_what_each_side_compares():
     }
 
 
+@windows_hosts
 def test_compare_images_counts_differing_components_and_pixels(tmp_path):
     colour = np.arange(4 * 3 * 3, dtype=np.uint8).reshape(4, 3, 3)
     changed = colour.copy()

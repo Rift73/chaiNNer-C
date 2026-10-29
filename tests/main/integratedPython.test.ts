@@ -1,5 +1,18 @@
+import { execFileSync } from 'child_process';
 import { EventEmitter } from 'events';
-import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from 'fs/promises';
+import { constants } from 'fs';
+import {
+    access,
+    mkdir,
+    mkdtemp,
+    readFile,
+    readdir,
+    readlink,
+    rm,
+    symlink,
+    utimes,
+    writeFile,
+} from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
@@ -203,3 +216,53 @@ test('the Python version is checked once per build of the executable', async () 
     await expect(getIntegratedPython(directory, () => {})).resolves.toEqual(expected);
     expect(checkPythonPaths).toHaveBeenCalledTimes(2);
 });
+
+test.skipIf(process.platform === 'win32')(
+    'the extracted archive keeps its symbolic links and executable files',
+    async () => {
+        for (const name of ['https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']) {
+            vi.stubEnv(name, '');
+        }
+        const source = await mkdtemp(path.join(os.tmpdir(), 'chaiNNer-python-archive-test-'));
+        let archive: Buffer;
+        try {
+            const bin = path.join(source, 'python/bin');
+            await mkdir(bin, { recursive: true });
+            await writeFile(path.join(bin, 'python3.14'), 'interpreter', { mode: 0o755 });
+            await writeFile(path.join(bin, 'python3.14-config'), 'data', { mode: 0o644 });
+            await symlink('python3.14', path.join(bin, 'python3'));
+            // only the files and the link, as in the real archive, which has no directory entries
+            execFileSync(
+                'tar',
+                [
+                    '-czf',
+                    'python.tar.gz',
+                    'python/bin/python3.14',
+                    'python/bin/python3.14-config',
+                    'python/bin/python3',
+                ],
+                { cwd: source }
+            );
+            archive = await readFile(path.join(source, 'python.tar.gz'));
+        } finally {
+            await rm(source, { recursive: true, force: true });
+        }
+        const response = incomingMessage(200, 'OK', { 'content-length': String(archive.length) });
+        respondWith(response);
+
+        const { getIntegratedPython } = await import('../../src/main/python/integratedPython');
+        const installing = getIntegratedPython(directory, () => {});
+        await vi.waitFor(() => expect(response.listenerCount('end')).toBe(1));
+        response.emit('data', archive);
+        response.emit('end');
+
+        const executable = path.join(directory, 'python/bin/python3.14');
+        await expect(installing).resolves.toEqual({ python: executable, version: '3.14.8' });
+        await expect(access(executable, constants.X_OK)).resolves.toBeUndefined();
+        await expect(
+            access(path.join(directory, 'python/bin/python3.14-config'), constants.X_OK)
+        ).rejects.toThrow();
+        expect(await readlink(path.join(directory, 'python/bin/python3'))).toBe('python3.14');
+        expect(await readdir(directory)).toEqual(['python']);
+    }
+);

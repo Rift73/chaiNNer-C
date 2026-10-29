@@ -202,6 +202,17 @@ def test_read_ahead_blocker_reports_a_path_it_cannot_resolve(
         # folder: outside the output directory it allows read-ahead, under it it
         # blocks.
         outside = Path("in\0valid") / "a.png"
+        if os.name != "nt":
+            # POSIX resolve() stats each component, which a NUL fails: reported,
+            # and read-ahead blocked, wherever the folder is
+            for source in (outside, tmp_path / "in\0valid" / "a.png"):
+                assert (
+                    read_ahead_blocker(
+                        [(NodeId("g0"), (source,))], [(NodeId("save"), tmp_path)]
+                    )
+                    == "path check failed: lstat: embedded null character in path"
+                )
+            return
         assert (
             read_ahead_blocker(
                 [(NodeId("g0"), (outside,))], [(NodeId("save"), tmp_path)]

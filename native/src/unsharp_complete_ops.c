@@ -33,7 +33,7 @@ typedef struct unsharp_context {
 static void unsharp_range(void *opaque, size_t begin, size_t end)
 {
     const unsharp_context *ctx = opaque;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     /* The fused form at avx2 and above through the AVX2 unit (vfmadd, fmaf's bits). */
     if (ctx->fused && ctx->isa >= CN_ISA_AVX2) {
         cn_unsharp_fused_avx2(ctx->source + begin, ctx->blurred + begin, ctx->output + begin, end - begin, ctx->alpha,

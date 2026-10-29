@@ -10,6 +10,7 @@ from __future__ import annotations
 import ctypes as ct
 import importlib
 import json
+import sys
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -182,6 +183,16 @@ def _log_severity(run_options: Any) -> int:
     return run_options.log_severity_level
 
 
+def _runtime_library() -> Path:
+    """The installed ONNX Runtime's shared library, which native sessions load."""
+    capi = Path(ort.__file__).parent / "capi"
+    if sys.platform == "win32":
+        return capi / "onnxruntime.dll"
+    # Linux wheels name it for the release (libonnxruntime.so.1.30.0); a local build
+    # label (+trt11) is not part of the name.
+    return capi / f"libonnxruntime.so.{ort.__version__.partition('+')[0]}"
+
+
 def _finalize_session(function: Callable[..., int], handle: int):
     # Finalizers cannot raise during interpreter teardown. Explicit close uses
     # the same release with normal error propagation and detaches this callback.
@@ -194,7 +205,7 @@ class NativeSession:
 
     def __init__(self, model: bytes, *, library_path: Path | None = None):
         dll = _api()
-        path = library_path or Path(ort.__file__).parent / "capi/onnxruntime.dll"
+        path = library_path or _runtime_library()
         handle = ct.c_uint64()
         owner = ct.create_string_buffer(model)
         _call(

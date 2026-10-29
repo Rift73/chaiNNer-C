@@ -478,7 +478,9 @@ def test_write_failure_propagates_without_codec_retry(tmp_path):
     # nothing again (no cv2 in these globals) and leaves no temporary file behind.
     target = tmp_path / "x.png"
     target.mkdir()
-    with pytest.raises(PermissionError):
+    # What open() raises for a directory: POSIX names the cause
+    error = PermissionError if sys.platform == "win32" else IsADirectoryError
+    with pytest.raises(error):
         graph().image_io_cv_save(no_opencv(), target, np.zeros((2, 3, 3), np.uint8), [])
     assert target.is_dir() and not any(target.iterdir())
     assert [path.name for path in tmp_path.iterdir()] == ["x.png"]

@@ -4,10 +4,15 @@ native/tests/chainner_ext/ holds what the real chainner_ext 0.3.10 did, recorded
 native/.venv-py311 by native/tools/chainner_ext_conformance.py (record-regex, then
 record). This test needs no real module: it runs every recorded case on the module
 `import chainner_ext` gives (backend/src/chainner_ext) under the manifest's rules.
+On Linux the cases whose outcome comes from the C library's math take the outcome of
+native/tests/chainner_ext/linux/manifest.json, recorded from the original module there
+(`twin`).
 """
 
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 
 import chainner_ext_conformance as conformance
@@ -40,6 +45,34 @@ def test_manifest_schema_and_regex_files():
         )
 
 
+def test_the_linux_twin_gives_outcomes_on_linux_only(monkeypatch, tmp_path):
+    recorded = json.loads(conformance.MANIFEST.read_text(encoding="utf-8"))["cases"]
+    row = next(row for row in recorded if row["class"] == "compare")
+    twin = tmp_path / "manifest.json"
+    monkeypatch.setattr(conformance, "TWIN", twin)
+
+    def write(*rows):
+        twin.write_text(json.dumps({"cases": rows}), encoding="utf-8")
+
+    held = row | {"outcome": {"ok": {"sha256": "0" * 64}}}
+    write(held)
+    monkeypatch.setattr(sys, "platform", "linux")
+    cases = conformance.load_manifest()["cases"]
+    assert [case for case in cases if case["id"] != row["id"]] == [
+        case for case in recorded if case["id"] != row["id"]
+    ]
+    assert next(case for case in cases if case["id"] == row["id"]) == held
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert conformance.load_manifest()["cases"] == recorded
+    monkeypatch.setattr(sys, "platform", "linux")
+    write(held | {"cell": "elsewhere"})
+    with pytest.raises(ValueError, match="is not its case"):
+        conformance.load_manifest()
+    write(held | {"id": "no such case"})
+    with pytest.raises(ValueError, match="not cases of"):
+        conformance.load_manifest()
+
+
 @pytest.mark.parametrize("cell", CELLS)
 def test_image_cell(cell):
     rows = [row for row in ROWS if row["cell"] == cell]
@@ -50,6 +83,8 @@ def test_image_cell(cell):
     )
     binary = None
     if any(row["call"].startswith("Clipboard.") for row in rows):
+        if sys.platform != "win32":
+            pytest.skip("Windows clipboard payloads, captured through PE imports")
         binary = conformance.clipboard_binary(chainner_ext)
     problems = []
     for row in rows:

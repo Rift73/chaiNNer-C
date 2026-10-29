@@ -329,7 +329,7 @@ def test_lib_names_the_dll_when_cn_isa_get_is_missing(monkeypatch, profile):
     monkeypatch.setattr(native_profile, "ProfiledCDLL", OldDll)
     with pytest.raises(
         RuntimeError,
-        match=r"Incompatible chaiNNer C kernel ABI at .*chainner_native\.dll: "
+        match=rf"Incompatible chaiNNer C kernel ABI at .*{re.escape(native.library_path().name)}: "
         r"no cn_isa_get export",
     ):
         native.lib.__wrapped__()

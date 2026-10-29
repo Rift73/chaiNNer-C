@@ -10,6 +10,7 @@ import gc
 import os
 import re
 import stat
+import sys
 import threading
 from pathlib import Path
 
@@ -19,6 +20,11 @@ from nodes.impl.native_graph import graph
 
 OLD = 1_000_000_000  # An mtime (2001) no write of this test can produce.
 TEMP = re.compile(r"\.chainner-c-(\d+)-(\d+)\.tmp$")
+
+
+def windows(reason: str):
+    """A test of a Windows rule that POSIX file systems do not have."""
+    return pytest.mark.skipif(sys.platform != "win32", reason=reason)
 
 
 def aged(path: Path, data: bytes) -> Path:
@@ -118,6 +124,7 @@ def test_long_names_write_as_open_does(tmp_path: Path, length: int):
     assert sorted(tmp_path.iterdir()) == [final]
 
 
+@windows('MAX_PATH and the \\\\?\\ form are Windows path rules')
 def test_a_full_path_past_max_path_goes_through_the_long_form(tmp_path: Path):
     # Past MAX_PATH both names of the rename take the \\?\ form; errors name the
     # path as given.
@@ -137,6 +144,7 @@ def test_a_full_path_past_max_path_goes_through_the_long_form(tmp_path: Path):
 
 
 @pytest.mark.parametrize("wildcard", "?*<>")
+@windows('? * < > are valid in POSIX names')
 def test_a_wildcard_in_a_long_name_fails_as_open_does(tmp_path: Path, wildcard: str):
     # open() refuses the name with [Errno 22] and writes nothing; so does the writer,
     # which never takes a sibling the name would match as a search pattern.
@@ -155,7 +163,16 @@ def test_a_wildcard_in_a_long_name_fails_as_open_does(tmp_path: Path, wildcard: 
     assert victim.stat().st_mtime == OLD
 
 
-@pytest.mark.parametrize("name", ["n" * 256 + ".bin", 'a".bin', "c" * 240 + '".bin'])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "n" * 256 + ".bin",
+        pytest.param('a".bin', marks=windows("a quote is valid in POSIX names")),
+        pytest.param(
+            "c" * 240 + '".bin', marks=windows("a quote is valid in POSIX names")
+        ),
+    ],
+)
 def test_an_invalid_name_fails_up_front_as_open_does(tmp_path: Path, name: str):
     # A name past 255 characters or with a quote: open() raises before writing, and so
     # do the writer and the check Save Video runs before encoding.
@@ -165,10 +182,12 @@ def test_an_invalid_name_fails_up_front_as_open_does(tmp_path: Path, name: str):
     with pytest.raises(OSError) as after:
         graph().atomic_write(final, b"payload")
     assert type(after.value) is type(before.value)
-    assert str(after.value) == str(before.value) and after.value.winerror is None
+    assert str(after.value) == str(before.value)
+    assert getattr(after.value, "winerror", None) is None
     with pytest.raises(OSError) as checked:
         graph().AtomicTarget(final).check()
-    assert checked.value.errno == before.value.errno and checked.value.winerror is None
+    assert checked.value.errno == before.value.errno
+    assert getattr(checked.value, "winerror", None) is None
     assert not list(tmp_path.iterdir())
 
 
@@ -180,31 +199,34 @@ def test_errors_name_the_final_path_as_open_does(tmp_path: Path):
         graph().atomic_write(missing, b"x")
     assert type(after.value) is type(before.value) is FileNotFoundError
     assert str(after.value) == str(before.value)
-    assert after.value.filename == str(missing) and after.value.winerror is None
+    assert after.value.filename == str(missing)
+    assert getattr(after.value, "winerror", None) is None
 
 
-KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
-KERNEL32.CreateFileW.restype = ctypes.c_void_p
-KERNEL32.CreateFileW.argtypes = [
-    ctypes.c_wchar_p,
-    ctypes.c_uint32,
-    ctypes.c_uint32,
-    ctypes.c_void_p,
-    ctypes.c_uint32,
-    ctypes.c_uint32,
-    ctypes.c_void_p,
-]
-KERNEL32.CloseHandle.argtypes = [ctypes.c_void_p]
-KERNEL32.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
-KERNEL32.ReadFile.argtypes = [
-    ctypes.c_void_p,
-    ctypes.c_void_p,
-    ctypes.c_uint32,
-    ctypes.POINTER(ctypes.c_uint32),
-    ctypes.c_void_p,
-]
-INVALID = (None, ctypes.c_void_p(-1).value)
-SHARE_READ_WRITE, FULL_SHARING = 1 | 2, 1 | 2 | 4  # FILE_SHARE_READ/WRITE/DELETE
+# Windows file handles: attributes, and sharing modes that can block a rename or delete
+if sys.platform == "win32":
+    KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    KERNEL32.CreateFileW.restype = ctypes.c_void_p
+    KERNEL32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    KERNEL32.CloseHandle.argtypes = [ctypes.c_void_p]
+    KERNEL32.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
+    KERNEL32.ReadFile.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_void_p,
+    ]
+    INVALID = (None, ctypes.c_void_p(-1).value)
+    SHARE_READ_WRITE, FULL_SHARING = 1 | 2, 1 | 2 | 4  # FILE_SHARE_READ/WRITE/DELETE
 
 
 def hold(path: Path, share: int) -> int | None:
@@ -231,6 +253,7 @@ class Holder:
         KERNEL32.CloseHandle(self.handle)
 
 
+@windows('hidden and system attributes and sharing modes are Windows file rules')
 def test_failures_on_the_final_path_raise_what_open_raises(tmp_path: Path):
     # A folder, a read-only, hidden or system file and a file another program holds:
     # open(final, "wb") raises PermissionError [Errno 13]; the write raises the same,
@@ -270,6 +293,7 @@ def test_failures_on_the_final_path_raise_what_open_raises(tmp_path: Path):
         assert path.stat().st_mtime == OLD
 
 
+@windows('names differing in case alone are one file on Windows only')
 def test_a_name_of_another_case_keeps_the_spelling_on_disk(tmp_path: Path):
     # open("CASE.BIN", "wb") over case.bin writes case.bin: so do both writers.
     final = tmp_path / "case.bin"
@@ -280,6 +304,31 @@ def test_a_name_of_another_case_keeps_the_spelling_on_disk(tmp_path: Path):
         assert final.read_bytes() == data
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="test_failures_on_the_final_path_raise_what_open_raises holds there",
+)
+def test_a_folder_or_read_only_final_path_raises_what_open_raises(tmp_path: Path):
+    # The POSIX part of the test above: the error open(final, "wb") raises, and the
+    # final path and the folder left as they were.
+    read_only = aged(tmp_path / "ro.bin", b"keep")
+    os.chmod(read_only, stat.S_IREAD)
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    for final in (folder, read_only):
+        with pytest.raises(OSError) as before:
+            open(final, "wb")
+        for write in (graph().atomic_write, _commit):
+            with pytest.raises(OSError) as after:
+                write(final, b"new")
+            assert type(after.value) is type(before.value)
+            assert str(after.value) == str(before.value)
+            assert after.value.filename == str(final)
+    assert read_only.read_bytes() == b"keep"
+    assert sorted(tmp_path.iterdir()) == [folder, read_only]
+
+
+@windows('sharing modes are Windows file rules')
 def test_a_target_held_with_delete_sharing_is_replaced(tmp_path: Path):
     # An antivirus, the indexer or a thumbnailer holds the file sharing read, write and
     # delete: open(final, "wb") succeeds there, so do both writers, and the holder
@@ -297,6 +346,7 @@ def test_a_target_held_with_delete_sharing_is_replaced(tmp_path: Path):
     assert contents(tmp_path) == {final: b"newer"}
 
 
+@windows('sharing modes are Windows file rules')
 def test_a_target_held_without_delete_sharing_fails_as_before(tmp_path: Path):
     # A holder that shares read and write but not delete keeps the file: both writers
     # raise PermissionError [Errno 13] naming the path and leave no temporary file.
@@ -367,6 +417,7 @@ def test_target_commit_and_equal_bytes(tmp_path: Path):
     assert sorted(tmp_path.iterdir()) == [final]
 
 
+@windows('POSIX deletes a file another program holds open')
 def test_an_equal_commit_whose_temporary_file_stays_deletes_it_later(tmp_path: Path):
     # The final file holds the bytes already, and another program holds the temporary
     # file, so it cannot go now: the commit reports the equal file, and abandon() (or
@@ -401,7 +452,8 @@ def test_abandon_repeats_commit_once_and_the_destructor_abandons(tmp_path: Path)
     held = open(target.temp, "wb")  # another holder: the first abandon cannot delete
     try:
         target.abandon()
-        assert Path(target.temp).exists()
+        # POSIX unlinks a file another holder has open at once
+        assert Path(target.temp).exists() == (sys.platform == "win32")
     finally:
         held.close()
     target.abandon()

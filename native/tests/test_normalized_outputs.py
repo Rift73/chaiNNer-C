@@ -19,7 +19,8 @@ native_filters.morphology's fresh result, which owns its data in every channel c
 
 This module imports only the modules it needs: the node bodies and numpy_outputs
 are loaded by path (the nodes.properties.outputs package would import Pillow and
-torch), and DAZ|FTZ is set through the CRT's _controlfp_s, not torch.
+torch), and DAZ|FTZ is set through the CRT's _controlfp_s, not torch (on Linux,
+which has no such call, through torch.set_flush_denormal, as golden_kernels.py).
 
 It also holds what the Gaussian and Box Blur parity tests share (Task 3b2; owner,
 2026-10-04: the contract is the schema and the output as the user receives it, not a
@@ -30,6 +31,7 @@ import ast
 import contextlib
 import ctypes
 import importlib.util
+import sys
 import types
 import warnings
 from pathlib import Path
@@ -216,18 +218,33 @@ def fp_state():
 def mxcsr(state):
     """Run the body under the MXCSR state on the calling thread (the DLL's helpers
     take the caller's controls); always restores the default."""
-    control = ctypes.CDLL("ucrtbase.dll")["_controlfp_s"]
-    control.argtypes = [ctypes.POINTER(ctypes.c_uint), ctypes.c_uint, ctypes.c_uint]
-    control.restype = ctypes.c_int
-    word = ctypes.c_uint()
+    if sys.platform == "win32":
+        control = ctypes.CDLL("ucrtbase.dll")["_controlfp_s"]
+        control.argtypes = [
+            ctypes.POINTER(ctypes.c_uint),
+            ctypes.c_uint,
+            ctypes.c_uint,
+        ]
+        control.restype = ctypes.c_int
+        word = ctypes.c_uint()
+
+        def flush(on: bool) -> bool:
+            bits = DENORMAL_FLUSH if on else 0
+            return control(ctypes.byref(word), bits, DENORMAL_MASK) == 0
+    else:
+        import torch
+
+        def flush(on: bool) -> bool:
+            return torch.set_flush_denormal(on)
+
     assert fp_state() == 0
     if state == "daz_ftz":
-        assert control(ctypes.byref(word), DENORMAL_FLUSH, DENORMAL_MASK) == 0
+        assert flush(True)
     try:
         assert fp_state() == (DAZ_FTZ if state == "daz_ftz" else 0)
         yield
     finally:
-        assert control(ctypes.byref(word), 0, DENORMAL_MASK) == 0
+        assert flush(False)
         assert fp_state() == 0
 
 

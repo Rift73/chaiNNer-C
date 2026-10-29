@@ -68,7 +68,7 @@ static void blur_one(const wavelet_job *job, size_t i) {
 static void blur_range(void *opaque, size_t begin, size_t end) {
     const wavelet_job *job = opaque;
     size_t i = begin;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (job->isa >= CN_ISA_AVX2 && job->width > 2 * job->radius) {
         while (i < end) {
             size_t row = i - i % job->width, stop = end - row < job->width ? end : row + job->width;

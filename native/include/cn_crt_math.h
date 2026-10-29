@@ -23,7 +23,11 @@
  * chainner_native.dll fills the table as it loads (crt_math.c): GetModuleHandleW
  * finds the ucrtbase.dll that python3xx.dll loaded (never a LoadLibrary), and a
  * missing module or export fails the load with a message on stderr. The pyds read
- * the DLL's exported table. Outside Windows the table holds the libm functions.
+ * the DLL's exported table. On Linux, NumPy, SciPy and CPython call glibc's libm.so.6:
+ * crt_math.c fills the table from that loaded library's exports as chainner_native.so
+ * loads, and groups 2 and 3 call the same library directly, but for sqrt and sqrtf:
+ * src/ucrt_sqrt.c gives every module the static UCRT's results and flags (glibc's differ
+ * under DAZ). Elsewhere the table holds the libm functions.
  * Each entry is named as its member; the export differs where noted. */
 #ifndef CHAINNER_CN_CRT_MATH_H
 #define CHAINNER_CN_CRT_MATH_H

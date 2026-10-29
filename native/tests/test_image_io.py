@@ -12,6 +12,7 @@ import shutil
 import stat
 import struct
 import subprocess
+import sys
 import time
 import uuid
 import warnings
@@ -603,6 +604,9 @@ def test_save_dds_all_exposed_format_options(tmp_path, dds_name, compression, un
     assert old == new
 
 
+@pytest.mark.skipif(
+    platform.system() != "Windows", reason="texconv runs on Windows only"
+)
 @pytest.mark.parametrize(
     "fmt", ["R8G8B8A8_UNORM", "BC1_UNORM", "BC3_UNORM", "BC7_UNORM"]
 )
@@ -1376,7 +1380,10 @@ def test_save_write_failure_leaves_no_partial_file(tmp_path, fmt, existing):
         args = list(
             save_arguments(NEW.save, LazyImage(value), target.parent, fmt=fmt).values()
         )
-        with pytest.raises(PermissionError) as raised:
+        # A directory in the way: POSIX's open() names the cause
+        windows = sys.platform == "win32"
+        error = PermissionError if existing or windows else IsADirectoryError
+        with pytest.raises(error) as raised:
             if name == "today":
                 NEW.save.save_image_node(*args)
             else:

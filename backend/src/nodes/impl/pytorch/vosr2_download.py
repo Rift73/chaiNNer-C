@@ -15,7 +15,7 @@ from sanic.log import logger
 from api import NodeContext
 
 from .vosr2 import BundlePaths
-from .vosr2_engine_cache import file_lock, stored_hash
+from .vosr2_engine_cache import file_lock, forget_hash, stored_hash
 from .vosr2_official import FILES, REVISION
 
 MODEL_HOST = "https://huggingface.co/CSWRY/VOSR/resolve/"
@@ -39,6 +39,7 @@ def download(
     entry: dict,
     advance: Callable[[int], None],
     file_digest: Callable[[Path], str],
+    forget_digest: Callable[[Path], None],
 ) -> None:
     """Resume a partial file when the server honours ranges; publish, then verify the
     published file on disk. The caller holds the folder's download lock."""
@@ -97,9 +98,11 @@ def download(
     if offset > size:
         part.unlink()
         raise mismatch
+    forget_digest(target)
     os.replace(part, target)
     # The bytes on disk are what later runs load, not the bytes received.
     if file_digest(target) != entry["sha256"]:
+        forget_digest(target)
         target.unlink()
         raise mismatch
 
@@ -109,6 +112,7 @@ def fetch_files(
     folder: Path,
     files: dict[str, dict],
     file_digest: Callable[[Path], str],
+    forget_digest: Callable[[Path], None],
     label: str,
     reserve: int = 0,
 ) -> None:
@@ -132,6 +136,7 @@ def fetch_files(
                     and file_digest(target) == entry["sha256"]
                 ):
                     continue
+                forget_digest(target)
                 target.unlink()
             pending[name] = entry
         if not pending:
@@ -164,7 +169,7 @@ def fetch_files(
         for name, entry in pending.items():
             target = folder / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            download(context, target, entry, advance, file_digest)
+            download(context, target, entry, advance, file_digest, forget_digest)
 
 
 def model_folder(storage_dir: Path) -> Path:
@@ -192,6 +197,7 @@ def ensure_face_model(context: NodeContext) -> Path:
         folder,
         {FACE_MODEL: FACE_FILE},
         lambda path: stored_hash(path, folder),
+        lambda path: forget_hash(path, folder),
         "the YuNet face detector",
     )
     return folder / FACE_MODEL
@@ -216,6 +222,7 @@ def ensure_model(context: NodeContext) -> BundlePaths:
             for remote, local, size, digest in FILES
         },
         lambda path: stored_hash(path, folder.parent),
+        lambda path: forget_hash(path, folder.parent),
         "the VOSR 2.0 model",
     )
     return BundlePaths(folder)

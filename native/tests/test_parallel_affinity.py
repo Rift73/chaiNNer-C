@@ -11,6 +11,7 @@ consults an engine thread count.
 """
 
 import ctypes as ct
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,15 +21,19 @@ import pytest
 BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
 MASKS = (0x1, 0x3, 0xF, 0x1F, 0xFF, 0)  # 1, 2, 4, 5 and 8 CPUs, then all of them
 CHILD = """
-import ctypes, hashlib, sys
+import ctypes, hashlib, os, sys
 from concurrent.futures import ThreadPoolExecutor
 
 mask = int(sys.argv[1], 0)
-kernel32 = ctypes.WinDLL("kernel32")
-kernel32.GetCurrentProcess.restype = ctypes.c_void_p
-kernel32.SetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-if mask and not kernel32.SetProcessAffinityMask(kernel32.GetCurrentProcess(), mask):
-    raise OSError(f"cannot set affinity mask {mask:#x}")
+if sys.platform == "win32":
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.SetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    if mask and not kernel32.SetProcessAffinityMask(kernel32.GetCurrentProcess(), mask):
+        raise OSError(f"cannot set affinity mask {mask:#x}")
+elif mask:
+    # Before any thread starts, so the pool's workers inherit the set
+    os.sched_setaffinity(0, [cpu for cpu in range(mask.bit_length()) if mask >> cpu & 1])
 
 import numpy as np
 from nodes.impl.blend import BlendMode, blend_images
@@ -76,12 +81,10 @@ with ThreadPoolExecutor(max_workers=8) as executor:
 print(dll.cn_parallel_capacity(), alone, len(overlapped | {alone}), dispatched)
 """
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="CPU sets are set through the Windows affinity mask"
-)
-
 
 def process_mask():
+    if sys.platform != "win32":
+        return sum(1 << cpu for cpu in os.sched_getaffinity(0))
     kernel32 = ct.WinDLL("kernel32")
     kernel32.GetCurrentProcess.restype = ct.c_void_p
     kernel32.GetProcessAffinityMask.argtypes = [

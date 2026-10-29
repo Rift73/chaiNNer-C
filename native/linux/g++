@@ -1,0 +1,6 @@
+#!/bin/sh
+# nvcc's host compiler in cnl-build (CMake's CHAINNER_C_NVCC_HOST): GCC Toolset 14's g++ from the glibc 2.28 sysroot,
+# compiling against that sysroot. It runs with its own binutils libraries (the toolset's lib64) and Rocky's GMP, MPFR
+# and MPC (/opt/gcc/lib), which Ubuntu does not have in these versions.
+toolset=/opt/sysroot/opt/rh/gcc-toolset-14/root/usr
+LD_LIBRARY_PATH=/opt/gcc/lib:$toolset/lib64 exec "$toolset/bin/g++" --sysroot=/opt/sysroot "$@"

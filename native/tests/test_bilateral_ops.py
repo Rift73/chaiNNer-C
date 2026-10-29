@@ -288,19 +288,29 @@ try:scope['surface_blur_node'](image,4,25,25)
 except cv2.error as error:print(json.dumps({'type':'cv2.error','message':str(error)}))
 else:raise AssertionError('Original invalid LUT range unexpectedly succeeded')
 """
-    result = subprocess.run(
-        [sys.executable, "-B", "-c", probe, kind, str(REFERENCE / "surface_blur.py")],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    original_error = json.loads(result.stdout)
-    assert original_error == {
-        "type": "cv2.error",
-        "message": "Unknown C++ exception from OpenCV code",
-    }
+    # Linux's build has no SEH: there the original's invalid gather ends the process
+    # with a segmentation fault instead
+    if sys.platform == "win32":
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                probe,
+                kind,
+                str(REFERENCE / "surface_blur.py"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        original_error = json.loads(result.stdout)
+        assert original_error == {
+            "type": "cv2.error",
+            "message": "Unknown C++ exception from OpenCV code",
+        }
     with pytest.raises(cv2.error, match="Unknown C\\+\\+ exception"):
         NODE.surface_blur_node(image, 4, 25, 25)
     out = np.full_like(image, 123)

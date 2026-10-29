@@ -147,6 +147,27 @@ function list is read when chaiNNer-C starts (Settings > Restart chaiNNer) and a
 again (a few seconds) if your files, `user_modules.toml`, the plugins or the VapourSynth or vs-jetpack versions changed,
 and re-reads the overlays.
 
+## Linux
+
+The same package works on Linux x86-64; paths read `<storage>/vapoursynth` and the like, and `vspipe` is the file
+`site-packages/vapoursynth/vspipe` of chaiNNer-C's Python (its plugins are `.so` files in `plugins/`).
+
+- **Installing.** The pip wheels of CPython 3.14 exist for everything the package lists, but two of them need a newer C
+  library than the rest of chaiNNer-C: vs-jetpack's `vapoursynth-akarin` wants glibc 2.35 (Ubuntu 22.04, Debian 12,
+  Fedora and newer) and vsview's PySide6 glibc 2.34. On an older distribution (Rocky/Alma/RHEL 8 and 9, Ubuntu 20.04,
+  Debian 10 and 11) the dependency manager shows the VapourSynth package as unavailable, naming the system's glibc and
+  the 2.35 floor; every other package installs there. VapourSynth's own programs also
+  need the system's `libstdc++.so.6`, which every desktop distribution has.
+- **Configuration.** vspipe needs a line naming the Python it runs scripts in; `vapoursynth config` cannot write it for
+  chaiNNer-C's Python (its sysconfig names the machine that built it), so chaiNNer-C writes it itself, in
+  `vsconfig/vapoursynth/vapoursynth.toml` inside its Python's folder, and again when the Python is moved or replaced.
+  Nothing goes to `~/.config/vapoursynth`.
+- **CUDA plugins.** vszip CUDA and DFTTest2's CUDA and NVRTC need an NVIDIA driver (`libcuda.so.1`); without one they
+  do not load.
+- **Preview Clips** needs a desktop session (X11 or Wayland) and Qt's `libxcb-cursor0`. Without a session the node says
+  so; if vsview ends within three seconds of its start, the node reports it and `vsview.log` beside the script has
+  Qt's reason. vsview keeps its settings in `~/.config/vsview`.
+
 ## Limits and known gaps
 
 - vs-jetpack's automatic backend choice takes a GPU plugin whenever one is installed, and the function fails if CUDA is

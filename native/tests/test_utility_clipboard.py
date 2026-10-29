@@ -17,12 +17,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
+import cv2
 import numpy as np
 import pytest
 from clipboard_capture import ClipboardCapture
 
 from chainner_ext import Clipboard
 from chainner_ext import chainner_ext as original_binary
+from nodes.impl import native
 from nodes.impl.native_graph import graph
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,6 +33,12 @@ ORIGINAL_PATH = Path(original_binary.__file__)
 assert NATIVE.__file__ is not None
 NATIVE_PATH = Path(NATIVE.__file__)
 REFERENCE = Path(__file__).with_name("reference_utility_clipboard")
+# The Windows payloads (CF_DIB, CF_UNICODETEXT) against the original binary's, which
+# ClipboardCapture reads through the PE import table
+windows = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Windows clipboard payloads, captured through PE imports",
+)
 
 
 def captured(call, original=False, failure=None):
@@ -94,6 +102,7 @@ def image_cases(channels, layout):
     ["plain", "reverse", "transpose", "broadcast", "unaligned", "readonly", "metadata"],
 )
 @pytest.mark.parametrize("pixel_format", ["RGB", "BGR"])
+@windows
 def test_image_payload_against_actual_installed_binary(channels, layout, pixel_format):
     array = image_cases(channels, layout)
     before = array.tobytes()
@@ -109,6 +118,7 @@ def test_image_payload_against_actual_installed_binary(channels, layout, pixel_f
 @pytest.mark.parametrize(
     "shape", [(0, 0), (0, 2), (2, 0), (1, 1), (3, 5), (0, 2, 4), (2, 0, 3), (2, 3, 1)]
 )
+@windows
 def test_gray_and_empty_image_headers(shape):
     value = np.full(shape, 0.25, dtype=np.float32)
     expected = captured(lambda: original_image(value), original=True)
@@ -132,6 +142,7 @@ def test_gray_and_empty_image_headers(shape):
         "large",
     ],
 )
+@windows
 def test_text_bytes_and_publication_order(text):
     expected = captured(lambda: original_text(text), original=True)
     actual = captured(lambda: NATIVE.utility_clipboard_text(text))
@@ -141,6 +152,7 @@ def test_text_bytes_and_publication_order(text):
 
 
 @pytest.mark.parametrize("value", [None, 1, 3.5, b"text", [], "\ud800", "x\udfffy"])
+@windows
 def test_text_validation_before_open(value):
     expected = captured(lambda: original_text(value), original=True)
     actual = captured(lambda: NATIVE.utility_clipboard_text(value))
@@ -165,6 +177,7 @@ def test_text_validation_before_open(value):
     ],
 )
 @pytest.mark.parametrize("pixel_format", ["BGR", "bad", None, "\ud800"])
+@windows
 def test_image_validation_priority_and_exact_errors(value, pixel_format):
     expected = captured(lambda: original_image(value, pixel_format), original=True)
     actual = captured(lambda: NATIVE.utility_clipboard_image(value, pixel_format))
@@ -185,6 +198,7 @@ def conversion_rule(result):
 
 @pytest.mark.parametrize("image", [False, True])
 @pytest.mark.parametrize("failure", ["open", "empty", "allocate", "lock", "set"])
+@windows
 def test_failures_keep_diagnostics_but_free_untransferred_memory(image, failure):
     value = np.full((2, 3, 4), 0.5, np.float32) if image else "test"
     expected = captured(
@@ -213,6 +227,7 @@ def test_failures_keep_diagnostics_but_free_untransferred_memory(image, failure)
         assert actual[2][-1] == ("CloseClipboard",)
 
 
+@windows
 def test_node_dispatch_and_registration_unchanged():
     relative = "packages/chaiNNer_standard/utility/clipboard/copy_to_clipboard.py"
     previous = ast.parse((REFERENCE / "source/copy_to_clipboard.py").read_text("utf-8"))
@@ -236,6 +251,7 @@ def test_node_dispatch_and_registration_unchanged():
         assert actual == expected
 
 
+@windows
 def test_parallel_kernel_calls_are_repeatable_and_do_not_mutate_inputs():
     # Only pure payload construction runs concurrently; IAT capture stays serial.
     values = [np.resize(image_cases(c, "reverse"), (137, 149, c)) for c in (1, 3, 4)]
@@ -254,9 +270,8 @@ def test_parallel_kernel_calls_are_repeatable_and_do_not_mutate_inputs():
     assert [v.tobytes() for v in values] == before
 
 
-def test_c_abi_rejects_invalid_sizes_strides_overlap_and_pointers():
-    dll = ctypes.CDLL(str(ROOT / "backend/src/nodes/impl/chainner_native.dll"))
-    fn = dll.cn_clipboard_pixels_f32
+def pixels_function():
+    fn = ctypes.CDLL(str(native.library_path())).cn_clipboard_pixels_f32
     fn.argtypes = [
         ctypes.c_void_p,
         ctypes.c_size_t,
@@ -270,6 +285,11 @@ def test_c_abi_rejects_invalid_sizes_strides_overlap_and_pointers():
         ctypes.c_size_t,
     ]
     fn.restype = ctypes.c_int
+    return fn
+
+
+def test_c_abi_rejects_invalid_sizes_strides_overlap_and_pointers():
+    fn = pixels_function()
     source = np.zeros((2, 3, 4), np.float32)
     output = np.full(24, 177, np.uint8)
     base = [source.ctypes.data, 2, 3, 4, 48, 16, 4, 0, output.ctypes.data, 24]
@@ -303,3 +323,39 @@ def test_reference_snapshots_have_not_changed():
             hashlib.sha256((REFERENCE / entry["snapshot"]).read_bytes()).hexdigest()
             == entry["sha256"]
         )
+
+
+linux = pytest.mark.skipif(
+    sys.platform != "linux", reason="the Linux payloads: UTF-8 text and a PNG image"
+)
+
+
+@linux
+@pytest.mark.parametrize("text", ["", "plain", "雪 ünï\r\n\0end"])
+def test_linux_text_payload_is_utf8(text):
+    assert NATIVE.utility_clipboard_text_bytes(text) == text.encode("utf-8")
+
+
+@linux
+@pytest.mark.parametrize("channels", [1, 3, 4])
+@pytest.mark.parametrize("pixel_format", ["RGB", "BGR"])
+def test_linux_image_payload_is_a_png_of_the_dib_pixels(channels, pixel_format):
+    # The pixels Windows puts in its DIB (bottom-up BGRA rows), as a top-down RGBA PNG
+    array = image_cases(channels, "plain")
+    height, width = array.shape[:2]
+    pixels = np.empty(height * width * 4, np.uint8)
+    status = pixels_function()(
+        array.ctypes.data,
+        height,
+        width,
+        channels,
+        *array.strides,
+        pixel_format == "RGB",
+        pixels.ctypes.data,
+        pixels.size,
+    )
+    assert status == 0
+    payload = NATIVE.utility_clipboard_image_bytes(array, pixel_format)
+    decoded = cv2.imdecode(np.frombuffer(payload, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert decoded.shape == (height, width, 4) and decoded.dtype == np.uint8
+    assert decoded[::-1].tobytes() == pixels.tobytes()

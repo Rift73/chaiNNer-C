@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import struct
+import sys
 import threading
 import zlib
 from pathlib import Path
@@ -428,6 +429,15 @@ def test_png_outputs_refuse_an_unknown_mode(tmp_path):
         bench_oracle.png_outputs(tmp_path, "pixels")
 
 
+# The oracle runs Windows hosts in a job (verify_runtime.run_owned) on the pinned
+# Windows FFmpeg build
+windows_oracle = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="the video oracle runs owned Windows hosts on a pinned Windows FFmpeg",
+)
+
+
+@windows_oracle
 def test_bounded_video_oracle_matches_raw_decode(tmp_path):
     clip = tmp_path / "clip.mkv"
     verify_runtime.run_owned(
@@ -459,6 +469,7 @@ def test_bounded_video_oracle_matches_raw_decode(tmp_path):
     assert bounded["semantic"]["decoded_frame_count"] == 12
 
 
+@windows_oracle
 def test_video_oracle_rejects_non_video_streams(tmp_path):
     clip = tmp_path / "audio.mkv"
     verify_runtime.run_owned(
@@ -489,6 +500,7 @@ def test_video_oracle_rejects_non_video_streams(tmp_path):
         bench_oracle.video_snapshot(clip, bench_oracle.FFMPEG, bench_oracle.FFPROBE)
 
 
+@windows_oracle
 def test_pinned_tools_match_recorded_builds():
     bench_oracle.require_pinned_tools()
     assert Path(bench_oracle.FFPROBE).name == "ffprobe.exe"

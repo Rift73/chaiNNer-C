@@ -165,7 +165,7 @@ CN_EXPORT cn_status cn_lens_power(const float *src, float *out, size_t count,
 static void compose_range(void *opaque, size_t begin, size_t end)
 {
     const compose_context *ctx = opaque;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (ctx->isa >= CN_ISA_AVX2) {
         cn_lens_compose_avx2(ctx, begin, end);
         return;

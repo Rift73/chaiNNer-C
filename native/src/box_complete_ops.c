@@ -265,7 +265,7 @@ CN_EXPORT cn_status cn_box_mean_u8(const uint8_t *src, uint8_t *dst,
 
 static void horizontal_row(const separable_context *ctx, size_t y, size_t first, size_t last, float *out)
 {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (ctx->isa >= CN_ISA_AVX512 && ctx->lanes == 8 && ctx->columns) {
         cn_separable_horizontal_avx512(ctx, y, first, last, out);
         return;
@@ -281,7 +281,7 @@ static void horizontal_row(const separable_context *ctx, size_t y, size_t first,
 static void vertical_row(const separable_context *ctx, const float *buffer, size_t stride, size_t first_row,
     size_t y, size_t first, size_t last, float *out)
 {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (ctx->isa >= CN_ISA_AVX512 && ctx->lanes == 8 && ctx->rows) {
         cn_separable_vertical_avx512(ctx, buffer, stride, first_row, y, first, last, out);
         return;

@@ -57,9 +57,11 @@
  * threshold they are counted as mallocs in NumPy's table, and below it (the 64 KiB to
  * threshold size classes included) they are not counted at all.
  *
- * Windows only (VirtualAlloc, SRW lock, QueryWorkingSetEx), as parallel.c and scratch.c
- * are. NumPy's headers are included in this unit only, without PY_ARRAY_UNIQUE_SYMBOL,
- * so the C API table stays private to it. */
+ * Windows: VirtualAlloc, an SRW lock and QueryWorkingSetEx. Linux: anonymous mmap
+ * blocks (page-aligned and zero-filled; the page is mmap's granularity), munmap (whose
+ * failures are the counted release failures), a mutex and mincore; the variables are read
+ * as os.environ holds them. NumPy's headers are included in this unit only, without
+ * PY_ARRAY_UNIQUE_SYMBOL, so the C API table stays private to it. */
 #include "numpy_pool.hpp"
 #include <pybind11/pybind11.h>
 #include <pybind11/gil_safe_call_once.h>
@@ -76,6 +78,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -85,6 +88,13 @@
 #include <Windows.h>
 #include <malloc.h>
 #include <psapi.h>
+#else
+#include "cn_platform.h"
+#include <pthread.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace py = pybind11;
 
@@ -153,7 +163,11 @@ std::atomic<uint64_t> class_sampled[class_count][2];
 std::atomic<uint64_t> sample_failures{0};
 std::atomic<uint64_t> release_failures{0};  // the process's, whatever the profile
 
+#ifdef _WIN32
 SRWLOCK lock = SRWLOCK_INIT;
+#else
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
 // Under the lock: the pool's blocks, live and idle, by data address (open addressing,
 // linear probing, backward-shift deletion), the idle list and its bytes; with
 // profiling, the other totals and the counts.
@@ -165,12 +179,21 @@ Block *newest = nullptr;
 size_t held_bytes = 0;
 size_t held_blocks = 0, held_peak = 0, live_bytes = 0, live_blocks = 0, live_peak = 0;
 Counts counts = {};
+#ifdef _WIN32
 DWORD thread_ids[max_threads];
+#else
+pid_t thread_ids[max_threads];
+#endif
 int thread_count = 0;
 
 struct Locked {
+#ifdef _WIN32
     Locked() { AcquireSRWLockExclusive(&lock); }
     ~Locked() { ReleaseSRWLockExclusive(&lock); }
+#else
+    Locked() { pthread_mutex_lock(&lock); }
+    ~Locked() { pthread_mutex_unlock(&lock); }
+#endif
     Locked(const Locked &) = delete;
     Locked &operator=(const Locked &) = delete;
 };
@@ -261,7 +284,11 @@ void idle_unlink(Block *block)
 void note_request()
 {
     ++counts.requests;
+#ifdef _WIN32
     DWORD id = GetCurrentThreadId();
+#else
+    pid_t id = static_cast<pid_t>(syscall(SYS_gettid));  // gettid() needs glibc 2.30
+#endif
     for (int i = 0; i < thread_count; ++i) {
         if (thread_ids[i] == id) return;
     }
@@ -348,7 +375,11 @@ void release(Block *chain)
 {
     while (chain) {
         Block *next = chain->older;
+#ifdef _WIN32
         if (!VirtualFree(chain->data, 0, MEM_RELEASE)) release_failures.fetch_add(1, std::memory_order_relaxed);
+#else
+        if (munmap(chain->data, chain->capacity) != 0) release_failures.fetch_add(1, std::memory_order_relaxed);
+#endif
         std::free(chain);
         chain = next;
     }
@@ -391,6 +422,7 @@ void sample(const void *data, size_t size)
     uintptr_t last = (reinterpret_cast<uintptr_t>(data) + size - 1) / config.page * config.page;
     size_t pages = (last - first) / config.page + 1;
     int taken = pages < static_cast<size_t>(sample_pages) ? static_cast<int>(pages) : sample_pages;
+#ifdef _WIN32
     PSAPI_WORKING_SET_EX_INFORMATION info[sample_pages] = {};
     for (int i = 0; i < taken; ++i) {
         size_t page = taken == 1 ? 0 : (pages - 1) * static_cast<size_t>(i) / static_cast<size_t>(taken - 1);
@@ -402,6 +434,19 @@ void sample(const void *data, size_t size)
     }
     uint64_t absent = 0;
     for (int i = 0; i < taken; ++i) absent += info[i].VirtualAttributes.Valid ? 0 : 1;
+#else
+    // mincore's residency bit stands for the working set's Valid bit.
+    uint64_t absent = 0;
+    for (int i = 0; i < taken; ++i) {
+        size_t page = taken == 1 ? 0 : (pages - 1) * static_cast<size_t>(i) / static_cast<size_t>(taken - 1);
+        unsigned char resident = 0;
+        if (mincore(reinterpret_cast<void *>(first + page * config.page), config.page, &resident) != 0) {
+            sample_failures.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        absent += resident & 1 ? 0 : 1;
+    }
+#endif
     std::atomic<uint64_t> *entry = class_sampled[size_class(size)];
     entry[0].fetch_add(static_cast<uint64_t>(taken), std::memory_order_relaxed);
     entry[1].fetch_add(absent, std::memory_order_relaxed);
@@ -413,8 +458,13 @@ void *pool_fresh(size_t size)
 {
     if (size > SIZE_MAX - (config.page - 1)) return nullptr;
     size_t capacity = (size + config.page - 1) / config.page * config.page;
+#ifdef _WIN32
     void *data = VirtualAlloc(nullptr, capacity, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!data) return nullptr;
+#else
+    void *data = mmap(nullptr, capacity, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (data == MAP_FAILED) return nullptr;
+#endif
     auto *block = static_cast<Block *>(std::malloc(sizeof(Block)));
     bool kept = false;
     if (block) {
@@ -431,7 +481,11 @@ void *pool_fresh(size_t size)
     }
     if (!kept) {
         std::free(block);
+#ifdef _WIN32
         if (!VirtualFree(data, 0, MEM_RELEASE)) release_failures.fetch_add(1, std::memory_order_relaxed);
+#else
+        if (munmap(data, capacity) != 0) release_failures.fetch_add(1, std::memory_order_relaxed);
+#endif
         return nullptr;
     }
     return data;
@@ -573,6 +627,7 @@ PyDataMem_Handler handler = {
     {nullptr, handler_malloc<profiled>, handler_calloc<profiled>, handler_realloc<profiled>, handler_free}};
 
 /* The variable's value; empty when it is unset or empty, which the switch treats alike. */
+#ifdef _WIN32
 std::wstring environment(const wchar_t *name)
 {
     std::wstring value;
@@ -588,6 +643,24 @@ std::wstring environment(const wchar_t *name)
     }
     return {};
 }
+#else
+// As os.environ decodes it (the file system encoding, surrogateescape); name is ASCII. The GIL is held.
+std::wstring environment(const wchar_t *name)
+{
+    std::string narrow;
+    for (const wchar_t *c = name; *c; ++c) narrow += static_cast<char>(*c);
+    const char *bytes = std::getenv(narrow.c_str());
+    if (!bytes || !*bytes) return {};
+    auto text = py::reinterpret_steal<py::object>(PyUnicode_DecodeFSDefault(bytes));
+    if (!text) throw py::error_already_set();
+    Py_ssize_t size = 0;
+    wchar_t *wide = PyUnicode_AsWideCharString(text.ptr(), &size);
+    if (!wide) throw py::error_already_set();
+    std::wstring value(wide, static_cast<size_t>(size));
+    PyMem_Free(wide);
+    return value;
+}
+#endif
 
 /* The pending Python error as "Type: message"; the error indicator is cleared. */
 py::str pending_error()
@@ -633,6 +706,7 @@ Setup configure()
     }
     bool profile = environment(L"CHAINNER_C_PROFILE") == L"1";
     if (!cap) {
+#ifdef _WIN32
         MEMORYSTATUSEX memory = {};
         memory.dwLength = sizeof(memory);
         if (!GlobalMemoryStatusEx(&memory)) {
@@ -640,6 +714,14 @@ Setup configure()
             throw py::error_already_set();
         }
         cap = static_cast<size_t>(std::min<uint64_t>(default_cap_limit, memory.ullTotalPhys / 10));
+#else
+        uint64_t total = cn_physical_memory();
+        if (!total) {
+            PyErr_SetFromErrno(PyExc_OSError);
+            throw py::error_already_set();
+        }
+        cap = static_cast<size_t>(std::min<uint64_t>(default_cap_limit, total / 10));
+#endif
     }
 
     if (_import_array() < 0) return {"unsupported", unsupported(pending_error()), py::object()};
@@ -655,10 +737,18 @@ Setup configure()
     py::object capsule = py::reinterpret_steal<py::object>(PyCapsule_New(own, capsule_name, nullptr));
     if (!capsule) throw py::error_already_set();
     Py_INCREF(PyDataMem_DefaultHandler);  // kept with base, never released
+#ifdef _WIN32
     SYSTEM_INFO system;
     GetSystemInfo(&system);
+#else
+    size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));  // also mmap's granularity
+#endif
     // No Python call from here on: a thread that reads the settings holds the GIL.
+#ifdef _WIN32
     config = Config{cap, profile, system.dwPageSize, system.dwAllocationGranularity};
+#else
+    config = Config{cap, profile, page, page};
+#endif
     base = &defaults->allocator;
     configured.store(true, std::memory_order_release);
     return {"installed", py::str(), std::move(capsule)};
@@ -801,12 +891,21 @@ void *cn_numpy_pool_allocate(size_t size) noexcept
         if (config.profile) count(size, op_malloc);
         return pool_allocate(size, op_malloc);
     }
+#ifdef _WIN32
     return _aligned_malloc(size ? size : 1, 64);
+#else
+    void *data = nullptr;
+    return posix_memalign(&data, 64, size ? size : 1) == 0 ? data : nullptr;
+#endif
 }
 
 void cn_numpy_pool_free(void *data) noexcept
 {
+#ifdef _WIN32
     if (data && !pool_free(data)) _aligned_free(data);
+#else
+    if (data && !pool_free(data)) std::free(data);
+#endif
 }
 
 void cn_bind_numpy_pool(py::module_ &module)

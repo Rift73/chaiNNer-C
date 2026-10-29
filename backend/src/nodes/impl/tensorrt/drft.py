@@ -1,13 +1,15 @@
 """Legacy DRFT's TensorRT path: Convert To ONNX exports the model with TensorRT plugin
 nodes (drft_export.py), and Build Engine builds it in a child process with chaiNNer-C's
-plugin library (drft_trt_plugins.dll, native/src/drft). Engines do not carry the
-library: an engine that carries one registers it at every load, and TensorRT refuses the
-second registration in a process, so a second DRFT engine (or the same one again) would
-not load. Every process that loads engines registers the library once (load_plugins)."""
+plugin library (drft_trt_plugins.dll, on Linux drft_trt_plugins.so; native/src/drft).
+Engines do not carry the library: an engine that carries one registers it at every load,
+and TensorRT refuses the second registration in a process, so a second DRFT engine (or
+the same one again) would not load. Every process that loads engines registers the
+library once (load_plugins)."""
 
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from functools import lru_cache
 from pathlib import Path
@@ -23,7 +25,17 @@ if TYPE_CHECKING:
 # The exporter's manifest, carried in the ONNX model's metadata.
 METADATA_KEY = "chainner_c.drft_tensorrt.export"
 # The plugins' library (native/Build.ps1 with the TensorRT and CUDA roots).
-PLUGIN_LIBRARY = Path(__file__).with_name("drft_trt_plugins.dll")
+PLUGIN_LIBRARY = Path(__file__).with_name(
+    "drft_trt_plugins.dll" if sys.platform == "win32" else "drft_trt_plugins.so"
+)
+# How a build gets the library
+_BUILD = (
+    "native/Build.ps1 -Define CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>,"
+    "CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit>"
+    if sys.platform == "win32"
+    else "native/build_linux.sh -D CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>"
+    " -D CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit>"
+)
 
 
 def export_manifest(model: bytes | onnx.ModelProto) -> dict[str, Any] | None:
@@ -46,8 +58,7 @@ def plugin_library() -> Path:
         raise RuntimeError(
             f"The DRFT TensorRT plugin library {PLUGIN_LIBRARY} is missing: this build"
             " was made without it. Use the PyTorch backend, or build it with"
-            " native/Build.ps1 -Define CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>,"
-            "CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit> (native/README.md, Build)."
+            f" {_BUILD} (native/README.md, Build)."
         )
     return PLUGIN_LIBRARY
 

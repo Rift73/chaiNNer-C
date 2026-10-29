@@ -5,6 +5,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl/filesystem.h>
 
+#include <cerrno>
 #include <cstring>
 #include <string>
 
@@ -15,6 +16,7 @@ using cn::files::AtomicTarget;
 
 // OSError(errno, strerror(errno), path) as open() and write() raise it, the text from this module's CRT; a Windows
 // error the CRT does not map: OSError with winerror and FormatMessage's text.
+#ifdef _WIN32
 void raise_file_error(const cn::files::FileError &error) {
     const std::wstring &name = error.path().native();
     PyObject *path = PyUnicode_FromWideChar(name.c_str(), Py_ssize_t(name.size()));
@@ -31,6 +33,23 @@ void raise_file_error(const cn::files::FileError &error) {
     }
     Py_DECREF(path);
 }
+#else
+// The path's bytes decoded as os.fsdecode does, so every name round-trips.
+PyObject *path_text(const std::filesystem::path &path) {
+    const std::string &name = path.native();
+    return PyUnicode_DecodeFSDefaultAndSize(name.data(), Py_ssize_t(name.size()));
+}
+
+// OSError(errno, strerror(errno), path) as open() and write() raise it (the subclass for the errno, the C library's
+// text).
+void raise_file_error(const cn::files::FileError &error) {
+    PyObject *path = path_text(error.path());
+    if (!path) return;
+    errno = error.error();
+    PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError, path);
+    Py_DECREF(path);
+}
+#endif
 
 bool atomic_write(const std::filesystem::path &path, const py::buffer &data) {
     Py_buffer view;
@@ -69,7 +88,16 @@ void cn_bind_atomic_file(py::module_ &module) {
                              "The temporary file in path's folder that a writer fills before commit() renames it onto "
                              "path; as a context manager it commits on success and abandons on an exception.")
         .def(py::init<std::filesystem::path>(), py::arg("path"))
+#ifdef _WIN32
         .def_property_readonly("temp", [](const AtomicTarget &target) { return target.temp().native(); })
+#else
+        .def_property_readonly("temp",
+                               [](const AtomicTarget &target) {
+                                   PyObject *text = path_text(target.temp());
+                                   if (!text) throw py::error_already_set();
+                                   return py::reinterpret_steal<py::str>(text);
+                               })
+#endif
         .def("check",
              [](const AtomicTarget &target) {
                  py::gil_scoped_release release;

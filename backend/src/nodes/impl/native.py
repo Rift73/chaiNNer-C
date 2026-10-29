@@ -21,15 +21,18 @@ from . import native_profile
 ISA_LEVELS = ("scalar", "avx2", "avx512")
 
 
-def library_path() -> Path:
-    suffix = (
+def shared_library_suffix() -> str:
+    return (
         ".dll"
         if sys.platform == "win32"
         else ".dylib"
         if sys.platform == "darwin"
         else ".so"
     )
-    return Path(__file__).with_name("chainner_native" + suffix)
+
+
+def library_path() -> Path:
+    return Path(__file__).with_name("chainner_native" + shared_library_suffix())
 
 
 @lru_cache(maxsize=1)

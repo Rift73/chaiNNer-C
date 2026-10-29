@@ -11,6 +11,7 @@ from __future__ import annotations
 import builtins
 import io
 import os
+import sys
 from pathlib import Path
 
 import numpy_pool_growth as growth
@@ -146,6 +147,10 @@ def tree(directory: Path) -> dict[str, tuple[int, int]]:
     }
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="numpy_pool_growth measures the Windows build (_chainner_graph.pyd)",
+)
 def test_images_dir_defaults_to_the_dataset_and_is_never_written(tmp_path, monkeypatch):
     assert Path(r"F:\Download\New folder\DiverSeg-IP\HR\0") == growth.DATASET
     assert growth.parser().parse_args([]).images_dir == growth.DATASET

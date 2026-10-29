@@ -3,16 +3,20 @@ project(chainner_native VERSION 1.0.0 LANGUAGES C CXX)
 
 # The one toolchain (decision 2026-10-06): clang-cl of LLVM 23.1.2 with lld-link and
 # llvm-lib under Ninja, against the Build Tools' MSVC libraries and the Windows SDK, all
-# pinned by Build.ps1, which configures every build directory.
-foreach(chainner_c_language C CXX)
-    if(NOT CMAKE_${chainner_c_language}_COMPILER_ID STREQUAL "Clang"
-        OR NOT CMAKE_${chainner_c_language}_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"
-        OR NOT CMAKE_${chainner_c_language}_COMPILER_VERSION VERSION_EQUAL 23.1.2)
-        message(FATAL_ERROR "chaiNNer-C builds with clang-cl 23.1.2 only, not "
-            "${CMAKE_${chainner_c_language}_COMPILER_ID} ${CMAKE_${chainner_c_language}_COMPILER_VERSION} "
-            "(${CMAKE_${chainner_c_language}_COMPILER_FRONTEND_VARIANT}); configure through native/Build.ps1")
-    endif()
-endforeach()
+# pinned by Build.ps1, which configures every build directory. Linux: cmake/linux.cmake.
+if(WIN32)
+    foreach(chainner_c_language C CXX)
+        if(NOT CMAKE_${chainner_c_language}_COMPILER_ID STREQUAL "Clang"
+            OR NOT CMAKE_${chainner_c_language}_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"
+            OR NOT CMAKE_${chainner_c_language}_COMPILER_VERSION VERSION_EQUAL 23.1.2)
+            message(FATAL_ERROR "chaiNNer-C builds with clang-cl 23.1.2 only, not "
+                "${CMAKE_${chainner_c_language}_COMPILER_ID} ${CMAKE_${chainner_c_language}_COMPILER_VERSION} "
+                "(${CMAKE_${chainner_c_language}_COMPILER_FRONTEND_VARIANT}); configure through native/Build.ps1")
+        endif()
+    endforeach()
+else()
+    include(cmake/linux.cmake)
+endif()
 # Every target:
 # - baseline x86-64 code (clang-cl's default, SSE2), so the binaries run on any x86-64 CPU;
 #   only the ISA units below and the vendored libraries' own guarded paths go beyond it,
@@ -209,18 +213,34 @@ if(CHAINNER_C_PDB)
     target_link_options(chainner_native PRIVATE /DEBUG /OPT:REF /OPT:ICF
         "/MAP:${CHAINNER_C_OUTPUT_DIR}/chainner_native.map")
 endif()
+if(NOT WIN32)
+    # A shared library is a LIBRARY output on Linux (a DLL is a RUNTIME one). -z defs refuses an unresolved symbol
+    # at link time, as lld-link does for a DLL. dlopen and dlsym (crt_math.c) are in libdl before glibc 2.34.
+    set_target_properties(chainner_native PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CHAINNER_C_OUTPUT_DIR}")
+    target_link_options(chainner_native PRIVATE -Wl,-z,defs)
+    target_link_libraries(chainner_native PRIVATE ${CMAKE_DL_LIBS})
+endif()
 
 # Keep the provisioned runtime's interpreter and public object/container API. This module
 # owns graph algorithms; it does not execute copied Python algorithm source. The runtime
 # (native/tools/provision_runtime.ps1) reports its own headers, import library and NumPy
 # headers (np.get_include()).
+# On Linux the runtime is laid out as bin/python3 and include/python3.14, and the modules link no libpython: the
+# interpreter provides its symbols as the modules load (manylinux's rule).
 set(CHAINNER_C_PYTHON_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/runtime/cpython-3.14.8" CACHE PATH
     "CPython runtime (python.exe, include, libs, NumPy) that _chainner_graph builds against")
-execute_process(COMMAND "${CHAINNER_C_PYTHON_ROOT}/python.exe" -I -B -c
+if(WIN32)
+    set(chainner_c_python_executable "${CHAINNER_C_PYTHON_ROOT}/python.exe")
+    set(chainner_c_module_suffix ".pyd")
+else()
+    set(chainner_c_python_executable "${CHAINNER_C_PYTHON_ROOT}/bin/python3")
+    set(chainner_c_module_suffix ".so")
+endif()
+execute_process(COMMAND "${chainner_c_python_executable}" -I -B -c
     "import sysconfig, numpy; print(sysconfig.get_path('include'), sysconfig.get_config_var('py_version_nodot'), numpy.get_include(), sep='|', end='')"
     RESULT_VARIABLE chainner_c_python_result OUTPUT_VARIABLE chainner_c_python ERROR_VARIABLE chainner_c_python_error)
 if(NOT chainner_c_python_result EQUAL 0)
-    message(FATAL_ERROR "${CHAINNER_C_PYTHON_ROOT}/python.exe did not report its headers, version and NumPy "
+    message(FATAL_ERROR "${chainner_c_python_executable} did not report its headers, version and NumPy "
         "headers (${chainner_c_python_result}): ${chainner_c_python_error}")
 endif()
 string(REPLACE "|" ";" chainner_c_python "${chainner_c_python}")
@@ -228,9 +248,11 @@ file(TO_CMAKE_PATH "${chainner_c_python}" chainner_c_python)
 list(GET chainner_c_python 0 chainner_c_python_include)
 list(GET chainner_c_python 1 chainner_c_python_version)
 list(GET chainner_c_python 2 chainner_c_numpy_include)
-set(chainner_c_python_library "${CHAINNER_C_PYTHON_ROOT}/libs/python${chainner_c_python_version}.lib")
-if(NOT EXISTS "${chainner_c_python_library}")
-    message(FATAL_ERROR "The runtime's import library ${chainner_c_python_library} is missing")
+if(WIN32)
+    set(chainner_c_python_library "${CHAINNER_C_PYTHON_ROOT}/libs/python${chainner_c_python_version}.lib")
+    if(NOT EXISTS "${chainner_c_python_library}")
+        message(FATAL_ERROR "The runtime's import library ${chainner_c_python_library} is missing")
+    endif()
 endif()
 add_library(_chainner_graph MODULE src/graph_module.cpp src/onnx_graph.cpp src/ncnn_graph.cpp src/onnx_converter.cpp src/onnx_tensorproto.cpp src/onnx_model_application.cpp src/tiling_control.cpp
     src/utility_scalar.cpp src/utility_random.cpp src/utility_text.cpp src/image_io.cpp
@@ -242,8 +264,12 @@ target_include_directories(_chainner_graph SYSTEM PRIVATE
     "${chainner_c_python_include}" "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pybind11/include"
     "${chainner_c_numpy_include}")
 target_include_directories(_chainner_graph PRIVATE include)
-target_link_libraries(_chainner_graph PRIVATE "${chainner_c_python_library}" chainner_native user32)
-set_target_properties(_chainner_graph PROPERTIES PREFIX "" SUFFIX ".pyd"
+if(WIN32)
+    target_link_libraries(_chainner_graph PRIVATE "${chainner_c_python_library}" chainner_native user32)
+else()
+    target_link_libraries(_chainner_graph PRIVATE chainner_native)
+endif()
+set_target_properties(_chainner_graph PROPERTIES PREFIX "" SUFFIX "${chainner_c_module_suffix}"
     CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO
     LIBRARY_OUTPUT_DIRECTORY "${CHAINNER_C_OUTPUT_DIR}")
 target_compile_options(_chainner_graph PRIVATE /W4 /WX /EHsc)
@@ -259,9 +285,11 @@ include(cmake/codecs.cmake)
 # 2026-10-06-chainner-ext-c-design.md). Limited API 3.11 against the runtime's python3.lib,
 # so one binary loads on CPython 3.11 and 3.14. chainner_ext_c.pyd is the conformance
 # harness's copy from the same sources (PyInit_chainner_ext_c), in <build>/harness.
-set(chainner_c_python3_library "${CHAINNER_C_PYTHON_ROOT}/libs/python3.lib")
-if(NOT EXISTS "${chainner_c_python3_library}")
-    message(FATAL_ERROR "The runtime's stable-ABI import library ${chainner_c_python3_library} is missing")
+if(WIN32)
+    set(chainner_c_python3_library "${CHAINNER_C_PYTHON_ROOT}/libs/python3.lib")
+    if(NOT EXISTS "${chainner_c_python3_library}")
+        message(FATAL_ERROR "The runtime's stable-ABI import library ${chainner_c_python3_library} is missing")
+    endif()
 endif()
 set(chainner_ext_sources src/chainner_ext/lib.c src/chainner_ext/regex.c src/chainner_ext/clipboard.c
     src/chainner_ext/convert.c src/chainner_ext/dither.c src/chainner_ext/pixel_art.c
@@ -275,8 +303,12 @@ foreach(target chainner_ext chainner_ext_c)
     target_compile_definitions(${target} PRIVATE Py_LIMITED_API=0x030B0000 CN_TENSOR_IMPORTS)
     target_include_directories(${target} SYSTEM PRIVATE "${chainner_c_python_include}")
     target_include_directories(${target} PRIVATE include)
-    target_link_libraries(${target} PRIVATE "${chainner_c_python3_library}" chainner_native chainner_regex user32)
-    set_target_properties(${target} PROPERTIES PREFIX "" SUFFIX ".pyd"
+    if(WIN32)
+        target_link_libraries(${target} PRIVATE "${chainner_c_python3_library}" chainner_native chainner_regex user32)
+    else()
+        target_link_libraries(${target} PRIVATE chainner_native chainner_regex)
+    endif()
+    set_target_properties(${target} PROPERTIES PREFIX "" SUFFIX "${chainner_c_module_suffix}"
         C_STANDARD 17 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
     target_compile_options(${target} PRIVATE /W4 /WX)
     if(CHAINNER_C_PDB)
@@ -314,7 +346,11 @@ if(NOT CHAINNER_C_TENSORRT_ROOT OR NOT CHAINNER_C_CUDA_ROOT)
         "(CHAINNER_C_TENSORRT_ROOT=${CHAINNER_C_TENSORRT_ROOT}, CHAINNER_C_CUDA_ROOT=${CHAINNER_C_CUDA_ROOT})")
 endif()
 set(chainner_c_tensorrt_header "${CHAINNER_C_TENSORRT_ROOT}/include/NvInferVersion.h")
-set(chainner_c_nvcc "${CHAINNER_C_CUDA_ROOT}/bin/nvcc.exe")
+if(WIN32)
+    set(chainner_c_nvcc "${CHAINNER_C_CUDA_ROOT}/bin/nvcc.exe")
+else()
+    set(chainner_c_nvcc "${CHAINNER_C_CUDA_ROOT}/bin/nvcc")
+endif()
 # The two version sources first, then the files that depend on the versions.
 foreach(chainner_c_file "${chainner_c_tensorrt_header}" "${chainner_c_nvcc}")
     if(NOT EXISTS "${chainner_c_file}")
@@ -342,9 +378,19 @@ if(NOT chainner_c_nvcc_result EQUAL 0 OR NOT chainner_c_cuda_version MATCHES "^$
         "'${chainner_c_cuda_version}' (${chainner_c_nvcc} --version, ${chainner_c_nvcc_result}): "
         "${chainner_c_nvcc_output}")
 endif()
-set(chainner_c_nvinfer_library "${CHAINNER_C_TENSORRT_ROOT}/lib/nvinfer_${chainner_c_tensorrt_major}.lib")
-set(chainner_c_cudart_library "${CHAINNER_C_CUDA_ROOT}/lib/x64/cudart.lib")
-set(chainner_c_nvcc_host "${chainner_c_vc_tools}/bin/Hostx64/x64/cl.exe")
+if(WIN32)
+    set(chainner_c_nvinfer_library "${CHAINNER_C_TENSORRT_ROOT}/lib/nvinfer_${chainner_c_tensorrt_major}.lib")
+    set(chainner_c_cudart_library "${CHAINNER_C_CUDA_ROOT}/lib/x64/cudart.lib")
+    set(chainner_c_nvcc_host "${chainner_c_vc_tools}/bin/Hostx64/x64/cl.exe")
+else()
+    # Linux: nvcc 13 refuses clang 23 as its host compiler, so the .cu files' host side is GCC's
+    # g++ (nvcc 13.4 takes 16 or older). TensorRT is linked by its soname's file, which the SDK
+    # and the tensorrt-cu13-libs wheel both hold; CUDA's runtime is the static one, as on Windows.
+    find_program(CHAINNER_C_NVCC_HOST g++ DOC "Linux: nvcc's host compiler for the .cu files, GCC's g++ 16 or older")
+    set(chainner_c_nvinfer_library "${CHAINNER_C_TENSORRT_ROOT}/lib/libnvinfer.so.${chainner_c_tensorrt_major}")
+    set(chainner_c_cudart_library "${CHAINNER_C_CUDA_ROOT}/lib64/libcudart_static.a")
+    set(chainner_c_nvcc_host "${CHAINNER_C_NVCC_HOST}")
+endif()
 foreach(chainner_c_file "${chainner_c_nvinfer_library}" "${chainner_c_cudart_library}" "${chainner_c_nvcc_host}")
     if(NOT EXISTS "${chainner_c_file}")
         message(FATAL_ERROR "vosr2_qkv.dll: ${chainner_c_file} is missing")
@@ -352,21 +398,46 @@ foreach(chainner_c_file "${chainner_c_nvinfer_library}" "${chainner_c_cudart_lib
 endforeach()
 message(STATUS "VOSR TensorRT plugin (vosr2_qkv.dll): TensorRT ${chainner_c_tensorrt_version}, "
     "CUDA ${chainner_c_cuda_version}")
-# cl.exe finds the toolset's and the SDK's headers through INCLUDE, as in a Developer prompt.
-set(chainner_c_nvcc_include "${chainner_c_vc_tools}/include"
-    "${chainner_c_sdk}/Include/${chainner_c_sdk_version}/ucrt"
-    "${chainner_c_sdk}/Include/${chainner_c_sdk_version}/shared"
-    "${chainner_c_sdk}/Include/${chainner_c_sdk_version}/um")
-list(JOIN chainner_c_nvcc_include "$<SEMICOLON>" chainner_c_nvcc_include)
-set(chainner_c_qkv_object "${CMAKE_CURRENT_BINARY_DIR}/vosr2_qkv_cuda.obj")
+if(WIN32)
+    # cl.exe finds the toolset's and the SDK's headers through INCLUDE, as in a Developer prompt.
+    set(chainner_c_nvcc_include "${chainner_c_vc_tools}/include"
+        "${chainner_c_sdk}/Include/${chainner_c_sdk_version}/ucrt"
+        "${chainner_c_sdk}/Include/${chainner_c_sdk_version}/shared"
+        "${chainner_c_sdk}/Include/${chainner_c_sdk_version}/um")
+    list(JOIN chainner_c_nvcc_include "$<SEMICOLON>" chainner_c_nvcc_include)
+    set(chainner_c_nvcc_command "${CMAKE_COMMAND}" -E env "INCLUDE=${chainner_c_nvcc_include}" "${chainner_c_nvcc}")
+    # The .cu files' host options: /W4 with /WX (strict), or without (DRFT's, below).
+    set(chainner_c_nvcc_host_strict "$<IF:$<CONFIG:Debug>,/MTd,/MT>,/W4,/WX,/fp:strict,/Brepro")
+    set(chainner_c_nvcc_host_drft "$<IF:$<CONFIG:Debug>,/MTd,/MT>,/W4,/EHsc,/Zc:preprocessor,/fp:strict,/Brepro")
+    set(chainner_c_nvcc_tensorrt_include "-I${CHAINNER_C_TENSORRT_ROOT}/include")
+else()
+    # The same options for g++, as cmake/linux.cmake gives the clang targets: /W4 is -Wall
+    # -Wextra, /WX -Werror, /fp:strict no contraction with rounding-mode-aware code; position-
+    # independent code, hidden visibility (a DLL exports only its dllexport symbols) and the stack
+    # protector (/GS, cl.exe's default). /MT is the link's static libstdc++, /EHsc and
+    # /Zc:preprocessor are g++'s defaults, and ELF objects carry no timestamps (/Brepro). nvcc
+    # keeps its intermediates in one directory (each named after its source file): a removed one
+    # is named after the process ID, which reaches the host object's file symbol and so the .so.
+    set(chainner_c_nvcc_intermediates "${CMAKE_BINARY_DIR}/nvcc")
+    file(MAKE_DIRECTORY "${chainner_c_nvcc_intermediates}")
+    set(chainner_c_nvcc_command "${chainner_c_nvcc}" --keep --keep-dir "${chainner_c_nvcc_intermediates}")
+    set(chainner_c_nvcc_host_strict
+        "-fPIC,-fvisibility=hidden,-fstack-protector-strong,-Wall,-Wextra,-Werror,-ffp-contract=off,-frounding-math")
+    set(chainner_c_nvcc_host_drft
+        "-fPIC,-fvisibility=hidden,-fstack-protector-strong,-Wall,-Wextra,-ffp-contract=off,-frounding-math")
+    # TensorRT's headers as system headers, as the clang targets take them: g++ would warn about
+    # their own deprecated declarations, which cl.exe does not see (its __cplusplus leaves
+    # TRT_DEPRECATED empty), so DRFT's warnings stay the Windows ones.
+    set(chainner_c_nvcc_tensorrt_include -isystem "${CHAINNER_C_TENSORRT_ROOT}/include")
+endif()
+set(chainner_c_qkv_object "${CMAKE_CURRENT_BINARY_DIR}/vosr2_qkv_cuda${CMAKE_CXX_OUTPUT_EXTENSION}")
 add_custom_command(OUTPUT "${chainner_c_qkv_object}"
-    COMMAND "${CMAKE_COMMAND}" -E env "INCLUDE=${chainner_c_nvcc_include}"
-        "${chainner_c_nvcc}" -c "${CMAKE_CURRENT_SOURCE_DIR}/src/vosr2/qkv.cu" -o "${chainner_c_qkv_object}"
+    COMMAND ${chainner_c_nvcc_command} -c "${CMAKE_CURRENT_SOURCE_DIR}/src/vosr2/qkv.cu" -o "${chainner_c_qkv_object}"
         -ccbin "${chainner_c_nvcc_host}" -O3 -std=c++17
         -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_86,code=sm_86
         -gencode=arch=compute_89,code=sm_89 "-gencode=arch=compute_120,code=[sm_120,compute_120]"
         --fmad=false --prec-div=true --prec-sqrt=true -Werror all-warnings
-        -Xcompiler "$<IF:$<CONFIG:Debug>,/MTd,/MT>,/W4,/WX,/fp:strict,/Brepro"
+        -Xcompiler "${chainner_c_nvcc_host_strict}"
     DEPENDS src/vosr2/qkv.cu
     COMMENT "Compiling src/vosr2/qkv.cu with nvcc"
     VERBATIM)
@@ -377,7 +448,7 @@ target_include_directories(vosr2_qkv SYSTEM PRIVATE
 # CUDA 13's cudart.lib is the static runtime (it loads the driver itself): the DLL imports only
 # nvinfer_11.dll and KERNEL32.dll.
 target_link_libraries(vosr2_qkv PRIVATE "${chainner_c_nvinfer_library}" "${chainner_c_cudart_library}")
-set_target_properties(vosr2_qkv PROPERTIES PREFIX "" SUFFIX ".dll"
+set_target_properties(vosr2_qkv PROPERTIES PREFIX "" SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO
     LIBRARY_OUTPUT_DIRECTORY "${CHAINNER_C_OUTPUT_DIR}/pytorch")
 target_compile_options(vosr2_qkv PRIVATE /W4 /WX /EHsc)
@@ -404,16 +475,15 @@ set(chainner_c_drft_definitions -DDRFT_ENABLE_OCAB_QKV_PACK_PLUGIN=1
 set(chainner_c_drft_objects "")
 foreach(chainner_c_drft_source DrftOCABAttentionSafePlugin DrftOCABQKVPackPlugin
         DrftFinalAffineCropPlugin DrftWindowNeuralBiasPlugin)
-    set(chainner_c_drft_object "${CMAKE_CURRENT_BINARY_DIR}/drft_${chainner_c_drft_source}.obj")
+    set(chainner_c_drft_object "${CMAKE_CURRENT_BINARY_DIR}/drft_${chainner_c_drft_source}${CMAKE_CXX_OUTPUT_EXTENSION}")
     add_custom_command(OUTPUT "${chainner_c_drft_object}"
-        COMMAND "${CMAKE_COMMAND}" -E env "INCLUDE=${chainner_c_nvcc_include}"
-            "${chainner_c_nvcc}" -c "${CMAKE_CURRENT_SOURCE_DIR}/src/drft/${chainner_c_drft_source}.cu"
+        COMMAND ${chainner_c_nvcc_command} -c "${CMAKE_CURRENT_SOURCE_DIR}/src/drft/${chainner_c_drft_source}.cu"
             -o "${chainner_c_drft_object}" -ccbin "${chainner_c_nvcc_host}" -O3 -std=c++17
-            "-I${CHAINNER_C_TENSORRT_ROOT}/include" ${chainner_c_drft_definitions}
+            ${chainner_c_nvcc_tensorrt_include} ${chainner_c_drft_definitions}
             -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_86,code=sm_86
             -gencode=arch=compute_89,code=sm_89 "-gencode=arch=compute_120,code=[sm_120,compute_120]"
             --fmad=true --prec-div=true --prec-sqrt=true
-            -Xcompiler "$<IF:$<CONFIG:Debug>,/MTd,/MT>,/W4,/EHsc,/Zc:preprocessor,/fp:strict,/Brepro"
+            -Xcompiler "${chainner_c_nvcc_host_drft}"
         DEPENDS "src/drft/${chainner_c_drft_source}.cu"
         COMMENT "Compiling src/drft/${chainner_c_drft_source}.cu with nvcc"
         VERBATIM)
@@ -425,7 +495,7 @@ target_include_directories(drft_trt_plugins SYSTEM PRIVATE
     "${CHAINNER_C_TENSORRT_ROOT}/include" "${CHAINNER_C_CUDA_ROOT}/include")
 target_compile_definitions(drft_trt_plugins PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(drft_trt_plugins PRIVATE "${chainner_c_nvinfer_library}" "${chainner_c_cudart_library}")
-set_target_properties(drft_trt_plugins PROPERTIES PREFIX "" SUFFIX ".dll"
+set_target_properties(drft_trt_plugins PROPERTIES PREFIX "" SUFFIX "${CMAKE_SHARED_MODULE_SUFFIX}"
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO
     LIBRARY_OUTPUT_DIRECTORY "${CHAINNER_C_OUTPUT_DIR}/tensorrt")
 target_compile_options(drft_trt_plugins PRIVATE /W4 /WX /EHsc)
@@ -433,6 +503,17 @@ if(CHAINNER_C_PDB)
     target_compile_options(drft_trt_plugins PRIVATE /Zi)
     target_link_options(drft_trt_plugins PRIVATE /DEBUG /OPT:REF /OPT:ICF
         "/MAP:${CHAINNER_C_OUTPUT_DIR}/tensorrt/drft_trt_plugins.map")
+endif()
+if(NOT WIN32)
+    # Linux: the plugins need only the libraries they call, as lld-link keeps only the used
+    # imports (libnvinfer.so.11 for vosr2_qkv's registration, none for drft_trt_plugins), plus
+    # glibc's libdl and librt for CUDA's static runtime. TensorRT is found as nvinfer_11.dll is,
+    # loaded already or on the search path, never through the build machine's SDK directory.
+    foreach(target vosr2_qkv drft_trt_plugins)
+        target_link_libraries(${target} PRIVATE ${CMAKE_DL_LIBS} rt)
+        target_link_options(${target} PRIVATE -Wl,--as-needed)
+        set_target_properties(${target} PROPERTIES SKIP_BUILD_RPATH YES)
+    endforeach()
 endif()
 
 # The TensorRT runner (trt_runner/CMakeLists.txt), from the same two roots.

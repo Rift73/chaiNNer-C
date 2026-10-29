@@ -91,6 +91,11 @@ def environment(threads: int | None, report: Path) -> dict[str, str]:
     # Per checkout: worktrees share the junctioned runtime's site-packages, so one cache
     # folder in %TEMP% raced between suites of different checkouts running at once
     env["NUMBA_CACHE_DIR"] = str(ROOT / "native" / "build" / "numba-cache")
+    if sys.platform == "linux":
+        # As the backend's worker (worker_spawn.py): NumPy's Linux wheels dispatch
+        # AVX-512 loops its Windows wheels lack, and the C mirrors follow the Windows
+        # wheels' AVX2 ones. A value the caller set is kept.
+        env.setdefault("NPY_DISABLE_CPU_FEATURES", "X86_V4 AVX512_ICL AVX512_SPR")
     # Thread pools sized to the shard's CPUs, not the machine's: the native pool reads
     # the process affinity (parallel.c), these libraries their variables
     if threads is not None:

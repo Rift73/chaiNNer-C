@@ -300,8 +300,8 @@ def _make_executable(ffmpeg_path: Path, ffprobe_path: Path) -> None:
     if is_mac or is_linux:
         # Make the files executable
         try:
-            ffmpeg_path.chmod(0o7777)
-            ffprobe_path.chmod(0o7777)
+            ffmpeg_path.chmod(0o755)
+            ffprobe_path.chmod(0o755)
         except Exception as e:
             logger.warn(f"Failed to set permissions for ffmpeg: {e}")
 

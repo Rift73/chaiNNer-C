@@ -8,7 +8,9 @@
  * A final file that already holds the same bytes (size, then 1 MiB blocks) is left untouched, its modification time
  * included, and the temporary file is deleted. Only this process's own temporary files are ever deleted. Nothing here
  * touches Python, so the run engine's threads call it as it is; the graph module raises FileError as the OSError
- * Python itself raises (atomic_file_python.cpp). */
+ * Python itself raises (atomic_file_python.cpp).
+ * On Linux the rename is rename(2), which also replaces a file other programs hold open, the replaced file's permission
+ * bits carry over as open(final, "wb") keeps them, and every error is the errno of the failed call. */
 #pragma once
 
 #include <cstdint>

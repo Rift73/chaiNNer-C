@@ -135,6 +135,10 @@ template<class T> T complex_component_add(T a,T b) {
     // when both operands are NaNs. Make that independent of register reuse.
     return std::isnan(a) && std::isnan(b) ? b+b : result;
 }
+#ifdef CN_WIDE_LONG_DOUBLE
+// CLONGDOUBLE's pairwise sum adds in plain C: the x87 itself picks the NaN of two.
+template<> long double complex_component_add(long double a,long double b) { return a+b; }
+#endif
 template<class T> Complex<T> complex_add(Complex<T> a,Complex<T> b) {
     return {complex_component_add(a.real,b.real),complex_component_add(a.imag,b.imag)};
 }
@@ -213,6 +217,11 @@ O array_sum(const O &value,const O &axis) {
     O result=array_empty(shape,a.dtype());
     auto out=py::reinterpret_borrow<py::array>(result);
     std::feclearexcept(FE_ALL_EXCEPT);
+#ifdef CN_WIDE_LONG_DOUBLE
+    if(kind=='f' && a.itemsize()==sizeof(long double))sum_rows<long double>(a,out,pairwise,block);
+    else if(kind=='c' && a.itemsize()==2*sizeof(long double))sum_complex_rows<long double>(a,out,pairwise,block);
+    else
+#endif
     if(kind=='f') {
         if(a.itemsize()==4)sum_rows<float>(a,out,pairwise,block);else sum_rows<double>(a,out,pairwise,block);
     } else if(kind=='c') {

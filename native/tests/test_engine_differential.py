@@ -7,7 +7,6 @@ synthetic inputs."""
 
 from __future__ import annotations
 
-import _winapi
 import importlib
 import os
 import re
@@ -105,6 +104,8 @@ def assets(tmp_path_factory):
             str(root / "moving.mkv"),
         ]
         subprocess.run(command, check=True, timeout=120, stdin=subprocess.DEVNULL)
+        import _winapi
+
         _winapi.CreateJunction(str(FFMPEG.parent), str(root / "storage" / "ffmpeg"))
     yield root
     if (root / "storage" / "ffmpeg").exists():

@@ -652,14 +652,19 @@ else:
 chain = parse_json(nodes)
 optimize(chain)
 process = psutil.Process()
+# Committed private bytes on Windows; resident ones elsewhere
+private = (
+    (lambda: process.memory_info().private) if sys.platform == "win32"
+    else lambda: process.memory_full_info().uss
+)
 numpy_pool.release()
 gc.collect()
-base = process.memory_info().private
+base = private()
 assert execute("native", chain, storage=work / "storage").error is None
 gc.collect()
 numpy_pool.release()
 gc.collect()
-print(json.dumps({"held": process.memory_info().private - base, **graph().memo_stats()}))
+print(json.dumps({"held": private() - base, **graph().memo_stats()}))
 """
 
 

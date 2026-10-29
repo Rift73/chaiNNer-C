@@ -17,7 +17,7 @@ static void planar_range(void *context, size_t begin, size_t end)
 {
     planar_call *call = context;
     int special;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (call->job.isa >= CN_ISA_AVX2)
         special = cn_planar_rows_avx2(&call->job, begin, end);
     else

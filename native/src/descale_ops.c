@@ -18,6 +18,19 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <emmintrin.h>
+/* The three Windows primitives the slot claims use: the Interlocked operations as
+ * sequentially consistent atomics (full barriers, as theirs are), and the spin-wait hint. */
+typedef int64_t LONG64;
+static LONG64 InterlockedCompareExchange64(volatile LONG64 *target, LONG64 exchange, LONG64 comparand) {
+    __atomic_compare_exchange_n(target, &comparand, exchange, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return comparand;
+}
+static LONG64 InterlockedAnd64(volatile LONG64 *target, LONG64 value) {
+    return __atomic_fetch_and(target, value, __ATOMIC_SEQ_CST);
+}
+#define YieldProcessor() _mm_pause()
 #endif
 
 #include "chainner.h"

@@ -478,6 +478,29 @@ def test_a_failed_run_with_progress_reads_the_list_again(
     assert store.installed_packages == {"protobuf": "6.33.0"}
 
 
+def test_the_installed_versions_are_listed_in_their_canonical_form(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Metadata may spell a version as pip does not list it; an invalid one stays.
+    monkeypatch.setattr(store, "installed_packages", {})
+    fake_environment(
+        monkeypatch,
+        {
+            "vapoursynth-mlrt-ov": "v17.1",
+            "Odd_Pkg": "1.0RC1",
+            "spandrel": "0.4.2+c2",
+            "custom": "2.0-custom",
+        },
+    )
+    store.scan_installed_packages()
+    assert store.installed_packages == {
+        "vapoursynth-mlrt-ov": "17.1",
+        "odd-pkg": "1.0rc1",
+        "spandrel": "0.4.2+c2",
+        "custom": "2.0-custom",
+    }
+
+
 def test_a_rescan_finds_what_pip_added_and_removed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

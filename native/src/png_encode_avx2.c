@@ -1,4 +1,4 @@
-#if !defined(_M_X64)
+#if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "png_encode_avx2.c is an x86-64 AVX2 unit"
 #endif
 /* PNG row filters, AVX2 unit (spec 4.3): no export, reached only through png_encode.c's dispatch on the call's ISA

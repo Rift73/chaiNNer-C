@@ -400,7 +400,7 @@ CN_EXPORT cn_status cn_height_prepare(const float *src, float *dst, size_t count
  * (color_shared.h). */
 static void normal_output_range(void *opaque, size_t begin, size_t end) {
     const normal_output_job *job = opaque;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (job->isa >= CN_ISA_AVX2) {
         cn_normal_output_avx2(job, begin, end);
         return;

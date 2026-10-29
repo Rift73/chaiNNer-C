@@ -116,6 +116,7 @@ from golden_kernels import (
     digest,
     digest_int,
     dither_form_specials,
+    load_expected,
     load_manifest,
     make_array,
     matrix,
@@ -137,7 +138,7 @@ from nodes.impl.native_opencv_simd import float32_lanes, target
 ROOT = Path(__file__).resolve().parents[2]
 GOLDEN = Path(__file__).resolve().parent / "golden"
 TOOL = ROOT / "native" / "tools" / "golden_kernels.py"
-CURRENT_DLL = Path(native.__file__).with_name("chainner_native.dll")  # lib()'s
+CURRENT_DLL = native.library_path()  # lib()'s
 B3_SHA256 = "5123f21c78305edd30893e582273a23b2e073921c5599455ac1f808e7c27504d"
 # Controller ruling (2026-10-03): the matrix as briefed is ~140 kB, not tens of kB.
 SIZE_LIMIT = 200_000
@@ -3254,7 +3255,8 @@ def test_current_dll_matches_the_b3_manifest(kernel, level):
     effective, _, cpu = isa_get()
     if level > cpu:
         pytest.skip(f"the CPU's maximum level is {native.ISA_LEVELS[cpu]}")
-    _, cases = load_manifest(GOLDEN / f"{kernel}.json")
+    # On Linux with the C-library-math cases of the Linux twins
+    _, cases = load_expected(GOLDEN / f"{kernel}.json")
     try:
         assert isa_set(level) == level
         mismatched = [

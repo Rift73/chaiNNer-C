@@ -182,7 +182,7 @@ static float reduce_contiguous(float out, const float *x, size_t len, int lanes,
     size_t vstep = (size_t)lanes, wstep = vstep * 8;
     float accumulator[16];
     for (int j = 0; j < lanes; ++j) accumulator[j] = out;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (lanes == 8 && cn_isa_current() >= CN_ISA_AVX2) {
         size_t done = cn_numpy_extreme8_avx2(accumulator, x, len, maximum);
         x += done;

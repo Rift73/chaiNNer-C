@@ -7,11 +7,10 @@ D87D`. Every library source in the tarball is identical to OpenCV 5.0.0's `3rdpa
 of all 62 files there match; only OpenCV's own `CMakeLists.txt` differs).
 
 The files here are unmodified copies of the tarball's `libtiff/` sources and headers that OpenCV's build compiles
-for its codec set (core, Win32 I/O, LZW, ZIP, PackBits, CCITT/fax3, ThunderScan, NeXT, LogLuv, JPEG), and
-`LICENSE.md`. Left out: `tif_ojpeg.c`, `tif_lzma.c`, `tif_jbig.c`, `tif_zstd.c`, `tif_webp.c`, `tif_pixarlog.c`
-and `tif_jpeg_12.c` (OpenCV compiles them to empty units with its configuration), `tif_lerc.c` (OpenCV's list
-leaves it out),
-`tif_stream.cxx` (the C++ stream API), `tif_unix.c` and the tools.
+for its codec set (core, Win32 I/O on Windows and `tif_unix.c`'s POSIX I/O on Linux, LZW, ZIP, PackBits,
+CCITT/fax3, ThunderScan, NeXT, LogLuv, JPEG), and `LICENSE.md`. Left out: `tif_ojpeg.c`, `tif_lzma.c`, `tif_jbig.c`,
+`tif_zstd.c`, `tif_webp.c`, `tif_pixarlog.c` and `tif_jpeg_12.c` (OpenCV compiles them to empty units with its
+configuration), `tif_lerc.c` (OpenCV's list leaves it out), `tif_stream.cxx` (the C++ stream API) and the tools.
 
 `chainner/` holds the headers OpenCV 5.0.0's `3rdparty/libtiff/CMakeLists.txt` generates for its Windows x64 build
 (`opencv-python` 5.0.0.93 reports "TIFF: build (ver 42 - 4.7.1)"):
@@ -24,6 +23,12 @@ leaves it out),
   (`HAVE_ASSERT_H`, `HAVE_FCNTL_H`, `HAVE_IO_H`, `HAVE_SYS_TYPES_H`, `HAVE_SETMODE`, `SIZEOF_SIZE_T 8`, 64-bit
   `long long` types, little-endian); OpenCV sets no `PACKAGE_*` values, so they are empty.
 - `tiffvers.h`: the tarball's `libtiff/tiffvers.h`, which `tiffvers.h.cmake.in` reproduces for version 4.7.1.
+
+`chainner/linux/` holds the `tif_config.h` and `tiffconf.h` that the same CMakeLists.txt writes for a Linux x86-64
+build: its configuration part run with clang 23.1.2 on Ubuntu 24.04 (glibc's headers). They differ from the Windows
+pair in `HAVE_GETOPT`, `HAVE_MMAP`, `HAVE_STRINGS_H` and `HAVE_UNISTD_H` (set), `HAVE_IO_H`, `HAVE_SETMODE` and
+`USE_WIN32_FILEIO` (unset), and the LP64 types (`signed long` 64-bit integers, `int64_t` for `TIFF_SSIZE_T`). The
+Linux build puts that directory ahead of `chainner/` and compiles `tif_unix.c` in place of `tif_win32.c`.
 
 Built as the static target `chainner_tiff` (native/cmake/codecs.cmake) against `chainner_zlib` (zlib 1.3.2) and
 `chainner_jpeg` (libjpeg-turbo 3.1.4.1, 8-bit only for libtiff).

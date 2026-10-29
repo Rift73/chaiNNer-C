@@ -1036,7 +1036,9 @@ def test_encode_matches_todays_path(
 
 
 # ---------------------------------------------------------------------------------------------
-# Names with a lone surrogate (NTFS takes unpaired UTF-16, Python keeps it in the str)
+# Names with a lone surrogate (NTFS takes unpaired UTF-16, Python keeps it in the str; a
+# POSIX name's undecodable byte is the surrogate that escapes it)
+LONE_SURROGATE = chr(0xDC00) if sys.platform == "win32" else chr(0xDCFF)
 
 
 @pytest.mark.parametrize("ext", [".png", ".jpe", ".jpg"])
@@ -1046,7 +1048,7 @@ def test_decode_lone_surrogate_name(
     image = (np.arange(16 * 16 * 3) % 251).astype(np.uint16).reshape(16, 16, 3) * 200
     if ext != ".png":
         image = (image >> 8).astype(np.uint8)
-    path = tmp_path / f"a\udc00b{ext}"
+    path = tmp_path / f"a{LONE_SURROGATE}b{ext}"
     path.write_bytes(cv2.imencode(".png" if ext == ".png" else ".jpg", image)[1])
     monkeypatch.setenv("CHAINNER_C_NATIVE_CODECS", "0")
     expected = decoded(path)
@@ -1063,7 +1065,7 @@ def test_decode_lone_surrogate_name(
 def test_save_lone_surrogate_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     case = EncodeCase("png", 3, depth="u16")
     image = image_for(case)
-    folder = tmp_path / "a\udc00b"
+    folder = tmp_path / f"a{LONE_SURROGATE}b"
     monkeypatch.setenv("CHAINNER_C_NATIVE_CODECS", "0")
     expected = saved(case, image, folder / "oracle")
     monkeypatch.delenv("CHAINNER_C_NATIVE_CODECS")

@@ -2,11 +2,19 @@
  * C kernel; this unit owns array/text validation, DIBV5 construction and Win32
  * publication. Adapted from chaiNNer-rs (MIT), arboard (MIT), and clipboard-win
  * (BSL-1.0), with notices in chainner_native.LICENSE.txt. No Rust clipboard call.
- * Failed HGLOBAL transfers use GlobalFree, correcting original leak branches. */
+ * Failed HGLOBAL transfers use GlobalFree, correcting original leak branches.
+ * On Linux the payload is UTF-8 text or a PNG image, published by clipboard_posix.h. */
+#ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#endif
 #include <pybind11/numpy.h>
 #include "clipboard_ops.h"
+#ifndef _WIN32
+#include "clipboard_posix.h"
+#include <cstdlib>
+#include <new>
+#endif
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -16,11 +24,13 @@
 namespace py = pybind11;
 namespace {
 using Bytes = std::vector<uint8_t>;
+#ifdef _WIN32
 constexpr const char* inaccessible = "The native clipboard is not accessible due to being held by an other party.";
 constexpr const char* prefix = "Unknown error while interacting with the clipboard: ";
 constexpr const char* text_failure = "Could not place the specified text to the clipboard";
 
 [[noreturn]] void fail(const std::string& message) { throw py::value_error(std::string(prefix) + message); }
+#endif
 
 std::string type_name(const py::object& value) { return py::str(py::type::of(value).attr("__name__")); }
 const char* utf8(const py::object& value, const char* argument, Py_ssize_t& length) {
@@ -47,6 +57,7 @@ py::array image_array(const py::object& value) {
     throw py::type_error(message);
 }
 
+#ifdef _WIN32
 Bytes text_bytes(const py::object& text) {
     Py_ssize_t length;
     const char* value = utf8(text, "text", length);
@@ -163,6 +174,57 @@ void publish(const Bytes& bytes, bool image) {
         fail(image ? "Call to `SetClipboardData` returned NULL at line 131" : text_failure);
     memory.transfer();
 }
+#else
+Bytes text_bytes(const py::object& text) {
+    Py_ssize_t length;
+    const char* value = utf8(text, "text", length);
+    return Bytes(value, value + length);
+}
+
+// The checks and their order as on Windows; then the PNG's limits, which an empty image is outside of.
+Bytes image_bytes(const py::object& value, const py::object& format) {
+    py::array image = image_array(value);
+    Py_ssize_t format_length;
+    const char* format_data = utf8(format, "pixel_format", format_length);
+    const std::string pixel_format(format_data, static_cast<size_t>(format_length));
+    if (pixel_format != "RGB" && pixel_format != "BGR")
+        throw py::value_error("Invalid pixel format: " + pixel_format);
+    const auto height = static_cast<size_t>(image.shape(0));
+    const auto width = static_cast<size_t>(image.shape(1));
+    const auto channels = image.ndim() == 3 ? static_cast<size_t>(image.shape(2)) : 1;
+    if (channels != 1 && channels != 3 && channels != 4)
+        throw py::value_error("Invalid number of channels: " + std::to_string(channels));
+    if (height > CN_PNG_MAX_SIDE || width > CN_PNG_MAX_ROW_SAMPLES / 4)
+        throw py::value_error("Clipboard image dimensions exceed the PNG limits");
+    if (!height || !width) throw py::value_error("Cannot copy an empty image to the clipboard");
+    Bytes pixels(width * height * 4);
+    int status;
+    {
+        py::gil_scoped_release release;
+        status = cn_clipboard_pixels_f32(image.data(), height, width, channels,
+            image.strides(0), image.strides(1), image.ndim() == 3 ? image.strides(2) : 0,
+            pixel_format == "RGB", pixels.data(), pixels.size());
+    }
+    if (status) throw py::value_error("Invalid or overflowing clipboard image buffer");
+    cn_clipboard_buffer png;
+    cn_status encoded;
+    {
+        py::gil_scoped_release release;
+        encoded = cn_clipboard_png(pixels.data(), height, width, &png);
+    }
+    if (encoded == CN_ALLOCATION_FAILED) throw std::bad_alloc();
+    if (encoded != CN_OK) throw py::value_error("Could not encode the clipboard image as PNG");
+    Bytes output(png.data, png.data + png.size);
+    std::free(png.data);
+    return output;
+}
+
+void publish(const Bytes& bytes, bool image) {
+    char scratch[512];
+    if (const char* failure = cn_clipboard_publish(bytes.data(), bytes.size(), image, scratch, sizeof(scratch)))
+        throw py::value_error(failure);
+}
+#endif
 
 void write_text(const py::object& value) {
     Bytes bytes = text_bytes(value);

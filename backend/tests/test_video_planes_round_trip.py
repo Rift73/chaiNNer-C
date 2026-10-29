@@ -4,7 +4,6 @@ chroma siting is honoured on load, on save and by the siting correction, and 8-b
 
 from __future__ import annotations
 
-import _winapi
 import json
 import os
 import subprocess
@@ -212,6 +211,8 @@ def newer_ffmpeg_storage(tmp_path: Path):
         pytest.skip("the local gates' FFmpeg is not installed")
     storage = tmp_path / "storage"
     storage.mkdir()
+    import _winapi
+
     _winapi.CreateJunction(str(NEWER_FFMPEG.parent), str(storage / "ffmpeg"))
     yield storage
     os.rmdir(storage / "ffmpeg")

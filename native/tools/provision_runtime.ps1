@@ -156,8 +156,8 @@ if ($Relock) {
         # spandrel: the fork's build (DRFT, DUAL, SST, WSR, GaterV3, SMoSR, FIGSR, GFISRv2), the wheel on its release
         'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c10/spandrel-0.4.2%2Bc10-py3-none-any.whl#sha256=2496741447f096efa803d01798262ab065d0c4e79b4266f30a32cab4e254b50f',
         'spandrel_extra_arches', 'facexlib', 'einops', 'safetensors',
-        # onnxruntime-gpu: ONNX Runtime 1.30.0 rebuilt for TensorRT 11, the wheel on its fork's release
-        'onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11-cp314-cp314-win_amd64.whl#sha256=443287192cb0add06e1faa7022f1badf9ead0e77b82cd6deb0fc2192af5a96d3',
+        # onnxruntime-gpu: ONNX Runtime 1.30.0 rebuilt for TensorRT 11.4, the wheel on its fork's release
+        'onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11.4-cp314-cp314-win_amd64.whl#sha256=3ab12b436d5f6463867b0635366c29fd4a26c3ae489d2b3911c00391411d1ca6',
         'onnx', 'onnxoptimizer', 'protobuf', 'ncnn==1.0.20260526',
         'sanic==25.12.1', 'aiofiles', 'html5tagger', 'sanic-routing', 'tracerite', 'websockets', 'typing_extensions',
         'nvidia-ml-py', 'psutil', 'aiohttp',

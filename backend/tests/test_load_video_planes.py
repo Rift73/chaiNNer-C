@@ -3,7 +3,6 @@ its readers (PyAV and the FFmpeg CLI). Runs on chaiNNer's integrated FFmpeg."""
 
 from __future__ import annotations
 
-import _winapi
 import os
 import subprocess
 from collections.abc import Callable
@@ -181,6 +180,8 @@ def newer_ffmpeg_storage(tmp_path: Path):
         pytest.skip("the local gates' FFmpeg is not installed")
     storage = tmp_path / "storage"
     storage.mkdir()
+    import _winapi
+
     _winapi.CreateJunction(str(NEWER_FFMPEG.parent), str(storage / "ffmpeg"))
     yield storage
     os.rmdir(storage / "ffmpeg")

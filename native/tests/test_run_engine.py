@@ -120,6 +120,7 @@ def test_engine_storage_outlives_the_array_that_produced_it():
 
 
 POOLED = """
+import mmap
 import numpy as np
 from nodes.impl.native_graph import graph
 g = graph()
@@ -127,7 +128,7 @@ assert g.numpy_pool_install()[0] == "installed"
 img = np.zeros((256, 256, 4), np.float32)  # 1 MiB, above the pool's threshold
 out = g.run_native("chainner:image:flip", [img, 0])[0]
 address = out.__array_interface__["data"][0]
-assert address % 65536 == 0, address
+assert address % mmap.ALLOCATIONGRANULARITY == 0, address  # VirtualAlloc's, or mmap's page
 del out
 assert address in [block for block, _ in g.numpy_pool_idle_blocks()]
 again = g.run_native("chainner:image:flip", [img, 1])[0]

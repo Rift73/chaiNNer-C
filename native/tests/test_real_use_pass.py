@@ -16,6 +16,11 @@ from pathlib import Path
 import independent_ui
 import psutil
 import pytest
+
+pytest.importorskip(
+    "_winapi",
+    reason="real_use_pass checks the Windows package (chaiNNer.exe, Win32 windows)",
+)
 import real_use_pass as r
 from verify_runtime import OwnedJob
 

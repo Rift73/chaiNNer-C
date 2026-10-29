@@ -14,6 +14,11 @@ import sys
 # backslashreplace: a log line with a lone surrogate (an undecodable Windows file
 # name) is written escaped instead of being dropped.
 ENV = {**os.environ, "PYTHONIOENCODING": "utf-8:backslashreplace"}
+if sys.platform == "linux":
+    # NumPy's Linux wheels dispatch AVX-512 loops its Windows wheels (MSVC) lack, and
+    # the C kernels that mirror NumPy's loops follow the Windows wheels' AVX2 ones
+    # (nodes/impl/native_numpy_simd.py). A value the user set is kept.
+    ENV.setdefault("NPY_DISABLE_CPU_FEATURES", "X86_V4 AVX512_ICL AVX512_SPR")
 
 
 def find_free_port() -> int:

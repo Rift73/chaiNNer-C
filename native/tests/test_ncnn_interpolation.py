@@ -8,7 +8,16 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pytest
 from numpy.typing import DTypeLike
-from test_ncnn_graph import build, outcome, port, reference, snapshot, spec
+from test_ncnn_graph import (
+    X87_LONGDOUBLE,
+    build,
+    outcome,
+    port,
+    reference,
+    snapshot,
+    spec,
+    value_bytes,
+)
 from test_ncnn_graph_numeric import DTYPES, ErrorPolicy, values
 
 
@@ -40,6 +49,25 @@ def pair(
     return one(left_dtype, 107, tags[0]), one(right_dtype, 231, tags[1])
 
 
+def encoded_values(result):
+    """interp_layers' bytes, each weight's tag and raw data, with the raw data of
+    x87 longdouble weights reduced to its values (test_ncnn_graph.value_bytes)."""
+    status, value = result
+    if status != "ok" or not isinstance(value, tuple) or not X87_LONGDOUBLE:
+        return result
+    layer, encoded = value
+    pieces, offset = [], 0
+    for weight in layer.weight_data.values():
+        data = np.asarray(weight.weight)
+        tag = encoded[offset : offset + len(weight.quantize_tag)]
+        offset += len(tag)
+        raw = np.frombuffer(encoded, data.dtype, data.size, offset)
+        offset += data.nbytes
+        pieces.append((tag, value_bytes(raw)))
+    assert offset == len(encoded)
+    return status, (layer, pieces)
+
+
 def compare(setup, amount, mode: ErrorPolicy = "ignore", model=False):
     observations = []
     for module in (reference, port):
@@ -55,7 +83,7 @@ def compare(setup, amount, mode: ErrorPolicy = "ignore", model=False):
             )
         observations.append(
             (
-                snapshot((a, b, result)),
+                snapshot((a, b, encoded_values(result))),
                 [(w.category.__name__, str(w.message)) for w in recorded],
             )
         )

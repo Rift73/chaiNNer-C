@@ -4,6 +4,8 @@ Each operation runs over the cross product of edge operands. An entry point decl
 where that body raises an error whose text formats a float, returns an int beyond int64, or (pow) gives a subnormal
 result, whose error status the C runtime's errno decides; each test asserts both paths occur."""
 
+import errno
+import os
 import sys
 
 import numpy as np
@@ -114,7 +116,8 @@ def round_declines(a: float, operation: str, scale: str, m: float, p: float) -> 
     return (
         (isinstance(result, int) and result not in INT64)
         or (isinstance(result, ValueError) and str(result).startswith("expected a positive input"))
-        or (isinstance(result, OverflowError) and str(result) == "(34, 'Result too large')")
+        # CPython's text for ERANGE is the C library's
+        or (isinstance(result, OverflowError) and str(result) == f"({errno.ERANGE}, {os.strerror(errno.ERANGE)!r})")
         or subnormal(result)
     )
 

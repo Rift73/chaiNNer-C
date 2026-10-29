@@ -42,6 +42,16 @@ corrected = types.ModuleType(PACKAGE + ".corrected_optimizer")
 corrected.__package__ = PACKAGE
 exec(compile(generator.corrected_source(), generator.SOURCE, "exec"), vars(corrected))
 ReferenceOptimizer = corrected.NcnnOptimizer
+# The x87 longdouble (Linux) keeps its value in 10 of its 16 bytes; NumPy leaves
+# the other six as the buffer held them, so they are no part of a value.
+X87_LONGDOUBLE = np.finfo(np.longdouble).nmant == 63
+
+
+def value_bytes(array: np.ndarray) -> bytes:
+    if not X87_LONGDOUBLE or array.dtype.type not in (np.longdouble, np.clongdouble):
+        return array.tobytes()
+    native = np.ascontiguousarray(array, array.dtype.newbyteorder("="))
+    return native.view(np.uint8).reshape(-1, 16)[:, :10].tobytes()
 
 
 def snapshot(value, seen=None):
@@ -53,7 +63,7 @@ def snapshot(value, seen=None):
             return (
                 type(value).__name__,
                 np.asarray(value).dtype.str,
-                np.asarray(value).tobytes(),
+                value_bytes(np.asarray(value)),
             )
         return value
     if id(value) in seen:
@@ -66,7 +76,7 @@ def snapshot(value, seen=None):
             value.shape,
             value.strides,
             value.flags.writeable,
-            value.tobytes(),
+            value_bytes(value),
         )
     if isinstance(value, dict):
         return (
