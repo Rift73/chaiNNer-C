@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # The AMD kit's second step: installs what chaiNNer-C needs on this machine and sets it up as a user would. The system
 # packages of the launcher's table (resources/src/linux_libraries.txt) and the kit's own (libatomic for ROCm, Mesa's
-# Vulkan driver for NCNN, Xvfb for chains); the app from its zip; a first headless run, which downloads the app's
-# Python; the wheels given as copies or release URLs (common.sh); then the dependency manager installs the packages
-# of common.sh (KIT_PACKAGES) through the backend, as its window would, with the ROCm builds it picks for this
-# GPU. Last, the test environment (the app's Python with pytest), the zip's native binaries in this checkout's
-# backend/src (the tests run from the checkout), and the models (models.txt).
+# Vulkan driver for NCNN, Xvfb for chains, a C compiler for Triton); the app from its zip; a first headless run, which
+# downloads the app's Python; the wheels given as copies or release URLs (common.sh); then the dependency manager
+# installs the packages of common.sh (KIT_PACKAGES) through the backend, as its window would, with the ROCm builds it
+# picks for this GPU. Last, the test environment (the app's Python with pytest), the zip's native binaries in this
+# checkout's backend/src (the tests run from the checkout), and the models (models.txt).
 # Usage: native/tools/amd/setup.sh --zip FILE [--wheels DIR] [--models DIR]
 set -uo pipefail
 # shellcheck source=common.sh
@@ -52,7 +52,9 @@ fail() {
     die "$*"
 }
 
-# The package manager, and the system packages: the launcher's table (every group) and the kit's own.
+# The package manager, and the system packages: the launcher's table (every group) and the kit's own. Triton builds
+# the launchers of the kernels it runs itself (the DUAL ops test's reference) with a C compiler and the C library's
+# headers, which a bare image lacks; the app runs only kernels compiled ahead of time and needs neither.
 manager=""
 case " $(os_release ID) $(os_release ID_LIKE) " in
     *" debian "* | *" ubuntu "*) manager=apt ;;
@@ -63,12 +65,12 @@ case $manager in
     apt)
         column=3
         kit_packages=(ca-certificates curl unzip git xz-utils procps pciutils libatomic1 libnuma1 libvulkan1
-            mesa-vulkan-drivers vulkan-tools)
+            mesa-vulkan-drivers vulkan-tools gcc libc6-dev)
         ;;
     dnf)
         column=4
         kit_packages=(ca-certificates curl unzip git xz procps-ng pciutils libatomic numactl-libs vulkan-loader
-            mesa-vulkan-drivers vulkan-tools)
+            mesa-vulkan-drivers vulkan-tools gcc glibc-devel)
         ;;
 esac
 # Debian 13 and Ubuntu 24.04 (glibc 2.38 and newer) name some packages with a t64 suffix (the table's "(t64)").

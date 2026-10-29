@@ -113,6 +113,8 @@ backend/src/nodes/impl/tensorrt/drft_trt_plugins.dll
 backend/src/nodes/impl/migraphx/drft_migx_ops.dll
 backend/src/nodes/impl/migraphx/vosr2_migx_ops.dll
 backend/src/nodes/impl/chainner_native.dylib
+backend/src/texconv/texconv
+backend/src/texconv/texconv.LICENSE.txt
 
 # Distribution / packaging
 .Python

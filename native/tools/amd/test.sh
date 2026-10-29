@@ -43,15 +43,18 @@ say "amd_gpu tests from ${#files[@]} files"
 reports=("$LOGS/amd-gpu-tests.xml")
 # VapourSynth's vsengine registers a pytest plugin that the tests do not use
 pytest_args=(-B -m pytest -m amd_gpu -p no:cacheprovider -p no:vsengine --continue-on-collection-errors -rA)
+# A run that takes too long is interrupted as with Ctrl+C, which pytest ends by writing the report of the tests it ran
+# (a plain kill leaves none); killed if it is still running 5 minutes later.
+limit=(timeout -s INT -k 300)
 start=$SECONDS
-(cd "$REPO" && run timeout 3600 "$TEST_PYTHON" "${pytest_args[@]}" --junitxml="$LOGS/amd-gpu-tests.xml" "${files[@]}") \
-    >"$LOGS/amd-gpu-tests.log" 2>&1
+(cd "$REPO" && run "${limit[@]}" 3600 "$TEST_PYTHON" "${pytest_args[@]}" --junitxml="$LOGS/amd-gpu-tests.xml" \
+    "${files[@]}") >"$LOGS/amd-gpu-tests.log" 2>&1
 status=$?
 say "amd_gpu tests: exit $status in $((SECONDS - start)) s ($LOGS/amd-gpu-tests.log)"
 gpu_count=$(kfd_gpus | wc -l)
 if [ "$gpu_count" -ge 2 ]; then
     reports+=("$LOGS/amd-gpu-tests-reordered.xml")
-    (cd "$REPO" && run env HIP_VISIBLE_DEVICES=1,0 timeout 900 "$TEST_PYTHON" "${pytest_args[@]}" \
+    (cd "$REPO" && run env HIP_VISIBLE_DEVICES=1,0 "${limit[@]}" 900 "$TEST_PYTHON" "${pytest_args[@]}" \
         --junitxml="$LOGS/amd-gpu-tests-reordered.xml" backend/tests/test_amd_gpu_devices.py) \
         >"$LOGS/amd-gpu-tests-reordered.log" 2>&1
     say "GPU list with HIP_VISIBLE_DEVICES=1,0: exit $?"
@@ -60,7 +63,7 @@ fi
 {
     echo "## amd_gpu tests"
     echo
-    echo "pytest -m amd_gpu over ${#files[@]} files, exit $status, $((SECONDS - start)) s$([ "$gpu_count" -ge 2 ] && echo "; the GPU list's test again with HIP_VISIBLE_DEVICES=1,0")."
+    echo "pytest -m amd_gpu over ${#files[@]} files, exit $status, $((SECONDS - start)) s$([ "$gpu_count" -ge 2 ] && echo "; the GPU list's test again with HIP_VISIBLE_DEVICES=1,0")$([ "$status" = 124 ] && echo "; stopped at the time limit (3600 s): the counts are of the tests that finished before it")."
     echo
     if [ "$DRY_RUN" = 1 ]; then
         echo "Not run (dry run). Files:"

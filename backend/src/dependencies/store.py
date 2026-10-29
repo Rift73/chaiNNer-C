@@ -22,10 +22,15 @@ if TYPE_CHECKING:
 
 python_path = sys.executable
 dir_path = os.path.dirname(os.path.realpath(__file__))
+# chainner_pip with the fix for wheels it downloaded twice
+run_chainner_pip = os.path.join(dir_path, "run_chainner_pip.py")
 
 installed_packages: dict[str, str] = {}
 
 COLLECTING_REGEX = re.compile(r"Collecting ([a-zA-Z0-9-_]+)")
+# The package of a file pip downloads, from the file's name (name-version...), as in
+# "Downloading https://download.pytorch.org/whl/cu132/torch-2.14.1%2Bcu132-...whl"
+DOWNLOADING_REGEX = re.compile(r"Downloading (?:\S*/)?([^/\s]+?)-\d")
 UNINSTALLING_REGEX = re.compile(r"Uninstalling ([a-zA-Z0-9-_]+)-+")
 
 DEP_MAX_PROGRESS = 0.8
@@ -139,6 +144,23 @@ def coerce_semver(version: str) -> tuple[int, int, int]:
     return (0, 0, 0)
 
 
+def replaced(replaces: Iterable[str], name: str, version: str) -> bool:
+    """Whether the installed distribution `name` (as pip lists it) at `version` is one
+    of the builds `replaces` names (api.Dependency.replaces): a distribution, any of its
+    builds, or "<distribution>+<label>", its builds whose local version label starts
+    with label ("torch+rocm": torch 2.14.1+rocm7.14, not 2.14.1+cu132 or 2.14.1). A
+    distribution ending in "*" names every distribution whose name starts with the rest
+    ("rocm-sdk-device-*": rocm-sdk-device-gfx1100)."""
+    for entry in replaces:
+        distribution, _, label = entry.partition("+")
+        pattern = distribution_name(distribution)
+        if (
+            name.startswith(pattern[:-1]) if pattern.endswith("*") else name == pattern
+        ) and version.partition("+")[2].startswith(label):
+            return True
+    return False
+
+
 def filter_necessary_to_install(dependencies: Iterable[DependencyInfo]):
     """
     Filters out dependencies that are already installed and have the same or higher version.
@@ -150,9 +172,13 @@ def filter_necessary_to_install(dependencies: Iterable[DependencyInfo]):
             installed_version = coerce_semver(version)
             dep_version = coerce_semver(dependency.version)
             # A local label (spandrel 0.4.2+c2, the fork's build) is a different
-            # build of the same numbers: only that exact version satisfies it.
-            if installed_version < dep_version or (
-                "+" in dependency.version and version != dependency.version
+            # build of the same numbers: only that exact version satisfies it. An
+            # installed build the dependency replaces never does (PyTorch's ROCm
+            # build where the CPU build is listed).
+            if (
+                installed_version < dep_version
+                or ("+" in dependency.version and version != dependency.version)
+                or replaced(dependency.replaces, dependency.distribution, version)
             ):
                 dependencies_to_install.append(dependency)
         elif not version:
@@ -164,16 +190,25 @@ def replaced_distributions(
     dependencies: Iterable[DependencyInfo],
 ) -> list[DependencyInfo]:
     """The installed distributions the dependencies replace: other builds of their
-    modules under another name (onnxruntime-gpu for onnxruntime-migraphx). pip would
-    install over their files and keep both listed, and a later uninstall of either would
-    delete files the other needs, so the installer uninstalls them first."""
+    modules under another name (onnxruntime-gpu for onnxruntime-migraphx), builds of
+    their own distribution they name by local label (PyTorch's ROCm build), and what
+    only the replaced builds ran on (ROCm's runtime). pip would install over the first's
+    files and keep both listed, and a later uninstall of either would delete files the
+    other needs; it would keep the second where the dependency's version names no label
+    (torch==2.14.1 is met by 2.14.1+rocm7.14) and never remove the third. So the
+    installer uninstalls them first."""
     names = sorted(
-        {distribution_name(name) for dep in dependencies for name in dep.replaces}
+        {
+            name
+            for dep in dependencies
+            if dep.replaces
+            for name, version in installed_packages.items()
+            if replaced(dep.replaces, name, version)
+        }
     )
     return [
         DependencyInfo(package_name=name, version=installed_packages[name])
         for name in names
-        if name in installed_packages
     ]
 
 
@@ -281,9 +316,8 @@ async def install_dependencies(
         process = subprocess.Popen(
             [
                 python_path,
-                "-m",
                 # TODO: Change this back to "pip" once pip updates with my changes
-                "chainner_pip",
+                run_chainner_pip,
                 "install",
                 *[pin(dep_info) for dep_info in dependencies_to_install],
                 "--disable-chainner_pip-version-check",
@@ -336,6 +370,14 @@ async def install_dependencies(
             # Later, we can use this to get the progress of the download.
             # For now, we just tell the user that it's happening.
             elif "Downloading" in line:
+                # pip downloads the wheels it resolved from metadata files after the
+                # last Collecting step, so the file names the package.
+                match = DOWNLOADING_REGEX.search(line)
+                if match:
+                    package_name = match.group(1)
+                    installing_name = dependency_name_map.get(
+                        distribution_name(package_name), package_name
+                    )
                 await update_progress_cb(
                     f"Downloading {installing_name}...",
                     get_progress_amount() + dep_small_incr,

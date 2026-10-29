@@ -25,6 +25,7 @@ from dependencies.store import (
     filter_necessary_to_install,
     install_dependencies,
     installed_packages,
+    replaced,
     uninstall_dependencies,
 )
 from events import BackendEventBroadcast
@@ -237,20 +238,26 @@ async def get_packages(request: Request):
     return await worker.proxy_request(request)
 
 
+def installed_versions(packages: list[api.Package]) -> dict[str, str]:
+    """The installed version of each dependency of the packages that is installed. A
+    build the dependency replaces (PyTorch's ROCm build where NVIDIA's is listed) is
+    not that dependency: the dependency manager shows it missing, to be installed."""
+    installed_deps: dict[str, str] = {}
+    for package in packages:
+        for pkg_dep in package.dependencies:
+            name = distribution_name(pkg_dep.pypi_name)
+            installed_version = installed_packages.get(name, None)
+            if installed_version is not None and not replaced(
+                pkg_dep.replaces, name, installed_version
+            ):
+                installed_deps[pkg_dep.pypi_name] = installed_version
+    return installed_deps
+
+
 @app.route("/installed-dependencies", methods=["GET"])
 async def get_installed_dependencies(request: Request):
     worker = await AppContext.get(request.app).get_worker()
-    installed_deps: dict[str, str] = {}
-    packages = await worker.get_packages()
-    for package in packages:
-        for pkg_dep in package.dependencies:
-            installed_version = installed_packages.get(
-                distribution_name(pkg_dep.pypi_name), None
-            )
-            if installed_version is not None:
-                installed_deps[pkg_dep.pypi_name] = installed_version
-
-    return json(installed_deps)
+    return json(installed_versions(await worker.get_packages()))
 
 
 @app.route("/features")

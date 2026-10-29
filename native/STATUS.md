@@ -4,6 +4,46 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- 2026-10-29 **TensorRT engine caches, Windows CUDA loading, installer, VapourSynth on glibc 2.28** (not released).
+  - **ONNX TensorRT cache.** ONNX Runtime 1.30's engine file name hashes tensor names, never weights
+    (`TRTGenerateId`), and chaiNNer creates sessions from bytes, so two models of one architecture shared an engine:
+    on the RTX 5090 the second model gave the first one's output. Each model now keeps its engines in
+    `<cache>/<sha256[:32]>` (`session.py`); the timing cache (tactics per layer) stays shared. Old engine files at
+    the cache root are never read again; Clear Cache removes them.
+  - **CUDA on Windows.** Without torch imported (a VapourSynth script's process, or a worker whose torch failed to
+    import), ONNX Runtime's CUDA and TensorRT providers took cuBLAS/cuDNN from PATH (a cuDNN for CUDA 12 aborted the
+    process). A CUDA or TensorRT session now first runs ONNX Runtime's `preload_dlls` from PyTorch's `torch\lib`
+    when torch is installed but not imported; without the PyTorch package the error says to install it.
+  - **Installer.** `dependencies/run_chainner_pip.py` runs the bundled chainner_pip 23.2 with pip's fix for
+    pypa/pip#11847: wheels resolved from PEP 658 metadata (the PyTorch indexes' torch, triton, ...) download once
+    (a Windows NVIDIA PyTorch install fetched the 2 GB torch wheel twice); the progress names the file's package.
+    Install All and Update All count each dependency once and only what is missing or outdated.
+  - **VapourSynth on glibc 2.28-2.34.** vapoursynth-akarin 1.5.0 and vapoursynth-nlm-ispc 4.1 built for
+    manylinux_2_28 from the unchanged sources, released on the forks `Rift73/vapoursynth-akarin`
+    (`v1.5.0-glibc2.28`) and `Rift73/vapoursynth-nlm-ispc` (`v4.1-glibc2.28`) and pinned by SHA-256 below the glibc
+    PyPI's wheels need (2.35, 2.34); same frames as PyPI's builds in 28 cases on Rocky 8, Ubuntu 20.04 and Rocky 9.
+    vsview is left out below 2.34; a missing libatomic is named for VapourSynth without stopping the launch.
+- 2026-10-29 **DDS on Linux** (branch `prep-dds` over `chaiNNer-C` `0291226e`; not released). Linux reads and writes DDS
+  through `native/texconv`, a texconv for the options chaiNNer passes (`native/src/image_io.cpp`), built on DirectXTex
+  may2026, the release Windows' texconv.exe 2026.5.8.1 comes from, with DirectXMath apr2025, DirectX-Headers v1.619.5
+  and the .NET runtime's `sal.h` (all MIT), fetched at configure time and pinned by SHA-256. Each step is texconv's own
+  with its DirectXTex calls; what texconv.exe does through WIC (Windows' imaging component) and MSVC's `/fp:fast`
+  arithmetic are rebuilt from measurements of texconv.exe: WIC's conversions for the intermediates' pairs (5:6:5,
+  5:5:5:1, BGRX, grey), WIC's Fant, nearest-neighbour and linear scaler (the default mip filter, BOX, FANT, POINT, LINEAR), reciprocal division in DirectXTex and
+  texconv.exe's BC4/BC5 UNORM gradient arithmetic. BC6H and BC7 compress on the CPU, spread over threads as texconv.exe
+  does with OpenMP (4096x4096 BC7 with mips: 142 s, texconv.exe `-nogpu` 171 s). The zip carries `texconv` and its
+  notices (`texconv.LICENSE.txt`); Windows is unchanged (`_chainner_graph.pyd` and `chainner_native.dll` rebuilt
+  byte-identical).
+  - **Verified.** `native/tests/test_texconv.py`: 193 cases of chaiNNer's command lines (every offered format with and
+    without mips, grey and opaque sources, compression, alpha and mip filter options, cubemap, array, volume), file
+    and read-back pixels against texconv.exe's digests (`golden/texconv.json`): Windows 194 passed; Linux 184 passed,
+    10 listed in `linux_differences.json` (`texconv-wic-*`). A wider matrix (1,425 writes, 2,332 reads): every read
+    and every write equal except WIC's cubic mip filter on 8-bit formats and its linear one on formats it scales as
+    float (not rebuilt, DirectXTex's filters there: 12 % of the levels' samples differ, by up to 2 steps, more on SNORM, whose negative values WIC
+    clips to 0), a colour image saved as R8_UNORM or R16_UNORM (WIC's grey: 3.6 % of samples one step apart at 8 bits, up
+    to 2 steps of 65535 at 16 bits), and the mip levels of formats WIC scales as float (SNORM, 4-bit, 4:2:2, 8-bit
+    integer: 0.1 to 6 % of samples, a few steps apart at most) and their `-sepalpha`; BC3 with alpha dithering differs at some
+    ties on larger images (not rebuilt). `test_dds.py` runs on Linux but for texconv.exe's own options.
 - 2026-10-29 **AMD GPUs: ROCm 7.14.1 and MIGraphX 2.16.1** (branch `amd` over `chaiNNer-C` `ebf96abd`; not released:
   it ships after tests on rented AMD GPUs, `native/AMD.md`). Design, decisions and the per-area reports:
   `native/local/amd-20261029/`. No AMD GPU ran any of it yet: what needs one is an `amd_gpu` test the kit runs.
@@ -18,8 +58,10 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
     MIGraphX ops (`native/src/dual_hip`, Linux only: no Triton for AMD on Windows); VOSR's MIGraphX backends (FP8 by
     MIGraphX's own quantisation on gfx942/gfx950/gfx12xx); HAT's and DAT's attention in PyTorch's fused AMD kernels
     and, exported on a ROCm torch, in the layout MIGraphX fuses (spandrel `0.4.2+c11`); an installer that uninstalls
-    the builds an AMD dependency replaces (`Dependency.replaces`). NVIDIA and CPU machines choose, install and show
-    what they did before.
+    the builds an AMD dependency replaces (`Dependency.replaces`), and the reverse: on a computer with an NVIDIA GPU or
+    none, a folder from an AMD computer gets NVIDIA's or the CPU builds in place of the ROCm PyTorch, ONNX Runtime's
+    MIGraphX build and Triton for ROCm, and ROCm's runtime wheels leave with them. NVIDIA and CPU machines without AMD
+    builds choose, install and show what they did before.
   - **How built.** `native/cmake/rocm.cmake` with `CHAINNER_C_ROCM_ROOT` and `CHAINNER_C_MIGRAPHX_ROOT`
     (`build_linux.sh`, or `Build.ps1 -RocmRoot -MigraphxRoot`): HIP code for every target ROCm 7.14.1 ships (25 on
     Linux, 22 on Windows). MIGraphX and the ONNX Runtime wheels: `native/tools/migraphx/` (Linux; `windows/`), the
@@ -42,9 +84,9 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
     device is software). The launcher probes whether Chromium's sandbox can start and starts without it only where it
     cannot (`CHAINNER_SANDBOX`), checks the system libraries Electron, OpenCV and VapourSynth link against and prints
     the install command of the distribution (`CHAINNER_SKIP_LIBRARY_CHECK`), and gives `run` a virtual display
-    (`xvfb-run`) when there is none. Copy To Clipboard calls `wl-copy` or `xclip`. Limits: DDS conversion needs
-    texconv, so the Linux zip carries none and the DDS nodes keep their Windows-only error; the VapourSynth package
-    installs only with glibc 2.35 or newer; ONNX Runtime has no Intel GPU provider there (CPU; AMD: above); C-library math
+    (`xvfb-run`) when there is none. Copy To Clipboard calls `wl-copy` or `xclip`. DDS goes through chaiNNer-C's
+    texconv for Linux (`native/texconv`, below). Limits: below glibc 2.34 VapourSynth's
+    Preview Clips cannot open vsview (its Qt needs 2.34); ONNX Runtime has no Intel GPU provider there (CPU; AMD: above); C-library math
     follows the system's libm, so a few results can differ from Windows in the last bit (Linux twins of the golden
     manifests, `native/tests/golden/linux/`).
   - **How built.** `native/build_linux.sh` configures `native/toolchain-linux.cmake` and `native/cmake/linux.cmake`:
@@ -71,7 +113,7 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
     passed (the unseeded VOSR2 streaming test failed once and passes alone), and all seven Windows binaries rebuilt
     byte-identical. The release zip ran a Load Image, Resize, Save Image chain headless on Ubuntu 20.04 and 24.04,
     Debian 12, Rocky 8, Fedora, Arch and Tumbleweed with byte-identical output, and started under WSLg; through
-    chaiNNer-C's session code ONNX Runtime's CUDA and TensorRT providers match the CPU on the 5090. Open: DDS through a DirectXTex-based texconv replacement, VapourSynth on glibc 2.28 to
+    chaiNNer-C's session code ONNX Runtime's CUDA and TensorRT providers match the CPU on the 5090. Open: VapourSynth on glibc 2.28 to
     2.34 (a glibc 2.28 build of `vapoursynth-akarin` and a PySide6 override).
 - RELEASED 2026-10-25 as **v0.3.8 re-release 5**: DUAL neighborhood attention in both routes (spandrel 0.4.2+c10,
   wheel SHA-256 `24967414…b50f`, release commit `5b4ed67`; the TensorRT exporter's `DualNA` node and AOT kernel). Fork
@@ -736,7 +778,7 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | GPU-dependent work (the GPU lease and its unittest were removed on 2026-10-05, decision; `GPU-DEFERRED.md` item 2 retired). Item 1, the GPU provider paths, was verified by U4-light on 2026-10-07 and removed: NCNN on Vulkan, ONNX Runtime's CUDA execution provider and PyTorch CUDA work on the 3.14 stack (`default.chn` on the GPU included; peak per-process VRAM 1.87 GB); ONNX Runtime's DirectML and TensorRT providers were not exercised | `GPU-DEFERRED.md`, under the rule of 2026-10-07: no GPU benchmarks, at most 3 GB VRAM |
 | SP0 deferred follow-ups | `docs/superpowers/plans/2026-10-01-sp0-foundation.md`, "Deferred follow-ups" |
 | Upstream-parity items still listed (decision 4, 2026-10-04): the C1-class pins not yet checked against chaiNNer; lens power's input `maxss(+0, x)`, output-invisible and VERIFIED equal to chaiNNer's chain; compose's NaN selection, positions-level by rule (spec 4.4); suite-wide ±0-aware bitwise comparators (the suite's `assert_array_equal` treats ±0 as equal). Closed: the normalize/enforce clamp follows `np.clip` on the tested stack, −0 kept (ARCHITECTURE section 7, Consult 11 R-p) | SP5a, or the next task that touches them |
-| Upstream-bug follow-ups (2026-10-09): the bundled `chainner_pip` 23.2 downloads PEP 658 wheels twice (needs pip's pypa/pip#11847 fix in the bundled wheel); SCUNet ONNX export unblocking (needs a real-model test); the ONNX size probe cannot find multiples 12/24/48 and its lock serializes ONNX upscales during a probe; the host reads the worker's output as strict UTF-8 (`backslashreplace` on that Popen); the real first-start check needs a fixed, firewall-allowed folder | `the decision log` (D1-D15) |
+| Upstream-bug follow-ups (2026-10-09): SCUNet ONNX export unblocking (needs a real-model test); the ONNX size probe cannot find multiples 12/24/48 and its lock serializes ONNX upscales during a probe; the host reads the worker's output as strict UTF-8 (`backslashreplace` on that Popen); the real first-start check needs a fixed, firewall-allowed folder | `the decision log` (D1-D15) |
 | VOSR speed, PyTorch path: each window's DINO features go to the CPU and back, and every DiT prediction is synchronized and copied to the CPU (`vosr2_context.py`) | Keep them on the GPU when Default has room; paired A/B |
 | VOSR cold start: the 5.6 GB FP32 DiT checkpoint is converted to BF16 at every cold load (`vosr2.py`) | A cached BF16 copy; measure the cold start |
 | VOSR temporal on PyTorch: the next restoration does not overlap the CPU stabilization (about 1.1 s of 4.6 s per 2560×1440 frame); `stabilize` runs on one thread (1.0 s); the next `motion_pair` could run alongside | Paired A/B and a memory check for each |
@@ -768,6 +810,10 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 ## Decision log
 
+- 2026-10-29 (DDS on Linux, stand-in ruling): a texconv lookalike on DirectXTex (native/texconv) instead of the
+  error; texconv.exe's output is the reference, and what Windows decides in WIC or MSVC's arithmetic is rebuilt where
+  measured exactly, otherwise listed (`linux_differences.json`, `texconv-wic-*`). Records:
+  `native/local/prep-20261029/lane-dds/`.
 - 2026-10-29 (Linux x86-64): Windows code stays verbatim and Linux code goes in `#else` / `if(NOT WIN32)` blocks and
   `native/toolchain-linux.cmake`; the glibc 2.28 floor comes from a Rocky 8.10 sysroot inside an Ubuntu 22.04 image;
   C-library math follows the system's libm (Linux twins of the golden manifests) except `sqrt` and `sqrtf`, which

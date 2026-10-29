@@ -321,6 +321,11 @@ if(CHAINNER_C_FUZZ)
     add_subdirectory(tests/fuzz)
 endif()
 
+# texconv for Linux (texconv/CMakeLists.txt), the DDS nodes' converter there; Windows ships Microsoft's texconv.exe.
+if(NOT WIN32)
+    add_subdirectory(texconv)
+endif()
+
 # The AMD GPU parts (cmake/rocm.cmake): optional, built when CHAINNER_C_ROCM_ROOT is given.
 include(cmake/rocm.cmake)
 

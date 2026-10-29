@@ -238,6 +238,8 @@ package from upstream's Windows nightly (sections 5, 6 and 8) and have no Linux 
    where Windows pins the same tool: LLVM 23.1.2, the CUDA 13 and TensorRT 11 majors (`CMakeLists.txt`) and TensorRT's
    version (`chaiNNer_tensorrt`), CMake, Ninja, NASM 3.01, Node 24 (`.nvmrc`), and the lock's CPython and NumPy. Once
    Rocky 8.10 leaves the main mirror, set the `ROCKY_MIRROR` default to `https://dl.rockylinux.org/vault/rocky/8.10`.
+   texconv's sources are the one download outside the image: the configure fetches them into the build directory,
+   pinned the same way in `native/texconv/CMakeLists.txt` (item 8).
 6. **Release (section 8).** `native/tools/build_linux_release.sh --ref <commit>` builds that commit in the image,
    checks `backend/src` and the packaged app with `check_glibc.py`, makes the zip and prints the SHA-256 of the zip and
    of every module (`native/README.md`'s hash table lists the Windows binaries). A release with the AMD GPU parts adds
@@ -252,3 +254,13 @@ package from upstream's Windows nightly (sections 5, 6 and 8) and have no Linux 
    native/tests/test_matting_complete.py` (`run_tests.py` sets `NPY_DISABLE_CPU_FEATURES` there). Cases whose Linux
    reference library rounds differently from the Windows build are listed with their reason in
    `native/tests/linux_differences.json`; both conftests skip them on Linux.
+8. **texconv (DDS).** Linux runs `native/texconv` where Windows runs `backend/src/texconv/texconv.exe` (DirectXTex's
+   release binary): texconv's steps for the options chaiNNer passes, on the same DirectXTex release, with texconv.exe's
+   WIC steps and MSVC `/fp:fast` arithmetic rebuilt from measurements (`wic.cpp`, `bc4_unorm_gradient.h`, the
+   DirectXTex compile options). `native/tests/test_texconv.py` compares both with `native/tests/golden/texconv.json`,
+   texconv.exe's results for chaiNNer's command lines. A texconv.exe update moves the DirectXTex tag and SHA-256 in
+   `native/texconv/CMakeLists.txt` to that release (the configure stops when BC4BC5.cpp's patched line moved), then
+   re-records the golden file on Windows (`native\.venv\Scripts\python.exe -B native/tools/texconv_golden.py`), runs
+   the test on both systems, and lists the cases WIC decides that the rebuild misses in `linux_differences.json`
+   (groups `texconv-wic-*`). A new texconv option in `native/src/image_io.cpp` needs its counterpart in `texconv.cpp`,
+   which refuses options it does not know.

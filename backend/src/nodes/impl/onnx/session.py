@@ -59,11 +59,23 @@ def _load_tensorrt() -> None:
         importlib.import_module("tensorrt_libs")
 
 
+def _pytorch_installed() -> bool:
+    return importlib.util.find_spec("torch") is not None
+
+
 @cache
 def _load_cuda() -> None:
-    """On Linux, ORT's CUDA provider finds cuDNN 9 only once it is loaded (`import
-    torch` loads it): load CUDA 13 and cuDNN 9 from the NVIDIA wheels, once."""
-    ort.preload_dlls(msvc=False, directory="")
+    """ORT's CUDA and TensorRT providers import CUDA 13 and cuDNN 9 by name, which
+    resolve to the modules of those names already loaded (`import torch` loads
+    PyTorch's). Else Linux finds no cuDNN, and Windows searches PATH, where another
+    CUDA's cuDNN crashes the process at its first run. So they load once by full path:
+    on Linux from the NVIDIA wheels; on Windows from PyTorch's folder (ORT's default
+    there; its wheel carries chaiNNer's only CUDA), where torch is installed but not
+    imported, as in a VapourSynth script's process."""
+    if sys.platform == "linux":
+        ort.preload_dlls(msvc=False, directory="")
+    elif "torch" not in sys.modules and _pytorch_installed():
+        ort.preload_dlls(msvc=False)
 
 
 @cache
@@ -77,18 +89,15 @@ def _load_migraphx() -> None:
     load_migraphx_libraries()
 
 
-def _migraphx_program_dir(
-    model: OnnxModel, cache_path: str, fp16: bool, exhaustive_tune: bool
-) -> str:
-    """The folder of `model`'s compiled MIGraphX programs in the cache at
-    `cache_path`. MIGraphX names a program by the graph's tensor names and shapes, the
-    GPU architecture and the input shape only: two models of one architecture with
-    other weights, or one model compiled in another precision or tuning, would load
-    each other's programs from one folder."""
+def _model_cache_dir(model: OnnxModel, cache_path: str, variant: str = "") -> str:
+    """The folder of `model`'s compiled programs or engines in the cache at
+    `cache_path`, named by the SHA-256 of the model and the `variant` of its
+    compilation. ONNX Runtime's MIGraphX and TensorRT providers name what they compile
+    by the graph's tensor names, not its weights (and a model created from bytes has
+    no file name): two models of one architecture with other weights would load each
+    other's from one folder."""
     digest = hashlib.sha256(model.bytes).hexdigest()[:32]
-    precision = "fp16" if fp16 else "fp32"
-    tuning = "-exhaustive" if exhaustive_tune else ""
-    path = os.path.join(cache_path, f"{digest}-{precision}{tuning}")
+    path = os.path.join(cache_path, digest + variant)
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -117,17 +126,6 @@ def create_inference_session(
             stacklevel=2,
         )
         return session
-    tensorrt: ProviderDesc = (
-        "TensorrtExecutionProvider",
-        {
-            "device_id": gpu_index,
-            "trt_engine_cache_enable": tensorrt_cache_path is not None,
-            "trt_engine_cache_path": tensorrt_cache_path,
-            "trt_fp16_enable": should_tensorrt_fp16,
-            "trt_timing_cache_enable": tensorrt_cache_path is not None,
-            "trt_timing_cache_path": tensorrt_cache_path,
-        },
-    )
     cuda: ProviderDesc = (
         "CUDAExecutionProvider",
         {
@@ -142,13 +140,30 @@ def create_inference_session(
     )
     cpu: ProviderDesc = "CPUExecutionProvider"
 
-    if sys.platform == "linux" and execution_provider in (
+    if sys.platform in ("linux", "win32") and execution_provider in (
         "TensorrtExecutionProvider",
         "CUDAExecutionProvider",
     ):
         _load_cuda()
     if execution_provider == "TensorrtExecutionProvider":
         _load_tensorrt()
+        # The engines go to the model's own folder; the timing cache (tactic timings
+        # by layer, which carry no weights) stays one for all models.
+        tensorrt: ProviderDesc = (
+            "TensorrtExecutionProvider",
+            {
+                "device_id": gpu_index,
+                "trt_engine_cache_enable": tensorrt_cache_path is not None,
+                "trt_engine_cache_path": (
+                    None
+                    if tensorrt_cache_path is None
+                    else _model_cache_dir(model, tensorrt_cache_path)
+                ),
+                "trt_fp16_enable": should_tensorrt_fp16,
+                "trt_timing_cache_enable": tensorrt_cache_path is not None,
+                "trt_timing_cache_path": tensorrt_cache_path,
+            },
+        )
         providers = [tensorrt, cuda, cpu]
     elif execution_provider == "CUDAExecutionProvider":
         providers = [cuda, cpu]
@@ -165,11 +180,11 @@ def create_inference_session(
             "migraphx_exhaustive_tune": migraphx_exhaustive_tune,
         }
         if migraphx_cache_path is not None:
-            migraphx_options["migraphx_model_cache_dir"] = _migraphx_program_dir(
-                model,
-                migraphx_cache_path,
-                should_migraphx_fp16,
-                migraphx_exhaustive_tune,
+            # MIGraphX's names also leave out the precision and the tuning
+            precision = "fp16" if should_migraphx_fp16 else "fp32"
+            tuning = "-exhaustive" if migraphx_exhaustive_tune else ""
+            migraphx_options["migraphx_model_cache_dir"] = _model_cache_dir(
+                model, migraphx_cache_path, f"-{precision}{tuning}"
             )
         providers = [("MIGraphXExecutionProvider", migraphx_options), cpu]
     else:
@@ -271,6 +286,16 @@ def get_onnx_session(
                     " Its TensorRT provider uses the TensorRT that chaiNNer-C's"
                     " TensorRT package installs. Install the TensorRT package in the"
                     " Dependency Manager, or choose CUDA in the ONNX settings."
+                )
+            elif (
+                execution_provider
+                in ("TensorrtExecutionProvider", "CUDAExecutionProvider")
+                and not _pytorch_installed()
+            ):
+                message += (
+                    " On NVIDIA GPUs it uses the CUDA and cuDNN that chaiNNer-C's PyTorch"
+                    " package installs. Install the PyTorch package in the Dependency"
+                    " Manager, or choose another execution provider in the ONNX settings."
                 )
             else:
                 message += " Choose another execution provider in the ONNX settings."

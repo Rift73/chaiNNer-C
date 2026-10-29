@@ -362,7 +362,9 @@ O read_tiff_alpha(py::dict g,O path) {
 }
 O read_dds(py::dict g,O path) {
     if(!equal(name(g,"get_ext")(path),py::str(".dds")))return py::none();
+#ifdef _WIN32
     if(!equal(name(g,"platform").attr("system")(),py::str("Windows")))return py::none();
+#endif // Linux runs native/texconv
     return name(g,"remove_unnecessary_alpha")(name(g,"read_dds_texconv")(path));
 }
 O decode_ext(O extensions,O decoder,O extension_fn,O path) {
@@ -725,10 +727,32 @@ O decode_bytes(O bytes) {
         catch(py::error_already_set& second){if(!second.matches(PyExc_Exception))throw;GraphHandledException second_context(second);return py::str(bytes);}
     }
 }
+#ifndef _WIN32
+// Linux's texconv (native/texconv), run as Windows runs texconv.exe. An archive tool that drops file modes leaves it
+// without its execute bit, which comes back here; one that still cannot run (a file system mounted noexec) is named.
+O run_linux_texconv(py::dict g,const py::list& command) {
+    O os=name(g,"os"),texconv=command[0];
+    try {
+        if(truth(os.attr("access")(texconv,os.attr("F_OK")))&&!truth(os.attr("access")(texconv,os.attr("X_OK"))))
+            os.attr("chmod")(texconv,O(os.attr("stat")(texconv).attr("st_mode"))|py::int_(0111));
+        return name(g,"subprocess").attr("run")(command,py::arg("check")=false,py::arg("capture_output")=true);
+    } catch(py::error_already_set& error) {
+        if(!error.matches(PyExc_OSError))throw;
+        GraphHandledException context(error);
+        raise(PyExc_ValueError,format("texconv cannot run: {} must be an executable file on a file system that runs programs (not mounted noexec)",texconv));
+    }
+}
+#endif
 void run_texconv(py::dict g,O args,O error_message) {
+#ifdef _WIN32
     if(!equal(name(g,"platform").attr("system")(),py::str("Windows")))raise(PyExc_ValueError,py::str("Texconv is only supported on Windows. Reading and writing DDS files is only partially supported on other systems."));
+#endif // Linux runs native/texconv
     py::list command;command.append(name(g,"__TEXCONV_EXE"));command.append("-nologo");command.attr("extend")(args);
+#ifdef _WIN32
     O result=name(g,"subprocess").attr("run")(command,py::arg("check")=false,py::arg("capture_output")=true);
+#else
+    O result=run_linux_texconv(g,command);
+#endif
     if(!equal(result.attr("returncode"),py::int_(0))) {
         O output=add(name(g,"__decode")(result.attr("stdout")),name(g,"__decode")(result.attr("stderr"))).attr("replace")("\r","");
         py::list lines;lines.append("Failed to run texconv.");lines.append(format("texconv: {}",name(g,"__TEXCONV_EXE")));lines.append(format("args: {}",args));lines.append(format("exit code: {}",result.attr("returncode")));lines.append(format("output: {}",output));

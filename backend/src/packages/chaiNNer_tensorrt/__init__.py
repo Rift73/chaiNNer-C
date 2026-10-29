@@ -3,7 +3,7 @@ from __future__ import annotations
 from sanic.log import logger
 
 from api import GB, MB, Category, Dependency, add_package
-from dependencies.rocm import gpu_architectures, triton_rocm
+from dependencies.rocm import TRITON_AMD_BUILDS, gpu_architectures, triton_rocm
 from gpu import NvDevice, nvidia
 from system import is_arm_mac, is_linux, is_windows
 
@@ -46,6 +46,7 @@ def get_triton() -> list[Dependency]:
             pypi_name="triton",
             version="3.8.0",
             size_estimate=250 * MB,
+            replaces=TRITON_AMD_BUILDS,
         )
     ]
 

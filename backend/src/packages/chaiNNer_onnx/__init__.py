@@ -3,7 +3,12 @@ from __future__ import annotations
 from sanic.log import logger
 
 from api import KB, MB, Dependency, add_package
-from dependencies.rocm import gpu_architectures, onnxruntime_migraphx, rocm_runtime
+from dependencies.rocm import (
+    ORT_AMD_BUILDS,
+    gpu_architectures,
+    onnxruntime_migraphx,
+    rocm_runtime,
+)
 from gpu import nvidia
 from system import is_arm_mac, is_linux, is_windows
 
@@ -57,6 +62,7 @@ def get_onnx_runtime():
                 "onnxruntime_gpu-1.30.0%2Btrt11.4-cp314-cp314-win_amd64.whl"
                 "#sha256=3ab12b436d5f6463867b0635366c29fd4a26c3ae489d2b3911c00391411d1ca6"
             ),
+            replaces=ORT_AMD_BUILDS,
         )
     elif nvidia.is_available and is_linux:
         # The same build for Linux (manylinux_2_28): the unmodified v1.30.0 tag with its
@@ -72,6 +78,7 @@ def get_onnx_runtime():
                 "onnxruntime_gpu-1.30.0%2Btrt11.4-cp314-cp314-manylinux_2_28_x86_64.whl"
                 "#sha256=b67a9a5b03df5fd4687d33d41dc035542d4ec2c4da8da57741749ee21b783778"
             ),
+            replaces=ORT_AMD_BUILDS,
         )
     elif nvidia.is_available:
         return Dependency(
@@ -80,6 +87,7 @@ def get_onnx_runtime():
             version="1.30.0",
             size_estimate=120 * MB,
             import_name="onnxruntime",
+            replaces=ORT_AMD_BUILDS,
         )
     elif amd_architectures():
         return onnxruntime_migraphx()
@@ -92,6 +100,7 @@ def get_onnx_runtime():
             version="1.24.4",
             size_estimate=15 * MB,
             import_name="onnxruntime",
+            replaces=ORT_AMD_BUILDS,
         )
     else:
         return Dependency(
@@ -99,6 +108,7 @@ def get_onnx_runtime():
             pypi_name="onnxruntime",
             version="1.30.0",
             size_estimate=6 * MB,
+            replaces=ORT_AMD_BUILDS,
         )
 
 

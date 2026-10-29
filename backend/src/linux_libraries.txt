@@ -12,7 +12,8 @@
 #   PyTorch may run on an AMD GPU: the AMD kernel driver's compute interface is there
 #   (/sys/class/kfd/kfd/topology/nodes) and no NVIDIA driver is (/proc/driver/nvidia; with one,
 #   PyTorch runs on CUDA). The launcher only prints amd's install command: a machine whose AMD
-#   GPU never runs models starts without them.
+#   GPU never runs models starts without them. vapoursynth is what some of VapourSynth's plugin
+#   wheels need (fmtconv's libatomic); the launcher only prints its install command too.
 # - "(t64)" after an apt name: Debian 13 and Ubuntu 24.04 (glibc 2.38 and newer) renamed the
 #   package with a t64 suffix there (libasound2t64), and no longer have the old name.
 libGL.so.1               base           libgl1                libglvnd-glx           libglvnd         libglvnd
@@ -24,7 +25,7 @@ libX11.so.6              base,electron  libx11-6              libX11            
 libglib-2.0.so.0         base,electron  libglib2.0-0(t64)     glib2                  glib2            libglib-2_0-0
 libgthread-2.0.so.0      base           libglib2.0-0(t64)     glib2                  glib2            libgthread-2_0-0
 libstdc++.so.6           base           libstdc++6            libstdc++              gcc-libs         libstdc++6
-libatomic.so.1           amd            libatomic1            libatomic              gcc-libs         libatomic1
+libatomic.so.1           amd,vapoursynth libatomic1            libatomic              gcc-libs         libatomic1
 libgtk-3.so.0            electron       libgtk-3-0(t64)       gtk3                   gtk3             libgtk-3-0
 libnss3.so               electron       libnss3               nss                    nss              mozilla-nss
 libasound.so.2           electron       libasound2(t64)       alsa-lib               alsa-lib         libasound2

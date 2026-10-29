@@ -20,7 +20,9 @@
 #                 as the _rocm_sdk_devel directory that `rocm-sdk init` makes from AMD's rocm-sdk-core, -libraries and
 #                 -devel wheels; --migraphx is MIGraphX 2.16's install prefix. Both are mounted read-only, at /opt/rocm
 #                 and /opt/migraphx, and the zip carries neither: the modules load MIGraphX and HIP from the installed
-#                 onnxruntime-migraphx and rocm-sdk packages (nodes/impl/migraphx/runner.py).
+#                 onnxruntime-migraphx and rocm-sdk packages (nodes/impl/migraphx/runner.py). The AMD kit's example
+#                 custom-op library (native/AMD.md), which the zip does not carry either, stays in the build directory:
+#                 <work>/build/migraphx_runner/chainner_example_migx_ops.so, checked and hashed as the modules.
 #   --no-package  stop after the native binaries and their check.
 # The zip: <work>/src/out/make/zip/linux/x64/. Containers: --memory=16g, named cnl-build-release-<pid>.
 set -euo pipefail
@@ -39,7 +41,11 @@ if [ "${1:-}" = --in-container ]; then
         echo "build_linux_release.sh: no MIGraphX runner was built: this commit has no AMD GPU parts" >&2
         exit 1
     fi
-    python3 -I native/tools/check_glibc.py backend/src
+    kit_ops=()
+    if [ "$3" = yes ]; then
+        kit_ops=(/work/build/migraphx_runner/chainner_example_migx_ops.so)
+    fi
+    python3 -I native/tools/check_glibc.py backend/src "${kit_ops[@]}"
     if [ "$package" = yes ]; then
         npm ci --no-audit --no-fund
         npm run make-linux-zip
@@ -48,6 +54,9 @@ if [ "${1:-}" = --in-container ]; then
         sha256sum out/make/zip/linux/x64/*.zip
     fi
     find backend/src -name '*.so' -exec sha256sum {} +
+    if [ "$3" = yes ]; then
+        sha256sum "${kit_ops[@]}"
+    fi
     exit 0
 fi
 

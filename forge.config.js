@@ -229,10 +229,9 @@ const config = {
             if (platform === 'linux') {
                 await Promise.all(
                     outputPaths.map(async (outputPath) => {
-                        // texconv.exe, which reads and writes DDS, is a Windows program; the DDS
-                        // nodes report that on other systems
-                        await fs.rm(path.join(outputPath, 'resources/src/texconv'), {
-                            recursive: true,
+                        // texconv.exe, which reads and writes DDS, is a Windows program; Linux runs
+                        // the texconv beside it (native/texconv), built on the same DirectXTex
+                        await fs.rm(path.join(outputPath, 'resources/src/texconv/texconv.exe'), {
                             force: true,
                         });
                         // The packager makes the folder readable by its owner only, and a zip

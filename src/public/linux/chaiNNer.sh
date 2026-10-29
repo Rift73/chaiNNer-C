@@ -84,7 +84,8 @@ print_install() {
 # the groups base and electron, and of display when $1 is display. The files of amd, where
 # PyTorch may run on ROCm (the AMD kernel driver's compute interface is there and no NVIDIA
 # driver is: with one, PyTorch runs on CUDA), only get the command: a machine whose AMD GPU
-# never runs models (a Ryzen's graphics, CPU PyTorch) starts without them.
+# never runs models (a Ryzen's graphics, CPU PyTorch) starts without them. So do the files of
+# vapoursynth, on every machine: only some VapourSynth plugins need them.
 check_system_files() {
     table="$here/resources/src/linux_libraries.txt"
     if [ ! -r "$table" ] || [ -n "${CHAINNER_SKIP_LIBRARY_CHECK:-}" ]; then
@@ -113,12 +114,14 @@ check_system_files() {
     packages=
     amd_missing=
     amd_packages=
+    vs_missing=
+    vs_packages=
     while read -r file groups apt dnf pacman zypper; do
         case $file in '' | '#'*) continue ;; esac
         case ",$groups," in
             *,base,* | *,electron,*) required=1 ;;
             *,display,*) [ "$1" = display ] || continue; required=1 ;;
-            *,amd,*) [ -n "$rocm" ] || continue; required= ;;
+            *,amd,* | *,vapoursynth,*) required= ;;
             *) continue ;;
         esac
         have_file "$file" && continue
@@ -139,13 +142,30 @@ check_system_files() {
                 *) packages="$packages $package" ;;
             esac
         else
-            amd_missing="$amd_missing $file"
-            amd_packages="$amd_packages $package"
+            case ",$groups," in
+                *,amd,*)
+                    if [ -n "$rocm" ]; then
+                        amd_missing="$amd_missing $file"
+                        amd_packages="$amd_packages $package"
+                    fi
+                    ;;
+            esac
+            case ",$groups," in
+                *,vapoursynth,*)
+                    vs_missing="$vs_missing $file"
+                    vs_packages="$vs_packages $package"
+                    ;;
+            esac
         fi
     done <"$table"
     if [ -n "$amd_missing" ]; then
         echo "chaiNNer-C: PyTorch on an AMD GPU (ROCm) needs$amd_missing, which this system lacks." >&2
         print_install "$amd_packages"
+        echo >&2
+    fi
+    if [ -n "$vs_missing" ]; then
+        echo "chaiNNer-C: some VapourSynth plugins need$vs_missing, which this system lacks." >&2
+        print_install "$vs_packages"
         echo >&2
     fi
     [ -n "$missing" ] || return 0

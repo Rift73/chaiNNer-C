@@ -34,8 +34,15 @@ def part(title: str, body: Callable[[], None]) -> None:
 
 
 def tool(path: Path, *arguments: str) -> str:
+    command = [str(path), *arguments]
+    # ROCm's wheel ships some tools (amd-smi) as scripts for "/usr/bin/env python3",
+    # which a bare image lacks: they run with this Python, which has ROCm's packages.
+    with path.open("rb") as file:
+        first_line = file.readline()
+    if first_line.startswith(b"#!") and b"python" in first_line:
+        command.insert(0, sys.executable)
     result = subprocess.run(
-        [str(path), *arguments],
+        command,
         capture_output=True,
         text=True,
         timeout=120,

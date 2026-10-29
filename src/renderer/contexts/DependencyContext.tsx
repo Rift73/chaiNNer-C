@@ -53,6 +53,11 @@ import { log } from '../../common/log';
 import { EMPTY_ARRAY, isNotNullish, joinEnglish, noop } from '../../common/util';
 import { versionGt } from '../../common/version';
 import { Markdown } from '../components/Markdown';
+import {
+    PackageUpdateInfo,
+    formatSizeEstimate,
+    getAllOperation,
+} from '../helpers/dependencyManager';
 import { useBackendEventSourceListener } from '../hooks/useBackendEventSource';
 import { useMemoObject } from '../hooks/useMemo';
 import { AlertBoxContext, AlertType } from './AlertBoxContext';
@@ -93,24 +98,6 @@ const getUninstallCommand = (packages: readonly Package[], pythonInfo: PythonInf
     return args.join(' ');
 };
 
-const formatBytes = (bytes: number): string => {
-    const KB = 1024 ** 1;
-    const MB = 1024 ** 2;
-    const GB = 1024 ** 3;
-
-    const rounded = (n: number): string => {
-        if (n < 10) return Number(n.toPrecision(2)).toString();
-        return n.toFixed(0);
-    };
-
-    if (bytes < KB) return `${bytes}\u2009Byte`;
-    if (bytes < MB) return `${rounded(bytes / KB)}\u2009KB`;
-    if (bytes < GB) return `${rounded(bytes / MB)}\u2009MB`;
-    return `${rounded(bytes / GB)}\u2009GB`;
-};
-const formatSizeEstimate = (packages: readonly PyPiPackage[]): string =>
-    formatBytes(packages.reduce((a, p) => a + p.sizeEstimate, 0));
-
 const PackageDependencyView = memo(
     ({ pkg, installedVersion }: { pkg: PyPiPackage; installedVersion: Version | null }) => {
         let color = 'red.500';
@@ -147,37 +134,6 @@ const PackageDependencyView = memo(
         );
     }
 );
-
-class PackageUpdateInfo {
-    readonly missing: readonly PyPiPackage[];
-
-    readonly outdated: readonly PyPiPackage[];
-
-    get canInstall(): boolean {
-        return this.missing.length > 0;
-    }
-
-    get canUpdate(): boolean {
-        return this.outdated.length > 0;
-    }
-
-    constructor(pkg: Package, installedPyPi: Readonly<Partial<Record<PyPiName, Version>>>) {
-        const missing: PyPiPackage[] = [];
-        const outdated: PyPiPackage[] = [];
-
-        for (const dep of pkg.dependencies) {
-            const installed = installedPyPi[dep.pypiName];
-            if (!installed) {
-                missing.push(dep);
-            } else if (versionGt(dep.version, installed)) {
-                outdated.push(dep);
-            }
-        }
-
-        this.missing = missing;
-        this.outdated = outdated;
-    }
-}
 
 const PackageView = memo(
     ({
@@ -381,10 +337,7 @@ const PackagesSection = memo(
             ...(canInstall ? ['Install'] : []),
         ].join('/');
         const showAll = canUpdate + canInstall > 1;
-        const allOperationPackages = packages.filter((p, i) => {
-            const info = infos[i];
-            return !p.disabled && (info.canInstall || info.canUpdate);
-        });
+        const allOperation = getAllOperation(packages, infos);
 
         return (
             <Box w="full">
@@ -409,11 +362,11 @@ const PackagesSection = memo(
                             mr={10}
                             size="sm"
                             onClick={() => {
-                                installPackages(...allOperationPackages);
+                                installPackages(...allOperation.packages);
                             }}
                         >
                             {`${operationsForAll} All Packages (${formatSizeEstimate(
-                                allOperationPackages.flatMap((p) => p.dependencies)
+                                allOperation.dependencies
                             )})`}
                         </Button>
                     )}

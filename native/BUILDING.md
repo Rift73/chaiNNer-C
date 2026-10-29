@@ -176,6 +176,11 @@ VapourSynth plugin, VapourSynth R81's `VapourSynth4.h` (`-D CHAINNER_C_VAPOURSYN
    `backend/tests/test_migraphx_runner.py`, with the build's `migraphx_runner/chainner_example_migx_ops.so` in
    `CHAINNER_C_MIGRAPHX_TEST_OPS`.
 
+   Every Linux build also makes `backend/src/texconv/texconv`, the DDS nodes' converter there (`native/texconv`), and
+   its notices `texconv.LICENSE.txt`. Its sources, DirectXTex may2026, DirectXMath apr2025, DirectX-Headers v1.619.5
+   and the .NET runtime 9.0.2's `sal.h`, are fetched at the first configure into `<build>/texconv/sources`, each
+   checked against its SHA-256 (`native/texconv/CMakeLists.txt`), so that configure needs the network once.
+
 3. The tested stack: `native/tools/provision_runtime.sh` (no option) provisions it from
    [`python-stack.lock.linux.txt`](python-stack.lock.linux.txt), the Windows stack plus what Linux adds (PyTorch's CUDA
    libraries and Triton, `cuda-bindings`, Sanic's `uvloop` and `ujson`). As on Windows it installs the pins as
@@ -200,8 +205,8 @@ as on Windows: never for releases.
 `zip` on `PATH`, on a Linux file system: a Windows drive mounted into WSL gives every file mode 777). A zip is made on
 Linux, because the `portable` marker follows the build host. Forge's `prePackage` refuses a package without
 `chainner_native.so`, `_chainner_graph.so`, `chainner_ext.so` or VOSR's `vosr2_qkv.so` (set
-`CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1` to waive the last, as on Windows), `postPackage` removes `texconv` (a Windows
-program), and `postMake` adds the `portable` marker and the launcher `chaiNNer.sh` (`src/public/linux/chaiNNer.sh`).
+`CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1` to waive the last, as on Windows), `postPackage` removes `texconv.exe` (a
+Windows program; the Linux `texconv` beside it stays), and `postMake` adds the `portable` marker and the launcher `chaiNNer.sh` (`src/public/linux/chaiNNer.sh`).
 The result is `out/make/zip/linux/x64/chaiNNer-linux-x64-<version>.zip`, holding `chaiNNer-linux-x64/` with `chainner`
 (Electron), `chaiNNer.sh`, `portable` and `resources/src`.
 
@@ -239,7 +244,9 @@ script prints the SHA-256 of the zip and of every module. The first run download
   carries neither tree: the modules need `libamdhip64.so.7` and MIGraphX's libraries by their sonames and have no run
   path, and the MIGraphX package loads those libraries from the installed `onnxruntime-migraphx` and `rocm-sdk`
   packages before the modules (`nodes/impl/migraphx/runner.py`), as the TensorRT parts' `libnvinfer.so.11` comes from
-  the `tensorrt` package.
+  the `tensorrt` package. The AMD kit's example custom-op library (`native/AMD.md`), which the zip does not carry
+  either, is built with them and stays in `<work>/build/migraphx_runner/chainner_example_migx_ops.so`, checked by
+  `check_glibc.py` and hashed with the modules.
 
 **MIGraphX and its ONNX Runtime wheel (AMD GPUs).** AMD ships no MIGraphX for ROCm 7.14, so
 `native/tools/migraphx/build.sh --rocm-wheels <directory> [--work <directory>] [--jobs <n>] [step...]` builds it from
