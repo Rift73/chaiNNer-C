@@ -34,7 +34,7 @@ static int widen(bucket *result, size_t c, float low, float high) {
 static bucket describe(const float *data, size_t start, size_t count, size_t channels,
                        cn_isa_level isa) {
     bucket result = {start, count, 0, 0};
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (isa >= CN_ISA_AVX2 && channels <= 4) {
         float low[4], high[4];
         cn_palette_extrema_avx2(data, start, count, channels, low, high);
@@ -58,7 +58,7 @@ static bucket describe(const float *data, size_t start, size_t count, size_t cha
 static int gather_channel(float *values, const float *source, size_t count, size_t channels,
                           size_t channel, cn_isa_level isa) {
     source += channel;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (isa >= CN_ISA_AVX2) {
         for (size_t p = 0; p < count; ++p) values[p] = source[p * channels];
         return cn_palette_any_nan_avx2(values, count);
@@ -78,7 +78,7 @@ static int gather_channel(float *values, const float *source, size_t count, size
    values holds the same floats as the bucket, and a count does not depend on their
    order. */
 static size_t count_above(const float *values, size_t count, float median, cn_isa_level isa) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (isa >= CN_ISA_AVX2) return cn_palette_count_above_avx2(values, count, median);
 #else
     (void)isa;
@@ -124,7 +124,7 @@ typedef struct {
    (the same counts). */
 static void median_count_range(const float *values, size_t begin, size_t end, unsigned shift,
                                uint32_t mask, uint32_t (*ways)[MEDIAN_BINS], cn_isa_level isa) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (isa >= CN_ISA_AVX2) {
         cn_palette_median_count_avx2(values, begin, end, shift, mask, ways);
         return;
@@ -162,7 +162,7 @@ static void median_count(const float *values, size_t count, unsigned shift, uint
    the advance is not. At ISA level avx2 the AVX2 unit's (the same copy). */
 static size_t median_narrow(const float *values, size_t count, unsigned shift, uint32_t prefix,
                             float *narrowed, cn_isa_level isa) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (isa >= CN_ISA_AVX2) return cn_palette_median_narrow_avx2(values, count, shift, prefix, narrowed);
 #else
     (void)isa;

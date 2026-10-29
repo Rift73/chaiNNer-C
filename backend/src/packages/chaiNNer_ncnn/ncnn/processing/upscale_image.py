@@ -35,7 +35,7 @@ from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
 from system import is_mac
 
-from ...settings import NcnnSettings, get_settings
+from ...settings import CPU_DEVICE, NcnnSettings, get_settings
 from .. import processing_group
 
 use_gpu = ncnn.get_gpu_count() > 0
@@ -86,6 +86,7 @@ def upscale_impl(
     progress: Progress | None = None,
 ):
     net = get_ncnn_net(model, settings=settings)
+    on_vulkan = use_gpu and settings.gpu_index != CPU_DEVICE
     try:
 
         def estimate():
@@ -93,7 +94,7 @@ def upscale_impl(
             if heap_budget_bytes == 0:
                 heap_budget_bytes = 1024**5
             model_size_estimate = model.model.bin_length
-            if use_gpu:
+            if on_vulkan:
                 if is_mac:
                     return MaxTileSize(256)
                 heap_budget_bytes = min(
@@ -118,7 +119,7 @@ def upscale_impl(
                 estimate_tile_size(heap_budget_bytes, int(model_size_estimate), img, 4)
             )
 
-        if use_gpu:
+        if on_vulkan:
             vkdev = ncnn.get_gpu_device(settings.gpu_index)
             with ncnn_allocators(vkdev) as (blob_vkallocator, staging_vkallocator):
                 result = ncnn_auto_split(

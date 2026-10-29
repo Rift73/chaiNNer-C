@@ -3,7 +3,7 @@
  * its failure messages included (line numbers as upstream). Corrected (Consult 6 D-1): a
  * failed image transfer frees its memory with GlobalFree, where upstream leaks it and calls
  * DeleteObject on the HGLOBAL; the node path (utility_clipboard.cpp) does the same.
- * Pixels: clipboard_ops.c's float32 -> BGRA. */
+ * Pixels: clipboard_ops.c's float32 -> BGRA. On Linux through clipboard_posix.h. */
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -11,6 +11,9 @@
 #endif
 #include "ext.h"
 #include "clipboard_ops.h"
+#ifndef _WIN32
+#include "clipboard_posix.h"
+#endif
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -191,23 +194,100 @@ static PyObject *clipboard_create_instance(PyObject *type, PyObject *unused)
     return PyType_GenericAlloc(chn_clipboard_type, 0);
 }
 #else
+/* Linux: the desktop's clipboard program (clipboard_posix.h), with text as UTF-8 and images as PNG; the arguments are
+ * checked as on Windows, in the same order and with the same errors. */
+
+/* The publication, without the GIL; a ValueError with the failure's message. */
+static PyObject *publish_bytes(const unsigned char *bytes, size_t size, int image)
+{
+    char scratch[512];
+    const char *failure;
+    Py_BEGIN_ALLOW_THREADS
+    failure = cn_clipboard_publish(bytes, size, image, scratch, sizeof(scratch));
+    Py_END_ALLOW_THREADS
+    if (failure) {
+        PyErr_SetString(PyExc_ValueError, failure);
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
 static PyObject *clipboard_write_text(PyObject *self, PyObject *args, PyObject *kwargs)
 {
-    (void)self; (void)args; (void)kwargs;
-    PyErr_SetString(PyExc_ValueError, "Failed to create clipboard: unsupported platform");
-    return NULL;
+    (void)self;
+    static const char *const names[] = {"text"};
+    PyObject *values[1];
+    Py_ssize_t length;
+    if (chn_parse(args, kwargs, "Clipboard.write_text", names, 1, 1, values)) return NULL;
+    /* The str's own UTF-8, which the caller's arguments keep alive while the GIL is released. */
+    const char *text = chn_utf8(values[0], "text", &length);
+    if (!text) return NULL;
+    return publish_bytes((const unsigned char *)text, (size_t)length, 0);
 }
 
 static PyObject *clipboard_write_image(PyObject *self, PyObject *args, PyObject *kwargs)
 {
-    return clipboard_write_text(self, args, kwargs);
+    (void)self;
+    static const char *const names[] = {"image", "pixel_format"};
+    PyObject *values[2];
+    chn_image image;
+    Py_ssize_t length;
+    if (chn_parse(args, kwargs, "Clipboard.write_image", names, 2, 2, values) ||
+        chn_image_extract(values[0], "image", &image)) return NULL;
+    const char *format = chn_utf8(values[1], "pixel_format", &length);
+    if (!format) { chn_image_release(&image); return NULL; }
+    int rgb = length == 3 && !memcmp(format, "RGB", 3);
+    if (!rgb && !(length == 3 && !memcmp(format, "BGR", 3))) {
+        chn_image_release(&image);
+        PyErr_Format(PyExc_ValueError, "Invalid pixel format: %U", values[1]);
+        return NULL;
+    }
+    size_t h = image.height, w = image.width, c = image.channels;
+    if (c != 1 && c != 3 && c != 4) {
+        chn_image_release(&image);
+        PyErr_Format(PyExc_ValueError, "Invalid number of channels: %zu", c);
+        return NULL;
+    }
+    if (h > CN_PNG_MAX_SIDE || w > CN_PNG_MAX_ROW_SAMPLES / 4) {
+        chn_image_release(&image);
+        PyErr_SetString(PyExc_ValueError, "Clipboard image dimensions exceed the PNG limits");
+        return NULL;
+    }
+    if (!h || !w) {
+        chn_image_release(&image);
+        PyErr_SetString(PyExc_ValueError, "Cannot copy an empty image to the clipboard");
+        return NULL;
+    }
+    size_t bytes = w * h * 4;
+    unsigned char *pixels = malloc(bytes);
+    if (!pixels) { chn_image_release(&image); return PyErr_NoMemory(); }
+    const Py_buffer *view = &image.view;
+    int status;
+    cn_clipboard_buffer png;
+    Py_BEGIN_ALLOW_THREADS
+    status = cn_clipboard_pixels_f32(view->buf, h, w, c, view->strides[0], view->strides[1],
+        view->ndim == 3 ? view->strides[2] : 0, rgb, pixels, bytes);
+    Py_END_ALLOW_THREADS
+    chn_image_release(&image);
+    if (status) {
+        free(pixels);
+        PyErr_SetString(PyExc_ValueError, "Invalid or overflowing clipboard image buffer");
+        return NULL;
+    }
+    Py_BEGIN_ALLOW_THREADS
+    status = cn_clipboard_png(pixels, h, w, &png);
+    Py_END_ALLOW_THREADS
+    free(pixels);
+    if (chn_status((cn_status)status)) return NULL;
+    PyObject *result = publish_bytes(png.data, png.size, 1);
+    free(png.data);
+    return result;
 }
 
 static PyObject *clipboard_create_instance(PyObject *type, PyObject *unused)
 {
     (void)type; (void)unused;
-    PyErr_SetString(PyExc_ValueError, "Failed to create clipboard: unsupported platform");
-    return NULL;
+    return PyType_GenericAlloc(chn_clipboard_type, 0);
 }
 #endif
 

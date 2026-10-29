@@ -2,6 +2,13 @@
  * numeric elements are computed by C/C++ kernels. */
 #pragma once
 #include <pybind11/pybind11.h>
+#include <cfloat>
+// NumPy's longdouble is the C long double. Under MSVC that is double, which the
+// float64 paths serve; where it is wider (the x87 80-bit type stored in 16 bytes
+// on x86-64 Linux), longdouble and clongdouble have paths of their own.
+#if LDBL_MANT_DIG > DBL_MANT_DIG
+#define CN_WIDE_LONG_DOUBLE 1
+#endif
 // add=0, sub=1, mul=2, div=3, floordiv=4, pow=5, mod=6.
 pybind11::object cn_graph_binary(const pybind11::object&,const pybind11::object&,int operation);
 pybind11::object cn_graph_inplace(const pybind11::object&,const pybind11::object&,int operation);

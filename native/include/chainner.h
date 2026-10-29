@@ -24,6 +24,15 @@
 #define CN_NOINLINE
 #endif
 
+/* CN_ISA_UNITS() is 1 where CMakeLists.txt builds the ISA units and the C entries dispatch to them (src/isa.c):
+ * x86-64 with clang-cl on Windows, x86-64 Linux; 0 elsewhere (scalar only). Function-like, so a unit that tests it
+ * without this header fails to compile instead of silently running scalar. */
+#if (defined(_MSC_VER) && defined(_M_X64)) || (defined(__linux__) && defined(__x86_64__))
+#define CN_ISA_UNITS() 1
+#else
+#define CN_ISA_UNITS() 0
+#endif
+
 typedef enum cn_status {
     CN_OK = 0,
     CN_INVALID_ARGUMENT = 1,

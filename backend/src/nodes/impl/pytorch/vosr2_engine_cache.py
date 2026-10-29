@@ -27,7 +27,7 @@ from ...utils.utils import file_identity
 from .vosr2 import BundlePaths, VosrBundle, load_weights, read_configs
 from .vosr2_official import FILES
 from .vosr2_plan_file import compress, compressed, stored
-from .vosr2_process import OwnedJob
+from .vosr2_process import PARENT_PID_VARIABLE, OwnedJob
 from .vosr2_trt_compile import STAGE_LINE
 from .vosr2_trt_plugin import plugin_path
 
@@ -114,17 +114,20 @@ def file_lock(path: Path, context: NodeContext, waiting_for: str) -> Iterator[No
 
 @contextmanager
 def cache_lock(path: Path, context: NodeContext) -> Iterator[None]:
-    if os.name != "nt":
-        raise RuntimeError("VOSR TensorRT compilation currently requires Windows.")
     with file_lock(path, context, "the VOSR compiler cache lock"):
         yield
+
+
+def stored_record(path: Path, root: Path) -> Path:
+    """Where stored_hash keeps path's SHA-256."""
+    path_key = hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:16]
+    return root / f"checkpoint-{path_key}.json"
 
 
 def stored_hash(path: Path, root: Path) -> str:
     """SHA-256 remembered in root across sessions while the file is unchanged."""
     identity = list(file_identity(path))
-    path_key = hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:16]
-    digest_path = root / f"checkpoint-{path_key}.json"
+    digest_path = stored_record(path, root)
     try:
         previous = json.loads(digest_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -138,6 +141,20 @@ def stored_hash(path: Path, root: Path) -> str:
     digest = file_hash(path)
     write_json(digest_path, {"identity": identity, "sha256": digest})
     return digest
+
+
+def forget_hash(path: Path, root: Path | None = None) -> None:
+    """Drop the SHA-256 that file_hash remembers for path in this process and, with
+    root, the one stored_hash keeps there. Call it before deleting or replacing the
+    file: a file system gives the inode of a deleted file to the next file it creates
+    and stamps both with coarse times, so the new file can have the old one's identity
+    and would be taken for it."""
+    absolute = str(path.absolute())
+    for identity in list(_HASHES):
+        if identity[0] == absolute:
+            _HASHES.pop(identity, None)
+    if root is not None:
+        stored_record(path, root).unlink(missing_ok=True)
 
 
 def identity_key(identity: dict) -> str:
@@ -223,12 +240,20 @@ def compile_worker(
             "Not enough free GPU memory to compile VOSR TensorRT. "
             "Close other GPU workloads and run again."
         )
-    # Match multiprocessing's Windows venv workaround: own the interpreter,
-    # not the redirector whose child can outlive its termination.
-    executable = Path(getattr(sys, "_base_executable", sys.executable))
     environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    if executable != Path(sys.executable):
-        environment["__PYVENV_LAUNCHER__"] = sys.executable
+    executable = Path(sys.executable)
+    creationflags = 0
+    if os.name == "nt":
+        # Match multiprocessing's Windows venv workaround: own the interpreter,
+        # not the redirector whose child can outlive its termination.
+        executable = Path(getattr(sys, "_base_executable", sys.executable))
+        if executable != Path(sys.executable):
+            environment["__PYVENV_LAUNCHER__"] = sys.executable
+        # Assign before the Windows venv launcher can spawn its interpreter.
+        creationflags = subprocess.CREATE_NO_WINDOW | 0x00000004
+    else:
+        # The compiler checks, before its slow imports, that this process still lives.
+        environment[PARENT_PID_VARIABLE] = str(os.getpid())
     job = OwnedJob()
     process = None
     started = time.monotonic()
@@ -251,11 +276,13 @@ def compile_worker(
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
-                # Assign before the Windows venv launcher can spawn its interpreter.
-                creationflags=subprocess.CREATE_NO_WINDOW | 0x00000004,
+                creationflags=creationflags,
+                # Outside Windows the job is the process group the compiler leads.
+                start_new_session=os.name != "nt",
             )
             job.assign(process)
-            psutil.Process(process.pid).resume()
+            if os.name == "nt":
+                psutil.Process(process.pid).resume()
             while process.poll() is None:
                 # A build cannot be safely suspended inside CUDA. Keep policing
                 # memory and cancellation while paused; inference waits later.

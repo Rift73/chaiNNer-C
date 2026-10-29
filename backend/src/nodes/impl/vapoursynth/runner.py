@@ -9,8 +9,10 @@ import io
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -33,6 +35,10 @@ T = TypeVar("T")
 STDERR_TAIL_LINES = 20
 # How often a wait for vspipe checks for Stop.
 STOP_POLL_SECONDS = 0.05
+# How long a new vsview (Linux) has to stay up before its window counts as opened.
+VIEWER_GRACE_SECONDS = 3
+# The environment variables with which vsview (Qt) finds a window system on Linux.
+DISPLAY_VARIABLES = ("DISPLAY", "WAYLAND_DISPLAY", "QT_QPA_PLATFORM")
 # The colour frame properties clip_props reads.
 COLOUR_PROPS = tuple(prop for prop, _ in PROPS.values())
 
@@ -108,12 +114,62 @@ def _venv_appdata() -> str | None:
     return str(appdata)
 
 
+def _libpython() -> Path:
+    """This Python's shared libpython, which vsscript loads to run a script."""
+    name = sysconfig.get_config_var("INSTSONAME")
+    folders = (
+        Path(sys.base_prefix) / "lib",
+        Path(sys.base_prefix) / "lib64",
+        Path(sysconfig.get_config_var("LIBDIR") or "."),
+    )
+    for folder in folders:
+        if name and (folder / name).is_file():
+            return folder / name
+    raise VSScriptError(
+        "VapourSynth needs a Python with a shared libpython, and this one has none."
+    )
+
+
+@cache
+def vsscript_config_home() -> str:
+    # On Linux vsscript reads $XDG_CONFIG_HOME/vapoursynth/vapoursynth.toml, whatever
+    # the Python: a line per libvsscript.so (by its real path) with the executable and
+    # the libpython to load and the executable's modification time, which must all be
+    # right. `vapoursynth config` writes the line, but cannot find the libpython of a
+    # Python whose sysconfig names the machine that built it, and takes the path of a
+    # library reached through a link as it is. So the line is written here, in a folder
+    # inside the runtime (nothing goes to the user's config), and kept current for a
+    # runtime that was moved or whose Python was replaced.
+    library = os.path.realpath(vspipe().parent / "libvsscript.so")
+    key = library.replace("/lib64/", "/lib/")
+    mtime = int(os.stat(sys.executable).st_mtime)
+    values = [sys.executable, str(_libpython()), str(mtime)]
+    quoted = [json.dumps(text, ensure_ascii=False) for text in (key, *values)]
+    line = f"{quoted[0]} = [{','.join(quoted[1:])}]\n"
+    home = Path(sys.prefix) / "vsconfig"
+    config = home / "vapoursynth" / "vapoursynth.toml"
+    if not config.is_file() or config.read_text(encoding="utf-8") != line:
+        config.parent.mkdir(parents=True, exist_ok=True)
+        handle, name = tempfile.mkstemp(dir=config.parent, suffix=".tmp")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as file:
+                file.write(line)
+            os.replace(name, config)
+        except BaseException:
+            Path(name).unlink(missing_ok=True)
+            raise
+    return str(home)
+
+
 def vs_env() -> dict[str, str]:
     """The environment of every VapourSynth child process."""
     env = _inherited_env()
-    appdata = _venv_appdata()
-    if appdata is not None:
-        env["APPDATA"] = appdata
+    if sys.platform.startswith("linux"):
+        env["XDG_CONFIG_HOME"] = vsscript_config_home()
+    else:
+        appdata = _venv_appdata()
+        if appdata is not None:
+            env["APPDATA"] = appdata
     return env
 
 
@@ -137,6 +193,14 @@ def script_error(
             if node_id is not None:
                 break
     message = "\n".join(lines[-STDERR_TAIL_LINES:]).strip()
+    if not message and returncode and returncode < 0:
+        # POSIX: a child that a signal ended has the signal's number, negated, as code.
+        signal_name = signal.strsignal(-returncode) or "unknown signal"
+        return VSScriptError(
+            f"vspipe was ended by signal {-returncode} ({signal_name}) and left no"
+            " message (a plugin crashed).",
+            node_id,
+        )
     if not message and returncode:
         # Windows' crash codes read as hex: 0xC0000005 is an access violation.
         code = (
@@ -548,18 +612,42 @@ def _open_viewer(script: Path) -> subprocess.Popen[bytes]:
             "vsview is not installed. Install the vsview package in the dependency"
             " manager."
         )
+    on_linux = sys.platform.startswith("linux")
+    # A QT_QPA_PLATFORM names the platform (offscreen, say) whatever the display.
+    if on_linux and not any(os.environ.get(name) for name in DISPLAY_VARIABLES):
+        raise VSScriptError(
+            "vsview needs a graphical session: neither DISPLAY nor WAYLAND_DISPLAY is"
+            " set."
+        )
     # vsview's output goes to a log beside the script.
-    with open(script.parent / "vsview.log", "wb") as log:
-        return subprocess.Popen(
+    log_path = script.parent / "vsview.log"
+    with open(log_path, "wb") as log:
+        viewer = subprocess.Popen(
             [str(vs_python()), "-m", "vsview", str(script)],
             cwd=script.parent,
-            env=vs_env(),
+            # It runs the script in its own process, which needs no vsscript
+            # configuration: on Linux its Qt and its settings keep the user's config
+            # folder.
+            env=_inherited_env() if on_linux else vs_env(),
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
             creationflags=_NO_WINDOW | _NEW_GROUP,
             start_new_session=True,
         )
+    if on_linux:
+        # Qt ends the process within a second or two when it cannot open a window (no
+        # X11 or Wayland connection, libxcb-cursor0 missing).
+        try:
+            returncode = viewer.wait(VIEWER_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            return viewer
+        raise VSScriptError(
+            f"vsview ended right after it started (code {returncode}). Its log,"
+            f" {log_path}, says why; on Linux Qt needs a graphical session and"
+            " libxcb-cursor0."
+        )
+    return viewer
 
 
 def launch_preview(script: Path, key: str) -> None:

@@ -17,7 +17,8 @@ extern "C" {
 /* The effective level. The first call runs the probe once: CPUID, XGETBV and
  * CHAINNER_C_ISA (exactly scalar, avx2 or avx512; unset or anything else is
  * auto), capped at the CPU's maximum. A C entry reads it once per call and
- * passes it down, so one call never mixes levels. Non-MSVC-x64 builds: scalar. */
+ * passes it down, so one call never mixes levels. Builds without the ISA units
+ * (CN_ISA_UNITS(), chainner.h): scalar. */
 cn_isa_level cn_isa_current(void);
 /* out[0] the effective level, out[1] the CHAINNER_C_ISA request (-1 = auto),
  * which cn_isa_set leaves unchanged, out[2] the CPU's maximum. */

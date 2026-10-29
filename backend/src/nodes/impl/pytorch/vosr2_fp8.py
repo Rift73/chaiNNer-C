@@ -28,6 +28,7 @@ from .vosr2_engine_cache import (
     compile_worker,
     ensure_engine_set,
     file_hash,
+    forget_hash,
 )
 from .vosr2_trt_models import STAGES
 from .vosr2_trt_plugin import load_plugin, plugin_path
@@ -155,6 +156,7 @@ def fetch_graphs(context: NodeContext, folder: Path, manifest: dict) -> Path:
             for name, entry in manifest["files"].items()
         },
         file_hash,
+        forget_hash,
         "the VOSR FP8 graphs",
         # The build unpacks the graphs next to the set, then writes the engines.
         ENGINE_BYTES + unpacked_bytes(manifest),

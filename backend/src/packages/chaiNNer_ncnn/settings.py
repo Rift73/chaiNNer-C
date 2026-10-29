@@ -1,13 +1,31 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 from ncnn import ncnn
 
 from api import DropdownSetting, NodeContext, NumberSetting, ToggleSetting
-from system import is_arm_mac
+from api.settings import DropdownOption
+from system import is_arm_mac, is_linux
 
 from . import package
 
+# The gpu_index that runs NCNN on the CPU, offered where Vulkan has only software devices
+CPU_DEVICE = -1
+# GpuInfo.type() of a CPU-type Vulkan device, such as Mesa's llvmpipe and lavapipe
+CPU_DEVICE_TYPE = 3
+
 use_gpu = ncnn.get_gpu_count() > 0
+# NCNN's own CPU kernels beat a software Vulkan device, so on Linux, where Mesa installs
+# one with no GPU behind it, they are the default; the software device stays selectable.
+software_only = (
+    is_linux
+    and use_gpu
+    and all(
+        ncnn.get_gpu_info(i).type() == CPU_DEVICE_TYPE
+        for i in range(ncnn.get_gpu_count())
+    )
+)
 
 if not is_arm_mac and use_gpu:
     try:
@@ -15,13 +33,24 @@ if not is_arm_mac and use_gpu:
         for i in range(ncnn.get_gpu_count()):
             gpu_list.append(ncnn.get_gpu_info(i).device_name())
 
+        options: list[DropdownOption] = [
+            {"label": x, "value": str(i)} for i, x in enumerate(gpu_list)
+        ]
+        description = "Which GPU to use for NCNN. This is only relevant if you have multiple GPUs."
+        if software_only:
+            options.insert(0, {"label": "CPU", "value": str(CPU_DEVICE)})
+            description = (
+                "NCNN found only software Vulkan devices, which are slower than its"
+                " own CPU kernels, so it runs on the CPU. Choose a device to use it anyway."
+            )
+
         package.add_setting(
             DropdownSetting(
                 label="GPU",
                 key="gpu_index",
-                description="Which GPU to use for NCNN. This is only relevant if you have multiple GPUs.",
-                options=[{"label": x, "value": str(i)} for i, x in enumerate(gpu_list)],
-                default="0",
+                description=description,
+                options=options,
+                default=str(CPU_DEVICE) if software_only else "0",
             )
         )
     except Exception:
@@ -30,9 +59,9 @@ if not is_arm_mac and use_gpu:
 default_net_opt = ncnn.Net().opt
 
 # Disabling Winograd/SGEMM was only tested on the CPU, so these toggles are
-# offered only when NCNN finds no Vulkan GPU. It should work fine regardless of
-# CPU/GPU. Ditto for multithreading, except it only makes sense for CPU.
-if not use_gpu:
+# offered only when NCNN finds no Vulkan GPU (or only software ones). It should work
+# fine regardless of CPU/GPU. Ditto for multithreading, except it only makes sense for CPU.
+if not use_gpu or software_only:
     package.add_setting(
         ToggleSetting(
             label="Use Winograd",
@@ -97,7 +126,9 @@ def get_settings(context: NodeContext) -> NcnnSettings:
     settings = context.settings
 
     return NcnnSettings(
-        gpu_index=settings.get_int("gpu_index", 0, parse_str=True),
+        gpu_index=settings.get_int(
+            "gpu_index", CPU_DEVICE if software_only else 0, parse_str=True
+        ),
         winograd=settings.get_bool(
             "winograd", default_net_opt.use_winograd_convolution
         ),

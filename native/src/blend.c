@@ -32,7 +32,7 @@ static int supported_channels(int channels)
 static void image_range(void *context, size_t begin, size_t end)
 {
     const blend_job *job = context;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (job->isa >= CN_ISA_AVX2) {
         cn_blend_images_avx2(job, begin, end);
         return;

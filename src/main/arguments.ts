@@ -90,6 +90,14 @@ export const parseArgs = (args: readonly string[]): ParsedArguments => {
                 description: 'Enable chromium features',
                 hidden: true,
             },
+            // The Linux launcher passes --no-sandbox where chromium's sandbox cannot start; yargs
+            // reads it as the negation of this option.
+            sandbox: {
+                type: 'boolean',
+                default: true,
+                description: 'Disable the chromium sandbox with --no-sandbox',
+                hidden: true,
+            },
         })
         .parserConfiguration({ 'unknown-options-as-args': true })
         .parseSync();

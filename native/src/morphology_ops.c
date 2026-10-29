@@ -179,7 +179,7 @@ static void ellipse_horizontal(void *raw, size_t begin, size_t end)
     }
 }
 
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
 /* Rows [begin, end) of ellipse_horizontal's outputs as direct folds through the AVX2 unit (morph_fold.h), the
  * deque's outputs. */
 static void ellipse_rows(void *raw, size_t begin, size_t end)
@@ -199,7 +199,7 @@ static void ellipse_combine(void *raw, size_t begin, size_t end)
 {
     const morphology_context *ctx = (const morphology_context *)raw;
     size_t i = begin;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (ctx->isa >= CN_ISA_AVX2) {
         cn_morphology_combine_avx2(ctx, begin, end);
         return;
@@ -322,7 +322,7 @@ CN_EXPORT cn_status cn_morphology_complete(const float *src, float *out,
                 if (half) {
                     int folds = 0;
                     ctx.src = current; ctx.out = horizontal; ctx.offset = half;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
                     folds = ctx.isa >= CN_ISA_AVX2 && half <= CN_MORPH_FOLD_RADIUS;
                     if (folds)
                         status = cn_parallel_for(height, 1 + 65536 / (width * channels), ellipse_rows, &ctx);

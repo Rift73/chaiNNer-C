@@ -47,6 +47,18 @@ template<class T> int nan_kind(T value) noexcept {
     std::memcpy(&bits, &value, sizeof(bits));
     return (bits & ~Bits::sign) <= Bits::infinity ? 0 : (bits & Bits::quiet) ? 1 : 2;
 }
+#ifdef CN_WIDE_LONG_DOUBLE
+// The x87 type: a NaN has the top exponent and a fraction below the explicit
+// integer bit; its quiet bit is the fraction's top bit.
+template<> int nan_kind(long double value) noexcept {
+    uint64_t significand;
+    uint16_t exponent;
+    std::memcpy(&significand, &value, sizeof(significand));
+    std::memcpy(&exponent, reinterpret_cast<const char*>(&value) + sizeof(significand), sizeof(exponent));
+    if((exponent & 0x7fffU) != 0x7fffU || !(significand << 1)) return 0;
+    return (significand >> 62) & 1 ? 1 : 2;
+}
+#endif
 template<class T> bool ordinary(T left, T right, int op) noexcept {
     switch(op) {
     case Py_LT: return left < right;
@@ -233,11 +245,17 @@ O numeric(const O &left, const O &right, int op) {
     if(kind == 'f') {
         if(descriptor.itemsize() == 2) traverse<uint16_t>(av, bv, output, [op](auto x, auto y) { return half(x,y,op); });
         else if(descriptor.itemsize() == 4) traverse<float>(av,bv,output,[op](auto x,auto y) { return floating(x,y,op); });
+#ifdef CN_WIDE_LONG_DOUBLE
+        else if(descriptor.itemsize() == sizeof(long double)) traverse<long double>(av,bv,output,[op](auto x,auto y) { return floating(x,y,op); });
+#endif
         else traverse<double>(av,bv,output,[op](auto x,auto y) { return floating(x,y,op); });
     } else if(kind == 'c') {
         // The real loops clear the FP status after comparing, so only a complex
         // loop reports the events of the iterator's casts, with its own.
         if(descriptor.itemsize() == 8) traverse<ComplexValue<float>>(av,bv,output,[&](auto x,auto y) { return complex(x,y,op,events); });
+#ifdef CN_WIDE_LONG_DOUBLE
+        else if(descriptor.itemsize() == 2 * sizeof(long double)) traverse<ComplexValue<long double>>(av,bv,output,[&](auto x,auto y) { return complex(x,y,op,events); });
+#endif
         else traverse<ComplexValue<double>>(av,bv,output,[&](auto x,auto y) { return complex(x,y,op,events); });
         if(output.size()) events |= operands.deferred;
     } else if(kind == 'b') {

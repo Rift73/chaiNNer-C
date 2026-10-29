@@ -244,7 +244,7 @@ static void color_range(void *raw, size_t begin, size_t end)
     if (ctx->op == 11) vector_end = ctx->width / ((size_t)ctx->lanes * 2) * ((size_t)ctx->lanes * 2);
     for (size_t y = begin; y < end; ++y) {
         size_t x = 0;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
         /* At avx2 and above, the vector pixels of BGR to and from HSV, HLS, YUV and YCrCb at 8 lanes, and of BGR to
            grey and to and from Lab, through the AVX2 unit. */
         if (ctx->isa >= CN_ISA_AVX2 && ctx->lanes == 8 && (ctx->op == 4 || ctx->op == 6)) {

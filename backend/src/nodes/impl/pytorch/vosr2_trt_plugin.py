@@ -9,17 +9,27 @@ from pathlib import Path
 
 
 def plugin_path() -> Path:
-    if sys.platform != "win32":
-        raise RuntimeError(
-            "The VOSR TensorRT rewrite plugin currently supports Windows."
+    if sys.platform == "win32":
+        path = Path(__file__).with_name("vosr2_qkv.dll")
+        build = (
+            "native/Build.ps1 -Define CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>,"
+            "CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit>"
         )
-    path = Path(__file__).with_name("vosr2_qkv.dll")
+    elif sys.platform == "linux":
+        path = Path(__file__).with_name("vosr2_qkv.so")
+        build = (
+            "native/build_linux.sh -D CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>"
+            " -D CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit>"
+        )
+    else:
+        raise RuntimeError(
+            "The VOSR TensorRT rewrite plugin supports Windows and Linux."
+        )
     if not path.is_file():
         raise RuntimeError(
             f"The VOSR TensorRT plugin {path} is missing: this build was made "
-            "without it. Use the PyTorch backend, or build it with native/Build.ps1 "
-            "-Define CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>,"
-            "CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit> (native/README.md, Build)."
+            f"without it. Use the PyTorch backend, or build it with {build} "
+            "(native/README.md, Build)."
         )
     return path
 

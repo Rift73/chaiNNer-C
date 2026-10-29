@@ -15,8 +15,9 @@ namespace cn_trt {
 
 class Runner {
 public:
-    // Checks the arguments before any CUDA call; nvinfer_11.dll and nvinfer_plugin_11.dll are
-    // loaded here (Python's `import tensorrt` has usually loaded them already).
+    // Checks the arguments before any CUDA call; nvinfer_11.dll and nvinfer_plugin_11.dll (on
+    // Linux libnvinfer.so.11 and libnvinfer_plugin.so.11) are loaded here (Python's `import
+    // tensorrt` has usually loaded them already).
     Runner(void const* engine, std::size_t size, int device, int streams);
     ~Runner();
     Runner(Runner const&) = delete;

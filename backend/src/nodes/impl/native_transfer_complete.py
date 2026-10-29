@@ -21,6 +21,7 @@ from .native import (
     pixel_source,
     pixel_target,
     ptr,
+    shared_library_suffix,
 )
 from .native_analysis import channel_stats
 
@@ -35,7 +36,7 @@ class _Backend(ct.Structure):
 @lru_cache(maxsize=1)
 def _backend():
     libs = Path(np.__file__).resolve().parent.parent / "numpy.libs"
-    paths = list(libs.glob("libscipy_openblas64_*.dll"))
+    paths = list(libs.glob("libscipy_openblas64_*" + shared_library_suffix()))
     if len(paths) != 1:
         raise RuntimeError(
             "Color Transfer requires the installed NumPy ILP64 OpenBLAS library"

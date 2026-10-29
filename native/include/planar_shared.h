@@ -85,7 +85,7 @@ static int planar_rows(const planar_job *job, size_t begin, size_t end, size_t f
     return special != 0;
 }
 
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
 /* planar_avx2.c: rows [begin, end), inside one chunk, for ISA level avx2 or above;
  * returns planar_rows' Inf/NaN flag. One and three channels run 8 pixels at a time
  * with half_bits_to_f32's operation per lane; each row's last width % 8 pixels, and

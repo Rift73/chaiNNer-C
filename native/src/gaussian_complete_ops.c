@@ -278,14 +278,11 @@ static SRWLOCK gaussian_lock = SRWLOCK_INIT;
 static void lock_gaussian(void) { AcquireSRWLockExclusive(&gaussian_lock); }
 static void unlock_gaussian(void) { ReleaseSRWLockExclusive(&gaussian_lock); }
 #else
-#include <stdatomic.h>
-static atomic_flag gaussian_lock = ATOMIC_FLAG_INIT;
-static void lock_gaussian(void) {
-    while (atomic_flag_test_and_set_explicit(&gaussian_lock, memory_order_acquire)) {}
-}
-static void unlock_gaussian(void) {
-    atomic_flag_clear_explicit(&gaussian_lock, memory_order_release);
-}
+/* The SRW lock's counterpart: a sleeping, non-recursive mutex. */
+#include <pthread.h>
+static pthread_mutex_t gaussian_lock = PTHREAD_MUTEX_INITIALIZER;
+static void lock_gaussian(void) { pthread_mutex_lock(&gaussian_lock); }
+static void unlock_gaussian(void) { pthread_mutex_unlock(&gaussian_lock); }
 #endif
 uint64_t cn_image_fp_state(void);
 #define GAUSSIAN_SLOTS 32

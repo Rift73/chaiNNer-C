@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import sys
 import warnings
+from functools import cache
 from typing import Any, Dict, Protocol, Sequence, Tuple, Union
 from weakref import WeakKeyDictionary
 
@@ -47,12 +49,19 @@ def _tensorrt_package_installed() -> bool:
 
 
 def _load_tensorrt() -> None:
-    """ORT's TensorRT provider imports nvinfer_11.dll and nvonnxparser_11.dll by name.
-    Importing the TensorRT package's tensorrt_libs loads its TensorRT 11 by full path,
-    so the provider finds those modules without a PATH change, and the TensorRT nodes
-    use the same ones."""
+    """ORT's TensorRT provider imports nvinfer_11.dll and nvonnxparser_11.dll by name
+    (on Linux libnvinfer.so.11 and libnvonnxparser.so.11). Importing the TensorRT
+    package's tensorrt_libs loads its TensorRT 11 by full path, so the provider finds
+    those modules without a PATH change, and the TensorRT nodes use the same ones."""
     if _tensorrt_package_installed():
         importlib.import_module("tensorrt_libs")
+
+
+@cache
+def _load_cuda() -> None:
+    """On Linux, ORT's CUDA provider finds cuDNN 9 only once it is loaded (`import
+    torch` loads it): load CUDA 13 and cuDNN 9 from the NVIDIA wheels, once."""
+    ort.preload_dlls(msvc=False, directory="")
 
 
 def create_inference_session(
@@ -101,6 +110,11 @@ def create_inference_session(
     )
     cpu: ProviderDesc = "CPUExecutionProvider"
 
+    if sys.platform == "linux" and execution_provider in (
+        "TensorrtExecutionProvider",
+        "CUDAExecutionProvider",
+    ):
+        _load_cuda()
     if execution_provider == "TensorrtExecutionProvider":
         _load_tensorrt()
         providers = [tensorrt, cuda, cpu]

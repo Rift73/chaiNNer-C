@@ -14,9 +14,14 @@
 #include <vector>
 
 #include <fcntl.h>
+#ifdef _WIN32
 #include <io.h>
 #include <share.h>
+#endif
 #include <sys/stat.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 namespace cn::files {
 namespace {
@@ -25,6 +30,7 @@ constexpr size_t block = size_t(1) << 20;
 
 std::atomic<uint64_t> sequence{0};
 
+#ifdef _WIN32
 // Whether Windows takes paths past MAX_PATH in this process (the LongPathsEnabled setting and a long-path-aware
 // manifest), as the libraries handed a temporary file's name see it.
 bool long_paths() {
@@ -89,6 +95,34 @@ public:
 private:
     HANDLE handle_;
 };
+#else
+// A file opened for reading as Python's open(path, "rb") opens it, without blocking on a FIFO; only a regular file has
+// a size, so a folder or a device reads as one that cannot be read.
+class Reader {
+public:
+    explicit Reader(const std::filesystem::path &path) : file_(open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK)) {}
+    // The file's size, or -1 when it cannot be read.
+    int64_t size() const {
+        struct stat status;
+        return file_.valid() && fstat(file_.handle, &status) == 0 && S_ISREG(status.st_mode) ? int64_t(status.st_size)
+                                                                                              : -1;
+    }
+    // The next n bytes; false at a read error or an early end.
+    bool read(uint8_t *out, size_t n) const {
+        while (n) {
+            const ssize_t got = ::read(file_.handle, out, std::min(n, block));
+            if (got < 0 && errno == EINTR) continue;
+            if (got <= 0) return false;
+            out += got;
+            n -= size_t(got);
+        }
+        return true;
+    }
+
+private:
+    Handle file_;
+};
+#endif
 
 // Whether `final` holds exactly `data`: the size first, then 1 MiB blocks; false when it cannot be read.
 bool holds(const std::filesystem::path &final, std::span<const uint8_t> data) {
@@ -118,6 +152,7 @@ bool same_bytes(const std::filesystem::path &a, const std::filesystem::path &b) 
     return true;
 }
 
+#ifdef _WIN32
 // Whether Windows can create a file of this name: 1 to 255 UTF-16 units, no control character and none of
 // <>:"/\|?* (wildcards to a search, so the name must never reach one).
 bool valid_name(const std::wstring &name) {
@@ -148,11 +183,40 @@ std::filesystem::path temporary_name(const std::filesystem::path &final) {
         if (GetFileAttributesW(name.c_str()) == INVALID_FILE_ATTRIBUTES) return name;
     }
 }
+#else
+// Whether Linux can create a file of this name: 1 to 255 bytes (NAME_MAX), no slash and no NUL.
+bool valid_name(const std::string &name) {
+    return !name.empty() && name.size() <= 255 && name.find('/') == std::string::npos &&
+           name.find('\0') == std::string::npos;
+}
+
+// The temporary name for sequence number `seq` (the ruled format, decision P8):
+// `<final>.chainner-c-<pid>-<seq>.tmp`; `.cnc-<pid>-<seq>.tmp` in final's folder where that name would pass the
+// 255-byte name limit. Linux has no long-path switch or \\?\ form: a path past PATH_MAX fails as open(final, "wb")
+// fails. The short name only for a valid final name (valid_name()), as on Windows.
+std::filesystem::path temporary_candidate(const std::filesystem::path &final, uint64_t seq) {
+    const std::string tail = std::to_string(getpid()) + "-" + std::to_string(seq) + ".tmp";
+    const std::filesystem::path ruled(final.native() + ".chainner-c-" + tail);
+    if (!valid_name(final.filename().native()) || ruled.filename().native().size() <= 255) return ruled;
+    return final.parent_path() / (".cnc-" + tail);
+}
+
+// temporary_candidate(), skipping a name some file already has (another process's leftover with this process's id):
+// this process never overwrites or deletes a file it did not create.
+std::filesystem::path temporary_name(const std::filesystem::path &final) {
+    for (;;) {
+        std::filesystem::path name = temporary_candidate(final, sequence.fetch_add(1));
+        struct stat status;
+        if (lstat(name.c_str(), &status) != 0) return name;
+    }
+}
+#endif
 
 std::string describe(int error, bool windows) {
     return (windows ? "Windows error " : "errno ") + std::to_string(error) + " writing a file";
 }
 
+#ifdef _WIN32
 // The errno the CRT gives a Windows error (the UCRT's _dosmaperr table, errno.cpp), as open() reports a failed
 // CreateFileW; 0 for one the table lacks, where the CRT falls back to EINVAL.
 int errno_of(DWORD error) {
@@ -268,6 +332,17 @@ std::filesystem::path on_disk(const std::filesystem::path &final) {
     spelled.replace_filename(found);
     return spelled;
 }
+#else
+// open(final, "wb") refuses a folder (EISDIR) and a file this process may not write (EACCES, or EROFS or ETXTBSY)
+// before it writes anything; so does this, before any temporary file and again before the rename, which would replace
+// such a file. Both follow a link, as open() does. Linux has no hidden or system attribute and no case to keep.
+void refuse_unwritable(const std::filesystem::path &final) {
+    struct stat status;
+    if (stat(final.c_str(), &status) != 0) return;
+    if (S_ISDIR(status.st_mode)) throw FileError(EISDIR, false, final);
+    if (faccessat(AT_FDCWD, final.c_str(), W_OK, AT_EACCESS) != 0 && errno != ENOENT) throw FileError(errno, false, final);
+}
+#endif
 
 } // namespace
 
@@ -282,13 +357,18 @@ bool AtomicTarget::commit() {
     if (state_ != State::open) throw std::logic_error("The temporary file was already committed or abandoned");
     if (same_bytes(temp_, final_)) {
         // A temporary file another program still holds stays abandoned: a later abandon() or the destructor deletes it.
+#ifdef _WIN32
         state_ = DeleteFileW(temp_.c_str()) ? State::committed : State::abandoned;
+#else
+        state_ = unlink(temp_.c_str()) == 0 ? State::committed : State::abandoned;
+#endif
         return false;
     }
     rename();
     return true;
 }
 
+#ifdef _WIN32
 void AtomicTarget::check() const {
     refuse_unwritable(final_);
     // The DELETE access the rename needs, of the file itself (a link, not its target), as the rename replaces it.
@@ -302,13 +382,33 @@ void AtomicTarget::check() const {
     });
     if (error && error != ERROR_FILE_NOT_FOUND) throw os_error(error, final_);
 }
+#else
+void AtomicTarget::check() const {
+    refuse_unwritable(final_);
+    // The rename replaces the file itself (a link, not its target), which needs write and search access to its folder;
+    // a final name in a missing folder fails as ENOENT, as on Windows, and one not there yet passes.
+    struct stat status;
+    const std::filesystem::path folder = final_.has_parent_path() ? final_.parent_path() : std::filesystem::path(".");
+    if (lstat(final_.c_str(), &status) != 0) {
+        const int error = errno;
+        if (error == ENOENT && stat(folder.c_str(), &status) == 0) return;
+        throw FileError(error, false, final_);
+    }
+    if (faccessat(AT_FDCWD, folder.c_str(), W_OK | X_OK, AT_EACCESS) != 0) throw FileError(errno, false, final_);
+}
+#endif
 
 void AtomicTarget::abandon() noexcept {
     if (state_ == State::committed) return;
+#ifdef _WIN32
     DeleteFileW(temp_.c_str());
+#else
+    unlink(temp_.c_str());
+#endif
     state_ = State::abandoned;
 }
 
+#ifdef _WIN32
 void AtomicTarget::rename() {
     try {
         refuse_unwritable(final_);
@@ -358,5 +458,63 @@ bool move_atomic(const std::filesystem::path &source, const std::filesystem::pat
     target.rename();
     return true;
 }
+#else
+void AtomicTarget::rename() {
+    try {
+        refuse_unwritable(final_);
+    } catch (const FileError &) {
+        abandon();
+        throw;
+    }
+    // The file replaced keeps its permission bits, as open(final, "wb") keeps them (a new file takes the umask's).
+    struct stat status;
+    const bool replaced = stat(final_.c_str(), &status) == 0 && S_ISREG(status.st_mode);
+    if ((replaced && chmod(temp_.c_str(), status.st_mode & 07777) != 0) || ::rename(temp_.c_str(), final_.c_str()) != 0) {
+        const int error = errno;
+        abandon();
+        throw FileError(error, false, final_);
+    }
+    state_ = State::committed;
+}
+
+bool write_atomic(const std::filesystem::path &final, std::span<const uint8_t> data) {
+    if (holds(final, data)) return false;
+    refuse_unwritable(final);
+    AtomicTarget target(final);
+    // open() and write() as Python's open(final, "wb") uses them, so their errno is the one Python reports; never over
+    // an existing file.
+    const int fd = open(target.temp().c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+    if (fd < 0) throw FileError(errno, false, final);
+    for (size_t done = 0; done < data.size();) {
+        const ssize_t written = write(fd, data.data() + done, std::min(data.size() - done, size_t(1) << 30));
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) {
+            const int error = written < 0 ? errno : EIO;
+            close(fd);
+            throw FileError(error, false, final);
+        }
+        done += size_t(written);
+    }
+    if (close(fd) != 0) throw FileError(errno, false, final);
+    target.rename();
+    return true;
+}
+
+bool move_atomic(const std::filesystem::path &source, const std::filesystem::path &final) {
+    if (same_bytes(source, final)) return false;
+    refuse_unwritable(final);
+    AtomicTarget target(final);
+    // A rename on one file system; across file systems a copy, then the source is deleted. As MoveFileExW with
+    // MOVEFILE_COPY_ALLOWED, a source that cannot be deleted after its copy stays for its owner.
+    if (::rename(source.c_str(), target.temp().c_str()) != 0) {
+        if (errno != EXDEV) throw FileError(errno, false, final);
+        std::error_code error;
+        if (!std::filesystem::copy_file(source, target.temp(), error)) throw FileError(error.value(), false, final);
+        unlink(source.c_str());
+    }
+    target.rename();
+    return true;
+}
+#endif
 
 } // namespace cn::files

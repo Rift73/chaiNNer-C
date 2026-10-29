@@ -1,4 +1,4 @@
-#if !defined(_M_X64)
+#if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "convolution_avx512.c is an x86-64 /arch:AVX512 unit"
 #endif
 /* The spatial convolution's AVX-512 unit (/arch:AVX512, spec 4.3, D15): no export,

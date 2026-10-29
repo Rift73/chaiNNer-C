@@ -6,7 +6,7 @@ from weakref import WeakKeyDictionary
 
 from ncnn import ncnn
 
-from packages.chaiNNer_ncnn.settings import NcnnSettings
+from packages.chaiNNer_ncnn.settings import CPU_DEVICE, NcnnSettings
 
 from .model import NcnnModelWrapper
 
@@ -25,7 +25,7 @@ def create_ncnn_net(model: NcnnModelWrapper, settings: NcnnSettings) -> ncnn.Net
         net.opt.use_fp16_storage = False
         net.opt.use_fp16_arithmetic = False
 
-    if use_gpu:
+    if use_gpu and settings.gpu_index != CPU_DEVICE:
         # Use vulkan compute
         net.opt.use_vulkan_compute = True
         net.set_vulkan_device(settings.gpu_index)
@@ -59,7 +59,7 @@ def create_ncnn_net(model: NcnnModelWrapper, settings: NcnnSettings) -> ncnn.Net
 
 def _net_settings(settings: NcnnSettings) -> tuple[object, ...]:
     """The settings `create_ncnn_net` builds a net from."""
-    if use_gpu:
+    if use_gpu and settings.gpu_index != CPU_DEVICE:
         return (settings.gpu_index,)
     return (settings.winograd, settings.sgemm, settings.threads, settings.blocktime)
 

@@ -458,8 +458,8 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   it with one (`backend/tests/test_ncnn_errors.py`).
 - ONNX sessions raise when the chosen execution provider did not start, where upstream silently ran on CUDA or the CPU
   (upstream chaiNNer #2715; `backend/tests/test_onnx_session_providers.py`). On Windows with NVIDIA, the ONNX package
-  installs `onnxruntime-gpu 1.30.0+trt11` (the fork release `v1.30.0-trt11`: the unmodified v1.30.0 source
-  rebuilt against TensorRT 11, decisions D19/D20), whose TensorRT provider uses the TensorRT package's TensorRT 11
+  installs `onnxruntime-gpu 1.30.0+trt11.4` (the fork release `v1.30.0-trt11`: the unmodified v1.30.0 source
+  rebuilt against TensorRT 11.4, decisions D19/D20), whose TensorRT provider uses the TensorRT package's TensorRT 11
   (loaded through `tensorrt_libs` before the session; without that package the error says to install it). The
   TensorRT session leaves out upstream's `trt_dump_subgraphs`, which wrote two copies of the model per session, and
   `trt_fp16_enable` has no effect with TensorRT 11 (engines follow the model's precision).

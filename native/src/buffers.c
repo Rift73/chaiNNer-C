@@ -36,7 +36,7 @@ static void merge_events(volatile long *target, long events) {
 static void convert_range(void *opaque, size_t begin, size_t end) {
     convert_job *j = opaque;
     long events;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (j->isa >= CN_ISA_AVX2 && ((j->type == 2 && j->output == 0) || j->type == 0))
         events = cn_convert_avx2(j, begin, end);
     else
@@ -56,7 +56,7 @@ typedef struct {
 static void gbr_planes_range(void *opaque, size_t begin, size_t end) {
     gbr_planes_job *j = opaque;
     long events;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (j->isa >= CN_ISA_AVX2)
         events = cn_gbr_planes_avx2(j->src, j->out, j->pixels, begin, end);
     else
@@ -111,7 +111,7 @@ CN_EXPORT cn_status cn_pixels_convert(const void *src, void *out, size_t count,
 CN_EXPORT cn_status cn_pixels_normalized_f32(const float *src, size_t count, int *same) {
     if (!src || !same) return CN_INVALID_ARGUMENT;
     if (count > SIZE_MAX / sizeof(float)) return CN_SIZE_OVERFLOW;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (cn_isa_current() >= CN_ISA_AVX2) {
         *same = cn_pixels_normalized_avx2(src, count);
         return CN_OK;

@@ -23,13 +23,14 @@ from .native import (
     ordered_layout,
     pixel_source,
     pixel_target,
+    shared_library_suffix,
 )
 
 
 @lru_cache(maxsize=1)
 def _dot():
     libs = Path(np.__file__).resolve().parent.parent / "numpy.libs"
-    paths = list(libs.glob("libscipy_openblas64_*.dll"))
+    paths = list(libs.glob("libscipy_openblas64_*" + shared_library_suffix()))
     if len(paths) != 1:
         raise RuntimeError(
             "Alpha Matting requires NumPy's public ILP64 OpenBLAS library"

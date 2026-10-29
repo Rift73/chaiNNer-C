@@ -117,7 +117,7 @@ static inline void png_swap_pixels(const uint8_t *source, size_t begin, size_t e
     }
 }
 
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
 /* png_encode_avx2.c: one row of `length` bytes filtered as above (out[0] the filter type, out[1..length] the
  * filtered bytes; up is the row above, length bytes), and png_swap_pixels of a whole row of `width` pixels. */
 void cn_png_filter_row_avx2(const uint8_t *row, const uint8_t *up, size_t length, size_t bpp, uint8_t *out);

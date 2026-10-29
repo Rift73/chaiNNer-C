@@ -13,6 +13,7 @@ This module does not import TensorRT until a runner is made."""
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from contextlib import AbstractContextManager
 from functools import lru_cache
@@ -32,7 +33,13 @@ from .model import TensorRTEngine
 
 RUNNER_VARIABLE = "CHAINNER_C_TRT_RUNNER"
 MODULE = "nodes.impl.tensorrt._chainner_trt"
-PLUGIN = Path(__file__).with_name("chainner_trt_vs.dll")
+# MODULE's file and the VapourSynth plugin's, beside this module
+MODULE_FILE, PLUGIN_FILE = (
+    ("_chainner_trt.pyd", "chainner_trt_vs.dll")
+    if sys.platform == "win32"
+    else ("_chainner_trt.so", "chainner_trt_vs.so")
+)
+PLUGIN = Path(__file__).with_name(PLUGIN_FILE)
 # The node upscales one image at a time (its session lock), its tiles back to back on the
 # GPU, so one execution context serves it.
 NODE_STREAMS = 1
@@ -56,7 +63,7 @@ def runner_enabled() -> bool:
     """Whether the Upscale Image node uses the runner: when CHAINNER_C_TRT_RUNNER is "1"
     and the build has the runner's module."""
     return os.environ.get(RUNNER_VARIABLE) == "1" and _built(
-        find_spec(MODULE) is not None, "module _chainner_trt.pyd"
+        find_spec(MODULE) is not None, f"module {MODULE_FILE}"
     )
 
 
@@ -73,7 +80,8 @@ def runner_plugin() -> Path | None:
 
 
 def load_tensorrt() -> None:
-    """Loads TensorRT's DLLs (tensorrt_libs), which the runner's delay-loaded imports find,
+    """Loads TensorRT's DLLs (tensorrt_libs), which the runner's delay-loaded imports find
+    (on Linux its shared libraries, which the runner's dependencies resolve to by name),
     and registers the DRFT plugins (drft.load_plugins) for the engines the runner loads."""
     import tensorrt
 

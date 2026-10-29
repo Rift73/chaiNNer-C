@@ -451,12 +451,22 @@ Value to_value(py::handle object)
     // The platform's concrete path type only (what to_python makes): a pure or foreign path stays itself.
     if (Py_TYPE(object.ptr()) == reinterpret_cast<PyTypeObject *>(python.path_type.ptr())) {
         py::str text(object);
+#ifdef _WIN32
         Py_ssize_t size = 0;
         wchar_t *wide = PyUnicode_AsWideCharString(text.ptr(), &size);
         if (!wide) throw py::error_already_set();
         Path path{std::filesystem::path(std::wstring(wide, size_t(size)))};
         PyMem_Free(wide);
         return path;
+#else
+        // The name's bytes as os.fsencode gives them (the file system encoding, surrogateescape).
+        auto bytes = py::reinterpret_steal<py::bytes>(PyUnicode_EncodeFSDefault(text.ptr()));
+        if (!bytes) {
+            PyErr_Clear();  // a lone surrogate that no escape gives: kept as the Python path
+            return py_ref(object);
+        }
+        return Path{std::filesystem::path(std::string(PyBytes_AS_STRING(bytes.ptr()), size_t(PyBytes_GET_SIZE(bytes.ptr()))))};
+#endif
     }
     if (is_instance(object, python.color)) {
         // Channels are floats, or ints where Color's _norm kept one (Color.gray(0)); anything else stays itself.
@@ -505,8 +515,14 @@ py::object to_python(const Value &value)
             else if constexpr (std::is_same_v<T, bool>) return py::bool_(v);
             else if constexpr (std::is_same_v<T, std::string>) return py::str(v);
             else if constexpr (std::is_same_v<T, Path>) {
+#ifdef _WIN32
                 const std::wstring &native = v.value.native();
                 PyObject *text = PyUnicode_FromWideChar(native.c_str(), Py_ssize_t(native.size()));
+#else
+                // os.fsdecode of the name's bytes.
+                const std::string &native = v.value.native();
+                PyObject *text = PyUnicode_DecodeFSDefaultAndSize(native.data(), Py_ssize_t(native.size()));
+#endif
                 if (!text) throw py::error_already_set();
                 return names().path(py::reinterpret_steal<py::object>(text));
             } else if constexpr (std::is_same_v<T, Color>) {

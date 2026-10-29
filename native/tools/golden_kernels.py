@@ -6,6 +6,7 @@ Usage:
       [--isa scalar|avx2|avx512] [--oracle] --out FILE
   python native/tools/golden_kernels.py rebase --dll DLL --kernel K --manifest FILE
   python native/tools/golden_kernels.py diff FILE1 FILE2
+  python native/tools/golden_kernels.py twin --dll LIBRARY --kernel K
 
 write runs the kernel's fixed matrix (matrix()); the tracked manifests under
 native/tests/golden/ are written only this way, from the B3 DLL. sweep runs
@@ -15,7 +16,8 @@ returns that level; --oracle makes the oracle the reference of the clamping
 conversions (oracle_outputs()). rebase re-bases a conversion manifest written from
 the DLL on the oracle, only the cases whose reference moved (rebase()). diff
 compares two manifests case by case and exits 1, listing the ids, when a case
-differs or is in one file only.
+differs or is in one file only. twin writes, on Linux, a manifest's Linux twin: the
+outputs of the cases whose C-library math rounds otherwise there (twin()).
 
 No arrays are stored. An input is a recipe: PCG64 raw bits mapped to its dtype
 (float32 unless the recipe names another), then float32 special values written as
@@ -41,6 +43,7 @@ import hashlib
 import itertools
 import json
 import math
+import platform
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -69,6 +72,11 @@ KERNELS = (
     "tail",
 )
 ISA_LEVELS = ("scalar", "avx2", "avx512")
+# Kernels whose manifest outputs go through the C library's math (cn_crt_math.h group
+# 1): ucrtbase.dll's on Windows, the process's libm on Linux (twin())
+LIBM_KERNELS = ("lens_power", "resample")
+# The folder, beside the manifests, of their Linux twins
+TWINS = "linux"
 Mxcsr = Literal["default", "daz_ftz"]
 
 
@@ -4343,6 +4351,91 @@ def diff(a: Path, b: Path) -> int:
     return 1 if mismatched else 0
 
 
+def twin_path(path: Path) -> Path:
+    """Where the Linux twin (twin()) of the manifest at path lives."""
+    return path.parent / TWINS / path.name
+
+
+def load_expected(path: Path) -> tuple[dict, list[tuple[Case, dict[str, str]]]]:
+    """load_manifest(path); on Linux, the outputs of its Linux twin (twin()) in place of
+    the manifest's for the cases the twin holds. Windows reads the manifest alone."""
+    header, cases = load_manifest(path)
+    twin = twin_path(path)
+    if sys.platform != "linux" or not twin.is_file():
+        return header, cases
+    linux = {case.id: (case, outputs) for case, outputs in load_manifest(twin)[1]}
+    known = {case.id: case for case, _ in cases}
+    for case_id, (case, _) in linux.items():
+        if known.get(case_id) != case:
+            raise ValueError(f"{twin}: {case_id} is not a case of {path}")
+    return header, [linux.get(case.id, (case, outputs)) for case, outputs in cases]
+
+
+def twin(dll_path: Path, kernel: str, path: Path) -> None:
+    """Write the Linux twin of the manifest at path (twin_path()), from dll_path, the
+    Linux build: the cases whose outputs differ from the manifest's, the same at every
+    ISA level the CPU has.
+
+    A LIBM_KERNELS kernel calls the C library's math, which the manifests recorded from
+    ucrtbase.dll; on Linux it is glibc's libm (a glibc version can round otherwise
+    again), as for NumPy and CPython there. Write a twin only once the kernel's live
+    comparisons with its Python reference pass on Linux, so its outputs are the ones
+    that reference gives there. Windows never reads a twin.
+    """
+    if sys.platform != "linux":
+        raise RuntimeError("a Linux twin is written on Linux, from the Linux build")
+    header, cases = load_manifest(path)
+    if header["kernel"] != kernel:
+        raise ValueError(f"{path}: not a {kernel} manifest")
+    dll = _load_dll(dll_path)
+    get = dll["cn_isa_get"]
+    get.argtypes = [ctypes.POINTER(ctypes.c_int)]
+    get.restype = ctypes.c_int
+    state = (ctypes.c_int * 3)()  # effective, requested and the CPU's level
+    if get(state) != 0:
+        raise RuntimeError(f"{dll_path}: cn_isa_get failed")
+    by_level = []
+    for level in ISA_LEVELS[: state[2] + 1]:
+        if not set_isa(dll, dll_path, level):
+            raise RuntimeError(f"{dll_path}: cannot run the {level} level")
+        by_level.append([run_case(dll, case) for case, _ in cases])
+    if not set_isa(dll, dll_path, ISA_LEVELS[state[0]]):
+        raise RuntimeError(
+            f"{dll_path}: cannot restore the {ISA_LEVELS[state[0]]} level"
+        )
+    differing = [
+        case.id
+        for (case, _), *outputs in zip(cases, *by_level, strict=True)
+        if any(own != outputs[0] for own in outputs)
+    ]
+    if differing:
+        raise RuntimeError(f"the ISA levels give different outputs: {differing}")
+    items = [
+        {**dataclasses.asdict(case), "outputs": own}
+        for (case, recorded), own in zip(cases, by_level[0], strict=True)
+        if own != recorded
+    ]
+    _, libc = platform.libc_ver()
+    _write(
+        twin_path(path),
+        {
+            "schema": SCHEMA,
+            "kernel": kernel,
+            "expectation": (
+                f"Linux, the C library's math of glibc {libc}'s libm where {path.name} "
+                "recorded ucrtbase.dll's; Windows reads that manifest alone"
+            ),
+            "generated_with": {
+                "dll_sha256": hashlib.sha256(dll_path.read_bytes()).hexdigest(),
+                "numpy": np.__version__,
+            },
+            "pcg64_check": np.random.PCG64(0).random_raw(4).tolist(),
+            "special_sets": SPECIALS,
+            "cases": items,
+        },
+    )
+
+
 def set_isa(dll: Library, dll_path: Path, level: str) -> bool:
     """cn_isa_set(level); false, with the reason on stderr, unless it returns level."""
     try:
@@ -4383,7 +4476,14 @@ def main(argv: list[str] | None = None) -> int:
     compare = commands.add_parser("diff", help="compare two manifests case by case")
     compare.add_argument("a", type=Path)
     compare.add_argument("b", type=Path)
+    linux = commands.add_parser("twin", help="write a manifest's Linux twin (twin())")
+    linux.add_argument("--dll", type=Path, required=True)
+    linux.add_argument("--kernel", choices=LIBM_KERNELS, required=True)
     args = parser.parse_args(argv)
+    if args.command == "twin":
+        manifests = Path(__file__).resolve().parents[1] / "tests" / "golden"
+        twin(args.dll, args.kernel, manifests / f"{args.kernel}.json")
+        return 0
     if args.command == "diff":
         return diff(args.a, args.b)
     if args.command == "write":

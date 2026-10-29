@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -557,6 +558,16 @@ close_task = None
 async def close_server(sanic_app: Sanic):
     # now we can close the server
     logger.info("Closing server...")
+
+    if sys.platform == "linux":
+        # The app sends SIGTERM once it has the answer to the shutdown request, as
+        # insurance (on Windows it is TerminateProcess, which no handler sees). Sanic's
+        # handler for it stops the event loop again, which cuts short the shutdown
+        # coroutines Sanic still runs on that loop (RuntimeError: Event loop stopped
+        # before Future completed), and uvloop cannot remove that handler once the loop
+        # has stopped. The default action ends the process at once, as on Windows; the
+        # worker is stopped below, and it exits with its host in any case.
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
     try:
         if setup_task is not None:

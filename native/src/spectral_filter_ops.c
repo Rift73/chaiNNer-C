@@ -261,7 +261,7 @@ static void spectrum_range(void *opaque, size_t begin, size_t end)
             size_t end_x = w - ((w & 1) ? 0 : 1);
             double *row = a + (job - 1) * w;
             const double *other = b + (job - 1) * w;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
             if (ctx->isa >= CN_ISA_AVX2) {
                 cn_spectral_pairs_avx2(row, other, end_x);
                 continue;

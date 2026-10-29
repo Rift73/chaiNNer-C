@@ -6,7 +6,11 @@
 #include <NvInferPlugin.h>
 #include <NvInferRuntime.h>
 #include <NvInferVersion.h>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #include <algorithm>
 #include <condition_variable>
@@ -63,6 +67,7 @@ private:
     char last_[1024] = {};
 };
 
+#ifdef _WIN32
 // nvinfer_11.dll and nvinfer_plugin_11.dll are delay-loaded, so the module imports and its
 // CPU functions run without TensorRT. They are loaded before the first call into them:
 // already loaded (`import tensorrt` loads tensorrt_libs' copies), else from the default and
@@ -77,6 +82,47 @@ void load_tensorrt() {
             "package, or put TensorRT's DLLs on the PATH.");
     }
 }
+#else
+// libnvinfer.so.11 and libnvinfer_plugin.so.11 are not linked (the delay-loaded DLLs of
+// Windows), so the module imports and its CPU functions run without TensorRT. They are opened
+// before the first call into them: already loaded (`import tensorrt` loads tensorrt_libs'
+// copies), else from the loader's search path (LD_LIBRARY_PATH, the ldconfig cache). The three
+// TensorRT functions the runner calls are defined after this namespace and call these.
+struct TensorRT {
+    decltype(&createInferRuntime_INTERNAL) create_runtime;
+    decltype(&getInferLibVersion) version;
+    decltype(&initLibNvInferPlugins) init_plugins;
+};
+
+TensorRT open_tensorrt() {
+    void* libraries[2] = {};
+    char const* const names[2] = {"libnvinfer.so.11", "libnvinfer_plugin.so.11"};
+    for (int i = 0; i < 2; ++i) {
+        libraries[i] = dlopen(names[i], RTLD_NOW | RTLD_LOCAL);
+        if (!libraries[i])
+            throw std::runtime_error(
+                "TensorRT 11 (libnvinfer.so.11, libnvinfer_plugin.so.11) was not found: install chaiNNer's TensorRT "
+                "package, or put TensorRT's libraries on LD_LIBRARY_PATH (" + std::string(dlerror()) + ").");
+    }
+    auto bind = [](void* library, char const* name) {
+        void* const address = dlsym(library, name);
+        if (!address) throw std::runtime_error(std::string("TensorRT 11 does not export ") + name + ".");
+        return address;
+    };
+    return {reinterpret_cast<decltype(TensorRT::create_runtime)>(bind(libraries[0], "createInferRuntime_INTERNAL")),
+            reinterpret_cast<decltype(TensorRT::version)>(bind(libraries[0], "getInferLibVersion")),
+            reinterpret_cast<decltype(TensorRT::init_plugins)>(bind(libraries[1], "initLibNvInferPlugins"))};
+}
+
+// Opened once per process and never closed, as Windows keeps the DLLs; a failed open is
+// retried by the next runner.
+TensorRT const& tensorrt() {
+    static TensorRT const entries = open_tensorrt();
+    return entries;
+}
+
+void load_tensorrt() { tensorrt(); }
+#endif
 
 Element element_of(nvinfer1::DataType type, char const* name) {
     switch (type) {
@@ -482,3 +528,17 @@ void Runner::upscale(FrameJob const& job, HostPlane const* planes, HostPlane con
 }
 
 }  // namespace cn_trt
+
+#ifndef _WIN32
+// TensorRT's entry points for the calls above (the runner's own, hidden like every symbol of
+// it): every Runner opens TensorRT (load_tensorrt) before its first call.
+void* createInferRuntime_INTERNAL(void* logger, int32_t version) noexcept {
+    return cn_trt::tensorrt().create_runtime(logger, version);
+}
+
+int32_t getInferLibVersion() noexcept { return cn_trt::tensorrt().version(); }
+
+bool initLibNvInferPlugins(void* logger, char const* libNamespace) {
+    return cn_trt::tensorrt().init_plugins(logger, libNamespace);
+}
+#endif

@@ -10,6 +10,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable
 
+from packaging.version import InvalidVersion, Version
+
 from custom_types import UpdateProgressFn
 
 # run.py imports this module before it starts the worker, which asyncio's import
@@ -65,6 +67,15 @@ def distribution_name(package_name: str) -> str:
     return re.sub(r"[-_.]+", "-", package_name.split("[", 1)[0]).lower()
 
 
+def listed_version(version: str) -> str:
+    """The version as pip lists it: in packaging's canonical form, so "v17.1" is 17.1
+    and "1.0RC1" is 1.0rc1. A version that is not one stays as the metadata has it."""
+    try:
+        return str(Version(version))
+    except InvalidVersion:
+        return version
+
+
 def scan_installed_packages() -> None:
     """Fills installed_packages with the distributions this Python has, as `pip list`
     lists them (pip reads the same metadata), in this process: a pip process takes
@@ -79,7 +90,9 @@ def scan_installed_packages() -> None:
         metadata = distribution.metadata
         name = metadata["Name"]
         if name:
-            found.setdefault(distribution_name(name), metadata["Version"])
+            found.setdefault(
+                distribution_name(name), listed_version(metadata["Version"])
+            )
     installed_packages.clear()
     installed_packages.update(found)
 

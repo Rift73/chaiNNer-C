@@ -85,7 +85,7 @@ static const uint8_t *packed_row(const png_job *job, size_t y, uint8_t *buffer)
     const uint8_t *source = job->source + (ptrdiff_t)y * job->row_stride;
     if (job->direct) return source;
     if (job->packed) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
         if (job->isa >= CN_ISA_AVX2) {
             cn_png_swap_row_avx2(source, job->width, job->channels, buffer);
             return buffer;
@@ -108,7 +108,7 @@ static const uint8_t *packed_row(const png_job *job, size_t y, uint8_t *buffer)
 static void filter_row(cn_isa_level isa, const uint8_t *row, const uint8_t *up, size_t length, size_t bpp,
                        uint8_t *out)
 {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (isa >= CN_ISA_AVX2) {
         cn_png_filter_row_avx2(row, up, length, bpp, out);
         return;

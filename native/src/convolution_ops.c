@@ -135,7 +135,7 @@ static void convolution_range(void *context, size_t begin, size_t end) {
     for (size_t y = begin / row_size, first = begin % row_size; begin < end; ++y, first = 0) {
         size_t last = end - begin < row_size - first ? first + (end - begin) : row_size;
         begin += last - first;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
         if (job->isa >= CN_ISA_AVX512 && job->fused_columns > 0) {
             cn_convolution_row_avx512(job, y, first, last);
             continue;

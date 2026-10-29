@@ -17,14 +17,17 @@
 #include <string>
 #include <string_view>
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#endif
 
 namespace {
 
 using namespace cn::run;
 
+#ifdef _WIN32
 /* nodes/utils/utils.py split_file_path: os.path.splitext, then os.path.split of the base (ntpath, both separators). */
 struct SplitPath {
     std::wstring directory, name, extension;
@@ -85,6 +88,65 @@ bool ascii_lower(const std::wstring &extension, std::string &out)
     }
     return true;
 }
+#else
+/* nodes/utils/utils.py split_file_path: os.path.splitext, then os.path.split of the base (posixpath: '/' alone, no
+ * drive; the head keeps a root of slashes and otherwise loses its trailing ones). On the path's file system bytes. */
+struct SplitPath {
+    std::string directory, name, extension;
+};
+SplitPath split_file_path(const std::string &p)
+{
+    // genericpath._splitext: the last dot after the last separator, unless the name is all dots before it.
+    std::string base = p, extension;
+    const size_t slash = p.rfind('/'), dot = p.rfind('.');
+    if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+        for (size_t i = slash == std::string::npos ? 0 : slash + 1; i < dot; ++i)
+            if (p[i] != '.') {
+                base = p.substr(0, dot);
+                extension = p.substr(dot);
+                break;
+            }
+    }
+    const size_t i = base.rfind('/') + 1; // 0 without a separator
+    std::string head = base.substr(0, i);
+    if (head.find_first_not_of('/') != std::string::npos)
+        while (head.back() == '/') head.pop_back();
+    return {head, base.substr(i), extension};
+}
+
+/* The name as the engine's UTF-8 string; false for bytes that are not UTF-8, which Python decodes with surrogate
+ * escapes the engine's strings cannot hold. */
+bool utf8(const std::string &text, std::string &out)
+{
+    const auto *bytes = reinterpret_cast<const unsigned char *>(text.data());
+    for (size_t i = 0, n = text.size(); i < n;) {
+        const unsigned char lead = bytes[i];
+        const size_t length = lead < 0x80 ? 1 : lead < 0xC2 ? 0 : lead < 0xE0 ? 2 : lead < 0xF0 ? 3 : lead < 0xF5 ? 4 : 0;
+        if (!length || i + length > n) return false;
+        for (size_t k = 1; k < length; ++k)
+            if ((bytes[i + k] & 0xC0) != 0x80) return false;
+        // The second byte's range rules out overlong forms, surrogates and code points past U+10FFFF.
+        const unsigned char second = length > 1 ? bytes[i + 1] : 0;
+        if ((lead == 0xE0 && second < 0xA0) || (lead == 0xED && second > 0x9F) || (lead == 0xF0 && second < 0x90) ||
+            (lead == 0xF4 && second > 0x8F))
+            return false;
+        i += length;
+    }
+    out = text;
+    return true;
+}
+
+/* get_ext: the extension, lowercased; false for a non-ASCII one, which matches no format list. */
+bool ascii_lower(const std::string &extension, std::string &out)
+{
+    out.clear();
+    for (char c : extension) {
+        if (static_cast<unsigned char>(c) > 0x7F) return false;
+        out.push_back(c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c);
+    }
+    return true;
+}
+#endif
 
 bool listed(std::string_view extension, std::initializer_list<std::string_view> names)
 {
@@ -126,8 +188,12 @@ Image normalized(const uint8_t *pixels, const cn::image_decode::Shape &shape)
 /* chainner:image:load (image/io/load_image.py, image_io.cpp load_image): the image, its directory and its name. */
 void load_image(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
+#ifdef _WIN32
     const std::wstring &text = std::get<Path>(inputs[0]).value.native();
     if (text.starts_with(L"\\\\?\\") || text.starts_with(L"\\\\.\\")) throw RunPython{}; // device paths: ntpath's own roots
+#else
+    const std::string &text = std::get<Path>(inputs[0]).value.native();
+#endif
     const SplitPath parts = split_file_path(text);
     std::string extension, name;
     if (!ascii_lower(parts.extension, extension) || !utf8(parts.name, name)) throw RunPython{};
@@ -231,6 +297,7 @@ std::filesystem::path full_path(std::span<const Value> inputs)
     if (const auto *relative = std::get_if<std::string>(&inputs[2]); relative && !relative->empty() && *relative != ".")
         path /= utf8_path(*relative);
     path /= utf8_path(std::get<std::string>(inputs[3]) + "." + std::get<std::string>(inputs[4]));
+#ifdef _WIN32
     const std::wstring &text = path.native();
     const DWORD size = GetFullPathNameW(text.c_str(), 0, nullptr, nullptr);
     if (!size) throw RunPython{};
@@ -239,6 +306,17 @@ std::filesystem::path full_path(std::span<const Value> inputs)
     if (!written || written >= size) throw RunPython{};
     full.resize(written);
     return std::filesystem::path(full);
+#else
+    // Path.resolve() (posixpath.realpath) itself: links are common on Linux, and a ".." after one leaves the link's
+    // target, which an absolutised spelling would not. The existing part resolved, the rest made normal. A link named
+    // by the path itself takes today's path, as on Windows, where the path stays lexical and keeps it.
+    std::error_code error, absent;
+    std::filesystem::path full = std::filesystem::absolute(path, error);
+    if (!error && std::filesystem::is_symlink(std::filesystem::symlink_status(full, absent))) throw RunPython{};
+    if (!error) full = std::filesystem::weakly_canonical(full, error);
+    if (error) throw RunPython{};
+    return full;
+#endif
 }
 
 /* chainner:image:save (image/io/save_image.py, image_io.cpp save_image): skip-existing before the image is read,
@@ -250,6 +328,7 @@ void save_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
         !cn::image_decode::enabled())
         throw RunPython{}; // GIF, TGA, AVIF (Pillow), DDS (texconv)
     std::filesystem::path path = full_path(inputs);
+#ifdef _WIN32
     const DWORD attributes = GetFileAttributesW(path.c_str());
     if (attributes != INVALID_FILE_ATTRIBUTES) {
         // A link takes today's path (Path.exists() follows it, and a dangling one does not exist there).
@@ -268,6 +347,19 @@ void save_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
         std::filesystem::create_directories(path.parent_path(), error);
         if (error) throw RunPython{};
     }
+#else
+    std::error_code error;
+    const std::filesystem::file_status status = std::filesystem::symlink_status(path, error);
+    if (status.type() != std::filesystem::file_type::not_found) {
+        if (error) throw RunPython{};
+        if (std::get<bool>(inputs[24])) return; // skip existing files (full_path declined a link)
+        // A folder in the way takes today's path; Linux names keep their case, so an overwrite keeps the path's.
+        if (std::filesystem::is_directory(status)) throw RunPython{};
+    } else {
+        std::filesystem::create_directories(path.parent_path(), error);
+        if (error) throw RunPython{};
+    }
+#endif
     const Value &value = std::get<std::shared_ptr<LazyValue>>(inputs[0])->value();
     const std::vector<uint8_t> bytes = save_bytes(std::get<Image>(value), inputs);
     try {

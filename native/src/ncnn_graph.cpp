@@ -22,6 +22,10 @@
 #include <string>
 #include <type_traits>
 #include <vector>
+#ifdef CN_WIDE_LONG_DOUBLE
+#include <cerrno>
+#include <complex>
+#endif
 
 // The FMA3 intrinsics run only when NumPy itself dispatched its FMA3 loops.
 #if defined(__GNUC__) || defined(__clang__)
@@ -65,8 +69,17 @@ int fp_events() {
     int flags=std::fetestexcept(FE_DIVBYZERO|FE_OVERFLOW|FE_UNDERFLOW|FE_INVALID);
     return ((flags&FE_DIVBYZERO)?1:0)|((flags&FE_OVERFLOW)?2:0)|((flags&FE_UNDERFLOW)?4:0)|((flags&FE_INVALID)?8:0);
 }
+#ifdef CN_WIDE_LONG_DOUBLE
+// longdouble and clongdouble take codes past the tensor ABI's, which never sees them.
+constexpr int longdouble_type=16,clongdouble_type=17;
+bool wide(int type) { return type==longdouble_type || type==clongdouble_type; }
+#endif
 int type_code(const py::dtype &dtype) {
     char kind=dtype.kind();auto size=dtype.itemsize();
+#ifdef CN_WIDE_LONG_DOUBLE
+    if(kind=='f' && size==sizeof(long double))return longdouble_type;
+    if(kind=='c' && size==2*sizeof(long double))return clongdouble_type;
+#endif
     if(kind=='f')return size==2?0:size==4?1:2;
     if(kind=='c')return size==8?3:4;
     if(kind=='b')return 5;
@@ -108,6 +121,9 @@ O array_allocate(const O &a,const O &b,const O &dtype) {
         py::arg("op_dtypes")=make_list({py::none(),py::none(),dtype}),py::arg("casting")="unsafe");
     O output=item(it.attr("operands"),py::int_(2));it.attr("close")();return output;
 }
+#ifdef CN_WIDE_LONG_DOUBLE
+void wide_cast(const Tensor &a,Tensor &out,int &events);
+#endif
 O array_cast(const O &value,const O &dtype,bool warnings=true,int *raised=nullptr) {
     O original=asarray(value),source=native_byte_order(original),target=np().attr("dtype")(dtype);
     bool swap_output=!truth(target.attr("isnative"));
@@ -118,6 +134,10 @@ O array_cast(const O &value,const O &dtype,bool warnings=true,int *raised=nullpt
         O warning=np().attr("exceptions").attr("ComplexWarning");
         if(PyErr_WarnEx(warning.ptr(),"Casting complex values to real discards the imaginary part",2)<0)throw py::error_already_set();
     }
+#ifdef CN_WIDE_LONG_DOUBLE
+    if(wide(a.view.type) || wide(out.view.type))wide_cast(a,out,events);
+    else
+#endif
     status(cn_tensor_cast_typed(&a.view,&out.view,&events));
     if(raised)*raised|=events;
     if(warnings)report_fp(events,"cast");
@@ -175,6 +195,18 @@ uint64_t weak_integer(const O &value,const py::dtype &dtype) {
     if(wrapped || narrowed)raise(PyExc_OverflowError,py::str("Python integer {} out of bounds for {}").attr("format")(builtin("repr")(value),builtin("str")(dtype)));
     return stored;
 }
+#ifdef CN_WIDE_LONG_DOUBLE
+long double weak_long_double(const O &value) {
+    // LONGDOUBLE_setitem: a Python int through its decimal text and strtold
+    // (npy_longdouble_from_PyLong), anything else through its double.
+    if(!PyLong_CheckExact(value.ptr()))return PyFloat_AS_DOUBLE(result(PyNumber_Float(value.ptr())).ptr());
+    const std::string digits=py::str(value);
+    errno=0;
+    const long double parsed=std::strtold(digits.c_str(),nullptr);
+    if(errno==ERANGE && PyErr_WarnEx(PyExc_RuntimeWarning,"overflow encountered in conversion from python long",1)<0)throw py::error_already_set();
+    return parsed;
+}
+#endif
 O weak_operand(const O &value,const py::dtype &dtype) {
     O output=np().attr("empty")(py::tuple(),py::arg("dtype")=dtype);
     char *data=static_cast<char*>(py::reinterpret_borrow<py::array>(output).mutable_data());
@@ -186,6 +218,13 @@ O weak_operand(const O &value,const py::dtype &dtype) {
         const uint64_t stored=weak_integer(value,dtype);
         std::memcpy(data,&stored,static_cast<size_t>(size));
     } else if(kind=='f') {
+#ifdef CN_WIDE_LONG_DOUBLE
+        if(size==sizeof(long double)) {
+            const long double wide_value=weak_long_double(value);
+            std::memcpy(data,&wide_value,sizeof(wide_value));
+            return output;
+        }
+#endif
         O number=result(PyNumber_Float(value.ptr()));
         double parsed=PyFloat_AS_DOUBLE(number.ptr());
         if(size==2) {
@@ -210,7 +249,14 @@ O weak_operand(const O &value,const py::dtype &dtype) {
         } else if(size==16) {
             const double parts[2]={parsed.real,parsed.imag};
             std::memcpy(data,parts,sizeof(parts));
-        } else raise(PyExc_TypeError,py::str("NCNN weight dtype is not numeric"));
+        }
+#ifdef CN_WIDE_LONG_DOUBLE
+        else if(size==2*sizeof(long double)) {
+            const long double parts[2]={parsed.real,parsed.imag};
+            std::memcpy(data,parts,sizeof(parts));
+        }
+#endif
+        else raise(PyExc_TypeError,py::str("NCNN weight dtype is not numeric"));
     } else raise(PyExc_TypeError,py::str("NCNN weight dtype is not numeric"));
     if(overflow)report_fp(2,"cast");
     return output;
@@ -361,10 +407,93 @@ template<class T> T load(const Tensor &a,size_t index) {
 template<class T> void store(Tensor &a,size_t index,T value) {
     std::memcpy(static_cast<char*>(a.array.mutable_data())+byte_offset(a,index),&value,sizeof(T));
 }
+#ifdef CN_WIDE_LONG_DOUBLE
+// Linux NumPy's casts from long double are C casts (lowlevel_strided_loops.c.src)
+// as GCC compiles them for the x87: fistp truncates into 16 bits for int8, uint8
+// and int16, into 32 bits for int32 and uint16, and into 64 bits for int64 and
+// uint32; uint64 first subtracts 2^63 from a value at or above it. A value out of
+// the stored width gives the width's lowest integer and raises invalid.
+template<class I> uint64_t x87_truncated(long double value) {
+    constexpr I lowest=std::numeric_limits<I>::min();
+    if(!(value>static_cast<long double>(lowest)-1 && value<-static_cast<long double>(lowest))) {
+        std::feraiseexcept(FE_INVALID);
+        return static_cast<uint64_t>(static_cast<int64_t>(lowest));
+    }
+    return static_cast<uint64_t>(static_cast<int64_t>(static_cast<I>(value)));
+}
+uint64_t x87_unsigned(long double value) {
+    constexpr long double high_bit=9223372036854775808.0L;
+    if(value>=high_bit)return x87_truncated<int64_t>(value-high_bit)^(UINT64_C(1)<<63);
+    return x87_truncated<int64_t>(value);
+}
+cn_ncnn_complex<long double> wide_load(const Tensor &a,size_t index) {
+    switch(a.view.type) {
+    case 1: return {load<float>(a,index),0};
+    case 2: return {load<double>(a,index),0};
+    case 3: {const auto z=load<cn_ncnn_complex<float>>(a,index);return {z.real,z.imag};}
+    case 4: {const auto z=load<cn_ncnn_complex<double>>(a,index);return {z.real,z.imag};}
+    case 5: return {load<uint8_t>(a,index)!=0?1.0L:0.0L,0};
+    case 6: return {static_cast<long double>(load<uint8_t>(a,index)),0};
+    case 7: return {static_cast<long double>(load<uint16_t>(a,index)),0};
+    case 8: return {static_cast<long double>(load<uint32_t>(a,index)),0};
+    case 9: return {static_cast<long double>(load<uint64_t>(a,index)),0};
+    case 10: return {static_cast<long double>(load<int8_t>(a,index)),0};
+    case 11: return {static_cast<long double>(load<int16_t>(a,index)),0};
+    case 12: return {static_cast<long double>(load<int32_t>(a,index)),0};
+    case 13: return {static_cast<long double>(load<int64_t>(a,index)),0};
+    case longdouble_type: return {load<long double>(a,index),0};
+    default: return load<cn_ncnn_complex<long double>>(a,index);
+    }
+}
+void wide_store(Tensor &out,size_t index,cn_ncnn_complex<long double> z) {
+    switch(out.view.type) {
+    case 1: store(out,index,static_cast<float>(z.real));break;
+    case 2: store(out,index,static_cast<double>(z.real));break;
+    case 3: store(out,index,cn_ncnn_complex<float>{static_cast<float>(z.real),static_cast<float>(z.imag)});break;
+    case 4: store(out,index,cn_ncnn_complex<double>{static_cast<double>(z.real),static_cast<double>(z.imag)});break;
+    case 5: store<uint8_t>(out,index,z.real!=0 || z.imag!=0);break;
+    case 6: case 10: store(out,index,static_cast<uint8_t>(x87_truncated<int16_t>(z.real)));break;
+    case 7: store(out,index,static_cast<uint16_t>(x87_truncated<int32_t>(z.real)));break;
+    case 8: store(out,index,static_cast<uint32_t>(x87_truncated<int64_t>(z.real)));break;
+    case 9: store(out,index,x87_unsigned(z.real));break;
+    case 11: store(out,index,static_cast<uint16_t>(x87_truncated<int16_t>(z.real)));break;
+    case 12: store(out,index,static_cast<uint32_t>(x87_truncated<int32_t>(z.real)));break;
+    case 13: store(out,index,x87_truncated<int64_t>(z.real));break;
+    case longdouble_type: store(out,index,z.real);break;
+    default: store(out,index,z);
+    }
+}
+void wide_cast(const Tensor &a,Tensor &out,int &events) {
+    if(a.view.type==out.view.type) {
+        // A same-type copy moves every byte, as NumPy's does.
+        const size_t width=static_cast<size_t>(a.array.itemsize());
+        for(size_t i=0;i<out.view.count;++i)std::memcpy(static_cast<char*>(out.array.mutable_data())+byte_offset(out,i),static_cast<const char*>(a.array.data())+byte_offset(a,i),width);
+        return;
+    }
+    if(a.view.type==0 || out.view.type==0) {
+        // Half goes through float both ways, npy_float_to_half((float)x) and
+        // (npy_longdouble)npy_half_to_float(x); the tensor ABI casts the half side.
+        const Tensor &half=a.view.type==0?a:out;
+        Tensor single(np().attr("empty_like")(half.array,py::arg("dtype")=py::dtype::of<float>(),py::arg("order")="K",py::arg("subok")=false));
+        int half_events=0;
+        if(a.view.type==0){status(cn_tensor_cast_typed(&a.view,&single.view,&half_events));wide_cast(single,out,events);}
+        else{wide_cast(a,single,events);status(cn_tensor_cast_typed(&single.view,&out.view,&half_events));}
+        events|=half_events;
+        return;
+    }
+    std::feclearexcept(FE_ALL_EXCEPT);
+    for(size_t i=0;i<out.view.count;++i)wide_store(out,i,wide_load(a,i));
+    events|=fp_events();
+}
+#endif
 template<class T> void arithmetic(Tensor &a,Tensor &b,Tensor &out,Op op) {
     for(size_t i=0;i<out.view.count;++i){T x=load<T>(a,i),y=load<T>(b,i),z;
         switch(op){case Op::add:z=x+y;break;case Op::sub:z=x-y;break;case Op::mul:z=x*y;break;case Op::div:z=x/y;break;
-            case Op::pow:if constexpr(std::is_same_v<T,float>)z=cn_crt.powf(x,y);else z=cn_crt.pow(x,y);break;
+            case Op::pow:if constexpr(std::is_same_v<T,float>)z=cn_crt.powf(x,y);
+#ifdef CN_WIDE_LONG_DOUBLE
+                else if constexpr(std::is_same_v<T,long double>)z=std::pow(x,y);
+#endif
+                else z=cn_crt.pow(x,y);break;
             case Op::mod:{z=std::fmod(x,y);if(z!=0 && ((y<0)!=(z<0)))z+=y;else if(z==0)z=std::copysign(T(0),y);break;}
             case Op::floordiv:{T mod=std::fmod(x,y);T div=(x-mod)/y;if(mod!=0 && ((y<0)!=(mod<0)))div-=T(1);if(div!=0){z=std::floor(div);if(div-z>T(0.5))z+=T(1);}else z=std::copysign(T(0),x/y);break;}
             default:raise(PyExc_TypeError,py::str("Unsupported array operation in NCNN graph"));}
@@ -433,6 +562,12 @@ template<class T> cn_ncnn_complex<T> complex_multiply(cn_ncnn_complex<T> a,cn_nc
     const T rr=first_nan({a.real,b.real},executed(a.real*b.real)),ri=first_nan({a.real,b.imag},executed(a.real*b.imag));
     return {first_nan({rr,ii},executed(rr-ii)),first_nan({ri,ir},executed(ri+ir))};
 }
+#ifdef CN_WIDE_LONG_DOUBLE
+// loops.c.src multiplies CLONGDOUBLE by the expression alone (complex_multiply_kind).
+template<> cn_ncnn_complex<long double> complex_multiply(cn_ncnn_complex<long double> a,cn_ncnn_complex<long double> b,ComplexMultiply) {
+    return {a.real*b.real-a.imag*b.imag,a.real*b.imag+a.imag*b.real};
+}
+#endif
 ComplexMultiply complex_multiply_kind(const UfuncOperands &operands,const O &shape,const py::dtype &dtype) {
     if(dtype.char_()=='G')return ComplexMultiply::expression;
     if(!numpy_fused_complex_multiply(dtype))return ComplexMultiply::split;
@@ -487,6 +622,11 @@ O array_binary(const O &left,const O &right,Op op,bool warnings=true,int *raised
             if(tw.view.type==3)complex_arithmetic<float>(ta,tb,tw,op,multiply);
             else complex_arithmetic<double>(ta,tb,tw,op,multiply);
         }
+#ifdef CN_WIDE_LONG_DOUBLE
+        // loops.c.src computes LONGDOUBLE and CLONGDOUBLE in plain C.
+        else if(tw.view.type==longdouble_type)arithmetic<long double>(ta,tb,tw,op);
+        else if(tw.view.type==clongdouble_type)complex_arithmetic<long double>(ta,tb,tw,op,ComplexMultiply::expression);
+#endif
         else switch(tw.array.itemsize()){
             case 1:integer_arithmetic<uint8_t>(ta,tb,tw,op);break;
             case 2:integer_arithmetic<uint16_t>(ta,tb,tw,op);break;
@@ -521,6 +661,15 @@ O array_sqrt(const O &input) {
         if(out.view.type==1)store<float>(out,i,std::sqrt(load<float>(a,i)));
         else if(out.view.type==2)store<double>(out,i,std::sqrt(load<double>(a,i)));
         else if(out.view.type==3)store(out,i,complex_sqrt(load<cn_ncnn_complex<float>>(a,i)));
+#ifdef CN_WIDE_LONG_DOUBLE
+        else if(out.view.type==longdouble_type)store<long double>(out,i,std::sqrt(load<long double>(a,i)));
+        else if(out.view.type==clongdouble_type) {
+            // npy_csqrtl is libm's csqrtl, which libstdc++'s complex sqrt calls.
+            const auto z=load<cn_ncnn_complex<long double>>(a,i);
+            const std::complex<long double> root=std::sqrt(std::complex<long double>(z.real,z.imag));
+            store(out,i,cn_ncnn_complex<long double>{root.real(),root.imag()});
+        }
+#endif
         else store(out,i,complex_sqrt(load<cn_ncnn_complex<double>>(a,i)));
     }
     events|=fp_events()|(nan_component?8:0);

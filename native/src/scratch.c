@@ -9,7 +9,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
-#include <stdatomic.h>
+#include <pthread.h>
 #endif
 
 #define CN_SCRATCH_SLOTS 4
@@ -31,15 +31,10 @@ static SRWLOCK scratch_lock = SRWLOCK_INIT;
 static void lock_scratch(void) { AcquireSRWLockExclusive(&scratch_lock); }
 static void unlock_scratch(void) { ReleaseSRWLockExclusive(&scratch_lock); }
 #else
-static atomic_flag scratch_lock = ATOMIC_FLAG_INIT;
-static void lock_scratch(void)
-{
-    while (atomic_flag_test_and_set_explicit(&scratch_lock, memory_order_acquire)) {}
-}
-static void unlock_scratch(void)
-{
-    atomic_flag_clear_explicit(&scratch_lock, memory_order_release);
-}
+/* The SRW lock's counterpart: a sleeping, non-recursive mutex. */
+static pthread_mutex_t scratch_lock = PTHREAD_MUTEX_INITIALIZER;
+static void lock_scratch(void) { pthread_mutex_lock(&scratch_lock); }
+static void unlock_scratch(void) { pthread_mutex_unlock(&scratch_lock); }
 #endif
 
 int cn_scratch_carve(size_t *total, size_t bytes, size_t *offset)

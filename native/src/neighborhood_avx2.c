@@ -1,4 +1,4 @@
-#if !defined(_M_X64)
+#if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "neighborhood_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
 /* Median Blur's 3x3 and 5x5 interiors, AVX2 unit (/arch:AVX2, spec 4.3): no export, reached only through

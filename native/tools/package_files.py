@@ -120,7 +120,7 @@ def walk(
         for name in dirs + files:
             candidate = base / name
             if candidate.is_symlink() or (
-                candidate.lstat().st_file_attributes & REPARSE_POINT
+                getattr(candidate.lstat(), "st_file_attributes", 0) & REPARSE_POINT
             ):
                 raise ValueError(f"Refusing reparse point: {candidate}")
         kept = []
@@ -293,7 +293,7 @@ def probe_unlocked(targets: Iterable[Path]) -> None:
         if not target.exists():
             continue
         try:
-            os.close(os.open(target, os.O_RDWR | os.O_BINARY))
+            os.close(os.open(target, os.O_RDWR | getattr(os, "O_BINARY", 0)))
         except PermissionError:
             locked.append(str(target))
     if locked:

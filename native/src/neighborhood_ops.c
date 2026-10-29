@@ -9,7 +9,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-#if defined(_M_X64)
+#if defined(_M_X64) || defined(__x86_64__)
 #include <xmmintrin.h>
 #endif
 
@@ -136,7 +136,7 @@ static void small_median_one(const small_median_job *job, size_t i) {
 static void small_median_range(void *context, size_t begin, size_t end) {
     small_median_job *job = (small_median_job *)context;
     for (size_t i = begin; i < end;) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
         if (!job->sorting_network && job->isa >= CN_ISA_AVX2 && job->w > 2 * job->radius) {
             size_t row = job->w * job->c, y = i / row, at = i - y * row;
             size_t stop = end - i < row - at ? at + (end - i) : row;
@@ -164,7 +164,7 @@ CN_EXPORT cn_status cn_neighborhood_median_f32(const float *src, float *out,
     if (h > SIZE_MAX / w || h * w > SIZE_MAX / sizeof(float) / c) return CN_SIZE_OVERFLOW;
     small_median_job job = { src, out, h, w, c, radius, vector_lanes, 0, cn_isa_current() };
     size_t i = 0;
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (job.isa >= CN_ISA_AVX2 && !(_mm_getcsr() & 0x40)) {
         job.sorting_network = cn_median_special_avx2(src, h * w * c);
         i = h * w * c;
@@ -523,7 +523,7 @@ static int finite_color(const dither_job *job, const float *color) {
    index 0 when its distance is NaN (nothing compares below it). At ISA level avx2, with
    the channel-major palette, the AVX2 unit's brute-force search gives the same index. */
 static size_t linear_nearest(const dither_job *job, const float *color) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     if (job->isa >= CN_ISA_AVX2 && job->soa) return cn_dither_nearest_avx2(job, color);
 #endif
     size_t best = 0;
@@ -1059,7 +1059,7 @@ CN_EXPORT cn_status cn_neighborhood_palette_apply(const float *src, float *out,
     job.palette = plan->palette; job.palette_count = plan->count;
     job.tree = plan->tree; job.tree_root = plan->root;
     job.isa = cn_isa_current();
-#if defined(_MSC_VER) && defined(_M_X64)
+#if CN_ISA_UNITS()
     /* Without a kd tree (fewer than 300 unique colors, or a nonfinite one), the AVX2
        search reads the sorted palette by channel, up to DITHER_SOA_ENTRIES colors; the
        lanes past the count are zero and masked. */

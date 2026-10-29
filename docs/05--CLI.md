@@ -6,6 +6,8 @@ CLI mode lets you use ChaiNNer without a GUI. This is useful for running ChaiNNe
 
 **IMPORTANT:** On Windows, run CLI commands through `chaiNNer-cli.cmd`, which is next to `chaiNNer.exe` in the release zip. `chaiNNer.exe` is a GUI program, so cmd and PowerShell neither wait for it nor get its exit code: its output would appear after the next prompt. `chaiNNer-cli.cmd` makes them wait, so the output appears in order and the exit code (`%ERRORLEVEL%`, `$LASTEXITCODE`) is set.
 
+**IMPORTANT:** On Linux, start chaiNNer through `chaiNNer.sh`, which is next to `chainner` in the release zip: `./chaiNNer.sh run "path/to/your-chain.chn"` instead of the `chaiNNer-cli.cmd` commands below. A Linux shell waits for the program and gets its exit code either way; the script checks whether the system lets Chromium's sandbox start, and starts without it where it does not. Electron cannot start without a display, even to run a chain, so on a server or in a container install `xvfb` and `xauth`: for `run`, the script then uses a virtual display when there is none. A minimal system may lack other libraries that Electron and the Python packages link against; the script then lists them and prints the command that installs them (`apt-get`, `dnf`, `pacman` or `zypper`, by the distribution), and `xvfb` and `xauth` are part of that list for `run` without a display.
+
 ## Introduction
 
 In some cases, you may want to run ChaiNNer without the GUI. E.g. to programmatically run the same chain with different inputs. As such, CLI mode is a way for advanced users with programming experience to work around the limitations of GUI chaiNNer.

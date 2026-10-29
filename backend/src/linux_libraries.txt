@@ -1,0 +1,36 @@
+# The system files chaiNNer-C needs on Linux, and the package that provides each one per
+# distribution family. Two programs read this table: the launcher (chaiNNer.sh), which stops
+# with the install command before it starts Electron, and the backend (linux_libraries.py),
+# which logs the command when OpenCV or VapourSynth would not load.
+#
+# Columns: file, groups, apt, dnf, pacman, zypper.
+# - A file with ".so" in its name is a library the dynamic loader must find (ldconfig -p, or a
+#   directory of LD_LIBRARY_PATH); any other file is a program that must be on the PATH.
+# - Groups, comma-separated: base is what the Python wheels need (OpenCV's Qt, VapourSynth's
+#   plugins), electron is what the Electron binary links against, display is what the
+#   command line needs to run a chain without a display.
+# - "(t64)" after an apt name: Debian 13 and Ubuntu 24.04 (glibc 2.38 and newer) renamed the
+#   package with a t64 suffix there (libasound2t64), and no longer have the old name.
+libGL.so.1               base           libgl1                libglvnd-glx           libglvnd         libglvnd
+libSM.so.6               base           libsm6                libSM                  libsm            libSM6
+libICE.so.6              base           libice6               libICE                 libice           libICE6
+libXext.so.6             base,electron  libxext6              libXext                libxext          libXext6
+libxcb.so.1              base,electron  libxcb1               libxcb                 libxcb           libxcb1
+libX11.so.6              base,electron  libx11-6              libX11                 libx11           libX11-6
+libglib-2.0.so.0         base,electron  libglib2.0-0(t64)     glib2                  glib2            libglib-2_0-0
+libgthread-2.0.so.0      base           libglib2.0-0(t64)     glib2                  glib2            libgthread-2_0-0
+libstdc++.so.6           base           libstdc++6            libstdc++              gcc-libs         libstdc++6
+libgtk-3.so.0            electron       libgtk-3-0(t64)       gtk3                   gtk3             libgtk-3-0
+libnss3.so               electron       libnss3               nss                    nss              mozilla-nss
+libasound.so.2           electron       libasound2(t64)       alsa-lib               alsa-lib         libasound2
+libgbm.so.1              electron       libgbm1               mesa-libgbm            mesa             libgbm1
+libcups.so.2             electron       libcups2(t64)         cups-libs              libcups          libcups2
+libatk-1.0.so.0          electron       libatk1.0-0(t64)      atk                    atk              libatk-1_0-0
+libatk-bridge-2.0.so.0   electron       libatk-bridge2.0-0(t64)  at-spi2-atk         at-spi2-core     libatk-bridge-2_0-0
+libatspi.so.0            electron       libatspi2.0-0(t64)    at-spi2-core           at-spi2-core     libatspi0
+libxkbcommon.so.0        electron       libxkbcommon0         libxkbcommon           libxkbcommon     libxkbcommon0
+libXcomposite.so.1       electron       libxcomposite1        libXcomposite          libxcomposite    libXcomposite1
+libXdamage.so.1          electron       libxdamage1           libXdamage             libxdamage       libXdamage1
+libXrandr.so.2           electron       libxrandr2            libXrandr              libxrandr        libXrandr2
+xvfb-run                 display        xvfb                  xorg-x11-server-Xvfb   xorg-server-xvfb xvfb-run
+xauth                    display        xauth                 xorg-x11-xauth         xorg-xauth       xauth

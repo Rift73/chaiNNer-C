@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 import psutil
 from sanic.log import logger
 
-from ..pytorch.vosr2_process import OwnedJob
+from ..pytorch.vosr2_process import PARENT_PID_VARIABLE, OwnedJob
 
 if TYPE_CHECKING:
     import onnx
@@ -85,15 +85,17 @@ def run_child(
     (drft.py) runs here too.
 
     The child ends with the call on any exit: Stop (context.check_aborted(), polled
-    while it runs) or an error kills it, and on Windows it runs in a kill-on-close job,
-    so a worker that dies takes it along (the host's /kill restarts a worker that does
-    not stop within 3 s, and an engine build kept the GPU until it finished)."""
+    while it runs) or an error kills it with its descendants (vosr2_process.OwnedJob),
+    and a worker that dies takes it along: on Windows its kill-on-close job, on Linux
+    the engine builds' end_with_parent, which they call before their slow imports and
+    which also ends a build whose worker died before that (the host's /kill restarts a
+    worker that does not stop within 3 s, and an engine build kept the GPU until it
+    finished)."""
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     if cpu_only:
         env["CUDA_VISIBLE_DEVICES"] = ""
     executable = sys.executable
     creationflags = 0
-    job = None
     if os.name == "nt":
         # As vosr2_engine_cache.compile_worker: own the interpreter, not the venv
         # redirector, and join the job before it can start anything.
@@ -101,7 +103,10 @@ def run_child(
         if executable != sys.executable:
             env["__PYVENV_LAUNCHER__"] = sys.executable
         creationflags = subprocess.CREATE_NO_WINDOW | 0x00000004  # CREATE_SUSPENDED
-        job = OwnedJob()
+    else:
+        # The engine builds check, before their slow imports, that this one still lives.
+        env[PARENT_PID_VARIABLE] = str(os.getpid())
+    job = OwnedJob()
     process = None
     try:
         with tempfile.TemporaryFile() as log:
@@ -114,9 +119,11 @@ def run_child(
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 creationflags=creationflags,
+                # Outside Windows the job is the process group the child leads.
+                start_new_session=os.name != "nt",
             )
-            if job is not None:
-                job.assign(process)
+            job.assign(process)
+            if os.name == "nt":
                 psutil.Process(process.pid).resume()
             while process.poll() is None:
                 if context is not None:
@@ -126,10 +133,7 @@ def run_child(
             log.seek(0)
             output = log.read().decode("utf-8", errors="replace")
     finally:
-        if job is not None:
-            job.close()
-        elif process is not None and process.poll() is None:
-            process.kill()
+        job.close()
         if process is not None:
             process.wait(timeout=20)
     if returncode != 0:

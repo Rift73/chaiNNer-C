@@ -107,7 +107,7 @@ def ncnn_auto_split(
     def upscale(img: np.ndarray, _: object):
         if progress is not None:
             progress.check_aborted()
-        if use_gpu:
+        if use_gpu and blob_vkallocator is not None:
             with _net_opt_lock:
                 net.opt.blob_vkallocator = blob_vkallocator
                 net.opt.workspace_vkallocator = blob_vkallocator
@@ -166,7 +166,7 @@ def ncnn_auto_split(
             message = (
                 f"NCNN failed with error code {ret}. Its reason is in chaiNNer's log."
             )
-            if use_gpu:
+            if use_gpu and blob_vkallocator is not None:
                 message += " You may need to restart chaiNNer in order for NCNN upscaling to start working again."
             raise RuntimeError(message)
         planes = np.asarray(mat_out)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from sanic.log import logger
 
 from api import KB, MB, Dependency, add_package
+from system import glibc_version
 
 package_description = (
     "VapourSynth filters video with scripts. These nodes build a VapourSynth script"
@@ -14,6 +15,9 @@ package_description = (
 install_hint = (
     "VapourSynth video filtering with vs-jetpack, its plugins and the vsview previewer."
 )
+
+# vapoursynth-akarin and PySide6 (vsview's) publish no Linux wheels for an older glibc.
+MIN_GLIBC = (2, 35)
 
 # ffms2 and fmtconv (pulled in by vs-jetpack's deinterlace extra) have their Windows
 # wheels only on JET's index.
@@ -76,6 +80,22 @@ package = add_package(
     icon="BsFilm",
     color="#D53F8C",
 )
+
+
+def _unsupported_reason(glibc: tuple[int, int] | None) -> str | None:
+    if glibc is None or glibc >= MIN_GLIBC:
+        return None
+    return (
+        f"VapourSynth needs glibc {MIN_GLIBC[0]}.{MIN_GLIBC[1]} or newer on Linux"
+        " (vapoursynth-akarin and PySide6 publish no wheels for an older one);"
+        f" this system has glibc {glibc[0]}.{glibc[1]}. Every other package works."
+    )
+
+
+_reason = _unsupported_reason(glibc_version())
+if _reason is not None:
+    package.disabled = True
+    package.disabled_reason = _reason
 
 vapoursynth_category = package.add_category(
     name="VapourSynth",

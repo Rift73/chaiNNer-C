@@ -20,6 +20,7 @@ to native_profile's line, as "numpy_pool".
 
 from __future__ import annotations
 
+import sys
 import threading
 
 from sanic.log import logger
@@ -28,13 +29,15 @@ from . import native_profile
 from .native_graph import graph
 
 VARIABLE = "CHAINNER_C_NUMPY_POOL"
+# The call the pool returns its blocks to the OS with, as the warning names it.
+RELEASE_CALL = "VirtualFree" if sys.platform == "win32" else "munmap"
 
 # Installs run on several threads; each flag below is set once per process, under it.
 _lock = threading.Lock()
 _installed = False
 _warned = False  # the one warning for an "invalid" or "unsupported" status
 _failed = False  # the one error for an install that raised
-_release_warned = False  # the one warning for VirtualFree failures
+_release_warned = False  # the one warning for failures of the release call
 
 
 def install() -> None:
@@ -82,8 +85,8 @@ def installed() -> bool:
 def release() -> int:
     """Release every idle block; the bytes released, 0 when not installed.
 
-    The first time the process's VirtualFree failures are non-zero, one warning says
-    so; the pyd counts them for the life of the process.
+    The first time the process's failures of the release call (RELEASE_CALL) are
+    non-zero, one warning says so; the pyd counts them for the life of the process.
     """
     global _release_warned
     if not _installed:
@@ -95,8 +98,9 @@ def release() -> int:
             _release_warned = True
         if first:
             logger.warning(
-                "NumPy pool: VirtualFree failed %d time(s) in this process; "
+                "NumPy pool: %s failed %d time(s) in this process; "
                 "those blocks were not returned to the OS",
+                RELEASE_CALL,
                 failures,
             )
     return released

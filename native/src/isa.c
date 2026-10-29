@@ -96,6 +96,74 @@ int cn_isa_set(int level)
     InterlockedExchange(&effective, capped);
     return (int)capped;
 }
+#elif CN_ISA_UNITS()
+/* The Windows branch's probe with GCC's <cpuid.h>, XGETBV as an instruction, getenv
+ * and pthread_once. */
+#include <cpuid.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
+
+static pthread_once_t once = PTHREAD_ONCE_INIT;
+/* Set by the probe, afterwards only by cn_isa_set. */
+static atomic_int effective = CN_ISA_SCALAR;
+/* Set once by the probe; pthread_once orders them before every reader. */
+static int requested = -1;
+static int maximum = CN_ISA_SCALAR;
+
+/* CHAINNER_C_ISA as a level: -1 (auto) unless it is exactly a level's name. */
+static int read_override(void)
+{
+    static const char *const names[] = {"scalar", "avx2", "avx512"};
+    const char *value = getenv("CHAINNER_C_ISA");
+    if (!value) return -1;
+    for (int level = CN_ISA_SCALAR; level <= CN_ISA_AVX512; ++level) {
+        if (strcmp(value, names[level]) == 0) return level;
+    }
+    return -1;
+}
+
+static void probe(void)
+{
+    unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+    uint32_t leaf1_ecx = 0, leaf7_ebx = 0;
+    uint64_t xcr0 = 0;
+    __cpuid(0, eax, ebx, ecx, edx);
+    uint32_t max_leaf = eax;
+    if (max_leaf >= 1) {
+        __cpuid(1, eax, ebx, ecx, edx);
+        leaf1_ecx = ecx;
+    }
+    if (max_leaf >= 7) {
+        __cpuid_count(7, 0, eax, ebx, ecx, edx);
+        leaf7_ebx = ebx;
+    }
+    /* XGETBV raises #UD unless the OS enabled XSAVE. */
+    if (leaf1_ecx & CN_CPUID_OSXSAVE) {
+        uint32_t low, high;
+        __asm__ volatile("xgetbv" : "=a"(low), "=d"(high) : "c"(0));
+        xcr0 = (uint64_t)high << 32 | low;
+    }
+    maximum = cn_isa_classify(max_leaf, leaf1_ecx, leaf7_ebx, xcr0);
+    requested = read_override();
+    atomic_store(&effective, requested >= 0 && requested < maximum ? requested : maximum);
+}
+
+cn_isa_level cn_isa_current(void)
+{
+    pthread_once(&once, probe);
+    return (cn_isa_level)atomic_load_explicit(&effective, memory_order_acquire);
+}
+
+int cn_isa_set(int level)
+{
+    (void)cn_isa_current();
+    if (level < CN_ISA_SCALAR || level > CN_ISA_AVX512) return -1;
+    int capped = level < maximum ? level : maximum;
+    atomic_exchange(&effective, capped);
+    return capped;
+}
 #else
 static const int requested = -1;
 static const int maximum = CN_ISA_SCALAR;
