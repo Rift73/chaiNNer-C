@@ -122,7 +122,10 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   feature (2026-10-29: one thread per device in `device_thread.py`, combined VRAM caps in `memory_cap.py`, a
   per-input unread flag in the engine's plan, a failing run's give-up for work computed ahead, a Pause/Stop check
   before each upscale) was removed on 2026-10-30 because its gain (ONNX +31 %, PyTorch +9 %, NCNN +5 % on an RTX
-  5090) did not justify the code. The offload's and VOSR's VRAM caps are as before it.
+  5090) did not justify the code. The offload's and VOSR's VRAM caps are as before it. Its gate behind lazy inputs
+  is back for TensorRT's and MIGraphX's upscales: none is computed ahead behind a lazy input its node may leave
+  unread (Save Image's image with Skip existing files on or connected, a Conditional's other branch), where v0.3.8
+  computed them and threw them away (`execution_scheduler.may_go_unread`, the plan's per-input unread flag).
 - 2026-10-29 **TensorRT engine caches, Windows CUDA loading, installer, VapourSynth on glibc 2.28** (not released).
   - **ONNX TensorRT cache.** ONNX Runtime 1.30's engine file name hashes tensor names, never weights
     (`TRTGenerateId`), and chaiNNer creates sessions from bytes, so two models of one architecture shared an engine:

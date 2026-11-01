@@ -47,7 +47,11 @@ from chain.chain import Chain, CollectorNode, FunctionNode, GeneratorNode, Node
 from chain.input import EdgeInput, Input, InputMap
 from events import EventConsumer, PreviewUrl
 from nodes.impl.execution_cleanup import run_cleanup_functions, run_cleanup_groups
-from nodes.impl.execution_scheduler import pure_cpu_node
+from nodes.impl.execution_scheduler import (
+    LOCKED_DEVICE_NODES,
+    may_go_unread,
+    pure_cpu_node,
+)
 from nodes.impl.item_window import (
     OUTPUT_UNRESOLVED,
     PATH_CHECK_FAILED,
@@ -1166,9 +1170,11 @@ def build_plan(
                 tuple[list[int] | None, bool] | None,
                 object,
                 str | None,
+                bool,
             ]
         ] = []
-        for node_input, assigned in zip(data.inputs, inputs.get(node.id)):
+        sources = inputs.get(node.id)
+        for position, (node_input, assigned) in enumerate(zip(data.inputs, sources)):
             source, output_index, value = -1, 0, None
             enforced: object = None
             if isinstance(assigned, EdgeInput):
@@ -1191,6 +1197,7 @@ def build_plan(
                     _image_input(node_input),
                     enforced,
                     None if source >= 0 else memo_constant(value),
+                    node_input.lazy and may_go_unread(data, sources, position),
                 )
             )
         strategy = strategies[node.id]
@@ -1203,6 +1210,7 @@ def build_plan(
                 "kind": {"regularNode": 0, "generator": 1, "collector": 2}[data.kind],
                 "side_effects": data.side_effects,
                 "pure": pure_cpu_node(data),
+                "device": data.schema_id in LOCKED_DEVICE_NODES,
                 "node_context": data.node_context,
                 "inputs": plan_inputs,
                 "outputs": len(data.outputs),

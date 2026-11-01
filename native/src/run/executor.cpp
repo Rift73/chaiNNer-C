@@ -49,6 +49,7 @@
 #include <set>
 #include <stdexcept>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -373,6 +374,7 @@ struct InputPlan {
     PyRef constant;   // a constant's value, as the Python body receives it before enforce
     Value enforced;   // a native node's constant, enforced
     bool lazy = false;
+    bool unread = false;   // lazy, and its node may leave it unread (execution_scheduler.may_go_unread)
     bool ignored = false;  // a collector's iterated input at construction
     bool image = false;    // ImageInput: the engine enforces images
     std::vector<int> channels;  // ImageInput.channels (empty: any)
@@ -405,6 +407,7 @@ struct NodePlan {
     std::string precached_identity;  // a precached Load Image's file identity as its individual run loaded it
     bool phased = false;  // registered prepare and commit phases (item_window.register_phases)
     bool not_speculated = false;  // Into Directory: never computed ahead of its item (process._NOT_SPECULATED)
+    bool device = false;  // a locked-device node (execution_scheduler.LOCKED_DEVICE_NODES)
     bool memo = false;    // its outputs may be memoized (amendment A3's allow-list)
     bool run_keyed = false;  // a generator whose per-run outputs follow from its inputs alone (MEMO_GENERATORS)
     int identity_input = -1;  // Load Image: its file input, whose file identity keys it
@@ -739,6 +742,7 @@ private:
     std::string fault_;  // an engine thread's fault (under mutex_): the run's error
     int fault_node_ = -1;  // the node whose job faulted, when known (under mutex_)
     int scheduling_ = -1;  // the driver's latest step: the node it runs, iterates or collects (driver thread)
+    std::vector<int8_t> device_needed_;  // needs_device per node: -1 not known yet (mutex_ held)
 
     // Events
     std::mutex events_mutex_;
@@ -789,6 +793,7 @@ private:
     void produce();
     void set_item(int node, int64_t slot, std::vector<Value> outputs, std::optional<Key> key = std::nullopt);
     void want_window(int64_t slot);
+    bool needs_device(int node);
     void run_task(const Task &task);
     PyRef take_prepared(int node, int64_t slot);
     void compute_folders();
@@ -1010,6 +1015,7 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
             plan_input.output = input[1].cast<int>();
             plan_input.constant = py_ref(input[2]);
             plan_input.lazy = input[3].cast<bool>();
+            plan_input.unread = input[8].cast<bool>();
             plan_input.ignored = input[4].cast<bool>();
             py::object image = input[5];
             if (!image.is_none()) {
@@ -1044,6 +1050,7 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
         }
         plan_node.phased = node["phased"].cast<bool>();
         plan_node.not_speculated = plan_node.schema == "chainner:utility:into_directory";
+        plan_node.device = node["device"].cast<bool>();
         plan_node.memo = node["memo"].cast<bool>() && Memo::get().enabled();
         plan_node.run_keyed = node["run_keyed"].cast<bool>();
         plan_node.identity_input = node["identity_input"].cast<int>();
@@ -1779,32 +1786,51 @@ void Run::set_item(int node, int64_t slot, std::vector<Value> outputs, std::opti
 }
 
 /* The pure nodes the slot's sinks need, through lazy inputs too (process.Executor's _ItemPlanner candidates), and
- * the prepare phases of its sinks (mutex_ held). A context item's: the pure nodes its temporal nodes need, and no
- * prepare (process.ItemWindow's context slots: nothing else runs for it). */
+ * the prepare phases of its sinks (mutex_ held). Behind a lazy input its node may leave unread (a Conditional's other
+ * branch, Save Image's image with Skip existing files), none that is or needs a locked-device node (process.
+ * _ItemPlanner's serial ones). A context item's: the pure nodes its temporal nodes need, and no prepare (process.
+ * ItemWindow's context slots: nothing else runs for it). */
 void Run::want_window(int64_t slot)
 {
-    std::set<std::pair<int, int64_t>> seen;
-    std::function<void(const CellRef &)> walk = [&](const CellRef &ref) {
-        if (!seen.insert({ref.node, ref.slot}).second) return;
+    std::set<std::tuple<int, int64_t, bool>> seen;
+    std::function<void(const CellRef &, bool)> walk = [&](const CellRef &ref, bool unread) {
+        if (!seen.insert({ref.node, ref.slot, unread}).second) return;
         const NodePlan &node = nodes_[size_t(ref.node)];
         if (cell(ref).state != State::idle) return;
         if (node.pure) {
-            want(ref);
+            if (!unread || !needs_device(ref.node)) want(ref);
             return;
         }
         for (size_t i = 0; i < node.inputs.size(); ++i) {
             const InputPlan &input = node.inputs[i];
-            if (input.source >= 0 && !(input.ignored && node.kind != Kind::collector)) walk(source_of(ref, int(i)));
+            if (input.source >= 0 && !(input.ignored && node.kind != Kind::collector))
+                walk(source_of(ref, int(i)), unread || input.unread);
         }
     };
     if (loop_->context(slot)) {
-        for (int node : loop_->group->temporal) walk({node, slot});
+        for (int node : loop_->group->temporal) walk({node, slot}, false);
         return;
     }
     for (int sink : loop_->sinks) {
-        walk({sink, slot});
+        walk({sink, slot}, false);
         if (nodes_[size_t(sink)].phased) loop_->prepares.try_emplace({sink, slot});
     }
+}
+
+/* A pure node that is a locked-device node, or needs one through the inputs want() wants (mutex_ held). */
+bool Run::needs_device(int node)
+{
+    if (device_needed_.empty()) device_needed_.assign(nodes_.size(), -1);
+    if (device_needed_[size_t(node)] >= 0) return device_needed_[size_t(node)] > 0;
+    const NodePlan &plan = nodes_[size_t(node)];
+    bool needs = plan.device;
+    for (size_t i = 0; !needs && i < plan.inputs.size(); ++i) {
+        const InputPlan &input = plan.inputs[i];
+        if (input.source >= 0 && !input.lazy && !input.ignored && nodes_[size_t(input.source)].pure)
+            needs = needs_device(input.source);
+    }
+    device_needed_[size_t(node)] = needs ? 1 : 0;
+    return needs;
 }
 
 void Run::run_task(const Task &task)
