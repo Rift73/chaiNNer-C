@@ -7,28 +7,30 @@ The operator, for a query (y, x) of an H x W trunk and window M (32 or 64):
     Kh = min(H, M), sy = clamp(y - Kh // 2, 0, H - Kh), key rows [sy, sy + Kh)
 (columns alike with W), so every query sees exactly Kh x Kw keys, borders shift the
 neighborhood inward and an axis no longer than M sees all of it. Q is scaled by
-1/sqrt(32) and rounded to BF16, then the 16 RFB factors of each side are appended, so a
-logit is Q.K / sqrt(32) + bias(query - key).
+1/sqrt(32) and rounded to BF16. The 32 content channels and 16 RFB channels use
+separate dot products into one FP32 accumulator, avoiding padding 48 channels to 64.
+The resulting logit is Q.K / sqrt(32) + bias(query - key).
 
 The RFB factors are low-precision, so their coordinate frame is part of the result:
 queries form 16 x 16 tiles anchored at multiples of 16; a tile's key union has
 Uh = min(H, Kh + 15) rows starting at by = clamp(ty - Kh // 2, 0, H - Uh) (columns
 alike), and both tables are indexed by union-local coordinates with row stride
-u = M + 15. A program takes block_m queries (block_m / 16 rows of one tile) and visits
-only its rows' minimal key union, min(H, Kh + block_m / 16 - 1) rows from
-clamp(row0 - Kh // 2, 0, H - rows), which contains every one of its queries'
-neighborhoods and lies inside the tile's union; a per-query mask keeps each query's own
-neighborhood. Lanes past the trunk's edge repeat the last valid query and are not
-stored.
+u = M + 15. Each original 128-query parent covers eight query rows. Two 64-query
+programs share that parent's key origin, min(H, Kh + 7)-row union and 64-key block
+boundaries. Each child skips blocks outside its four query rows' support without
+regrouping the remaining keys. A per-query mask retains exactly its neighborhood.
+Lanes past the trunk's edge repeat the last valid query and are not stored.
 
-The trunk size is a run-time argument (one kernel for fixed and dynamic engines); keys
-are visited in the same order as the fixed-size original kernel, so trunks of at least
-M + 15 in both axes round identically to it. Arguments are ordered as TensorRT's AOT
-plugins pass them: inputs, then scalars, then outputs."""
+The trunk size is a run-time argument shared by fixed and dynamic engines. The
+parent key grid preserves the existing per-row reduction order; changing the key
+origin with the smaller query block would change BF16 rounding. Finite activations
+are required: skipping masked blocks need not preserve NaN/Inf propagation.
+Arguments follow TensorRT AOT order: inputs, scalars, then outputs."""
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import triton
 import triton.language as tl
@@ -47,9 +49,11 @@ def na_attention(
     block_m: tl.constexpr,
     block_n: tl.constexpr,
     minimal: tl.constexpr,
-):
+) -> None:
     """qkv [1, H, W, 3C] (all Q, all K, all V; heads of 32), factor tables
     [C / 32, (M + 15)^2, 16] and out [1, H, W, C], all BF16."""
+    tl.static_assert(block_m == 64)
+    tl.static_assert(block_n == 64)
     tile, sub, head = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     ty = tile // tl.cdiv(width, 16) * 16
     tx = tile % tl.cdiv(width, 16) * 16
@@ -62,14 +66,13 @@ def na_attention(
     by = tl.minimum(tl.maximum(ty - kh // 2, 0), height - uh)
     bx = tl.minimum(tl.maximum(tx - kw // 2, 0), width - uw)
     if minimal:
-        rows = tl.minimum(height, kh + block_m // 16 - 1)
-        ky0 = tl.minimum(
-            tl.maximum(ty + sub * (block_m // 16) - kh // 2, 0), height - rows
-        )
+        rows = tl.minimum(height, kh + 7)
+        ky0 = tl.minimum(tl.maximum(ty + (sub // 2) * 8 - kh // 2, 0), height - rows)
     else:
         rows = uh
         ky0 = by
-    d = tl.arange(0, 64)
+    d = tl.arange(0, 32)
+    r = tl.arange(0, 16)
     dv = tl.arange(0, 32)
     n = tl.arange(0, block_n)
     pix = qy * width + qx
@@ -81,22 +84,24 @@ def na_attention(
     q0 = (q0.to(tl.float32) * 0.1767766952966369).to(tl.bfloat16)
     bqi = (qy - by) * u + (qx - bx)
     bq = tl.load(
-        bq_ptr + (head * u * u + bqi[:, None]) * 16 + d[None, :] - 32,
-        (d[None, :] >= 32) & (d[None, :] < 48),
+        bq_ptr + (head * u * u + bqi[:, None]) * 16 + r[None, :],
+        r[None, :] < 16,
         0,
     )
-    q = tl.where(d[None, :] < 32, q0, bq)
+    q = q0
     sy = tl.minimum(tl.maximum(qy - kh // 2, 0), height - kh)
     sx = tl.minimum(tl.maximum(qx - kw // 2, 0), width - kw)
     maximum = tl.full((block_m,), -float("inf"), tl.float32)
     denominator = tl.full((block_m,), 0, tl.float32)
     acc = tl.full((block_m, 32), 0, tl.float32)
-    # The fixed-size kernel's constant trip count (a run-time one, rows * u, measured 4-7 %
-    # slower). On short trunks (rows < most) the blocks past `rows` are fully masked:
-    # they add exact zeros and rescale by exactly 1.
-    most: tl.constexpr = window + block_m // 16 - 1 if minimal else u
-    for start in range(0, most * u, block_n):
-        ns = start + n
+    # Four child query rows need at most window+3 key rows, plus the leading
+    # block's alignment remainder. Keep the parent's 64-key block boundaries.
+    first_qy = tl.minimum(ty + sub * 4, height - 1)
+    first_sy = tl.minimum(tl.maximum(first_qy - kh // 2, 0), height - kh)
+    first = ((first_sy - ky0) * u // block_n) * block_n
+    trips: tl.constexpr = ((window + 3) * u + 2 * block_n - 2) // block_n
+    for start in range(0, trips * block_n, block_n):
+        ns = first + start + n
         ky, kx = ky0 + ns // u, bx + ns % u
         # The union's row stride stays M + 15; columns past its width are not loaded.
         # Keys outside the loaded union fail every query's neighborhood test below.
@@ -109,11 +114,11 @@ def na_attention(
             0,
         )
         bk = tl.load(
-            bk_ptr + (head * u * u + bi[None, :]) * 16 + d[:, None] - 32,
-            (d[:, None] >= 32) & (d[:, None] < 48) & inside[None, :],
+            bk_ptr + (head * u * u + bi[None, :]) * 16 + r[:, None],
+            inside[None, :] & (r[:, None] < 16),
             0,
         )
-        k = tl.where(d[:, None] < 32, k0, bk)
+        k = k0
         v = tl.load(
             qkv_ptr
             + kp[:, None] * (3 * channels)
@@ -123,7 +128,8 @@ def na_attention(
             inside[:, None],
             0,
         )
-        score = tl.dot(q, k) * 1.4426950408889634
+        score = tl.dot(q, k)
+        score = tl.dot(bq, bk, score) * 1.4426950408889634
         valid = (
             (ky[None, :] >= sy[:, None])
             & (ky[None, :] < sy[:, None] + kh)
@@ -147,9 +153,9 @@ def na_attention(
     )
 
 
-# Measured fastest for M = 32 and 64 (28672 bytes of shared memory on sm_120).
-LAUNCH = {"block_m": 128, "block_n": 64, "minimal": True}
-OPTIONS = {"num_warps": 8, "num_stages": 1, "enable_fp_fusion": True}
+# Split query work, retaining the parent's key grouping and per-row reductions.
+LAUNCH = {"block_m": 64, "block_n": 64, "minimal": True}
+OPTIONS = {"num_warps": 4, "num_stages": 1, "enable_fp_fusion": True}
 
 
 def grid(

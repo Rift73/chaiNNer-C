@@ -179,8 +179,8 @@ def assert_matches_the_oracle(
 
 
 def test_grid_covers_every_16x16_tile_and_head():
-    assert dual_na_kernel.grid(40, 70, 160, triton.cdiv) == (3 * 5, 2, 5)
-    assert dual_na_kernel.grid(256, 256, 128, triton.cdiv) == (256, 2, 4)
+    assert dual_na_kernel.grid(40, 70, 160, triton.cdiv) == (3 * 5, 4, 5)
+    assert dual_na_kernel.grid(256, 256, 128, triton.cdiv) == (256, 4, 4)
 
 
 @pytest.mark.parametrize("window", [32, 64])

@@ -4,6 +4,27 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- 2026-11-01 **DUAL TensorRT plugins faster** (`dual_na_kernel.py`, `dual_aot.py`). Neighborhood attention takes its 32
+  content channels and 16 positional-bias channels as two dot products into one FP32 accumulator (no padding of 48
+  channels to 64) and runs 64-query programs on 4 warps (was 128 on 8), each pair keeping its 128-query parent's key
+  origin, 64-key blocks and bias frame, so every row reduces in the same order; RCA's value application runs 64
+  positions per program (`APPLY_BT`, was 256), each output's four-region order kept; the residual addition before a
+  dynamic router's Transpose, FP32 Cast and ReduceMean is its own BF16 plugin (`router_add`), which keeps TensorRT
+  from a slow fused Add/Transpose/Cast/Mean. RTX 5090, TensorRT 11.4, DUAL-XS 4x at 512x512, BF16, optimization
+  level 3: 61.99 -> 58.03 ms (attention products and `APPLY_BT`), then 58.41 -> 54.81 ms (smaller attention programs
+  and `router_add`), full engines bit-identical to the old ones on the synthetic inputs tried. Through chaiNNer-C's
+  build (XS 1x at 256x256, synthetic weights): the same error against PyTorch FP32 as before (relative L2 0.002148,
+  max 0.00579). MIGraphX's DUAL route shares the attention kernel (4 parts per tile now; compiles for gfx1100, gfx942
+  and gfx1201) and keeps 256 positions per value-application program (not measured on AMD). The engine build cache
+  hashes both files, so engines rebuild; engines built before keep the old kernels.
+- RELEASED 2026-11-01 as **v0.3.9**: fork branch and tag `v0.3.9` at `925e92ec` (publish commit over `0b597ed0`, tree =
+  main `118e7bf5`); assets `chaiNNer-C-v0.3.9-win-x64.zip` SHA-256 `cc9c8b4c…137a` (176,373,176 B) and
+  `chaiNNer-C-v0.3.9-linux-x64.zip` `74e2f937…a806` (147,424,287 B), both checked against git (every backend file
+  equal; the Windows binaries equal the README hashes). Gates: Windows 139,026 passed (the unseeded VOSR streaming test
+  failed; it fails 2 in 7 alone), Linux 136,107 passed at `92e056a9`. `D:\chaiNNer` updated (212 files) with its
+  tuned set rebuilt from this tree (DLL `745B33D7`, graph `9050BF6E`, ext `A603F216`; exports equal to the portable
+  DLL) and spandrel c12; 197 nodes. `npm run make`'s Squirrel maker fails since `58e069b1` (electron-winstaller's
+  install script, which puts `7z.exe` in place, is denied); the zip maker is unaffected: Pending.
 - 2026-11-01 **v0.3.9**: the version label (eight files, as v0.3.8's), and everything below since v0.3.8 re-release 5.
   The release ships a Windows zip with the AMD GPU parts (`Build.ps1 -RocmRoot -MigraphxRoot`; the seven other
   binaries byte-identical to a build without them) and, for the first time, a Linux zip

@@ -164,6 +164,53 @@ def test_the_na_node_lowers_to_a_slice_and_its_plugin(key: str):
     assert read == {"qkv", "bq", "bk"}
 
 
+def _router_model(residual_shape: list[int]):
+    """The guide's graph followed by a dynamic router's input: the block's output plus a
+    residual, then Transpose to NCHW, Cast to FP32 and ReduceMean over H and W."""
+    model = _guide_model()
+    graph = model.graph
+    graph.input.append(
+        helper.make_tensor_value_info("residual", TensorProto.BFLOAT16, residual_shape)
+    )
+    graph.initializer.append(
+        numpy_helper.from_array(np.array([2, 3], np.int64), "mean_axes")
+    )
+    graph.node.extend(
+        [
+            helper.make_node("Add", ["out", "residual"], ["sum"], name="add"),
+            helper.make_node("Transpose", ["sum"], ["nchw"], perm=[0, 3, 1, 2]),
+            helper.make_node("Cast", ["nchw"], ["wide"], to=TensorProto.FLOAT),
+            helper.make_node("ReduceMean", ["wide", "mean_axes"], ["mean"]),
+        ]
+    )
+    graph.output.append(
+        helper.make_tensor_value_info("mean", TensorProto.FLOAT, [1, 128, 1, 1])
+    )
+    return model
+
+
+def test_a_router_s_residual_addition_lowers_to_its_plugin():
+    lowered = dual_aot.lower(_router_model([1, 32, 48, 128]), KEY)
+    *_, barrier, router = lowered.plugins
+    assert barrier.op == "barrier"
+    assert (router.op, router.inputs, router.outputs) == (
+        "router_add",
+        ["out", "residual"],
+        ["sum"],
+    )
+    read = {
+        lowered.readers[n.name]
+        for n in lowered.model.graph.node
+        if "router_add" in n.name
+    }
+    assert read == {"out", "residual"}
+
+
+def test_a_broadcast_residual_keeps_the_native_addition():
+    lowered = dual_aot.lower(_router_model([1, 1, 1, 128]), KEY)
+    assert "router_add" not in [p.op for p in lowered.plugins]
+
+
 @pytest.mark.parametrize("sm", [86, 120])
 @pytest.mark.parametrize("window", [32, 64])
 def test_the_na_kernel_fits_the_aot_plugins_shared_memory(window: int, sm: int):

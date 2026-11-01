@@ -130,7 +130,7 @@ def test_each_op_carries_its_kernel_and_tile_sizes():
     assert attributes["norm"]["rows"] == dual_hip.NORM_PIXELS
     assert attributes["project"]["rows"] == dual_hip.PROJECT_ROWS
     assert attributes["apply"]["parts"] == 1
-    assert (attributes["na"]["window"], attributes["na"]["parts"]) == (32, 2)
+    assert (attributes["na"]["window"], attributes["na"]["parts"]) == (32, 4)
     assert attributes["barrier"] == {}
     # Norm's code is the dynamic TensorRT plugin's kernel, its sigma kept.
     assert attributes["norm"]["kernel"] == b"norm"
