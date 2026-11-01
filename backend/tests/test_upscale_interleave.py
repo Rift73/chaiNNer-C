@@ -89,6 +89,9 @@ def test_pytorch_planes_interleaved_as_converted(
     img = image((24, 32, channels), 1, exceptional=False)
     if nan_input:
         img[2, 3] = np.nan
+    # NCHW planes, as a GPU returns them: on the CPU an FP32 forward runs in
+    # channels-last order, whose output is already interleaved.
+    monkeypatch.setattr(torch_split, "_channels_last_input", lambda *_: False)
 
     def run() -> np.ndarray:
         return torch_split.pytorch_auto_split(
@@ -113,7 +116,7 @@ class OverlappingRowsModel:
 
     dtype = torch.float32
     device = CPU
-    architecture = SimpleNamespace(name="Overlapping")
+    architecture = SimpleNamespace(id="Overlapping", name="Overlapping")
     model = torch.nn.Identity()
 
     def __init__(self, row_stride: int) -> None:
@@ -153,6 +156,8 @@ def test_pytorch_host_out_of_memory_in_the_conversion_splits(
     # the CPU cast before raised torch's RuntimeError, which split the tile.
     model = compact(3)
     img = image((24, 32, 3), 1, exceptional=False)
+    # NCHW planes, as a GPU returns them (see above)
+    monkeypatch.setattr(torch_split, "_channels_last_input", lambda *_: False)
     interleave = torch_split.planar_to_interleaved_checked
     calls: list[tuple[int, ...]] = []
 
@@ -274,7 +279,6 @@ def test_ncnn_node_planes_interleaved_as_converted(
             add_cleanup=lambda *_, **__: None,
             check_aborted=progress.check_aborted,
             set_progress=progress.set_progress,
-            suspend=progress.suspend,
         ),
     )
     rgba = image((20, 28, 4), 3, exceptional=False)
@@ -343,7 +347,6 @@ def test_ncnn_node_returns_the_models_channels_in_bgr_order(
             add_cleanup=lambda *_, **__: None,
             check_aborted=progress.check_aborted,
             set_progress=progress.set_progress,
-            suspend=progress.suspend,
         ),
     )
     # Values NCNN's 8-bit input keeps (to a few ulps: its input scales by 1 / 255)

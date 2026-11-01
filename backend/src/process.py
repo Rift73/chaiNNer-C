@@ -48,11 +48,9 @@ from nodes.impl.execution_cleanup import (
     run_cleanup_groups,
 )
 from nodes.impl.execution_scheduler import (
-    LOCKED_DEVICE_NODES,
     LatestBroadcasts,
     NodeFlights,
     advance_iterator,
-    may_go_unread,
     owned_gather,
     pure_cpu_dependency,
     pure_cpu_node,
@@ -893,21 +891,6 @@ class _ItemPlanner:
                 if edge.source.id not in ancestors:
                     ancestors.add(edge.source.id)
                     pending.append(edge.source.id)
-        # The ancestors the sinks reach without a lazy input their node may leave unread (may_go_unread: a Conditional's other branch, Save Image's image with Skip existing files).
-        eager: set[NodeId] = set()
-        pending = [node.id for node in sinks]
-        while pending:
-            target = pending.pop()
-            data = chain.nodes[target].data
-            unread = {
-                i.id
-                for index, i in enumerate(data.inputs)
-                if i.lazy and may_go_unread(data, inputs.get(target), index)
-            }
-            for edge in chain.edges_to(target):
-                if edge.target.input_id not in unread and edge.source.id not in eager:
-                    eager.add(edge.source.id)
-                    pending.append(edge.source.id)
 
         def depends(sources: Iterable[Input]) -> frozenset[NodeId]:
             return frozenset(
@@ -918,19 +901,13 @@ class _ItemPlanner:
                 and (i.id not in generators)
             )
 
-        # A node that may not run beside others (a GPU or context node) is computed ahead only for a look-ahead, one item at a time in order (serial); never with a lazy input, which a look-ahead could reach before the node ran at the committing item. So is a locked-device node that the sinks reach only through lazy inputs their node may leave unread (may_go_unread), and the pure nodes that need it wait for it.
+        # A node that may not run beside others (a GPU or context node) is computed ahead only for a look-ahead, one item at a time in order (serial); never with a lazy input, which a look-ahead could reach before the node ran at the committing item.
         self.__candidates = [
             Candidate(
                 node_id,
                 depends(inputs.get(node_id)),
-                serial=(
-                    not pure_cpu_node(chain.nodes[node_id].data)
-                    and (not any(i.lazy for i in chain.nodes[node_id].data.inputs))
-                )
-                or (
-                    node_id not in eager
-                    and chain.nodes[node_id].data.schema_id in LOCKED_DEVICE_NODES
-                ),
+                serial=not pure_cpu_node(chain.nodes[node_id].data)
+                and (not any(i.lazy for i in chain.nodes[node_id].data.inputs)),
             )
             for node_id in reversed(chain.topological_order())
             if node_id in ancestors

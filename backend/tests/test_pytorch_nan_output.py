@@ -62,8 +62,10 @@ def tiled_image() -> np.ndarray:
 def test_finite_result_is_the_model_output_unchanged():
     model = overflowing()
     img = image()
-    # BGR HWC to the model's RGB NCHW and back, as pytorch_auto_split converts.
+    # BGR HWC to the model's RGB input in channels-last order and back, as
+    # pytorch_auto_split converts on the CPU in FP32.
     tensor = torch.from_numpy(img[:, :, ::-1].copy()).permute(2, 0, 1).unsqueeze(0)
+    tensor = tensor.clone(memory_format=torch.channels_last)
     expected = model(tensor).squeeze(0).permute(1, 2, 0).flip(2).numpy()
     np.testing.assert_array_equal(upscale(img, model, use_fp16=False), expected)
 

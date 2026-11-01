@@ -205,13 +205,14 @@ package = add_package(
             # WSR, GaterV3, SMoSR, FIGSR and GFISRv2; c9 loads released GaterV3 models
             # (no flash buffer, resselt's upsamplers); c10 runs DUAL's context layers
             # as neighborhood attention; c11 exports HAT's and DAT's attention in the
-            # layout MIGraphX fuses, on request.
-            version="0.4.2+c11",
-            size_estimate=580 * KB,
+            # layout MIGraphX fuses, on request; c12 runs depthwise 3x3 convolutions
+            # and ESRGAN's dense blocks on HIP kernels under ROCm.
+            version="0.4.2+c12",
+            size_estimate=600 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c11/"
-                "spandrel-0.4.2%2Bc11-py3-none-any.whl"
-                "#sha256=77467a3fbd2e915ee83b52ec10546714c6820304c7983d4a55d5185952b08cb2"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c12/"
+                "spandrel-0.4.2%2Bc12-py3-none-any.whl"
+                "#sha256=b45ef9aaf5e1d02e011a873eb5e81ee4dfe88ed86b5307ff1f63689b6d5cbe40"
             ),
         ),
         Dependency(

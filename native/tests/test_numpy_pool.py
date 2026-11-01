@@ -1162,8 +1162,6 @@ def test_every_worker_executor_installs_the_handler():
             )
     expected = ([["numpy_pool.install"]], "nodes.impl.numpy_pool")
     assert found == {
-        # The device threads PyTorch, ONNX and NCNN Upscale Image run on.
-        "nodes/impl/device_thread.py": expected,
         "nodes/impl/ffmpeg.py": expected,
         # The restoring worker and the CPU work's threads.
         "nodes/impl/pytorch/vosr2_temporal_step.py": (

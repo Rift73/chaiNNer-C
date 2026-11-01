@@ -44,7 +44,6 @@ class Context:
         progress = Progress.noop_progress()
         self.check_aborted = progress.check_aborted
         self.set_progress = progress.set_progress
-        self.suspend = progress.suspend
 
     def add_cleanup(self, fn: Callable[[], None], after: str = "chain"):
         pass

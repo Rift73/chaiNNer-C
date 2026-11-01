@@ -124,6 +124,28 @@ def _into_tensor(
         img.flags.writeable = writeable
 
 
+# Architectures measured at least 5 % slower on the CPU in FP32 with a channels-last
+# input (default networks at 128 px): they keep NCHW.
+_NCHW_ON_CPU = frozenset({"MixDehazeNet"})
+
+
+def _channels_last_input(
+    model: ImageModelDescriptor[torch.nn.Module],
+    device: torch.device,
+    dtype: torch.dtype,
+    use_bf16: bool,
+) -> bool:
+    """Whether the forward gets its input in channels-last order: on the CPU in FP32
+    and in BF16. oneDNN's convolutions on NCHW reorder each layer's input and output;
+    in channels-last order they run on them directly (a 4x ESRGAN 1.5x faster, in FP32
+    as in BF16). GPUs and FP16 keep NCHW."""
+    return use_bf16 or (
+        device.type == "cpu"
+        and dtype == torch.float32
+        and model.architecture.id not in _NCHW_ON_CPU
+    )
+
+
 def _is_finite(img: np.ndarray) -> bool:
     # NaN propagates through min and max: two passes and no temporary array
     return math.isfinite(img.min()) and math.isfinite(img.max())
@@ -163,6 +185,7 @@ def pytorch_auto_split(
     weights stay FP32)."""
     dtype = torch.float16 if use_fp16 else torch.float32
     model = on_device(model, device, dtype)
+    channels_last = _channels_last_input(model, device, dtype, use_bf16)
 
     def upscale(img: np.ndarray, _: object):
         progress.check_aborted()
@@ -177,11 +200,9 @@ def pytorch_auto_split(
             input_tensor = _into_tensor(img, device, dtype)
             input_tensor = _rgb_to_bgr(input_tensor)
             input_tensor = _into_batched_form(input_tensor)
-            if use_bf16:
-                # oneDNN's BF16 convolutions on NCHW reorder each layer's input and
-                # output; in channels-last order they run on them directly (a 4x
-                # ESRGAN 1.5x faster). A copy: the batched form is channels-last in
-                # memory, but its batch stride makes PyTorch take it for NCHW.
+            if channels_last:
+                # A copy: the batched form is channels-last in memory, but its batch
+                # stride makes PyTorch take it for NCHW.
                 input_tensor = input_tensor.clone(memory_format=torch.channels_last)
 
             # inference; activations past the GPU's memory go to RAM, not the driver's overflow

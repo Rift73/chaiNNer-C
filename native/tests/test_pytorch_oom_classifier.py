@@ -64,7 +64,10 @@ def test_only_memory_failures_retry(monkeypatch, error, is_oom):
         auto_split, "safe_cuda_cache_empty", lambda: cleared.append(True)
     )
     model = Model(
-        dtype=torch.float32, device=torch.device("cpu"), model=torch.nn.Identity()
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+        model=torch.nn.Identity(),
+        architecture=SimpleNamespace(id="Identity", name="Identity"),
     )
     image = np.ones((8, 8, 3), np.float32)
 
