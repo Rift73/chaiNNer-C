@@ -2,13 +2,15 @@
 # The kit's self-test on a machine without an AMD GPU, in Docker containers of a bare image (native/AMD.md, Updating
 # the kit): the host check must stop with exit status 2; a dry run must finish; and with --zip the kit's real steps run
 # twice, VOSR skipped, 2 timed calls. First on the CPU (KIT_SELFTEST=1 lets the host check go on): setup through the
-# dependency manager, which installs a CPU build of PyTorch, the tests, the chains, the speed table and the uninstall
-# check. The PyTorch and NCNN chains must pass there: this run is chaiNNer-C's only check of a CPU build of PyTorch (the
-# test suite runs a CUDA build with CUDA hidden). Then beside a fake AMD GPU (fake_gpu.sh, the --gpu profile; the
-# container gets SYS_ADMIN for it, the kit runs without): all a rented machine runs but the GPU's own work. The host
-# check must pass, the dependency manager must install ROCm's builds with that GPU's kernels alone, MIGraphX's nodes
-# must load, ONNX Runtime must offer MIGraphX first, ROCm's tools must start, and the PyTorch and NCNN chains must pass
-# on the CPU. The checkout is copied without its build outputs; results go to $KIT_SELFTEST_DIR (default
+# dependency manager, which installs a CPU build of PyTorch, the tests, the chains, the spandrel checks, the speed
+# table and the uninstall check. The PyTorch and NCNN chains must pass there (this run is chaiNNer-C's only check of a
+# CPU build of PyTorch; the test suite runs a CUDA build with CUDA hidden), and the spandrel checks must pass with their
+# code run on the CPU (the architecture check on three architectures). Then beside a fake AMD GPU (fake_gpu.sh, the
+# --gpu profile; the container gets SYS_ADMIN for it, the kit runs without): all a rented machine runs but the GPU's
+# own work. The host check must pass, the dependency manager must install ROCm's builds with that GPU's kernels alone,
+# MIGraphX's nodes must load, ONNX Runtime must offer MIGraphX first, ROCm's tools must start, the PyTorch and NCNN
+# chains must pass on the CPU, and the spandrel checks must pass, finding no GPU for PyTorch. The checkout is copied
+# without its build outputs; results go to $KIT_SELFTEST_DIR (default
 # ~/amd-kit-selftest).
 # Usage: native/tools/amd/selftest.sh [--zip FILE] [--image ubuntu:24.04] [--gpu gfx1100|gfx942]
 set -uo pipefail
@@ -43,9 +45,10 @@ case $1 in
     stop) bash $kit/kit.sh --zip /z/app.zip ;;
     dry) bash $kit/kit.sh --dry-run ;;
     cpu)
-        # PyTorch in FP16 on a CPU takes many minutes per image: the CPU's routes are FP32 and NCNN
+        # PyTorch in FP16 on a CPU takes many minutes per image: the CPU's routes are FP32 and NCNN. The architecture
+        # check runs three architectures: one from its defaults, one from the check's own settings, one with two networks.
         KIT_SELFTEST=1 KIT_SKIP_VOSR=1 KIT_ONLY='^esrgan-(pytorch-fp32|ncnn-vulkan)$' \
-            bash $kit/kit.sh --zip /z/app.zip --iterations 2
+            KIT_ARCHS='^(Compact|SPAN|DRFT)$' bash $kit/kit.sh --zip /z/app.zip --iterations 2
         ;;
     fake)
         bash $kit/fake_gpu.sh --container "$2" || exit 1
@@ -82,6 +85,14 @@ status=$?
 check "the host check stops without an AMD GPU (exit $status, expected 2)" "$([ "$status" = 2 ]; echo $?)"
 container dry
 check "a dry run finishes (exit $?)" "$?"
+# Both spandrel checks pass: on the CPU against itself in the CPU's run, as not run (no AMD GPU for PyTorch) beside
+# the fake GPU. spandrel_steps SUMMARY
+spandrel_steps() {
+    grep -qE '^- every architecture: exit 0,' "$1" 2>/dev/null
+    check "the architecture check passes ($2)" "$?"
+    grep -qE '^- HIP kernels on and off: exit 0,' "$1" 2>/dev/null
+    check "the HIP kernels check passes ($2)" "$?"
+}
 if [ -n "$zip" ]; then
     container cpu
     summary=$dir/results/summary-cpu.md
@@ -91,6 +102,12 @@ if [ -n "$zip" ]; then
     done
     grep -q '^| PyTorch | enabled |' "$summary" 2>/dev/null
     check "the PyTorch package is enabled with a CPU build of PyTorch" "$?"
+    spandrel_steps "$summary" "on the CPU"
+    for row in '^\| Compact \| defaults; .* \| FP32 \| ok \|' '^\| SPAN \| num_in_ch=3, .* \| FP32 \| ok \|' \
+        '^\| DRFT \(legacy\) \| .* \| FP32 \| ok \|'; do
+        grep -qE "$row" "$summary" 2>/dev/null
+        check "the architecture check's row $row" "$?"
+    done
 
     container fake --cap-add SYS_ADMIN
     summary=$dir/results/summary-fake.md
@@ -111,6 +128,7 @@ if [ -n "$zip" ]; then
         grep -q "^| $chain | esrgan | passed |" "$summary" 2>/dev/null
         check "the chain $chain passes on the CPU beside the fake $gpu" "$?"
     done
+    spandrel_steps "$summary" "beside the fake $gpu"
 fi
 echo "results: $dir/results"
 exit "$failed"

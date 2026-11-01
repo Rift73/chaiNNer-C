@@ -95,12 +95,12 @@ package.add_setting(
         key="use_cpu_bf16",
         description=(
             "Runs Upscale Image (PyTorch) in bfloat16 when PyTorch runs on the CPU (CPU"
-            " Mode, or no GPU found): about 1.4x (Compact) to 3x (ESRGAN) faster on CPUs"
-            " with AVX-512 BF16 or AMX, with a small loss of precision (PSNR 51 dB vs"
-            " FP32 on ESRGAN): BF16 can shift a few pixels slightly versus FP32. It keeps"
-            " about 8 bits of precision, so 16-bit images lose precision in the"
-            " highlights (gradients can band after grading). Models without bfloat16"
-            " support run in FP32. No effect on a GPU."
+            " Mode, or no GPU found): about 1.6x (Compact) to 2x (ESRGAN) faster than"
+            " FP32 on CPUs with AVX-512 BF16 or AMX, with a small loss of precision"
+            " (PSNR 51 dB vs FP32 on ESRGAN): BF16 can shift a few pixels slightly"
+            " versus FP32. It keeps about 8 bits of precision, so 16-bit images lose"
+            " precision in the highlights (gradients can band after grading). Models"
+            " without bfloat16 support run in FP32. No effect on a GPU."
             + (
                 ""
                 if cpu_has_bf16

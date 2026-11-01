@@ -26,6 +26,12 @@ count() {
     if [ -f "$(fragment 40-chains)" ]; then
         echo "- Chains: $(count '| passed |' "$(fragment 40-chains)") passed, $(count '| FAILED' "$(fragment 40-chains)") failed, $(count '| skipped' "$(fragment 40-chains)") skipped"
     fi
+    if [ -f "$(fragment 44-archs)" ]; then
+        echo "- Every architecture: $(sed -n 's/^Result: //p' "$(fragment 44-archs)")"
+    fi
+    if [ -f "$(fragment 46-hip-kernels)" ]; then
+        echo "- spandrel's HIP kernels: $(sed -n 's/^Result: //p' "$(fragment 46-hip-kernels)")"
+    fi
     if [ -f "$(fragment 50-speed)" ]; then
         echo "- Speed rows: $(grep -cE '^\| [a-z0-9]+ \| .* \| [0-9.]+ \| [0-9.]+ \|' "$(fragment 50-speed)") timed, $(count 'FAILED' "$(fragment 50-speed)") failed"
     fi

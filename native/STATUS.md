@@ -4,6 +4,18 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- 2026-10-30 **CPU FP32 in channels-last order; spandrel 0.4.2+c12; AMD kit checks** (not released).
+  - **Channels-last.** PyTorch upscales on the CPU in FP32 take their input in channels-last order, as BF16 does:
+    4x-UltraSharp 2.212 -> 1.425 s/image, 4xLSDIRCompactN 0.0476 -> 0.0391 (Ryzen 9 9950X3D, 256x256); outputs move
+    by 1 code on 0.006-0.008 % of values. MixDehazeNet keeps NCHW (15 % slower in channels-last, random weights at
+    128 px; every other architecture measured within 5 % or faster). GPUs and FP16 unchanged.
+  - **spandrel c12.** Depthwise 3x3 convolutions and ESRGAN's dense blocks run on HIP kernels under ROCm (adapted
+    from spandrel-rocm, MIT; Windows and Linux; compiled with HIPRTC for the GPU present; any failure falls back to
+    PyTorch, `SPANDREL_HIP_KERNELS=0` turns them off). Compiled here for gfx1201, gfx1200, gfx1100, gfx1101, gfx1030,
+    gfx942, gfx90a and gfx908; not yet run on an AMD GPU.
+  - **AMD kit.** Two steps after the chains: every spandrel architecture with random weights on the GPU in FP32,
+    FP16 and BF16 against the CPU (58 architectures as 61 networks; a crash or NaN fails), and the HIP kernels off
+    and on for ESRGAN and DAT2 (difference and time).
 - 2026-10-29 **Type check; large 16-bit grey+alpha TIFFs** (not released): `npm run type-check:py` has no errors (25
   at `e7a16a33`, 49 warnings unchanged); 16-bit grey+alpha TIFFs above 89.5 MP keep their alpha and depth since the
   image-size limit replaced Pillow's (a test pins it).
@@ -105,13 +117,12 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
   and on Windows one with a device name (NUL, CON, COM1, ...).
   AVIF's 4:0:0 is labelled Grayscale (it drops the colour). 16-bit grey+alpha TIFFs load with their alpha at 16
   bits (OpenCV gave 8-bit grey).
-- 2026-10-29 **Upscale run-ahead** (not released): PyTorch, ONNX and NCNN Upscale Image run ahead of earlier items, each
-  upscale on one thread for the GPU or one for the CPU (`nodes/impl/device_thread.py`; per calling thread ONNX Runtime
-  keeps 66 MiB of VRAM, PyTorch and NCNN an OpenMP team). RTX 5090, 48 images 480 px, outputs identical, VRAM equal:
-  PyTorch FP16 0.137 -> 0.125 s/image, ONNX CUDA 0.034 -> 0.023, NCNN Vulkan 0.343 -> 0.325, PyTorch 1x -> ONNX 4x 0.078
-  -> 0.066. Never behind a lazy input its node may leave unread (Save Image's with Skip existing files, a Conditional's
-  other branch); a failing run's upscales computed ahead give up; queued ones wait on Pause; the offload's and VOSR's
-  VRAM caps combine (`memory_cap.py`).
+- 2026-10-30 **Upscale run-ahead removed** (not released): PyTorch, ONNX and NCNN Upscale Image no longer run ahead
+  of earlier items; they run on the driver again, and of the upscales only TensorRT's and MIGraphX's run ahead. The
+  feature (2026-10-29: one thread per device in `device_thread.py`, combined VRAM caps in `memory_cap.py`, a
+  per-input unread flag in the engine's plan, a failing run's give-up for work computed ahead, a Pause/Stop check
+  before each upscale) was removed on 2026-10-30 because its gain (ONNX +31 %, PyTorch +9 %, NCNN +5 % on an RTX
+  5090) did not justify the code. The offload's and VOSR's VRAM caps are as before it.
 - 2026-10-29 **TensorRT engine caches, Windows CUDA loading, installer, VapourSynth on glibc 2.28** (not released).
   - **ONNX TensorRT cache.** ONNX Runtime 1.30's engine file name hashes tensor names, never weights
     (`TRTGenerateId`), and chaiNNer creates sessions from bytes, so two models of one architecture shared an engine:
@@ -857,7 +868,7 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 | Item | Plan |
 | --- | --- |
-| Yes/no questions from the 2026-10-23 hunt (`native/local/hunt-20261023/REPORT.md`, "Your yes/no list"): (1) Save Video FFV1 `-level 3 -slices 16` (14-46 % faster saves, frames identical, bytes change; ruling 7); (2) Save Image PNG compression level 5 (-24 % save time, +0.7 % size); (3) Blue Noise non-identical speedup (prototype 8-19x, 6 of 65,536 ranks differ; ruling 11); (4) upscale run-ahead: done 2026-10-29 (State) | The yes or no |
+| Yes/no questions from the 2026-10-23 hunt (`native/local/hunt-20261023/REPORT.md`, "Your yes/no list"): (1) Save Video FFV1 `-level 3 -slices 16` (14-46 % faster saves, frames identical, bytes change; ruling 7); (2) Save Image PNG compression level 5 (-24 % save time, +0.7 % size); (3) Blue Noise non-identical speedup (prototype 8-19x, 6 of 65,536 ranks differ; ruling 11); (4) upscale run-ahead: built 2026-10-29, removed 2026-10-30 (State) | The yes or no |
 | 2026-10-23 hunt GPU phase: merged upscale changes bit-identical on TensorRT fp16, PyTorch CUDA fp16 and NCNN Vulkan (TensorRT RGBA 4x -8 %); ONNX's CUDA provider did not start in a plain process ("Could not locate cublasLt64_12.dll", runtime CUDA 13) and the process ended silently | Check in the app: ONNX Upscale Image on CUDA |
 | Electron 43 checks still to make by hand: first start of the packaged zip, a folder dropped onto inputs, dropdown group headers, dialogs remembering the folder, screenshot copy, Squirrel install and uninstall. Passed by hand on 2026-10-24 from source: first start, a `.chn` and an image dropped, chain copy and paste, image paste, Get Native Resolution's values in Number/Text nodes, Linear Light. A start listens on a socket (Vite, Electron, the backend): new program paths raise a Firewall prompt | By hand, announced first (`native/local/getnative-20261023/electron-report.md`, "Start check") |
 | Electron 45 clipboard checks by hand (unit tests mock Electron's clipboard): chain copy and paste in the app, from v0.3.8 into it and from it into v0.3.8; image paste of an opaque and a transparent image (from a browser, which puts a PNG file on the clipboard, and from an app that puts only a bitmap); Export viewport to clipboard pasted into another app; `main.log` shows the backend's bare prints | By hand, at the next app start |
