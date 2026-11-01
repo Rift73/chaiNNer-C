@@ -36,8 +36,8 @@ chaiNNer-org. For chaiNNer itself, its documentation and its community, see the
 
 chaiNNer-C doesn't update itself; check the Releases page for new versions.
 
-On Linux, the Linux zip unzips to `chaiNNer-linux-x64/`, where you run `./chaiNNer.sh` ([On Linux](#on-linux)). Linux
-zips arrive with the next release; until then, build from source (below).
+On Linux, download `chaiNNer-C-…-linux-x64.zip` from the same page; it unzips to `chaiNNer-linux-x64/`, where you run
+`./chaiNNer.sh` ([On Linux](#on-linux)).
 
 ## System requirements
 

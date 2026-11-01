@@ -4,6 +4,10 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- 2026-11-01 **v0.3.9**: the version label (eight files, as v0.3.8's), and everything below since v0.3.8 re-release 5.
+  The release ships a Windows zip with the AMD GPU parts (`Build.ps1 -RocmRoot -MigraphxRoot`; the seven other
+  binaries byte-identical to a build without them) and, for the first time, a Linux zip
+  (`native/tools/build_linux_release.sh --rocm --migraphx`).
 - 2026-10-30 **CPU FP32 in channels-last order; spandrel 0.4.2+c12; AMD kit checks** (not released).
   - **Channels-last.** PyTorch upscales on the CPU in FP32 take their input in channels-last order, as BF16 does:
     4x-UltraSharp 2.212 -> 1.425 s/image, 4xLSDIRCompactN 0.0476 -> 0.0391 (Ryzen 9 9950X3D, 256x256); outputs move
@@ -166,9 +170,9 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
     to 2 steps of 65535 at 16 bits), and the mip levels of formats WIC scales as float (SNORM, 4-bit, 4:2:2, 8-bit
     integer: 0.1 to 6 % of samples, a few steps apart at most) and their `-sepalpha`; BC3 with alpha dithering differs at some
     ties on larger images (not rebuilt). `test_dds.py` runs on Linux but for texconv.exe's own options.
-- 2026-10-29 **AMD GPUs: ROCm 7.14.1 and MIGraphX 2.16.1** (branch `amd` over `chaiNNer-C` `ebf96abd`; not released:
-  it ships after tests on rented AMD GPUs, `native/AMD.md`). Design, decisions and the per-area reports:
-  `native/local/amd-20261029/`. No AMD GPU ran any of it yet: what needs one is an `amd_gpu` test the kit runs.
+- 2026-10-29 **AMD GPUs: ROCm 7.14.1 and MIGraphX 2.16.1** (branch `amd` over `chaiNNer-C` `ebf96abd`; ships in
+  v0.3.9). Design, decisions and the per-area reports: `native/local/amd-20261029/`. No AMD GPU ran any of it yet:
+  what needs one is an `amd_gpu` test (`native/AMD.md`).
   - **What.** Where an AMD GPU with 8 or more compute units is found and no NVIDIA GPU (`gpu.amd`: KFD topology on
     Linux, HIP in a child process on Windows, HIP's device order and visibility variables), the packages install AMD
     builds: PyTorch 2.14.1+rocm7.14 (Linux) or AMD's 2.12.0 (Windows) with only that GPU's kernel wheels (the bundled
@@ -198,8 +202,8 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
     start (`dependencies/store.py` imported `packaging` before installing it) and CPU-only PyTorch (`offload.py`
     imported a GPU-only torch call).
 
-- 2026-10-29 **Linux x86-64** (branch `linux` over `chaiNNer-C` `225e1765`; not released: Linux zips ship with the next
-  release). Design, decisions and the per-area reports: `native/local/linux-20261029/`.
+- 2026-10-29 **Linux x86-64** (branch `linux` over `chaiNNer-C` `225e1765`; Linux zips ship from v0.3.9). Design,
+  decisions and the per-area reports: `native/local/linux-20261029/`.
   - **What.** A portable zip (`chaiNNer-linux-x64/`, started by `chaiNNer.sh`) for x86-64 Linux with glibc 2.28 or
     newer. Every node and package that works on Windows works there, on the CPU, on NVIDIA GPUs (PyTorch, TensorRT
     with the DUAL, DRFT and VOSR plugins, ONNX Runtime with its TensorRT provider) and on Vulkan (NCNN, defaulting to the CPU where every Vulkan
