@@ -30,7 +30,9 @@ from ..tensorrt import dual_dynamic_kernels, dual_na_kernel
 
 DOMAIN = "chainner"
 OP_PREFIX = "chainner_dual_"
-# tensorrt/dual_aot.py's compile options and tile sizes
+# tensorrt/dual_aot.py's compile options and tile sizes, but for the value application:
+# TensorRT's APPLY_BT of 64 was measured on NVIDIA only, and either size keeps each
+# output's four-region accumulation order
 OPTIONS = {"num_warps": 4, "num_stages": 1, "enable_fp_fusion": False}
 NORM_PIXELS = 16
 APPLY_BLOCK = 256
