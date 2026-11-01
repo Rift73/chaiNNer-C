@@ -9,7 +9,7 @@ from typing import Literal, Protocol, TypeVar, cast
 
 from api import NodeData, NodeId
 from chain.chain import Chain
-from chain.input import EdgeInput, Input, InputMap
+from chain.input import EdgeInput, Input, InputMap, ValueInput
 
 from .execution_cleanup import await_owned_node
 
@@ -80,6 +80,27 @@ async def owned_gather(coroutines: list[Awaitable[T]]) -> list[T]:
 LOCKED_DEVICE_NODES: frozenset[str] = frozenset(
     {"chainner:tensorrt:upscale_image", "chainner:migraphx:upscale_image"}
 )
+
+# The lazy inputs their node always reads, so the item window computes ahead behind them
+# as behind any input: per schema id, each with the boolean input that, on or
+# connected, may leave it unread. Every other lazy input may go unread (a
+# Conditional's If True and If False, Logic Operation's B), and the window computes no
+# locked-device node behind it for an item that may never read it.
+ALWAYS_READ_LAZY_INPUTS: dict[str, dict[int, int]] = {
+    # The image, unless Skip existing files finds the file
+    "chainner:image:save": {0: 1000},
+}
+
+
+def may_go_unread(data: NodeData, sources: list[Input], index: int) -> bool:
+    """Whether the node may leave its lazy input data.inputs[index] unread for an item:
+    one not in ALWAYS_READ_LAZY_INPUTS, or one whose boolean input is on or connected.
+    sources: the node's inputs (InputMap.get)."""
+    switch = ALWAYS_READ_LAZY_INPUTS.get(data.schema_id, {}).get(data.inputs[index].id)
+    if switch is None:
+        return True
+    source = next(s for i, s in zip(data.inputs, sources) if i.id == switch)
+    return not isinstance(source, ValueInput) or bool(source.value)
 
 
 def pure_cpu_node(data: NodeData) -> bool:
