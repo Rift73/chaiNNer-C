@@ -34,7 +34,7 @@ mkdir -p "$WORK"
 free_gb=$(df -P -BG "$WORK" | awk 'NR == 2 { sub("G", "", $4); print $4 }')
 fact "Disk" "$free_gb GiB free in $WORK"
 if [ "$free_gb" -lt "$KIT_MIN_DISK_GB" ]; then
-    problems+=("$WORK has $free_gb GiB free; the kit needs $KIT_MIN_DISK_GB GiB (rent a machine with more disk, or set KIT_WORK).")
+    problems+=("$WORK has $free_gb GiB free; the kit needs $KIT_MIN_DISK_GB GiB (use a machine with more disk, or set KIT_WORK).")
 fi
 fact "User" "$(id)"
 # Chromium (the app's window and its headless runs) keeps shared memory in /dev/shm, which a container may give 64 MB
@@ -53,7 +53,7 @@ if [ -e /dev/kfd ]; then
     fi
 else
     fact "/dev/kfd" "missing"
-    problems+=("/dev/kfd is missing: the machine has no AMD GPU, or the container was started without --device /dev/kfd (on vast.ai: an AMD machine and a ROCm template).")
+    problems+=("/dev/kfd is missing: the machine has no AMD GPU, or the container was started without --device /dev/kfd and --device /dev/dri.")
 fi
 render_nodes=()
 for render in /dev/dri/renderD*; do

@@ -6,7 +6,7 @@
 # table and the uninstall check. The PyTorch and NCNN chains must pass there (this run is chaiNNer-C's only check of a
 # CPU build of PyTorch; the test suite runs a CUDA build with CUDA hidden), and the spandrel checks must pass with their
 # code run on the CPU (the architecture check on three architectures). Then beside a fake AMD GPU (fake_gpu.sh, the
-# --gpu profile; the container gets SYS_ADMIN for it, the kit runs without): all a rented machine runs but the GPU's
+# --gpu profile; the container gets SYS_ADMIN for it, the kit runs without): all a real AMD machine runs but the GPU's
 # own work. The host check must pass, the dependency manager must install ROCm's builds with that GPU's kernels alone,
 # MIGraphX's nodes must load, ONNX Runtime must offer MIGraphX first, ROCm's tools must start, the PyTorch and NCNN
 # chains must pass on the CPU, and the spandrel checks must pass, finding no GPU for PyTorch. The checkout is copied

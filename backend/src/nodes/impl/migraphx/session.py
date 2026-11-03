@@ -79,12 +79,14 @@ class RunnerSession:
         self.runner.close()
 
 
-_sessions: SharedCache[RunnerSession] = SharedCache(RunnerSession.close)
-
 # Load Program's programs, read once and kept across runs until no node uses them, so
-# that Upscale Image keeps its session (keyed by the program): a program holds only bytes,
-# so closing one frees nothing.
+# that Upscale Image keeps its session (keyed by the program). A program holds only bytes;
+# closing one releases the sessions built on it.
 programs: SharedCache[MIGraphXProgram] = SharedCache(lambda _program: None)
+
+_sessions: SharedCache[RunnerSession] = SharedCache(
+    RunnerSession.close, built_on=programs
+)
 
 
 def use_runner_session(

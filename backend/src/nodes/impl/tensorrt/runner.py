@@ -27,7 +27,7 @@ from sanic.log import logger
 
 from api import NodeId
 
-from .cache import SharedCache
+from .cache import SharedCache, engines
 from .drft import load_plugins
 from .model import TensorRTEngine
 
@@ -139,7 +139,9 @@ class RunnerSession:
         self.runner.close()
 
 
-_sessions: SharedCache[RunnerSession] = SharedCache(RunnerSession.close)
+_sessions: SharedCache[RunnerSession] = SharedCache(
+    RunnerSession.close, built_on=engines
+)
 
 
 def use_runner_session(

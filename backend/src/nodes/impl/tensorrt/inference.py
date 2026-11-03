@@ -25,7 +25,7 @@ from api import NodeId
 from ..native_framework_images import planar_to_interleaved
 from ..native_tensors import cast_into
 from .bfloat16 import bf16_bits_to_float32, float32_to_bf16_bits
-from .cache import SharedCache
+from .cache import SharedCache, engines
 from .dual import input_alignment
 from .engine_info import deserialize_engine
 from .memory import check_cuda
@@ -351,7 +351,9 @@ class TensorRTSession:
             raise errors[0]
 
 
-_sessions: SharedCache[TensorRTSession] = SharedCache(TensorRTSession.close)
+_sessions: SharedCache[TensorRTSession] = SharedCache(
+    TensorRTSession.close, built_on=engines
+)
 
 
 @contextmanager
