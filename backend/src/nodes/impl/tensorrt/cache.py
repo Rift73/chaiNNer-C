@@ -4,7 +4,10 @@ An entry is shared by every node that uses its key and holds one reference per
 node id. A node holds at most one entry per cache: using another key releases
 its previous one. `release_node` (the `/clear-cache/individual` hook) drops a
 node's references; an entry left without any is closed at once when idle, else
-when its last user returns. One lock guards the tables; an entry's own lock
+when its last user returns. A cache built on another (sessions on Load Engine's
+engines) keys its entries `(value, ...)` by the other's values: closing one of
+those also releases every entry built on it, since no run can pass that value
+again (its node makes a new one). One lock guards the tables; an entry's own lock
 makes its use exclusive, since a session owns one stream and one context. The
 wait for that lock is not the waiting node's time (`util.held`).
 
@@ -70,11 +73,15 @@ class _Entry(Generic[T]):
 
 
 class SharedCache(Generic[T]):
-    def __init__(self, close: Callable[[T], None]) -> None:
+    def __init__(
+        self, close: Callable[[T], None], built_on: SharedCache[Any] | None = None
+    ) -> None:
+        """`built_on`: the cache whose values start this cache's keys, `(value, ...)`."""
         self._close = close
         self._lock = Lock()
         self._entries: dict[Hashable, _Entry[T]] = {}
         self._held: dict[NodeId, tuple[Hashable, Preview | None]] = {}
+        self.built_on = built_on
         _CACHES.add(self)
 
     def __len__(self) -> int:
@@ -99,8 +106,37 @@ class SharedCache(Generic[T]):
         return self._detach(key)
 
     def _close_value(self, value: T | None) -> None:
-        if value is not None:
+        if value is None:
+            return
+        try:
+            for shared in list(_CACHES):
+                if shared.built_on is self:
+                    shared.release_built_on(value)
+        finally:
             self._close(value)
+
+    def release_built_on(self, value: object) -> None:
+        """Drop every reference to the entries keyed `(value, ...)`; each is closed at
+        once when idle, else when its last user returns. Every one is closed even after
+        an error; the first error is raised at the end."""
+        with self._lock:
+            for node_id, (key, _) in list(self._held.items()):
+                if isinstance(key, tuple) and key[0] is value:
+                    del self._held[node_id]
+                    self._entries[key].refs.discard(node_id)
+            doomed = [
+                self._detach(key)
+                for key in list(self._entries)
+                if isinstance(key, tuple) and key[0] is value
+            ]
+        errors: list[Exception] = []
+        for item in doomed:
+            try:
+                self._close_value(item)
+            except Exception as e:
+                errors.append(e)
+        if errors:
+            raise errors[0]
 
     def release_node(self, node_id: NodeId, preview: Preview | None = None) -> None:
         """Release the reference of `node_id`; an unknown id is a no-op."""
@@ -159,8 +195,8 @@ class SharedCache(Generic[T]):
             self._close_value(doomed)
 
 
-# Load Engine's deserialized engines; a session using one keeps it alive (see
-# `DeserializedEngine`), so closing an entry frees the engine after its sessions.
+# Load Engine's deserialized engines. Closing one releases the sessions built on it
+# (each keeps it alive, see `DeserializedEngine`), so the engine is freed after them.
 engines: SharedCache[TensorRTEngine] = SharedCache(TensorRTEngine.close)
 
 

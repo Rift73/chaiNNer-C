@@ -1,12 +1,12 @@
-# chaiNNer-C on a rented AMD GPU: the test kit
+# chaiNNer-C on an AMD GPU: the test kit
 
-`native/tools/amd/kit.sh` checks chaiNNer-C on a rented Linux machine with an AMD GPU in one command and writes one
-report file to send back. It installs the app from its Linux zip and its packages through the dependency manager (as a
-user would), proves that PyTorch runs on the GPU, runs every test marked `amd_gpu`, runs real chains through the app's
-command line, runs every architecture spandrel knows on the GPU, compares spandrel's own HIP kernels with PyTorch's,
-and measures a speed table. The rental time goes to testing: allow about an hour and a half.
+`native/tools/amd/kit.sh` checks chaiNNer-C on a Linux machine with an AMD GPU (reached over SSH) in one command and
+writes one report file to send back. It installs the app from its Linux zip and its packages through the dependency
+manager (as a user would), proves that PyTorch runs on the GPU, runs every test marked `amd_gpu`, runs real chains
+through the app's command line, runs every architecture spandrel knows on the GPU, compares spandrel's own HIP kernels
+with PyTorch's, and measures a speed table. Allow about an hour and a half.
 
-## What to rent (vast.ai)
+## The machine
 
 - **GPU**: any AMD GPU that ROCm 7.14.1 supports: Instinct MI100 (gfx908), MI210/MI250 (gfx90a), MI300X/MI325X (gfx942),
   MI350/MI355 (gfx950); Radeon RX 6800/6900 (gfx1030) and other RX 6000; RX 7900 (gfx1100), RX 7800/7700 (gfx1101),
@@ -16,8 +16,8 @@ and measures a speed table. The rental time goes to testing: allow about an hour
   discrete AMD GPU if one is offered (memory reporting of integrated GPUs).
 - **Image**: plain `ubuntu:24.04` or `ubuntu:22.04`, or one of AMD's ROCm images
   (`rocm/dev-ubuntu-24.04`, `rocm/pytorch`); the kit brings its own ROCm (PyTorch's pip packages), so the image's ROCm
-  does not matter. The machine must give the container the GPU (`/dev/kfd` and `/dev/dri`), as vast.ai's AMD and ROCm
-  templates do; the kit says so if not.
+  does not matter. The machine must give the container the GPU (`/dev/kfd` and `/dev/dri`; with Docker,
+  `--device /dev/kfd --device /dev/dri`); the kit says so if not.
 - **Launch mode**: SSH. **Disk**: 80 GB (the kit needs 40 GB free; VOSR alone downloads 7 GB). Root is fine.
 
 ## What to copy from this PC
@@ -40,7 +40,7 @@ download, for testing a newer build).
 
 ## Commands
 
-On this PC (PowerShell; `<PORT>` and `<HOST>` are the SSH port and address vast.ai shows):
+On this PC (PowerShell; `<PORT>` and `<HOST>` are the machine's SSH port and address):
 
 ```
 ssh -p <PORT> root@<HOST> "mkdir -p /root/kit-in/models/tests"
@@ -55,7 +55,7 @@ scp -P <PORT> <TEST_MODEL_1> <TEST_MODEL_2> root@<HOST>:/root/kit-in/models/test
 ssh -p <PORT> root@<HOST>
 ```
 
-On the rented machine:
+On the AMD machine:
 
 ```
 apt-get update && apt-get install -y git tmux   # skip if both are there
@@ -97,7 +97,7 @@ after `setup.sh` once.
 ## The GUI in a browser (optional)
 
 ```
-bash /root/chaiNNer-C/native/tools/amd/desktop.sh            # on the rented machine
+bash /root/chaiNNer-C/native/tools/amd/desktop.sh            # on the AMD machine
 ssh -p <PORT> -L 6080:127.0.0.1:6080 root@<HOST>              # on this PC, then open http://127.0.0.1:6080/vnc.html
 bash /root/chaiNNer-C/native/tools/amd/desktop.sh stop
 ```
@@ -108,13 +108,13 @@ that SSH tunnel, and chaiNNer-C in it.
 ## Updating the kit
 
 The test files expected to carry `amd_gpu` tests, the wheels' URLs and the fallback ESRGAN are at the top of
-`native/tools/amd/common.sh`. Before a rental, `native/tools/amd/selftest.sh --zip <LINUX_ZIP>` checks the kit with the
-zip on any Linux machine with Docker, without an AMD GPU: the host check must stop, a dry run must finish, and the real
-steps run on the CPU, where the PyTorch FP32 and NCNN chains must pass (it is also the only check of chaiNNer-C with a
-CPU build of PyTorch) and the two spandrel checks run their code on the CPU against itself (the architecture check on
-Compact, SPAN and DRFT), then beside a fake AMD GPU (`fake_gpu.sh`; `--gpu gfx1100` or `gfx942`): the host check, the
-dependency manager's ROCm builds with that GPU's kernels alone, MIGraphX's nodes, ONNX Runtime's MIGraphX provider and
-ROCm's tools must all work as on a rented machine, short of the GPU's own work. `setup.sh` copies MIGraphX's example
+`native/tools/amd/common.sh`. Before a session on an AMD machine, `native/tools/amd/selftest.sh --zip <LINUX_ZIP>`
+checks the kit with the zip on any Linux machine with Docker, without an AMD GPU: the host check must stop, a dry run
+must finish, and the real steps run on the CPU, where the PyTorch FP32 and NCNN chains must pass (it is also the only
+check of chaiNNer-C with a CPU build of PyTorch) and the two spandrel checks run their code on the CPU against itself
+(the architecture check on Compact, SPAN and DRFT), then beside a fake AMD GPU (`fake_gpu.sh`; `--gpu gfx1100` or
+`gfx942`): the host check, the dependency manager's ROCm builds with that GPU's kernels alone, MIGraphX's nodes, ONNX
+Runtime's MIGraphX provider and ROCm's tools must all work as on a real AMD machine, short of the GPU's own work. `setup.sh` copies MIGraphX's example
 custom-op library (see the table above) from `--models` to `native/tools/amd/test-ops/`, where one runner test loads it;
 the app does not ship it. The architecture check builds an architecture from the network class its spandrel loader
 names, with that class's defaults; one without defaults, with large ones, or with more than one kind of network gets

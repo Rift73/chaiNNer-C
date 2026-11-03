@@ -4,7 +4,7 @@
 # memory counters) over /sys/bus/pci/devices and an amdgpu module over /sys/module, as read-only overlays on the real
 # sysfs; /dev/kfd and the render nodes are /dev/null's device, so ROCm opens them, fails its first request and finds
 # no GPU. The host check, chaiNNer's GPU list and the dependency manager then see the GPU, and everything up to the
-# GPU's own work runs as on a rented machine. Profiles: gfx1100 (one Radeon RX 7900 XTX: 96 compute units, 24 GiB,
+# GPU's own work runs as on a real AMD machine. Profiles: gfx1100 (one Radeon RX 7900 XTX: 96 compute units, 24 GiB,
 # the kernel's own amdgpu) and gfx942 (two Instinct MI300X: 304 compute units, 192 GiB each, AMD's amdgpu with a
 # version). It runs only in a container (/.dockerenv or /run/.containerenv) and when told so with --container, as
 # selftest.sh runs it: on a machine it would replace the real /dev/kfd and render nodes and hide its sysfs.

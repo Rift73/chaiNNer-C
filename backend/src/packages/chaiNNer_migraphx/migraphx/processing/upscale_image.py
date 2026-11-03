@@ -62,8 +62,9 @@ if processing_group is not None:
         h, w, c = get_h_w_c(img)
         logger.debug("Upscaling a %dx%dx%d image with MIGraphX", h, w, c)
 
-        # The session outlives the run; clearing this node frees it. Its lock lets items
-        # computed ahead share it; their wait for it is not their time.
+        # The session outlives the run; clearing this node, or Load Program letting go
+        # of its program, frees it. Its lock lets items computed ahead share it; their
+        # wait for it is not their time.
         with use_runner_session(
             program, settings.gpu_index, context.node_id
         ) as runner, held(runner.lock):

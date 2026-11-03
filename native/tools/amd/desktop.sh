@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Optional: a remote desktop in the browser to use chaiNNer-C's window on the rented machine. A virtual display (Xvfb
+# Optional: a remote desktop in the browser to use chaiNNer-C's window on the AMD machine. A virtual display (Xvfb
 # :1, 1920x1080), a light window manager (Openbox), a VNC server on it (x11vnc) and noVNC, its web client, all bound to
 # 127.0.0.1 and without a password: only an SSH tunnel reaches them. On your computer:
 #   ssh -p <ssh port> -L 6080:127.0.0.1:6080 root@<host>

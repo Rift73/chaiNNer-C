@@ -1,4 +1,4 @@
-"""The AMD kit (native/tools/amd, native/AMD.md) on what a bare rented image lacks: no
+"""The AMD kit (native/tools/amd, native/AMD.md) on what a bare Linux image lacks: no
 system Python for the scripts among ROCm's tools, no C compiler for the launchers Triton
 builds, and a test run that may outlast its time limit."""
 

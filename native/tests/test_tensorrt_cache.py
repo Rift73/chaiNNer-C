@@ -209,7 +209,9 @@ class FakeTrt:
         self.deserialized = 0
         self.freed: list[str] = []
         self.engines: SharedCache[TensorRTEngine] = SharedCache(TensorRTEngine.close)
-        self.sessions: SharedCache[FakeSession] = SharedCache(FakeSession.close)
+        self.sessions: SharedCache[FakeSession] = SharedCache(
+            FakeSession.close, built_on=self.engines
+        )
 
     def handle(self, name):
         value = Handle()
@@ -282,25 +284,71 @@ def test_contexts_are_freed_before_the_engine_and_the_engine_before_its_runtime(
     trt = FakeTrt()
     trt.upscale(trt.load(engine_file, A), C)
     cache.release_node(first_cleared)
-    assert trt.freed == (["context"] if first_cleared == C else [])
+    everything = ["context", "engine one", "runtime one"]
+    # Clearing Load Engine also frees the session built on its engine.
+    assert trt.freed == (["context"] if first_cleared == C else everything)
     cache.release_node(C if first_cleared == A else A)
-    assert trt.freed == ["context", "engine one", "runtime one"]
+    assert trt.freed == everything
     assert len(trt.engines) == len(trt.sessions) == 0
 
 
-def test_a_changed_engine_file_deserializes_the_new_one(engine_file):
+def test_a_changed_engine_file_frees_the_old_engine_with_its_session(engine_file):
     trt = FakeTrt()
     old = trt.load(engine_file, A)
     trt.upscale(old, C)
     engine_file.write_bytes(b"two")
     stat = engine_file.stat()
     os.utime(engine_file, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
-    new = trt.load(engine_file, A)
+    new = trt.load(engine_file, A)  # Load Engine's preview, before any run
     assert new is not old and trt.deserialized == 2
-    assert trt.freed == []  # the old session still uses the old engine
-    trt.upscale(new, C)
+    # No run can pass the old engine again: its session goes with it.
     assert trt.freed == ["context", "engine one", "runtime one"]
+    trt.upscale(new, C)
     assert len(trt.engines) == len(trt.sessions) == 1
+
+
+def test_a_session_in_use_when_its_engine_is_replaced_goes_when_its_run_returns(
+    engine_file, tmp_path
+):
+    trt = FakeTrt()
+    old = trt.load(engine_file, A)
+    other = tmp_path / "y.engine"
+    other.write_bytes(b"two")
+    with trt.sessions.use((old, 0), C, lambda: FakeSession(trt, old, 0)):
+        trt.load(other, A)  # Load Engine's file changed mid-run
+        assert trt.freed == []
+    assert trt.freed == ["context", "engine one", "runtime one"]
+    assert len(trt.sessions) == 0
+    trt.upscale(old, C)  # a later item of that run still passes the old engine
+    assert trt.deserialized == 3
+
+
+def test_replacing_an_engine_keeps_the_sessions_of_other_engines(engine_file, tmp_path):
+    trt = FakeTrt()
+    other = tmp_path / "y.engine"
+    other.write_bytes(b"two")
+    kept = trt.upscale(trt.load(other, B), D)
+    trt.upscale(trt.load(engine_file, A), C)
+    third = tmp_path / "z.engine"
+    third.write_bytes(b"three")
+    trt.load(third, A)
+    assert trt.freed == ["context", "engine one", "runtime one"]
+    assert trt.upscale(trt.load(other, B), D) is kept
+
+
+def test_an_error_closing_a_session_still_closes_its_engine():
+    engines = Recorder()
+
+    def fail(_session):
+        raise RuntimeError("CUDA error")
+
+    sessions: SharedCache[Fake] = SharedCache(fail, built_on=engines.cache)
+    engine = engines.use("file", A)
+    with sessions.use((engine, 0), C, lambda: Fake("session")):
+        pass
+    with pytest.raises(RuntimeError, match="CUDA error"):
+        engines.cache.release_node(A)
+    assert engines.closed == [engine] and len(sessions) == 0
 
 
 def test_a_session_whose_load_engine_node_was_cleared_deserializes(engine_file):

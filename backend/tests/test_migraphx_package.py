@@ -464,6 +464,27 @@ def test_upscale_image_runs_the_runner_and_keeps_its_session(loaded: Imported):
     assert made.closed
 
 
+def test_a_new_file_in_load_program_frees_the_old_program_s_session(
+    loaded: Imported, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    module = loaded.nodes["io.load_program"]
+    monkeypatch.setattr(module, "read_program_info", lambda _data, _gpu_index: INFO)
+    upscale = loaded.nodes["processing.upscale_image"].upscale_image_node
+    load_context = context({"gpu_index": "0"}, "load")
+    upscale_context = context({"gpu_index": "0"}, "upscale")
+    image = np.random.default_rng(1).random((5, 7, 3), dtype=np.float32)
+    first, second = tmp_path / "first.mxr", tmp_path / "second.mxr"
+    first.write_bytes(b"first program")
+    second.write_bytes(b"second program")
+    program = module.load_program_node(load_context, first)[0]
+    upscale(upscale_context, image, program, False)
+    (old,) = Runner.made
+    module.load_program_node(load_context, second)  # Load Program's preview
+    assert old.closed  # no run can pass the first program again
+    cache.release_node(load_context.node_id)
+    cache.release_node(upscale_context.node_id)
+
+
 def test_get_program_info(loaded: Imported):
     info = loaded.nodes["utility.get_program_info"].get_program_info_node
     assert info(MIGraphXProgram(b"", INFO)) == (

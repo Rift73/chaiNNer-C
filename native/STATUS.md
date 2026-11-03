@@ -4,6 +4,19 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- 2026-11-04 **A replaced engine or program frees its VRAM at once** (`tensorrt/cache.py`, not released). Upscale
+  Image's session (TensorRT's context and buffers, MIGraphX's runner) outlives the run under its node id, so after Load
+  Engine or Load Program took another file, or was cleared or deleted, the old engine stayed alive with that session
+  until the Upscale node ran again. A cache built on another (`built_on`, keys `(value, ...)`) now has its entries on a
+  closed value released with it; a session in use goes when its run returns. RTX 5090, the process's dedicated memory
+  after picking engine B in Load Engine, before any run: ESRGAN 4x engines (A 23 blocks to 512 px, B 12 to 384 px)
+  3,310 -> 496 MiB; DUAL-XS 1x (fixed 256 and 192 px) 814 -> 598 MiB. After the run with B the old engine was already
+  freed before (2,114 -> 2,082 MiB).
+- RELEASED 2026-11-01 as **v0.3.9 re-release 1**: the entry below. Fork branch and tag `v0.3.9` at `353b54d1`
+  (publish commit over `925e92ec`, tree = main `565c2cd0`); assets win-x64 `4d6acc8e…e740` (176,374,621 B) and
+  linux-x64 `86df1a75…fe7e` (147,425,713 B), both checked against git. `D:\chaiNNer` updated (4 files, tuned binaries
+  kept); 197 nodes. Tests: the DUAL plugin tests on D:'s Python (43 passed with the GPU hidden; the attention kernel's
+  21, its GPU cases included, on the RTX 5090) and MIGraphX's DUAL tests in WSL with ROCm's Triton (34 passed).
 - 2026-11-01 **DUAL TensorRT plugins faster** (`dual_na_kernel.py`, `dual_aot.py`). Neighborhood attention takes its 32
   content channels and 16 positional-bias channels as two dot products into one FP32 accumulator (no padding of 48
   channels to 64) and runs 64-query programs on 4 warps (was 128 on 8), each pair keeping its 128-query parent's key
@@ -912,6 +925,7 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | Ruff: `npm run lint:py` passes (`55583e78`); `ruff check` from `native\` reports 32 in tests and `tools/amd/bench.py` (I001 x7, Q000 x7 in `test_atomic_file.py`, B905 x4, PLW0108 x3, RUF005 x3 with test_video_io.py's, ISC004 x3, RUF043 x2, RUF001 x2, C408) | A lint pass |
 | Hunt O02: cold CFR Matroska/WebM rate detection and frame indexing read packets twice, then cache the result | Deferred unless a long cold load visibly stalls; preserve their different counting rules |
 | Hunt O03: opt-in `CHAINNER_C_TRT_RUNNER=1` retains both Python and C++ TensorRT engine copies | Parked: the cross-boundary ownership change is riskier than the current saving |
+| DUAL engines leave VRAM behind (2026-11-04, RTX 5090, TensorRT 11.4): the first DUAL engine loaded keeps 128 MiB in the process after it is freed (loading and freeing more stays flat; ESRGAN engines return to the baseline), and each DUAL engine that runs keeps about 2 MiB more (4 swap cycles of two engines: +16 MiB) | An investigation (TensorRT's AOT plugin kernels or its own kernel loading) if it matters |
 | Hunt GPU corrections B16-B18: owning-device reuse/teardown, low-headroom split admission, activation restore recovery | CPU/source checks only; real-device confirmation deferred in `GPU-DEFERRED.md` |
 | Load Video seek bar follow-ups (2026-10-21): the independent-UI patch (`native/tools/independent_ui.py`) for the `video-seek` input kind and runWithOverrides; the CLI path's Frame Count stays the probe's estimate (a run that reaches the end does not teach it); a one-frame run shares the Preview's decoded frame only in RGB float; VOSR Persistent Detail starts its history at a range's first context frame | Next sessions |
 | The error-retention fix's two recorded follow-ups, both INFERRED: a failed `/run/individual` (a preview's inputs) and the per-item errors of a non-fail-fast generator (`process.py:903` keeps `str(e)`; the run then fails, so B collects at its end). Each lets an exception through the same frames as a failed `/run`; A breaks their chaiNNer-C edge, and upstream's `Lazy` edge remains. `await_owned_node`'s cancel-branch `error` local and `owned_gather`'s `results`/`tasks` locals are dropped since `8f220ab9`, with tests (checked 2026-10-29); the two `server.py` comments were rewritten since. Upstream's `Lazy.from_coroutine` `completion` local needs a separate decision. Root cause: `native/reports/error-retention/rootcause.md` | The fix (2026-10-06) is two commits: A, `bad1dba7` (`await_owned_node` and `NodeFlights.run` drop their `future`/`task` locals), then B with D (`collect_failed_run`: one `gc.collect()` after a failed or stopped `/run`'s handler returns, then the pool's release if no run executes; ARCHITECTURE section 6). A failed run's arrays are freed right after it, earlier than upstream git's end of the next `/run`; successful runs never collect. Growth record: the release check (0)–(f), with (e) and (f) asserted; verdict `native/reports/error-retention/verdict.md`. REVIEW FLAG (decision log): `import gc` and that one collection; undo = `git revert` of the second commit. The B1 re-test and SP3b's phase-2 re-check follow it, then SP5a |

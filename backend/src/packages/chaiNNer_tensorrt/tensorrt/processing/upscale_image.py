@@ -82,8 +82,9 @@ if processing_group is not None:
                     separate_alpha,
                 )
 
-        # The session outlives the run; clearing this node frees it. Its lock lets
-        # items computed ahead share it; their wait for it is not their time.
+        # The session outlives the run; clearing this node, or Load Engine letting go
+        # of its engine, frees it. Its lock lets items computed ahead share it; their
+        # wait for it is not their time.
         with use_tensorrt_session(
             engine, settings.gpu_index, context.node_id
         ) as session, held(session.lock):
