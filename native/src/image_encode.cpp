@@ -5,8 +5,6 @@
 #include "run_kernels.h"
 
 #include <cstring>
-#include <new>
-#include <utility>
 
 namespace cn::image_encode {
 
@@ -27,19 +25,14 @@ Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t chan
 }
 
 Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
-        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, std::vector<uint8_t> &encoded) {
-    std::vector<uint8_t> bytes;
-    const Png result = png(source, height, width, channels, row_stride, pixel_stride, channel_stride,
-                           [&](size_t size) -> uint8_t * {
-                               try {
-                                   bytes.resize(size);
-                                   return bytes.data();
-                               } catch (const std::bad_alloc &) {
-                                   return nullptr;
-                               }
-                           });
-    if (result == Png::encoded) encoded = std::move(bytes);
-    return result;
+        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, cn_codec_output &out) {
+    return png(source, height, width, channels, row_stride, pixel_stride, channel_stride,
+               [&](size_t size) -> uint8_t * {
+                   cn_codec_output_reserve(&out, size);
+                   if (out.failed) return nullptr;
+                   out.size = size;
+                   return out.data;
+               });
 }
 
 bool tiff_extra_samples(std::span<const uint8_t> file, std::vector<uint8_t> &fixed) {

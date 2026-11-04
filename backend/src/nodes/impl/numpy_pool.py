@@ -83,13 +83,17 @@ def installed() -> bool:
 
 
 def release() -> int:
-    """Release every idle block; the bytes released, 0 when not installed.
+    """Release every idle block and what the PNG encoder keeps; the bytes released, 0
+    when not installed.
 
     The first time the process's failures of the release call (RELEASE_CALL) are
     non-zero, one warning says so; the pyd counts them for the life of the process.
     """
     global _release_warned
     if not _installed:
+        module = sys.modules.get("nodes.impl._chainner_graph")
+        if module is not None:  # no pyd, nothing the encoder kept
+            module.numpy_pool_release()
         return 0
     released, failures = graph().numpy_pool_release()
     if failures:

@@ -228,60 +228,59 @@ void load_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
     outputs.push_back(std::move(name));
 }
 
-/* to_uint8 / to_uint16 of an enforced image (cn_pixels_convert_checked: float32 to 8 or 16 bits, clamped, half to
- * even); a floating-point event, which NumPy would report, declines. */
-std::vector<uint8_t> quantized(const Image &image, int bits)
+/* to_uint8 / to_uint16 of an enforced image into `out` (cn_pixels_convert_checked: float32 to 8 or 16 bits, clamped,
+ * half to even); a floating-point event, which NumPy would report, declines. */
+void quantized(const Image &image, int bits, cn_codec_output &out)
 {
-    std::vector<uint8_t> out(image.values() * size_t(bits / 8));
+    const size_t bytes = image.values() * size_t(bits / 8);
+    cn_codec_output_reserve(&out, bytes);
+    if (out.failed) throw std::bad_alloc();
+    out.size = bytes;
     int events = 0;
-    check(cn_pixels_convert_checked(image.data, out.data(), image.values(), 0, bits == 8 ? 1 : 2, 1, &events));
+    check(cn_pixels_convert_checked(image.data, out.data, image.values(), 0, bits == 8 ? 1 : 2, 1, &events));
     if (events) throw RunPython{};
-    return out;
 }
 
 /* Save Image's file bytes for the formats whose encoders are native (save_image.py encoding() and image_io.cpp
- * encode()): PNG (chaiNNer-C's encoder for 8 bits, OpenCV's PngEncoder for 16), JPG, WEBP (lossless with alpha as
- * Pillow's exact save), BMP, TIFF (8/16-bit with its compression, or float32 as it is; then the ExtraSamples fix). */
-std::vector<uint8_t> save_bytes(const Image &image, std::span<const Value> inputs)
+ * encode()), held by `out`, or by `fixed` for a TIFF that took the ExtraSamples fix: PNG (chaiNNer-C's encoder for 8
+ * bits, OpenCV's PngEncoder for 16), JPG, WEBP (lossless with alpha as Pillow's exact save), BMP, TIFF (8/16-bit with
+ * its compression, or float32 as it is; then the ExtraSamples fix). */
+std::span<const uint8_t> save_bytes(const Image &image, std::span<const Value> inputs, cn_codec_output &out,
+                                    std::vector<uint8_t> &fixed)
 {
     const std::string &format = std::get<std::string>(inputs[4]);
     const std::string &depth = std::get<std::string>(inputs[format == "tiff" ? 10 : 5]);
     const uint32_t height = uint32_t(image.height), width = uint32_t(image.width), channels = uint32_t(image.channels);
     const bool floats = format == "tiff" && depth == "f32";
     const bool sixteen = (format == "png" || format == "tiff") && depth == "u16";
-    std::vector<uint8_t> pixels = floats ? std::vector<uint8_t>() : quantized(image, sixteen ? 16 : 8);
+    cn::codecs::PoolOutput pixels;
+    if (!floats) quantized(image, sixteen ? 16 : 8, pixels.value);
     const uint32_t sample_bytes = floats ? 4 : sixteen ? 2 : 1;
-    const cn_codec_image view{floats ? reinterpret_cast<const uint8_t *>(image.data) : pixels.data(), height, width,
+    const cn_codec_image view{floats ? reinterpret_cast<const uint8_t *>(image.data) : pixels.value.data, height, width,
                               channels, sample_bytes, size_t(width) * channels * sample_bytes};
-    std::vector<uint8_t> bytes;
     if (format == "png" && !sixteen) {
         const ptrdiff_t c = ptrdiff_t(channels);
-        const auto result = cn::image_encode::png(pixels.data(), height, width, c, ptrdiff_t(width) * c, c, 1, bytes);
-        if (result == cn::image_encode::Png::encoded) return bytes;
+        const auto result = cn::image_encode::png(pixels.value.data, height, width, c, ptrdiff_t(width) * c, c, 1, out);
+        if (result == cn::image_encode::Png::encoded) return {out.data, out.size};
         // The Python body raises the same encoder's error (MemoryError or RuntimeError).
         if (result != cn::image_encode::Png::declined) throw RunPython{};
     }
     const bool webp_lossless = std::get<bool>(inputs[6]);
     const int64_t quality = std::get<int64_t>(inputs[7]), compression = std::get<int64_t>(inputs[11]);
     if (format == "webp" && webp_lossless && channels == 4)
-        for (size_t i = 0; i < pixels.size(); i += 4) std::swap(pixels[i], pixels[i + 2]); // BGRA2RGBA for Pillow
-    {
-        cn::codecs::Output output;
-        auto &out = output.value;
-        cn_codec_status status = CN_CODEC_FALLBACK;
-        if (format == "png") status = cn_png_encode(&view, &out);
-        else if (format == "jpg" && quality >= 0 && quality <= 100)
-            status = cn_jpeg_encode(&view, int(quality), uint32_t(std::get<int64_t>(inputs[8])), std::get<bool>(inputs[9]) ? 1 : 0, &out);
-        else if (format == "webp" && webp_lossless && channels == 4) status = cn_webp_encode_exact(&view, &out);
-        else if (format == "webp" && quality <= 100) status = cn_webp_encode(&view, webp_lossless ? 101 : int(quality), &out);
-        else if (format == "bmp") status = cn_bmp_encode(&view, &out);
-        else if (format == "tiff" && (floats || compression == 1 || compression == 5 || compression == 8))
-            status = cn_tiff_encode(&view, floats ? 0 : int(compression), &out);
-        if (status != CN_CODEC_OK) throw RunPython{};
-        bytes.assign(out.data, out.data + out.size);
-    }
-    if (std::vector<uint8_t> fixed; format == "tiff" && cn::image_encode::tiff_extra_samples(bytes, fixed)) return fixed;
-    return bytes;
+        for (size_t i = 0; i < pixels.value.size; i += 4) std::swap(pixels.value.data[i], pixels.value.data[i + 2]); // BGRA2RGBA for Pillow
+    cn_codec_status status = CN_CODEC_FALLBACK;
+    if (format == "png") status = cn_png_encode(&view, &out);
+    else if (format == "jpg" && quality >= 0 && quality <= 100)
+        status = cn_jpeg_encode(&view, int(quality), uint32_t(std::get<int64_t>(inputs[8])), std::get<bool>(inputs[9]) ? 1 : 0, &out);
+    else if (format == "webp" && webp_lossless && channels == 4) status = cn_webp_encode_exact(&view, &out);
+    else if (format == "webp" && quality <= 100) status = cn_webp_encode(&view, webp_lossless ? 101 : int(quality), &out);
+    else if (format == "bmp") status = cn_bmp_encode(&view, &out);
+    else if (format == "tiff" && (floats || compression == 1 || compression == 5 || compression == 8))
+        status = cn_tiff_encode(&view, floats ? 0 : int(compression), &out);
+    if (status != CN_CODEC_OK) throw RunPython{};
+    if (format == "tiff" && cn::image_encode::tiff_extra_samples({out.data, out.size}, fixed)) return fixed;
+    return {out.data, out.size};
 }
 
 /* A path from an engine string (UTF-8). */
@@ -349,9 +348,12 @@ void save_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
         FindClose(search);
         path.replace_filename(found.cFileName);
     } else {
+        // The folder is there for all but the first file: create_directories makes one call per component from the root.
         std::error_code error;
-        std::filesystem::create_directories(path.parent_path(), error);
-        if (error) throw RunPython{};
+        if (!std::filesystem::is_directory(path.parent_path(), error)) {
+            std::filesystem::create_directories(path.parent_path(), error);
+            if (error) throw RunPython{};
+        }
     }
 #else
     std::error_code error;
@@ -367,7 +369,9 @@ void save_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
     }
 #endif
     const Value &value = std::get<std::shared_ptr<LazyValue>>(inputs[0])->value();
-    const std::vector<uint8_t> bytes = save_bytes(std::get<Image>(value), inputs);
+    cn::codecs::PoolOutput encoded;
+    std::vector<uint8_t> fixed;
+    const std::span<const uint8_t> bytes = save_bytes(std::get<Image>(value), inputs, encoded.value, fixed);
     try {
         cn::files::write_atomic(path, bytes);
     } catch (const cn::files::FileError &) {

@@ -15,8 +15,8 @@ from api import NodeContext, NodeId
 from nodes.groups import Condition, if_group
 from nodes.impl.image_utils import as_target_channels
 from nodes.impl.onnx.autocast import LowPrecision, autocast
-from nodes.impl.onnx.load import load_onnx_model
-from nodes.impl.onnx.model import MIXED, OnnxGeneric
+from nodes.impl.onnx.load import load_onnx_model, with_recorded_arch
+from nodes.impl.onnx.model import FP16_ARCHS, FP16_ARCHS_NAVI, MIXED, OnnxGeneric
 from nodes.impl.pytorch.convert_to_onnx_impl import (
     export_copy,
     export_onnx,
@@ -142,13 +142,20 @@ IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" }')
 NOT_DUAL = Condition.type(
     0, 'PyTorchModel { arch: invStrSet("DUAL") }', if_not_connected=True
 )
+# Shown until the model is known to have one automatic precision
+DATA_TYPE_APPLIES = Condition.type(
+    0,
+    f'PyTorchModel {{ arch: invStrSet("DUAL" | {FP16_ARCHS_NAVI}) }}',
+    if_not_connected=True,
+)
 
 
 @utility_group.register(
     schema_id="chainner:pytorch:convert_to_onnx",
     name="Convert To ONNX",
     description=[
-        "Convert a PyTorch model to ONNX. Note: fp16 conversion will only work if PyTorch fp16 mode is turned on.",
+        "Convert a PyTorch model to ONNX. Note: fp16 conversion will only work if PyTorch fp16 mode is turned on, except for ESRGAN, HAT and DAT.",
+        "ESRGAN, HAT and DAT models always convert in FP16, whatever PyTorch's FP16 setting, so the node hides Data Type and Calibration Image for them. The ONNX records its architecture, so Build Engine and Build Program build it in FP16 with no Precision to pick, also after it is saved and loaded again.",
         "It is recommended to save converted models as a separate step, then load the converted models instead of converting them every time you run the chain.",
         "Note: Converted models are not guaranteed to work with other programs that support ONNX models. This is for a variety of reasons and cannot be changed.",
     ],
@@ -156,28 +163,32 @@ NOT_DUAL = Condition.type(
     inputs=[
         SrModelInput("PyTorch Model"),
         if_group(NOT_DUAL)(
-            EnumInput(
-                OnnxDataType,
-                label="Data Type",
-                default=OnnxDataType.FP32,
-                option_labels=DATA_TYPE_LABELS,
-            ).with_docs(
-                "Mixed FP16 and Mixed BF16 export in FP32, then NVIDIA ModelOpt's AutoCast"
-                " converts each node to FP16 or BF16 unless its values on the calibration"
-                " image, or its weights, would overflow or lose too much there; those"
-                " nodes stay FP32, as do the input and output. TensorRT builds these"
-                " models in their own precision (Build Engine's Precision does not apply)."
-                " Needs the NVIDIA ModelOpt package.",
-                "With PyTorch's FP16 setting on, Load Model keeps a model in FP16; FP32 and"
-                " the mixed types read its file again for its FP32 weights (if the file"
-                " changed since, they export the FP16 weights, and the log says so).",
-                "A legacy DRFT model (LayerNorm, not i-LN) converts to a TensorRT-only"
-                " ONNX with chaiNNer-C's DRFT TensorRT plugins instead, which ONNX Runtime"
-                " cannot run: its precision is fixed and mixed (FP16 with BF16 attention,"
-                " FP32 input and output), its opset is 20, it takes every input size from"
-                " 64 px (twice the window for larger windows), and Data Type, Opset and"
-                " Verify do not apply to it.",
-                hint=True,
+            if_group(DATA_TYPE_APPLIES)(
+                EnumInput(
+                    OnnxDataType,
+                    label="Data Type",
+                    default=OnnxDataType.FP32,
+                    option_labels=DATA_TYPE_LABELS,
+                ).with_docs(
+                    "Mixed FP16 and Mixed BF16 export in FP32, then NVIDIA ModelOpt's AutoCast"
+                    " converts each node to FP16 or BF16 unless its values on the calibration"
+                    " image, or its weights, would overflow or lose too much there; those"
+                    " nodes stay FP32, as do the input and output. TensorRT builds these"
+                    " models in their own precision (Build Engine's Precision does not apply)."
+                    " Needs the NVIDIA ModelOpt package.",
+                    "With PyTorch's FP16 setting on, Load Model keeps a model in FP16; FP32 and"
+                    " the mixed types read its file again for its FP32 weights (if the file"
+                    " changed since, they export the FP16 weights, and the log says so).",
+                    "A legacy DRFT model (LayerNorm, not i-LN) converts to a TensorRT-only"
+                    " ONNX with chaiNNer-C's DRFT TensorRT plugins instead, which ONNX Runtime"
+                    " cannot run: its precision is fixed and mixed (FP16 with BF16 attention,"
+                    " FP32 input and output), its opset is 20, it takes every input size from"
+                    " 64 px (twice the window for larger windows), and Data Type, Opset and"
+                    " Verify do not apply to it.",
+                    "ESRGAN, HAT and DAT models always convert in FP16, so this input is"
+                    " hidden for them.",
+                    hint=True,
+                ),
             ),
             EnumInput(
                 Opset,
@@ -197,7 +208,8 @@ NOT_DUAL = Condition.type(
                 hint=True,
             ),
             if_group(
-                Condition.enum(1, (OnnxDataType.MIXED_FP16, OnnxDataType.MIXED_BF16))
+                DATA_TYPE_APPLIES
+                & Condition.enum(1, (OnnxDataType.MIXED_FP16, OnnxDataType.MIXED_BF16))
             )(
                 ImageInput("Calibration Image")
                 .make_optional()
@@ -251,16 +263,17 @@ NOT_DUAL = Condition.type(
         ),
         TextOutput(
             "FP Mode",
-            """
-                match Input0.arch {
+            f"""
+                match Input0.arch {{
                     "DUAL" => "mixed",
-                    _ => match Input1 {
+                    {FP16_ARCHS_NAVI} => "fp16",
+                    _ => match Input1 {{
                         OnnxDataType::Fp32 => "fp32",
                         OnnxDataType::Fp16 => "fp16",
                         OnnxDataType::MixedFp16 => "mixed-fp16",
                         OnnxDataType::MixedBf16 => "mixed-bf16",
-                    },
-                }
+                    }},
+                }}
             """,
         ),
         TextOutput(
@@ -342,11 +355,16 @@ def convert_to_onnx_node(
         f"{model.architecture} is not supported for ONNX conversion at this time."
     )
 
+    # These are FP16 whatever a saved chain's hidden Data Type holds and whatever
+    # PyTorch's FP16 setting: export_copy converts a copy of the model.
+    fp16_arch = model.architecture.id in FP16_ARCHS
+    if fp16_arch:
+        data_type = OnnxDataType.FP16
     fp16 = data_type == OnnxDataType.FP16
     exec_options = get_settings(context)
     device = exec_options.device
     if fp16:
-        if not exec_options.use_fp16:
+        if not fp16_arch and not exec_options.use_fp16:
             raise ValueError(
                 "PyTorch fp16 mode must be supported and turned on in settings to convert model as fp16."
             )
@@ -367,6 +385,8 @@ def convert_to_onnx_node(
 
     source = model if fp16 else full_precision_source(model, "Convert To ONNX")
     onnx_model_bytes = export_verified(source, device, fp16, opset.value, verify)
+    if fp16_arch:
+        onnx_model_bytes = with_recorded_arch(onnx_model_bytes, model.architecture.id)
     onnx_model = load_onnx_model(onnx_model_bytes)
     assert onnx_model.sub_type == "Generic"
 
@@ -402,13 +422,15 @@ def calibration_input(
     """AutoCast's calibration input (NCHW float32 RGB): a centre crop of `image`, or
     seeded noise, padded to a size the model accepts."""
     if image is None:
-        image = np.random.default_rng(0).random((64, 64, 3), dtype=np.float32)
+        image = np.random.default_rng(0).random(
+            (64, 64, model.input_channels), dtype=np.float32
+        )
     height, width = image.shape[:2]
     top = max(0, (height - CALIBRATION_SIZE) // 2)
     left = max(0, (width - CALIBRATION_SIZE) // 2)
     image = image[top : top + CALIBRATION_SIZE, left : left + CALIBRATION_SIZE]
     image = as_target_channels(image, model.input_channels, narrowing=True)
-    if image.ndim == 3 and image.shape[2] >= 3:
+    if image.ndim == 3 and image.shape[2] in (3, 4):
         # chaiNNer's images are BGR(A); the model takes RGB(A).
         image = np.concatenate([image[:, :, 2::-1], image[:, :, 3:]], axis=2)
     if image.ndim == 2:

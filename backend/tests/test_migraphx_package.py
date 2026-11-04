@@ -494,3 +494,19 @@ def test_get_program_info(loaded: Imported):
         "2.16.1",
         "256x256",
     )
+
+
+@pytest.mark.parametrize("hidden", ["FP32", "FP16", "FP8"])
+def test_a_recorded_architecture_compiles_in_fp16(build: SimpleNamespace, hidden: str):
+    # FP8 is not refused either, on a GPU without it: the hidden input does not apply.
+    model = OnnxGeneric(
+        b"onnx model", OnnxInfo(17, "fp16", input_channels=3, arch="ESRGAN")
+    )
+    run(build, model, hidden)
+    ((call,),) = [build.compiles.calls]
+    assert call["fp16"] is True and call["fp8"] is False
+
+
+def test_an_onnx_without_a_record_keeps_the_chosen_precision(build: SimpleNamespace):
+    run(build, onnx(), "FP32")
+    assert build.compiles.calls[0]["fp16"] is False

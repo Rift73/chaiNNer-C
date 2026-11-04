@@ -2,10 +2,12 @@
 # gives every target of the build AddressSanitizer and libFuzzer's coverage (../../CMakeLists.txt). libFuzzer's
 # runtime is linked as clang-cl's driver would add it, since CMake links with lld-link itself.
 
-# Load Image's decoders: image_decode.cpp over the codecs, with parallel.c (OpenEXR's chunk loop) compiled in, so
+# Load Image's decoders: image_decode.cpp over the codecs, with parallel.c (OpenEXR's chunk loop, PNG's pieces and rows) compiled in, so
 # coverage reaches libFuzzer from one module instead of through chainner_native.dll.
 add_executable(fuzz_image_decode fuzz_image_decode.cpp ../../src/image_decode.cpp ../../src/parallel.c)
 target_link_libraries(fuzz_image_decode PRIVATE chainner_codecs)
+# The parallel inflate at sizes -max_len reaches (README.md).
+target_compile_definitions(chainner_codecs PRIVATE PNG_INFLATE_MIN_STRETCH_BYTES=12288)
 # The regex engine of chainner_ext and Text nodes.
 add_executable(fuzz_regex fuzz_regex.c)
 target_link_libraries(fuzz_regex PRIVATE chainner_regex)

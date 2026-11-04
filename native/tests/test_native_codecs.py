@@ -15,6 +15,8 @@ The full proof is the codec corpus (native/local/codec-corpus, gen_corpus.py and
 from __future__ import annotations
 
 import base64
+import ctypes
+import ctypes
 import hashlib
 import io
 import json
@@ -27,6 +29,7 @@ import zlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 import cv2
@@ -38,7 +41,8 @@ import pytest
 from PIL import Image
 
 from api import Lazy
-from nodes.impl import native_image_io
+from nodes.impl import native, native_image_io
+from nodes.impl.native import lib
 from nodes.properties.outputs import LargeImageOutput
 from packages.chaiNNer_standard.image.io import load_image, save_image
 
@@ -285,12 +289,18 @@ def png_filtered(
     after_idat: bytes = b"",
     iend_crc_ok: bool = True,
     depth: int = 8,
+    width: int = 13,
+    values: list[int] | None = None,
 ) -> bytes:
-    """A 13-wide PNG of depth-bit random filtered rows, one per filter type in filters, deflated with a 2^wbits window;
-    stream_end rewrites the zlib stream, which is split over pieces IDAT chunks between before_idat and after_idat."""
-    width = 13
-    samples = np.random.default_rng(len(filters) * 7 + color_type).integers(
-        0, 256, (len(filters), (width * channels * depth + 7) // 8), dtype=np.uint8
+    """A width-wide PNG of depth-bit filtered rows, random (random picks of values if given), one per filter type in
+    filters, deflated with a 2^wbits window; stream_end rewrites the zlib stream, which is split over pieces IDAT
+    chunks between before_idat and after_idat."""
+    rng = np.random.default_rng(len(filters) * 7 + color_type)
+    shape = (len(filters), (width * channels * depth + 7) // 8)
+    samples = (
+        rng.integers(0, 256, shape, dtype=np.uint8)
+        if values is None
+        else rng.choice(np.array(values, dtype=np.uint8), shape)
     )
     raw = b"".join(
         bytes([kind]) + row.tobytes()
@@ -310,6 +320,322 @@ def png_filtered(
         + after_idat
         + png_chunk(b"IEND", b"", iend_crc_ok)
     )
+
+
+def png_flushed(
+    color_type: int,
+    channels: int,
+    height: int = 40,
+    cuts: list[int] | None = None,
+    flush: int = zlib.Z_FULL_FLUSH,
+    edit: Callable[[list[bytes]], list[bytes]] = lambda pieces: pieces,
+    before_idat: bytes = b"",
+    depth: int = 8,
+) -> bytes:
+    """A 13-wide PNG of three random rows in turn with every filter type, so that matches reach back over rows. Its
+    zlib stream is flushed at each cut of the rows and split there into IDAT chunks: by default the cuts of
+    png_encode.c's rule for five bands. The last chunk ends with an empty final block (03 00) and the Adler-32; edit
+    rewrites the chunks' bytes."""
+    width = 13
+    patterns = np.random.default_rng(height + color_type).integers(
+        0, 256, (3, (width * channels * depth + 7) // 8), dtype=np.uint8
+    )
+    rows = [bytes([y % 5]) + patterns[y % 3].tobytes() for y in range(height)]
+    cuts = cuts or [height * k // 5 for k in range(6)]
+    compressor = zlib.compressobj(9, zlib.DEFLATED, 15)
+    pieces = [
+        compressor.compress(b"".join(rows[cuts[k] : cuts[k + 1]]))
+        + compressor.flush(flush)
+        for k in range(len(cuts) - 1)
+    ]
+    pieces[-1] += compressor.flush()
+    ihdr = struct.pack(">IIBBBBB", width, height, depth, color_type, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", ihdr)
+        + before_idat
+        + b"".join(png_chunk(b"IDAT", piece) for piece in edit(pieces))
+        + png_chunk(b"IEND", b"")
+    )
+
+
+def reaching_back(pieces: list[bytes]) -> list[bytes]:
+    """The pieces, once shown not to be independent: the second does not inflate alone."""
+    with pytest.raises(zlib.error, match="too far back"):
+        zlib.decompressobj(-15).decompress(pieces[1])
+    return pieces
+
+
+def png_stored_tail() -> bytes:
+    """Two rows in stored blocks, one per IDAT chunk; the first chunk's non-empty block ends in the bytes of an empty
+    stored block."""
+    row = bytes([0]) + bytes(35) + b"\0\0\xff\xff"
+    stored = struct.pack("<HH", len(row), len(row) ^ 0xFFFF) + row
+    ihdr = struct.pack(">IIBBBBB", 13, 2, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", ihdr)
+        + png_chunk(b"IDAT", b"\x78\x01\x00" + stored)
+        + png_chunk(
+            b"IDAT", b"\x01" + stored + struct.pack(">I", zlib.adler32(row + row))
+        )
+        + png_chunk(b"IEND", b"")
+    )
+
+
+def png_indices(past_palette: bool) -> bytes:
+    """An image of 16-colour indices large enough for several store chunks; past_palette puts an index outside the
+    palette in a late row."""
+    side = 1100
+    rows = np.zeros((side, side + 1), np.uint8)
+    rows[:, 1:] = np.random.default_rng(9).integers(0, 16, (side, side), dtype=np.uint8)
+    if past_palette:
+        rows[1000, 500] = 200
+    ihdr = struct.pack(">IIBBBBB", side, side, 8, 3, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", ihdr)
+        + png_palette(16, True)
+        + png_chunk(b"IDAT", zlib.compress(rows.tobytes(), 1))
+        + png_chunk(b"IEND", b"")
+    )
+
+
+# The parallel inflate (png_inflate.c) takes streams from 1 MiB of compressed data at 5:1 or less. Every byte of these
+# rows is a valid filter type, so that a crafted match anywhere keeps the rows valid; they compress about 3:1.
+INFLATE_WIDTH = 1024
+INFLATE_HEIGHT = 2400
+INFLATE_SIZE = (3 * INFLATE_WIDTH + 1) * INFLATE_HEIGHT
+INFLATE_DYNAMIC = (6, zlib.Z_DEFAULT_STRATEGY)
+INFLATE_FIXED = (6, zlib.Z_FIXED)
+INFLATE_STORED = (0, zlib.Z_DEFAULT_STRATEGY)
+INFLATE_HUFFMAN = (6, zlib.Z_HUFFMAN_ONLY)
+INFLATE_RLE = (6, zlib.Z_RLE)
+
+
+def inflate_noise(size: int) -> bytes:
+    return np.random.default_rng(size).integers(0, 5, size, dtype=np.uint8).tobytes()
+
+
+@cache
+def inflate_rows() -> bytes:
+    """Noise with a 512-byte copy every 8 KiB from one row, three rows or nearly the whole window back."""
+    rows = bytearray(inflate_noise(INFLATE_SIZE))
+    for index, at in enumerate(range(32768, INFLATE_SIZE - 512, 8192)):
+        distance = (3073, 9219, 32000)[index % 3]
+        rows[at : at + 512] = rows[at - distance : at - distance + 512]
+    return bytes(rows)
+
+
+@cache
+def inflate_level6() -> bytes:
+    return zlib.compress(inflate_rows(), 6)
+
+
+def raw_deflate(
+    data: bytes,
+    kind: tuple[int, int] = INFLATE_DYNAMIC,
+    history: bytes = b"",
+    final: bool = False,
+) -> bytes:
+    """Raw DEFLATE of data whose matches may reach history, ending on a byte boundary or, if final, the stream."""
+    level, strategy = kind
+    arguments = (level, zlib.DEFLATED, -15, 8, strategy)
+    compressor = (
+        zlib.compressobj(*arguments, history[-32768:])
+        if history
+        else zlib.compressobj(*arguments)
+    )
+    ending = zlib.Z_FINISH if final else zlib.Z_SYNC_FLUSH
+    return compressor.compress(data) + compressor.flush(ending)
+
+
+def raw_deflate_pieces(
+    rows: bytes, sizes: list[int], kinds: list[tuple[int, int]]
+) -> bytes:
+    """rows deflated in pieces of the sizes and kinds in turn, each with the output before it as history."""
+    pieces, at, index = [], 0, 0
+    while at < len(rows):
+        end = at + sizes[index % len(sizes)]
+        pieces.append(
+            raw_deflate(
+                rows[at:end],
+                kinds[index % len(kinds)],
+                rows[max(at - 32768, 0) : at],
+                end >= len(rows),
+            )
+        )
+        at, index = end, index + 1
+    return b"".join(pieces)
+
+
+def far_match_block() -> bytes:
+    """A fixed Huffman block holding one match of length 258 at distance 32768, then an empty stored block."""
+    bits = 0
+    count = 0
+
+    def put(value: int, width: int) -> None:
+        nonlocal bits, count
+        bits |= value << count
+        count += width
+
+    def code(value: int, width: int) -> None:
+        for bit in reversed(range(width)):
+            put((value >> bit) & 1, 1)
+
+    put(0, 1)  # not final
+    put(1, 2)  # fixed
+    code(0b11000101, 8)  # length symbol 285: 258
+    code(29, 5)  # distance symbol 29: 24577 and 13 extra bits
+    put(32768 - 24577, 13)
+    code(0, 7)  # end of block
+    put(0, 3)  # stored, not final
+    return bits.to_bytes((count + 7) // 8, "little") + b"\x00\x00\xff\xff"
+
+
+def zlib_stream(deflate: bytes, rows: bytes) -> bytes:
+    return b"\x78\x9c" + deflate + zlib.adler32(rows).to_bytes(4, "big")
+
+
+def png_rows(stream: bytes, height: int = INFLATE_HEIGHT) -> bytes:
+    """An INFLATE_WIDTH-wide RGB PNG whose rows are the zlib stream, in three IDAT chunks."""
+    ihdr = struct.pack(">IIBBBBB", INFLATE_WIDTH, height, 8, 2, 0, 0, 0)
+    cuts = [len(stream) * k // 3 for k in range(4)]
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", ihdr)
+        + b"".join(png_chunk(b"IDAT", stream[cuts[k] : cuts[k + 1]]) for k in range(3))
+        + png_chunk(b"IEND", b"")
+    )
+
+
+def inflate_far_matches() -> bytes:
+    """A match at the longest distance after every small dynamic block: some land right after a stretch's start."""
+    noise = inflate_noise(INFLATE_SIZE)
+    rows = bytearray(noise[:40000])
+    deflate = bytearray(raw_deflate(bytes(rows)))
+    while len(rows) + 20000 + 258 < INFLATE_SIZE:
+        piece = noise[len(rows) : len(rows) + 20000]
+        deflate += raw_deflate(piece, history=bytes(rows[-32768:]))
+        rows += piece
+        deflate += far_match_block()
+        rows += bytes(rows[-32768 + k] for k in range(258))
+    rest = noise[len(rows) :]
+    deflate += raw_deflate(rest, history=bytes(rows[-32768:]), final=True)
+    return png_rows(zlib_stream(bytes(deflate), bytes(rows) + rest))
+
+
+def inflate_lasting_markers() -> bytes:
+    """A tag every 16 KiB, each a match of the one before: output from before a stretch to the end of every stretch."""
+    rows = bytearray(inflate_noise(INFLATE_SIZE))
+    tag = inflate_noise(24)
+    for at in range(0, INFLATE_SIZE - 24, 16384):
+        rows[at : at + 24] = tag
+    return png_rows(zlib.compress(bytes(rows), 6))
+
+
+def inflate_false_starts() -> bytes:
+    """Stored data that holds a real DEFLATE stream: dynamic block headers the true parse never sees, between true blocks."""
+    rows = inflate_rows()
+    half = len(rows) // 2
+    payload = raw_deflate(inflate_noise(len(rows)))[: len(rows) - half]
+    first = rows[:half]
+    deflate = (
+        raw_deflate(first)
+        + raw_deflate(payload, INFLATE_STORED, first)
+        + raw_deflate(b"", final=True)
+    )
+    return png_rows(zlib_stream(deflate, first + payload))
+
+
+def inflate_past_start() -> bytes:
+    """A match past the stream's real start, early on: the serial decoder's error, and the first stretch's."""
+    early = inflate_noise(1000)
+    rows = inflate_rows()[: INFLATE_SIZE - 1258]
+    deflate = (
+        raw_deflate(early)
+        + far_match_block()
+        + raw_deflate(rows, history=early, final=True)
+    )
+    return png_rows(zlib_stream(deflate, early + bytes(258) + rows))
+
+
+def inflate_cases() -> dict[str, Callable[[], bytes]]:
+    rows_cut = INFLATE_SIZE // 3
+
+    def flip(stream: bytes, at: int) -> bytes:
+        return stream[:at] + bytes([stream[at] ^ 16]) + stream[at + 1 :]
+
+    return {
+        **{
+            f"inflate_level{level}": (
+                lambda level=level: png_rows(zlib.compress(inflate_rows(), level))
+            )
+            for level in (1, 6, 9)
+        },
+        "inflate_block_types": lambda: png_rows(
+            zlib_stream(
+                raw_deflate_pieces(
+                    inflate_rows(),
+                    [400000, 120000, 280000, 200000, 80000],
+                    [
+                        INFLATE_DYNAMIC,
+                        INFLATE_FIXED,
+                        INFLATE_STORED,
+                        INFLATE_HUFFMAN,
+                        INFLATE_RLE,
+                    ],
+                ),
+                inflate_rows(),
+            )
+        ),
+        "inflate_stored_runs": lambda: png_rows(
+            zlib_stream(
+                raw_deflate_pieces(
+                    inflate_rows(), [700000], [INFLATE_DYNAMIC, INFLATE_STORED]
+                ),
+                inflate_rows(),
+            )
+        ),
+        "inflate_only_fixed_after_first": lambda: png_rows(
+            zlib_stream(
+                raw_deflate_pieces(
+                    inflate_rows(),
+                    [60000, INFLATE_SIZE],
+                    [INFLATE_DYNAMIC, INFLATE_FIXED],
+                ),
+                inflate_rows(),
+            )
+        ),
+        "inflate_final_stored": lambda: png_rows(
+            zlib_stream(
+                raw_deflate(inflate_rows()) + b"\x01\x00\x00\xff\xff", inflate_rows()
+            )
+        ),
+        "inflate_far_matches": inflate_far_matches,
+        "inflate_lasting_markers": inflate_lasting_markers,
+        "inflate_false_starts": inflate_false_starts,
+        "inflate_past_start": inflate_past_start,
+        # Output far from its share of the compressed bytes, at either end.
+        "inflate_zeros_at_end": lambda: png_rows(
+            zlib.compress(inflate_rows()[:-rows_cut] + bytes(rows_cut), 6)
+        ),
+        "inflate_run_at_start": lambda: png_rows(
+            zlib.compress(b"\x03" * rows_cut + inflate_rows()[rows_cut:], 6)
+        ),
+        # What the stream's checks must still catch.
+        "inflate_bad_adler": lambda: png_rows(
+            flip(inflate_level6(), len(inflate_level6()) - 1)
+        ),
+        "inflate_bit_flip_early": lambda: png_rows(flip(inflate_level6(), 300000)),
+        "inflate_bit_flip_late": lambda: png_rows(
+            flip(inflate_level6(), len(inflate_level6()) - 300000)
+        ),
+        "inflate_truncated": lambda: png_rows(inflate_level6()[:-5000]),
+        "inflate_trailing_byte": lambda: png_rows(inflate_level6() + b"\0"),
+        "inflate_too_few_rows": lambda: png_rows(inflate_level6(), INFLATE_HEIGHT - 1),
+        "inflate_too_many_rows": lambda: png_rows(inflate_level6(), INFLATE_HEIGHT + 1),
+    }
 
 
 def png_palette(colors: int, trns: bool) -> bytes:
@@ -577,6 +903,7 @@ def decode_cases() -> list[DecodeCase]:
             3, 1, [4, 1, 2, 3, 0, 4], before_idat=png_palette(16, True)
         ),
         "window_512": lambda: png_filtered(2, 3, [4, 1, 2, 3, 0], wbits=9),
+        **inflate_cases(),
         "bad_filter": lambda: png_filtered(2, 3, [4, 1, 5, 3, 0]),
         # An invalid filter type in an indexed image: libpng's error, not decoded pixels.
         **{
@@ -611,6 +938,81 @@ def decode_cases() -> list[DecodeCase]:
             before_idat=png_chunk(b"gAMA", struct.pack(">I", 45455))
             + png_chunk(b"sRGB", b"\0")
             + png_chunk(b"pHYs", struct.pack(">IIB", 2835, 2835, 1)),
+        ),
+        # Several store chunks (png_codec.c png_store_range): 16-bit samples and indices; test_png_encode.py has 8-bit.
+        "store_chunks_grey16": lambda: cv_bytes(
+            ".png",
+            np.random.default_rng(1).integers(0, 65536, (1100, 600), dtype=np.uint16),
+        ),
+        "store_chunks_rgba16": lambda: cv_bytes(
+            ".png",
+            np.random.default_rng(2).integers(0, 65536, (600, 300, 4), dtype=np.uint16),
+        ),
+        "store_chunks_palette": lambda: png_indices(False),
+        "store_chunks_past_palette": lambda: png_indices(True),
+        # Independent pieces, inflated in parallel (png_codec.c png_inflate_pieces), in every format.
+        "flushed_grey": lambda: png_flushed(0, 1),
+        "flushed_rgb": lambda: png_flushed(2, 3),
+        "flushed_rgba": lambda: png_flushed(6, 4),
+        "flushed_rgb16": lambda: png_flushed(2, 3, depth=16),
+        "flushed_palette8": lambda: png_flushed(
+            3, 1, before_idat=png_palette(256, True)
+        ),
+        # An index past the palette among many rows: libpng's result, whichever store chunk meets it.
+        "flushed_palette8_past_16": lambda: png_flushed(
+            3, 1, before_idat=png_palette(16, True)
+        ),
+        # Pieces that fail the parallel try, for the stream as a whole to decide: valid files first.
+        "flushed_sync_reach_back": lambda: png_flushed(
+            2, 3, flush=zlib.Z_SYNC_FLUSH, edit=reaching_back
+        ),
+        "flushed_other_split": lambda: png_flushed(2, 3, cuts=[0, 1, 20, 40]),
+        "flushed_more_chunks_than_rows": lambda: png_flushed(
+            2,
+            3,
+            height=3,
+            cuts=[0, 1, 2, 3],
+            edit=lambda p: p[:2] + [b"\0\0\0\xff\xff"] * 2 + p[2:],
+        ),
+        "flushed_empty_chunk": lambda: png_flushed(
+            2, 3, edit=lambda p: p[:1] + [b""] + p[1:]
+        ),
+        "flushed_empty_first_chunk": lambda: png_flushed(
+            2, 3, edit=lambda p: [b""] + p
+        ),
+        "flushed_split_adler": lambda: png_flushed(
+            2, 3, edit=lambda p: p[:-1] + [p[-1][:-2], p[-1][-2:]]
+        ),
+        "flushed_final_then_adler_chunk": lambda: png_flushed(
+            2,
+            3,
+            edit=lambda p: p[:-1] + [p[-1][:-6] + b"\1\0\0\xff\xff", p[-1][-4:]],
+        ),
+        "flushed_stored_tail": png_stored_tail,
+        # And damaged files.
+        "flushed_final_stored_in_middle": lambda: png_flushed(
+            2, 3, edit=lambda p: [p[0], p[1] + b"\1\0\0\xff\xff", *p[2:]]
+        ),
+        "flushed_final_huffman_in_middle": lambda: png_flushed(
+            2, 3, edit=lambda p: [p[0], p[1] + b"\3\0\0\0\xff\xff", *p[2:]]
+        ),
+        "flushed_bad_adler": lambda: png_flushed(
+            6, 4, edit=lambda p: p[:-1] + [p[-1][:-1] + bytes([p[-1][-1] ^ 1])]
+        ),
+        "flushed_data_after_end": lambda: png_flushed(
+            2, 3, edit=lambda p: p[:-1] + [p[-1] + b"\0\0"]
+        ),
+        "flushed_short_last_chunk": lambda: png_flushed(
+            2, 3, edit=lambda p: p[:-1] + [b"\3"]
+        ),
+        "flushed_tiny_first_chunk": lambda: png_flushed(
+            2, 3, edit=lambda p: [b"\0\0\xff\xff"] + p
+        ),
+        "flushed_header_only_first_chunk": lambda: png_flushed(
+            2, 3, edit=lambda p: [p[0][:2] + b"\0\0\xff\xff", p[0][2:], *p[1:]]
+        ),
+        "flushed_cut_piece": lambda: png_flushed(
+            2, 3, edit=lambda p: [p[0][:-12] + b"\0\0\xff\xff", *p[1:]]
         ),
     }
     for name, make in pngs.items():
@@ -825,6 +1227,122 @@ def test_decode_matches_todays_path(
             and sha(native) == expected["raw"]
             and native.shape == expected["shape"]
         )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "inflate_level6",
+        "inflate_level9",
+        "inflate_block_types",
+        "inflate_final_stored",
+        "inflate_far_matches",
+        "inflate_lasting_markers",
+        "inflate_zeros_at_end",
+        "inflate_run_at_start",
+    ],
+)
+def test_png_stream_inflates_on_the_pool(name: str, decode_files: dict[str, Path]):
+    """A taken stream dispatches four calls (search, decode, place, free) that a small PNG does not. Not the stored
+    runs: whether a search window finds a block among them depends on the thread count."""
+    dll = lib()
+    dll.cn_parallel_capacity.restype = ctypes.c_uint
+    dll.cn_parallel_dispatches.restype = ctypes.c_uint64
+    if dll.cn_parallel_capacity() < 4:
+        pytest.skip("the parallel inflate needs 4 logical CPUs")
+
+    def dispatches(path: Path) -> int:
+        before = dll.cn_parallel_dispatches()
+        assert load_image._read_cv(path) is not None
+        return dll.cn_parallel_dispatches() - before
+
+    assert (
+        dispatches(decode_files[f"png_{name}"]) - dispatches(decode_files["png_bgr8"])
+        >= 4
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# The direct path's row filters against libpng's: the same filtered rows deflated with a 512-byte window leave the file
+# to libpng (png_codec.c png_decode_direct). Every filter type directly under every other, at every pixel size, on
+# widths around the AVX2 unit's loads, then files above the size of the wave across the rows: narrow blocks, wide short
+# rows, more rows than bands of 16 hold, and an invalid filter type part way down.
+PIXEL_SIZES = {
+    1: (0, 1, 8),
+    2: (0, 1, 16),
+    3: (2, 3, 8),
+    4: (6, 4, 8),
+    6: (2, 3, 16),
+    8: (6, 4, 16),
+}
+EVERY_PAIR = [
+    kind for above in range(5) for below in range(5) for kind in (above, below)
+]
+
+
+def unfilter_cases() -> Iterator[tuple[int, list[int], int, list[int] | None]]:
+    """(bytes per pixel, the rows' filter types, width, the rows' values)."""
+    for pixel in PIXEL_SIZES:
+        for width in range(1, 71):
+            yield pixel, EVERY_PAIR, width, None
+            yield pixel, EVERY_PAIR, width, [0, 1, 127, 128, 254, 255]
+        yield pixel, EVERY_PAIR * 6, 1100 // pixel, None
+        yield pixel, EVERY_PAIR * 2, 4096, None
+    yield 3, [(y // 16) % 5 for y in range(5000)], 300, None
+    yield 3, [7 if y == 150 else y % 5 for y in range(300)], 400, None
+
+
+@pytest.fixture(scope="module")
+def unfilter_files(tmp_path_factory) -> list[tuple[Path, Path]]:
+    directory = tmp_path_factory.mktemp("unfilter")
+    pairs = []
+    for index, (pixel, filters, width, values) in enumerate(unfilter_cases()):
+        color_type, channels, depth = PIXEL_SIZES[pixel]
+        pair = tuple(directory / f"{index}_{wbits}.png" for wbits in (15, 9))
+        for path, wbits in zip(pair, (15, 9), strict=True):
+            path.write_bytes(
+                png_filtered(
+                    color_type,
+                    channels,
+                    filters,
+                    wbits=wbits,
+                    depth=depth,
+                    width=width,
+                    values=values,
+                )
+            )
+        pairs.append(pair)
+    return pairs
+
+
+def read_outcome(path: Path) -> tuple:
+    try:
+        image = load_image._read_cv(path)
+    except Exception as error:
+        return (type(error).__qualname__,)
+    return image.shape, sha(image)
+
+
+@pytest.mark.parametrize("level", (0, 1, 2), ids=("scalar", "avx2", "avx512"))
+def test_direct_unfilter_matches_libpng(
+    level: int, unfilter_files: list[tuple[Path, Path]]
+):
+    state = (ctypes.c_int * 3)()
+    assert native.lib()["cn_isa_get"](state) == 0
+    isa_set = native.lib()["cn_isa_set"]
+    isa_set.argtypes = [ctypes.c_int]
+    if level > state[2]:
+        pytest.skip("this CPU lacks the level")
+    dispatches = native.lib()["cn_parallel_dispatches"]
+    dispatches.restype = ctypes.c_uint64
+    before = dispatches()
+    isa_set(level)
+    try:
+        for direct, through_libpng in unfilter_files:
+            assert read_outcome(direct) == read_outcome(through_libpng), direct.name
+    finally:
+        isa_set(state[0])
+    assert dispatches() > before or native.lib()["cn_parallel_capacity"]() == 1
 
 
 # ---------------------------------------------------------------------------------------------

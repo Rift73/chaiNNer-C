@@ -3,8 +3,8 @@
 Every default 8-bit PNG (grey, grey + alpha, BGR, BGRA) is MinSum-filtered and compressed by libdeflate level 6
 in row bands, one zlib stream. Checked here: exact pixels through OpenCV, Pillow and chaiNNer-C's own decoder;
 the stream (chunks, CRCs, Adler-32, the filtered rows under libpng's MinSum rule, one IDAT per band); the same
-bytes at every ISA level; the size on the owner's sample frames; dispatch to OpenCV for everything else; layouts,
-file errors and concurrent callers.
+bytes at every ISA level and after the memory kept between calls held other images; the size on the owner's sample
+frames; dispatch to OpenCV for everything else; layouts, file errors and concurrent callers.
 """
 
 from __future__ import annotations
@@ -558,6 +558,18 @@ def test_long_sides_have_exact_ihdr(tmp_path, shape):
     assert struct.unpack_from(">II", data, 16) == (shape[1], shape[0])
     assert_exact(value, data, tmp_path / "decode.png")
     assert_stream(value, data)
+
+
+def test_memory_kept_between_calls_leaves_the_bytes_alone(tmp_path):
+    # The encoder keeps its compressors and band buffers until numpy_pool_release: an image gives the same stream after
+    # a larger one of other content filled them, and after they were freed.
+    value = content("mixed", (300, 301, 3), 5)
+    data = encode(value, tmp_path)
+    assert_stream(value, data)
+    encode(content("noise", (1200, 1500, 4), 6), tmp_path)
+    assert encode(value, tmp_path) == data
+    graph().numpy_pool_release()
+    assert encode(value, tmp_path) == data
 
 
 def test_first_calls_are_safe_for_concurrent_callers(tmp_path):

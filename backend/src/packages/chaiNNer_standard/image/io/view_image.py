@@ -4,6 +4,7 @@ import numpy as np
 
 from nodes.properties.inputs import ImageInput
 from nodes.properties.outputs import LargeImageOutput
+from nodes.utils.utils import get_h_w_c
 
 from .. import io_group
 
@@ -25,4 +26,7 @@ from .. import io_group
     side_effects=True,
 )
 def view_image_node(img: np.ndarray):
+    c = get_h_w_c(img)[2]
+    if c > 4:
+        raise ValueError(f"View Image shows images of up to 4 channels, not {c}.")
     return img

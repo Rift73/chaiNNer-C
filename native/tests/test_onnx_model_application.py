@@ -58,10 +58,12 @@ def outcome(
 
 
 def info(value):
+    # `arch` is Convert To ONNX's record, which the reference loader has no field for
+    fields = {k: v for k, v in vars(value.info).items() if k != "arch"}
     return (
         value.sub_type,
         value.bytes,
-        vars(value.info) | {"size_req": vars(value.info.size_req)},
+        fields | {"size_req": vars(value.info.size_req)},
     )
 
 

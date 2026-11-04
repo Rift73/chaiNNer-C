@@ -3,6 +3,8 @@
  * of OpenCV's TIFFs (GPL-3.0). Nothing here touches Python. */
 #pragma once
 
+#include "image_codecs.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -21,9 +23,9 @@ enum class Png { declined, encoded, out_of_memory, failed };
  * gives. */
 Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
         ptrdiff_t pixel_stride, ptrdiff_t channel_stride, const std::function<uint8_t *(size_t)> &allocate);
-/* The same into `encoded` (untouched unless `encoded`). */
+/* The same into a buffer from `out`'s allocator, not zeroed: the encoder writes every byte (`out.size` the file's). */
 Png png(const uint8_t *source, ptrdiff_t height, ptrdiff_t width, ptrdiff_t channels, ptrdiff_t row_stride,
-        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, std::vector<uint8_t> &encoded);
+        ptrdiff_t pixel_stride, ptrdiff_t channel_stride, cn_codec_output &out);
 
 /* OpenCV writes 4-sample RGB TIFFs without ExtraSamples (tag 338), which TIFF 6.0 requires, so readers may take the
  * fourth sample for an unknown one (upstream chaiNNer #2950). Adds 338 = SHORT 2 (unassociated alpha: chaiNNer's

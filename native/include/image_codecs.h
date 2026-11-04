@@ -63,6 +63,11 @@ cn_codec_status cn_jpeg_decode(const uint8_t *data, size_t size, cn_jpeg_flavour
  * 16-bit, native-endian) and its transforms. An animated PNG falls back. */
 cn_codec_status cn_png_decode(const uint8_t *data, size_t size, cn_codec_allocate allocate, void *context);
 
+/* Inflates one zlib stream of size bytes to exactly out_size bytes on many threads (png_inflate.c). Returns 1 where
+ * libdeflate_zlib_decompress_ex would succeed with the same bytes and use the whole stream; 0 otherwise, whether or not
+ * it would, with out's contents undefined. */
+int cn_png_inflate_parallel(const uint8_t *stream, size_t size, uint8_t *out, size_t out_size);
+
 /* Decodes a WebP with libwebp 1.6.0 as OpenCV 5.0's WebPDecoder does under IMREAD_UNCHANGED: the features of the
  * first 32 bytes decide BGR or BGRA; a still image through WebPDecodeBGRInto/WebPDecodeBGRAInto, an animation
  * through WebPAnimDecoder (MODE_BGRA, first canvas, alpha dropped for BGR). */

@@ -1040,13 +1040,13 @@ def test_install_logs_an_unexpected_error_once_and_never_raises(monkeypatch, cap
 
 
 @pytest.mark.usefixtures("first_install")
-def test_release_is_a_no_op_when_not_installed(monkeypatch):
+def test_release_without_the_pool_still_frees_what_the_encoder_keeps(monkeypatch):
     calls = []
     monkeypatch.setattr(
         graph(), "numpy_pool_release", lambda: calls.append(1) or (MIB, 0)
     )
     assert numpy_pool.release() == 0
-    assert calls == []
+    assert calls == [1]
 
 
 @pytest.mark.usefixtures("first_install")

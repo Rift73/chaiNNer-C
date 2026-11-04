@@ -86,10 +86,10 @@ bool encode_step(Pixels &image, int target, double grace, bool lossless, std::ve
         return false; // NumPy would report the event (warn, raise, print or call): today's path does
     if (image.channels > 3 || lossless) {
         const ptrdiff_t c = ptrdiff_t(image.channels);
-        std::vector<uint8_t> png;
-        switch (cn::image_encode::png(pixels.data(), image.height, image.width, c, ptrdiff_t(image.width) * c, c, 1, png)) {
+        cn::codecs::Output png;
+        switch (cn::image_encode::png(pixels.data(), image.height, image.width, c, ptrdiff_t(image.width) * c, c, 1, png.value)) {
         case cn::image_encode::Png::encoded:
-            url = "data:image/png;base64," + base64(png);
+            url = "data:image/png;base64," + base64({png.value.data, png.value.size});
             return true;
         case cn::image_encode::Png::declined:
             return false; // today's path runs

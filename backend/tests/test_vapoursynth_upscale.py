@@ -433,6 +433,60 @@ def test_tensorrt_runs_on_the_runner_unless_switched_off_or_missing(
         out.get_frame(0)
 
 
+def test_an_engine_the_runner_refuses_runs_on_the_bridge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    runner_module = importlib.import_module("nodes.impl.tensorrt.runner")
+    engine = tmp_path / "model.engine"
+    engine.write_bytes(b"")
+    monkeypatch.setattr(runner_module, "runner_plugin", lambda: tmp_path / "plugin")
+
+    def runner_clip(clip: Any, model: str, plugin: Path, streams: int) -> Any:
+        raise vs.Error(
+            "Upscale: The TensorRT runner takes engines with 1 or 3 input and output"
+            " channels, not 4 -> 4."
+        )
+
+    monkeypatch.setattr(bridge, "_runner_clip", runner_clip)
+    fake_load(monkeypatch, 4, 4)
+    out = chainner_vs.upscale(clip_of(images(1)), str(engine), "TensorRT", "fp32", 0, 1)
+    assert (out.width, out.height) == (2 * WIDTH, 2 * HEIGHT)
+
+
+def test_the_runners_other_refusals_reach_the_user(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    runner_module = importlib.import_module("nodes.impl.tensorrt.runner")
+    engine = tmp_path / "model.engine"
+    engine.write_bytes(b"")
+    monkeypatch.setattr(runner_module, "runner_plugin", lambda: tmp_path / "plugin")
+
+    def runner_clip(clip: Any, model: str, plugin: Path, streams: int) -> Any:
+        raise vs.Error("Upscale: The TensorRT engine is empty.")
+
+    monkeypatch.setattr(bridge, "_runner_clip", runner_clip)
+    with pytest.raises(vs.Error, match="engine is empty"):
+        chainner_vs.upscale(clip_of(images(1)), str(engine), "TensorRT", "fp32", 0, 1)
+
+
+def test_a_model_making_more_planes_than_its_file_says_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    # An ONNX can leave its output channels unnamed, which reads as 3.
+    model = tmp_path / "model.onnx"
+    model.write_bytes(b"")
+
+    def run(img: np.ndarray, tile: int) -> np.ndarray:
+        h, w = img.shape[:2]
+        return np.zeros((2 * h, 2 * w, 5), np.float32)
+
+    monkeypatch.setattr(bridge, "loaded", {})
+    monkeypatch.setattr(bridge, "load", lambda *key: bridge.Upscaler(2, 2, 3, 3, run))
+    out = chainner_vs.upscale(clip_of(images(1)), str(model), "ONNX", "fp32", 0)
+    with pytest.raises(vs.Error, match="5-channel image"):
+        out.get_frame(0)
+
+
 def test_the_node_passes_streams_and_old_chains_get_1():
     source = VideoClip(
         var="n_src_0",

@@ -9,7 +9,7 @@ from sanic.log import logger
 from api import NodeContext
 from nodes.groups import Condition, if_enum_group, if_group
 from nodes.impl.onnx.load import model_facts
-from nodes.impl.onnx.model import OnnxModel
+from nodes.impl.onnx.model import FP16_ARCHS_NAVI, OnnxModel
 from nodes.impl.tensorrt import drft, dual
 from nodes.impl.tensorrt.build_cache import (
     cached_engine,
@@ -22,6 +22,7 @@ from nodes.impl.tensorrt.engine_builder import (
     build_engine_from_onnx,
     timing_cache_name,
 )
+from nodes.impl.tensorrt.group_norm import written_out_group_norm
 from nodes.impl.tensorrt.memory import (
     get_cuda_compute_capability,
     get_cuda_device_name,
@@ -91,9 +92,12 @@ TILE_SIZE_DOC = (
 # ONNX its guide's.
 DUAL_WORKSPACE_GIB = 8.0
 
-# Shown until the ONNX is known to be DUAL's, which keeps its own precision
-NOT_DUAL = Condition.type(
-    0, 'OnnxModel { arch: invStrSet("DUAL") }', if_not_connected=True
+# Shown until the ONNX is known to have one automatic precision: DUAL's keeps its own,
+# and one with a recorded architecture builds in FP16
+PRECISION_APPLIES = Condition.type(
+    0,
+    f'OnnxModel {{ arch: invStrSet("DUAL" | {FP16_ARCHS_NAVI}) }}',
+    if_not_connected=True,
 )
 
 
@@ -108,12 +112,13 @@ if utility_group is not None:
             "The built engine is optimized specifically for your GPU and TensorRT version.",
             "It is recommended to save the built engine for reuse, as building is slow.",
             "A DUAL ONNX from Convert To ONNX builds in its own mixed precision (BF16 body, FP32 input and output) with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Precision does not apply and is hidden; Workspace, Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do. Upscale Image replays DUAL engines from a CUDA graph per input size.",
+            "An ESRGAN, HAT or DAT ONNX from Convert To ONNX builds in FP16, also after it is saved and loaded again: it records its architecture, and Precision does not apply and is hidden. An ONNX with no such record, such as one converted by an earlier version, works as before, with Precision shown.",
             "A legacy DRFT ONNX from Convert To ONNX also builds in its own mixed precision, with chaiNNer-C's DRFT TensorRT plugins (chaiNNer-C loads them with the engine; another program needs the plugin library too). Its sizes, Fixed or Dynamic, must be multiples of the ONNX's alignment and at least its minimum size on each side (Build Engine says which if not). Precision does not apply; Workspace (0: TensorRT's default), Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do.",
         ],
         icon="BsNvidia",
         inputs=[
             OnnxModelInput("ONNX Model"),
-            if_group(NOT_DUAL)(
+            if_group(PRECISION_APPLIES)(
                 EnumInput(
                     Precision,
                     label="Precision",
@@ -323,6 +328,10 @@ if utility_group is not None:
                 sparse_weights=sparse_weights,
                 tiling_optimization=tiling_optimization.value,
             )
+        # A recorded architecture builds in FP16, whatever a saved chain's hidden input
+        # holds.
+        if onnx_model.info.arch is not None:
+            precision = Precision.FP16
         # One timing cache per model, GPU and TensorRT version
         timing_cache_path = None
         if settings.timing_cache_path:
@@ -349,6 +358,14 @@ if utility_group is not None:
             tiling_optimization=tiling_optimization.value,
         )
 
+        written_out = written_out_group_norm(
+            onnx_model.bytes,
+            config.precision,
+            config.min_shape,
+            config.max_shape,
+            config.use_dynamic_shapes,
+        )
+
         def build() -> TensorRTEngine:
             logger.info(
                 "Building TensorRT engine: precision=%s, dynamic=%s, workspace=%s,"
@@ -362,15 +379,20 @@ if utility_group is not None:
                 tiling_optimization.value,
             )
             return build_engine_from_onnx(
-                onnx_model.bytes,
+                onnx_model.bytes if written_out is None else written_out,
                 config,
                 gpu_index=gpu_index,
                 timing_cache_path=timing_cache_path,
             )
 
+        # An engine cached before GroupNorm was written out for this range is wrong.
         key = engine_key(
             onnx_model,
-            ("onnx", *dataclasses.astuple(config)),
+            (
+                "onnx",
+                *dataclasses.astuple(config),
+                *(() if written_out is None else ("group norm written out",)),
+            ),
             get_cuda_device_name(gpu_index),
             get_cuda_compute_capability(gpu_index),
             trt.__version__,

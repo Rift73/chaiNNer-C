@@ -260,6 +260,43 @@ libdeflate_deflate_decompress(struct libdeflate_decompressor *decompressor,
 			      size_t *actual_out_nbytes_ret);
 
 /*
+ * One stretch of a DEFLATE stream.  Decoding starts at the block header at bit
+ * offset 'start_bit' of 'in', and returns LIBDEFLATE_SUCCESS at the first block
+ * boundary at or past bit offset 'stop_bit', or at the end of the final block.
+ * Matches may reach 'history' items before 'out'.  'end_bit' and 'end_out' are
+ * the last block boundary reached and the output up to it, 'start_bit' and 0
+ * until then, whatever the result; 'final' says it ended the final block.
+ */
+struct libdeflate_range {
+	size_t start_bit;
+	size_t stop_bit;
+	size_t history;
+	size_t end_bit;
+	size_t end_out;
+	int final;
+};
+
+LIBDEFLATEAPI enum libdeflate_result
+libdeflate_deflate_decompress_range(struct libdeflate_decompressor *decompressor,
+				    const void *in, size_t in_nbytes,
+				    void *out, size_t out_nbytes_avail,
+				    struct libdeflate_range *range);
+
+/*
+ * The same with an output of 16-bit symbols: a literal gives its byte value and
+ * a match copies symbols, so any larger value the caller stored in the history
+ * before 'out' travels through the output as a marker of its position there.
+ * It also returns LIBDEFLATE_SUCCESS at a block boundary (before 'stop_bit' and
+ * not 'final') once the last 32768 symbols hold no marker: every later match
+ * can then reach only plain bytes, and the rest can be decoded as bytes.
+ */
+LIBDEFLATEAPI enum libdeflate_result
+libdeflate_deflate_decompress_symbols(struct libdeflate_decompressor *decompressor,
+				      const void *in, size_t in_nbytes,
+				      uint16_t *out, size_t out_nsymbols_avail,
+				      struct libdeflate_range *range);
+
+/*
  * Like libdeflate_deflate_decompress(), but adds the 'actual_in_nbytes_ret'
  * argument.  If decompression succeeds and 'actual_in_nbytes_ret' is not NULL,
  * then the actual compressed size of the DEFLATE stream (aligned to the next
@@ -271,6 +308,21 @@ libdeflate_deflate_decompress_ex(struct libdeflate_decompressor *decompressor,
 				 void *out, size_t out_nbytes_avail,
 				 size_t *actual_in_nbytes_ret,
 				 size_t *actual_out_nbytes_ret);
+
+/*
+ * chaiNNer-C patch (PROVENANCE.md): like libdeflate_deflate_decompress(), for a
+ * piece of a DEFLATE stream as libdeflate_deflate_compress_nonfinal() writes
+ * one: succeeds only if the piece ends, at the last byte of the input, on an
+ * empty non-final stored block and none of its blocks is final.  Its history
+ * starts empty: a match reaching before 'out' is LIBDEFLATE_BAD_DATA, so a piece
+ * that succeeds gives what it gives at any place in a stream, and the next piece
+ * starts at a block boundary.
+ */
+LIBDEFLATEAPI enum libdeflate_result
+libdeflate_deflate_decompress_nonfinal(struct libdeflate_decompressor *decompressor,
+				       const void *in, size_t in_nbytes,
+				       void *out, size_t out_nbytes_avail,
+				       size_t *actual_out_nbytes_ret);
 
 /*
  * Like libdeflate_deflate_decompress(), but assumes the zlib wrapper format

@@ -345,7 +345,13 @@ def test_processes_register_the_plugin_library_once(
     assert record.libraries == ([str(library)] if present else [])
 
 
-def _run_node(monkeypatch: pytest.MonkeyPatch, onnx_bytes: bytes, shape_mode: Any):
+def _run_node(
+    monkeypatch: pytest.MonkeyPatch,
+    onnx_bytes: bytes,
+    shape_mode: Any,
+    info: OnnxInfo | None = None,
+    precision: Any = build_engine.Precision.FP16,
+):
     """Build Engine on an ONNX with every builder stubbed; the route it took."""
     routes: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
 
@@ -369,11 +375,11 @@ def _run_node(monkeypatch: pytest.MonkeyPatch, onnx_bytes: bytes, shape_mode: An
     monkeypatch.setattr(build_engine, "build_drft_engine", route("drft"))
     monkeypatch.setattr(build_engine, "build_dual_engine", route("dual"))
     monkeypatch.setattr(build_engine, "build_engine_from_onnx", route("generic"))
-    model = OnnxGeneric(onnx_bytes, OnnxInfo(opset=20, dtype="fp32"))
+    model = OnnxGeneric(onnx_bytes, info or OnnxInfo(opset=20, dtype="fp32"))
     build_engine.build_engine_node(
         CONTEXT,
         model,
-        build_engine.Precision.FP16,
+        precision,
         shape_mode,
         64,
         64,
@@ -506,3 +512,32 @@ def test_build_engine_refuses_a_drft_profile_before_building(
     monkeypatch.setattr(drft, "build_engine", pytest.fail)
     with pytest.raises(ValueError, match="multiple of 16 px"):
         _build_drft(((64, 64), (500, 500), (1152, 1152)))
+
+
+@pytest.mark.parametrize("hidden", ["FP32", "FP16", "BF16"])
+def test_build_engine_builds_a_recorded_architecture_in_fp16(
+    monkeypatch: pytest.MonkeyPatch, hidden: str
+):
+    routes = _run_node(
+        monkeypatch,
+        _onnx(),
+        build_engine.ShapeMode.FIXED,
+        OnnxInfo(opset=20, dtype="fp16", arch="ESRGAN"),
+        build_engine.Precision[hidden],
+    )
+    ((name, args, _),) = routes
+    assert name == "generic"
+    assert args[1].precision == "fp16"
+
+
+def test_build_engine_keeps_the_chosen_precision_without_a_record(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    routes = _run_node(
+        monkeypatch,
+        _onnx(),
+        build_engine.ShapeMode.FIXED,
+        OnnxInfo(opset=20, dtype="fp32"),
+        build_engine.Precision.FP32,
+    )
+    assert routes[0][1][1].precision == "fp32"

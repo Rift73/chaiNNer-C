@@ -672,6 +672,15 @@ struct libdeflate_decompressor {
 	bool static_codes_loaded;
 	unsigned litlen_tablebits;
 
+	/*
+	 * chaiNNer-C patch (PROVENANCE.md): true in
+	 * libdeflate_deflate_decompress_nonfinal(), whose input must end on an
+	 * empty non-final stored block and hold no final block
+	 */
+	bool nonfinal;
+	/* Set only during libdeflate_deflate_decompress_range() */
+	struct libdeflate_range *range;
+
 	/* The free() function for this struct, chosen at allocation time */
 	free_func_t free_func;
 };
@@ -1081,6 +1090,10 @@ typedef enum libdeflate_result (*decompress_func_t)
 #undef EXTRACT_VARBITS8
 #include "decompress_template.h"
 
+#define FUNCNAME deflate_decompress_symbols_default
+#define DECODE_SYMBOLS
+#include "decompress_template.h"
+
 /* Include architecture-specific implementation(s) if available. */
 #undef DEFAULT_IMPL
 #undef arch_select_decompress_func
@@ -1150,6 +1163,69 @@ libdeflate_deflate_decompress(struct libdeflate_decompressor *d,
 	return libdeflate_deflate_decompress_ex(d, in, in_nbytes,
 						out, out_nbytes_avail,
 						NULL, actual_out_nbytes_ret);
+}
+
+LIBDEFLATEAPI enum libdeflate_result
+libdeflate_deflate_decompress_nonfinal(struct libdeflate_decompressor *d,
+				       const void *in, size_t in_nbytes,
+				       void *out, size_t out_nbytes_avail,
+				       size_t *actual_out_nbytes_ret)
+{
+	enum libdeflate_result result;
+
+	d->nonfinal = true;
+	result = libdeflate_deflate_decompress_ex(d, in, in_nbytes,
+						  out, out_nbytes_avail,
+						  NULL, actual_out_nbytes_ret);
+	d->nonfinal = false;
+	return result;
+}
+
+static enum libdeflate_result
+decompress_range(decompress_func_t decompress,
+		 struct libdeflate_decompressor *d,
+		 const void *in, size_t in_nbytes,
+		 void *out, size_t out_avail,
+		 struct libdeflate_range *range)
+{
+	enum libdeflate_result result;
+
+	range->end_bit = range->start_bit;
+	range->end_out = 0;
+	range->final = 0;
+	if (range->start_bit / 8 >= in_nbytes)
+		return LIBDEFLATE_BAD_DATA;
+	d->range = range;
+	result = decompress(d, in, in_nbytes, out, out_avail,
+			    NULL, &range->end_out);
+	d->range = NULL;
+	return result;
+}
+
+LIBDEFLATEAPI enum libdeflate_result
+libdeflate_deflate_decompress_range(struct libdeflate_decompressor *d,
+				    const void *in, size_t in_nbytes,
+				    void *out, size_t out_nbytes_avail,
+				    struct libdeflate_range *range)
+{
+	return decompress_range(decompress_impl, d, in, in_nbytes,
+				out, out_nbytes_avail, range);
+}
+
+LIBDEFLATEAPI enum libdeflate_result
+libdeflate_deflate_decompress_symbols(struct libdeflate_decompressor *d,
+				      const void *in, size_t in_nbytes,
+				      uint16_t *out, size_t out_nsymbols_avail,
+				      struct libdeflate_range *range)
+{
+	decompress_func_t decompress = deflate_decompress_symbols_default;
+
+#ifdef deflate_decompress_symbols_bmi2
+	if (HAVE_BMI2(get_x86_cpu_features()))
+		decompress = deflate_decompress_symbols_bmi2;
+#endif
+	return decompress_range(decompress, d, in, in_nbytes,
+				out, out_nsymbols_avail, range);
 }
 
 LIBDEFLATEAPI struct libdeflate_decompressor *

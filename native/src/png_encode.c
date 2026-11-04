@@ -5,12 +5,20 @@
  * stream, and the stream's Adler-32 is the bands' Adler-32 values combined. Each band is one IDAT chunk. The bytes
  * depend on the image alone: the band count on its size, never on the CPU count, and every ISA level gives the same
  * filtered rows. libdeflate's own SIMD (Adler-32, CRC-32, match finder setup) dispatches on its CPUID check and gives
- * the same values on every CPU. */
+ * the same values on every CPU.
+ *
+ * Compressors and band buffers stay between calls in slots that an atomic exchange takes (cn_png_encode_release frees
+ * them, at the end of each run), so a batch's files reuse warm memory where each band otherwise took the heap's lock and
+ * the page faults of 2 MiB at 4K: a call finding no idle one allocates and never waits, and no thread owns any. They
+ * never change the bytes: every kept byte is written before it is read, and a compression resets libdeflate's hash
+ * tables, through which alone it reaches anything of an earlier one. */
 #include "png_encode_shared.h"
+#include "adler32_combine.h"
 #include "isa.h"
 #include "parallel.h"
 #include "run_kernels.h"
 #include <libdeflate.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -26,11 +34,76 @@
 #define PNG_MIN_BAND_ROWS 8
 #define PNG_MAX_BAND_BYTES ((size_t)1 << 29)
 _Static_assert(CN_PNG_MAX_ROW_SAMPLES < PNG_MAX_BAND_BYTES, "a row (with its filter byte) fits in a band");
+/* Kept between calls: a compressor per band running at once; a buffer per chunk of the eight calls an item window
+ * overlaps (item_window.py's largest automatic size) and per band running at once; no buffer above 8 MiB (a band of an
+ * image of about 85 megapixels), so a larger image allocates as it did. A kept buffer takes an eighth more than asked,
+ * which covers the bands' row counts and both kinds of buffer. */
+#define PNG_KEPT_COMPRESSORS PNG_MAX_BANDS
+#define PNG_KEPT_BUFFERS (9 * PNG_MAX_BANDS)
+#define PNG_KEEP_BYTES ((size_t)8 << 20)
+
+typedef struct png_buffer {
+    size_t capacity;
+    uint8_t data[];
+} png_buffer;
+
+static _Atomic(void *) kept_compressors[PNG_KEPT_COMPRESSORS], kept_buffers[PNG_KEPT_BUFFERS];
+
+/* An idle block of slots, looking from `start` (a call's bands start apart); NULL when none is idle. */
+static void *take_kept(_Atomic(void *) *slots, size_t count, size_t start)
+{
+    for (size_t i = 0; i < count; ++i) {
+        _Atomic(void *) *slot = &slots[(start + i) % count];
+        if (!atomic_load_explicit(slot, memory_order_relaxed)) continue;
+        void *block = atomic_exchange(slot, NULL);
+        if (block) return block;
+    }
+    return NULL;
+}
+
+/* Puts block into an empty slot; 0 when every slot holds one. */
+static int give_kept(_Atomic(void *) *slots, size_t count, size_t start, void *block)
+{
+    for (size_t i = 0; i < count; ++i) {
+        _Atomic(void *) *slot = &slots[(start + i) % count];
+        void *empty = NULL;
+        if (!atomic_load_explicit(slot, memory_order_relaxed) && atomic_compare_exchange_strong(slot, &empty, block))
+            return 1;
+    }
+    return 0;
+}
+
+/* A buffer of at least `bytes`, not zeroed: an idle one that holds them, else a new one; NULL when memory runs out. */
+static png_buffer *take_buffer(size_t start, size_t bytes)
+{
+    size_t capacity = bytes;
+    if (bytes <= PNG_KEEP_BYTES) {
+        png_buffer *kept = take_kept(kept_buffers, PNG_KEPT_BUFFERS, start);
+        if (kept && kept->capacity >= bytes) return kept;
+        free(kept);
+        capacity += bytes / 8;
+    }
+    png_buffer *buffer = malloc(sizeof *buffer + capacity);
+    if (buffer) buffer->capacity = capacity;
+    return buffer;
+}
+
+static void give_buffer(size_t start, png_buffer *buffer)
+{
+    if (buffer->capacity > PNG_KEEP_BYTES || !give_kept(kept_buffers, PNG_KEPT_BUFFERS, start, buffer)) free(buffer);
+}
+
+CN_EXPORT void cn_png_encode_release(void)
+{
+    for (size_t i = 0; i < PNG_KEPT_COMPRESSORS; ++i)
+        libdeflate_free_compressor(atomic_exchange(&kept_compressors[i], NULL));
+    for (size_t i = 0; i < PNG_KEPT_BUFFERS; ++i) free(atomic_exchange(&kept_buffers[i], NULL));
+}
 
 /* One band's IDAT chunk: its length and type, its data (band 0's begins with the zlib header, the last band's ends
  * with the stream's Adler-32, written after the join), its CRC. */
 typedef struct png_band {
-    uint8_t *chunk;
+    png_buffer *chunk;
     size_t size;      /* the chunk's bytes */
     size_t offset;    /* the chunk's place in the file */
     size_t filtered;  /* the band's filtered bytes, the data its DEFLATE piece holds */
@@ -56,16 +129,6 @@ static void put32(uint8_t *p, uint32_t value)
     p[1] = (uint8_t)(value >> 16);
     p[2] = (uint8_t)(value >> 8);
     p[3] = (uint8_t)value;
-}
-
-/* The Adler-32 of A followed by B from adler(A), adler(B) and B's length (RFC 1950's sums s1 and s2 mod 65521):
- * s1(AB) = s1(A) + s1(B) - 1 and s2(AB) = s2(A) + s2(B) + length(B) * (s1(A) - 1). */
-static uint32_t adler32_combine(uint32_t a, uint32_t b, uint64_t b_length)
-{
-    const uint64_t base = 65521, a1 = a & 0xFFFF, b1 = b & 0xFFFF;
-    const uint64_t s1 = (a1 + b1 + base - 1) % base;
-    const uint64_t s2 = ((a >> 16) + (b >> 16) + (b_length % base) * ((a1 + base - 1) % base)) % base;
-    return (uint32_t)(s2 << 16 | s1);
 }
 
 static size_t band_count(size_t height, size_t filtered)
@@ -133,8 +196,9 @@ static cn_status encode_band(const png_job *job, size_t index, png_band *band)
     /* The filtered rows, then two packed rows (unless the source rows are read in place), then the zeros above the
      * image's first row. */
     const size_t rows = job->direct ? 0 : 2 * n, zeros = first ? n : 0;
-    uint8_t *work = malloc(length + rows + zeros);
-    if (!work) return CN_ALLOCATION_FAILED;
+    png_buffer *work_buffer = take_buffer(index, length + rows + zeros);
+    if (!work_buffer) return CN_ALLOCATION_FAILED;
+    uint8_t *work = work_buffer->data;
     uint8_t *filtered = work, *buffers[2] = {work + length, work + length + n};
     const uint8_t *up;
     if (first) {
@@ -152,27 +216,27 @@ static cn_status encode_band(const png_job *job, size_t index, png_band *band)
     band->filtered = length;
     band->adler = libdeflate_adler32(1, filtered, length);
 
-    struct libdeflate_compressor *compressor = libdeflate_alloc_compressor(PNG_LEVEL);
+    struct libdeflate_compressor *compressor = take_kept(kept_compressors, PNG_KEPT_COMPRESSORS, index);
+    if (!compressor) compressor = libdeflate_alloc_compressor(PNG_LEVEL);
     if (!compressor) {
-        free(work);
+        give_buffer(index, work_buffer);
         return CN_ALLOCATION_FAILED;
     }
     const size_t header = first ? 2 : 0, trailer = last ? 4 : 0;
     const size_t bound = libdeflate_deflate_compress_bound(compressor, length) + 5;
-    uint8_t *chunk = malloc(8 + header + bound + trailer + 4);
+    png_buffer *chunk_buffer = take_buffer(index, 8 + header + bound + trailer + 4);
     size_t written = 0;
-    if (chunk) {
-        uint8_t *data = chunk + 8 + header;
+    if (chunk_buffer) {
+        uint8_t *data = chunk_buffer->data + 8 + header;
         written = last ? libdeflate_deflate_compress(compressor, filtered, length, data, bound)
                        : libdeflate_deflate_compress_nonfinal(compressor, filtered, length, data, bound);
     }
-    libdeflate_free_compressor(compressor);
-    free(work);
-    if (!chunk) return CN_ALLOCATION_FAILED;
-    if (!written) {
-        free(chunk); /* not expected: the bound holds every output */
-        return CN_SIZE_OVERFLOW;
-    }
+    if (!give_kept(kept_compressors, PNG_KEPT_COMPRESSORS, index, compressor)) libdeflate_free_compressor(compressor);
+    give_buffer(index, work_buffer);
+    if (!chunk_buffer) return CN_ALLOCATION_FAILED;
+    band->chunk = chunk_buffer; /* the call gives it back, whatever happens to the others */
+    if (!written) return CN_SIZE_OVERFLOW; /* not expected: the bound holds every output */
+    uint8_t *chunk = chunk_buffer->data;
     if (first) {
         chunk[8] = 0x78; /* zlib: DEFLATE with a 32 KiB window */
         chunk[9] = 0x9C; /* no dictionary, level hint 2 (libdeflate's for level 6), check bits */
@@ -182,7 +246,6 @@ static cn_status encode_band(const png_job *job, size_t index, png_band *band)
     memcpy(chunk + 4, "IDAT", 4);
     band->crc = libdeflate_crc32(0, chunk + 4, 4 + header + written);
     if (!last) put32(chunk + 8 + data, band->crc);
-    band->chunk = chunk;
     band->size = 12 + data;
     return CN_OK;
 }
@@ -202,7 +265,8 @@ typedef struct png_copy {
 static void copy_bands(void *context, size_t begin, size_t end)
 {
     const png_copy *copy = context;
-    for (size_t i = begin; i < end; ++i) memcpy(copy->out + copy->band[i].offset, copy->band[i].chunk, copy->band[i].size);
+    for (size_t i = begin; i < end; ++i)
+        memcpy(copy->out + copy->band[i].offset, copy->band[i].chunk->data, copy->band[i].size);
 }
 
 /* (count - 1) * |stride| within a quarter of PTRDIFF_MAX, so a sample's offset (three such terms) fits. */
@@ -234,8 +298,9 @@ CN_EXPORT cn_status cn_png_encode_u8(const uint8_t *source, size_t height, size_
         uint32_t adler = band[0].adler;
         for (size_t i = 1; i < bands; ++i) adler = adler32_combine(adler, band[i].adler, band[i].filtered);
         png_band *last = &band[bands - 1];
-        put32(last->chunk + last->size - 8, adler);
-        put32(last->chunk + last->size - 4, libdeflate_crc32(last->crc, last->chunk + last->size - 8, 4));
+        uint8_t *end_of_chunk = last->chunk->data + last->size;
+        put32(end_of_chunk - 8, adler);
+        put32(end_of_chunk - 4, libdeflate_crc32(last->crc, end_of_chunk - 8, 4));
         size_t total = 8 + 25;
         for (size_t i = 0; i < bands; ++i) {
             band[i].offset = total;
@@ -264,7 +329,8 @@ CN_EXPORT cn_status cn_png_encode_u8(const uint8_t *source, size_t height, size_
             memcpy(out + total - 12, end, 12);
         }
     }
-    for (size_t i = 0; i < bands; ++i) free(band[i].chunk);
+    for (size_t i = 0; i < bands; ++i)
+        if (band[i].chunk) give_buffer(i, band[i].chunk);
     free(band);
     return status;
 }

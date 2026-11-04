@@ -2956,8 +2956,11 @@ def test_prepared_save_replays_its_upstream_before_writing(monkeypatch, tmp_path
     )
     assert list(files_one) == [f"item-{i}.png" for i in range(5)]
     assert files_three == files_one
-    # prepared bytes count toward the window's in-flight bytes
-    assert any(type(value) is bytes and value for value in counted)
+    # prepared bytes (the encoder's array) count toward the window's in-flight bytes
+    assert any(
+        isinstance(value, np.ndarray) and value.ndim == 1 and value.dtype == np.uint8
+        for value in counted
+    )
 
 
 @pytest.mark.usefixtures("phases_registry")
@@ -3338,7 +3341,7 @@ else:
     NEW.save.save_image_node(**save_arguments(NEW.save, LazyImage(value), out, fmt=case))
     today = (out / f"image.{case.lower()}").read_bytes()
     result["prepared"] = prepared if isinstance(prepared, str) else len(prepared)
-    result["equal"] = prepared == today
+    result["equal"] = not isinstance(prepared, str) and bytes(prepared) == today
 result["torch"] = "torch" in sys.modules
 result["onnxruntime"] = "onnxruntime" in sys.modules
 print(json.dumps(result))

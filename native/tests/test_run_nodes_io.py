@@ -218,6 +218,16 @@ def test_save_image_declines_other_formats(tmp_path, fmt):
     assert not any(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize("channels", [2, 5, 15])
+@pytest.mark.parametrize("fmt", ["PNG", "JPG", "WEBP", "BMP", "TIFF", "GIF", "TGA", "AVIF"])
+def test_save_image_refuses_plane_counts_no_format_holds(tmp_path, fmt, channels):
+    # The engine's Image holds 1, 3 or 4 channels, so only the Python body meets these.
+    inputs = save_inputs(float_image(channels), tmp_path, fmt=fmt)
+    with pytest.raises(RuntimeError, match=rf"Saving \.{fmt.lower()} images is only"):
+        run_save(inputs, False)
+    assert not list(tmp_path.iterdir())
+
+
 def test_save_image_skips_existing_without_reading(tmp_path):
     from api import Lazy
 
@@ -383,3 +393,21 @@ def test_pillow_max_image_pixels_is_the_constant():
     assert done.returncode == 0, done.stderr
     # No Pillow at the worker's start; Load Image's Pillow, which the native routes read, holds the limit.
     assert done.stdout.splitlines()[-1] == "False 1600000000"
+
+
+@pytest.mark.parametrize("planes", [2, 5])
+def test_view_image_external_refuses_what_no_image_holds(planes):
+    from nodes.impl.native_graph import graph
+
+    pixels = np.zeros((2, 2, planes), dtype=np.float32)
+    with pytest.raises(RuntimeError, match="Viewing images"):
+        graph().image_io_view({}, pixels)
+
+
+@pytest.mark.parametrize("shape", [(2, 2), (2, 2, 1), (2, 2, 3), (2, 2, 4)])
+def test_view_image_external_needs_no_helper_to_pass_an_image(shape):
+    from nodes.impl.native_graph import graph
+
+    # The first name it reads after the check, from a module that imports only what it uses
+    with pytest.raises(KeyError, match="mkdtemp"):
+        graph().image_io_view({}, np.zeros(shape, dtype=np.float32))

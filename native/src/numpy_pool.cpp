@@ -26,9 +26,10 @@
  *
  * Retention. A freed pool block becomes the newest idle block. Idle bytes never exceed
  * the cap: the oldest idle blocks are released first, and a block larger than the cap
- * is released at once. numpy_pool_release releases every idle block (the worker calls
- * it at the end of each run). Blocks go back with VirtualFree outside the lock; a
- * failure is counted for the process, never ignored.
+ * is released at once. numpy_pool_release releases every idle block, and what the default
+ * PNG encoder keeps between calls (the worker calls it at the end of each run). Blocks go
+ * back with VirtualFree outside the lock; a failure is counted for the process, never
+ * ignored.
  *
  * Install. NumPy keeps the current handler in a context variable, which a new thread
  * does not inherit, so every thread that allocates node outputs calls
@@ -63,6 +64,7 @@
  * as os.environ holds them. NumPy's headers are included in this unit only, without
  * PY_ARRAY_UNIQUE_SYMBOL, so the C API table stays private to it. */
 #include "numpy_pool.hpp"
+#include "run_kernels.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/gil_safe_call_once.h>
 #define NPY_NO_DEPRECATED_API NPY_1_22_API_VERSION
@@ -865,6 +867,7 @@ py::tuple release_idle()
     {
         py::gil_scoped_release unlocked;
         release(chain);
+        cn_png_encode_release();
     }
     return py::make_tuple(bytes, release_failures.load(std::memory_order_relaxed));
 }

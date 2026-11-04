@@ -281,5 +281,10 @@ foreach(chainner_c_target chainner_deflate chainner_zstd chainner_openjph chainn
 endforeach()
 target_sources(chainner_codecs PRIVATE src/codecs/exr_codec.c src/codecs/exr_openjph.cpp)
 target_link_libraries(chainner_codecs PRIVATE chainner_openexr chainner_openjph chainner_native)
-# The PNG decoder's direct path inflates with it and checks IDAT CRCs (src/codecs/png_codec.c).
+# The PNG decoder's direct path inflates with it, on many threads where it can (src/codecs/png_inflate.c), and checks
+# IDAT CRCs (src/codecs/png_codec.c).
+target_sources(chainner_codecs PRIVATE src/codecs/png_inflate.c)
 target_link_libraries(chainner_codecs PRIVATE chainner_deflate)
+# Its Paeth filter at the AVX2 level (src/isa.c), reached only through its dispatch.
+target_sources(chainner_codecs PRIVATE src/codecs/png_unfilter_avx2.c)
+set_source_files_properties(src/codecs/png_unfilter_avx2.c PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")

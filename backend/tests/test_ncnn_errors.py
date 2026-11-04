@@ -54,6 +54,32 @@ def test_a_model_ncnn_loads_is_accepted(tmp_path: Path):
     )
 
 
+@pytest.mark.parametrize(
+    "planes,size", [(2, (6, 8)), (5, (5, 7)), (15, (65, 67))], ids=str
+)
+def test_a_model_of_other_plane_counts_gets_its_planes(
+    tmp_path: Path, planes: int, size: tuple[int, int]
+):
+    # ncnn's pixel formats stop at 4 channels, so these planes reach the model as they are.
+    (tmp_path / "copy.param").write_text(
+        PARAM.replace("0=3 1=1 6=9", f"0={planes} 1=1 6={planes**2}"), encoding="utf-8"
+    )
+    (tmp_path / "copy.bin").write_bytes(
+        b"\x00\x00\x00\x00" + np.eye(planes, dtype=np.float32).tobytes()
+    )
+    model = NcnnModelWrapper(
+        NcnnModel.load_from_file(
+            str(tmp_path / "copy.param"), str(tmp_path / "copy.bin")
+        )
+    )
+    net = create_ncnn_net(model, SETTINGS)
+    image = np.random.default_rng(planes).random((*size, planes), dtype=np.float32)
+    result = ncnn_auto_split(image, net, "data", "out", None, None, MaxTileSize())
+    np.testing.assert_array_equal(
+        result, to_uint8(image).astype(np.float32) * np.float32(1 / 255)
+    )
+
+
 class VulkanNet:
     """Stands in for ncnn.Net on the Vulkan branch: the tests hide every GPU, so the
     Vulkan settings go nowhere and the loads run on a CPU net."""

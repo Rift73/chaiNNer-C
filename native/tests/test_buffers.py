@@ -317,17 +317,19 @@ def test_convenient_upscale_cpu_callback(constant, separate, model_channels):
 
     with np.errstate(all="ignore"):
         if model_channels == 1 and separate and constant is False:
-            # The upstream helper itself rejects a 2D grayscale model output
-            # in this branch. Preserve that failure rather than inventing shape semantics.
-            for module in (INSTALLED_UPSCALE, upscale):
-                with pytest.raises(np.exceptions.AxisError):
-                    module.convenient_upscale(
-                        image, model_channels, model_channels, callback, separate
-                    )
-            return
-        expected = INSTALLED_UPSCALE.convenient_upscale(
-            image, model_channels, model_channels, callback, separate
-        )
+            # The upstream helper rejects a 2D grayscale model output in this branch;
+            # the result is what it makes of the same output with a channel axis.
+            expected = INSTALLED_UPSCALE.convenient_upscale(
+                image,
+                model_channels,
+                model_channels,
+                lambda value: callback(value)[:, :, np.newaxis],
+                separate,
+            )
+        else:
+            expected = INSTALLED_UPSCALE.convenient_upscale(
+                image, model_channels, model_channels, callback, separate
+            )
         actual = upscale.convenient_upscale(
             image, model_channels, model_channels, callback, separate
         )

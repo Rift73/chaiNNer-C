@@ -18,6 +18,7 @@ from nodes.impl.compressed_file import Compression
 from nodes.impl.native_onnx_runtime import NativeSession
 from nodes.impl.onnx import load as load_module
 from nodes.impl.onnx.load import load_onnx_model, model_facts
+from nodes.impl.onnx.model import ARCH_METADATA_KEY
 from nodes.impl.onnx.model import MIXED, OnnxGeneric, OnnxInfo
 from nodes.impl.onnx.session import create_inference_session
 from nodes.impl.tensorrt.dual import METADATA_KEY
@@ -171,3 +172,19 @@ def test_undecodable_bytes_reach_onnx_runtime(monkeypatch: pytest.MonkeyPatch):
     facts = model_facts(model)
     assert facts.native_session and facts.dual_manifest is None
     assert load_module.model_facts(model) is facts
+
+
+def test_an_onnx_without_a_record_has_no_architecture():
+    assert load_onnx_model(gain_model().SerializeToString()).info.arch is None
+
+
+def test_a_record_on_a_model_that_is_not_fp16_is_left_out():
+    # gain_model is FP32: another tool changed its precision and kept the metadata.
+    model = gain_model({ARCH_METADATA_KEY: "ESRGAN"})
+    assert load_onnx_model(model.SerializeToString()).info.arch is None
+
+
+def test_a_record_of_another_architecture_is_left_out():
+    loaded = load_onnx_model(gain_model({ARCH_METADATA_KEY: "Other"}).SerializeToString())
+    assert model_facts(loaded).arch is None
+    assert loaded.info.arch is None

@@ -39,6 +39,9 @@ native\build-fuzz\out\fuzz_regex.exe -rss_limit_mb=1024 -malloc_limit_mb=1024 -m
 Seeds: small files of each format (the encoders of the runtime's OpenCV and Pillow, `native/tests/exr/*.exr`), and
 `pattern 0xFF text` pairs from `native/tests/chainner_ext/regex_corpus.jsonl`. A crash leaves its input as
 `crash-<sha1>` (or the `-artifact_prefix` given); rerun the harness with that file as its only argument to reproduce.
+The fuzz build lowers the parallel PNG inflate's size threshold (`src/codecs/png_inflate.c`) to 12 KiB of compressed data
+per stretch, and only a seed of 48 KiB to 64 KiB, compressed 3:1 to 5:1 in small dynamic blocks, reaches it within
+`-max_len`: for a level-6 stream, `zlib.compressobj(6, zlib.DEFLATED, 15, 3)` gives those blocks.
 The harness decodes images up to 16 MiB; a larger one declines, as a failed allocation does in the application.
 A header within the 1.6-gigapixel limit still makes libjpeg (progressive coefficients) or libtiff (a strip or tile
 buffer) allocate whole-image buffers before that cap applies, as OpenCV and Pillow do; `-malloc_limit_mb=256` ends

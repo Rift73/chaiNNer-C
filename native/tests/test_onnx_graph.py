@@ -44,11 +44,22 @@ def outcome(call):
         return (type(error), str(error))
 
 
+def _image_or_unnamed(second, fourth):
+    """Whether a shape fixes an image's channel count or none: upstream's reading. A fixed
+    count above 4, which upstream read as 3, is test_parse_shape_more_planes's."""
+    fixed = [d for d in (second, fourth) if isinstance(d, int)]
+    return not fixed or min(fixed) <= 4
+
+
 @pytest.mark.parametrize(
     "second,fourth",
-    itertools.product(
-        [0, -1, 1, 3, 4, 5, 2**70, "dynamic", None, np.int64(3), True], repeat=2
-    ),
+    [
+        shape
+        for shape in itertools.product(
+            [0, -1, 1, 3, 4, 5, 2**70, "dynamic", None, np.int64(3), True], repeat=2
+        )
+        if _image_or_unnamed(*shape)
+    ],
 )
 @pytest.mark.parametrize("middle", [1, 5, "height", None])
 def test_parse_shape(second, fourth, middle):
@@ -56,6 +67,25 @@ def test_parse_shape(second, fourth, middle):
     assert outcome(lambda: current.parse_onnx_shape(source)) == outcome(
         lambda: old.parse_onnx_shape(source)  # pyright: ignore[reportArgumentType] -- upstream's annotation says a 4-tuple, but its callers pass ORT's list shapes; the test pins both functions on lists
     )
+
+
+@pytest.mark.parametrize(
+    "source,parsed",
+    [
+        ([1, 15, "h", "w"], ("BCHW", 15, None, None)),
+        ([None, 21, None, None], ("BCHW", 21, None, None)),
+        ([1, 15, 128, 256], ("BCHW", 15, 256, 128)),
+        ([1, 15, 64, 15], ("BCHW", 15, 15, 64)),
+        ([1, "h", "w", 15], ("BHWC", 15, None, None)),
+        ([1, 256, 128, 15], ("BHWC", 15, 128, 256)),
+        # A fixed height and width next to an unnamed channel count stay a size.
+        ([1, "c", 128, 256], ("BCHW", 3, 256, 128)),
+        ([1, 128, 256, "c"], ("BCHW", 3, None, 256)),
+        ([None, 64, 64, None], ("BCHW", 3, None, 64)),
+    ],
+)
+def test_parse_shape_more_planes(source, parsed):
+    assert current.parse_onnx_shape(source) == parsed
 
 
 @pytest.mark.parametrize(
@@ -260,7 +290,9 @@ def test_whole_loader(dtype, shape):
     expected, actual = old_load.load_onnx_model(a), current_load.load_onnx_model(b)
     assert actual.bytes == expected.bytes
     assert actual.sub_type == expected.sub_type
-    assert vars(actual.info) | {"size_req": vars(actual.info.size_req)} == vars(
+    # `arch` is Convert To ONNX's record, which the reference loader has no field for
+    fields = {k: v for k, v in vars(actual.info).items() if k != "arch"}
+    assert fields | {"size_req": vars(actual.info.size_req)} == vars(
         expected.info
     ) | {"size_req": vars(expected.info.size_req)}
     assert a.SerializeToString() == b.SerializeToString()

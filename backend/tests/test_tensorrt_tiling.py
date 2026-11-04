@@ -186,6 +186,19 @@ def test_build_engine_sizes_start_where_an_engine_tiles_larger_images():
         tiled_upscale(image, SCALE, smaller, FakeEngine(smaller))
 
 
+@pytest.mark.parametrize(
+    "size", [(40, 50), (300, 420)], ids=["padded single tile", "several tiles"]
+)
+def test_a_grey_image_stays_as_chainner_holds_it(size: tuple[int, int]):
+    # A grey image is HxW everywhere in chaiNNer; the engine still takes one plane.
+    grey = np.random.default_rng(5).random(size, np.float32)
+    bounds = ShapeBounds(64, 64, 256, 256)
+    out = tiled_upscale(grey, SCALE, bounds, FakeEngine(bounds))
+    assert out.shape == (size[0] * SCALE, size[1] * SCALE)
+    planes = tiled_upscale(grey[:, :, np.newaxis], SCALE, bounds, FakeEngine(bounds))
+    np.testing.assert_array_equal(out, planes[:, :, 0])
+
+
 def test_axis_weights_partition_of_unity():
     for length in (513, 1000, 1024, 1500, 2049):
         starts = tile_starts(length, 512)

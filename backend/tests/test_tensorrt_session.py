@@ -295,3 +295,19 @@ def test_planes_reach_the_engine_in_rgb_order_and_return_bgr(
     weights[order] = np.arange(1, channels + 1, dtype=np.float32)
     expected = image.repeat(2, 0).repeat(2, 1) * weights
     np.testing.assert_array_equal(out, expected)
+
+
+def test_a_grey_image_reaches_a_one_channel_engine(inference: ModuleType):
+    # chaiNNer holds a grey image as HxW, which the session takes as one plane.
+    from nodes.impl.tensorrt.tiling import tiled_upscale
+
+    loaded = DeserializedEngine(object(), _WeightingEngine(1), 0)
+    shape = (1, 1, 64, 64)
+    info = TensorRTEngineInfo(
+        "fp32", 1, 1, 2, "sm_120", "11", True, shape, shape, shape
+    )
+    session = inference.TensorRTSession(TensorRTEngine(b"engine", info, loaded), 0)
+    image = np.random.default_rng(32).random((40, 50), np.float32)
+    out = tiled_upscale(image, 2, session.bounds, session)
+    session.close()
+    np.testing.assert_array_equal(out, image.repeat(2, 0).repeat(2, 1))

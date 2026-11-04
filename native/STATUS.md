@@ -4,7 +4,68 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
-- 2026-11-04 **A replaced engine or program frees its VRAM at once** (`tensorrt/cache.py`, not released). Upscale
+- 2026-11-05 **ESRGAN, HAT and DAT convert and build in FP16 with no precision choice**, not released. Convert To
+  ONNX hides Data Type and Calibration Image for them and exports FP16 whatever PyTorch's FP16 setting says; it records
+  the architecture in the ONNX (`chainner_c.architecture`), so a saved file stays seamless. Build Engine and Build
+  Program hide Precision for such files and ignore a value a saved chain still holds. Files without the record behave
+  as before. Against strict FP32 at 256x256, TF32 off: 15 ESRGAN weights 52.9 to 66.8 dB (8 crops), HAT-L 58.7 to 60.2,
+  DAT2 65.8 to 67.7 (55.2 to 59.8 on a Dynamic engine; 4 crops, one weight each); no NaN or Inf. Session ms, FP32 ->
+  FP16, RTX 5090: HAT-L 333.6 -> 69.9, DAT2 123.8 -> 43.1. Screentone models (4x eula) are not precision tests: they
+  draw dots on flat areas, so pixel PSNR collapses (24.5 dB) while tone holds (46.6 to 56.9 dB after a 16-pixel blur).
+- 2026-11-05 **ESRGAN FP16 exports nest their dense-block joins** (`esrgan_export.py`): `cat(cat(x, x1), x2)` instead
+  of `cat(x, x1, x2)`, same channels in the same order. TensorRT's concat kernels were 25 % of a plain 512x512 run and
+  are gone. Session ms before -> after, same session, one paired run, 50 iterations, median: 4x-UltraSharp 512x512 68.87
+  -> 52.44; at 256x256 UltraSharp 16.85 -> 15.18, RealESRGAN_x4plus 17.37 -> 14.61, 1x_Saiyajin 15.28 -> 12.46,
+  8x_NMKD-Typescale 25.14 -> 21.89, 2x_MangaScaleV3 15.42 -> 14.50, x4plus_anime_6B 6.33 -> 6.08. Output against plain
+  FP16: 60.0 to 69.8 dB on those weights, close to two builds of plain (about 63 dB). FP32 stays plain: nesting made one
+  1x file slower (44.08 -> 59.00 ms). Measured and left out: conv after upsampling at low resolution (the tail is 5.5 %
+  of the time), folding 0.2 into conv 5, and a Triton conv kernel (estimated slower than nesting across the network).
+- 2026-11-05 **Channel fixes**: Separate Alpha on a 1-channel engine; ONNX models above 4 planes read as what they are,
+  and AI Upscale refuses rather than drops planes; a clear message for multi-plane models; Save Image and View Image
+  (External) refuse plane counts no format holds; AI Upscale takes 4->4 and 4->3 engines through its bridge; Mixed
+  calibration noise has the model's planes; NCNN multi-plane input.
+- 2026-11-05 **TensorRT's GroupNorm kernel is silently wrong on small Dynamic ranges**: channels per group x max height x
+  max width at or below 20,736 (right from 25,088). Build Engine writes GroupNorm out for FP32 Dynamic engines up to
+  65,536, under a new cache key; other builds are unchanged. A general export change cost 2 to 6 % on Fixed and more on
+  Dynamic, so it stays out.
+- 2026-11-05 **PNG decode and encode faster**, not released. Pixels and file bytes unchanged. 3840x2160 RGB, Ryzen 9
+  9950X3D, all 32 threads, Load Image (reader + 8-bit to float32), medians over three paired runs in fresh processes:
+  own encoder 50.2 -> 11.1 ms, Pillow 50.2 -> 14.7, OpenCV 46.6 -> 14.3, Paeth rows 97.6 -> 45.6, own encoder at
+  7680x4320 311.7 -> 44.0; 48 real images of a dataset, all small, 138.0 -> 96.2 ms in total. Save Image's native path
+  22.75 -> 17.85 ms, its batch path 18.92 -> 17.13 ms.
+  - Independent IDAT pieces (the default encoder's bands) inflate in parallel (`png_inflate_pieces`, libdeflate's
+    `libdeflate_deflate_decompress_nonfinal`): a piece must end on an empty stored block at its last byte, and a match
+    cannot reach before its own output, so what succeeds is what a serial decode gives.
+  - One zlib stream of 1 MiB or more, compressed 5:1 or less, up to 512 MiB of rows, inflates on the pool
+    (`png_inflate.c`, the pugz technique, 2 to 6 times faster on inflate alone at 4K): threads decode from block headers
+    found by search, carrying markers for the unknown history, and the result stands only if their blocks chain exactly
+    from the real start to the real end and the Adler-32 holds; else serial from scratch. 2.1 to 3 times the filtered
+    size in added memory; a damaged stream costs 12 to 35 % more than serial alone before it falls back.
+  - Unfiltering runs as a wave across rows (`png_unfilter_rows`), Paeth in AVX2 (`png_unfilter_avx2.c`, right on all 2^24
+    inputs); the store step runs on the pool; the direct path's cap rose from 64 MiB to 2 GiB of filtered rows.
+  - The encoder keeps compressors and band buffers between calls (released with the NumPy pool's idle blocks at a run's
+    end, or by `numpy_pool.release()` with no pool); encoded files live in pool blocks, unzeroed; the native path checks
+    the folder exists before `create_directories`. Level 6, the band split and filter choices are untouched: 14,856
+    encoder comparisons and 346 written files equal.
+  - Accepted: a crafted stream with codes zlib refuses and libdeflate reads (length symbols 286, 287, distance symbols 30,
+    31, too many codes) opens where libpng fails. Already so below 64 MiB; rejecting them would change libdeflate's hot
+    decode path, and no valid file is affected.
+  - Tested: Windows 139,081 passed, 0 failed (`make_oracle.py` must run first after a native change); Linux 136,195
+    passed in the suite and 502 in the ROCm runtime, with 1 test corrected (its dispatch assertion depended on the thread
+    count, the stream's result did not). Whole-machine run of the wave's 16 workers under load, and CPUs other than Zen 5,
+    not measured.
+- RELEASED 2026-11-04 as **v0.3.9 re-release 2**: the entry below, and the AMD kit's docs and messages describe any
+  AMD machine reached over SSH; the notes no longer say AMD support has not run on an AMD GPU. Fork branch and tag
+  `v0.3.9` at `b65e73b0` (publish commit over `353b54d1`, tree = main `a5d13353`); assets win-x64 `c3429d1a…d797`
+  (176,375,072 B) and linux-x64 `355154b8…8f32` (147,426,223 B), both checked against git. Gate: Windows 139,031
+  passed, 0 failed. `D:\chaiNNer` updated (7 files, tuned binaries kept); 197 nodes.
+- 2026-11-04 **Cross-node fusion measured, dropped.** A 3840x2160 RGB chain, Load Image (PNG) -> Brightness &
+  Contrast -> Hue & Saturation -> Levels -> Unsharp Mask -> Save Image (PNG 8-bit), nodes called in-process with
+  their own output enforce, Ryzen 9 9950X3D: 117.4 ms, of which Load 52.1 and Save 23.8 (65 %). Fusing the four
+  processing nodes removes at most 3 whole-image passes of 3.6 ms (Invert Color's time): 9.1 % of the chain, under
+  the 10 % line set before measuring (25.7 % without Load and Save). The output range check of a node without
+  `assume_normalized` (Levels, Unsharp Mask) is one more read of the image, 3.6 ms at this size (Pending).
+- 2026-11-04 **A replaced engine or program frees its VRAM at once** (`tensorrt/cache.py`). Upscale
   Image's session (TensorRT's context and buffers, MIGraphX's runner) outlives the run under its node id, so after Load
   Engine or Load Program took another file, or was cleared or deleted, the old engine stayed alive with that session
   until the Upscale node ran again. A cache built on another (`built_on`, keys `(value, ...)`) now has its entries on a
@@ -925,6 +986,14 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | Ruff: `npm run lint:py` passes (`55583e78`); `ruff check` from `native\` reports 32 in tests and `tools/amd/bench.py` (I001 x7, Q000 x7 in `test_atomic_file.py`, B905 x4, PLW0108 x3, RUF005 x3 with test_video_io.py's, ISC004 x3, RUF043 x2, RUF001 x2, C408) | A lint pass |
 | Hunt O02: cold CFR Matroska/WebM rate detection and frame indexing read packets twice, then cache the result | Deferred unless a long cold load visibly stalls; preserve their different counting rules |
 | Hunt O03: opt-in `CHAINNER_C_TRT_RUNNER=1` retains both Python and C++ TensorRT engine copies | Parked: the cross-boundary ownership change is riskier than the current saving |
+| DUAL's PyTorch route 16 to 25 % faster with all 62 test outputs bit-identical (4x at 512x512: XS FP32 629 -> 516 ms, FP16 309 -> 239, BF16 307 -> 237; Light FP32 161 -> 135, FP16 87 -> 65, BF16 86 -> 67): local spandrel branch `dual-sync`, commit `a1e05b6`, worktree `spandrel-wt/dual-sync`. TensorRT had nothing to port (engines through this path: Light 15.25 ms, XS 56.33 ms) | Publish as spandrel c13 and pin it |
+| After the wave, run the store step inside its tiles (drops a second pool dispatch, works on cache lines just written); unmeasured | A probe with a keep rule |
+| The output range check (`normalized_output`, `cn_pixels_normalized_f32`) reads every image a node returns without `assume_normalized` once more: 3.6 ms at 3840x2160 RGB on the 9950X3D, about as long as Invert Color's whole pass. Such a node's kernel could report whether every value it wrote is in range, so the engine skips the read (same outputs) | When CPU chains are next sped up, after PNG decode and encode (65 % of the measured chain) |
+| GroupNorm on those small Dynamic ranges stays wrong in FP16, BF16 and Mixed (the written-out form reached 34 to 40 dB in forced FP16) | Find a form that holds in FP16, or refuse those builds |
+| DAT2 on a Dynamic engine is about 10 dB below Fixed (55.2 to 59.8 against 65.8 to 67.7 dB); cause not found | Look only if it shows in real use |
+| Nested ESRGAN engines lose LeakyReLU fusion (about 7 % of a 512x512 run, at most about 3 % to win back); `nestfold` and `nestdeconv` unmeasured | A probe with a keep rule |
+| Older ESRGAN ONNX files gain nesting only when converted again; a Build Engine pass would reach them but changes the engine cache key | Decide if asked |
+| Inline View Image still previews 2-plane images, where View Image (External) refuses them | Align them if it matters |
 | DUAL engines leave VRAM behind (2026-11-04, RTX 5090, TensorRT 11.4): the first DUAL engine loaded keeps 128 MiB in the process after it is freed (loading and freeing more stays flat; ESRGAN engines return to the baseline), and each DUAL engine that runs keeps about 2 MiB more (4 swap cycles of two engines: +16 MiB) | An investigation (TensorRT's AOT plugin kernels or its own kernel loading) if it matters |
 | Hunt GPU corrections B16-B18: owning-device reuse/teardown, low-headroom split admission, activation restore recovery | CPU/source checks only; real-device confirmation deferred in `GPU-DEFERRED.md` |
 | Load Video seek bar follow-ups (2026-10-21): the independent-UI patch (`native/tools/independent_ui.py`) for the `video-seek` input kind and runWithOverrides; the CLI path's Frame Count stays the probe's estimate (a run that reaches the end does not teach it); a one-frame run shares the Preview's decoded frame only in RGB float; VOSR Persistent Detail starts its history at a range's first context frame | Next sessions |

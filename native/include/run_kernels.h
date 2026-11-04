@@ -247,6 +247,8 @@ typedef uint8_t *(*cn_png_allocate)(void *context, size_t size);
 CN_RUN_KERNEL cn_status cn_png_encode_u8(const uint8_t *source, size_t height, size_t width, size_t channels,
     ptrdiff_t row_stride, ptrdiff_t pixel_stride, ptrdiff_t channel_stride, int bgr, cn_png_allocate allocate,
     void *context);
+/* Frees the compressors and buffers idle between calls; a call in flight keeps its own. */
+CN_RUN_KERNEL void cn_png_encode_release(void);
 /* procedural_complete_ops.c */
 CN_RUN_KERNEL cn_status cn_create_procedural(void *out, size_t height, size_t width,
     uint64_t seed, int method, double scale, double brightness,
