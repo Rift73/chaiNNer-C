@@ -287,6 +287,11 @@ def _write(img: np.ndarray, frame: Any) -> None:
     if frame.format.num_planes == 1:
         np.copyto(np.asarray(frame[0]), img.reshape(height, width))
         return
+    if img.ndim != 3 or img.shape[2] != 3:
+        channels = 1 if img.ndim == 2 else img.shape[2]
+        raise RuntimeError(
+            f"The model made a {channels}-channel image where AI Upscale expected RGB."
+        )
     for plane, channel in enumerate((2, 1, 0)):
         np.copyto(np.asarray(frame[plane]), img[:, :, channel])
 
@@ -370,7 +375,12 @@ def upscale(
         plugin = runner_plugin()
         if plugin is not None:
             _model_key(model, backend, precision)
-            return _runner_clip(clip, model, plugin, streams)
+            try:
+                return _runner_clip(clip, model, plugin, streams)
+            except vs.Error as error:
+                # The runner takes engines of 1 or 3 channels; the bridge takes the rest.
+                if "input and output channels" not in str(error):
+                    raise
     upscaler = _upscaler(model, backend, precision)
     # As the Upscale Image nodes: the clip's channels, unless the model changes them
     # (a gray clip goes through an RGB model as BGR and comes back as gray).

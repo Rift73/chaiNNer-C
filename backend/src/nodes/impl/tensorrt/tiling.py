@@ -162,7 +162,13 @@ def tiled_upscale(
     progress: Progress | None = None,
     overlap: int = TILE_OVERLAP,
 ) -> np.ndarray:
-    """Upscale an HWC float32 image by tiling it within the engine's profile."""
+    """Upscale an HWC float32 image, or a grey HxW one, by tiling it within the
+    engine's profile. A grey image that stays grey comes back HxW."""
+    if img.ndim == 2:
+        out = tiled_upscale(
+            img[:, :, np.newaxis], scale, bounds, runner, progress, overlap
+        )
+        return out[:, :, 0] if out.shape[2] == 1 else out
     h, w = img.shape[:2]
     tile_h = _tile_extent(bounds.max_h, bounds.min_h, bounds.alignment)
     tile_w = _tile_extent(bounds.max_w, bounds.min_w, bounds.alignment)

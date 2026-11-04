@@ -126,13 +126,13 @@ def ncnn_auto_split(
             lr_img_fix = to_uint8(pixel_image)
             if lr_c in (1, 3, 4):
                 lr_planar = ncnn_input(lr_img_fix)
-                mat_in = ncnn.Mat(lr_planar).clone()
             else:
-                pixel_type = ncnn.Mat.PixelType.PIXEL_RGBA
-                mat_in = ncnn.Mat.from_pixels(
-                    lr_img_fix, pixel_type, lr_img_fix.shape[1], lr_img_fix.shape[0]
-                )
-                mat_in.substract_mean_normalize([], [1 / 255.0] * lr_c)
+                # ncnn_input's planes for a count it has no pixel format for.
+                lr_planar = np.ascontiguousarray(
+                    lr_img_fix.transpose(2, 0, 1)
+                ) * np.float32(1 / 255)
+            # A Mat reads the contiguous array it is given, and does not keep it alive.
+            mat_in = ncnn.Mat(lr_planar).clone()
             # PyPI ncnn reports a failure only by a non-zero return code; it prints
             # the reason to stderr, which the log keeps.
             if ex.input(input_name, mat_in):

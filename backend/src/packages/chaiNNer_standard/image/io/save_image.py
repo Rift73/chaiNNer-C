@@ -541,9 +541,10 @@ def get_full_path(
     )
 
 
-def prepare_save_image(inputs: list[object]) -> bytes | None:
-    """The bytes Save Image would write for these inputs, input 0 being the image;
-    None for DDS, which texconv writes itself (SP3-P9)."""
+def prepare_save_image(inputs: list[object]) -> bytes | np.ndarray | None:
+    """The bytes Save Image would write for these inputs, input 0 being the image, as
+    bytes or an encoder's buffer array; None for DDS, which texconv writes itself
+    (SP3-P9)."""
     return graph().image_io_save_prepare(globals(), tuple(inputs))
 
 

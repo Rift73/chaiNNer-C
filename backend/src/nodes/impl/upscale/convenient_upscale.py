@@ -30,6 +30,8 @@ def with_black_and_white_backgrounds(img: np.ndarray) -> tuple[np.ndarray, np.nd
 
 
 def denoise_and_flatten_alpha(img: np.ndarray) -> np.ndarray:
+    if img.ndim == 2:
+        img = img[:, :, np.newaxis]
     if img.dtype == np.float32 and img.ndim == 3 and 1 <= img.shape[2] <= 7:
         return flatten_alpha(img)
     alpha_min = np.min(img, axis=2)
@@ -58,6 +60,12 @@ def convenient_upscale(
     `model_out_nc` otherwise.
     """
     in_img_c = get_h_w_c(img)[2]
+
+    if in_img_c != model_in_nc and model_in_nc not in (1, 3, 4):
+        raise ValueError(
+            f"This model takes {model_in_nc}-channel input, and this node feeds a model"
+            f" images of 1, 3 or 4 channels; this image has {in_img_c}."
+        )
 
     if clip:
         upscale = clipped(upscale)

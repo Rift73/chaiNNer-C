@@ -42,6 +42,14 @@ py::tuple parse_shape(py::object shape) {
     py::object fourth = item(shape, 3);
     if (PyLong_Check(fourth.ptr()) && compare(fourth, py::int_(4), Py_LE))
         return py::make_tuple("BHWC", fourth, as_int(item(shape, 2)), as_int(second));
+    // More planes than an image has: the fixed dimension, or the smaller of two. A fixed
+    // height and width next to an unnamed channel count stay a size, on either side.
+    const bool fixed_second = PyLong_Check(second.ptr()), fixed_fourth = PyLong_Check(fourth.ptr());
+    const bool fixed_third = PyLong_Check(item(shape, 2).ptr());
+    if (fixed_second && (fixed_fourth ? compare(second, fourth, Py_LE) : !fixed_third))
+        return py::make_tuple("BCHW", second, as_int(fourth), as_int(item(shape, 2)));
+    if (fixed_fourth && (fixed_second || !fixed_third))
+        return py::make_tuple("BHWC", fourth, as_int(item(shape, 2)), as_int(second));
     return py::make_tuple("BCHW", 3, as_int(fourth), as_int(item(shape, 2)));
 }
 // A range-for extends the lifetime of its range's last temporary only: an earlier

@@ -37,6 +37,21 @@
 #    endif
 #  endif
 #  include "../decompress_template.h"
+   /* The same for libdeflate_deflate_decompress_symbols(). */
+#  define deflate_decompress_symbols_bmi2	deflate_decompress_symbols_bmi2
+#  define FUNCNAME			deflate_decompress_symbols_bmi2
+#  define ATTRIBUTES			_target_attribute("bmi2")
+#  define DECODE_SYMBOLS
+#  ifndef __clang__
+#    ifdef ARCH_X86_64
+#      define EXTRACT_VARBITS(word, count)  _bzhi_u64((word), (count))
+#      define EXTRACT_VARBITS8(word, count) _bzhi_u64((word), (count))
+#    else
+#      define EXTRACT_VARBITS(word, count)  _bzhi_u32((word), (count))
+#      define EXTRACT_VARBITS8(word, count) _bzhi_u32((word), (count))
+#    endif
+#  endif
+#  include "../decompress_template.h"
 #endif
 
 #if defined(deflate_decompress_bmi2) && HAVE_BMI2_NATIVE

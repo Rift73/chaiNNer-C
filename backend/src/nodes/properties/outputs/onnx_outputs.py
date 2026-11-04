@@ -38,6 +38,8 @@ class OnnxModelOutput(BaseOutput):
         i = value.info
         if i.dtype == MIXED:
             fields["arch"] = navi.literal("DUAL")
+        elif i.arch is not None:
+            fields["arch"] = navi.literal(i.arch)
         if i.scale_width is not None:
             fields["scaleWidth"] = i.scale_width
         if i.scale_height is not None:

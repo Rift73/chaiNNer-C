@@ -40,6 +40,11 @@
 #ifndef EXTRACT_VARBITS8
 #  define EXTRACT_VARBITS8(word, count)	((word) & BITMASK((u8)(count)))
 #endif
+#ifdef DECODE_SYMBOLS
+#  define OUT_TYPE	u16
+#else
+#  define OUT_TYPE	u8
+#endif
 
 static ATTRIBUTES MAYBE_UNUSED enum libdeflate_result
 FUNCNAME(struct libdeflate_decompressor * restrict d,
@@ -47,9 +52,9 @@ FUNCNAME(struct libdeflate_decompressor * restrict d,
 	 void * restrict out, size_t out_nbytes_avail,
 	 size_t *actual_in_nbytes_ret, size_t *actual_out_nbytes_ret)
 {
-	u8 *out_next = out;
-	u8 * const out_end = out_next + out_nbytes_avail;
-	u8 * const out_fastloop_end =
+	OUT_TYPE *out_next = out;
+	OUT_TYPE * const out_end = out_next + out_nbytes_avail;
+	OUT_TYPE * const out_fastloop_end =
 		out_end - MIN(out_nbytes_avail, FASTLOOP_MAX_BYTES_WRITTEN);
 
 	/* Input bitstream state; see deflate_decompress.c for documentation */
@@ -62,12 +67,27 @@ FUNCNAME(struct libdeflate_decompressor * restrict d,
 	u32 bitsleft = 0;
 	size_t overread_count = 0;
 
+	struct libdeflate_range * const range = d->range;
+	const OUT_TYPE * const out_begin =
+		(const OUT_TYPE *)out - (range != NULL ? range->history : 0);
+#ifdef DECODE_SYMBOLS
+	const OUT_TYPE *marker_end = out_next;
+#endif
+
 	bool is_final_block;
 	unsigned block_type;
 	unsigned num_litlen_syms;
 	unsigned num_offset_syms;
 	bitbuf_t litlen_tablemask;
 	u32 entry;
+
+	if (range != NULL) {
+		in_next += range->start_bit >> 3;
+		if (range->start_bit & 7) {
+			bitbuf = *in_next++ >> (range->start_bit & 7);
+			bitsleft = 8 - (range->start_bit & 7);
+		}
+	}
 
 next_block:
 	/* Starting to read the next block */
@@ -246,6 +266,9 @@ next_block:
 
 	} else if (block_type == DEFLATE_BLOCKTYPE_UNCOMPRESSED) {
 		u16 len, nlen;
+#ifdef DECODE_SYMBOLS
+		unsigned i;
+#endif
 
 		/*
 		 * Uncompressed block: copy 'len' bytes literally from the input
@@ -278,9 +301,22 @@ next_block:
 			return LIBDEFLATE_INSUFFICIENT_SPACE;
 		SAFETY_CHECK(len <= in_end - in_next);
 
+#ifdef DECODE_SYMBOLS
+		for (i = 0; i < len; i++)
+			out_next[i] = in_next[i];
+#else
 		memcpy(out_next, in_next, len);
+#endif
 		in_next += len;
 		out_next += len;
+
+		/*
+		 * chaiNNer-C patch (PROVENANCE.md): an empty non-final stored
+		 * block at the very end of the input ends a non-final piece.
+		 */
+		if (d->nonfinal && !is_final_block && len == 0 &&
+		    in_next == in_end)
+			goto stream_done;
 
 		goto block_done;
 
@@ -347,8 +383,8 @@ have_decode_tables:
 	entry = d->u.litlen_decode_table[bitbuf & litlen_tablemask];
 	do {
 		u32 length, offset, lit;
-		const u8 *src;
-		u8 *dst;
+		const OUT_TYPE *src;
+		OUT_TYPE *dst;
 
 		/*
 		 * Consume the bits for the litlen decode table entry.  Save the
@@ -392,7 +428,7 @@ have_decode_tables:
 				saved_bitbuf = bitbuf;
 				bitbuf >>= (u8)entry;
 				bitsleft -= entry;
-				*out_next++ = lit;
+				*out_next++ = (u8)lit;
 				if (entry & HUFFDEC_LITERAL) {
 					/* 2nd extra fast literal */
 					lit = entry >> 16;
@@ -400,7 +436,7 @@ have_decode_tables:
 					saved_bitbuf = bitbuf;
 					bitbuf >>= (u8)entry;
 					bitsleft -= entry;
-					*out_next++ = lit;
+					*out_next++ = (u8)lit;
 					if (entry & HUFFDEC_LITERAL) {
 						/*
 						 * Another fast literal, but
@@ -411,7 +447,7 @@ have_decode_tables:
 						lit = entry >> 16;
 						entry = d->u.litlen_decode_table[bitbuf & litlen_tablemask];
 						REFILL_BITS_IN_FASTLOOP();
-						*out_next++ = lit;
+						*out_next++ = (u8)lit;
 						continue;
 					}
 				}
@@ -429,7 +465,7 @@ have_decode_tables:
 				lit = entry >> 16;
 				entry = d->u.litlen_decode_table[bitbuf & litlen_tablemask];
 				REFILL_BITS_IN_FASTLOOP();
-				*out_next++ = lit;
+				*out_next++ = (u8)lit;
 				continue;
 			}
 		}
@@ -474,7 +510,7 @@ have_decode_tables:
 				lit = entry >> 16;
 				entry = d->u.litlen_decode_table[bitbuf & litlen_tablemask];
 				REFILL_BITS_IN_FASTLOOP();
-				*out_next++ = lit;
+				*out_next++ = (u8)lit;
 				continue;
 			}
 			if (unlikely(entry & HUFFDEC_END_OF_BLOCK))
@@ -547,7 +583,7 @@ have_decode_tables:
 		offset += EXTRACT_VARBITS8(saved_bitbuf, entry) >> (u8)(entry >> 8);
 
 		/* Validate the match offset; needed even in the fastloop. */
-		SAFETY_CHECK(offset <= out_next - (const u8 *)out);
+		SAFETY_CHECK(offset <= out_next - out_begin);
 		src = out_next - offset;
 		dst = out_next;
 		out_next += length;
@@ -587,6 +623,29 @@ have_decode_tables:
 		 * overrun.  FASTLOOP_MAX_BYTES_WRITTEN needs to be updated if
 		 * the maximum possible overrun here is changed.
 		 */
+#ifdef DECODE_SYMBOLS
+		if (UNALIGNED_ACCESS_IS_FAST && offset >= WORDBYTES / 2) {
+			machine_word_t word, seen = 0;
+
+			do {
+				word = load_word_unaligned(src);
+				store_word_unaligned(word, dst);
+				seen |= word;
+				src += WORDBYTES / 2;
+				dst += WORDBYTES / 2;
+			} while (dst < out_next);
+			if (seen & (machine_word_t)0xFF00FF00FF00FF00)
+				marker_end = out_next;
+		} else {
+			u32 seen = 0;
+
+			do {
+				seen |= *dst++ = *src++;
+			} while (dst < out_next);
+			if (seen >> 8)
+				marker_end = out_next;
+		}
+#else
 		if (UNALIGNED_ACCESS_IS_FAST && offset >= WORDBYTES) {
 			store_word_unaligned(load_word_unaligned(src), dst);
 			src += WORDBYTES;
@@ -668,6 +727,7 @@ have_decode_tables:
 				*dst++ = *src++;
 			} while (dst < out_next);
 		}
+#endif
 	} while (in_next < in_fastloop_end && out_next < out_fastloop_end);
 
 	/*
@@ -680,8 +740,8 @@ have_decode_tables:
 generic_loop:
 	for (;;) {
 		u32 length, offset;
-		const u8 *src;
-		u8 *dst;
+		const OUT_TYPE *src;
+		OUT_TYPE *dst;
 
 		REFILL_BITS();
 		entry = d->u.litlen_decode_table[bitbuf & litlen_tablemask];
@@ -699,7 +759,7 @@ generic_loop:
 		if (entry & HUFFDEC_LITERAL) {
 			if (unlikely(out_next == out_end))
 				return LIBDEFLATE_INSUFFICIENT_SPACE;
-			*out_next++ = length;
+			*out_next++ = (u8)length;
 			continue;
 		}
 		if (unlikely(entry & HUFFDEC_END_OF_BLOCK))
@@ -724,27 +784,57 @@ generic_loop:
 		bitbuf >>= (u8)entry;
 		bitsleft -= entry;
 
-		SAFETY_CHECK(offset <= out_next - (const u8 *)out);
+		SAFETY_CHECK(offset <= out_next - out_begin);
 		src = out_next - offset;
 		dst = out_next;
 		out_next += length;
 
 		STATIC_ASSERT(DEFLATE_MIN_MATCH_LEN == 3);
+#ifdef DECODE_SYMBOLS
+		{
+			u32 seen = 0;
+
+			do {
+				seen |= *dst++ = *src++;
+			} while (dst < out_next);
+			if (seen >> 8)
+				marker_end = out_next;
+		}
+#else
 		*dst++ = *src++;
 		*dst++ = *src++;
 		do {
 			*dst++ = *src++;
 		} while (dst < out_next);
+#endif
 	}
 
 block_done:
 	/* Finished decoding a block */
+
+	if (range != NULL) {
+		range->end_bit = (in_next - (const u8 *)in + overread_count) * 8 -
+				 (u8)bitsleft;
+		range->end_out = out_next - (OUT_TYPE *)out;
+		range->final = is_final_block;
+		if (!is_final_block && range->end_bit >= range->stop_bit)
+			return LIBDEFLATE_SUCCESS;
+#ifdef DECODE_SYMBOLS
+		if (!is_final_block && out_next - marker_end >= 32768)
+			return LIBDEFLATE_SUCCESS;
+#endif
+	}
 
 	if (!is_final_block)
 		goto next_block;
 
 	/* That was the last block. */
 
+	/* chaiNNer-C patch (PROVENANCE.md): a non-final piece has no such block. */
+	if (d->nonfinal)
+		return LIBDEFLATE_BAD_DATA;
+
+stream_done:
 	bitsleft = (u8)bitsleft;
 
 	/*
@@ -763,7 +853,7 @@ block_done:
 
 	/* Optionally return the actual number of bytes written. */
 	if (actual_out_nbytes_ret) {
-		*actual_out_nbytes_ret = out_next - (u8 *)out;
+		*actual_out_nbytes_ret = out_next - (OUT_TYPE *)out;
 	} else {
 		if (out_next != out_end)
 			return LIBDEFLATE_SHORT_OUTPUT;
@@ -775,3 +865,5 @@ block_done:
 #undef ATTRIBUTES
 #undef EXTRACT_VARBITS
 #undef EXTRACT_VARBITS8
+#undef OUT_TYPE
+#undef DECODE_SYMBOLS

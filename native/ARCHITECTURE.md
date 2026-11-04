@@ -306,10 +306,13 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
   `native/tests/test_native_codecs.py` and the git-ignored corpus in `native/local/codec-corpus`). The PNG decoder's
   direct path (`png_codec.c`, hunt 2026-10-23) skips libpng's row loop for the common file, 8- or 16-bit grey, RGB
   or RGBA without tRNS, or indexed at any depth, not interlaced, IDATs with valid CRCs right before an empty IEND, a
-  32 KiB zlib window and a stream that inflates exactly to the filtered rows: libdeflate inflates, C unfilters and
-  stores BGR(A) (16-bit samples little-endian, indices expanded through PLTE and tRNS), the same pixels as libpng
-  (about 40 % less decode time); every other file, an index past the palette, and any failure there, continue in
-  libpng from the first IDAT as before.
+  32 KiB zlib window and a stream that inflates exactly to the filtered rows: libdeflate inflates, C unfilters (a wave
+  across the rows in the pool, `png_unfilter_avx2.c` for Paeth) and stores BGR(A) (16-bit samples little-endian, indices
+  expanded through PLTE and tRNS), the same pixels as libpng (about 40 % less decode time); every other file, an index
+  past the palette, and any failure there, continue in libpng from the first IDAT as before. A stream of 1 MiB or more,
+  compressed 5:1 or less, up to 512 MiB of rows, inflates on the native pool (`png_inflate.c`): threads decode from block headers found by
+  search, and the result stands only if their blocks chain from the real start to the real end and the Adler-32 holds;
+  anything else inflates serially from scratch.
 - OpenEXR: the runtime's OpenCV is built without OpenEXR, so `.exr` (by signature, in the `cv` decoder and the engine's
   Load Image) decodes through OpenEXRCore 3.5.2 (`exr_codec.c`; ZIP, PIZ, B44, DWA, HTJ2K, ZSTD and the rest; tiled,
   multipart), even under `CHAINNER_C_NATIVE_CODECS=0`. It gives what OpenCV's ExrDecoder gives under IMREAD_UNCHANGED:

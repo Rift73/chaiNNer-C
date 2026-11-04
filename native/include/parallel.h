@@ -20,7 +20,7 @@ extern "C" {
  * remains alive when this function returns. The library must stay loaded for
  * the life of the process: a helper woken for a call may still be returning to
  * the pool after that call returned (it no longer touches that call's job).
- * Non-Windows builds run the same chunks serially.
+ * Non-Windows builds run the chunks on an equivalent pthread pool.
  */
 CN_EXPORT cn_status cn_parallel_for(size_t count, size_t grain, cn_range_fn fn, void *context);
 CN_EXPORT unsigned int cn_parallel_capacity(void);

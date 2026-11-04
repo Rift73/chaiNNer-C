@@ -17,7 +17,7 @@ from spandrel.architectures.SAFMN import SAFMN
 from spandrel.architectures.SCUNet import SCUNet
 
 from ..onnx.model import SIZE_REQ_METADATA_KEY
-from . import attention_export
+from . import attention_export, esrgan_export
 
 _Descriptor = TypeVar("_Descriptor", bound=ModelDescriptor)
 
@@ -66,6 +66,8 @@ def export_onnx(
 
     # HAT and DAT: a copy with their attention laid out for TensorRT (exact)
     model = attention_export.for_export(model)
+    # ESRGAN in FP16: a copy with its dense blocks laid out for TensorRT (exact)
+    model = esrgan_export.for_export(model)
 
     # The trace stores the weights as constants (FakeModel below holds the descriptor,
     # not the module), and a constant must not require grad. Load Model turns grad
