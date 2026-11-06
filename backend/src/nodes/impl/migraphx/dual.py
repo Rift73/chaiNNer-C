@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import sys
 import tempfile
 from functools import cache
 from pathlib import Path
@@ -32,9 +33,12 @@ from . import program, runner
 if TYPE_CHECKING:
     from api import NodeContext
 
-# The ops' library (native/src/dual_hip, built with the ROCm SDK; Linux only: its kernels
-# come from Triton, which has no Windows build for AMD GPUs)
-OP_LIBRARY = Path(__file__).with_name("dual_migx_ops.so")
+# The ops' library (native/src/dual_hip, built with the ROCm SDK). Its kernels come from
+# Triton: triton-rocm on Linux, on Windows triton-windows 3.8.0.post29 or newer (3.5.1
+# fails on its temporary files).
+OP_LIBRARY = Path(__file__).with_name(
+    "dual_migx_ops.dll" if sys.platform == "win32" else "dual_migx_ops.so"
+)
 # What a program's lowering and kernels come from (build_identity, with OP_LIBRARY)
 BUILD_SOURCES = (
     Path(__file__),
@@ -81,7 +85,7 @@ def build_identity() -> str:
         # the identity of a missing one.
         if source.is_file():
             digest.update(source.read_bytes())
-    for distribution in ("triton-rocm", "triton"):
+    for distribution in ("triton-rocm", "triton-windows", "triton"):
         try:
             digest.update(importlib.metadata.version(distribution).encode())
             break
@@ -109,6 +113,7 @@ def build_program(
     size: Size | None,
     *,
     exhaustive_tune: bool = False,
+    hip_graph: bool = False,
     context: NodeContext | None = None,
 ) -> bytes:
     """A saved MIGraphX program of a DUAL ONNX for the AMD GPU of HIP device index
@@ -148,6 +153,7 @@ def build_program(
         fp16=False,
         fp8=False,
         exhaustive_tune=exhaustive_tune,
+        hip_graph=hip_graph,
         op_libraries=(library,),
         label="DUAL program build",
         context=context,

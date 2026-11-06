@@ -40,6 +40,9 @@ NODE_MODULES = (
 ROCM_TARGETS = {"gfx942", "gfx1036", "gfx1100", "gfx1201"}
 INSTALLED = Dependency("pytest", "pytest", importlib.metadata.version("pytest"), 0)
 ABSENT = Dependency("Absent", "chainner-c-absent-test-dependency", "1.0", 0)
+# Each system's Triton: installed, under a name a test can tell
+TRITON_ROCM = Dependency("Triton for ROCm", "pytest", INSTALLED.version, 0)
+TRITON_WINDOWS = Dependency("Triton for Windows", "pytest", INSTALLED.version, 0)
 RADEON = "AMD Radeon RX 7900 XTX"
 
 
@@ -59,6 +62,7 @@ class Program:
         compute_type: str = "float16",
         input_type: str = "float32",
         gfx: str = "gfx1100",
+        hip_graphs: int = 0,
     ) -> None:
         self.input_names = [name]
         self.input_shapes = [shape]
@@ -66,6 +70,7 @@ class Program:
         self.input_types = [input_type]
         self.compute_type = compute_type
         self.gfx = gfx
+        self.hip_graphs = hip_graphs
         self.closed = False
 
     def close(self) -> None:
@@ -113,6 +118,7 @@ class Route(types.ModuleType):
         super().__init__(f"nodes.impl.migraphx.{name}")
         self.profiles: list[tuple[Any, Any, Any]] = []
         self.builds: list[tuple[int, Any, bool]] = []
+        self.hip_graph_builds: list[bool] = []
         self.loads = 0
 
     def check_profile(self, manifest: dict, low: Any, opt: Any, high: Any) -> None:
@@ -126,9 +132,11 @@ class Route(types.ModuleType):
         size: Any,
         *,
         exhaustive_tune: bool = False,
+        hip_graph: bool = False,
         context: Any = None,
     ) -> bytes:
         self.builds.append((gpu_index, size, exhaustive_tune))
+        self.hip_graph_builds.append(hip_graph)
         return b"route program"
 
     def build_identity(self) -> str:
@@ -224,7 +232,8 @@ def import_package(
         gpu_architectures=architectures,
         rocm_runtime=lambda _architectures: list(here.dependencies),
         onnxruntime_migraphx=lambda: INSTALLED,
-        triton_rocm=lambda: INSTALLED,
+        triton_rocm=lambda: TRITON_ROCM,
+        triton_windows=lambda: TRITON_WINDOWS,
     )
     monkeypatch.setitem(sys.modules, "dependencies.rocm", rocm)
 

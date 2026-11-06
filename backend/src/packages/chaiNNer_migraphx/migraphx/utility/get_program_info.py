@@ -20,11 +20,15 @@ if utility_group is not None:
             TextOutput("GPU Target"),
             TextOutput("MIGraphX Version"),
             TextOutput("Input Size"),
+            NumberOutput("HIP Graphs", output_type="uint").with_docs(
+                "The HIP graphs the program holds: Build Program's Use HIP Graph. 0 without"
+                " it, or when the model had nothing to capture.",
+            ),
         ],
     )
     def get_program_info_node(
         program: MIGraphXProgram,
-    ) -> tuple[int, str, str, str, str]:
+    ) -> tuple[int, str, str, str, str, int]:
         info = program.info
         return (
             info.scale,
@@ -32,4 +36,5 @@ if utility_group is not None:
             info.gfx,
             info.migraphx_version,
             f"{info.width}x{info.height}",
+            info.hip_graphs,
         )

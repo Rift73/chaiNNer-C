@@ -5,6 +5,8 @@ rem GPU target with MIOpen, rocBLAS, hipBLASLt; composable kernel off, as MIGrap
 rem DLL C runtime; ROCm's clang++) and rocMLIR (build_rocmlir_win.cmd), except BUILD_DEV off, as in a release build
 rem (and the Linux build): hipRTC compiles the JIT kernels at run time (BUILD_DEV would call a ROCm clang the user
 rem does not have) and the inline namespace carries the version. Device code for all 22 ROCm 7.14.1 Windows targets.
+rem With migraphx-hip-graph.patch (MIT, as MIGraphX; its origin in build_migraphx.sh): the target's files are restored
+rem and the patch applied again on every run.
 rem Source: AMDMIGraphX at that commit in ROOT\src\AMDMIGraphX (fetch_sources.sh); ROOT is the work directory
 rem (settings_win.cmd).
 rem Output: %ROOT%\install (bin\*.dll, bin\migraphx-hiprtc-driver.exe, lib\*.lib, include\, lib\cmake\migraphx\).
@@ -24,6 +26,9 @@ git -C "%SRC%" rev-parse HEAD | findstr /B 2487b688c453b9007ac69ff1d79ad6cf9b509
   echo wrong MIGraphX commit
   exit /b 1
 )
+git -C "%SRC%" checkout HEAD -- src/targets/gpu || exit /b 1
+git -C "%SRC%" clean -fdq -- src/targets/gpu || exit /b 1
+git -C "%SRC%" apply "%~dp0..\migraphx-hip-graph.patch" || exit /b 1
 echo [%DATE% %TIME%] MIGraphX configure, targets %TARGETS%
 cmake -S "%SRC%" -B "%B%" -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_INSTALL_PREFIX=%I%" "-DCMAKE_PREFIX_PATH=%DEPS%;%HIP_PATH%" "-DCMAKE_C_COMPILER=%LLVMBIN%\clang.exe" "-DCMAKE_CXX_COMPILER=%LLVMBIN%\clang++.exe" -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL "-DGPU_TARGETS=%TARGETS%" -DBUILD_TESTING=OFF -DBUILD_DEV=Off -DMIGRAPHX_ENABLE_GPU=On -DMIGRAPHX_ENABLE_CPU=Off -DMIGRAPHX_ENABLE_FPGA=Off -DMIGRAPHX_ENABLE_PYTHON=Off -DMIGRAPHX_USE_MIOPEN=On -DMIGRAPHX_USE_ROCBLAS=On -DMIGRAPHX_USE_HIPBLASLT=On -DMIGRAPHX_USE_COMPOSABLEKERNEL=Off -DMIGRAPHX_ENABLE_MLIR=On "-DCLANG_OFFLOAD_BUNDLER=%LLVMBIN%\clang-offload-bundler.exe" "-DLLVM_OBJCOPY=%LLVMBIN%\llvm-objcopy.exe" "-DLLVM_READOBJ=%LLVMBIN%\llvm-readobj.exe" "-DLLVM_OBJDUMP=%LLVMBIN%\llvm-objdump.exe" -DCMAKE_JOB_POOLS=link_pool=2 -DCMAKE_JOB_POOL_LINK=link_pool > "%B%.configure.log" 2>&1 || (
   powershell -NoProfile -Command "Get-Content -Tail 60 '%B%.configure.log'"

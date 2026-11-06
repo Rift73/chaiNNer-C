@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import importlib.metadata
+import json
 import os
 from collections import OrderedDict
 from pathlib import Path
@@ -67,6 +68,12 @@ def test_a_programs_precision_is_its_compute_type(compute_type: str, precision: 
         height=64,
         width=64,
     )
+
+
+def test_a_programs_info_counts_its_hip_graphs():
+    described = program_info.describe_program
+    assert described(Program(), "2.16.1").hip_graphs == 0
+    assert described(Program(hip_graphs=3), "2.16.1").hip_graphs == 3
 
 
 def test_a_dual_or_drft_program_is_mixed_precision():
@@ -273,6 +280,7 @@ def test_a_compile_runs_the_worker_and_returns_its_program(
         fp16=True,
         fp8=False,
         exhaustive_tune=True,
+        hip_graph=True,
         op_libraries=[Path("ops.so")],
         label="DRFT program build",
         channels=1,
@@ -280,7 +288,7 @@ def test_a_compile_runs_the_worker_and_returns_its_program(
     assert saved == b"saved program"
     ((arguments, label, cwd, context),) = calls
     assert arguments[:2] == ["-m", "nodes.impl.migraphx.program_worker"]
-    assert arguments[4:] == ["2", "1x96x128", "1", "0", "1", "ops.so"]
+    assert arguments[4:] == ["2", "1x96x128", "1", "0", "1", "1", "ops.so"]
     assert (label, context) == ("DRFT program build", None)
     assert cwd == Path(program.__file__).resolve().parents[3]
 
@@ -325,7 +333,7 @@ def test_the_worker_compiles_the_image_input_after_the_op_libraries(
     vars(module)["compile_onnx"] = compile_onnx
     monkeypatch.setattr(runner, "load_migraphx", lambda: module)
     out = tmp_path / "model.mxr"
-    program_worker.main(str(path), str(out), "1", "3x64x96", "0", "1", "0", "a.so")
+    program_worker.main(str(path), str(out), "1", "3x64x96", "0", "1", "0", "1", "a.so")
     ops, (step, model, options) = events
     assert ops == ("ops", "a.so") and (step, model) == ("compile", str(path))
     calibration = options.pop("calibration")
@@ -335,6 +343,7 @@ def test_the_worker_compiles_the_image_input_after_the_op_libraries(
         "fp8": True,
         "input_dims": {"image": (1, 3, 64, 96)},
         "exhaustive_tune": False,
+        "hip_graph": True,
     }
     assert out.read_bytes() == b"compiled"
     # FP8's scales come from three images in [0, 1] of the input's size and type.
@@ -380,7 +389,9 @@ def test_without_fp8_there_is_no_calibration(
 
     vars(module)["compile_onnx"] = compile_onnx
     monkeypatch.setattr(runner, "load_migraphx", lambda: module)
-    program_worker.main(str(path), str(tmp_path / "p.mxr"), "0", "1x8x8", "1", "0", "0")
+    program_worker.main(
+        str(path), str(tmp_path / "p.mxr"), "0", "1x8x8", "1", "0", "0", "0"
+    )
     assert compiled[0]["calibration"] == ()
     assert compiled[0]["input_dims"] == {"image": (1, 1, 8, 8)}
     fp16 = program_worker.calibration("image", np.dtype(np.float16), (1, 1, 8, 8))
@@ -401,6 +412,22 @@ def test_the_runner_session_upscales_bgr_and_gray_images(
     assert np.array_equal(session.upscale(gray), gray.repeat(2, 0).repeat(2, 1))
     session.close()
     assert session.runner.closed
+
+
+@pytest.mark.parametrize(("graphs", "logged"), [(0, False), (2, True)])
+def test_the_runner_session_logs_the_hip_graphs_a_program_holds(
+    monkeypatch: pytest.MonkeyPatch, graphs: int, logged: bool
+):
+    routes(monkeypatch)
+    sessions = session_module(monkeypatch)
+    monkeypatch.setattr(sessions, "native", lambda: SimpleNamespace(Runner=Runner))
+    lines: list[str] = []
+    monkeypatch.setattr(
+        sessions.logger, "info", lambda text, *args: lines.append(text % args)
+    )
+    info = MIGraphXProgramInfo(**{**vars(INFO), "hip_graphs": graphs})
+    sessions.RunnerSession(MIGraphXProgram(b"program", info), 0)
+    assert any(f"{graphs} HIP graphs" in line for line in lines) is logged
 
 
 @pytest.fixture
@@ -455,6 +482,26 @@ def test_a_build_of_the_same_inputs_runs_once_and_is_kept_on_disk(
     assert (again.bytes, again.info) == (first.bytes, first.info)
     assert build.runs == 1
     assert [p.name for p in tmp_path.iterdir()] == [f"{key}{SUFFIX}"]
+
+
+def test_a_kept_file_from_before_hip_graphs_holds_none(
+    memory: OrderedDict[str, MIGraphXProgram], tmp_path: Path
+):
+    builds = Builds()
+    cached_program("key", builds, str(tmp_path))
+    path = tmp_path / f"key{SUFFIX}"
+    data = path.read_bytes()
+    start = data.index(b"\n") + 1 + 8
+    end = start + int.from_bytes(data[start - 8 : start], "little")
+    header = json.loads(data[start:end])
+    del header["info"]["hip_graphs"]
+    earlier = json.dumps(header).encode()
+    path.write_bytes(
+        data[: start - 8] + len(earlier).to_bytes(8, "little") + earlier + data[end:]
+    )
+    memory.clear()
+    assert cached_program("key", builds, str(tmp_path)).info.hip_graphs == 0
+    assert builds.runs == 1
 
 
 def test_a_damaged_file_is_removed_and_built_again(

@@ -8,13 +8,17 @@ Save Video updated the FFmpeg there to the pinned build, and a worker started wi
 
 usage: python -B native/tools/scratch_storage.py
 
-puts the pinned FFmpeg there with the backend's own setup (a download the first time,
-nothing once it is there); run_tests.py runs it before its shards. Without it, the tests
-that run that FFmpeg skip.
+copies the pinned FFmpeg there from a local copy (the folder CHAINNER_C_TEST_FFMPEG names,
+or the test storage of the checkout this worktree belongs to), and does nothing once it
+is there. It never downloads: without a copy the setup fails, and the tests that run that
+FFmpeg skip. run_tests.py runs it before its shards.
 """
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,20 +26,57 @@ ROOT = Path(__file__).resolve().parents[2]
 STORAGE = ROOT / "native" / "local" / "test-storage"
 NO_FFMPEG = (
     "the pinned FFmpeg is not in the test storage"
-    " (python -B native/tools/scratch_storage.py puts it there)"
+    " (python -B native/tools/scratch_storage.py copies it there)"
 )
 
 
+def local_copies() -> list[Path]:
+    """The folders that may hold the pinned FFmpeg, in the order they are tried."""
+    copies = []
+    named = os.environ.get("CHAINNER_C_TEST_FFMPEG")
+    if named:
+        copies.append(Path(named))
+    common = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    if common.returncode == 0:
+        checkout = Path(common.stdout.strip()).parent
+        copies.append(checkout / "native" / "local" / "test-storage" / "ffmpeg")
+    return copies
+
+
 def set_up_ffmpeg() -> Path:
-    """Puts the pinned FFmpeg into STORAGE's ffmpeg folder unless it is there: the
-    setup FFMpegEnv.get_integrated runs, without its wait for a later start when an
-    older build is in place. Returns the folder."""
+    """Copies the pinned FFmpeg into STORAGE's ffmpeg folder unless it is there, and
+    raises FileNotFoundError when no local copy holds it. Returns the folder."""
     from nodes.impl import ffmpeg
 
     folder = STORAGE / "ffmpeg"
-    if not ffmpeg.is_set_up(folder) or ffmpeg.needs_update(folder):
-        ffmpeg.setup_integrated_ffmpeg(folder)
-    return folder
+    if ffmpeg.is_set_up(folder) and not ffmpeg.needs_update(folder):
+        return folder
+    for source in local_copies():
+        if (
+            source != folder
+            and ffmpeg.is_set_up(source)
+            and not ffmpeg.needs_update(source)
+        ):
+            if folder.exists():
+                shutil.rmtree(folder)
+            shutil.copytree(source, folder)
+            return folder
+    raise FileNotFoundError(
+        "No local copy of the pinned FFmpeg: name one in CHAINNER_C_TEST_FFMPEG."
+    )
+
+
+def copy_ffmpeg_to(executable: Path, storage: Path) -> None:
+    """Gives a test's own storage folder the FFmpeg folder of `executable`, so that Load
+    Video and Save Video find it there and never download one."""
+    shutil.copytree(executable.parent, storage / "ffmpeg")
 
 
 if __name__ == "__main__":

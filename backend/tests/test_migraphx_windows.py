@@ -1,7 +1,7 @@
 """The MIGraphX runner on Windows, where MIGraphX's DLLs come from ONNX Runtime's Windows
 MIGraphX build (onnxruntime/capi) and HIP and the ROCm libraries from the ROCm pip
-packages: the MIGraphX package's loader imports the runner with those files, the DRFT and
-VOSR op libraries register their ops through it, and without an AMD GPU a compile for the
+packages: the MIGraphX package's loader imports the runner with those files, the DRFT, DUAL
+and VOSR op libraries register their ops through it, and without an AMD GPU a compile for the
 GPU fails with an error and the process goes on. Skipped elsewhere and where the runner or
 MIGraphX's libraries are missing; an op library that is not built is skipped."""
 
@@ -28,6 +28,15 @@ OP_LIBRARIES = {
         "chainner_drft_ocab_window_pack",
         "chainner_drft_final_affine_crop",
         "chainner_drft_ocab_attention",
+    ],
+    "dual_migx_ops.dll": [
+        "chainner_dual_norm",
+        "chainner_dual_cell",
+        "chainner_dual_region",
+        "chainner_dual_apply",
+        "chainner_dual_project",
+        "chainner_dual_na",
+        "chainner_dual_barrier",
     ],
     "vosr2_migx_ops.dll": ["chainner_vosr2_qkv"],
 }

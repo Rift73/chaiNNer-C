@@ -30,13 +30,14 @@ RUNNER_BINARIES = frozenset(
     }
 )
 # The AMD GPU parts (native/cmake/rocm.cmake; Build.ps1 -RocmRoot, -MigraphxRoot): the
-# MIGraphX runner and the DRFT and VOSR op libraries ship when built and are never
+# MIGraphX runner and the DRFT, DUAL and VOSR op libraries ship when built and are never
 # required: without the runner the MIGraphX package is disabled, without an op library
 # that model's MIGraphX route, each saying so.
 AMD_BINARIES = frozenset(
     {
         "nodes/impl/migraphx/_chainner_migraphx.pyd",
         "nodes/impl/migraphx/drft_migx_ops.dll",
+        "nodes/impl/migraphx/dual_migx_ops.dll",
         "nodes/impl/migraphx/vosr2_migx_ops.dll",
     }
 )

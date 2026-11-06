@@ -6,7 +6,7 @@ GPU and saved in MIGraphX's .mxr format. FP8's scales are calibrated on three im
 and their mean.
 
     python -m nodes.impl.migraphx.program_worker ONNX PROGRAM GPU_INDEX CxHxW FP16 FP8
-        EXHAUSTIVE [OP_LIBRARY ...]
+        EXHAUSTIVE HIP_GRAPH [OP_LIBRARY ...]
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ def main(
     fp16: str,
     fp8: str,
     exhaustive: str,
+    hip_graph: str,
     *op_libraries: str,
 ) -> None:
     import onnx
@@ -66,6 +67,7 @@ def main(
         fp8=fp8 == "1",
         input_dims={name: shape},
         exhaustive_tune=exhaustive == "1",
+        hip_graph=hip_graph == "1",
         calibration=calibration(name, dtype, shape) if fp8 == "1" else (),
     )
     program.save(program_path)

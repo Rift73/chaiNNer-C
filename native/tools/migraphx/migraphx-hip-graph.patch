@@ -1,0 +1,1338 @@
+diff --git a/src/targets/gpu/CMakeLists.txt b/src/targets/gpu/CMakeLists.txt
+index 551d443..294156f 100644
+--- a/src/targets/gpu/CMakeLists.txt
++++ b/src/targets/gpu/CMakeLists.txt
+@@ -222,6 +222,8 @@ add_library(migraphx_gpu
+     hip.cpp
+     hipblaslt.cpp
+     hip_gemm_impl.cpp
++    hip_graph.cpp
++    hipgraphify.cpp
+     hsa_chiplet.cpp
+     kernel.cpp
+     lowering.cpp
+diff --git a/src/targets/gpu/code_object_op.cpp b/src/targets/gpu/code_object_op.cpp
+index 8165b64..529f0ce 100644
+--- a/src/targets/gpu/code_object_op.cpp
++++ b/src/targets/gpu/code_object_op.cpp
+@@ -135,8 +135,6 @@ void code_object_op::finalize(context&, const shape&, const std::vector<shape>&)
+     // their byte offsets are replayed below for compute()-time patching.
+     std::vector<kernel_argument_value> flat;
+     flat.reserve(kernel_args.size());
+-    std::vector<bool> is_pointer;
+-    is_pointer.reserve(kernel_args.size());
+ 
+     for(const auto& [idx, v] : kernel_args)
+     {
+@@ -146,30 +144,22 @@ void code_object_op::finalize(context&, const shape&, const std::vector<shape>&)
+             slot.align = 8;
+             slot.data.assign(8, 0);
+             flat.push_back(std::move(slot));
+-            is_pointer.push_back(true);
+         }
+         else
+         {
+             flat.push_back(v);
+-            is_pointer.push_back(false);
+         }
+     }
+ 
+     packed_kernargs = pack_args(flat);
+ 
+-    // Replay the same alignment math pack_args uses to recover pointer-slot
+-    // offsets in the packed buffer.
++    // Recover the pointer-slot offsets in the packed buffer.
+     runtime_arg_offsets.clear();
+     std::size_t arg_counter = 0;
+-    std::size_t pos         = 0;
+-    for(std::size_t i = 0; i < flat.size(); ++i)
+-    {
+-        auto align = flat[i].align;
+-        pos += (align - (pos % align)) % align;
+-        if(is_pointer[i])
++    for_each_kernarg_slot(kernel_args, [&](std::size_t pos, bool is_pointer) {
++        if(is_pointer)
+             runtime_arg_offsets.emplace_back(arg_counter++, pos);
+-        pos += flat[i].data.size();
+-    }
++    });
+ }
+ 
+ } // namespace gpu
+diff --git a/src/targets/gpu/hip_graph.cpp b/src/targets/gpu/hip_graph.cpp
+new file mode 100644
+index 0000000..9e25b71
+--- /dev/null
++++ b/src/targets/gpu/hip_graph.cpp
+@@ -0,0 +1,580 @@
++/*
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2015-2026 Advanced Micro Devices, Inc. All rights reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++#include <migraphx/gpu/context.hpp>
++#include <migraphx/gpu/hip.hpp>
++#include <migraphx/gpu/kernel.hpp>
++#include <migraphx/gpu/code_object_op.hpp>
++#include <migraphx/argument.hpp>
++#include <migraphx/env.hpp>
++#include <migraphx/reflect.hpp>
++#include <migraphx/module.hpp>
++#include <migraphx/module_ref.hpp>
++#include <migraphx/instruction.hpp>
++#include <migraphx/functional.hpp>
++#include <migraphx/algorithm.hpp>
++#include <migraphx/manage_ptr.hpp>
++#include <migraphx/optional.hpp>
++#include <migraphx/program.hpp>
++#include <migraphx/ranges.hpp>
++#include <migraphx/stringutils.hpp>
++#include <migraphx/register_op.hpp>
++#include <hip/hip_runtime_api.h>
++#include <algorithm>
++#include <array>
++#include <cassert>
++#include <cstdint>
++#include <functional>
++#include <iterator>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <unordered_map>
++#include <unordered_set>
++#include <utility>
++#include <vector>
++
++namespace migraphx {
++inline namespace MIGRAPHX_INLINE_NS {
++namespace gpu {
++
++using hip_graph_ptr      = MIGRAPHX_MANAGE_PTR(hipGraph_t, hipGraphDestroy);
++using hip_graph_exec_ptr = MIGRAPHX_MANAGE_PTR(hipGraphExec_t, hipGraphExecDestroy);
++
++static void check_hip(hipError_t status, const char* what)
++{
++    if(status != hipSuccess)
++        MIGRAPHX_THROW("hip::graph: " + std::string(what) + " failed: " + hip_error(status));
++}
++
++// A single output is returned directly, multiple as a tuple, matching compute_shape().
++static argument pack_outputs(const std::vector<argument>& outputs)
++{
++    if(outputs.size() == 1)
++        return outputs.front();
++    return {outputs};
++}
++
++// The data pointer of each leaf argument.
++static std::vector<const void*> leaf_ptrs(const std::vector<argument>& leaves)
++{
++    std::vector<const void*> ptrs;
++    std::transform(leaves.begin(), leaves.end(), std::back_inserter(ptrs), [](const argument& a) {
++        return a.data();
++    });
++    return ptrs;
++}
++
++// The [begin, end) byte range of a buffer.
++using address_range = std::pair<std::uintptr_t, std::uintptr_t>;
++
++// The byte range of each leaf buffer, in leaf order.
++static std::vector<address_range> leaf_bounds(const std::vector<argument>& leaves)
++{
++    std::vector<address_range> bounds;
++    std::transform(
++        leaves.begin(), leaves.end(), std::back_inserter(bounds), [](const argument& leaf) {
++            auto base = reinterpret_cast<std::uintptr_t>(leaf.data());
++            return std::make_pair(base, base + leaf.get_shape().bytes());
++        });
++    return bounds;
++}
++
++// The leaf containing `p`, as (leaf index, byte offset); nullopt when not in any leaf.
++static optional<std::pair<std::size_t, std::size_t>>
++locate_leaf(const char* p, const std::vector<address_range>& bounds)
++{
++    auto addr = reinterpret_cast<std::uintptr_t>(p);
++    auto it   = std::find_if(bounds.begin(), bounds.end(), [&](const address_range& bound) {
++        return addr >= bound.first and addr < bound.second;
++    });
++    if(it == bounds.end())
++        return nullopt;
++    return std::make_pair(static_cast<std::size_t>(std::distance(bounds.begin(), it)),
++                          static_cast<std::size_t>(addr - it->first));
++}
++
++// True when `consumer` passes its input's buffer through to its own outputs (a view op).
++static bool aliases_input(instruction_ref consumer, instruction_ref input)
++{
++    return contains(instruction::get_output_alias(consumer, true), input);
++}
++
++// Sorted by name to match find_inputs' name-ordered inputs;
++// get_parameter_names() order is not serialized.
++static std::vector<std::string> input_param_names(const_module_ref sub)
++{
++    auto param_names = sub->get_parameter_names();
++    std::sort(param_names.begin(), param_names.end());
++    return param_names;
++}
++
++// Bind the submodule's parameters to the op's input arguments.
++static std::unordered_map<std::string, argument> create_params(const_module_ref sub,
++                                                               const std::vector<argument>& args)
++{
++    auto param_names = input_param_names(sub);
++    assert(param_names.size() == args.size());
++    std::unordered_map<std::string, argument> params;
++    for_each(param_names.begin(),
++             param_names.end(),
++             args.begin(),
++             [&](const std::string& pname, const argument& a) { params[pname] = a; });
++    return params;
++}
++
++// RAII wrapper over the HIP graph C API; handles are shared so copies share one graph.
++struct hip_graph
++{
++    template <class F>
++    static hip_graph capture(hipStream_t stream, F f)
++    {
++        check_hip(hipStreamBeginCapture(stream, hipStreamCaptureModeThreadLocal),
++                  "hipStreamBeginCapture");
++        hipGraph_t g = nullptr;
++        try
++        {
++            f();
++        }
++        catch(...)
++        {
++            // End the capture so the stream stays usable; discard the partial graph.
++            if(hipStreamEndCapture(stream, &g) == hipSuccess)
++                hip_graph_ptr partial{g};
++            throw;
++        }
++        check_hip(hipStreamEndCapture(stream, &g), "hipStreamEndCapture");
++        return hip_graph{share(hip_graph_ptr{g})};
++    }
++
++    struct node
++    {
++        hipGraphNodeType type() const
++        {
++            hipGraphNodeType t{};
++            check_hip(hipGraphNodeGetType(ptr, &t), "hipGraphNodeGetType");
++            return t;
++        }
++        hipKernelNodeParams get_kernel_node_params() const
++        {
++            hipKernelNodeParams params{};
++            check_hip(hipGraphKernelNodeGetParams(ptr, &params), "hipGraphKernelNodeGetParams");
++            return params;
++        }
++        void set_kernel_node_params(hipKernelNodeParams params) const
++        {
++            check_hip(hipGraphKernelNodeSetParams(ptr, &params), "hipGraphKernelNodeSetParams");
++        }
++        hipGraphNode_t ptr = nullptr;
++    };
++
++    std::vector<node> nodes() const
++    {
++        std::size_t num = 0;
++        check_hip(hipGraphGetNodes(ptr.get(), nullptr, &num), "hipGraphGetNodes");
++        std::vector<hipGraphNode_t> handles(num);
++        if(num > 0)
++            check_hip(hipGraphGetNodes(ptr.get(), handles.data(), &num), "hipGraphGetNodes");
++        // The second query may report fewer nodes than the first.
++        handles.resize(num);
++        std::vector<node> result(handles.size());
++        std::transform(handles.begin(), handles.end(), result.begin(), [](hipGraphNode_t h) {
++            return node{h};
++        });
++        return result;
++    }
++
++    struct exec
++    {
++        shared<hip_graph_exec_ptr> ptr = nullptr;
++        void launch(hipStream_t stream) const
++        {
++            check_hip(hipGraphLaunch(ptr.get(), stream), "hipGraphLaunch");
++        }
++        // False if the exec cannot be updated in place and must be re-instantiated.
++        bool update(hip_graph& g)
++        {
++            hipGraphNode_t error_node       = nullptr;
++            hipGraphExecUpdateResult result = hipGraphExecUpdateError;
++            auto status = hipGraphExecUpdate(ptr.get(), g.ptr.get(), &error_node, &result);
++            return status == hipSuccess and result == hipGraphExecUpdateSuccess;
++        }
++    };
++
++    exec instantiate() const
++    {
++        hipGraphExec_t e = nullptr;
++        check_hip(hipGraphInstantiate(&e, ptr.get(), nullptr, nullptr, 0), "hipGraphInstantiate");
++        return exec{share(hip_graph_exec_ptr{e})};
++    }
++
++    shared<hip_graph_ptr> ptr = nullptr;
++};
++
++// A pointer slot in a kernel node's argument buffer: its offset, the movable
++// leaf it points into, and the offset within that leaf.
++struct graph_slot_patch
++{
++    std::size_t offset;
++    std::size_t leaf;
++    std::size_t ptr_offset;
++};
++
++// A captured kernel node and the pointer slots to rewrite when a movable
++// parameter moves.
++struct graph_node_patch
++{
++    hip_graph::node node{};
++    std::vector<graph_slot_patch> slots{};
++    // Kept alive here because HIP does not document copying `extra` at SetParams time.
++    hipKernelNodeParams params{};
++    std::vector<char> buffer{};
++    std::size_t buffer_size = 0;
++    std::array<void*, 5> config{};
++};
++
++// Captures the submodule into a HIP graph on first run and replays it on later
++// runs, amortizing the per-launch CPU overhead.
++struct hip_graph_op
++{
++    struct graph_state
++    {
++        hip_graph graph{};
++        hip_graph::exec exec{};
++        bool captured = false;
++        std::vector<argument> outputs{};
++        // Packed return value cached for the replay path; refreshed with `outputs`.
++        argument result{};
++        // Movable-leaf addresses currently bound, to detect when a buffer moved.
++        std::vector<const void*> applied_ptrs{};
++        // True when every movable parameter reaches only patchable code-object
++        // kernels; false (a library kernel consumer) forces a re-record.
++        bool patchable = false;
++        std::vector<graph_node_patch> patches{};
++        // A captured output inside a movable leaf; rebased when that leaf moves
++        // since patching rewrites only kernel arguments.
++        struct output_rebind
++        {
++            std::size_t output;
++            std::size_t leaf;
++            std::size_t offset;
++        };
++        std::vector<output_rebind> output_rebinds{};
++        // Serializes evals; the state may be shared by compiled-program copies.
++        std::mutex mutex{};
++
++        // Capture `f`'s launches into a fresh graph; the buffers are only filled
++        // when the instantiated graph is later launched.
++        template <class F>
++        void record(hipStream_t stream, F f)
++        {
++            graph  = hip_graph::capture(stream, [&] { outputs = f(); });
++            result = pack_outputs(outputs);
++        }
++
++        // Rebase the cached outputs (and packed result) onto the current
++        // movable-leaf buffers.
++        void rebind_outputs(const std::vector<argument>& leaves)
++        {
++            for(const auto& r : output_rebinds)
++            {
++                assert(r.output < outputs.size());
++                assert(r.leaf < leaves.size());
++                assert(r.offset + outputs[r.output].get_shape().bytes() <=
++                       leaves[r.leaf].get_shape().bytes());
++                outputs[r.output] = {outputs[r.output].get_shape(),
++                                     leaves[r.leaf].data() + r.offset};
++            }
++            if(not output_rebinds.empty())
++                result = pack_outputs(outputs);
++        }
++    };
++
++    // Created in finalize() so each instruction gets its own state; copies of a
++    // compiled program do not re-run finalize and share it (guarded by the mutex).
++    std::shared_ptr<graph_state> state{};
++
++    // Indices of the inputs the captured outputs are written into (and so alias).
++    std::vector<std::size_t> aliases{};
++
++    // Indices of the inputs whose buffer can move between runs (the program
++    // parameters); every other input keeps a stable address.
++    std::vector<std::size_t> replace_inputs{};
++
++    template <class Self, class F>
++    static auto reflect(Self& self, F f)
++    {
++        // The captured graph is runtime-only state and is excluded.
++        return pack(f(self.aliases, "aliases"), f(self.replace_inputs, "replace_inputs"));
++    }
++
++    std::string name() const { return "hip::graph"; }
++
++    std::vector<std::size_t> output_alias(const std::vector<shape>&) const { return aliases; }
++
++    shape compute_shape(const std::vector<shape>&, std::vector<module_ref> mods) const
++    {
++        if(mods.size() != 1)
++            MIGRAPHX_THROW("hip::graph: expected exactly one submodule");
++        auto out_shapes = mods.front()->get_output_shapes();
++        if(out_shapes.size() == 1)
++            return out_shapes.front();
++        return shape(out_shapes);
++    }
++
++    void finalize(context&, const shape&, const std::vector<shape>&)
++    {
++        state = std::make_shared<graph_state>();
++    }
++
++    // The movable inputs flattened to their leaf arguments, in replace_inputs order.
++    std::vector<argument> movable_leaves(const std::vector<argument>& args) const
++    {
++        std::vector<argument> selected;
++        selected.reserve(replace_inputs.size());
++        std::transform(replace_inputs.begin(),
++                       replace_inputs.end(),
++                       std::back_inserter(selected),
++                       [&](std::size_t idx) {
++                           assert(idx < args.size());
++                           return args[idx];
++                       });
++        return flatten(selected);
++    }
++
++    // Collect the code-object kernels reachable from `param` through alias ops,
++    // keyed by function handle. False if the parameter reaches a consumer whose
++    // argument buffer we cannot interpret (a library gemm/conv).
++    static bool collect_param_code_objects(
++        instruction_ref param,
++        std::unordered_map<void*, const std::map<std::size_t, kernel_argument_value>*>& out)
++    {
++        bool patchable = true;
++        std::unordered_set<instruction_ref> visited;
++        fix([&](auto self, instruction_ref ins) {
++            if(not visited.insert(ins).second)
++                return;
++            for(auto consumer : ins->outputs())
++            {
++                if(consumer->name() == "gpu::code_object")
++                {
++                    const auto& cop = any_cast<code_object_op>(consumer->get_operator());
++                    out.emplace(cop.k.get_function(), &cop.kernel_args);
++                    // An in-place kernel passes the buffer to its readers;
++                    // follow so they are patched too.
++                    if(aliases_input(consumer, ins))
++                        self(consumer);
++                }
++                else if(aliases_input(consumer, ins))
++                {
++                    // A view passes the buffer through; keep following it.
++                    self(consumer);
++                }
++                else if(not starts_with(consumer->name(), "@"))
++                {
++                    // A library kernel we cannot interpret; builtins (@return) are skipped.
++                    patchable = false;
++                }
++            }
++        })(param);
++        return patchable;
++    }
++
++    // Match captured kernel nodes to the code-object kernels consuming a movable
++    // parameter (by function handle) and record their pointer slots. False when
++    // the graph must be re-recorded instead.
++    bool build_patch_plan(const std::vector<address_range>& bounds, const_module_ref sub) const
++    {
++        // locate_leaf is only unambiguous when the leaf ranges are disjoint;
++        // overlap would patch slots with the wrong address.
++        auto sorted_bounds = bounds;
++        std::sort(sorted_bounds.begin(), sorted_bounds.end());
++        if(std::adjacent_find(
++               sorted_bounds.begin(), sorted_bounds.end(), [](const auto& b1, const auto& b2) {
++                   return b2.first < b1.second;
++               }) != sorted_bounds.end())
++            return false;
++
++        // Code-object kernels consuming a movable parameter, keyed by function handle.
++        std::unordered_map<void*, const std::map<std::size_t, kernel_argument_value>*>
++            code_object_args;
++        auto param_names = input_param_names(sub);
++        for(auto idx : replace_inputs)
++        {
++            if(not collect_param_code_objects(sub->get_parameter(param_names.at(idx)),
++                                              code_object_args))
++                return false;
++        }
++
++        std::vector<graph_node_patch> patches;
++        for(const auto& node : state->graph.nodes())
++        {
++            // Only kernel nodes carry packed arguments.
++            if(node.type() != hipGraphNodeTypeKernel)
++                continue;
++            auto params = node.get_kernel_node_params();
++            auto cobj   = code_object_args.find(params.func);
++            if(cobj == code_object_args.end())
++                continue; // does not consume a movable parameter
++            // An unparsable buffer cannot be patched; re-record instead.
++            auto buffer = unpack_kernel_config(params.extra);
++            if(buffer.empty())
++                return false;
++
++            graph_node_patch np;
++            np.node = node;
++            for(const auto& [off, p] : unpack_pointer_args(buffer, *cobj->second))
++            {
++                if(auto loc = locate_leaf(p, bounds))
++                    np.slots.push_back({off, loc->first, loc->second});
++            }
++            if(np.slots.empty())
++                continue;
++            np.params = params;
++            np.buffer = std::move(buffer);
++            patches.push_back(std::move(np));
++        }
++
++        state->patches = std::move(patches);
++        return true;
++    }
++
++    // Write the current leaf addresses into the recorded pointer slots; the
++    // caller re-syncs the executable graph.
++    void patch_kernel_nodes(const std::vector<argument>& leaves) const
++    {
++        for(auto& np : state->patches)
++        {
++            for(const auto& slot : np.slots)
++            {
++                assert(slot.leaf < leaves.size());
++                // A re-bound leaf is assumed to keep the captured shape.
++                assert(slot.ptr_offset < leaves[slot.leaf].get_shape().bytes());
++                assert(slot.offset + sizeof(char*) <= np.buffer.size());
++                const char* p = leaves[slot.leaf].data() + slot.ptr_offset;
++                write_pointer(np.buffer.data() + slot.offset, p);
++            }
++            // Stored on the patch (not locals) so they outlive this call.
++            np.buffer_size      = np.buffer.size();
++            np.config           = pack_kernel_config(np.buffer.data(), &np.buffer_size);
++            auto params         = np.params;
++            params.extra        = np.config.data();
++            params.kernelParams = nullptr;
++            np.node.set_kernel_node_params(params);
++        }
++    }
++
++    // Locate each captured output within the movable leaves (see
++    // graph_state::output_rebind).
++    static std::vector<graph_state::output_rebind>
++    find_output_rebinds(const std::vector<argument>& outputs,
++                        const std::vector<address_range>& bounds)
++    {
++        std::vector<optional<std::pair<std::size_t, std::size_t>>> locs;
++        std::transform(outputs.begin(),
++                       outputs.end(),
++                       std::back_inserter(locs),
++                       [&](const argument& out) { return locate_leaf(out.data(), bounds); });
++        std::vector<graph_state::output_rebind> rebinds;
++        auto indices = range(outputs.size());
++        transform_if(
++            indices.begin(),
++            indices.end(),
++            std::back_inserter(rebinds),
++            [&](std::size_t i) { return locs[i].has_value(); },
++            [&](std::size_t i) {
++                return graph_state::output_rebind{i, locs[i]->first, locs[i]->second};
++            });
++        return rebinds;
++    }
++
++    argument compute(context& ctx,
++                     const shape&,
++                     const std::vector<argument>& args,
++                     const std::vector<module_ref>& mods,
++                     const std::function<std::vector<argument>(
++                         module_ref&, const std::unordered_map<std::string, argument>&)>& run) const
++    {
++        assert(mods.size() == 1);
++        module_ref sub = mods.front();
++        auto run_sub   = [&] { return run(sub, create_params(sub, args)); };
++
++        hipStream_t stream = ctx.get_stream().get();
++        // The null stream and tracing (reads results mid-run) cannot be
++        // captured; fall back to a normal run.
++        if(stream == nullptr or value_of(MIGRAPHX_TRACE_EVAL{}) > 0)
++            return pack_outputs(run_sub());
++
++        std::lock_guard<std::mutex> lock(state->mutex);
++
++        // Capture only records the launches; the launch below fills the buffers.
++        if(not state->captured)
++        {
++            state->record(stream, run_sub);
++            state->exec = state->graph.instantiate();
++            // With no movable inputs the graph stays bound to stable buffers.
++            if(not replace_inputs.empty())
++            {
++                auto leaves           = movable_leaves(args);
++                auto bounds           = leaf_bounds(leaves);
++                state->patchable      = build_patch_plan(bounds, sub);
++                state->output_rebinds = find_output_rebinds(state->outputs, bounds);
++                state->applied_ptrs   = leaf_ptrs(leaves);
++            }
++            state->captured = true;
++        }
++        else if(not replace_inputs.empty())
++        {
++            // Re-bind only when a parameter buffer has moved since the last run.
++            auto leaves       = movable_leaves(args);
++            auto current_ptrs = leaf_ptrs(leaves);
++            if(current_ptrs != state->applied_ptrs)
++            {
++                // Patch in place, or re-record a non-patchable graph; either way
++                // re-sync the executable graph.
++                if(state->patchable)
++                {
++                    patch_kernel_nodes(leaves);
++                    // Cached outputs viewing the moved buffers must move with them.
++                    state->rebind_outputs(leaves);
++                }
++                else
++                {
++                    state->record(stream, run_sub);
++                }
++                if(not state->exec.update(state->graph))
++                    state->exec = state->graph.instantiate();
++                state->applied_ptrs = std::move(current_ptrs);
++            }
++        }
++
++        state->exec.launch(stream);
++        return state->result;
++    }
++};
++
++MIGRAPHX_REGISTER_OP(hip_graph_op)
++
++} // namespace gpu
++} // namespace MIGRAPHX_INLINE_NS
++} // namespace migraphx
+diff --git a/src/targets/gpu/hipgraphify.cpp b/src/targets/gpu/hipgraphify.cpp
+new file mode 100644
+index 0000000..52b8a3c
+--- /dev/null
++++ b/src/targets/gpu/hipgraphify.cpp
+@@ -0,0 +1,281 @@
++/*
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2015-2026 Advanced Micro Devices, Inc. All rights reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++#include <migraphx/gpu/hipgraphify.hpp>
++#include <migraphx/pass_manager.hpp>
++#include <migraphx/module.hpp>
++#include <migraphx/instruction.hpp>
++#include <migraphx/make_op.hpp>
++#include <migraphx/param_utils.hpp>
++#include <migraphx/iterator_for.hpp>
++#include <migraphx/algorithm.hpp>
++#include <migraphx/ranges.hpp>
++#include <migraphx/stringutils.hpp>
++#include <algorithm>
++#include <iterator>
++#include <string>
++#include <unordered_map>
++#include <unordered_set>
++#include <vector>
++
++namespace migraphx {
++inline namespace MIGRAPHX_INLINE_NS {
++namespace gpu {
++
++// True when `ins` or anything it views satisfies `pred`.
++template <class Predicate>
++static bool on_alias_chain(instruction_ref ins, Predicate pred)
++{
++    if(pred(ins))
++        return true;
++    auto aliases = instruction::get_output_alias(ins, true);
++    return std::any_of(aliases.begin(), aliases.end(), [&](instruction_ref alias) {
++        return alias != ins and on_alias_chain(alias, pred);
++    });
++}
++
++// Host memory filled by a device-to-host copy (possibly viewed through a
++// sync); its contents only exist at capture time.
++static bool is_host_value(instruction_ref ins)
++{
++    return on_alias_chain(ins, [](instruction_ref x) { return x->name() == "hip::copy_from_gpu"; });
++}
++
++// Ops that cannot be stream-captured; they become partition boundaries.
++static bool is_unsupported(const std::string& name)
++{
++    static const std::unordered_set<std::string> unsupported = {
++        "hip::copy_from_gpu",
++        "hip::copy_to_gpu",
++        "hip::sync_stream",
++        // Host dispatch picks a submodule per run; capturing it would replay
++        // the submodule chosen at capture time.
++        "select_module",
++        // Its iterations run and synchronize on the host.
++        "gpu::loop",
++        // rocblas crashes with a capturing stream
++        "gpu::gemm",
++        "gpu::quant_gemm",
++        // nested stream capture fails, so a re-run of the pass leaves its own
++        // products alone
++        "hip::graph",
++    };
++    return contains(unsupported, name);
++}
++
++// A view placed by a host value (a slice with run-time bounds): its address is
++// computed on the host per run, so a captured kernel would replay a stale one.
++static bool is_runtime_view(instruction_ref ins)
++{
++    if(ins->get_operator().output_alias(to_shapes(ins->inputs())).empty())
++        return false;
++    return std::any_of(ins->inputs().begin(), ins->inputs().end(), is_host_value);
++}
++
++// True when an input's buffer is reached through a runtime view, so the
++// kernel's pointer argument depends on a host value.
++static bool reads_runtime_view(instruction_ref ins)
++{
++    return std::any_of(ins->inputs().begin(), ins->inputs().end(), [](instruction_ref input) {
++        return on_alias_chain(input, is_runtime_view);
++    });
++}
++
++static bool is_capturable(instruction_ref ins)
++{
++    const auto& op = ins->get_operator();
++    // Builtins (@param/@return/...) are not real device work.
++    if(starts_with(op.name(), "@"))
++        return false;
++    if(is_unsupported(op.name()))
++        return false;
++    // A context-free op consuming inputs without aliasing them runs on the host
++    // and would not re-execute on replay; views and input-less sources
++    // (gpu::literal) issue no work and stay capturable.
++    if(not ins->inputs().empty() and op.is_context_free() and
++       op.output_alias(to_shapes(ins->inputs())).empty())
++        return false;
++    if(is_runtime_view(ins) or reads_runtime_view(ins))
++        return false;
++    return true;
++}
++
++static bool is_allocation(instruction_ref ins) { return ins->name() == "hip::allocate"; }
++
++// An input that ultimately aliases a program parameter, so its buffer can move
++// between runs (allocations and constants keep a fixed address).
++static bool is_param_input(instruction_ref ins)
++{
++    auto roots = instruction::get_output_alias(ins, false);
++    return roots.size() == 1 and roots.front()->name() == "@param";
++}
++
++// True when some consumer of `ins` lies outside the run.
++static bool used_outside(instruction_ref ins, const std::unordered_set<instruction_ref>& run_set)
++{
++    return std::any_of(ins->outputs().begin(), ins->outputs().end(), [&](instruction_ref out) {
++        return not contains(run_set, out);
++    });
++}
++
++// True when `buf` is directly consumed by an instruction in the run.
++static bool directly_used_in_run(instruction_ref buf,
++                                 const std::unordered_set<instruction_ref>& run_set)
++{
++    return std::any_of(buf->outputs().begin(), buf->outputs().end(), [&](instruction_ref ins) {
++        return contains(run_set, ins);
++    });
++}
++
++static void
++graphify_run(module_pass_manager& mpm, const std::vector<instruction_ref>& run, std::size_t n)
++{
++    module& m = mpm.get_module();
++    std::unordered_set<instruction_ref> run_set(run.begin(), run.end());
++
++    // Input-less sources (literals, allocations) used outside the run stay in
++    // the parent; if also used inside the run they become graph inputs.
++    std::unordered_set<instruction_ref> keep;
++    std::copy_if(run.begin(), run.end(), std::inserter(keep, keep.end()), [&](instruction_ref ins) {
++        return ins->inputs().empty() and used_outside(ins, run_set);
++    });
++
++    // Captured outputs: run instructions consumed outside the run; allocations
++    // are buffers, never returned.
++    std::vector<instruction_ref> outputs;
++    std::copy_if(run.begin(), run.end(), std::back_inserter(outputs), [&](instruction_ref ins) {
++        return used_outside(ins, run_set) and not is_allocation(ins) and not contains(keep, ins);
++    });
++    // A run with no external outputs is pure dead code; leave it for dce.
++    if(outputs.empty())
++        return;
++
++    // @return cannot return internal scratch, so output-backing allocations are
++    // kept in the parent and written through a parameter (global lifetime).
++    // Either every output is allocation-backed or none are; a mix is uncaptured.
++    std::unordered_map<instruction_ref, instruction_ref> output_buffer;
++    // The backing allocation must become an input of the hip::graph op so the
++    // alias index can refer to it; a root reached only through pre-run views cannot.
++    for(auto out : outputs)
++    {
++        // Follow the alias chain down to the buffer the output writes into.
++        auto roots = instruction::get_output_alias(out, false);
++        if(roots.size() == 1 and is_allocation(roots.front()))
++        {
++            if(not contains(run_set, roots.front()) and
++               not directly_used_in_run(roots.front(), run_set))
++                return;
++            output_buffer[out] = roots.front();
++            if(contains(run_set, roots.front()))
++                keep.insert(roots.front());
++        }
++    }
++    if(not output_buffer.empty() and output_buffer.size() != outputs.size())
++        return;
++
++    auto* sub = mpm.create_module(m.name() + ":hipgraph" + std::to_string(n));
++    std::unordered_map<instruction_ref, instruction_ref> map_ins;
++    std::vector<instruction_ref> fused;
++    std::copy_if(run.begin(), run.end(), std::back_inserter(fused), [&](instruction_ref ins) {
++        return not contains(keep, ins);
++    });
++    // Keep exact input layouts: the captured kernels are compiled for specific
++    // strides, so parameters must not be standardized.
++    sub->fuse(fused, &map_ins, nullptr, [](const shape& s) { return s; });
++    std::vector<instruction_ref> sub_outputs;
++    std::transform(outputs.begin(),
++                   outputs.end(),
++                   std::back_inserter(sub_outputs),
++                   [&](instruction_ref ins) { return map_ins.at(ins); });
++    sub->add_return(sub_outputs);
++
++    auto inputs = find_inputs(map_ins, &m, sub);
++
++    // Inputs the caller can rebind between runs (the program parameters).
++    std::vector<std::size_t> replace_inputs;
++    auto indices = range(inputs.size());
++    std::copy_if(indices.begin(),
++                 indices.end(),
++                 std::back_inserter(replace_inputs),
++                 [&](std::size_t i) { return is_param_input(inputs[i]); });
++
++    // The captured outputs alias the kept output buffers (op inputs).
++    std::vector<std::size_t> aliases;
++    if(not output_buffer.empty())
++    {
++        std::transform(
++            outputs.begin(), outputs.end(), std::back_inserter(aliases), [&](instruction_ref out) {
++                auto buf = output_buffer.at(out);
++                auto it  = std::find(inputs.begin(), inputs.end(), buf);
++                assert(it != inputs.end());
++                return static_cast<std::size_t>(std::distance(inputs.begin(), it));
++            });
++    }
++
++    // Insert the hip::graph op right after the run; multiple outputs come back
++    // as a tuple unpacked with get_tuple_elem.
++    auto pos = std::next(run.back());
++    auto g   = m.insert_instruction(
++        pos,
++        make_op("hip::graph", {{"aliases", aliases}, {"replace_inputs", replace_inputs}}),
++        inputs,
++        {sub});
++    for(std::size_t i = 0; i < outputs.size(); ++i)
++    {
++        auto replacement = g;
++        if(outputs.size() > 1)
++            replacement = m.insert_instruction(pos, make_op("get_tuple_elem", {{"index", i}}), g);
++        // Only redirect uses outside the run to avoid a use-before-def in the parent.
++        auto consumers = outputs[i]->outputs();
++        for(auto consumer : consumers)
++        {
++            if(not contains(run_set, consumer))
++                instruction::replace_argument(consumer, outputs[i], replacement);
++        }
++    }
++}
++
++void hipgraphify::apply(module_pass_manager& mpm) const
++{
++    module& m = mpm.get_module();
++    // Only partition the root module.
++    if(&m != mpm.get_root_module())
++        return;
++
++    // Collect the maximal capturable runs first so rewriting does not
++    // invalidate iteration.
++    std::vector<std::vector<instruction_ref>> runs;
++    auto range = iterator_for(m);
++    group_find(range.begin(), range.end(), is_capturable, [&](auto start, auto last) {
++        if(std::distance(start, last) >= min_partition_size)
++            runs.emplace_back(start, last);
++    });
++
++    std::size_t n = 0;
++    for(const auto& run : runs)
++        graphify_run(mpm, run, n++);
++}
++
++} // namespace gpu
++} // namespace MIGRAPHX_INLINE_NS
++} // namespace migraphx
+diff --git a/src/targets/gpu/include/migraphx/gpu/hipgraphify.hpp b/src/targets/gpu/include/migraphx/gpu/hipgraphify.hpp
+new file mode 100644
+index 0000000..3bc2583
+--- /dev/null
++++ b/src/targets/gpu/include/migraphx/gpu/hipgraphify.hpp
+@@ -0,0 +1,54 @@
++/*
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2015-2026 Advanced Micro Devices, Inc. All rights reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++#ifndef MIGRAPHX_GUARD_GPU_HIPGRAPHIFY_HPP
++#define MIGRAPHX_GUARD_GPU_HIPGRAPHIFY_HPP
++
++#include <migraphx/gpu/config.hpp>
++#include <cstddef>
++#include <string>
++
++namespace migraphx {
++inline namespace MIGRAPHX_INLINE_NS {
++
++struct module_pass_manager;
++
++namespace gpu {
++
++// Partitions the root module into maximal runs of HIP-graph-capturable
++// instructions, wrapping each run of at least min_partition_size in a single
++// hip::graph op. Ops that synchronize with or run on the host cannot be
++// captured and act as partition boundaries.
++struct MIGRAPHX_GPU_EXPORT hipgraphify
++{
++    // Minimum run length worth extracting into a hip::graph submodule.
++    std::size_t min_partition_size = 4;
++    std::string name() const { return "gpu::hipgraphify"; }
++    void apply(module_pass_manager& mpm) const;
++};
++
++} // namespace gpu
++} // namespace MIGRAPHX_INLINE_NS
++} // namespace migraphx
++
++#endif // MIGRAPHX_GUARD_GPU_HIPGRAPHIFY_HPP
+diff --git a/src/targets/gpu/include/migraphx/gpu/kernel.hpp b/src/targets/gpu/include/migraphx/gpu/kernel.hpp
+index 7339e6c..634cd2b 100644
+--- a/src/targets/gpu/include/migraphx/gpu/kernel.hpp
++++ b/src/targets/gpu/include/migraphx/gpu/kernel.hpp
+@@ -28,8 +28,12 @@
+ #include <migraphx/gpu/pack_args.hpp>
+ #include <migraphx/pmr/vector.hpp>
+ #include <hip/hip_runtime_api.h>
++#include <array>
++#include <cstddef>
++#include <map>
+ #include <memory>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ namespace migraphx {
+@@ -38,6 +42,26 @@ namespace gpu {
+ 
+ struct kernel_impl;
+ 
++// Kernels launch through hipExtModuleLaunchKernel with a packed byte buffer
++// (a mix of pointer slots and inlined scalars) described by an `extra` config
++// array of (tag, value) pairs. These functions are the single definition of
++// that array: pack_kernel_config builds it (the pointed-to `size` must outlive
++// any use), and unpack_kernel_config returns a copy of the packed buffer
++// (empty for any other argument-passing scheme).
++MIGRAPHX_GPU_EXPORT std::array<void*, 5> pack_kernel_config(char* buffer, std::size_t* size);
++MIGRAPHX_GPU_EXPORT std::vector<char> unpack_kernel_config(void** extra);
++
++// The byte offset and current value of each pointer slot in a packed buffer,
++// per the kernel_args layout (see for_each_kernarg_slot), skipping the inlined
++// scalars. An empty kernel_args is the all-pointer launch path (every 8-byte
++// word is a pointer).
++MIGRAPHX_GPU_EXPORT std::vector<std::pair<std::size_t, char*>>
++unpack_pointer_args(const std::vector<char>& buffer,
++                    const std::map<std::size_t, kernel_argument_value>& kernel_args);
++
++// Store a pointer value at a byte position in a packed kernarg buffer.
++MIGRAPHX_GPU_EXPORT void write_pointer(char* pos, const char* p);
++
+ struct MIGRAPHX_GPU_EXPORT kernel
+ {
+     struct pointers
+@@ -69,6 +93,10 @@ struct MIGRAPHX_GPU_EXPORT kernel
+ 
+     bool empty() const;
+ 
++    // The underlying HIP function handle, used to correlate a captured graph
++    // kernel node back to this kernel. Null when the kernel is empty.
++    hipFunction_t get_function() const;
++
+     void launch(hipStream_t stream,
+                 std::size_t global,
+                 std::size_t local,
+diff --git a/src/targets/gpu/include/migraphx/gpu/pack_args.hpp b/src/targets/gpu/include/migraphx/gpu/pack_args.hpp
+index 44de6a5..3614d40 100644
+--- a/src/targets/gpu/include/migraphx/gpu/pack_args.hpp
++++ b/src/targets/gpu/include/migraphx/gpu/pack_args.hpp
+@@ -30,7 +30,9 @@
+ #include <migraphx/requires.hpp>
+ #include <algorithm>
+ #include <array>
++#include <cassert>
+ #include <cstddef>
++#include <map>
+ #include <type_traits>
+ #include <utility>
+ #include <vector>
+@@ -39,6 +41,14 @@ namespace migraphx {
+ inline namespace MIGRAPHX_INLINE_NS {
+ namespace gpu {
+ 
++// Padding inserted before an argument at buffer position `pos` to reach
++// `align`; the single definition of the kernarg alignment rule.
++constexpr std::size_t pack_padding(std::size_t pos, std::size_t align)
++{
++    assert(align > 0);
++    return (align - (pos % align)) % align;
++}
++
+ struct kernel_argument
+ {
+     template <class T,
+@@ -88,6 +98,23 @@ struct kernel_argument_value
+ MIGRAPHX_GPU_EXPORT std::vector<char> pack_args(const std::vector<kernel_argument>& args);
+ MIGRAPHX_GPU_EXPORT std::vector<char> pack_args(const std::vector<kernel_argument_value>& args);
+ 
++// Walk the packed-buffer layout of `kernel_args` in index order, calling
++// f(offset, is_pointer) for each argument; the single definition of how a
++// code_object_op's kernel_args map onto packed bytes (a pointer slot has empty
++// data and takes 8 bytes at align 8, a scalar its own bytes and alignment).
++template <class F>
++void for_each_kernarg_slot(const std::map<std::size_t, kernel_argument_value>& kernel_args, F f)
++{
++    std::size_t pos = 0;
++    for(const auto& [idx, v] : kernel_args)
++    {
++        bool is_pointer = v.data.empty();
++        pos += pack_padding(pos, is_pointer ? sizeof(char*) : v.align);
++        f(pos, is_pointer);
++        pos += is_pointer ? sizeof(char*) : v.data.size();
++    }
++}
++
+ } // namespace gpu
+ } // namespace MIGRAPHX_INLINE_NS
+ } // namespace migraphx
+diff --git a/src/targets/gpu/kernel.cpp b/src/targets/gpu/kernel.cpp
+index a2e6eec..08a6ab8 100644
+--- a/src/targets/gpu/kernel.cpp
++++ b/src/targets/gpu/kernel.cpp
+@@ -23,28 +23,31 @@
+  */
+ #include <migraphx/gpu/kernel.hpp>
+ #include <migraphx/manage_ptr.hpp>
++#include <migraphx/bit_cast.hpp>
+ #include <migraphx/errors.hpp>
+ #include <migraphx/gpu/pack_args.hpp>
++#include <algorithm>
++#include <array>
+ #include <cassert>
+ 
+ #ifdef _WIN32
+ #include <hip/hip_ext.h>
+ #else
+ // extern declare the function since hip/hip_ext.h header is broken
+-extern hipError_t hipExtModuleLaunchKernel(hipFunction_t, // NOLINT
+-                                           uint32_t,
+-                                           uint32_t,
+-                                           uint32_t,
+-                                           uint32_t,
+-                                           uint32_t,
+-                                           uint32_t,
+-                                           size_t,
+-                                           hipStream_t,
+-                                           void**,
+-                                           void**,
+-                                           hipEvent_t = nullptr,
+-                                           hipEvent_t = nullptr,
+-                                           uint32_t   = 0);
++extern "C" hipError_t hipExtModuleLaunchKernel(hipFunction_t, // NOLINT
++                                               uint32_t,
++                                               uint32_t,
++                                               uint32_t,
++                                               uint32_t,
++                                               uint32_t,
++                                               uint32_t,
++                                               size_t,
++                                               hipStream_t,
++                                               void**,
++                                               void**,
++                                               hipEvent_t = nullptr,
++                                               hipEvent_t = nullptr,
++                                               uint32_t   = 0);
+ #endif
+ 
+ namespace migraphx {
+@@ -81,6 +84,98 @@ kernel::kernel(const char* image, const std::string& name) : impl(std::make_shar
+ 
+ bool kernel::empty() const { return impl == nullptr; }
+ 
++hipFunction_t kernel::get_function() const { return impl == nullptr ? nullptr : impl->fun; }
++
++namespace {
++// HIP_LAUNCH_PARAM_* expand to C-style pointer casts that clang-tidy rejects,
++// so the launch-config sentinels are produced behind these accessors
++// (functions rather than globals to avoid the non-const-global lint).
++#ifdef MIGRAPHX_USE_CLANG_TIDY
++void* launch_param_pointer() { return nullptr; }
++void* launch_param_size() { return nullptr; }
++void* launch_param_end() { return nullptr; }
++#else
++void* launch_param_pointer() { return HIP_LAUNCH_PARAM_BUFFER_POINTER; }
++void* launch_param_size() { return HIP_LAUNCH_PARAM_BUFFER_SIZE; }
++void* launch_param_end() { return HIP_LAUNCH_PARAM_END; }
++#endif
++
++// A launch-config entry: (tag, value).
++using launch_param = std::pair<void*, void*>;
++static_assert(sizeof(launch_param) == 2 * sizeof(void*),
++              "the extra config array is viewed as an array of launch_param pairs");
++
++// The value of the entry with `tag` in [first, last), or nullptr when absent.
++void* find_launch_param(const launch_param* first, const launch_param* last, const void* tag)
++{
++    // NOLINTNEXTLINE(readability-qualified-auto)
++    auto it = std::find_if(first, last, [&](const launch_param& p) { return p.first == tag; });
++    return it == last ? nullptr : it->second;
++}
++} // namespace
++
++std::array<void*, 5> pack_kernel_config(char* buffer, std::size_t* size)
++{
++    return {launch_param_pointer(), buffer, launch_param_size(), size, launch_param_end()};
++}
++
++std::vector<char> unpack_kernel_config(void** extra)
++{
++    if(extra == nullptr)
++        return {};
++    // The config is a sequence of (tag, value) pairs terminated by the end
++    // sentinel; an array with no sentinel within the fixed cap is rejected.
++    constexpr std::size_t max_params = 8;
++    const auto* first                = reinterpret_cast<const launch_param*>(extra);
++    const auto* last = std::find_if(first, first + max_params, [](const launch_param& p) {
++        return p.first == launch_param_end();
++    });
++    if(last == first + max_params)
++        return {};
++    if(std::any_of(first, last, [](const launch_param& p) {
++           return p.first != launch_param_pointer() and p.first != launch_param_size();
++       }))
++        return {};
++    auto* buffer = static_cast<char*>(find_launch_param(first, last, launch_param_pointer()));
++    auto* size   = static_cast<std::size_t*>(find_launch_param(first, last, launch_param_size()));
++    if(buffer == nullptr or size == nullptr)
++        return {};
++    return {buffer, buffer + *size};
++}
++
++void write_pointer(char* pos, const char* p)
++{
++    auto bytes = migraphx::bit_cast<std::array<char, sizeof(char*)>>(p);
++    std::copy(bytes.begin(), bytes.end(), pos);
++}
++
++static char* read_pointer(const char* pos)
++{
++    std::array<char, sizeof(char*)> bytes{};
++    std::copy(pos, pos + sizeof(char*), bytes.begin());
++    return migraphx::bit_cast<char*>(bytes);
++}
++
++std::vector<std::pair<std::size_t, char*>>
++unpack_pointer_args(const std::vector<char>& buffer,
++                    const std::map<std::size_t, kernel_argument_value>& kernel_args)
++{
++    std::vector<std::pair<std::size_t, char*>> pointers;
++    if(kernel_args.empty())
++    {
++        // The all-pointer launch path packs one device pointer per 8-byte word.
++        for(std::size_t off = 0; off + sizeof(char*) <= buffer.size(); off += sizeof(char*))
++            pointers.emplace_back(off, read_pointer(buffer.data() + off));
++        return pointers;
++    }
++    // A slot past the end of the buffer is skipped rather than read.
++    for_each_kernarg_slot(kernel_args, [&](std::size_t pos, bool is_pointer) {
++        if(is_pointer and pos + sizeof(char*) <= buffer.size())
++            pointers.emplace_back(pos, read_pointer(buffer.data() + pos));
++    });
++    return pointers;
++}
++
+ static void launch_kernel(hipFunction_t fun,
+                           hipStream_t stream,
+                           std::size_t global,
+@@ -92,32 +187,10 @@ static void launch_kernel(hipFunction_t fun,
+ {
+     assert(global > 0);
+     assert(local > 0);
+-    void* config[] = {
+-// HIP_LAUNCH_PARAM_* are macros that do horrible things
+-#ifdef MIGRAPHX_USE_CLANG_TIDY
+-        nullptr, kernargs, nullptr, &size, nullptr
+-#else
+-        HIP_LAUNCH_PARAM_BUFFER_POINTER,
+-        kernargs,
+-        HIP_LAUNCH_PARAM_BUFFER_SIZE,
+-        &size,
+-        HIP_LAUNCH_PARAM_END
+-#endif
+-    };
+-
+-    auto status = hipExtModuleLaunchKernel(fun,
+-                                           global,
+-                                           1,
+-                                           1,
+-                                           local,
+-                                           1,
+-                                           1,
+-                                           0,
+-                                           stream,
+-                                           nullptr,
+-                                           reinterpret_cast<void**>(&config),
+-                                           start,
+-                                           stop);
++    auto config = pack_kernel_config(static_cast<char*>(kernargs), &size);
++
++    auto status = hipExtModuleLaunchKernel(
++        fun, global, 1, 1, local, 1, 1, 0, stream, nullptr, config.data(), start, stop);
+     if(status != hipSuccess)
+         MIGRAPHX_THROW("Failed to launch kernel: " + hip_error(status));
+     if(stop != nullptr)
+diff --git a/src/targets/gpu/pack_args.cpp b/src/targets/gpu/pack_args.cpp
+index a8e930e..a1b5ec7 100644
+--- a/src/targets/gpu/pack_args.cpp
++++ b/src/targets/gpu/pack_args.cpp
+@@ -43,9 +43,7 @@ std::vector<char> pack_args_impl(const PackArgs& args)
+     {
+         std::size_t n = get_size(arg);
+         const auto* p = get_data(arg);
+-        // Insert padding
+-        std::size_t padding = (arg.align - (kernargs.size() % arg.align)) % arg.align;
+-        kernargs.insert(kernargs.end(), padding, 0);
++        kernargs.insert(kernargs.end(), pack_padding(kernargs.size(), arg.align), 0);
+         kernargs.insert(kernargs.end(), p, p + n);
+     }
+     return kernargs;
+diff --git a/src/targets/gpu/target.cpp b/src/targets/gpu/target.cpp
+index e96fd0a..d3e6108 100644
+--- a/src/targets/gpu/target.cpp
++++ b/src/targets/gpu/target.cpp
+@@ -74,6 +74,7 @@
+ #include <migraphx/gpu/fuse_ck.hpp>
+ #include <migraphx/gpu/fuse_mlir.hpp>
+ #include <migraphx/gpu/fuse_ops.hpp>
++#include <migraphx/gpu/hipgraphify.hpp>
+ #include <migraphx/gpu/prefuse_ops.hpp>
+ #include <migraphx/gpu/lowering.hpp>
+ #include <migraphx/gpu/propagate_reshape_layout.hpp>
+@@ -108,6 +109,13 @@ struct pipeline_factory
+     // cppcheck-suppress CastIntegerToAddressAtReturn
+     context* get_context() const { return any_cast<context>(gctx_ptr); }
+ 
++    // Enable the hipgraphify pass (wrap capturable runs in hip::graph ops).
++    bool hip_graph_enabled() const
++    {
++        auto option = options.backend_options.find("hip_graph");
++        return option != options.backend_options.end() and option->second.to<bool>();
++    }
++
+     std::vector<pass> dynamic_shapes_pipeline() const
+     {
+         return {
+@@ -236,6 +244,8 @@ struct pipeline_factory
+             promote_literals{},
+             dead_code_elimination{},
+             write_literals{.max_memory = max_memory},
++            enable_pass(hip_graph_enabled(), hipgraphify{}),
++            dead_code_elimination{},
+             schedule{gpu::schedule_model{get_context()->get_current_device().nstreams()},
+                      not enabled(MIGRAPHX_DISABLE_SCHEDULE_PASS{})},
+             memory_coloring{"hip::allocate"},

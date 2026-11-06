@@ -25,6 +25,7 @@ def compile_in_child(
     fp16: bool,
     fp8: bool,
     exhaustive_tune: bool,
+    hip_graph: bool = False,
     op_libraries: Sequence[Path] = (),
     label: str = "MIGraphX program build",
     channels: int = 3,
@@ -32,8 +33,8 @@ def compile_in_child(
 ) -> bytes:
     """The saved program (MIGraphX's .mxr bytes) of an ONNX model compiled on the GPU of
     HIP index `gpu_index` for one input of `channels` x `size` (height, width), in FP16
-    or FP8 if asked (else in the ONNX's own types), with MIGraphX's exhaustive tuning if
-    asked, after loading `op_libraries`. An error starts with `label`."""
+    or FP8 if asked (else in the ONNX's own types), with MIGraphX's exhaustive tuning and
+    HIP graphs if asked, after loading `op_libraries`. An error starts with `label`."""
     height, width = size
     with tempfile.TemporaryDirectory(prefix="chaiNNer-migraphx-") as temporary:
         model = Path(temporary) / "model.onnx"
@@ -50,6 +51,7 @@ def compile_in_child(
                 "1" if fp16 else "0",
                 "1" if fp8 else "0",
                 "1" if exhaustive_tune else "0",
+                "1" if hip_graph else "0",
                 *(str(library) for library in op_libraries),
             ],
             label,

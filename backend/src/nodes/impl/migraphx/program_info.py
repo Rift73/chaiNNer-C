@@ -58,6 +58,7 @@ def describe_program(program: Any, migraphx_version: str) -> MIGraphXProgramInfo
         migraphx_version=migraphx_version,
         height=height,
         width=width,
+        hip_graphs=program.hip_graphs,
     )
 
 

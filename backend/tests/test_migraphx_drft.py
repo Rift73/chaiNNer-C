@@ -340,7 +340,7 @@ def test_a_program_compiles_in_a_child_with_the_op_library(
     manifest = drft.export_manifest(plugin_onnx)
     assert manifest is not None
     built = drft.build_program(
-        plugin_onnx, manifest, 1, (256, 320), exhaustive_tune=True
+        plugin_onnx, manifest, 1, (256, 320), exhaustive_tune=True, hip_graph=True
     )
     assert built == b"program"
     ((args, kwargs),) = calls
@@ -350,6 +350,7 @@ def test_a_program_compiles_in_a_child_with_the_op_library(
         "fp16": False,
         "fp8": False,
         "exhaustive_tune": True,
+        "hip_graph": True,
         "op_libraries": (library,),
         "label": "DRFT program build",
         "context": None,

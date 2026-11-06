@@ -744,7 +744,10 @@ def test_the_amd_gpu_binaries_ship_when_built_and_are_never_required(package_cas
     for name in package_files.AMD_BINARIES:
         write(case.backend, name, b"AMD GPU binary fixture")
     result = case.run()
-    assert (result["result"], result["written_files"]) == ("refreshed", 3)
+    assert (result["result"], result["written_files"]) == (
+        "refreshed",
+        len(package_files.AMD_BINARIES),
+    )
     backend = package_manifest.load(case.manifest)["backend"]
     assert all(packaged(name) in backend for name in package_files.AMD_BINARIES)
     for name in package_files.AMD_BINARIES:

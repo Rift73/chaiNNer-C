@@ -22,7 +22,6 @@ from nodes.properties.inputs import (
     OnnxModelInput,
 )
 from nodes.properties.outputs import MIGraphXProgramOutput
-from system import is_windows
 
 from ...settings import MIGraphXSettings, get_settings
 from .. import utility_group
@@ -60,7 +59,7 @@ if utility_group is not None:
             "Compile an ONNX model into a MIGraphX program for an AMD GPU.",
             "Compiling can take several minutes depending on the model size and settings; it runs in a process of its own, which Stop ends.",
             "A program takes one input size, Height x Width; Upscale Image splits images of any size into overlapping tiles of that size. It is compiled for your GPU's target (gfx) and MIGraphX version: save it for reuse, as compiling is slow.",
-            "A DUAL ONNX from Convert To ONNX compiles in its own mixed precision with chaiNNer-C's DUAL operators; a dynamic one takes this node's size (multiples of 4 px), a fixed one keeps its own. Precision does not apply and is hidden. Linux only: DUAL's operators need Triton, which has no AMD build for Windows.",
+            "A DUAL ONNX from Convert To ONNX compiles in its own mixed precision with chaiNNer-C's DUAL operators; a dynamic one takes this node's size (multiples of 4 px), a fixed one keeps its own. Precision does not apply and is hidden.",
             "An ONNX from Convert To ONNX compiles in the precision it records (FP16 for the architectures that hold in it, else FP32), also after it is saved and loaded again, so Precision does not apply and is hidden. An ONNX with no record, from another program or an earlier version's conversion, works as before, with Precision shown.",
             "A legacy DRFT ONNX from Convert To ONNX also compiles in its own mixed precision, with chaiNNer-C's DRFT operators. Its size must be a multiple of the ONNX's alignment and at least its minimum size on each side (Build Program says which if not). Precision does not apply.",
         ],
@@ -107,6 +106,20 @@ if utility_group is not None:
                 "MIGraphX tries more kernels for each layer: the compile takes much longer"
                 " and the program may run faster.",
             ),
+            BoolInput("Use HIP Graph", default=False)
+            .with_id(5)
+            .with_docs(
+                "Experimental. MIGraphX records runs of the program's kernels on its first"
+                " run into HIP graphs, AMD's counterpart of CUDA graphs, and replays them on"
+                " later runs instead of launching each kernel again. Whether that is faster"
+                " depends on the model and the GPU.",
+                "Get Program Info shows how many HIP graphs a program holds; a saved program"
+                " keeps them. 0 means the model had nothing to capture.",
+                "To report how it went: GPU Target and HIP Graphs from Get Program Info, the"
+                " time for the same image with this on and off, whether the two images"
+                " match, and the exact message if a run fails. If a run fails or an image"
+                " looks wrong, turn this off.",
+            ),
         ],
         outputs=[
             MIGraphXProgramOutput(),
@@ -120,6 +133,7 @@ if utility_group is not None:
         height: int,
         width: int,
         exhaustive_tune: bool,
+        use_hip_graph: bool,
     ) -> MIGraphXProgram:
         settings = get_settings(context)
         size = (height, width)
@@ -133,6 +147,7 @@ if utility_group is not None:
                 settings,
                 size,
                 exhaustive_tune,
+                use_hip_graph,
             )
         if facts.dual_manifest is not None:
             return build_dual_program(
@@ -142,6 +157,7 @@ if utility_group is not None:
                 settings,
                 size,
                 exhaustive_tune,
+                use_hip_graph,
             )
         # A record compiles in its precision, whatever a saved chain's hidden input holds.
         if onnx_model.info.arch is not None:
@@ -161,12 +177,13 @@ if utility_group is not None:
         def build() -> MIGraphXProgram:
             logger.info(
                 "Compiling a MIGraphX program: %s, %dx%d, %d channels, exhaustive=%s,"
-                " GPU %d (%s)",
+                " HIP graphs=%s, GPU %d (%s)",
                 "mixed" if mixed else precision.value,
                 width,
                 height,
                 channels,
                 exhaustive_tune,
+                use_hip_graph,
                 settings.gpu_index,
                 settings.gfx,
             )
@@ -177,6 +194,7 @@ if utility_group is not None:
                 fp16=fp16,
                 fp8=fp8,
                 exhaustive_tune=exhaustive_tune,
+                hip_graph=use_hip_graph,
                 channels=channels,
                 context=context,
             )
@@ -186,7 +204,7 @@ if utility_group is not None:
 
         key = program_key(
             onnx_model,
-            ("onnx", fp16, fp8, size, channels, exhaustive_tune),
+            ("onnx", fp16, fp8, size, channels, exhaustive_tune, use_hip_graph),
             settings.gpu_name,
             settings.gfx,
             runner_identity(),
@@ -202,15 +220,11 @@ def build_dual_program(
     settings: MIGraphXSettings,
     size: Size,
     exhaustive_tune: bool,
+    use_hip_graph: bool,
 ) -> MIGraphXProgram:
     """DUAL's program with its custom operators, in the ONNX's mixed precision. A dynamic
     DUAL ONNX takes the node's size; a fixed one has its own. The node's precision input
-    does not apply (hidden). Not on Windows, where Triton cannot compile its kernels."""
-    if is_windows:
-        raise ValueError(
-            "DUAL's MIGraphX route needs Triton, which has no AMD build for Windows;"
-            " DUAL runs through PyTorch."
-        )
+    does not apply (hidden)."""
     spec = manifest["specialization"]
     build_size: Size | None = None
     if spec.get("dynamic", False):
@@ -219,11 +233,13 @@ def build_dual_program(
 
     def build() -> MIGraphXProgram:
         logger.info(
-            "Compiling a DUAL program (%s x%d, %s, exhaustive=%s, GPU %d (%s))",
+            "Compiling a DUAL program (%s x%d, %s, exhaustive=%s, HIP graphs=%s,"
+            " GPU %d (%s))",
             spec["factory"],
             spec["scale"],
             "its own size" if build_size is None else f"{size[1]}x{size[0]}",
             exhaustive_tune,
+            use_hip_graph,
             settings.gpu_index,
             settings.gfx,
         )
@@ -233,13 +249,14 @@ def build_dual_program(
             settings.gpu_index,
             build_size,
             exhaustive_tune=exhaustive_tune,
+            hip_graph=use_hip_graph,
             context=context,
         )
         return MIGraphXProgram(program, read_program_info(program, settings.gpu_index))
 
     key = program_key(
         onnx_model,
-        ("dual", build_size, exhaustive_tune),
+        ("dual", build_size, exhaustive_tune, use_hip_graph),
         settings.gpu_name,
         settings.gfx,
         runner_identity(),
@@ -255,6 +272,7 @@ def build_drft_program(
     settings: MIGraphXSettings,
     size: Size,
     exhaustive_tune: bool,
+    use_hip_graph: bool,
 ) -> MIGraphXProgram:
     """Legacy DRFT's program with its custom operators, in the ONNX's mixed precision,
     for the node's size; its precision input does not apply."""
@@ -262,12 +280,14 @@ def build_drft_program(
 
     def build() -> MIGraphXProgram:
         logger.info(
-            "Compiling a DRFT program (x%d, window %d, %dx%d, exhaustive=%s, GPU %d (%s))",
+            "Compiling a DRFT program (x%d, window %d, %dx%d, exhaustive=%s,"
+            " HIP graphs=%s, GPU %d (%s))",
             manifest["scale"],
             manifest["window_size"],
             size[1],
             size[0],
             exhaustive_tune,
+            use_hip_graph,
             settings.gpu_index,
             settings.gfx,
         )
@@ -277,13 +297,14 @@ def build_drft_program(
             settings.gpu_index,
             size,
             exhaustive_tune=exhaustive_tune,
+            hip_graph=use_hip_graph,
             context=context,
         )
         return MIGraphXProgram(program, read_program_info(program, settings.gpu_index))
 
     key = program_key(
         onnx_model,
-        ("drft", size, exhaustive_tune),
+        ("drft", size, exhaustive_tune, use_hip_graph),
         settings.gpu_name,
         settings.gfx,
         runner_identity(),

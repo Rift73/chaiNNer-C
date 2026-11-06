@@ -118,7 +118,7 @@ def environment(threads: int | None, report: Path) -> dict[str, str]:
 
 def set_up_ffmpeg() -> None:
     """Once, before the shards: the video tests' pinned FFmpeg in their storage folder
-    (scratch_storage.py). A setup that fails (no network) is reported, and the run goes
+    (scratch_storage.py). A setup that fails (no local copy) is reported, and the run goes
     on without it: the tests that run that FFmpeg skip."""
     done = subprocess.run(
         [sys.executable, "-B", str(ROOT / "native" / "tools" / "scratch_storage.py")],

@@ -14,6 +14,7 @@ from nodes.groups import Condition, if_enum_group, if_group
 from nodes.impl.image_op import ImageOp
 from nodes.impl.pytorch.auto_engine import (
     ENGINE_MODEL_NAVI,
+    migraphx_here,
     release_engine,
     upscale_through_engine,
 )
@@ -44,6 +45,9 @@ from ...settings import PyTorchSettings, get_settings
 from .. import processing_group
 
 MODEL_BYTES_CACHE = weakref.WeakKeyDictionary()
+# The same input (id 8) on a PC where MIGraphX runs, so a saved chain keeps its value on
+# either kind of PC; only a PC with neither has none.
+ON_MIGRAPHX = migraphx_here()
 
 
 def upscale(
@@ -224,10 +228,34 @@ def upscale(
             )
         ),
         if_group(
-            Condition.const(nvidia.is_available)
+            Condition.const(nvidia.is_available or ON_MIGRAPHX)
             & Condition.type(0, ENGINE_MODEL_NAVI, if_not_connected=True)
         )(
-            BoolInput("Use TensorRT Engine", default=False)
+            BoolInput("Use MIGraphX Program", default=False)
+            .with_id(8)
+            .with_docs(
+                "Runs this model through a MIGraphX program instead of PyTorch, on AMD GPUs.",
+                "The first run for a model at a Tile Size exports the model and compiles its"
+                " program, which can take several minutes; later runs read it, also after a"
+                " restart. Stop ends a running compile.",
+                "While this is on, programs take disk space, whether MIGraphX's Program Cache"
+                " setting is on or off: in that cache's folder and within its limit of 16 GiB,"
+                " the least recently used removed first. While this is off, this node keeps"
+                " nothing on disk.",
+                "A program takes one input size, so each Tile Size has its own program: that"
+                " size, aligned up to the multiple the model needs. Auto, Maximum and No Tiling"
+                " take 512 px, and RGT stops at 256 px. A larger image runs in overlapping tiles"
+                " of that size. A smaller one is padded to it by reflection and runs through the"
+                " program, and the result is cropped to the image's own size.",
+                "The output differs slightly from PyTorch's: the program runs in the model's"
+                " automatic precision, whose FP16 list was measured on TensorRT, and its tiling"
+                " and padding are its own. The node's Clear frees its GPU memory.",
+                "When the program cannot be built or fails, the image runs on PyTorch and a"
+                " warning says why.",
+                hint=True,
+            )
+            if ON_MIGRAPHX
+            else BoolInput("Use TensorRT Engine", default=False)
             .with_id(8)
             .with_docs(
                 "Runs this model through a TensorRT engine instead of PyTorch, on NVIDIA GPUs:"

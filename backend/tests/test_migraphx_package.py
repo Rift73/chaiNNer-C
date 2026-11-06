@@ -17,6 +17,8 @@ from migraphx_stand_ins import (
     ABSENT,
     INSTALLED,
     RADEON,
+    TRITON_ROCM,
+    TRITON_WINDOWS,
     Here,
     Imported,
     Runner,
@@ -125,17 +127,16 @@ def test_a_disabled_package_lists_no_dependencies(load: Load):
     # ONNX Runtime's MIGraphX build replaces the onnxruntime module of the ONNX package.
     assert load(Here(devices=[])).package.package.dependencies == []
     enabled = load().package.package
-    assert enabled.dependencies == [INSTALLED, INSTALLED, INSTALLED]
+    assert enabled.dependencies == [INSTALLED, INSTALLED, TRITON_ROCM]
 
 
-def test_on_windows_it_runs_without_triton(load: Load):
-    # ROCm's runtime and ONNX Runtime's MIGraphX build, without Triton for ROCm (Linux
-    # only), which only DUAL's programs need.
+def test_on_windows_it_lists_triton_for_windows(load: Load):
+    # ROCm's runtime, ONNX Runtime's MIGraphX build and the Triton DUAL's programs need.
     imported = load(WINDOWS)
     package = imported.package.package
     assert not package.disabled
     assert imported.package.migraphx_loaded
-    assert package.dependencies == [INSTALLED, INSTALLED]
+    assert package.dependencies == [INSTALLED, INSTALLED, TRITON_WINDOWS]
     assert hasattr(imported.nodes["utility.build_program"], "build_program_node")
 
 
@@ -273,7 +274,11 @@ def onnx(dtype: str = "fp32", data: bytes = b"onnx model") -> OnnxGeneric:
 
 
 def run(
-    build: SimpleNamespace, model: OnnxGeneric, precision: str = "FP16", **settings
+    build: SimpleNamespace,
+    model: OnnxGeneric,
+    precision: str = "FP16",
+    hip_graph: bool = False,
+    **settings,
 ) -> Any:
     return build.node(
         context({"gpu_index": "0", **settings}),
@@ -282,6 +287,7 @@ def run(
         128,
         192,
         False,
+        hip_graph,
     )
 
 
@@ -295,6 +301,7 @@ def test_build_program_compiles_once_per_build_inputs(build: SimpleNamespace):
             "fp16": True,
             "fp8": False,
             "exhaustive_tune": False,
+            "hip_graph": False,
             "channels": 3,
             "context": build.compiles.calls[0]["context"],
         }
@@ -305,6 +312,68 @@ def test_build_program_compiles_once_per_build_inputs(build: SimpleNamespace):
     assert run(build, model) is program
     assert run(build, model, "FP32").bytes == b"program 2"
     assert build.compiles.calls[1]["fp16"] is False
+
+
+def test_use_hip_graph_is_a_new_input_off_by_default_with_a_stable_id(load: Load):
+    imported = load()
+    node = node_data(imported, "chainner:migraphx:build_program")
+    # A saved chain holds its inputs by id: the older inputs keep theirs, the new one
+    # keeps this one, and a chain without it takes the default.
+    assert [(i.id, i.label) for i in node.inputs] == [
+        (0, "ONNX Model"),
+        (1, "Precision"),
+        (2, "Height"),
+        (3, "Width"),
+        (4, "Exhaustive Tuning"),
+        (5, "Use HIP Graph"),
+    ]
+    option = next(i for i in node.inputs if i.label == "Use HIP Graph")
+    assert option.enforce(option.default) is False
+    assert "Experimental" in option.description
+    assert "Get Program Info" in option.description
+
+
+def test_use_hip_graph_reaches_the_compile_and_changes_the_cache_key(
+    build: SimpleNamespace,
+):
+    model = onnx()
+    off = run(build, model)
+    on = run(build, model, hip_graph=True)
+    assert [call["hip_graph"] for call in build.compiles.calls] == [False, True]
+    assert off.bytes != on.bytes
+    # Each is kept under its own key: neither build runs again.
+    assert run(build, model) is off
+    assert run(build, model, hip_graph=True) is on
+    assert len(build.compiles.calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("manifests", "route"),
+    [
+        (
+            {
+                "drft_manifest": None,
+                "dual_manifest": {
+                    "specialization": {"dynamic": True, "factory": "s", "scale": 2}
+                },
+            },
+            "dual",
+        ),
+        (
+            {"drft_manifest": {"scale": 2, "window_size": 8}, "dual_manifest": None},
+            "drft",
+        ),
+    ],
+)
+def test_use_hip_graph_reaches_the_custom_op_routes_under_their_own_keys(
+    build: SimpleNamespace, manifests: dict[str, Any], route: str
+):
+    vars(build.manifests).update(manifests)
+    routed = getattr(build.imported, route)
+    run(build, onnx("mixed"))
+    run(build, onnx("mixed"), hip_graph=True)
+    run(build, onnx("mixed"), hip_graph=True)
+    assert routed.hip_graph_builds == [False, True]
 
 
 def test_a_mixed_precision_onnx_keeps_its_own_types(build: SimpleNamespace):
@@ -368,9 +437,23 @@ def test_a_drft_onnx_takes_the_nodes_size(build: SimpleNamespace):
     assert drft.builds == [(0, (128, 192), False)]
 
 
-def test_on_windows_dual_is_refused_and_drft_builds(
-    load: Load, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("here", "triton", "other"),
+    [
+        (Here(), TRITON_ROCM, TRITON_WINDOWS),
+        (WINDOWS, TRITON_WINDOWS, TRITON_ROCM),
+    ],
+    ids=["linux", "windows"],
+)
+def test_each_system_installs_its_triton(
+    load: Load, here: Here, triton: Dependency, other: Dependency
 ):
+    dependencies = load(here).package.package.dependencies
+    assert triton in dependencies
+    assert other not in dependencies
+
+
+def test_on_windows_dual_and_drft_build(load: Load, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(build_cache, "_memory", OrderedDict())
     monkeypatch.setattr(build_cache, "_building", {})
     imported = load(WINDOWS)
@@ -393,15 +476,12 @@ def test_on_windows_dual_is_refused_and_drft_builds(
             128,
             192,
             False,
+            False,
         )
 
-    with pytest.raises(
-        ValueError,
-        match=r"^DUAL's MIGraphX route needs Triton, which has no AMD build for Windows;"
-        r" DUAL runs through PyTorch\.$",
-    ):
-        build()
-    assert imported.dual.profiles == imported.dual.builds == []
+    assert build().bytes == b"route program"
+    assert imported.dual.profiles == [((128, 192),) * 3]
+    assert imported.dual.builds == [(0, (128, 192), False)]
     manifests.dual_manifest, manifests.drft_manifest = (
         None,
         {"scale": 2, "window_size": 16},
@@ -500,7 +580,10 @@ def test_get_program_info(loaded: Imported):
         "gfx1100",
         "2.16.1",
         "256x256",
+        0,
     )
+    held = MIGraphXProgramInfo(**{**vars(INFO), "hip_graphs": 3})
+    assert info(MIGraphXProgram(b"", held))[-1] == 3
 
 
 @pytest.mark.parametrize("hidden", ["FP32", "FP16", "FP8"])

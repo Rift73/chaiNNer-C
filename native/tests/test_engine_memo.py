@@ -20,8 +20,9 @@ import cv2
 import numpy as np
 import psutil
 import pytest
-from PIL import Image, ImageCms
 from engine_differential import FFMPEG, execute, load_registry_errors, mismatches
+from PIL import Image, ImageCms
+from scratch_storage import copy_ffmpeg_to
 from verify_runtime import edge, make_node
 
 import api
@@ -294,6 +295,7 @@ def test_a_file_read_per_run_output_is_read_again(schemas, tmp_path):
     if not FFMPEG.exists():
         pytest.skip(f"the pinned FFmpeg ({FFMPEG}) is not installed")
     video, output = tmp_path / "clip.mkv", tmp_path / "out"
+    copy_ffmpeg_to(FFMPEG, tmp_path / "storage")
 
     def write_video(rate: int) -> None:
         command = [
@@ -562,7 +564,9 @@ def test_result_cache_size_as_the_field_stores_it(value, mib):
     """The size field stores what was typed as a number (a fraction too), an older
     settings file a string; a size it cannot hold is the default size, never a failed
     run (a ValueError here failed every run)."""
-    options = api.ExecutionOptions({result_cache.PACKAGE: {result_cache.SIZE_MIB: value}})
+    options = api.ExecutionOptions(
+        {result_cache.PACKAGE: {result_cache.SIZE_MIB: value}}
+    )
     expected = result_cache.default_size_mib() if mib is None else mib
     assert result_cache.cache_budget(options) == expected << 20
 
@@ -788,7 +792,9 @@ def metadata_chain(
 
 
 @pytest.mark.parametrize("executor", ["python", "native"])
-@pytest.mark.parametrize("schema", ["chainner:image:load", "chainner:image:load_images"])
+@pytest.mark.parametrize(
+    "schema", ["chainner:image:load", "chainner:image:load_images"]
+)
 def test_metadata_reaches_the_saved_file(schemas, tmp_path, executor, schema):
     images, output = tmp_path / "images", tmp_path / "out"
     images.mkdir()
@@ -819,7 +825,11 @@ def test_convert_to_srgb_is_part_of_load_images_key(schemas, tmp_path):
     for convert in (0, 1, 0, 1):
         for schema, inputs, index in (
             ("chainner:image:load", {0: str(path), 1: convert}, 3),
-            ("chainner:image:load_images", {0: str(images), 2: 0, 4: 0, 6: 1, 7: convert}, 5),
+            (
+                "chainner:image:load_images",
+                {0: str(images), 2: 0, 4: 0, 6: 1, 7: convert},
+                5,
+            ),
         ):
             nodes = metadata_chain(schemas, inputs, schema, output, index)
             _, result = run("native", nodes, tmp_path, output)
@@ -827,7 +837,9 @@ def test_convert_to_srgb_is_part_of_load_images_key(schemas, tmp_path):
             with Image.open(output / "a.png") as saved:
                 assert ("icc_profile" in saved.info) is (not convert)
                 value = np.array(saved)
-            assert pixels.setdefault((convert, schema), value).tolist() == value.tolist()
+            assert (
+                pixels.setdefault((convert, schema), value).tolist() == value.tolist()
+            )
     for schema in ("chainner:image:load", "chainner:image:load_images"):
         np.testing.assert_array_equal(pixels[0, schema], grey)
         # Gamma 1.8's 128 is sRGB's 147.

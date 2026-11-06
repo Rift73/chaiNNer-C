@@ -11,7 +11,8 @@
 # backend/src/dependencies/whls/, spandrel and onnxruntime-migraphx from their forks' release wheels
 # (github.com/Rift73/spandrel, github.com/Rift73/onnxruntime), the rest from PyPI). It is the Windows lock's
 # set for AMD GPUs: ROCm in CUDA's place and ONNX Runtime with DirectML and MIGraphX. The GPU kernel wheels
-# (torch[device-gfx<arch>]) are a machine's, never the lock's: -Device adds them.
+# (torch[device-gfx<arch>]) are a machine's, never the lock's: -Device adds them. triton-windows compiles DUAL's
+# kernels (Build Program), by its wheel's URL on PyPI.
 aiofiles==25.1.0
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.4
@@ -56,7 +57,7 @@ numpy==2.5.3
 nvidia-ml-py==13.615.71
 onnx==1.23.2
 onnxoptimizer==0.4.2
-onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14/onnxruntime_migraphx-1.30.0%2Brocm7.14.dml-cp314-cp314-win_amd64.whl#sha256=9a8c2d1fddfd9a00e429d21fe8f50a32496d0dfe797db1675d3ef299782b870c
+onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph.dml-cp314-cp314-win_amd64.whl#sha256=940258f7c0f010d4250560b18cc95c359348f16ab7b060e65a32fd91cc5fc29f
 opencv-python==5.0.0.93
 packaging==26.3
 pillow==12.3.0
@@ -94,6 +95,7 @@ torch==2.12.0+rocm7.14.1
 torchvision==0.27.0+rocm7.14.1
 tqdm==4.70.1
 tracerite==2.6.5
+triton-windows @ https://files.pythonhosted.org/packages/0c/3c/6be3de0febab8f0708b32377c59d6f963a492622ce79762ec08ddc7496a8/triton_windows-3.8.0.post29-cp314-cp314-win_amd64.whl#sha256=1d0fd6a6cf36ba5cced997177068e328d015e42cd4300f6995fff5a6f8707aff
 typing_extensions==4.16.0
 urllib3==2.8.0
 wcmatch==11.0.1

@@ -14,6 +14,7 @@ import hashlib
 import importlib
 import sys
 import zipfile
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import build_rocm_meta_wheel
@@ -207,7 +208,7 @@ def test_pytorch_on_amd_windows_is_amds_build_with_its_kernel_wheels(
         ("rocm-sdk-device-gfx1151", "7.14.1"),
     ]
     # Each of AMD's wheels by its URL with the SHA-256 it was pinned at (AMD publishes
-    # none); no index, and no Triton (Triton for Windows is not for AMD GPUs).
+    # none); no index, and no Triton (AMD's Windows PyTorch does not need it).
     for dependency in dependencies:
         assert dependency.extra_index_url is None
         if dependency.pypi_name == "rocm":
@@ -337,7 +338,7 @@ def test_onnx_runtime_on_amd_linux_is_the_migraphx_build_on_rocm(
     dependency = onnx_package.get_onnx_runtime()
     assert (dependency.pypi_name, dependency.version, dependency.import_name) == (
         "onnxruntime-migraphx",
-        "1.30.0+rocm7.14",
+        "1.30.0+rocm7.14.hipgraph",
         "onnxruntime",
     )
     assert (
@@ -359,13 +360,13 @@ def test_onnx_runtime_on_amd_windows_is_the_directml_and_migraphx_build(
     dependency = onnx_package.get_onnx_runtime()
     assert (dependency.pypi_name, dependency.version, dependency.import_name) == (
         "onnxruntime-migraphx",
-        "1.30.0+rocm7.14.dml",
+        "1.30.0+rocm7.14.hipgraph.dml",
         "onnxruntime",
     )
     # The Linux wheel's release, its Windows asset
     assert dependency.url == (
-        "https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14/"
-        "onnxruntime_migraphx-1.30.0%2Brocm7.14.dml-cp314-cp314-win_amd64.whl"
+        "https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/"
+        "onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph.dml-cp314-cp314-win_amd64.whl"
         f"#sha256={rocm.ORT_MIGRAPHX_WINDOWS_SHA256}"
     )
     # AMD's Windows ROCm wheels by their pinned URLs, as PyTorch's
@@ -384,7 +385,7 @@ def test_onnx_runtime_on_amd_windows_is_the_directml_and_migraphx_build(
         ("windows", NVIDIA, (), ("triton-windows", "3.5.1.post22")),
         ("windows", NVIDIA, ("gfx1100",), ("triton-windows", "3.5.1.post22")),
         ("windows", NO_NVIDIA, (), ("triton-windows", "3.5.1.post22")),
-        # Triton for Windows is not for AMD GPUs.
+        # The MIGraphX package lists its own there (triton_windows).
         ("windows", NO_NVIDIA, ("gfx1100",), None),
     ],
 )
@@ -603,6 +604,60 @@ def test_on_amd_onnx_runtime_and_triton_replace_the_other_builds(
     if system == "linux":
         expected["triton-rocm"] = ("triton",)
     assert {d.pypi_name: d.replaces for d in dependencies if d.replaces} == expected
+
+
+def test_triton_for_amd_windows_is_pinned_by_its_hash_above_nvidias():
+    dependency = rocm.triton_windows()
+    assert (dependency.pypi_name, dependency.version) == (
+        "triton-windows",
+        "3.8.0.post29",
+    )
+    assert dependency.import_name == "triton"
+    assert dependency.replaces == ()
+    assert dependency.url == (
+        "https://files.pythonhosted.org/packages/0c/3c/"
+        "6be3de0febab8f0708b32377c59d6f963a492622ce79762ec08ddc7496a8/"
+        "triton_windows-3.8.0.post29-cp314-cp314-win_amd64.whl"
+        "#sha256=1d0fd6a6cf36ba5cced997177068e328d015e42cd4300f6995fff5a6f8707aff"
+    )
+
+
+def test_the_amd_windows_lock_and_provisioning_pin_the_same_triton():
+    native = Path(__file__).parents[2] / "native"
+    pin = f"triton-windows @ {rocm.triton_windows().url}"
+    lock = (native / "python-stack.lock.rocm.txt").read_text("utf-8")
+    assert pin in lock.splitlines()
+    assert pin in (native / "tools" / "provision_runtime.ps1").read_text("utf-8")
+    # NVIDIA's lock keeps its own pin.
+    assert pin not in (native / "python-stack.lock.txt").read_text("utf-8")
+
+
+def test_a_folder_from_nvidia_upgrades_to_amds_triton_with_nothing_removed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(store, "installed_packages", {"triton-windows": "3.5.1.post22"})
+    dependency = rocm.triton_windows()
+    info = store.DependencyInfo(
+        package_name=dependency.pypi_name,
+        version=dependency.version,
+        url=dependency.url,
+    )
+    assert filter_necessary_to_install([info]) == [info]
+    assert replaced_distributions([info]) == []
+
+
+def test_a_folder_from_amd_keeps_its_newer_triton_on_nvidia(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A pin is a floor: on NVIDIA, this folder stays on 3.8.0.post29.
+    monkeypatch.setattr(store, "installed_packages", {"triton-windows": "3.8.0.post29"})
+    computer(monkeypatch, tensorrt_package, nvidia=NVIDIA, system="windows")
+    (dependency,) = tensorrt_package.get_triton()
+    assert dependency.version == "3.5.1.post22"
+    info = store.DependencyInfo(
+        package_name=dependency.pypi_name, version=dependency.version
+    )
+    assert filter_necessary_to_install([info]) == []
 
 
 def test_the_host_installs_with_what_the_workers_dependency_replaces(

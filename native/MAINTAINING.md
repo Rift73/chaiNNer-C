@@ -151,7 +151,8 @@ packaging (section 4, item 6; README Build). VOSR's modules, engine caches, host
    build), so this check covers it; a package without it has no DRFT TensorRT route.
 6. A Windows release with the AMD GPU parts builds with `Build.ps1 -RocmRoot <ROCm 7.14 SDK> -MigraphxRoot <MIGraphX
    2.16 install>` as well (`BUILDING.md`, AMD GPUs; the MIGraphX whose DLLs the published Windows `onnxruntime-migraphx`
-   wheel bundles): `nodes\impl\migraphx\_chainner_migraphx.pyd`, `drft_migx_ops.dll` and `vosr2_migx_ops.dll` ship
+   wheel bundles): `nodes\impl\migraphx\_chainner_migraphx.pyd`, `drft_migx_ops.dll`, `dual_migx_ops.dll` and
+   `vosr2_migx_ops.dll` ship
    when built and are never required (`package_files.py`), and the other binaries keep the SHA-256 of a build without
    the roots at the same path (`drft_trt_plugins.dll` depends on the checkout's path).
 

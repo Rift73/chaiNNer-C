@@ -23,7 +23,7 @@ install_hint = (
 def get_triton() -> list[Dependency]:
     # The package is disabled without an NVIDIA GPU. Where PyTorch runs on ROCm instead, the
     # Triton its ROCm build pins on Linux (NVIDIA's would overwrite its triton module), and
-    # none on Windows (Triton for Windows is not for AMD GPUs).
+    # none on Windows, where the MIGraphX package lists its own (dependencies.rocm).
     on_rocm = not nvidia.is_available and bool(gpu_architectures()[0])
     if is_windows:
         if on_rocm:

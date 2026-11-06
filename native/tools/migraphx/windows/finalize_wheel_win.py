@@ -1,6 +1,7 @@
 """Turn the built Windows onnxruntime_migraphx 1.30.0 wheel (DirectML + MIGraphX + CPU) into the shipped one.
 
-1. Local version: 1.30.0 -> 1.30.0+rocm7.14.dml (METADATA and .dist-info name; onnxruntime.__version__ stays 1.30.0).
+1. Local version: 1.30.0 -> 1.30.0+rocm7.14.hipgraph.dml, MIGraphX with migraphx-hip-graph.patch (METADATA and
+   .dist-info name; onnxruntime.__version__ stays 1.30.0).
 2. MIGraphX's DLLs in onnxruntime/capi: setup.py copies the ones ORT's Windows packaging names (migraphx, _c,
    _device, _gpu, _onnx, _tf, migraphx-hiprtc-driver.exe); migraphx_ref.dll (the CPU reference target MIGraphX
    loads by name, shipped on Linux too) is added from the MIGraphX install. ROCm is never copied in.
@@ -28,7 +29,7 @@ import subprocess
 import sys
 import tempfile
 
-LOCAL = "+rocm7.14.dml"
+LOCAL = "+rocm7.14.hipgraph.dml"
 DIST = "onnxruntime_migraphx"
 DEFAULT_VS_ROOT = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
 # The toolset the wheel's binaries are built with: its redistributable folder holds the runtime DLLs they import.

@@ -75,7 +75,9 @@ def test_a_fixed_onnx_compiles_lowered_at_its_own_size(
 ):
     manifest = dual.export_manifest(fixed_onnx)
     assert manifest is not None
-    built = dual.build_program(fixed_onnx, manifest, 1, None, exhaustive_tune=True)
+    built = dual.build_program(
+        fixed_onnx, manifest, 1, None, exhaustive_tune=True, hip_graph=True
+    )
     assert built == b"program"
     ((args, kwargs),) = compiles
     assert args[1:] == (1, (32, 64))
@@ -83,6 +85,7 @@ def test_a_fixed_onnx_compiles_lowered_at_its_own_size(
         "fp16": False,
         "fp8": False,
         "exhaustive_tune": True,
+        "hip_graph": True,
         "op_libraries": (library,),
         "label": "DUAL program build",
         "context": None,

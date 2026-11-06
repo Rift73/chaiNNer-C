@@ -240,6 +240,32 @@ def conv_model(w: np.ndarray) -> ModelProto:
     return helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
 
 
+def test_hip_graphs_are_counted_and_the_option_changes_nothing_on_ref(
+    migx: ModuleType, tmp_path: Path
+):
+    """The option goes to the GPU target's hipgraphify pass: a ref program compiles the
+    same, holds no HIP graph, and keeps saying so after it is saved and loaded."""
+    rng = np.random.default_rng(3)
+    data = conv_model(
+        (rng.standard_normal((8, 3, 3, 3)) * 0.2).astype(np.float32)
+    ).SerializeToString()
+    x = rng.uniform(0, 1, (1, 3, 32, 32)).astype(np.float32)
+    off = migx.compile_onnx(data, target="ref")
+    on = migx.compile_onnx(data, target="ref", hip_graph=True)
+    assert (off.hip_graphs, on.hip_graphs) == (0, 0)
+    y, want = np.zeros((2, 1, 8, 32, 32), np.float32)
+    run(off, {"x": x}, [want])
+    run(on, {"x": x}, [y])
+    assert np.array_equal(y, want)
+    path = tmp_path / "program.mxr"
+    on.save(path)
+    again = migx.load_program(path, 0)
+    assert again.hip_graphs == 0
+    y2 = np.zeros_like(y)
+    run(again, {"x": x}, [y2])
+    assert np.array_equal(y2, want)
+
+
 def test_model_file_with_external_data(migx: ModuleType, tmp_path: Path):
     """A model file whose weights lie beside it compiles as its bytes with the weights
     inside."""
@@ -604,6 +630,52 @@ def test_gpu_program_matches_ref(migx: ModuleType, fp16: bool):
     assert np.allclose(y, conv3x3(x, w), atol=2e-2 if fp16 else 1e-4)
     again = migx.load_program(program.to_bytes(), 0)
     assert again.gfx == program.gfx
+
+
+@amd_gpu
+def test_gpu_hip_graphs_match_the_program_without_them(
+    migx: ModuleType, tmp_path: Path
+):
+    """A program built with the option holds HIP graphs, saved and loaded too, and its
+    capture, replays and a moved output buffer all give the plain program's output."""
+    rng = np.random.default_rng(5)
+    w = [(rng.standard_normal((3, 3, 3, 3)) * 0.2).astype(np.float32) for _ in range(5)]
+    nodes = []
+    previous = "x"
+    for i in range(len(w)):
+        nodes.append(
+            helper.make_node("Conv", [previous, f"w{i}"], [f"c{i}"], pads=[1, 1, 1, 1])
+        )
+        nodes.append(helper.make_node("Relu", [f"c{i}"], [f"r{i}"]))
+        previous = f"r{i}"
+    nodes.append(helper.make_node("Identity", [previous], ["y"]))
+    weights = {f"w{i}": v for i, v in enumerate(w)}
+    data = model(nodes, {"x": [1, 3, 32, 32]}, ["y"], weights)
+    plain = migx.compile_onnx(data, device=0)
+    graphed = migx.compile_onnx(data, device=0, hip_graph=True)
+    assert plain.hip_graphs == 0 and graphed.hip_graphs > 0
+    path = tmp_path / "graphs.mxr"
+    graphed.save(path)
+    loaded = migx.load_program(path, 0)
+    assert loaded.hip_graphs == graphed.hip_graphs
+    hip = Hip()
+    shape = (1, 3, 32, 32)
+
+    def output(program: Any, x: int, out: int) -> np.ndarray:
+        program.run({"x": x}, [out], 0)
+        return hip.download(out, np.zeros(shape, np.float32))
+
+    try:
+        out = hip.upload(np.zeros(shape, np.float32))
+        moved = hip.upload(np.zeros(shape, np.float32))
+        for program in (graphed, loaded):
+            for _ in range(3):
+                x = hip.upload(rng.uniform(0, 1, shape).astype(np.float32))
+                want = output(plain, x, out)
+                assert np.array_equal(output(program, x, out), want)
+                assert np.array_equal(output(program, x, moved), want)
+    finally:
+        hip.free()
 
 
 @amd_gpu

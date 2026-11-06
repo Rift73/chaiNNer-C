@@ -162,6 +162,7 @@ def build_program(
     size: Size,
     *,
     exhaustive_tune: bool = False,
+    hip_graph: bool = False,
     context: NodeContext | None = None,
 ) -> bytes:
     """A MIGraphX program of a DRFT ONNX for one (height, width) input size (see
@@ -176,6 +177,7 @@ def build_program(
         fp16=False,
         fp8=False,
         exhaustive_tune=exhaustive_tune,
+        hip_graph=hip_graph,
         op_libraries=(library,),
         label="DRFT program build",
         context=context,

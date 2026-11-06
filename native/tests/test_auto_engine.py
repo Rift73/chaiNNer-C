@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import os
 import subprocess
 import sys
@@ -790,6 +791,73 @@ def node_module():
     return pytest.importorskip(
         "packages.chaiNNer_pytorch.pytorch.processing.upscale_image"
     )
+
+
+# The node's input, imported as the server imports it, on a PC of each kind.
+THE_NODES_INPUT = """
+import json, sys
+from types import SimpleNamespace
+sys.path.insert(0, sys.argv[1])
+import torch, spandrel, gpu
+gpu.nvidia = SimpleNamespace(
+    is_available={nvidia}, any_needs_legacy_cuda=False, all_support_fp16=True, devices=[]
+)
+from api.group import Group
+from nodes.condition import Condition
+from nodes.impl.pytorch import auto_engine
+auto_engine.migraphx_here = lambda: {migraphx}
+import packages.chaiNNer_pytorch
+__import__("packages.chaiNNer_pytorch.pytorch.processing.upscale_image", fromlist=["x"])
+from packages.chaiNNer_pytorch.pytorch import processing_group
+node = next(n for n in processing_group.nodes if n.schema_id == "{schema}")
+wanted = (
+    Condition.const({shown})
+    & Condition.type(0, auto_engine.ENGINE_MODEL_NAVI, if_not_connected=True)
+).to_json()
+def holds_it(item):
+    return isinstance(item, Group) and any(i == 8 or holds_it(i) for i in item.items)
+groups = [g for g in node.group_layout if holds_it(g)]
+input_8 = next(i for i in node.inputs if i.id == 8)
+print("RESULT" + json.dumps(dict(
+    label=input_8.label,
+    default=input_8.default,
+    matches=groups[0].info.options["condition"] == wanted,
+)))
+"""
+
+
+@pytest.mark.parametrize(
+    ("nvidia", "migraphx", "label", "shown"),
+    [
+        (True, False, "Use TensorRT Engine", True),
+        (False, True, "Use MIGraphX Program", True),
+        # A PC with neither shows no input, whatever a saved chain holds.
+        (False, False, "Use TensorRT Engine", False),
+    ],
+    ids=["nvidia", "amd", "neither"],
+)
+def test_the_same_input_on_either_kind_of_pc(nvidia, migraphx, label, shown):
+    backend = Path(auto.__file__).parents[3]
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            THE_NODES_INPUT.format(
+                nvidia=nvidia, migraphx=migraphx, schema=SCHEMA, shown=shown
+            ),
+            str(backend),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr[-2000:]
+    line = next(x for x in done.stdout.splitlines() if x.startswith("RESULT"))
+    result = json.loads(line.removeprefix("RESULT"))
+    assert result["label"] == label
+    assert result["default"] == 0
+    assert result["matches"]
 
 
 def test_the_setting_is_off_by_default_and_its_id_is_new(node_module):
