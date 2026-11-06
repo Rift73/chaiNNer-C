@@ -1,8 +1,10 @@
 /* eslint-disable prefer-destructuring */
 /* eslint-disable no-param-reassign */
 /* eslint-disable import/prefer-default-export */
-import { isEdge, isNode } from 'reactflow';
 import { log } from './log';
+
+const isEdge = (element) => 'id' in element && 'source' in element && 'target' in element;
+const isNode = (element) => 'id' in element && !('source' in element) && !('target' in element);
 
 // ==============
 //   pre-alpha

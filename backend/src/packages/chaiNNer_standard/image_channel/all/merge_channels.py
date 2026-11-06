@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import numpy as np
 
-import navi
 from nodes.impl import native_channels
 from nodes.properties.inputs import ImageInput
 from nodes.properties.outputs import ImageOutput
@@ -27,20 +26,29 @@ from .. import all_group
     outputs=[
         ImageOutput(
             size_as=0,
-            image_type=navi.Image(
-                channels="""
-                    match (
-                        Input0.channels
-                        + match Input1 { Image as i => i.channels, _ => 0 }
-                        + match Input2 { Image as i => i.channels, _ => 0 }
-                        + match Input3 { Image as i => i.channels, _ => 0 }
-                    ) {
-                        1 => 1,
-                        2 | 3 => 3,
-                        int(4..) => 4
+            image_type="""
+                def otherSize(i: any, first: Image) = match i {
+                    Image as i => i.width != first.width or i.height != first.height,
+                    _ => false,
+                };
+
+                if otherSize(Input1, Input0) or otherSize(Input2, Input0) or otherSize(Input3, Input0) {
+                    error("All images to be merged must be the same resolution.")
+                } else {
+                    Image {
+                        channels: match (
+                            Input0.channels
+                            + match Input1 { Image as i => i.channels, _ => 0 }
+                            + match Input2 { Image as i => i.channels, _ => 0 }
+                            + match Input3 { Image as i => i.channels, _ => 0 }
+                        ) {
+                            1 => 1,
+                            2 | 3 => 3,
+                            int(4..) => 4
+                        },
                     }
-                    """,
-            ),
+                }
+            """,
         )
     ],
     deprecated=True,

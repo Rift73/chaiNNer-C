@@ -7,6 +7,7 @@ import numpy as np
 
 from nodes.impl.native_buffers import freeze_normalized
 from nodes.impl.native_filters import morphology
+from nodes.impl.native_resample import finish_alpha, has_transparency
 from nodes.properties.inputs import EnumInput, ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -47,6 +48,12 @@ def dilate_node(
 ) -> np.ndarray:
     if radius == 0 or iterations == 0:
         return img
+
+    # A transparent pixel holds no colour, so a hidden colour cannot win the channel's
+    # maximum. Colours are not premultiplied: that would mix a pixel's colour with another's
+    # alpha.
+    if has_transparency(img):
+        img = finish_alpha(img, divide=False)
 
     # The fresh result is clamped in place as the output enforce converts it, frozen
     # and registered (freeze_normalized), so the enforce can borrow it.

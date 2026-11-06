@@ -2,6 +2,8 @@ from __future__ import annotations
 
 # `x as x` imports: the native mirror reads these names in native/src/video_io.cpp
 import os as os
+import re
+import sys
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -13,6 +15,7 @@ import numpy as np
 from sanic.log import logger as logger
 
 from api import Collector, IteratorInputInfo, KeyInfo, NodeContext
+from gpu import nvidia
 from nodes.groups import Condition, if_enum_group, if_group, required
 from nodes.impl.colour_info import (
     MATRIX_LABELS,
@@ -20,6 +23,7 @@ from nodes.impl.colour_info import (
     ChromaLocation,
     ColourInfo,
     Matrix,
+    PixelLayout,
     Primaries,
     Range,
     Transfer,
@@ -31,8 +35,9 @@ from nodes.impl.colour_info import (
     swscale_matrix,
 )
 from nodes.impl.ffmpeg import FFMpegEnv
-from nodes.impl.image_utils import to_uint8, to_uint16, to_uint16_gbr_planes
+from nodes.impl.image_utils import to_uint8, to_uint16
 from nodes.impl.item_window import Prepared, register_phases
+from nodes.impl.native_buffers import gbr_planes_u16
 from nodes.impl.native_graph import graph
 from nodes.impl.native_image_io import cv_save_image
 from nodes.impl.plane_resample import Kernel, resample_plane
@@ -87,6 +92,11 @@ class VideoEncoder(Enum):
     H265 = "libx265"
     VP9 = "libvpx-vp9"
     FFV1 = "ffv1"
+    AV1 = "libsvtav1"
+    PRORES = "prores_ks"
+    H264_NVENC = "h264_nvenc"
+    H265_NVENC = "hevc_nvenc"
+    AV1_NVENC = "av1_nvenc"
 
     @property
     def formats(self) -> tuple[VideoFormat, ...]:
@@ -94,35 +104,61 @@ class VideoEncoder(Enum):
 
     @property
     def bit_depths(self) -> tuple[int, ...]:
-        """The bit depths the encoder takes in chaiNNer's FFmpeg 5.1.2 (ffmpeg -h
-        encoder=...), of those Save Video writes, in increasing order."""
+        """The bit depths the encoder takes in the pinned FFmpeg (ffmpeg -h encoder=...),
+        of those Save Video writes, in increasing order. NVENC has no deeper coding: its
+        16-bit input formats are encoded in 10 bits."""
         return {
             VideoEncoder.H264: (8, 10),
             VideoEncoder.H265: (8, 10, 12),
             VideoEncoder.VP9: (8, 10, 12),
             VideoEncoder.FFV1: (8, 9, 10, 12, 14, 16),
+            VideoEncoder.AV1: (8, 10),
+            VideoEncoder.PRORES: (10,),
+            VideoEncoder.H264_NVENC: (8, 10),
+            VideoEncoder.H265_NVENC: (8, 10),
+            VideoEncoder.AV1_NVENC: (8, 10),
         }[self]
 
     @property
     def pixel_formats(self) -> tuple[str, ...]:
-        """The YUV and RGB pixel formats the encoder takes in chaiNNer's FFmpeg 5.1.2,
-        of those Save Video writes."""
+        """The YUV and RGB pixel formats the encoder takes in the pinned FFmpeg, of those
+        Save Video writes. NVENC's own semi-planar and MSB-aligned forms of these (p010le,
+        nv16, p210le, yuv444p10msble) are FFmpeg's choice for them, which only moves the
+        same codes; its 10-bit RGB would be coded as 4:2:0 YUV, so it is left out. What
+        an older GPU lacks (10 bits, 4:2:2, 4:4:4), the encoder refuses when it starts."""
         depths = ["" if depth == 8 else f"{depth}le" for depth in self.bit_depths]
-        layouts = ("420", "422", "444")
+        layouts = {
+            VideoEncoder.AV1: ("420",),
+            VideoEncoder.AV1_NVENC: ("420",),
+            VideoEncoder.PRORES: ("422", "444"),
+        }.get(self, ("420", "422", "444"))
         formats = [f"yuv{layout}p{depth}" for layout in layouts for depth in depths]
-        if self is not VideoEncoder.H264:
+        if self in (VideoEncoder.H265, VideoEncoder.VP9, VideoEncoder.FFV1):
             formats += [f"gbrp{depth}" for depth in depths]
         if self is VideoEncoder.FFV1:
             formats.remove("gbrp")  # FFV1 takes 8-bit RGB as bgr0 only
+        if self in (VideoEncoder.H264_NVENC, VideoEncoder.H265_NVENC):
+            formats.append("gbrp")
         return tuple(formats)
 
     @property
     def auto_depth(self) -> int | None:
         """The most bits Bit Depth Auto gives the encoder: what players commonly
-        decode (H.264 8, H.265 and VP9 10); FFV1 keeps the source's."""
-        return {VideoEncoder.H264: 8, VideoEncoder.H265: 10, VideoEncoder.VP9: 10}.get(
-            self
-        )
+        decode (H.264 8, H.265, VP9 and AV1 10); FFV1 keeps the source's."""
+        return {
+            VideoEncoder.H264: 8,
+            VideoEncoder.H265: 10,
+            VideoEncoder.VP9: 10,
+            VideoEncoder.AV1: 10,
+            VideoEncoder.PRORES: 10,
+            VideoEncoder.H264_NVENC: 8,
+            VideoEncoder.H265_NVENC: 10,
+            VideoEncoder.AV1_NVENC: 10,
+        }.get(self)
+
+    @property
+    def nvenc(self) -> bool:
+        return self.value.endswith("_nvenc")
 
 
 class VideoPreset(Enum):
@@ -134,6 +170,25 @@ class VideoPreset(Enum):
     SLOW = "slow"
     SLOWER = "slower"
     VERY_SLOW = "veryslow"
+
+
+class ProResProfile(Enum):
+    PROXY = "proxy"
+    LT = "lt"
+    STANDARD = "standard"
+    HQ = "hq"
+    P4444 = "4444"
+    P4444_XQ = "4444xq"
+
+
+class NvencPreset(Enum):
+    P1 = "p1"
+    P2 = "p2"
+    P3 = "p3"
+    P4 = "p4"
+    P5 = "p5"
+    P6 = "p6"
+    P7 = "p7"
 
 
 class AudioSettings(Enum):
@@ -179,11 +234,16 @@ def get_simple_format(
     return graph().video_simple_format(globals(), simple_video_format, quality)
 
 
-PARAMETERS: dict[VideoEncoder, list[Literal["preset", "crf"]]] = {
+PARAMETERS: dict[VideoEncoder, list[Literal["preset", "crf", "profile", "cq"]]] = {
     VideoEncoder.H264: ["preset", "crf"],
     VideoEncoder.H265: ["preset", "crf"],
     VideoEncoder.VP9: ["crf"],
     VideoEncoder.FFV1: [],
+    VideoEncoder.AV1: ["preset", "crf"],
+    VideoEncoder.PRORES: ["profile"],
+    VideoEncoder.H264_NVENC: ["preset", "cq"],
+    VideoEncoder.H265_NVENC: ["preset", "cq"],
+    VideoEncoder.AV1_NVENC: ["preset", "cq"],
 }
 
 
@@ -200,15 +260,30 @@ class WriteSettings:
     siting: SitingCorrection
 
 
-def rgb_payload(img: np.ndarray) -> np.ndarray:
+def rgb_payload(img: np.ndarray, white: float) -> np.ndarray:
     """An RGB frame as Save Video pipes it: gbrp16le, the G, B and R planes in 16 bits,
-    so FFmpeg's YUV conversion keeps more than 8 bits of the float image."""
-    return to_uint16_gbr_planes(img)
+    so FFmpeg's YUV conversion keeps more than 8 bits of the float image, with 1.0 as
+    the code `white` (Writer.rgb_white)."""
+    planes = gbr_planes_u16(np.ascontiguousarray(img), white)
+    if planes is not None:
+        return planes
+    scaled = np.rint(np.clip(img, 0, 1) * white).astype(np.uint16)
+    return np.ascontiguousarray(scaled.transpose(2, 0, 1)[[1, 0, 2]])
 
 
 def atomic_target(path: str) -> Any:
     """A temporary file in path's folder, renamed onto path by commit()
-    (native/include/atomic_file.hpp): Save Video's FFmpeg output and audio mux."""
+    (native/include/atomic_file.hpp): Save Video's FFmpeg output and audio mux. FFmpeg on
+    Windows reads its arguments as UTF-8, which a lone UTF-16 unit in a name does not have."""
+    if sys.platform == "win32":
+        try:
+            path.encode("utf-8")
+        except UnicodeEncodeError:
+            shown = path.encode("utf-8", "backslashreplace").decode("utf-8")
+            raise ValueError(
+                f"FFmpeg cannot write to {shown} on Windows: the folder or file name"
+                " holds a character that is not valid text. Choose another name."
+            ) from None
     return graph().AtomicTarget(path)
 
 
@@ -257,6 +332,10 @@ class Writer:
     faststart: bool = False
 
     def start(self, width: int, height: int):
+        if self.encoder is VideoEncoder.AV1:
+            # SVT-AV1 prints its settings to stderr whatever FFmpeg's log level is, and
+            # a finished encode logs what FFmpeg printed. FFmpeg inherits this.
+            os.environ.setdefault("SVT_LOG", "1")
         # Create the writer and run process
         graph().video_writer_start(globals(), self, width, height)
 
@@ -331,9 +410,9 @@ class Writer:
         settings = self.settings
         if settings is not None and settings.bit_depth is not BitDepth.AUTO:
             return int(settings.bit_depth.value)
-        if settings is None or settings.colour is None:
-            return 8
-        depth = max(8, settings.colour.bit_depth)
+        depth = 8
+        if settings is not None and settings.colour is not None:
+            depth = max(8, settings.colour.bit_depth)
         encoder = self.encoder
         if encoder is None:
             return depth
@@ -343,6 +422,14 @@ class Writer:
         return depth if cap is None else min(depth, cap)
 
     @property
+    def _output_layout(self) -> PixelLayout | None:
+        """The coding of the -pix_fmt given; None without one, or without output options
+        to read."""
+        params = self.output_params
+        fmt = str(params.get("pix_fmt", "")) if hasattr(params, "get") else ""
+        return pixel_layout(fmt) if fmt else None
+
+    @property
     def pipe_format(self) -> str:
         """The pixel format frames are piped in: the planes' own; RGB as gbrp16le, so
         a YUV conversion keeps more than 8 bits, but as bgr24 for GIF's palette and RGB
@@ -350,17 +437,28 @@ class Writer:
         by a shift, off by one for half the codes)."""
         if self.coding is not None:
             return planar_format(self.coding)
-        params = self.output_params
-        output = (
-            pixel_layout(str(params.get("pix_fmt", "")))
-            if hasattr(params, "get")
-            else None
-        )
+        output = self._output_layout
         if self.container is VideoFormat.GIF or (
             output is not None and output.kind == "rgb" and output.bit_depth <= 8
         ):
             return "bgr24"
         return "gbrp16le"
+
+    @property
+    def rgb_white(self) -> float:
+        """The gbrp16le code of white: libswscale's RGB to YUV or gray takes 65280 as
+        white at every output depth, so 65535 gave Y 236 at 8 bits, limited range; RGB
+        output reaches its highest code at 65535. Without a -pix_fmt, FFmpeg keeps the
+        piped RGB on an encoder that takes RGB and converts to YUV on one that does not
+        (H.264, and a container's default encoder)."""
+        output = self._output_layout
+        if output is None:
+            encoder = self.encoder
+            takes_rgb = encoder is not None and any(
+                fmt.startswith("gbrp") for fmt in encoder.pixel_formats
+            )
+            return 65535.0 if takes_rgb else 65280.0
+        return 65280.0 if output.kind in ("yuv", "gray") else 65535.0
 
     @property
     def input_options(self) -> dict[str, str]:
@@ -411,7 +509,7 @@ class Writer:
         if coding is None or planes is None:
             if self.pipe_format == "bgr24":
                 return to_uint8(self._image(frame), normalized=True)
-            return rgb_payload(self._image(frame))
+            return rgb_payload(self._image(frame), self.rgb_white)
         self.check_frame(frame, coding.luma_size)
         y, u, v = planes
         u, v = self._sited(u, v)
@@ -523,11 +621,15 @@ class Writer:
             params["pix_fmt"] = planar_format(coding)
             self._tag(params, coding)
             _append_frame_tags(params)
+            _nvenc_siting(params)
             return
         depth = self._bit_depth()
-        if depth > 8 and str(params["pix_fmt"]) == "yuv420p":
-            params["pix_fmt"] = f"yuv420p{depth}le"
-        if not str(params["pix_fmt"]).startswith(("yuv", "nv")):
+        if str(params["pix_fmt"]) == "yuv420p":
+            layout = "420"
+            if params.get("vcodec") == VideoEncoder.PRORES.value:
+                layout = "444" if _prores_444(params) else "422"
+            params["pix_fmt"] = f"yuv{layout}p" + ("" if depth == 8 else f"{depth}le")
+        if not str(params["pix_fmt"]).startswith(("yuv", "nv", "p0", "p2")):
             return
         colour = self._rgb_colour(width, height)
         if colour is None:
@@ -536,6 +638,7 @@ class Writer:
             self._tag(params, colour)
         self._append_conversion(params)
         _append_frame_tags(params)
+        _nvenc_siting(params)
 
     def _rgb_colour(self, width: int, height: int) -> ColourInfo | None:
         """The YUV output's colour in RGB mode: the Colour Info input (else the size
@@ -557,6 +660,8 @@ class Writer:
                 chroma_location=guess.chroma_location,
             )
         colour = base.with_choices(*settings.choices)
+        if self.encoder is VideoEncoder.PRORES and settings.choices[3] is Range.AUTO:
+            colour = replace(colour, range=Range.LIMITED)  # ProRes knows no other
         if colour.matrix in (Matrix.BT2020_CL, Matrix.YCGCO, Matrix.ICTCP, Matrix.RGB):
             raise ValueError(
                 f"Save Video's RGB mode cannot convert to the {MATRIX_LABELS[colour.matrix]}"
@@ -567,21 +672,34 @@ class Writer:
 
     @staticmethod
     def _tag(params: dict[str, Any], colour: ColourInfo) -> None:
-        """The colour tags, and for H.265 the HDR10 metadata (the mastering display and
-        light levels) as x265 writes it; a user's tag or x265 option wins."""
+        """The colour tags, and for H.265 and AV1 the HDR10 metadata (the mastering display
+        and light levels) as x265 and SVT-AV1 write it; a user's tag or encoder option
+        wins."""
         for key, value in colour_tags(colour).items():
             params.setdefault(key, value)
         hdr = colour.hdr
-        if hdr is None or params.get("vcodec") != VideoEncoder.H265.value:
+        names = {
+            VideoEncoder.H265.value: ("x265-params", "master-display", "max-cll"),
+            VideoEncoder.AV1.value: (
+                "svtav1-params",
+                "mastering-display",
+                "content-light",
+            ),
+        }.get(str(params.get("vcodec")))
+        if hdr is None or names is None:
             return
-        user = str(params.get("x265-params", ""))
+        key, mastering_key, light_key = names
+        user = str(params.get(key, ""))
         options = [user] if user else []
-        if hdr.mastering_display is not None and "master-display=" not in user:
-            options.append(f"master-display={hdr.mastering_display}")
-        if (hdr.max_cll, hdr.max_fall) != (None, None) and "max-cll=" not in user:
-            options.append(f"max-cll={hdr.max_cll or 0},{hdr.max_fall or 0}")
+        if hdr.mastering_display is not None and f"{mastering_key}=" not in user:
+            mastering = hdr.mastering_display
+            if key == "svtav1-params":
+                mastering = _svt_mastering_display(mastering)
+            options.append(f"{mastering_key}={mastering}")
+        if (hdr.max_cll, hdr.max_fall) != (None, None) and f"{light_key}=" not in user:
+            options.append(f"{light_key}={hdr.max_cll or 0},{hdr.max_fall or 0}")
         if options:
-            params["x265-params"] = ":".join(options)
+            params[key] = ":".join(options)
 
     @staticmethod
     def _tag_by_size(params: dict[str, Any], width: int, height: int) -> None:
@@ -634,8 +752,9 @@ class Writer:
         _append_filter(params, scale + "flags=accurate_rnd+full_chroma_int")
 
     def _check_pixel_format(self, width: int, height: int) -> None:
-        """Refuses a pixel format the encoder cannot take, and warns about 4:4:4, which
-        many hardware players cannot play, and about a -pix_fmt Planes mode ignores."""
+        """Refuses a pixel format or frame size the encoder cannot take, and warns about
+        4:4:4, which many hardware players cannot play, and about a -pix_fmt Planes mode
+        ignores."""
         if "pix_fmt" not in self.output_params:
             return
         params = dict(self.output_params)
@@ -651,6 +770,12 @@ class Writer:
         encoder = next(
             (e for e in VideoEncoder if e.value == params.get("vcodec")), None
         )
+        if encoder is VideoEncoder.AV1 and min(width, height) < 16:
+            raise ValueError(
+                f"The AV1 encoder needs frames of at least 16x16, not {width}x{height}:"
+                " SVT-AV1 can crash FFmpeg on smaller ones. Resize the frames or choose"
+                " another encoder."
+            )
         if encoder is None or not fmt.startswith(("yuv4", "gbrp")):
             return
         if fmt not in encoder.pixel_formats:
@@ -659,10 +784,63 @@ class Writer:
                 f" {', '.join(encoder.pixel_formats)}. Choose another Bit Depth or"
                 " encoder (FFV1 writes every layout up to 16 bits)."
             )
-        if fmt.startswith("yuv444") and encoder is not VideoEncoder.FFV1:
+        if encoder is VideoEncoder.PRORES:
+            if fmt.startswith("yuv444") != _prores_444(params):
+                raise ValueError(
+                    f"The ProRes {params['profile:v']} profile cannot hold {fmt}: 4444 and"
+                    " 4444 XQ hold 4:4:4 frames, the others 4:2:2."
+                )
+            if fmt.startswith("yuv422") and width % 2:
+                raise ValueError(
+                    f"ProRes 4:2:2 cannot keep an odd width ({width}): the encoder damages"
+                    " the last column's chroma, without an error. Make the width even, or"
+                    " save 4:4:4 with a 4444 profile."
+                )
+            if str(params.get("color_range")) in ("pc", "jpeg"):
+                raise ValueError(
+                    "ProRes is limited range only, and FFmpeg would save full-range codes"
+                    " tagged limited. Choose Range Limited, or save full-range planes"
+                    " with another encoder."
+                )
+        settings = self.settings
+        if (
+            (encoder is VideoEncoder.PRORES or encoder.nvenc)
+            and settings is not None
+            and settings.colour is not None
+            and settings.colour.hdr is not None
+        ):
+            logger.warning(
+                "%s gets its colour tags, without the HDR10 mastering display and light"
+                " levels: %s can only take them from a decoded video's frames.",
+                self.save_path,
+                encoder.value,
+            )
+        if fmt.startswith("yuv444") and encoder not in (
+            VideoEncoder.FFV1,
+            VideoEncoder.PRORES,
+        ):
             logger.warning(
                 "%s is 4:4:4, which many hardware players cannot play.", self.save_path
             )
+
+
+def _prores_444(params: dict[str, Any]) -> bool:
+    """Whether the ProRes profile in FFmpeg's options is one of 4:4:4 frames."""
+    return str(params["profile:v"]).startswith("4444")
+
+
+def _svt_mastering_display(display: str) -> str:
+    """A mastering display as x265 writes it (HdrInfo: chromaticities in 1/50000 and
+    luminance in 1/10000 cd/m2) as SVT-AV1 reads it, chromaticities in units of 1 and
+    luminance in cd/m2."""
+    return re.sub(
+        r"(G|B|R|WP|L)\((\d+),(\d+)\)",
+        lambda m: "{}({:.5f},{:.5f})".format(
+            m[1],
+            *(int(m[i]) / (10000 if m[1] == "L" else 50000) for i in (2, 3)),
+        ),
+        display,
+    )
 
 
 def _append_filter(params: dict[str, Any], chain: str) -> None:
@@ -693,6 +871,27 @@ def _append_frame_tags(params: dict[str, Any]) -> None:
         _append_filter(params, "setparams=" + ":".join(tags))
 
 
+def _nvenc_siting(params: dict[str, Any]) -> None:
+    """NVENC writes no chroma siting into its stream, so only Matroska's and WebM's own tag
+    would hold -chroma_sample_location: players of an MP4, MOV or AVI would assume left
+    (H.264, H.265) or nothing (AV1). The encoder's metadata bitstream filter writes it. A
+    user's -bsf wins; AV1 has no way to say centre."""
+    location = str(params.get("chroma_sample_location"))
+    if any(key.startswith("bsf") for key in params):
+        return
+    if params.get("vcodec") in ("h264_nvenc", "hevc_nvenc") and location != "left":
+        kind = {"center": 1, "topleft": 2, "top": 3, "bottomleft": 4, "bottom": 5}.get(
+            location
+        )
+        if kind is not None:
+            codec = str(params["vcodec"]).split("_")[0]
+            params["bsf:v"] = f"{codec}_metadata=chroma_sample_loc_type={kind}"
+    elif params.get("vcodec") == "av1_nvenc":
+        position = {"left": "vertical", "topleft": "colocated"}.get(location)
+        if position is not None:
+            params["bsf:v"] = f"av1_metadata=chroma_sample_position={position}"
+
+
 @dataclass
 class VideoCollector(Collector[tuple[np.ndarray | None, ...], None]):
     """Save Video's collector; its commit phase writes prepared frames to `writer`."""
@@ -711,7 +910,7 @@ def frame_collector(
     simplicity: Simplicity,
     container: VideoFormat,
     encoder: VideoEncoder,
-    video_preset: VideoPreset,
+    preset: str | int,
     crf: int,
     additional_parameters: str | None,
     simple_video_format: SimpleVideoFormat,
@@ -729,9 +928,10 @@ def frame_collector(
     Additional parameters, then its first frame). A second frame is an error: the loop
     runs one item."""
     if simplicity is Simplicity.SIMPLE:
-        container, encoder, video_preset, crf = get_simple_format(
+        container, encoder, simple_preset, crf = get_simple_format(
             simple_video_format, quality
         )
+        preset = simple_preset.value
     video = (save_dir / f"{video_name}.{container.ext}").resolve()
     video.parent.mkdir(parents=True, exist_ok=True)
     params, global_params = graph().video_output_options(
@@ -739,7 +939,7 @@ def frame_collector(
         str(video),
         container,
         encoder,
-        video_preset,
+        preset,
         crf,
         fps,
         simplicity,
@@ -843,12 +1043,25 @@ def frame_collector(
                     VideoEncoder.H265: "H.265 (HEVC)",
                     VideoEncoder.VP9: "VP9",
                     VideoEncoder.FFV1: "FFV1",
+                    VideoEncoder.AV1: "SVT-AV1",
+                    VideoEncoder.PRORES: "ProRes",
+                    VideoEncoder.H264_NVENC: "H.264 (NVENC)",
+                    VideoEncoder.H265_NVENC: "H.265 (NVENC)",
+                    VideoEncoder.AV1_NVENC: "AV1 (NVENC)",
                 },
                 conditions={
                     VideoEncoder.H264: Condition.enum(4, VideoEncoder.H264.formats),
                     VideoEncoder.H265: Condition.enum(4, VideoEncoder.H265.formats),
                     VideoEncoder.VP9: Condition.enum(4, VideoEncoder.VP9.formats),
                     VideoEncoder.FFV1: Condition.enum(4, VideoEncoder.FFV1.formats),
+                    VideoEncoder.AV1: Condition.enum(4, VideoEncoder.AV1.formats),
+                    VideoEncoder.PRORES: Condition.enum(4, VideoEncoder.PRORES.formats),
+                    VideoEncoder.H264_NVENC: Condition.const(nvidia.is_available)
+                    & Condition.enum(4, VideoEncoder.H264_NVENC.formats),
+                    VideoEncoder.H265_NVENC: Condition.const(nvidia.is_available)
+                    & Condition.enum(4, VideoEncoder.H265_NVENC.formats),
+                    VideoEncoder.AV1_NVENC: Condition.const(nvidia.is_available)
+                    & Condition.enum(4, VideoEncoder.AV1_NVENC.formats),
                 },
             )
             .with_id(3)
@@ -877,6 +1090,94 @@ def frame_collector(
                     "For more information on CRF, see [here](https://trac.ffmpeg.org/wiki/Encode/H.264#crf)."
                 )
                 .with_id(9),
+            ),
+            if_enum_group(3, VideoEncoder.AV1)(
+                SliderInput(
+                    "Preset",
+                    min=0,
+                    max=11,
+                    default=8,
+                    ends=("Slowest", "Fastest"),
+                )
+                .with_docs(
+                    "SVT-AV1's preset: lower is smaller and much slower. From 10 on it is"
+                    " meant for automated work and may show artifacts. Frames must be at"
+                    " least 16x16."
+                )
+                .with_id(31),
+                SliderInput(
+                    "CRF",
+                    min=1,
+                    max=63,
+                    default=35,
+                    ends=("Best", "Worst"),
+                )
+                .with_docs(
+                    "SVT-AV1's constant rate factor. It is not lossless at any value."
+                )
+                .with_id(32),
+            ),
+            if_enum_group(3, VideoEncoder.PRORES)(
+                EnumInput(
+                    ProResProfile,
+                    label="Profile",
+                    label_style="inline",
+                    default=ProResProfile.HQ,
+                    option_labels={
+                        ProResProfile.PROXY: "422 Proxy",
+                        ProResProfile.LT: "422 LT",
+                        ProResProfile.STANDARD: "422",
+                        ProResProfile.HQ: "422 HQ",
+                        ProResProfile.P4444: "4444",
+                        ProResProfile.P4444_XQ: "4444 XQ",
+                    },
+                )
+                .with_docs(
+                    "The profile sets the bitrate and, for 4444 and 4444 XQ, 4:4:4 chroma"
+                    " instead of 4:2:2, which needs an even width. ProRes is always 10-bit"
+                    " and limited range here."
+                )
+                .with_id(33),
+            ),
+            if_enum_group(
+                3,
+                (
+                    VideoEncoder.H264_NVENC,
+                    VideoEncoder.H265_NVENC,
+                    VideoEncoder.AV1_NVENC,
+                ),
+            )(
+                EnumInput(
+                    NvencPreset,
+                    label="Preset",
+                    label_style="inline",
+                    default=NvencPreset.P4,
+                    option_labels={
+                        NvencPreset.P1: "P1 (fastest)",
+                        NvencPreset.P2: "P2",
+                        NvencPreset.P3: "P3",
+                        NvencPreset.P4: "P4",
+                        NvencPreset.P5: "P5",
+                        NvencPreset.P6: "P6",
+                        NvencPreset.P7: "P7 (best)",
+                    },
+                )
+                .with_docs(
+                    "NVENC encodes on an NVIDIA GPU, and fails with the GPU's reason if it"
+                    " lacks the codec, bit depth or chroma layout (AV1 needs an RTX 40 or"
+                    " newer; frames must be at least about 145x49 and of even size)."
+                )
+                .with_id(34),
+            ),
+            if_enum_group(3, (VideoEncoder.H264_NVENC, VideoEncoder.H265_NVENC))(
+                SliderInput("CQ", min=1, max=51, default=23, ends=("Best", "Worst"))
+                .with_docs("NVENC's constant quality level.")
+                .with_id(35),
+            ),
+            if_enum_group(3, VideoEncoder.AV1_NVENC)(
+                SliderInput("CQ", min=1, max=63, default=30, ends=("Best", "Worst"))
+                .with_docs("NVENC's constant quality level.")
+                .with_id(36),
             ),
             TextInput(
                 "Additional parameters",
@@ -953,8 +1254,9 @@ def frame_collector(
         .with_docs(
             "Auto writes the Colour Info's bit depth, rounded up to one the encoder"
             " writes (FFV1: 8, 9, 10, 12, 14 or 16 bits), at most 8 bits for H.264 and 10"
-            " for H.265 and VP9 (what players commonly decode), and 8 bits without"
-            " Colour Info. 16-bit needs FFV1."
+            " for H.265, VP9 and AV1 (what players commonly decode), and 8 bits without"
+            " Colour Info. ProRes is always 10-bit, NVENC and AV1 at most 10. 16-bit needs"
+            " FFV1."
         ),
         if_enum_group(19, VideoInputMode.PLANES)(
             EnumInput(
@@ -993,6 +1295,12 @@ def save_video_node(
     encoder: VideoEncoder,
     video_preset: VideoPreset,
     crf: int,
+    av1_preset: int,
+    av1_crf: int,
+    prores_profile: ProResProfile,
+    nvenc_preset: NvencPreset,
+    nvenc_cq: int,
+    av1_nvenc_cq: int,
     additional_parameters: str | None,
     simple_video_format: SimpleVideoFormat,
     quality: int,
@@ -1015,6 +1323,24 @@ def save_video_node(
         bit_depth,
         siting_correction,
     )
+    if (
+        simplicity is Simplicity.ADVANCED
+        and encoder.nvenc
+        and encoder in container.encoders
+        and not nvidia.is_available
+    ):
+        raise ValueError(
+            f"The {encoder.value} encoder needs an NVIDIA GPU, and this computer has none."
+            " Choose a software encoder (H.264, H.265, VP9, AV1, FFV1 or ProRes)."
+        )
+    # FFmpeg's values for the encoder's own inputs: its preset or profile, and its quality.
+    preset, level = {
+        VideoEncoder.AV1: (av1_preset, av1_crf),
+        VideoEncoder.PRORES: (prores_profile.value, 0),
+        VideoEncoder.H264_NVENC: (nvenc_preset.value, nvenc_cq),
+        VideoEncoder.H265_NVENC: (nvenc_preset.value, nvenc_cq),
+        VideoEncoder.AV1_NVENC: (nvenc_preset.value, av1_nvenc_cq),
+    }.get(encoder, (video_preset.value, crf))
     chosen = node_context.chosen_item
     if chosen is not None:
         return frame_collector(
@@ -1024,8 +1350,8 @@ def save_video_node(
             simplicity,
             container,
             encoder,
-            video_preset,
-            crf,
+            preset,
+            level,
             additional_parameters,
             simple_video_format,
             quality,
@@ -1043,8 +1369,8 @@ def save_video_node(
         simplicity,
         container,
         encoder,
-        video_preset,
-        crf,
+        preset,
+        level,
         additional_parameters,
         simple_video_format,
         quality,

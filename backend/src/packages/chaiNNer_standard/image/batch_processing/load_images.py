@@ -12,16 +12,19 @@ from nodes.groups import Condition, if_group
 from nodes.impl.image_formats import (
     get_available_image_formats as get_available_image_formats,
 )
+from nodes.impl.image_tags import ImageMetadata
 from nodes.impl.native_graph import graph
 from nodes.properties.inputs import BoolInput, DirectoryInput, NumberInput, TextInput
 from nodes.properties.outputs import (
     DirectoryOutput,
+    ImageMetadataOutput,
     ImageOutput,
     NumberOutput,
     TextOutput,
 )
 
 from .. import batch_processing_group
+from ..io.load_image import convert_to_srgb_input
 from ..io.load_image import load_image_node as load_image_node
 
 
@@ -66,6 +69,7 @@ def list_glob(directory: Path, globexpr: str, ext_filter: list[str]) -> list[Pat
             "Instead of collecting errors and throwing them at the end of processing, stop iteration and throw an error as soon as one occurs.",
             hint=True,
         ),
+        convert_to_srgb_input().with_id(7),
     ],
     outputs=[
         ImageOutput(),
@@ -73,9 +77,10 @@ def list_glob(directory: Path, globexpr: str, ext_filter: list[str]) -> list[Pat
         TextOutput("Subdirectory Path"),
         TextOutput("Name"),
         NumberOutput("Index", output_type="min(uint, max(0, IterOutput0.length - 1))"),
+        ImageMetadataOutput(),
     ],
     iterator_outputs=IteratorOutputInfo(
-        outputs=[0, 2, 3, 4],
+        outputs=[0, 2, 3, 4, 5],
         length_type="if Input4 { min(uint, Input5) } else { uint }",
     ),
     kind="generator",
@@ -89,7 +94,8 @@ def load_images_node(
     use_limit: bool,
     limit: int,
     fail_fast: bool,
-) -> tuple[Generator[tuple[np.ndarray, str, str, int]], Path]:
+    convert_colours: bool = False,
+) -> tuple[Generator[tuple[np.ndarray, str, str, int, ImageMetadata]], Path]:
     return graph().file_sequence_load_images(
         globals(),
         directory,
@@ -99,4 +105,5 @@ def load_images_node(
         use_limit,
         limit,
         fail_fast,
+        convert_colours,
     )

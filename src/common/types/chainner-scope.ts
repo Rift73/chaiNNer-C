@@ -147,6 +147,7 @@ struct RotateInterpolationMode;
 struct TileSize;
 struct AudioStream;
 struct ColourInfo;
+struct ImageMetadata;
 
 enum FpMode { fp32, fp16 }
 

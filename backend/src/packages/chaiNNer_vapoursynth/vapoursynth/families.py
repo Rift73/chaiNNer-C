@@ -12,6 +12,7 @@ from nodes.impl.vapoursynth.schema_gen import (
     register_families,
 )
 
+from ..chains import image_node_output
 from . import clips_group, filters_group, functions_group
 
 FUNCTIONS = ("User Functions", ANY_FUNCTION)
@@ -23,5 +24,8 @@ register_families(
     filters_group,
     _catalog.enums,
     [f for f in FAMILIES if f != LOAD_CLIP and f not in FUNCTIONS],
+    image_node_output,
 )
-register_families(_catalog.methods, functions_group, _catalog.enums, FUNCTIONS)
+register_families(
+    _catalog.methods, functions_group, _catalog.enums, FUNCTIONS, image_node_output
+)

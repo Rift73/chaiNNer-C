@@ -48,15 +48,20 @@ Image gaussian(const Image &image, double sigma_x, double sigma_y)
     if (image.height == 0 || image.width == 0) throw NodeError("ValueError", "Gaussian filtering requires a nonempty image");
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     size_t lanes = dispatch::opencv_lanes("filter");
-    check(cn_gaussian_f32(image.data, out.data(), size_t(image.height), size_t(image.width), size_t(image.channels), 0,
-                          0, sigma_x, sigma_y, border_reflect, lanes));
+    /* One tap on an axis with sigma 0: without a size, its sigma means the other axis's. */
+    check(cn_gaussian_f32(image.data, out.data(), size_t(image.height), size_t(image.width), size_t(image.channels),
+                          sigma_x == 0 ? 1 : 0, sigma_y == 0 ? 1 : 0, sigma_x, sigma_y, border_reflect, lanes));
     return std::move(out).publish();
 }
 
 Image fast_gaussian_blur(const Image &image, double sigma_x, double sigma_y)
 {
-    if (sigma_x == 0 || sigma_y == 0) return image;
+    if (sigma_x == 0 && sigma_y == 0) return image;
     double factor = std::min(scale_factor(sigma_x), scale_factor(sigma_y));
+    /* Too small to shrink: only the plain blur gives the whole sigma. */
+    if (std::ceil(double(image.height) / factor) == double(image.height)
+        && std::ceil(double(image.width) / factor) == double(image.width))
+        factor = 1;
     Sizing y = sizing(image.height, sigma_y, factor);
     Sizing x = sizing(image.width, sigma_x, factor);
     if (image.height != y.size || image.width != x.size) throw RunPython{};

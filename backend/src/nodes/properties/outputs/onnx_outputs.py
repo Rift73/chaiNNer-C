@@ -4,7 +4,7 @@ import navi
 from api import BaseOutput, OutputKind
 from nodes.utils.format import format_channel_numbers
 
-from ...impl.onnx.model import MIXED, OnnxModel
+from ...impl.onnx.model import MIXED, NO_RECORD_ARCH, OnnxModel
 
 
 class OnnxModelOutput(BaseOutput):
@@ -38,8 +38,8 @@ class OnnxModelOutput(BaseOutput):
         i = value.info
         if i.dtype == MIXED:
             fields["arch"] = navi.literal("DUAL")
-        elif i.arch is not None:
-            fields["arch"] = navi.literal(i.arch)
+        else:
+            fields["arch"] = navi.literal(NO_RECORD_ARCH if i.arch is None else i.arch)
         if i.scale_width is not None:
             fields["scaleWidth"] = i.scale_width
         if i.scale_height is not None:

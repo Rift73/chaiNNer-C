@@ -29,12 +29,11 @@ from collections.abc import Callable
 from functools import cache
 from pathlib import Path
 from threading import Lock
-from weakref import WeakKeyDictionary
 
 import psutil
 from sanic.log import logger
 
-from ..onnx.model import OnnxModel
+from ..onnx.model import OnnxModel, content_digest
 from . import drft, dual
 from .model import TensorRTEngine, TensorRTEngineInfo
 
@@ -61,17 +60,6 @@ _DRFT_PLUGIN_SOURCES = (
 def memory_budget() -> int:
     """The bytes of engines kept in memory: 2 GiB, or a tenth of the RAM if less."""
     return min(2 * 1024**3, psutil.virtual_memory().total // 10)
-
-
-_onnx_digests: WeakKeyDictionary[OnnxModel, bytes] = WeakKeyDictionary()
-
-
-def _onnx_digest(model: OnnxModel) -> bytes:
-    digest = _onnx_digests.get(model)
-    if digest is None:
-        digest = hashlib.sha256(model.bytes).digest()
-        _onnx_digests[model] = digest
-    return digest
 
 
 @cache
@@ -111,7 +99,7 @@ def engine_key(
     """The key of an engine of `model` built with `settings` (every build input) on a
     GPU, by a TensorRT version, with DUAL's or DRFT's `plugins` identity (None
     otherwise)."""
-    digest = hashlib.sha256(_onnx_digest(model))
+    digest = hashlib.sha256(content_digest(model))
     digest.update(
         repr(
             (
@@ -201,6 +189,18 @@ def _cached_engine(
     if directory is not None:
         _store(Path(directory), key, engine)
     return engine
+
+
+def forget_engine(key: str, directory: str) -> None:
+    """Drop the engine of `key`, whose whole record TensorRT cannot start (a driver update,
+    say): its next use builds it again. A file that cannot go is logged."""
+    with _lock:
+        _memory.pop(key, None)
+    path = Path(directory) / f"{key}{SUFFIX}"
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Engine Cache: could not remove %s.", path, exc_info=True)
 
 
 def _magic() -> bytes:

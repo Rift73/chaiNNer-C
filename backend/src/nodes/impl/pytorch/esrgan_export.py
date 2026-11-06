@@ -7,7 +7,8 @@ convolution reads the same values, and TensorRT lays each join out over the one 
 it, which leaves most of the copies out of the plan. At 512x512 on TensorRT 11.4
 (optimization level 3), a 4x RRDB with 23 blocks runs in 52 ms instead of 69 ms. The
 loaded model is not changed: the rewrite works on a copy, so Save Model keeps it as it
-is."""
+is. Build Engine gives an ONNX converted before this layout the same one
+(nodes/impl/tensorrt/dense_blocks.py)."""
 
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from torch import nn
 _Descriptor = TypeVar("_Descriptor", bound=ModelDescriptor)
 
 
-class _NestedDenseBlock(ResidualDenseBlock_5C):
+class NestedDenseBlock(ResidualDenseBlock_5C):
     def __init__(self, source: ResidualDenseBlock_5C) -> None:
         nn.Module.__init__(self)
         self.__dict__.update(source.__dict__)
@@ -52,5 +53,5 @@ def for_export(model: _Descriptor) -> _Descriptor:
     net = model.model
     for name, module in list(net.named_modules()):
         if isinstance(module, ResidualDenseBlock_5C):
-            net.set_submodule(name, _NestedDenseBlock(module))
+            net.set_submodule(name, NestedDenseBlock(module))
     return model

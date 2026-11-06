@@ -123,10 +123,10 @@ SAVE_DIRECTORY = 1
 SAVE_SUBDIRECTORY = 2
 LOAD_IMAGE = "chainner:image:load"
 LOAD_IMAGE_PATH = 0
-# Upstream's save-file migrations (src/common/migrations.ts): the installed app
-# has 45, and a save records how many it had. The driver applies none, so a
-# chain that a pending one would change is refused; each entry is that test.
-CURRENT_MIGRATION = 45
+# The save-file migrations (src/common/migrations.ts): the app has 46, and a save
+# records how many it had. The driver applies none, so a chain that a pending one
+# would change is refused; each entry is that test.
+CURRENT_MIGRATION = 47
 PENDING_MIGRATIONS: dict[int, tuple[str, Callable[[list[Json]], bool]]] = {
     43: (
         "newIteratorToGenerator",
@@ -136,6 +136,19 @@ PENDING_MIGRATIONS: dict[int, tuple[str, Callable[[list[Json]], bool]]] = {
         "splitLoadImagePairs",
         lambda nodes: any(
             node["data"]["schemaId"] == "chainner:image:load_image_pairs"
+            for node in nodes
+        ),
+    ),
+    45: (
+        "loadVideoFrames",
+        lambda nodes: any(
+            node["data"]["schemaId"] == "chainner:image:load_video" for node in nodes
+        ),
+    ),
+    46: (
+        "convertToOnnxMixedTypes",
+        lambda nodes: any(
+            node["data"]["schemaId"] == "chainner:pytorch:convert_to_onnx"
             for node in nodes
         ),
     ),
@@ -687,7 +700,7 @@ def read_chain(path: Path, schemas: dict[str, Json]) -> Json:
     if not isinstance(migration, int) or migration > CURRENT_MIGRATION:
         raise ValueError(
             f"{path}: migration {migration!r} is not one this driver reads (the "
-            f"installed app has {CURRENT_MIGRATION})"
+            f"app has {CURRENT_MIGRATION})"
         )
     nodes = save["content"]["nodes"]
     for index in range(migration, CURRENT_MIGRATION):

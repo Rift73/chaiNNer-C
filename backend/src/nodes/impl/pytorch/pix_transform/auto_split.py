@@ -5,6 +5,8 @@ import gc
 import numpy as np
 import torch
 
+from api import Progress
+
 from ....utils.utils import Region, Size, get_h_w_c
 from ...image_op import to_op
 from ...upscale.auto_split import Split, auto_split
@@ -16,7 +18,7 @@ from .pix_transform import Params, pix_transform
 
 
 class _PixTiler(Tiler):
-    def __init__(self, max_tile_size: int = 2048) -> None:
+    def __init__(self, max_tile_size: int) -> None:
         self.max_tile_size: int = max_tile_size
 
     def allow_smaller_tile_size(self) -> bool:
@@ -45,7 +47,9 @@ def pix_transform_auto_split(
     guide: np.ndarray,
     device: torch.device,
     params: Params,
-    split_mode: SplitMode = SplitMode.LAB,
+    split_mode: SplitMode,
+    tile_size: int,
+    progress: Progress,
 ) -> np.ndarray:
     """
     Automatically splits the source and guide image into segments that can be processed by PixTransform.
@@ -63,7 +67,7 @@ def pix_transform_auto_split(
         "The size of the guide image must be an integer multiple of the size of the source image (e.g. 2x, 3x, 4x, ...)."
     )
 
-    tiler = _PixTiler()
+    tiler = _PixTiler(tile_size)
     scale = g_w // s_w
 
     def upscale(tile: np.ndarray, region: Region):
@@ -73,6 +77,7 @@ def pix_transform_auto_split(
                 guide_img=np.transpose(_as_3d(tile_guide), (2, 0, 1)),
                 device=device,
                 params=params,
+                progress=progress,
             )
             # passthrough single colors to speed up alpha channels
             pass_op = to_op(passthrough_single_color)(scale, pix_op)

@@ -33,6 +33,7 @@ export const useRunNode = (
     const schema = schemata.get(schemaId);
 
     const didEverRun = useRef(false);
+    const runningPreviews = useRef(0);
 
     const inputs = useMemo(
         () => mapInputValues(schema, (inputId) => inputData[inputId] ?? null),
@@ -61,28 +62,36 @@ export const useRunNode = (
             await delay(50);
             token.checkCanceled();
 
-            lastInputHash.current = inputHash;
-
             if (shouldRun) {
+                // only a run counts: a connected node has not run with the inputs it has now
+                lastInputHash.current = inputHash;
                 didEverRun.current = true;
 
+                runningPreviews.current += 1;
                 addIndividuallyRunning(id);
-                const result = await backend.runIndividual({
-                    schemaId,
-                    id,
-                    inputs,
-                    options: packageSettings,
-                });
-                removeIndividuallyRunning(id);
-
-                if (!result.success) {
-                    sendToast({
-                        status: 'error',
-                        title: 'Error',
-                        description:
-                            result.error ||
-                            'Preview failed to load, probably unsupported file type.',
+                try {
+                    const result = await backend.runIndividual({
+                        schemaId,
+                        id,
+                        inputs,
+                        options: packageSettings,
                     });
+
+                    if (!result.success) {
+                        sendToast({
+                            status: 'error',
+                            title: 'Error',
+                            description:
+                                result.error ||
+                                'Preview failed to load, probably unsupported file type.',
+                        });
+                    }
+                } finally {
+                    // a new value of the input does not wait for the preview of the old one
+                    runningPreviews.current -= 1;
+                    if (runningPreviews.current === 0) {
+                        removeIndividuallyRunning(id);
+                    }
                 }
             }
         },

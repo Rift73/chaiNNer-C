@@ -1,7 +1,8 @@
 import { HStack, Icon, Text, Tooltip } from '@chakra-ui/react';
 import { memo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { BiStopwatch } from 'react-icons/bi';
-import { fixRoundingError, joinEnglish } from '../../../../common/util';
+import { fixRoundingError } from '../../../../common/util';
 
 interface Duration {
     seconds: number;
@@ -38,23 +39,34 @@ const shortFormat = ({ hours, minutes, seconds }: Duration): string => {
     return `${shortestVariant}s`;
 };
 
-const plural = (word: string, count: number): string => (count === 1 ? word : `${word}s`);
+// Unit names, plural forms, decimal separator and the list conjunction all
+// come from Intl for the UI language.
+const longFormat = ({ hours, minutes, seconds }: Duration, locale: string): string => {
+    const unit = (value: number, name: 'hour' | 'minute' | 'second') =>
+        new Intl.NumberFormat(locale, {
+            style: 'unit',
+            unit: name,
+            unitDisplay: 'long',
+            maximumFractionDigits: 6,
+            useGrouping: false,
+        }).format(value);
+
+    const parts: string[] = [];
+    if (hours > 0) parts.push(unit(hours, 'hour'));
+    if (minutes > 0) parts.push(unit(minutes, 'minute'));
+    if (hours === 0 && (parts.length === 0 || seconds > 0)) parts.push(unit(seconds, 'second'));
+    return new Intl.ListFormat(locale, { style: 'long', type: 'conjunction' }).format(parts);
+};
 
 interface TimerProps {
     time: number;
 }
 
 export const Timer = memo(({ time }: TimerProps) => {
+    const { t, i18n } = useTranslation();
     const displayTime = Number(Number(time.toFixed(4)).toExponential(3));
 
     const duration = splitDuration(displayTime);
-    const { hours, minutes, seconds } = duration;
-
-    const longParts: string[] = [];
-    if (hours > 0) longParts.push(`${hours} ${plural('hour', hours)}`);
-    if (minutes > 0) longParts.push(`${minutes} ${plural('minute', minutes)}`);
-    if (hours === 0 && (longParts.length === 0 || seconds > 0))
-        longParts.push(`${seconds} ${plural('second', seconds)}`);
 
     return (
         <Tooltip
@@ -62,7 +74,9 @@ export const Timer = memo(({ time }: TimerProps) => {
             borderRadius={8}
             closeOnClick={false}
             gutter={24}
-            label={`Execution took approximately ${joinEnglish(longParts)}.`}
+            label={t('timer.executionTook', 'Execution took approximately {{duration}}.', {
+                duration: longFormat(duration, i18n.language),
+            })}
             openDelay={150}
             px={2}
             textAlign="center"

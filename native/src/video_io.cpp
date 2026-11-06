@@ -169,15 +169,29 @@ O probe_file(const py::dict&g,const O&path,const O&ffprobe,const py::dict&option
     }
     return probe;
 }
-// VideoMetadata from ffprobe; `video` receives the video stream's probe entry.
-O probe_metadata(const py::dict&g,const O&path,const O&env,O&video) {
+bool attached_picture(const O&stream) {
+    return truth(stream.attr("get")("disposition",py::dict()).attr("get")("attached_pic",py::int_(0)));
+}
+// VideoMetadata from ffprobe; `video` receives the video stream's probe entry: the first
+// that is not an attached picture (cover art, which an MP4 can list first), else the first,
+// and `cover_first`, whether a picture stands before it. With
+// `unknown_count`, a track with neither a frame count nor a duration (an elementary
+// stream, which Load Video's file filter offers) counts 0: the loader counts its packets
+// (video.py frame_count), and its frames are read to their end.
+O probe_metadata(const py::dict&g,const O&path,const O&env,O&video,bool unknown_count=false,bool*cover_first=nullptr) {
     O probe=probe_file(g,path,env.attr("ffprobe"),py::dict());
     O format=probe.attr("get")("format",py::none());
     if(format.is_none())fail(PyExc_RuntimeError,"Failed to get video format. Please report.");
     video=py::none();
     for(py::handle sh:probe[py::str("streams")]) {
         O stream=py::reinterpret_borrow<O>(sh);
-        if(eq(stream[py::str("codec_type")],py::str("video"))) {video=stream;break;}
+        if(!eq(stream[py::str("codec_type")],py::str("video")))continue;
+        if(!attached_picture(stream)) {
+            if(cover_first)*cover_first=!video.is_none();
+            video=stream;
+            break;
+        }
+        if(video.is_none())video=stream;
     }
     if(video.is_none())fail(PyExc_RuntimeError,"No video stream found in file");
     O width=video.attr("get")("width",py::none());
@@ -196,8 +210,8 @@ O probe_metadata(const py::dict&g,const O&path,const O&env,O&video) {
     if(count.is_none()) {
         O duration=video.attr("get")("duration",py::none());
         if(duration.is_none())duration=format.attr("get")("duration",py::none());
-        if(duration.is_none())fail(PyExc_RuntimeError,"No frame count or duration found in video stream. Unable to determine video length. Please report.");
-        count=mul(builtin("float")(duration),fps);
+        if(duration.is_none()&&!unknown_count)fail(PyExc_RuntimeError,"No frame count or duration found in video stream. Unable to determine video length. Please report.");
+        count=duration.is_none()?O(py::int_(0)):mul(builtin("float")(duration),fps);
     }
     count=builtin("int")(count);
     return global(g,"VideoMetadata")(py::arg("width")=width,py::arg("height")=height,
@@ -207,7 +221,10 @@ O metadata(const py::dict&g,const O&path,const O&env) {O video;return probe_meta
 void loader_init(const py::dict&g,const O&self,const O&path,const O&env) {
     self.attr("path")=path; self.attr("ffmpeg_env")=env;
     O video;
-    self.attr("metadata")=probe_metadata(g,path,env,video);
+    bool cover_first=false;
+    self.attr("metadata")=probe_metadata(g,path,env,video,true,&cover_first);
+    // FFmpeg's stream specifier of that stream: V skips attached pictures.
+    self.attr("video_selector")=py::str(cover_first?"V:0":"v:0");
     // The probe entry Load Video detects the colour information from (video.py).
     self.attr("video_stream")=video;
     // Both readers convert YUV by the file's matrix tag; untagged HD video (the stored
@@ -228,11 +245,13 @@ O audio_stream(const py::dict&g,const O&self,const O&duration) {
 O container_encoders(const py::dict&g,const O&self) {
     for(const auto &entry: {"MKV","MP4","MOV","WEBM","AVI","GIF"}) {
         if(!eq(self,member(g,"VideoFormat",entry)))continue;
-        if(std::string(entry)=="MKV")return py::make_tuple(member(g,"VideoEncoder","H264"),member(g,"VideoEncoder","H265"),member(g,"VideoEncoder","VP9"),member(g,"VideoEncoder","FFV1"));
-        if(std::string(entry)=="MP4")return py::make_tuple(member(g,"VideoEncoder","H264"),member(g,"VideoEncoder","H265"),member(g,"VideoEncoder","VP9"));
-        if(std::string(entry)=="MOV")return py::make_tuple(member(g,"VideoEncoder","H264"),member(g,"VideoEncoder","H265"));
-        if(std::string(entry)=="WEBM")return py::make_tuple(member(g,"VideoEncoder","VP9"));
-        if(std::string(entry)=="AVI")return py::make_tuple(member(g,"VideoEncoder","H264"));
+        if(std::string(entry)=="MKV")return py::make_tuple(member(g,"VideoEncoder","H264"),member(g,"VideoEncoder","H265"),member(g,"VideoEncoder","VP9"),member(g,"VideoEncoder","FFV1"),
+            member(g,"VideoEncoder","AV1"),member(g,"VideoEncoder","PRORES"),member(g,"VideoEncoder","H264_NVENC"),member(g,"VideoEncoder","H265_NVENC"),member(g,"VideoEncoder","AV1_NVENC"));
+        if(std::string(entry)=="MP4")return py::make_tuple(member(g,"VideoEncoder","H264"),member(g,"VideoEncoder","H265"),member(g,"VideoEncoder","VP9"),
+            member(g,"VideoEncoder","AV1"),member(g,"VideoEncoder","H264_NVENC"),member(g,"VideoEncoder","H265_NVENC"),member(g,"VideoEncoder","AV1_NVENC"));
+        if(std::string(entry)=="MOV")return py::make_tuple(member(g,"VideoEncoder","H264"),member(g,"VideoEncoder","H265"),member(g,"VideoEncoder","PRORES"),member(g,"VideoEncoder","H264_NVENC"),member(g,"VideoEncoder","H265_NVENC"));
+        if(std::string(entry)=="WEBM")return py::make_tuple(member(g,"VideoEncoder","VP9"),member(g,"VideoEncoder","AV1"),member(g,"VideoEncoder","AV1_NVENC"));
+        if(std::string(entry)=="AVI")return py::make_tuple(member(g,"VideoEncoder","H264"),member(g,"VideoEncoder","H264_NVENC"));
         return py::tuple();
     }
     graphpy::raise(PyExc_ValueError,fmt("Unknown container: {}",self));
@@ -475,7 +494,10 @@ std::shared_ptr<WriterResource> resource(const O&self) {
 bool writer_open(const py::dict&g,const O&self,const O&width,const O&height,bool launch) {
     if(!self.attr("out").is_none())return true;
     if(resource(self)->aborted)fail(PyExc_RuntimeError,"Video writer was aborted");
-    if(graphpy::contains(py::make_tuple(member(g,"VideoEncoder","H264"),member(g,"VideoEncoder","H265")),self.attr("encoder")))
+    // HEVC and AV1 NVENC would round an odd size up without a word. A container that does
+    // not use the encoder named (GIF uses none; Simple mode names H.264) has no such rule.
+    if(graphpy::contains(self.attr("container").attr("encoders"),self.attr("encoder")) && graphpy::contains(py::make_tuple(member(g,"VideoEncoder","H264"),member(g,"VideoEncoder","H265"),
+        member(g,"VideoEncoder","H264_NVENC"),member(g,"VideoEncoder","H265_NVENC"),member(g,"VideoEncoder","AV1_NVENC")),self.attr("encoder")))
         graphpy::require(eq(mod(height,py::int_(2)),py::int_(0)) && eq(mod(width,py::int_(2)),py::int_(0)),
             fmt("The \"{}\" encoder requires an even-number frame resolution.",self.attr("encoder").attr("value")));
     try {
@@ -627,6 +649,9 @@ py::dict audio_options(const py::dict&g,const O&self,const O&settings) {
             // each output stream: a mono stream gets 256k (b:a:N, which wins over b:a), where
             // 320k failed; streams of two or more channels keep 320k.
             p["acodec"]="libopus";p["b:a"]="320k";
+            // libopus takes only the Vorbis channel layouts and at most 8 channels, where
+            // AC-3's 5.1(side) failed: aformat picks the nearest it takes.
+            p["af"]="aformat=channel_layouts=mono|stereo|3.0|quad|5.0|5.1|6.1|7.1";
             const py::list streams=audio_streams(g,self);
             for(size_t i=0;i<streams.size();++i)
                 if(eq(O(streams[i]).attr("get")("channels"),py::int_(1)))p[py::str("b:a:{}").attr("format")(i)]="256k";
@@ -668,6 +693,19 @@ O mux_audio(const py::dict&g,const O&self) {
                 settings=member(g,"AudioSettings","TRANSCODE");
                 break;
             }
+        }
+    }
+    if(eq(container,member(g,"VideoFormat","MOV")) && !eq(settings,member(g,"AudioSettings","TRANSCODE"))) {
+        // FFmpeg stores WMA in a MOV under a tag no reader knows, without an error: the
+        // video would have audio that nothing can play.
+        for(py::handle sh:audio_streams(g,self)) {
+            O codec=py::reinterpret_borrow<O>(sh).attr("get")("codec_name",py::str(""));
+            if(!truth(codec.attr("startswith")("wma")))continue;
+            if(eq(settings,member(g,"AudioSettings","COPY")))
+                graphpy::raise(PyExc_RuntimeError,py::str("Save Video could not copy the {} audio into the .mov file: nothing could read it there. Set Audio to Auto or Transcode to re-encode it.").attr("format")(codec));
+            logger.attr("info")(py::str("Auto transcodes the {} audio, which nothing can read in a .mov file").attr("format")(codec));
+            settings=member(g,"AudioSettings","TRANSCODE");
+            break;
         }
     }
     py::dict params=audio_options(g,self,settings); // A WebM Copy raises before the mux.
@@ -755,16 +793,22 @@ void writer_close(const py::dict&g,const O&self) {
 
 // Save Video's FFmpeg output options, writing `filename`, and its global options: the
 // container's and encoder's, then Advanced mode's Additional parameters, "-key value" an
-// option and a lone "-flag" a global option; a key Save Video sets itself raises. A run of
-// one chosen frame reads them too (save_video.py frame_collector).
+// option and a lone "-flag" a global option; a key Save Video sets itself raises. `preset`
+// is FFmpeg's value of the encoder's preset or profile and `crf` of its quality level. A run
+// of one chosen frame reads them too (save_video.py frame_collector).
 py::tuple output_options(const py::dict&g,const O&filename,const O&container,const O&encoder,const O&preset,const O&crf,
     const O&fps,const O&simplicity,O additional) {
     py::dict params=dict({{"filename",filename},{"format",container.attr("muxer")},{"pix_fmt",py::str("yuv420p")},{"r",fps},{"movflags",py::str("faststart")}});
+    O allowed=py::tuple();
     if(graphpy::contains(container.attr("encoders"),encoder)) {
         params["vcodec"]=encoder.attr("value");
-        O allowed=global(g,"PARAMETERS")[encoder];
-        if(graphpy::contains(allowed,py::str("preset")))params["preset"]=preset.attr("value");
+        allowed=global(g,"PARAMETERS")[encoder];
+        if(graphpy::contains(allowed,py::str("preset")))params["preset"]=preset;
         if(graphpy::contains(allowed,py::str("crf")))params["crf"]=crf;
+        // Plain -profile would also apply to audio, which FFmpeg calls ambiguous.
+        if(graphpy::contains(allowed,py::str("profile")))params["profile:v"]=preset;
+        // Without -b:v 0, NVENC's default 2 Mb/s target would hold back the constant quality.
+        if(graphpy::contains(allowed,py::str("cq"))) {params["rc"]="vbr";params["cq"]=crf;params["b:v"]=0;}
     }
     py::list globals;
     if(eq(simplicity,member(g,"Simplicity","ADVANCED")) && !additional.is_none()) {
@@ -780,6 +824,8 @@ py::tuple output_options(const py::dict&g,const O&filename,const O&container,con
                     if(!truth(key.attr("startswith")(blocked)))params[key]=value;
                     else graphpy::raise(PyExc_ValueError,fmt("Duplicate parameter: -{}",parameter));
                 }
+                for(py::handle name:allowed)
+                    if(truth(key.attr("startswith")(name)))graphpy::raise(PyExc_ValueError,fmt("Duplicate parameter: -{}",parameter));
             } else globals.append(fmt("-{}",parameter));
         }
     }
@@ -792,7 +838,7 @@ O save_video(const py::dict&g,const O&context,O unused,const O&directory,const O
     (void)unused;
     if(eq(simplicity,member(g,"Simplicity","SIMPLE"))) {
         O settings=global(g,"get_simple_format")(simple,quality);
-        container=settings[py::int_(0)];encoder=settings[py::int_(1)];preset=settings[py::int_(2)];crf=settings[py::int_(3)];
+        container=settings[py::int_(0)];encoder=settings[py::int_(1)];preset=settings[py::int_(2)].attr("value");crf=settings[py::int_(3)];
     }
     if(eq(container,member(g,"VideoFormat","GIF")))audio=py::none();
     // A copy cannot cut the audio at a Range's In > 0 (mux_audio): refused before anything
@@ -848,13 +894,13 @@ class FrameIterator {
             // converts as FFmpeg chooses.
             O matrix=py::getattr(loader_,"input_matrix",py::none());
             if(!matrix.is_none())options["vf"]=py::str("scale=in_color_matrix={}:flags={}").attr("format")(matrix,flags);
-            output=global(globals_,"ffmpeg").attr("input")(loader_.attr("path"))[py::str("v:0")].attr("output");
+            output=global(globals_,"ffmpeg").attr("input")(loader_.attr("path"))[py::getattr(loader_,"video_selector",py::str("v:0"))].attr("output");
         } else {
             options=dict({{"format",py::str("rawvideo")},{"pix_fmt",format_.attr("pix_fmt")},{"sws_flags",py::str(flags)}});
             O scale=format_.attr("scale");
             if(!scale.is_none())options["vf"]=py::str("scale={}").attr("format")(scale);
             py::dict input_options=format_.attr("input_options");
-            output=call(global(globals_,"ffmpeg").attr("input"),py::make_tuple(loader_.attr("path")),input_options)[py::str("v:0")].attr("output");
+            output=call(global(globals_,"ffmpeg").attr("input"),py::make_tuple(loader_.attr("path")),input_options)[py::getattr(loader_,"video_selector",py::str("v:0"))].attr("output");
         }
         options["loglevel"]="error";
         process_=call(output,py::make_tuple("pipe:"),options)

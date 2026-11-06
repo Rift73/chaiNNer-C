@@ -22,6 +22,18 @@ float narrow(double value)
 
 }  // namespace
 
+size_t spatial_lanes(size_t coefficients)
+{
+    bool tested = dispatch::cv2_tested("nodes.impl.native_convolution");
+    // filter.dispatch.cpp's DFT threshold: area 130 for float32 with SSE3 active, else 50 (spectral: cv2.dft).
+    if (tested && coefficients >= (dispatch::cv2_sse3() ? 130u : 50u)) throw RunPython{};
+    // _spatial_lanes: the mirrored dispatch modes are the baseline (0) and AVX2.
+    if (!tested || dispatch::cv2_use_ipp_not_exact()) throw RunPython{};
+    std::string mode = dispatch::opencv_target("filter");
+    if ((mode != "BASELINE" && mode != "AVX2") || coefficients >= 130) throw RunPython{};
+    return mode == "BASELINE" ? 0 : dispatch::opencv_lanes("filter");
+}
+
 Image convolve(const Image &image, const Kernel &kernel, int64_t padding)
 {
     if (image.height == 0 || image.width == 0)
@@ -30,15 +42,7 @@ Image convolve(const Image &image, const Kernel &kernel, int64_t padding)
         throw NodeError("ValueError", "Convolution kernel must be a nonempty two-dimensional array");
     if (padding > (int64_t(std::numeric_limits<int32_t>::max()) - std::max(image.height, image.width)) / 2)
         throw NodeError("OverflowError", "Padded image exceeds OpenCV's dimension range");
-    size_t size = kernel.values.size();
-    bool tested = dispatch::cv2_tested("nodes.impl.native_convolution");
-    // filter.dispatch.cpp's DFT threshold: area 130 for float32 with SSE3 active, else 50 (spectral: cv2.dft).
-    if (tested && size >= (dispatch::cv2_sse3() ? 130u : 50u)) throw RunPython{};
-    // _spatial_lanes: the mirrored dispatch modes are the baseline (0) and AVX2.
-    if (!tested || dispatch::cv2_use_ipp_not_exact()) throw RunPython{};
-    std::string mode = dispatch::opencv_target("filter");
-    if ((mode != "BASELINE" && mode != "AVX2") || size >= 130) throw RunPython{};
-    size_t lanes = mode == "BASELINE" ? 0 : dispatch::opencv_lanes("filter");
+    size_t lanes = spatial_lanes(kernel.values.size());
     std::vector<float> coefficients;
     for (double value : kernel.values) coefficients.push_back(narrow(value));
     MutableImage out = MutableImage::allocate(int32_t(image.height + 2 * padding), int32_t(image.width + 2 * padding),

@@ -130,7 +130,7 @@ const chainnerPresetProcessor: DataTransferProcessor = (
 const openChainnerFileProcessor: DataTransferProcessor = (dataTransfer) => {
     if (dataTransfer.files.length === 1 && !includesDirectory(dataTransfer)) {
         const path = getFilePath(dataTransfer.files[0]);
-        if (/\.chn/i.test(path)) {
+        if (extname(path).toLowerCase() === '.chn') {
             // found a .chn file; the main process opens it and sends the result over `file-open`
             ipcRenderer.invoke('open-save-file', path).catch(log.error);
 

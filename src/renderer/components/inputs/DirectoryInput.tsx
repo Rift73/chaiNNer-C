@@ -86,7 +86,11 @@ export const DirectoryInput = memo(
             if (files.length !== 1) {
                 sendToast({
                     status: 'error',
-                    description: `Only one directory is accepted by ${input.label}.`,
+                    description: t(
+                        'inputs.directory.onlyOneDirectory',
+                        'Only one directory is accepted by {{label}}.',
+                        { label: input.label }
+                    ),
                 });
                 return;
             }
@@ -101,7 +105,11 @@ export const DirectoryInput = memo(
             } else {
                 sendToast({
                     status: 'error',
-                    description: `Drop a directory onto ${input.label}, not a file.`,
+                    description: t(
+                        'inputs.directory.dropDirectory',
+                        'Drop a directory onto {{label}}, not a file.',
+                        { label: input.label }
+                    ),
                 });
             }
         };
@@ -186,7 +194,7 @@ export const DirectoryInput = memo(
                             disabled={isLocked || isConnected}
                             draggable={false}
                             htmlSize={1}
-                            placeholder="Click to select..."
+                            placeholder={t('inputs.directory.clickToSelect', 'Click to select...')}
                             size="sm"
                             textOverflow="ellipsis"
                             value={displayDirectory ?? ''}

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib
 import importlib.util
 import os
@@ -16,7 +15,7 @@ import onnxruntime as ort
 
 from ..native_onnx_runtime import NativeSession
 from .load import model_facts
-from .model import OnnxModel
+from .model import OnnxModel, content_digest
 from .utils import OnnxParsedTensorShape, parse_onnx_shape
 
 ProviderDesc = Union[str, Tuple[str, Dict[Any, Any]]]
@@ -98,7 +97,7 @@ def _model_cache_dir(model: OnnxModel, cache_path: str, variant: str = "") -> st
     by the graph's tensor names, not its weights (and a model created from bytes has
     no file name): two models of one architecture with other weights would load each
     other's from one folder."""
-    digest = hashlib.sha256(model.bytes).hexdigest()[:32]
+    digest = content_digest(model).hex()[:32]
     path = os.path.join(cache_path, digest + variant)
     os.makedirs(path, exist_ok=True)
     return path
@@ -290,7 +289,7 @@ def get_onnx_session(
             }.get(execution_provider)
             shared = None
             if folder is not None:
-                shared = (hashlib.sha256(model.bytes).digest(), *key)
+                shared = (content_digest(model), *key)
             with _shared_lock(shared):
                 session = None if shared is None else __shared_sessions.get(shared)
                 if session is None:

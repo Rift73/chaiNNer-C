@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+from threading import Lock
 from typing import Any
 
 from cuda.bindings import runtime as cudart
+
+# TensorRT synchronizes the GPU's streams when it deserializes an engine or makes or
+# destroys an execution context, which invalidates a CUDA graph capture on any thread:
+# these take turns, across engines.
+gpu_setup_lock = Lock()
+
+
+class CudaOutOfMemory(RuntimeError):
+    """An allocation found no memory, on the device or pinned on the host."""
 
 
 def check_cuda(result: tuple[Any, ...]) -> Any:
@@ -13,7 +23,13 @@ def check_cuda(result: tuple[Any, ...]) -> Any:
     if err != cudart.cudaError_t.cudaSuccess:
         _, name = cudart.cudaGetErrorName(err)
         _, text = cudart.cudaGetErrorString(err)
-        raise RuntimeError(f"CUDA error {name.decode()}: {text.decode()}")
+        message = f"CUDA error {name.decode()}: {text.decode()}"
+        if err == cudart.cudaError_t.cudaErrorMemoryAllocation:
+            # Taken, so that this thread's next enqueue does not fail on it: TensorRT's
+            # reads CUDA's per-thread last error, and goes on only if there is none.
+            cudart.cudaGetLastError()
+            raise CudaOutOfMemory(message)
+        raise RuntimeError(message)
     if len(result) == 1:
         return None
     return result[1] if len(result) == 2 else result[1:]

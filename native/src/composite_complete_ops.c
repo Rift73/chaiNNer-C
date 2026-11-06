@@ -128,7 +128,7 @@ CN_EXPORT cn_status cn_composite_canvas(const canvas_layer *base, const canvas_l
     if (status != CN_OK) return status;
     status = layer_validate(overlay);
     if (status != CN_OK) return status;
-    if (!g || !out || !g->height || !g->width || !channels_valid(g->channels) || mode < 0 || mode > 22
+    if (!g || !out || !g->height || !g->width || !channels_valid(g->channels) || mode < 0 || mode > 24
         || (g->padded != 0 && g->padded != 1) || (uintptr_t)out % _Alignof(float)) return CN_INVALID_ARGUMENT;
     if (g->height > SIZE_MAX / g->width || g->height * g->width > SIZE_MAX / g->channels / sizeof(float)) return CN_SIZE_OVERFLOW;
     size_t out_bytes = g->height * g->width * g->channels * sizeof(float);

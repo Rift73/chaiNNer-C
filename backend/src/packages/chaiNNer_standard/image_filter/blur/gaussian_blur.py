@@ -4,6 +4,8 @@ import numpy as np
 
 from nodes.groups import linked_inputs_group
 from nodes.impl.image_utils import fast_gaussian_blur
+from nodes.impl.native_buffers import freeze_normalized
+from nodes.impl.native_resample import finish_alpha, has_transparency, premultiply
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -49,5 +51,9 @@ def gaussian_blur_node(
 ) -> np.ndarray:
     if sigma_x == 0 and sigma_y == 0:
         return img
+
+    if has_transparency(img):
+        blurred = fast_gaussian_blur(premultiply(img), sigma_x, sigma_y)
+        return freeze_normalized(finish_alpha(blurred, divide=True), clamp=True)
 
     return fast_gaussian_blur(img, sigma_x, sigma_y, normalized=True)

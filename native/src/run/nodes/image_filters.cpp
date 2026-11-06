@@ -51,7 +51,8 @@ void pixelate(NodeContext &, std::span<const Value> inputs, std::vector<Value> &
 }
 
 /* chainner:image:sharpen (sharpen/unsharp_mask.py): native_unsharp.weighted (OpenCV's addWeighted on the "arithm"
- * family's lanes; C-ordered operands form one row) without a threshold, else native_analysis.binary. */
+ * family's lanes; C-ordered operands form one row) without a threshold, else native_analysis.binary. With transparency
+ * the blur runs on premultiplied colours and a result with alpha 0 holds no colour. */
 void unsharp_mask(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     const Image &image = std::get<Image>(inputs[0]);
@@ -60,16 +61,20 @@ void unsharp_mask(NodeContext &, std::span<const Value> inputs, std::vector<Valu
         outputs.push_back(inputs[0]);
         return;
     }
-    Image blurred = fast_gaussian_blur(image, radius, radius);
+    bool transparent = has_transparency(image);
+    Image blurred = transparent ? finish_alpha(fast_gaussian_blur(premultiplied(image), radius, radius), true)
+                                : fast_gaussian_blur(image, radius, radius);
     double threshold = number(inputs[3]) / 100;
+    Image result = image;
     if (threshold != 0) {
-        outputs.push_back(analysis_binary(image, blurred, 1, amount, threshold));
-        return;
+        result = analysis_binary(image, blurred, 1, amount, threshold);
+    } else {
+        MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
+        check(cn_unsharp_weighted(image.data, blurred.data, out.data(), image.values(), image.values(), amount,
+                                  int(dispatch::opencv_lanes("arithm"))));
+        result = std::move(out).publish();
     }
-    MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
-    check(cn_unsharp_weighted(image.data, blurred.data, out.data(), image.values(), image.values(), amount,
-                              int(dispatch::opencv_lanes("arithm"))));
-    outputs.push_back(std::move(out).publish());
+    outputs.push_back(transparent ? finish_alpha(result, false) : result);
 }
 
 /* chainner:image:high_pass (miscellaneous/high_pass.py): BlurMode 0 Gaussian (fast_gaussian_blur), 1 a given blurred
@@ -352,8 +357,9 @@ Image box_blur_integer(const Image &image, int64_t radius_x, int64_t radius_y)
 /* chainner:image:blur (blur/box_blur.py): integer radii through native_convolution.box_blur; fractional ones
  * through native_box.separable_box (sepFilter2D on the "filter" dispatch lanes), integral radii of 15 and more
  * blurred apart first; an average radius of 70 and more filters with the 2-D kernel through the spectral filter
- * (cv2.dft), which declines to the Python body (after its own empty-image error). The result is the raw one: the
- * body's freeze_normalized(clamp=True) clamps it as the output enforce does. */
+ * (cv2.dft), which declines to the Python body (after its own empty-image error). An image with transparency runs on
+ * premultiplied colours. The result is the raw one: the body's freeze_normalized(clamp=True) clamps it as the output
+ * enforce does. */
 void box_blur(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     double radius_x = number(inputs[1]), radius_y = number(inputs[2]);
@@ -366,17 +372,20 @@ void box_blur(NodeContext &, std::span<const Value> inputs, std::vector<Value> &
     if (radius_y > 200) radius_y = std::nearbyint(radius_y);
     auto integral = [](double value) { return std::trunc(value) == value; };
     Image image = std::get<Image>(inputs[0]);
+    bool transparent = has_transparency(image);
+    if (transparent) image = premultiplied(image);
+    auto finish = [transparent](const Image &result) { return transparent ? finish_alpha(result, true) : result; };
     if (integral(radius_x) && integral(radius_y)) {
-        outputs.push_back(box_blur_integer(image, int64_t(radius_x), int64_t(radius_y)));
+        outputs.push_back(finish(box_blur_integer(image, int64_t(radius_x), int64_t(radius_y))));
         return;
     }
     if (radius_x >= 15 && integral(radius_x)) {
         image = box_blur_integer(image, int64_t(radius_x), 0);
-        radius_x = 1;
+        radius_x = 0;
     }
     if (radius_y >= 15 && integral(radius_y)) {
         image = box_blur_integer(image, 0, int64_t(radius_y));
-        radius_y = 1;
+        radius_y = 0;
     }
     if (std::sqrt(radius_x * radius_y) >= 70) {
         if (image.height == 0 || image.width == 0)
@@ -387,7 +396,7 @@ void box_blur(NodeContext &, std::span<const Value> inputs, std::vector<Value> &
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     check(cn_box_separable(image.data, out.data(), size_t(image.height), size_t(image.width), size_t(image.channels),
                            radius_x, radius_y, dispatch::opencv_lanes("filter")));
-    outputs.push_back(std::move(out).publish());
+    outputs.push_back(finish(std::move(out).publish()));
 }
 
 /* native_neighborhood._image: a nonempty image. */
@@ -398,31 +407,35 @@ void neighborhood_image(const Image &image)
 
 /* chainner:image:median_blur (blur/median_blur.py, native_neighborhood.median): radii 1 and 2 on float32 (OpenCV's
  * median_blur dispatch lanes), larger ones on the uint8 image, whose uint8 result is normalized here as the output
- * enforce converts it. */
+ * enforce converts it. Transparent pixels hold no colour. */
 void median_blur(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
-    const Image &image = std::get<Image>(inputs[0]);
+    Image image = std::get<Image>(inputs[0]);
     int64_t radius = integer(inputs[1]);
     if (radius == 0) {
         outputs.push_back(inputs[0]);
         return;
     }
     neighborhood_image(image);
+    if (has_transparency(image)) image = finish_alpha(image, false);
     size_t height = size_t(image.height), width = size_t(image.width), channels = size_t(image.channels);
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     if (radius <= 2) {
         check(cn_neighborhood_median_f32(image.data, out.data(), height, width, channels, size_t(radius),
                                          dispatch::opencv_lanes("median_blur")));
     } else {
-        std::vector<uint8_t> source = to_uint8(image, true), result(source.size());
-        check(cn_neighborhood_median_u8(source.data(), result.data(), height, width, channels, size_t(radius)));
-        check(cn_pixels_convert_checked(result.data(), out.data(), image.values(), 2, 0, 1, nullptr));
+        // to_uint8's values, then the result's, in a same-shaped image's block: the image pool keeps it warm between calls.
+        MutableImage bytes = MutableImage::allocate(image.height, image.width, image.channels);
+        uint8_t *source = reinterpret_cast<uint8_t *>(bytes.data()), *result = source + image.values();
+        check(cn_pixels_convert_checked(image.data, source, image.values(), 0, 1, 1, nullptr));
+        check(cn_neighborhood_median_u8(source, result, height, width, channels, size_t(radius)));
+        check(cn_pixels_convert_checked(result, out.data(), image.values(), 2, 0, 1, nullptr));
     }
     outputs.push_back(std::move(out).publish());
 }
 
 /* chainner:image:dither (quantize/dither.py, native_neighborhood.uniform_dither): UniformDitherAlgorithm "None",
- * "Ordered" (ThresholdMap B2-B16), "Diffusion" (ErrorDiffusionMap values) or "Riemersma". */
+ * "Ordered" (ThresholdMap B2-B16), "Diffusion" (ErrorDiffusionMap values) or "Riemersma". Alpha stays as it is. */
 void dither(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     const Image &image = std::get<Image>(inputs[0]);
@@ -444,6 +457,8 @@ void dither(NodeContext &, std::span<const Value> inputs, std::vector<Value> &ou
         check(cn_neighborhood_dither(image.data, out.data(), height, width, channels, colors, mode, map_size, map,
                                      nullptr, 0, nullptr));
     }
+    if (channels == 4)
+        for (size_t p = 0; p < height * width; ++p) out.data()[p * 4 + 3] = image.data[p * 4 + 3];
     outputs.push_back(std::move(out).publish());
 }
 

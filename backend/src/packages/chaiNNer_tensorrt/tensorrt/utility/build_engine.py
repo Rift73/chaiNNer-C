@@ -8,8 +8,8 @@ from sanic.log import logger
 
 from api import NodeContext
 from nodes.groups import Condition, if_enum_group, if_group
-from nodes.impl.onnx.load import model_facts
-from nodes.impl.onnx.model import FP16_ARCHS_NAVI, OnnxModel
+from nodes.impl.onnx.load import model_facts, warn_if_grid_frozen
+from nodes.impl.onnx.model import NO_RECORD_ARCH, OnnxModel
 from nodes.impl.tensorrt import drft, dual
 from nodes.impl.tensorrt.build_cache import (
     cached_engine,
@@ -17,8 +17,10 @@ from nodes.impl.tensorrt.build_cache import (
     dual_plugin_identity,
     engine_key,
 )
+from nodes.impl.tensorrt.dense_blocks import nested_dense_blocks
 from nodes.impl.tensorrt.engine_builder import (
     BuildConfig,
+    activations_follow_tiles,
     build_engine_from_onnx,
     timing_cache_name,
 )
@@ -93,10 +95,10 @@ TILE_SIZE_DOC = (
 DUAL_WORKSPACE_GIB = 8.0
 
 # Shown until the ONNX is known to have one automatic precision: DUAL's keeps its own,
-# and one with a recorded architecture builds in FP16
+# and one with a record builds in its recorded precision
 PRECISION_APPLIES = Condition.type(
     0,
-    f'OnnxModel {{ arch: invStrSet("DUAL" | {FP16_ARCHS_NAVI}) }}',
+    f'OnnxModel {{ arch: "{NO_RECORD_ARCH}" }}',
     if_not_connected=True,
 )
 
@@ -112,7 +114,7 @@ if utility_group is not None:
             "The built engine is optimized specifically for your GPU and TensorRT version.",
             "It is recommended to save the built engine for reuse, as building is slow.",
             "A DUAL ONNX from Convert To ONNX builds in its own mixed precision (BF16 body, FP32 input and output) with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Precision does not apply and is hidden; Workspace, Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do. Upscale Image replays DUAL engines from a CUDA graph per input size.",
-            "An ESRGAN, HAT or DAT ONNX from Convert To ONNX builds in FP16, also after it is saved and loaded again: it records its architecture, and Precision does not apply and is hidden. An ONNX with no such record, such as one converted by an earlier version, works as before, with Precision shown.",
+            "An ONNX from Convert To ONNX builds in the precision it records (FP16 for the architectures that hold in it, else FP32), also after it is saved and loaded again, so Precision does not apply and is hidden. An ONNX with no record, from another program or an earlier version's conversion, works as before, with Precision shown; an earlier ESRGAN ONNX in FP16 also builds with the faster layout a new conversion has.",
             "A legacy DRFT ONNX from Convert To ONNX also builds in its own mixed precision, with chaiNNer-C's DRFT TensorRT plugins (chaiNNer-C loads them with the engine; another program needs the plugin library too). Its sizes, Fixed or Dynamic, must be multiples of the ONNX's alignment and at least its minimum size on each side (Build Engine says which if not). Precision does not apply; Workspace (0: TensorRT's default), Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do.",
         ],
         icon="BsNvidia",
@@ -128,7 +130,7 @@ if utility_group is not None:
                     "FP16: lower precision but faster and uses less memory, especially on RTX GPUs. FP16 also does not work with certain models.",
                     "BF16: same exponent range as FP32 with reduced mantissa. Better numerical stability than FP16 while still being faster than FP32. Good for models that produce NaN/artifacts with FP16.",
                     "FP32: higher precision but slower. Use especially if FP16 fails.",
-                    "A mixed-precision ONNX (Convert To ONNX's Mixed FP16 or Mixed BF16) keeps its own precision, and this setting does not apply.",
+                    "A mixed-precision ONNX (Mixed FP16 or Mixed BF16 from an earlier version's Convert To ONNX) keeps its own precision, and this setting does not apply.",
                 ),
             ),
             EnumInput(
@@ -138,7 +140,9 @@ if utility_group is not None:
                 option_labels=SHAPE_MODE_LABELS,
             ).with_docs(
                 "Fixed: Build engine for a single input size. Fastest inference.",
-                "Dynamic: Build engine for variable input sizes. More flexible but slightly slower.",
+                "Dynamic: Build engine for variable input sizes. More flexible but slightly slower."
+                " It takes GPU memory by the size of each input, so Upscale Image can go on with"
+                " smaller tiles when the memory runs out.",
             ),
             if_enum_group(2, ShapeMode.DYNAMIC)(
                 NumberInput(
@@ -295,6 +299,9 @@ if utility_group is not None:
             min_height = opt_height = max_height = static_height
             min_width = opt_width = max_width = static_width
 
+        warn_if_grid_frozen(
+            context, onnx_model, "This ONNX model, and so the engine built from it,"
+        )
         facts = model_facts(onnx_model)
         profile = (
             (min_height, min_width),
@@ -328,10 +335,9 @@ if utility_group is not None:
                 sparse_weights=sparse_weights,
                 tiling_optimization=tiling_optimization.value,
             )
-        # A recorded architecture builds in FP16, whatever a saved chain's hidden input
-        # holds.
+        # A record builds in its precision, whatever a saved chain's hidden input holds.
         if onnx_model.info.arch is not None:
-            precision = Precision.FP16
+            precision = Precision(onnx_model.info.dtype)
         # One timing cache per model, GPU and TensorRT version
         timing_cache_path = None
         if settings.timing_cache_path:
@@ -343,7 +349,7 @@ if utility_group is not None:
             )
             timing_cache_path = f"{settings.timing_cache_path}/{name}"
 
-        # A mixed-precision ONNX (ModelOpt AutoCast) keeps its own types.
+        # A mixed-precision ONNX from an earlier version keeps its own types.
         mixed = onnx_model.info.dtype.startswith("mixed-")
         config = BuildConfig(
             precision="mixed" if mixed else precision.value,
@@ -360,11 +366,11 @@ if utility_group is not None:
 
         written_out = written_out_group_norm(
             onnx_model.bytes,
-            config.precision,
             config.min_shape,
             config.max_shape,
             config.use_dynamic_shapes,
         )
+        nested = nested_dense_blocks(onnx_model.bytes, config.precision)
 
         def build() -> TensorRTEngine:
             logger.info(
@@ -379,7 +385,7 @@ if utility_group is not None:
                 tiling_optimization.value,
             )
             return build_engine_from_onnx(
-                onnx_model.bytes if written_out is None else written_out,
+                written_out or nested or onnx_model.bytes,
                 config,
                 gpu_index=gpu_index,
                 timing_cache_path=timing_cache_path,
@@ -392,6 +398,9 @@ if utility_group is not None:
                 "onnx",
                 *dataclasses.astuple(config),
                 *(() if written_out is None else ("group norm written out",)),
+                *(() if nested is None else ("dense blocks nested",)),
+                # An engine cached before this takes its largest size's memory at any tile.
+                *(("activations by tile",) if activations_follow_tiles(config) else ()),
             ),
             get_cuda_device_name(gpu_index),
             get_cuda_compute_capability(gpu_index),

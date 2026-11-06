@@ -2,6 +2,17 @@ from __future__ import annotations
 
 import sys
 
+# What lack of memory reads as: the arena's words, the GPU's, native/src/onnx_runtime.cpp's
+# for a std::bad_alloc in the adapter, and a kernel's std::bad_alloc on Linux and Windows.
+_OUT_OF_MEMORY_TEXTS = (
+    "allocate memory",
+    "out of memory",
+    "cudaMalloc",
+    "allocation failed",
+    "bad_alloc",
+    "bad allocation",
+)
+
 
 def ort_error_message(error: Exception) -> str:
     """The message of an error that an ONNX Runtime session raised.
@@ -21,8 +32,6 @@ def is_out_of_memory(error: Exception) -> bool:
     """Whether an ONNX Runtime session's error is that it could not allocate memory
     (on the CPU or the GPU)."""
     message = ort_error_message(error)
-    return "ONNXRuntimeError" in message and (
-        "allocate memory" in message
-        or "out of memory" in message
-        or "cudaMalloc" in message
+    return "ONNXRuntimeError" in message and any(
+        text in message for text in _OUT_OF_MEMORY_TEXTS
     )

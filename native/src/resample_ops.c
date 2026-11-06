@@ -8,6 +8,9 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 static cn_status image_size(size_t h, size_t w, size_t c)
 {
@@ -102,6 +105,76 @@ CN_EXPORT cn_status cn_resample_alpha(const float *src, float *out,
     if (pixels > SIZE_MAX / (4 * sizeof(float))) return CN_SIZE_OVERFLOW;
     alpha_context ctx = {src, out, undo};
     return cn_parallel_for(pixels, 65536, alpha_range, &ctx);
+}
+
+typedef struct alpha_scan_context {
+    const float *src;
+    volatile long found;
+} alpha_scan_context;
+
+/* Blocks of pixels, so a chunk stops soon after its first such alpha. */
+static void alpha_scan_range(void *opaque, size_t begin, size_t end)
+{
+    alpha_scan_context *ctx = opaque;
+    for (size_t block = begin; block < end; block += 4096) {
+        size_t stop = end - block < 4096 ? end : block + 4096;
+        int differs = 0;
+        for (size_t p = block; p < stop; ++p) differs |= ctx->src[p * 4 + 3] != 1.0f;
+        if (differs) {
+#ifdef _MSC_VER
+            _InterlockedOr(&ctx->found, 1);
+#else
+            __atomic_fetch_or(&ctx->found, 1, __ATOMIC_RELAXED);
+#endif
+            return;
+        }
+    }
+}
+
+/* Whether a four-channel image holds an alpha other than exactly 1. */
+CN_EXPORT cn_status cn_alpha_transparent(const float *src, size_t pixels, int *transparent)
+{
+    if (!src || !transparent) return CN_INVALID_ARGUMENT;
+    if (pixels > SIZE_MAX / (4 * sizeof(float))) return CN_SIZE_OVERFLOW;
+    alpha_scan_context ctx = {src, 0};
+    cn_status status = cn_parallel_for(pixels, 65536, alpha_scan_range, &ctx);
+    *transparent = ctx.found != 0;
+    return status;
+}
+
+typedef struct alpha_finish_context {
+    const float *src;
+    float *out;
+    int divide;
+} alpha_finish_context;
+
+static void alpha_finish_range(void *opaque, size_t begin, size_t end)
+{
+    const alpha_finish_context *ctx = opaque;
+    for (size_t p = begin; p < end; ++p) {
+        const float *src = ctx->src + p * 4;
+        float *out = ctx->out + p * 4;
+        float alpha = src[3];
+        for (size_t c = 0; c < 3; ++c) {
+            float value = alpha > 0.0f ? src[c] : 0.0f;
+            if (ctx->divide && alpha > 0.0f) {
+                value /= alpha;
+                if (value > 1.0f) value = 1.0f;
+            }
+            out[c] = value;
+        }
+        out[3] = alpha;
+    }
+}
+
+/* Colour 0 under an alpha that is not above 0; elsewhere colour / alpha, at most 1, with divide (unlike
+ * cn_resample_alpha's undo, no floor under the alpha: a tail's faint alpha keeps its colour), or the colour as it is. */
+CN_EXPORT cn_status cn_alpha_finish(const float *src, float *out, size_t pixels, int divide)
+{
+    if (!src || !out || !pixels || (divide != 0 && divide != 1)) return CN_INVALID_ARGUMENT;
+    if (pixels > SIZE_MAX / (4 * sizeof(float))) return CN_SIZE_OVERFLOW;
+    alpha_finish_context ctx = {src, out, divide};
+    return cn_parallel_for(pixels, 65536, alpha_finish_range, &ctx);
 }
 
 typedef struct content_context {

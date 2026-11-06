@@ -67,15 +67,23 @@ static unsigned char to_uint8(float value)
     return (unsigned char)lower;
 }
 
+#define CN_BLEND_COLOR 23
+#define CN_BLEND_LUMINOSITY 24
+
+/* As the W3C compositing spec and ISO 32000-2 define them: a white base stays white under
+ * Color Burn and a black base black under Color Dodge, whatever the overlay, also where the
+ * quotient is 0 / 0 (upstream gave black on a black overlay and white on a white one). */
 static float color_burn(float a, float b)
 {
-    return a == 0.0f ? 0.0f
+    return b == 1.0f ? 1.0f
+        : a == 0.0f ? 0.0f
         : maximum(0.0f, 1.0f - ((1.0f - b) / maximum(0.0001f, a)));
 }
 
 static float color_dodge(float a, float b)
 {
-    return a == 1.0f ? 1.0f
+    return b == 0.0f ? 0.0f
+        : a == 1.0f ? 1.0f
         : minimum(1.0f, b / maximum(0.0001f, 1.0f - a));
 }
 
@@ -123,6 +131,9 @@ static float apply_mode(float a, float b, int mode)
         return b < y ? y : (b > x ? x : b);
     }
     case 22: return (a + b) - 1.0f;
+    /* The non-separable modes on a grey pixel, which is all luminosity. */
+    case CN_BLEND_COLOR: return b;
+    case CN_BLEND_LUMINOSITY: return a;
     default: return cn_f32_from_bits(CN_NPY_NANF_BITS); /* Entry points validate modes first. */
     }
 }
@@ -148,12 +159,45 @@ typedef struct blend_job {
 } blend_job;
 
 /* Convert one channel without allocating expanded grayscale or opaque-alpha
- * images. RGB/BGR ordering is preserved; blending is channel-independent.
+ * images. RGB/BGR ordering is preserved; separable blending is channel-independent.
  */
 static float channel(const float *image, size_t pixel, int channels, int c)
 {
     if (c == 3 && channels < 4) return 1.0f;
     return image[pixel * (size_t)channels + (size_t)(channels == 1 ? 0 : c)];
+}
+
+/* Lum of ISO 32000-2 11.3.5.3 and the W3C compositing spec, on B, G, R. */
+static double luminosity(const double c[3])
+{
+    return (0.11 * c[0]) + (0.59 * c[1]) + (0.3 * c[2]);
+}
+
+/* The non-separable modes of one BGR pixel, the specs' SetLum and ClipColor: Color is
+ * the overlay at the base's luminosity, Luminosity the base at the overlay's. Doubles,
+ * so a grey pixel stays exact and rounding cannot leave l on the wrong side of its own
+ * minimum or maximum; where it still ties them, the channels are all but equal and the
+ * step would divide 0 by 0. */
+static void non_separable(const blend_job *job, size_t pixel, float out[3])
+{
+    const int color = job->mode == CN_BLEND_COLOR;
+    double c[3], source[3];
+    for (int i = 0; i < 3; ++i) {
+        const double a = channel(job->overlay, pixel, job->overlay_channels, i);
+        const double b = channel(job->base, pixel, job->base_channels, i);
+        c[i] = color ? a : b;
+        source[i] = color ? b : a;
+    }
+    const double d = luminosity(source) - luminosity(c);
+    for (int i = 0; i < 3; ++i) c[i] += d;
+    const double l = luminosity(c);
+    const double low = c[0] < c[1] ? (c[0] < c[2] ? c[0] : c[2]) : (c[1] < c[2] ? c[1] : c[2]);
+    const double high = c[0] > c[1] ? (c[0] > c[2] ? c[0] : c[2]) : (c[1] > c[2] ? c[1] : c[2]);
+    if (low < 0.0 && l > low)
+        for (int i = 0; i < 3; ++i) c[i] = l + (((c[i] - l) * l) / (l - low));
+    if (high > 1.0 && high > l)
+        for (int i = 0; i < 3; ++i) c[i] = l + (((c[i] - l) * (1.0 - l)) / (high - l));
+    for (int i = 0; i < 3; ++i) out[i] = (float)c[i];
 }
 
 /* cn_blend_images' pixels [begin, end): each output's operations in their order. */
@@ -165,21 +209,29 @@ static void image_pixels(const blend_job *job, size_t begin, size_t end)
     int mode = job->mode;
     int target = overlay_channels > base_channels ? overlay_channels : base_channels;
     int needs_clipping = !normalized_mode(mode);
+    int joint = mode >= CN_BLEND_COLOR && target >= 3;
+    int colours = target < 3 ? target : 3;
 
     for (size_t i = begin; i < end; ++i) {
         size_t offset = i * (size_t)target;
-        if (target < 4) {
-            for (int c = 0; c < target; ++c) {
-                float value = apply_mode(channel(overlay, i, overlay_channels, c),
+        float blended[3];
+        if (joint) non_separable(job, i, blended);
+        else
+            for (int c = 0; c < colours; ++c) {
+                blended[c] = apply_mode(channel(overlay, i, overlay_channels, c),
                     channel(base, i, base_channels, c), mode);
-                output[offset + (size_t)c] = needs_clipping ? clip(value) : value;
+                /* Divide's quotient has no bound: unclipped, a dark, nearly transparent overlay
+                   pixel would mix up to 10000 times the base and turn white (2026-11-06). */
+                if (mode == 15) blended[c] = clip(blended[c]);
             }
+        if (target < 4) {
+            for (int c = 0; c < target; ++c)
+                output[offset + (size_t)c] = needs_clipping ? clip(blended[c]) : blended[c];
         } else if (base_channels < 4) {
             float alpha = overlay[i * 4 + 3];
             for (int c = 0; c < 3; ++c) {
                 float b = channel(base, i, base_channels, c);
-                float blended = apply_mode(overlay[i * 4 + (size_t)c], b, mode);
-                float value = (alpha * blended) + ((1.0f - alpha) * b);
+                float value = (alpha * blended[c]) + ((1.0f - alpha) * b);
                 output[offset + (size_t)c] = needs_clipping ? clip(value) : value;
             }
             output[offset + 3] = 1.0f;
@@ -194,9 +246,8 @@ static void image_pixels(const blend_job *job, size_t begin, size_t end)
             for (int c = 0; c < 3; ++c) {
                 float a = channel(overlay, i, overlay_channels, c);
                 float b = base[i * 4 + (size_t)c];
-                float blended = apply_mode(a, b, mode);
                 float value = ((o_strength * a) + (b_strength * b))
-                    + (blend_strength * blended);
+                    + (blend_strength * blended[c]);
                 output[offset + (size_t)c] = clip(value / denominator);
             }
             output[offset + 3] = needs_clipping ? clip(final_a) : final_a;

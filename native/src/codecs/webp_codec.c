@@ -23,10 +23,17 @@ cn_codec_status cn_webp_decode(const uint8_t *data, size_t size, cn_codec_alloca
         uint8_t *const pixels = allocate(context, height, width, channels, 1);
         if (!pixels) return CN_CODEC_FALLBACK;
         const size_t stride = (size_t)width * channels;
-        const uint8_t *decoded =
-            channels == 3 ? WebPDecodeBGRInto(data, size, pixels, stride * height, (int)stride)
-                          : WebPDecodeBGRAInto(data, size, pixels, stride * height, (int)stride);
-        return decoded == pixels ? CN_CODEC_OK : CN_CODEC_FALLBACK;
+        /* WebPDecodeBGRInto and WebPDecodeBGRAInto with libwebp's second thread: a lossy frame's loop filter and
+         * colour conversion run beside its parsing, and a large enough one decodes to the same samples. */
+        WebPDecoderConfig config;
+        if (!WebPInitDecoderConfig(&config)) return CN_CODEC_FALLBACK;
+        config.options.use_threads = 1;
+        config.output.colorspace = channels == 3 ? MODE_BGR : MODE_BGRA;
+        config.output.u.RGBA.rgba = pixels;
+        config.output.u.RGBA.stride = (int)stride;
+        config.output.u.RGBA.size = stride * height;
+        config.output.is_external_memory = 1;
+        return WebPDecode(data, size, &config) == VP8_STATUS_OK ? CN_CODEC_OK : CN_CODEC_FALLBACK;
     }
     /* An animation: WebPAnimDecoder in MODE_BGRA, its first canvas, BGRA -> BGR without alpha (cvtColor). */
     WebPAnimDecoderOptions options;

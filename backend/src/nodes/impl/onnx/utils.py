@@ -89,11 +89,37 @@ def get_opset(model: onnx.ModelProto) -> int:
     return graph().onnx_opset(model)
 
 
+def _reshape_copies_from_a_reshape(model_proto: ModelProto) -> bool:
+    """Whether a Reshape reads another Reshape's output with a 0 in its constant shape,
+    which copies that dimension from the output. PyTorch's pixel_unshuffle exports this
+    pair."""
+    graph_proto = model_proto.graph
+    constants = {t.name: t for t in graph_proto.initializer}
+    for node in graph_proto.node:
+        if node.op_type == "Constant":
+            for attribute in node.attribute:
+                if attribute.name == "value":
+                    constants[node.output[0]] = attribute.t
+    reshaped = {
+        node.output[0] for node in graph_proto.node if node.op_type == "Reshape"
+    }
+    return any(
+        node.op_type == "Reshape"
+        and node.input[0] in reshaped
+        and node.input[1] in constants
+        and 0 in onnx.numpy_helper.to_array(constants[node.input[1]])
+        for node in graph_proto.node
+    )
+
+
 def safely_optimize_onnx_model(model_proto: ModelProto) -> ModelProto:
     """
     Optimizes the model using onnxoptimizer. If onnxoptimizer is not installed, the model is returned as is.
     So is a model that is not valid ONNX: onnxoptimizer's native code can end the
     process on one (a node without the inputs its op needs, an output no node makes).
+    Its eliminate_consecutive_idempotent_ops drops the first of two Reshapes, which
+    changes the second's result when that copies a dimension from the first, so a model
+    with such a pair goes without that pass.
     """
     # The checker takes a model in memory up to 2 GiB, as onnxoptimizer does.
     if model_proto.ByteSize() <= onnx.checker.MAXIMUM_PROTOBUF:
@@ -106,6 +132,8 @@ def safely_optimize_onnx_model(model_proto: ModelProto) -> ModelProto:
         import onnxoptimizer
 
         passes = onnxoptimizer.get_fuse_and_elimination_passes()
+        if _reshape_copies_from_a_reshape(model_proto):
+            passes.remove("eliminate_consecutive_idempotent_ops")
         model_proto = onnxoptimizer.optimize(model_proto, passes)
     except Exception:
         pass

@@ -196,7 +196,10 @@ export const FileInput = memo(
                                 cursor="pointer"
                                 disabled={isLocked || isConnected}
                                 draggable={false}
-                                placeholder="Click to select a file..."
+                                placeholder={t(
+                                    'inputs.file.clickToSelectFile',
+                                    'Click to select a file...'
+                                )}
                                 size="sm"
                                 textOverflow="ellipsis"
                                 value={filePath ? path.parse(filePath).base : ''}

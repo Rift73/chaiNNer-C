@@ -569,20 +569,78 @@ static double standard_normal(cn_rng *rng) {
     }
 }
 
-static float noise_sample(cn_rng *rng, int mode, double amount, double poisson_limit) {
+static float noise_sample(cn_rng *rng, int mode, double amount) {
     if (mode == 0 || mode == 4)
         return (float)(0.0 + amount * standard_normal(rng));
-    if (mode == 1) return (float)(-amount + (amount - (-amount)) * cn_rng_double(rng));
-    /* The node passes amount/100, within [0, 1], so NumPy always selects its
-     * multiplicative Poisson sampler. The original casts its count to uint8. */
-    if (amount == 0) return 0;
-    double product = 1;
-    uint8_t count = 0;
-    for (;;) {
-        product *= cn_rng_double(rng);
-        if (product <= poisson_limit) return (float)count;
-        ++count;
+    return (float)(-amount + (amount - (-amount)) * cn_rng_double(rng));
+}
+
+static double loggam(double x) {
+    static const double a[10] = {
+        8.333333333333333e-02, -2.777777777777778e-03, 7.936507936507937e-04,
+        -5.952380952380952e-04, 8.417508417508418e-04, -1.917526917526918e-03,
+        6.410256410256410e-03, -2.955065359477124e-02, 1.796443723688307e-01,
+        -1.39243221690590e+00
+    };
+    if (x == 1.0 || x == 2.0) return 0.0;
+    int64_t n = x < 7.0 ? (int64_t)(7 - x) : 0;
+    double x0 = x + (double)n;
+    double x2 = (1.0 / x0) * (1.0 / x0);
+    double gl0 = a[9];
+    for (int k = 8; k >= 0; --k) {
+        gl0 *= x2;
+        gl0 += a[k];
     }
+    double gl = gl0 / x0 + 0.5 * 1.8378770664093453e+00 + (x0 - 0.5) * cn_crt.log(x0) - x0;
+    if (x < 7.0) {
+        for (int64_t k = 1; k <= n; ++k) {
+            gl -= cn_crt.log(x0 - 1.0);
+            x0 -= 1.0;
+        }
+    }
+    return gl;
+}
+
+/* NumPy's random_poisson for lam > 0: multiplication below 10, else transformed rejection (Hoermann's PTRS). */
+static int64_t poisson_count(cn_rng *rng, double lam) {
+    if (lam < 10) {
+        double limit = cn_crt.exp(-lam), product = 1.0;
+        int64_t count = 0;
+        for (;;) {
+            product *= cn_rng_double(rng);
+            if (product <= limit) return count;
+            ++count;
+        }
+    }
+    double slam = sqrt(lam), loglam = cn_crt.log(lam);
+    double b = 0.931 + 2.53 * slam, a = -0.059 + 0.02483 * b;
+    double invalpha = 1.1239 + 1.1328 / (b - 3.4), vr = 0.9277 - 3.6224 / (b - 2);
+    for (;;) {
+        double u = cn_rng_double(rng) - 0.5, v = cn_rng_double(rng);
+        double us = 0.5 - fabs(u);
+        int64_t k = (int64_t)floor((2 * a / us + b) * u + lam + 0.43);
+        if (us >= 0.07 && v <= vr) return k;
+        if (k < 0 || (us < 0.013 && v > us)) continue;
+        if (cn_crt.log(v) + cn_crt.log(invalpha) - cn_crt.log(a / (us * us) + b)
+                <= -lam + (double)k * loglam - loggam((double)k + 1)) return k;
+    }
+}
+
+/* Shot noise: a sample's Poisson count (white holds 65536, a sensor's full well, whose skew leaves the clipped mean
+ * within 0.0005 at every Amount on flat 0.5) less the count's mean, scaled so the standard deviation is
+ * amount * sqrt(signal). Zero mean, none on black, Gaussian's amount on white. A signal no count can have (negative, NaN,
+ * unbounded) gets no noise. */
+static float shot_noise(cn_rng *rng, double amount, double signal) {
+    double mean = 65536.0 * signal;
+    if (amount == 0 || !(mean > 0 && mean < 1e18)) return 0;
+    return (float)(amount * ((double)poisson_count(rng, mean) - mean) / 256.0);
+}
+
+/* The signal under a noise channel: its colour channel, or for one noise channel over colours their luma (BT.601). */
+static double shot_signal(const float *pixel, size_t channels, size_t noise_channels, size_t c) {
+    if (channels == 1) return pixel[0];
+    if (noise_channels == 3) return pixel[c];
+    return 0.114 * pixel[0] + 0.587 * pixel[1] + 0.299 * pixel[2];
 }
 
 typedef struct {
@@ -610,7 +668,6 @@ static void seeded_noise_range(void *opaque, size_t begin, size_t end) {
     }
     double pepper_threshold = amount / 2;
     double salt_threshold = 1 - pepper_threshold;
-    double poisson_limit = mode == 3 ? cn_crt.exp(-amount) : 0;
     for (size_t p = begin; p < end; ++p) {
         float values[3] = {0, 0, 0};
         int replace[3] = {0, 0, 0};
@@ -620,7 +677,10 @@ static void seeded_noise_range(void *opaque, size_t begin, size_t end) {
                 int salt = cn_rng_double(&salt_rng) >= salt_threshold;
                 replace[c] = pepper || salt;
                 values[c] = salt ? 1.0f : 0.0f;
-            } else values[c] = noise_sample(&rng, mode, amount, poisson_limit);
+            } else if (mode == 3) {
+                double signal = shot_signal(image + p * channels, channels, noise_channels, c);
+                values[c] = shot_noise(&rng, amount, signal);
+            } else values[c] = noise_sample(&rng, mode, amount);
         }
         for (size_t c = 0; c < output_channels; ++c) {
             float value = image[p * channels + (channels == 1 ? 0 : c)];

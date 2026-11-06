@@ -1,9 +1,36 @@
 import { createIcon } from '@chakra-ui/icons';
-import { Icon } from '@chakra-ui/react';
-import { memo } from 'react';
+import { Box, Icon } from '@chakra-ui/react';
+import { memo, useEffect, useState } from 'react';
 import { IconType } from 'react-icons';
-import * as bs from 'react-icons/bs';
-import * as cg from 'react-icons/cg';
+import {
+    BsAmd,
+    BsBadgeHd,
+    BsBorderOuter,
+    BsBoundingBox,
+    BsBoxArrowUpRight,
+    BsClipboard,
+    BsEyeFill,
+    BsFillGrid3X3GapFill,
+    BsFillImageFill,
+    BsFilm,
+    BsFolder,
+    BsGear,
+    BsGearFill,
+    BsGraphDown,
+    BsGrid3X3,
+    BsImages,
+    BsLayersHalf,
+    BsNvidia,
+    BsPaletteFill,
+    BsQuestionCircleFill,
+    BsQuestionDiamond,
+    BsRulers,
+    BsShuffle,
+    BsSliders,
+    BsSquareHalf,
+    BsTornado,
+} from 'react-icons/bs';
+import { CgEditNoise, CgMathDivide, CgMergeVertical } from 'react-icons/cg';
 import {
     FaAlignCenter,
     FaAlignLeft,
@@ -13,19 +40,160 @@ import {
     FaPaintBrush,
 } from 'react-icons/fa';
 import { GiRolledCloth } from 'react-icons/gi';
-import * as im from 'react-icons/im';
-import * as md from 'react-icons/md';
+import { ImBrightnessContrast, ImContrast, ImInfo } from 'react-icons/im';
+import {
+    MdAddCircleOutline,
+    MdAllOut,
+    MdAutoFixHigh,
+    MdAutoGraph,
+    MdBlurOff,
+    MdBlurOn,
+    MdBorderAll,
+    MdCalculate,
+    MdCallMerge,
+    MdCallSplit,
+    MdChangeCircle,
+    MdColorLens,
+    MdColorize,
+    MdCompare,
+    MdContentCut,
+    MdCrop,
+    MdDoubleArrow,
+    MdExpand,
+    MdFilterAlt,
+    MdFlip,
+    MdFormatColorFill,
+    MdGradient,
+    MdInput,
+    MdInvertColors,
+    MdLens,
+    MdLoop,
+    MdNumbers,
+    MdOutlineAssessment,
+    MdOutlineAutoFixHigh,
+    MdOutlineColorLens,
+    MdOutlineFormatColorFill,
+    MdOutlineOpacity,
+    MdOutlinePhotoSizeSelectLarge,
+    MdOutlinePhotoSizeSelectSmall,
+    MdOutlineStickyNote2,
+    MdRotate90DegreesCcw,
+    MdSave,
+    MdShowChart,
+    MdSpeed,
+    MdTerrain,
+    MdTextFields,
+    MdVideoCameraBack,
+    MdVideoLabel,
+    MdWbAuto,
+} from 'react-icons/md';
+import { log } from '../../common/log';
+import { lazy } from '../../common/util';
 
+type Library = Partial<Record<string, IconType>>;
+
+// The icons the backend's schemas name (tests/renderer/schemaIcons.test.ts checks this), which draw
+// at once. Taking whole packs here would add 4.4 MB to the bundle every start loads.
+const bs = {
+    BsAmd,
+    BsBadgeHd,
+    BsBorderOuter,
+    BsBoundingBox,
+    BsBoxArrowUpRight,
+    BsClipboard,
+    BsEyeFill,
+    BsFillGrid3X3GapFill,
+    BsFillImageFill,
+    BsFilm,
+    BsFolder,
+    BsGear,
+    BsGearFill,
+    BsGraphDown,
+    BsGrid3X3,
+    BsImages,
+    BsLayersHalf,
+    BsNvidia,
+    BsPaletteFill,
+    BsQuestionCircleFill,
+    BsQuestionDiamond,
+    BsRulers,
+    BsShuffle,
+    BsSliders,
+    BsSquareHalf,
+    BsTornado,
+};
+const cg = { CgEditNoise, CgMathDivide, CgMergeVertical };
+const im = { ImBrightnessContrast, ImContrast, ImInfo };
+const md = {
+    MdAddCircleOutline,
+    MdAllOut,
+    MdAutoFixHigh,
+    MdAutoGraph,
+    MdBlurOff,
+    MdBlurOn,
+    MdBorderAll,
+    MdCalculate,
+    MdCallMerge,
+    MdCallSplit,
+    MdChangeCircle,
+    MdColorLens,
+    MdColorize,
+    MdCompare,
+    MdContentCut,
+    MdCrop,
+    MdDoubleArrow,
+    MdExpand,
+    MdFilterAlt,
+    MdFlip,
+    MdFormatColorFill,
+    MdGradient,
+    MdInput,
+    MdInvertColors,
+    MdLens,
+    MdLoop,
+    MdNumbers,
+    MdOutlineAssessment,
+    MdOutlineAutoFixHigh,
+    MdOutlineColorLens,
+    MdOutlineFormatColorFill,
+    MdOutlineOpacity,
+    MdOutlinePhotoSizeSelectLarge,
+    MdOutlinePhotoSizeSelectSmall,
+    MdOutlineStickyNote2,
+    MdRotate90DegreesCcw,
+    MdSave,
+    MdShowChart,
+    MdSpeed,
+    MdTerrain,
+    MdTextFields,
+    MdVideoCameraBack,
+    MdVideoLabel,
+    MdWbAuto,
+};
 const fa = { FaPaintBrush, FaAlignCenter, FaAlignLeft, FaAlignRight, FaBold, FaItalic };
 const gi = { GiRolledCloth };
 
-const libraries: Partial<Record<string, Partial<Record<string, IconType>>>> = {
+const libraries: Partial<Record<string, Library>> = {
     bs,
     cg,
     md,
     im,
     fa,
     gi,
+};
+
+const loadPack = (load: () => Promise<unknown>) => {
+    return lazy(async () => ((await load()) as { default: Library }).default);
+};
+
+// Any other icon of these packs still draws, once its pack has loaded. These are the packs' CommonJS
+// builds: Rollup cannot split a module, so importing the ES builds whole here would keep them, whole,
+// in the bundle with the named imports above.
+const packs: Partial<Record<string, () => Promise<Library>>> = {
+    bs: loadPack(() => import('react-icons/bs/index')),
+    cg: loadPack(() => import('react-icons/cg/index')),
+    md: loadPack(() => import('react-icons/md/index')),
+    im: loadPack(() => import('react-icons/im/index')),
 };
 
 export const PyTorchIcon = createIcon({
@@ -68,22 +236,44 @@ export const NcnnIcon = createIcon({
     ),
 });
 
+const renderIcon = (as: IconType | undefined, color: string | undefined, boxSize: number) => (
+    <Icon
+        alignContent="center"
+        alignItems="center"
+        as={as}
+        boxSize={boxSize}
+        color={color}
+        transition="0.15s ease-in-out"
+    />
+);
+
+interface PackIconProps {
+    icon: string;
+    load: () => Promise<Library>;
+    accentColor?: string;
+    boxSize: number;
+}
+const PackIcon = memo(({ icon, load, accentColor, boxSize }: PackIconProps) => {
+    const [library, setLibrary] = useState<Library>();
+    useEffect(() => {
+        load().then(setLibrary, (error) => {
+            log.error(error);
+            setLibrary({});
+        });
+    }, [load]);
+    if (!library) {
+        return <Box boxSize={boxSize} />;
+    }
+    return renderIcon(library[icon], accentColor, boxSize);
+});
+
 interface IconFactoryProps {
     icon?: string | null;
     accentColor?: string;
     boxSize?: number;
 }
 export const IconFactory = memo(({ icon, accentColor, boxSize = 4 }: IconFactoryProps) => {
-    const unknownIcon = (
-        <Icon
-            alignContent="center"
-            alignItems="center"
-            as={bs.BsQuestionDiamond}
-            boxSize={boxSize}
-            color="gray.500"
-            transition="0.15s ease-in-out"
-        />
-    );
+    const unknownIcon = renderIcon(bs.BsQuestionDiamond, 'gray.500', boxSize);
     if (!icon) {
         return unknownIcon;
     }
@@ -143,16 +333,18 @@ export const IconFactory = memo(({ icon, accentColor, boxSize = 4 }: IconFactory
         return unknownIcon;
     }
     const libraryIcon = library[icon];
-    return (
-        <Icon
-            alignContent="center"
-            alignItems="center"
-            as={libraryIcon}
-            boxSize={boxSize}
-            color={accentColor}
-            transition="0.15s ease-in-out"
-        />
-    );
+    const pack = packs[prefix];
+    if (!libraryIcon && pack) {
+        return (
+            <PackIcon
+                accentColor={accentColor}
+                boxSize={boxSize}
+                icon={icon}
+                load={pack}
+            />
+        );
+    }
+    return renderIcon(libraryIcon, accentColor, boxSize);
 });
 
 export const DragHandleSVG = createIcon({

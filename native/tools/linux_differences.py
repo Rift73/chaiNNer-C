@@ -56,7 +56,9 @@ _records: dict[str, list[tuple[str, str]]] = {}
 
 def skip_listed(items: list[pytest.Item]) -> None:
     """Skips the listed tests with the reason of their group (the conftests call it on
-    Linux)."""
+    Linux), but in a record, which must see them to list them again."""
+    if os.environ.get(RECORD):
+        return
     data = json.loads(LIST.read_text(encoding="utf-8"))
     groups = dict(data["named"])
     for nodeid in data["tests"]:

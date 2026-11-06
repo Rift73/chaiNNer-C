@@ -1,4 +1,5 @@
 import { evaluate } from '@chainner/navi';
+import i18n from 'i18next';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from 'react-query';
 import { useReactFlow } from 'reactflow';
@@ -27,6 +28,8 @@ import {
     ChainProgress,
     getInitialChainProgress,
     getTotalProgress,
+    isOwnProgress,
+    withNodeFinished,
     withNodeProgress,
 } from '../helpers/chainProgress';
 import {
@@ -144,11 +147,16 @@ const useRegisterNodeEvents = (
     );
 };
 
-const useOnBackendStatus = (backend: Backend, onChange: (data: BackendStatusResponse) => void) => {
+const useOnBackendStatus = (
+    backend: Backend,
+    statusChangesRef: React.MutableRefObject<number>,
+    onChange: (data: BackendStatusResponse) => void
+) => {
     const statusQuery = useQuery({
         queryKey: ['status', backend.url],
         queryFn: async () => {
-            return { ...(await backend.status()), timestamp: Date.now() };
+            const statusChanges = statusChangesRef.current;
+            return { ...(await backend.status()), statusChanges, timestamp: Date.now() };
         },
         cacheTime: 0,
         retry: 25,
@@ -161,9 +169,12 @@ const useOnBackendStatus = (backend: Backend, onChange: (data: BackendStatusResp
     useEffect(() => {
         if (statusQuery.data && statusQuery.data !== lastDataRef.current) {
             lastDataRef.current = statusQuery.data;
-            onChange(statusQuery.data);
+            // A reply asked for before the status last changed here tells the status before that.
+            if (statusQuery.data.statusChanges === statusChangesRef.current) {
+                onChange(statusQuery.data);
+            }
         }
-    }, [statusQuery.data, onChange]);
+    }, [statusQuery.data, onChange, statusChangesRef]);
 };
 
 // eslint-disable-next-line @typescript-eslint/ban-types
@@ -198,6 +209,15 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     const { getNodes, getEdges } = useReactFlow<NodeData, EdgeData>();
 
     const [status, setStatus] = useState(ExecutionStatus.READY);
+    const statusChangesRef = useRef(0);
+    const setLocalStatus = useCallback((newStatus: ExecutionStatus) => {
+        statusChangesRef.current += 1;
+        setStatus(newStatus);
+    }, []);
+    // for the event handlers, which do not run with a render
+    const statusRef = useRef(status);
+    statusRef.current = status;
+    const runsInFlightRef = useRef(0);
 
     const [executionNumber, setExecutionNumber] = useState(1);
 
@@ -231,9 +251,12 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         [nodeStatusMap]
     );
 
-    useOnBackendStatus(backend, (data) => {
+    useOnBackendStatus(backend, statusChangesRef, (data) => {
         if (data.worker && !('error' in data.worker)) {
             const executorStatus = data.worker.executor;
+            // A run this window started ends with the reply to its request. A status reply can say
+            // ready before that: asked after the run started, it can reach the worker first.
+            if (executorStatus === 'ready' && runsInFlightRef.current > 0) return;
             const statusMapping = {
                 running: ExecutionStatus.RUNNING,
                 paused: ExecutionStatus.PAUSED,
@@ -273,6 +296,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         let broadcastData;
         let types;
         let progress;
+        let chainNodeProgress;
         let sequenceTypes;
 
         for (const { type, data } of events) {
@@ -281,6 +305,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             } else if (type === 'node-finish') {
                 executionStatus = NodeExecutionStatus.FINISHED as const;
                 executionTime = data.executionTime;
+                chainNodeProgress = 1;
             } else if (type === 'node-broadcast') {
                 // An overridden node's broadcast follows from the overriding values (Run this
                 // frame: a range of one frame), which its own inputs do not have, and would be
@@ -293,10 +318,20 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                 }
             } else {
                 progress = data;
+                // A node's own progress stays out of the chain bar: the bar would move with each
+                // tile of a long upscale and fall back at its next pass.
+                if (!isOwnProgress(data)) {
+                    chainNodeProgress = data.progress;
+                }
             }
         }
 
-        if (executionStatus !== undefined) {
+        // Events can come after their run ended: the reply to the run comes over another
+        // connection, and an error is handled ahead of the events before it. What they say of the
+        // node's outputs holds, but the node is not running anymore.
+        const executing = statusRef.current !== ExecutionStatus.READY;
+
+        if (executing && executionStatus !== undefined) {
             setNodeStatus(executionStatus, [nodeId]);
         }
 
@@ -322,16 +357,20 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             );
         }
 
-        if (progress) {
+        if (executing && progress) {
             setNodeProgressImpl(nodeId, progress);
         }
 
-        if (executionStatus === NodeExecutionStatus.FINISHED || progress) {
-            const p = progress?.progress ?? 1;
+        if (executing && executionStatus === NodeExecutionStatus.FINISHED) {
+            setNodeProgress((prev) => withNodeFinished(prev, nodeId));
+        }
+
+        if (chainNodeProgress !== undefined) {
+            const p = chainNodeProgress;
             setChainProgress((prev) => withNodeProgress(prev, nodeId, p));
         }
 
-        if (executingIteratorNodesRef.current.has(nodeId) && types) {
+        if (executing && executingIteratorNodesRef.current.has(nodeId) && types) {
             // we want to update the output types of the iterator nodes
             for (const [outputId, typeExpr] of Object.entries(types)) {
                 if (typeExpr) {
@@ -360,6 +399,11 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
 
     useBackendEventSourceListener(eventSource, 'execution-error', (data) => {
         if (data) {
+            if (statusRef.current === ExecutionStatus.KILLING) {
+                // Stop is still ending this run, and the user asked for it to end.
+                log.warn(`A stopped run failed: ${data.exception}`);
+                return;
+            }
             sendAlert({
                 type: AlertType.ERROR,
                 message: formatExecutionErrorMessage(
@@ -371,7 +415,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                 trace: data.exceptionTrace,
             });
             clearNodeStatusMap();
-            setStatus(ExecutionStatus.READY);
+            setLocalStatus(ExecutionStatus.READY);
         }
     });
 
@@ -383,7 +427,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     });
 
     useBackendEventSourceListener(eventSource, 'chain-start', (data) => {
-        if (data) {
+        if (data && statusRef.current !== ExecutionStatus.READY) {
             clearNodeStatusMap();
             setNodeStatus(NodeExecutionStatus.YET_TO_RUN, data.nodes);
 
@@ -404,9 +448,9 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         if (ownsBackend && !backendDownRef.current && eventSourceStatus === 'error') {
             log.warn('The backend event source errored.');
             clearNodeStatusMap();
-            setStatus(ExecutionStatus.READY);
+            setLocalStatus(ExecutionStatus.READY);
         }
-    }, [eventSourceStatus, clearNodeStatusMap, backendDownRef, ownsBackend]);
+    }, [eventSourceStatus, clearNodeStatusMap, backendDownRef, ownsBackend, setLocalStatus]);
 
     const lastChangesRef = useRef(`${nodeChanges} ${edgeChanges}`);
     useEffect(() => {
@@ -452,12 +496,17 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             if (nodes.length === 0) {
                 let message;
                 if (report.removedSideEffectFree > 0) {
-                    message =
-                        'There are no nodes that have an effect. Try to view or output images/files.';
+                    message = i18n.t(
+                        'execution.noEffectiveNodes',
+                        'There are no nodes that have an effect. Try to view or output images/files.'
+                    );
                 } else if (report.removedDisabled > 0) {
-                    message = 'All nodes are disabled. There are no nodes to run.';
+                    message = i18n.t(
+                        'execution.allNodesDisabled',
+                        'All nodes are disabled. There are no nodes to run.'
+                    );
                 } else {
-                    message = 'There are no nodes to run.';
+                    message = i18n.t('execution.noNodes', 'There are no nodes to run.');
                 }
                 sendAlert({ type: AlertType.ERROR, message });
                 return;
@@ -495,7 +544,10 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                 const reasons = invalidNodes.join('\n');
                 sendAlert({
                     type: AlertType.ERROR,
-                    message: `There are invalid nodes in the editor. Please fix them before running.\n${reasons}`,
+                    message: `${i18n.t(
+                        'execution.invalidNodes',
+                        'There are invalid nodes in the editor. Please fix them before running.'
+                    )}\n${reasons}`,
                 });
                 return;
             }
@@ -510,8 +562,9 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             overriddenNodesRef.current = new Set(overrides.keys());
             setChainProgress(getInitialChainProgress(nodes, edges, schemata));
 
+            runsInFlightRef.current += 1;
             try {
-                setStatus(ExecutionStatus.RUNNING);
+                setLocalStatus(ExecutionStatus.RUNNING);
 
                 const data = toBackendJson(nodes, edges, schemata);
                 const response = await backend.run({
@@ -525,24 +578,29 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                 if (response.type === 'already-running') {
                     sendAlert({
                         type: AlertType.ERROR,
-                        message: `Cannot start because a previous executor is still running.`,
+                        message: i18n.t(
+                            'execution.previousStillRunning',
+                            'Cannot start because a previous executor is still running.'
+                        ),
                     });
                 }
             } catch (err: unknown) {
                 if (!(err instanceof CancelError)) {
                     sendAlert({
                         type: AlertType.ERROR,
-                        message: `An unexpected error occurred: ${String(err)}`,
+                        message: i18n.t(
+                            'execution.unexpectedErrorDetail',
+                            'An unexpected error occurred: {{error}}',
+                            { error: String(err) }
+                        ),
                     });
-                    setTimeout(() => {
-                        clearNodeStatusMap();
-                    }, 1000);
                 }
             } finally {
+                runsInFlightRef.current -= 1;
                 nodeEventBacklog.processAll();
                 overriddenNodesRef.current = EMPTY_SET;
                 clearNodeStatusMap();
-                setStatus(ExecutionStatus.READY);
+                setLocalStatus(ExecutionStatus.READY);
                 clearManualTypes(iteratorNodeIds);
             }
         },
@@ -563,6 +621,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             clearNodeStatusMap,
             nodeEventBacklog,
             clearManualTypes,
+            setLocalStatus,
         ]
     );
 
@@ -576,11 +635,14 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             if (response.type === 'no-executor') {
                 return;
             }
-            setStatus(ExecutionStatus.RUNNING);
+            setLocalStatus(ExecutionStatus.RUNNING);
         } catch (err) {
-            sendAlert({ type: AlertType.ERROR, message: 'An unexpected error occurred.' });
+            sendAlert({
+                type: AlertType.ERROR,
+                message: i18n.t('execution.unexpectedError', 'An unexpected error occurred.'),
+            });
         }
-    }, [backend, sendAlert]);
+    }, [backend, sendAlert, setLocalStatus]);
 
     const run = useCallback(async () => {
         if (!isBackendReady) {
@@ -617,22 +679,25 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             if (response.type === 'no-executor') {
                 return;
             }
-            setStatus(ExecutionStatus.PAUSED);
+            setLocalStatus(ExecutionStatus.PAUSED);
         } catch (err) {
-            sendAlert({ type: AlertType.ERROR, message: 'An unexpected error occurred.' });
+            sendAlert({
+                type: AlertType.ERROR,
+                message: i18n.t('execution.unexpectedError', 'An unexpected error occurred.'),
+            });
         }
-    }, [backend, sendAlert]);
+    }, [backend, sendAlert, setLocalStatus]);
 
     const kill = useCallback(async () => {
         try {
-            setStatus(ExecutionStatus.KILLING);
+            setLocalStatus(ExecutionStatus.KILLING);
             backend.abort();
             // We need to set the status again, since run() resets it to READY
             // We have to do this in a setTimeout, otherwise react doesn't honor this
             const killBackendAndWait = new Promise<void>((resolve, reject) =>
                 // eslint-disable-next-line no-promise-executor-return, @typescript-eslint/no-misused-promises
                 setTimeout(async () => {
-                    setStatus(ExecutionStatus.KILLING);
+                    setLocalStatus(ExecutionStatus.KILLING);
                     try {
                         const response = await backend.kill();
                         // The host's /kill returns once a restarted worker answers, and a
@@ -643,17 +708,20 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                     } catch (err) {
                         reject(err);
                     } finally {
-                        setStatus(ExecutionStatus.READY);
+                        setLocalStatus(ExecutionStatus.READY);
                         resolve();
                     }
                 }, 0)
             );
             await killBackendAndWait;
         } catch (err) {
-            sendAlert({ type: AlertType.ERROR, message: 'An unexpected error occurred.' });
+            sendAlert({
+                type: AlertType.ERROR,
+                message: i18n.t('execution.unexpectedError', 'An unexpected error occurred.'),
+            });
         }
         setNodeProgress({});
-    }, [backend, sendAlert]);
+    }, [backend, sendAlert, setLocalStatus]);
 
     // This makes sure keystrokes are executed even if the focus is on an input field
     useEffect(() => {

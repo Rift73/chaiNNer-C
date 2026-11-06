@@ -39,6 +39,8 @@ _signatures = {
     "cas": [_v, _v, _f, _f, _v, _n, _n, ct.c_double, ct.c_int, ct.c_int],
     "correction": [_f, _f, _f, _f, _f, _f, _n, ct.c_int],
     "channel_stats": [_f, _n, _n, _n, _f],
+    "channel_sums": [_f, _n, _n, _d],
+    "scale_channels": [_f, _n, _n, _f],
     "transfer": [_f, _f, _v, _n, _f, _f, _f, ct.c_int, ct.c_int],
 }
 for _name, _args in _signatures.items():
@@ -299,6 +301,33 @@ def channel_stats(image: np.ndarray) -> np.ndarray:
         )
     )
     return result
+
+
+def _raster(image: np.ndarray) -> tuple[int, int]:
+    """(pixels, floats per pixel) of an (H, W, 3 or more) float32 array, or a view of one
+    that keeps its pixels in raster order."""
+    source = f32(image)
+    h, w, c = source.shape
+    step = source.strides[1] // 4
+    if c < 3 or source.strides[2] != 4 or source.strides[0] != step * 4 * w:
+        raise ValueError("Channel kernels require pixels in raster order")
+    return h * w, step
+
+
+def channel_sums(image: np.ndarray) -> np.ndarray:
+    """np.sum(image, axis=(0, 1), dtype=np.float64) of the first three channels."""
+    result = np.empty(3, dtype=np.float64)
+    check(
+        _lib.cn_analysis_channel_sums(
+            ptr(f32(image)), *_raster(image), result.ctypes.data_as(_d)
+        )
+    )
+    return result
+
+
+def scale_channels(image: np.ndarray, gains: np.ndarray) -> None:
+    """image[:, :, :3] *= gains (three float32 factors) in place."""
+    check(_lib.cn_analysis_scale_channels(ptr(f32(image)), *_raster(image), ptr(gains)))
 
 
 def color_transfer(

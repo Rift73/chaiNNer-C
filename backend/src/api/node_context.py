@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable, Literal
 
+from sanic.log import logger
+
 from .settings import SettingsParser
 from .types import NodeId
 
@@ -293,6 +295,13 @@ class NodeContext(Progress, ABC):
 
         This directory persists between node executions, and its contents are shared between different nodes.
         """
+
+    def warn(self, message: str) -> None:
+        """
+        Tells the user about a problem while the node goes on: logged, and shown by the
+        app until it is closed. On any thread.
+        """
+        logger.warning(message)
 
     @abstractmethod
     def add_cleanup(

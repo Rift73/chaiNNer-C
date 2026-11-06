@@ -1,0 +1,407 @@
+{
+    "alert": {
+        "button": {
+            "ok": "OK",
+            "openLogsFolder": "Otwórz folder logów",
+            "exitApplication": "Zamknij aplikację",
+            "copyToClipboard": "Kopiuj do schowka"
+        },
+        "stackTrace": "Ślad stosu",
+        "title": {
+            "systemInformation": "Informacje o systemie"
+        }
+    },
+    "common": {
+        "cancel": "Anuluj",
+        "close": "Zamknij",
+        "settings": "Ustawienia"
+    },
+    "error": {
+        "error": "Błąd",
+        "message": {
+            "criticalBackend": "Wystąpił krytyczny błąd podczas przetwarzania danych węzłów zwróconych przez backend."
+        },
+        "title": {
+            "unableToProcessNodes": "Nie można przetworzyć węzłów backendu."
+        }
+    },
+    "header": {
+        "alpha": "Alfa",
+        "pause": "Wstrzymaj",
+        "pauseButton": "Przycisk wstrzymania",
+        "resume": "Wznów",
+        "run": "Uruchom",
+        "runButton": "Przycisk uruchamiania",
+        "stop": "Zatrzymaj",
+        "stopButton": "Przycisk zatrzymania",
+        "updateAvailable": "Dostępna aktualizacja ({{version}})",
+        "updateAvailableAria": "Dostępna aktualizacja",
+        "updateChangelog": "Dziennik zmian aktualizacji",
+        "updateAvailableTitle": "Dostępna aktualizacja ({{version}})",
+        "updateAvailableMessage": "Dostępna jest aktualizacja dla wersji {{version}}. Czy chcesz zobaczyć dziennik zmian?",
+        "viewReleaseOnGitHub": "Zobacz wydanie na GitHubie",
+        "downloadFromWebsite": "Pobierz z chaiNNer.app",
+        "ignoreUpdate": "Ignoruj aktualizację",
+        "viewUpdate": "Zobacz aktualizację"
+    },
+    "inputs": {
+        "copyInputOverrideId": "Kopiuj ID nadpisywania wejścia",
+        "directory": {
+            "clear": "Wyczyść",
+            "copyFullDirectoryPath": "Kopiuj pełną ścieżkę katalogu",
+            "openInFileExplorer": "Otwórz w Eksploratorze plików",
+            "selectDirectory": "Wybierz katalog...",
+            "clickToSelect": "Kliknij, aby wybrać..."
+        },
+        "extractValueIntoNode": "Wyciągnij wartość do węzła",
+        "file": {
+            "clear": "Wyczyść",
+            "copyFileName": "Kopiuj nazwę pliku",
+            "copyFullFilePath": "Kopiuj pełną ścieżkę pliku",
+            "openInFileExplorer": "Otwórz w Eksploratorze plików",
+            "selectFile": "Wybierz plik...",
+            "clickToSelectFile": "Kliknij, aby wybrać plik..."
+        },
+        "number": {
+            "copyText": "Kopiuj liczbę",
+            "paste": "Wklej"
+        },
+        "text": {
+            "copyText": "Kopiuj tekst",
+            "paste": "Wklej",
+            "invalidCharacter": "Nieprawidłowy znak '{{character}}' (U+{{codePoint}})."
+        },
+        "addInput": "Dodaj wejście",
+        "colorCompare": {
+            "old": "stary",
+            "new": "nowy"
+        },
+        "rgbHex": {
+            "hex": "Hex"
+        }
+    },
+    "outputs": {
+        "largeImage": {
+            "imageNotAvailable": "Obraz niedostępny.",
+            "imagePreviewFailed": "Podgląd obrazu nie załadował się, prawdopodobnie nieobsługiwany typ pliku."
+        },
+        "model": {
+            "modelNotAvailable": "Dane modelu niedostępne."
+        }
+    },
+    "settings": {
+        "title": "Ustawienia",
+        "restartChaiNNer": "Uruchom ponownie chaiNNer",
+        "tabs": {
+            "appearance": "Wygląd",
+            "environment": "Środowisko",
+            "python": "Python",
+            "advanced": "Zaawansowane"
+        },
+        "appearance": {
+            "colorTheme": {
+                "label": "Motyw kolorów",
+                "description": "Wybierz motyw wyglądu chaiNNera.",
+                "options": {
+                    "dark": "Ciemny",
+                    "light": "Jasny",
+                    "system": "Systemowy",
+                    "charcoal": "Węglowy",
+                    "coffee": "Kawowy",
+                    "blueberry": "Jagodowy",
+                    "dusk": "Zmierzch",
+                    "oled": "OLED",
+                    "cyberpunk": "Cyberpunk",
+                    "mixer": "Mixer3D",
+                    "notreal": "NotRealEngine",
+                    "comfort": "ComfortUI"
+                }
+            },
+            "language": {
+                "label": "Język",
+                "description": "Wybierz język interfejsu chaiNNera."
+            },
+            "chainAnimation": {
+                "label": "Animacja łańcucha",
+                "description": "Włącz animacje pokazujące stan przetwarzania łańcucha."
+            },
+            "minimap": {
+                "label": "Minimapa",
+                "description": "Włącz minimapę bieżącego łańcucha w prawym dolnym rogu edytora węzłów."
+            },
+            "snapToGrid": {
+                "label": "Przyciąganie do siatki",
+                "description": "Włącz przyciąganie węzłów do siatki."
+            },
+            "snapToGridAmount": {
+                "label": "Wielkość przyciągania do siatki",
+                "description": "Wielkość przyciągania do siatki."
+            },
+            "viewportExportPadding": {
+                "label": "Margines przy eksporcie widoku do PNG",
+                "description": "Wielkość marginesu przy eksporcie widoku do PNG."
+            }
+        },
+        "environment": {
+            "startupTemplate": {
+                "label": "Szablon uruchomienia",
+                "description": "Ustaw szablon łańcucha do domyślnego użycia przy uruchamianiu chaiNNera.",
+                "placeholder": "Wybierz plik...",
+                "clear": "Wyczyść",
+                "pickFile": "Wybierz plik szablonu uruchomienia"
+            },
+            "selectChain": "Wybierz łańcuch"
+        },
+        "python": {
+            "general": "Ogólne",
+            "useSystemPython": {
+                "label": "Użyj systemowego Pythona (wymaga restartu)",
+                "description": "Użyj systemowego Pythona do przetwarzania w chaiNNerze zamiast wbudowanego Pythona (niezalecane)"
+            },
+            "systemPythonLocation": {
+                "label": "Lokalizacja systemowego Pythona (opcjonalnie)",
+                "description": "Jeśli chcesz, użyj konkretnego pliku wykonywalnego Pythona zamiast domyślnego wywołanego przez 'python3' lub 'python'. To jest przydatne, jeśli masz zainstalowane wiele wersji Pythona i chcesz wybrać konkretną.",
+                "placeholder": "Wybierz plik...",
+                "clear": "Wyczyść",
+                "pickFile": "Wybierz lokalizację systemowego Pythona"
+            }
+        },
+        "advanced": {
+            "checkForUpdates": {
+                "label": "Sprawdzaj aktualizacje przy uruchomieniu",
+                "description": "Przełącza sprawdzanie aktualizacji przy uruchomieniu."
+            },
+            "hardwareAcceleration": {
+                "label": "Włącz przyspieszenie sprzętowe (wymaga restartu)",
+                "description": "Włącz renderowanie GPU dla GUI. Używaj ostrożnie, ponieważ może to znacznie zmniejszyć wydajność GPU dla przetwarzania obrazów."
+            },
+            "allowMultipleInstances": {
+                "label": "Zezwól na wiele jednoczesnych instancji",
+                "description": "Włącz wiele jednoczesnych instancji chaiNNera. Nie jest to zalecane, ale jeśli twój łańcuch nie wykorzystuje wystarczająco zasobów systemowych, może to pomóc w równoległym uruchamianiu zadań."
+            }
+        },
+        "noOptionsFound": "Nie znaleziono opcji.",
+        "clearCache": "Wyczyść cache"
+    },
+    "setup": {
+        "checkingPort": "Sprawdzanie dostępnego portu...",
+        "checkingPython": "Sprawdzanie środowiska systemowego pod kątem prawidłowego Pythona...",
+        "downloadingPython": "Pobieranie zintegrowanego Pythona...",
+        "extractingPython": "Wypakowywanie pobranych plików...",
+        "loading": "Ładowanie...",
+        "startingBackend": "Uruchamianie procesu backendu..."
+    },
+    "typeTags": {
+        "optional": "opcjonalne"
+    },
+    "groups": {
+        "seed": {
+            "randomSeed": "Losowe ziarno",
+            "randomSeedAria": "Losowe ziarno"
+        }
+    },
+    "timer": {
+        "executionTook": "Przybliżony czas wykonania: {{duration}}."
+    },
+    "linkedInputs": {
+        "currentlyLinked": "Wartości {{inputs}} są obecnie połączone z tą samą wartością. Kliknij tutaj, aby cofnąć to połączenie.",
+        "clickToLink": "Kliknij tutaj, aby połączyć {{inputs}} z tą samą wartością."
+    },
+    "languages": {
+        "english": "English",
+        "spanish": "Español",
+        "german": "Deutsch",
+        "french": "Français",
+        "italian": "Italiano",
+        "japanese": "日本語",
+        "chinese": "中文",
+        "russian": "Русский",
+        "korean": "한국어",
+        "dutch": "Nederlands",
+        "polish": "Polski",
+        "turkish": "Türkçe",
+        "hindi": "हिन्दी",
+        "brazilianPortuguese": "Português (Brasil)"
+    },
+    "search": {
+        "placeholder": "Szukaj...",
+        "missingNodes": "Brakujące węzły? Kliknij, aby otworzyć menedżer zależności!",
+        "noCompatibleNodes": "Nie znaleziono kompatybilnych węzłów."
+    },
+    "favorites": {
+        "title": "Ulubione",
+        "noFavorites": "Brak ulubionych.",
+        "addFavoritesTooltip": "Dodawaj do ulubionych, klikając prawym przyciskiem myszy na węzły i wybierając 'Dodaj do ulubionych'.",
+        "addFavoritesTooltipExpanded": "Dodawaj do ulubionych, najeżdżając kursorem na węzły i klikając ikonę <star/> lub klikając prawym przyciskiem myszy i wybierając 'Dodaj do ulubionych'.",
+        "addToFavorites": "Dodaj do ulubionych",
+        "removeFromFavorites": "Usuń z ulubionych"
+    },
+    "documentation": {
+        "title": "Dokumentacja węzła",
+        "openDocumentation": "Otwórz dokumentację"
+    },
+    "dependencyManager": {
+        "title": "Menedżer zależności",
+        "manageDependencies": "Zarządzaj zależnościami",
+        "updatesAvailable": "Dostępne aktualizacje",
+        "updatesAvailableDescription_one": "Jest {{count}} pakiet z dostępnymi aktualizacjami zależności.",
+        "updatesAvailableDescription_few": "Są {{count}} pakiety z dostępnymi aktualizacjami zależności.",
+        "updatesAvailableDescription_many": "Jest {{count}} pakietów z dostępnymi aktualizacjami zależności.",
+        "updatesAvailableDescription_other": "Jest {{count}} pakietu z dostępnymi aktualizacjami zależności.",
+        "openDependencyManager": "Otwórz menedżer zależności",
+        "packages": "Pakiety",
+        "features": "Funkcje",
+        "refresh": "Odśwież",
+        "install": "Zainstaluj",
+        "update": "Aktualizuj",
+        "uninstall": "Odinstaluj",
+        "close": "Zamknij",
+        "missing": "Brakujący",
+        "outdated": "Przestarzały",
+        "unavailable": "Niedostępna",
+        "enabled": "Włączona",
+        "disabled": "Wyłączona",
+        "python": "Python",
+        "system": "System",
+        "integrated": "Zintegrowany",
+        "advanced": "Zaawansowane",
+        "installationMode": "Tryb instalacji",
+        "normal": "Normalny",
+        "manualCopy": "Ręczny/Kopiowanie",
+        "consoleOutput": "Wyjście konsoli:",
+        "commandCopied": "Polecenie skopiowane do schowka",
+        "commandCopiedDescription": "Otwórz zewnętrzny terminal, wklej polecenie i uruchom je. Gdy skończy się wykonywać, ręcznie uruchom ponownie chaiNNer.",
+        "uninstallTitle": "Odinstaluj",
+        "uninstallMessage": "Czy na pewno chcesz odinstalować {{name}}?",
+        "unsavedChanges": "Niezapisane zmiany",
+        "unsavedChangesMessage": "Możesz stracić niezapisane zmiany przez odinstalowanie {{name}}.\n\nCzy na pewno chcesz odinstalować {{name}}?",
+        "cancel": "Anuluj",
+        "installing": "Instalowanie {{name}}...",
+        "uninstalling": "Odinstalowywanie {{name}}...",
+        "copyPythonPath": "Kopiuj ścieżkę Pythona do schowka",
+        "pythonPath": "Ścieżka do Pythona:",
+        "installAllPackages": "{{operations}} wszystkie pakiety ({{size}})",
+        "package_one": "pakiet",
+        "package_few": "pakiety",
+        "package_many": "pakietów",
+        "package_other": "pakietu",
+        "brackets": {
+            "open": "[",
+            "close": "]"
+        }
+    },
+    "note": {
+        "editMode": "Tryb edycji",
+        "editContent": "Edytuj treść",
+        "markdownMode": "Tryb Markdown",
+        "viewMarkdown": "Zobacz Markdown"
+    },
+    "node": {
+        "disableHint": "Wskazówka: Użyj Ctrl+Klik, aby przełączać między opcjami.",
+        "note": {
+            "placeholder": "Tekst notatki"
+        },
+        "implementationError": "Błąd implementacji",
+        "implementationErrorMessage": "Nie można określić kluczowych informacji dla węzła {{nodeName}} ({{schemaId}}).",
+        "enable": "Włącz",
+        "disable": "Wyłącz",
+        "skip": "Pomiń",
+        "eta": "ETA:",
+        "outdated": "Przestarzały",
+        "paused": "Wstrzymano",
+        "finished": "Zakończono"
+    },
+    "color": {
+        "resetToOld": "Przywróć stary kolor",
+        "acceptNew": "Zaakceptuj nowy kolor"
+    },
+    "support": {
+        "koFiTooltip": "Wesprzyj chaiNNer na Ko-fi",
+        "koFiAria": "Wesprzyj chaiNNer",
+        "koFiButton": "Wesprzyj chaiNNer"
+    },
+    "edge": {
+        "removeEdge": "Przycisk usuwania krawędzi"
+    },
+    "breakpoint": {
+        "removeBreakpoint": "Usuń punkt przerwania",
+        "removeEdge": "Usuń krawędź"
+    },
+    "tooltips": {
+        "addNodesToCanvas": "Kliknij dwukrotnie lub przeciągnij i upuść, aby dodać węzły do płótna.",
+        "collapseExpandCategories": "Zwiń/rozwiń kategorie"
+    },
+    "nodeMenu": {
+        "copy": "Kopiuj",
+        "duplicate": "Duplikuj",
+        "resetNode": "Resetuj węzeł",
+        "resetInputs": "Resetuj wejścia",
+        "resetConnections": "Resetuj połączenia",
+        "resetAll": "Resetuj wszystko",
+        "enable": "Włącz",
+        "disable": "Wyłącz",
+        "skip": "Pomiń",
+        "unlock": "Odblokuj",
+        "lock": "Zablokuj",
+        "refreshPreview": "Odśwież podgląd",
+        "delete": "Usuń",
+        "openDocumentation": "Otwórz dokumentację"
+    },
+    "nodesMenu": {
+        "copy": "Kopiuj",
+        "duplicate": "Duplikuj",
+        "resetNodes": "Resetuj węzły",
+        "resetInputs": "Resetuj wejścia",
+        "resetConnections": "Resetuj połączenia",
+        "resetAll": "Resetuj wszystko",
+        "enableAll": "Włącz wszystkie",
+        "disableAll": "Wyłącz wszystkie",
+        "delete": "Usuń"
+    },
+    "edgeMenu": {
+        "addBreakpoint": "Dodaj punkt przerwania",
+        "delete": "Usuń"
+    },
+    "nodeSelector": {
+        "missingDependencies": "Brakujące zależności.",
+        "unableToImport": "Nie można zaimportować węzła(ów).",
+        "clickToInstall": "Kliknij, aby otworzyć menedżer zależności w celu zainstalowania {{packageName}}.",
+        "criticalImportError": "Wystąpił krytyczny błąd importu z zależnością w pakiecie: {{packageName}}.",
+        "nodes": "Węzły"
+    },
+    "nodeDocumentation": {
+        "conditionExplanation": {
+            "condition": "Warunek:",
+            "allConditions": "Muszą być spełnione wszystkie poniższe warunki:",
+            "anyCondition": "Musi być spełniony co najmniej jeden z poniższych warunków:",
+            "enumIs": "<name>{{name}}</name> ma wartość <options/>.",
+            "enumIsNot": "<name>{{name}}</name> nie ma wartości <options/>.",
+            "enumIsOneOf": "<name>{{name}}</name> ma jedną z wartości <options/>.",
+            "enumIsNotOneOf": "<name>{{name}}</name> nie ma żadnej z wartości <options/>.",
+            "typeIs": "<name>{{name}}</name> to {{type}}.",
+            "typeIsNot": "<name>{{name}}</name> to nie {{type}}.",
+            "typeIsOfType": "<name>{{name}}</name> jest typu <type/>.",
+            "typeIsNotOfType": "<name>{{name}}</name> nie jest typu <type/>."
+        },
+        "nodeDocs": {
+            "optional": "opcjonalne",
+            "sequenced": "(Sekwencyjne)",
+            "supportedFileTypes": "Obsługiwane typy plików:",
+            "primaryInputDescription": "To wejście jest głównym wejściem dla obsługiwanych typów plików. Oznacza to, że możesz przeciągnąć i upuścić obsługiwane pliki do chaiNNera, a program automatycznie utworzy węzeł z wypełnionym tym wejściem.",
+            "options": "Opcje:",
+            "type": "Typ:",
+            "inputs": "Wejścia",
+            "noInputs": "Ten węzeł nie ma wejść.",
+            "outputs": "Wyjścia",
+            "noOutputs": "Ten węzeł nie ma wyjść.",
+            "seeAlso": "Zobacz także",
+            "character_one": "znak",
+            "character_few": "znaki",
+            "character_many": "znaków",
+            "character_other": "znaku"
+        },
+        "nodesList": {
+            "noNodesFound": "Nie znaleziono węzłów"
+        }
+    }
+}

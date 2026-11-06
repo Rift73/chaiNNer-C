@@ -3,7 +3,7 @@ from __future__ import annotations
 import heapq
 
 import onnx
-from onnx.onnx_pb import ModelProto, NodeProto
+from onnx.onnx_pb import ModelProto, NodeProto, TensorProto
 
 from nodes.impl.ncnn.model import (
     BinaryOpTypes,
@@ -19,6 +19,60 @@ from nodes.properties.inputs import OnnxFpDropdown, OnnxModelInput
 from nodes.properties.outputs import NcnnModelOutput, TextOutput
 
 from .. import utility_group
+
+_FLOAT_TYPES = (TensorProto.FLOAT, TensorProto.FLOAT16)
+
+
+def pass_float_casts_through(model: ModelProto) -> None:
+    """Takes out each Cast between FP16 and FP32, as NCNN has one float type: an FP16 ONNX
+    that takes its image in FP32 has them around its first convolution (pytorch/
+    input_export.py). Every other Cast stays for the converter to refuse. Runs on nodes in
+    graph order, after the optimizer, which needs each node's types to match."""
+    graph = model.graph
+    inferred = onnx.shape_inference.infer_shapes(model).graph
+    types = {
+        value.name: value.type.tensor_type.elem_type
+        for value in (*inferred.value_info, *inferred.input, *inferred.output)
+    }
+    types.update({tensor.name: tensor.data_type for tensor in graph.initializer})
+    given = {value.name for value in graph.input}
+    given |= {tensor.name for tensor in graph.initializer}
+    outputs = {value.name for value in graph.output}
+
+    def between_floats(node: NodeProto) -> bool:
+        to = next((a.i for a in node.attribute if a.name == "to"), None)
+        return (
+            node.op_type == "Cast"
+            and to in _FLOAT_TYPES
+            and types.get(node.input[0]) in _FLOAT_TYPES
+        )
+
+    # Readers of a Cast read what it reads; in graph order, so Casts in a row go together
+    renamed: dict[str, str] = {}
+    kept: list[NodeProto] = []
+    for node in graph.node:
+        node.input[:] = [renamed.get(name, name) for name in node.input]
+        if between_floats(node) and node.output[0] not in outputs:
+            renamed[node.output[0]] = node.input[0]
+        else:
+            kept.append(node)
+
+    # A Cast that makes a graph output hands its name to the node it reads and that node's
+    # other readers; a graph input, a weight or another output keeps its name, and the Cast
+    # stays for the converter to refuse.
+    renamed = {
+        node.input[0]: node.output[0]
+        for node in kept
+        if between_floats(node)
+        and node.input[0] not in given
+        and node.input[0] not in outputs
+    }
+    del graph.node[:]
+    for node in kept:
+        if not (between_floats(node) and node.input[0] in renamed):
+            node.input[:] = [renamed.get(name, name) for name in node.input]
+            node.output[:] = [renamed.get(name, name) for name in node.output]
+            graph.node.append(node)
 
 
 def put_in_order(model: ModelProto) -> None:
@@ -169,6 +223,7 @@ def convert_to_ncnn_node(
     put_in_order(model_proto)  # first, as the optimizer optimizes only valid models
     fill_kernel_shapes(model_proto)
     opt_model = safely_optimize_onnx_model(model_proto)
+    pass_float_casts_through(opt_model)
 
     # Before the converter, which rewrites the graph's nodes as it fuses them
     takers = computed_inputs(opt_model)

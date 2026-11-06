@@ -27,11 +27,10 @@ from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 from threading import Lock
-from weakref import WeakKeyDictionary
 
 from sanic.log import logger
 
-from ..onnx.model import OnnxModel
+from ..onnx.model import OnnxModel, content_digest
 from ..tensorrt.build_cache import memory_budget
 from .model import MIGraphXProgram, MIGraphXProgramInfo
 
@@ -40,16 +39,6 @@ DISK_BYTES = 16 * 1024**3
 SUFFIX = ".chainner-c.mxr"
 # The record a file holds (_encode): a new layout takes the next version.
 FORMAT_VERSION = 1
-
-_onnx_digests: WeakKeyDictionary[OnnxModel, bytes] = WeakKeyDictionary()
-
-
-def _onnx_digest(model: OnnxModel) -> bytes:
-    digest = _onnx_digests.get(model)
-    if digest is None:
-        digest = hashlib.sha256(model.bytes).digest()
-        _onnx_digests[model] = digest
-    return digest
 
 
 def program_key(
@@ -63,7 +52,7 @@ def program_key(
     """The key of a program of `model` built with `settings` (every build input) on a GPU,
     by a MIGraphX runner (runner_identity), with a DUAL or DRFT route's build identity
     (None otherwise)."""
-    digest = hashlib.sha256(_onnx_digest(model))
+    digest = hashlib.sha256(content_digest(model))
     digest.update(
         repr((FORMAT_VERSION, settings, gpu_name, gfx, runner, route)).encode()
     )

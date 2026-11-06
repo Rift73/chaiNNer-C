@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from sanic.log import logger
 
 from api import KB, MB, Dependency, add_package
@@ -57,6 +59,24 @@ NLM_ISPC_GLIBC_2_28 = Dependency(
     ),
 )
 
+# Deband and Grain's Grainer needs the noise plugin (github.com/wwww-wwww/vs-noise, GPL-3.0)
+# for all its types but Placebo, and vs-jetpack does not require it: the plugin's own wheels
+# on PyPI, by hash.
+NOISE_WHEELS = {
+    "win32": (
+        "https://files.pythonhosted.org/packages/e9/b2/"
+        "74caf326050f8ae03d8a6e24f810d5cca36f31f18dba5a77eb0c26a8eb02/"
+        "vsnoise-1.3-py3-none-win_amd64.whl"
+        "#sha256=39201f4c0ed11d4d3f44e4106a039831ae1e72b57a1fa45a313a13369267d779"
+    ),
+    "linux": (
+        "https://files.pythonhosted.org/packages/e3/86/"
+        "497a531cc75061b609790542de3816cf61e8a902201aa0df909b75f583f7/"
+        "vsnoise-1.3-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+        "#sha256=35cc606ef085cd140d62108023f30c16e9dddcea91f23c074cf798db520d66db"
+    ),
+}
+
 
 def vsview_unavailable_reason(glibc: tuple[int, int] | None) -> str | None:
     """The reason the package leaves vsview out on a system with this glibc, or None
@@ -105,6 +125,13 @@ def vapoursynth_dependencies(glibc: tuple[int, int] | None) -> list[Dependency]:
             pypi_name="vapoursynth-cas",
             version="3.0",
             size_estimate=400 * KB,
+        ),
+        Dependency(
+            display_name="Noise",
+            pypi_name="vsnoise",
+            version="1.3",
+            size_estimate=500 * KB,
+            url=NOISE_WHEELS.get(sys.platform),
         ),
         # The CUDA BM3D, NLMeans and DFTTest that vs-jetpack prefers on NVIDIA GPUs.
         Dependency(

@@ -5,7 +5,8 @@
 // rebuilt without Qt: the same field names, values and meanings, keys sorted as QJsonObject sorts
 // them. Additions: each analysis's kernel evidence, and in the summary a short record per analysis
 // (its verdict, statuses and leading candidates), the kernel decision and the selection (the frame
-// and candidate the node's outputs carry).
+// and candidate the node's outputs carry). A one-axis upscale's result goes through searchUnscaledAxis
+// before any of this: the same fields, with the unscaled axis at the source's size.
 #include "getnative_unit.hpp"
 #include "getnative_kernel.hpp"
 #include <algorithm>
@@ -231,7 +232,9 @@ Json parameters(const Result &r, size_t index) {
         }
     }
     auto selectedKernel = kernel(c);
-    selectedKernel["axes"] = "Same kernel assumed on both axes";
+    selectedKernel["axes"] = c.y.size == r.height  ? "The width only; the height is at the source's size"
+                             : c.x.size == r.width ? "The height only; the width is at the source's size"
+                                                   : "Same kernel assumed on both axes";
     selectedKernel["alternatives"] = alternatives;
     std::string toLinear = "c", toEncoded = "l";
     const auto &domain = r.lightDomain;
@@ -898,6 +901,7 @@ void addFrame(void *state, const double *plane, int width, int height, const cn_
     f.linearWeights = {facts.weights[0], facts.weights[1], facts.weights[2]};
     f.keyframeOnly = facts.keyframe_only != 0;
     record.result = analyze(image, session.options, cancel);
+    searchUnscaledAxis(image, record.result, session.options, cancel);
     record.result.lightDomain = f.lightDomain;
     record.result.colorAssumptions = f.colorAssumptions;
     record.result.linearWeights = f.linearWeights;

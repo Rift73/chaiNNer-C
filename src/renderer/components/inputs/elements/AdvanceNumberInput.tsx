@@ -7,29 +7,56 @@ import {
     NumberInputField,
     NumberInputStepper,
 } from '@chakra-ui/react';
-import { evaluate, isBigNumber, isComplex, isFraction, isNumber, isUnit, number } from 'mathjs';
 import { CSSProperties, MouseEventHandler, memo, useCallback, useEffect, useRef } from 'react';
 import { useContextSelector } from 'use-context-selector';
+import { log } from '../../../../common/log';
+import { lazy, noop } from '../../../../common/util';
 import { GlobalContext } from '../../../contexts/GlobalNodeState';
 import './AdvancedNumberInput.scss';
 
 const validChars = /^[\w.+\-*()^!%&|~ /]$/iu;
 const isValidChar = (c: string): boolean => validChars.test(c);
-const parseNumberString = (s: string): number => {
+
+// Text mathjs would read as this same number. Anything else is an expression, which needs mathjs.
+const plainNumber = /^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?\s*$/iu;
+
+let evaluateExpression: ((s: string) => number) | undefined;
+
+// mathjs takes long to start and only expressions need it, so it loads when an input gets focus,
+// not with the app. Without it, an expression reads as an invalid one does.
+const loadMathjs = lazy(async () => {
     try {
-        const result = evaluate(s.replace(/\*\*/g, ' ^ ')) as unknown;
-        if (isNumber(result)) return result;
-        // ignore units
-        if (isUnit(result)) return result.toNumber();
-        // just return the real part of complex numbers
-        if (isComplex(result)) return result.re;
-        // just return the real part of complex numbers
-        if (isBigNumber(result)) return result.toNumber();
-        if (isFraction(result)) return number(result);
-    } catch {
-        // noop
+        const { evaluate, isBigNumber, isComplex, isFraction, isNumber, isUnit, number } =
+            await import('mathjs');
+        evaluateExpression = (s) => {
+            try {
+                const result = evaluate(s.replace(/\*\*/g, ' ^ ')) as unknown;
+                if (isNumber(result)) return result;
+                // ignore units
+                if (isUnit(result)) return result.toNumber();
+                // just return the real part of complex numbers
+                if (isComplex(result)) return result.re;
+                // just return the real part of complex numbers
+                if (isBigNumber(result)) return result.toNumber();
+                if (isFraction(result)) return number(result);
+            } catch {
+                // noop
+            }
+            return parseFloat(s);
+        };
+    } catch (error) {
+        log.error('Unable to load mathjs. Number inputs only read plain numbers.', error);
+        evaluateExpression = parseFloat;
     }
-    return parseFloat(s);
+});
+
+const startLoadingMathjs = () => {
+    loadMathjs().catch(log.error);
+};
+
+/** The number the text stands for, or undefined while its expression waits for mathjs. */
+const parseNumberString = (s: string): number | undefined => {
+    return plainNumber.test(s) ? parseFloat(s) : evaluateExpression?.(s);
 };
 
 const clamp = (value: number, min?: number | null, max?: number | null): number => {
@@ -53,6 +80,8 @@ interface AdvancedNumberInputProps {
     inputString: string;
     setInputString: (input: string) => void;
     setInput: (value: number) => void;
+    /** If given, committing an empty input calls this instead of using the default value. */
+    onClear?: () => void;
 
     onContextMenu?: MouseEventHandler<HTMLElement> | undefined;
     inputWidth?: string;
@@ -78,6 +107,7 @@ export const AdvancedNumberInput = memo(
         inputString,
         setInputString,
         setInput,
+        onClear,
 
         onContextMenu,
         inputWidth,
@@ -87,12 +117,28 @@ export const AdvancedNumberInput = memo(
         alignSelf,
     }: AdvancedNumberInputProps) => {
         const changedSinceCommit = useRef(false);
+        const commitLoaded = useRef<(waiting: string) => void>(noop);
+        const isCleared = onClear !== undefined && !inputString.trim();
+        const clear = (): void => {
+            changedSinceCommit.current = false;
+            onClear?.();
+        };
         const getNumericValue = (): number | undefined => {
+            if (isCleared) return undefined;
             const rawNumber = inputString.trim() ? parseNumberString(inputString) : defaultValue;
+            if (rawNumber === undefined) {
+                const waiting = inputString;
+                loadMathjs()
+                    .then(() => commitLoaded.current(waiting))
+                    .catch(log.error);
+                return undefined;
+            }
             const valAsNumber = precision > 0 ? rawNumber : Math.round(rawNumber);
 
-            if (!Number.isNaN(valAsNumber)) {
-                return Number(clamp(valAsNumber, min, max).toFixed(precision));
+            const clamped = clamp(valAsNumber, min, max);
+            // without limits, an infinite number stays: a chain cannot hold one, it saves as null
+            if (Number.isFinite(clamped)) {
+                return Number(clamped.toFixed(precision));
             }
         };
         const setValue = (value: number): void => {
@@ -103,6 +149,14 @@ export const AdvancedNumberInput = memo(
             setInput(value);
             const formatted = hideTrailingZeros ? String(value) : value.toFixed(precision);
             setInputString(formatted);
+        };
+        commitLoaded.current = (waiting) => {
+            // the text may have changed while mathjs loaded
+            if (waiting !== inputString) return;
+            const value = getNumericValue();
+            if (value !== undefined) {
+                setValue(value);
+            }
         };
 
         // auto commit system to set value after a delay
@@ -135,6 +189,10 @@ export const AdvancedNumberInput = memo(
         flushDraft.current = () => {
             if (!changedSinceCommit.current || isDisabled || noRepeatOnBlur) return;
             cancelAutoCommit();
+            if (isCleared) {
+                clear();
+                return;
+            }
             const value = getNumericValue();
             if (value !== undefined) {
                 setValue(value);
@@ -150,6 +208,10 @@ export const AdvancedNumberInput = memo(
         const onBlur = () => {
             cancelAutoCommit();
             if (noRepeatOnBlur) return;
+            if (isCleared) {
+                clear();
+                return;
+            }
             const value = getNumericValue();
             if (value !== undefined) {
                 // Make sure the input value has been altered so onChange gets correct value if adjustment needed
@@ -159,6 +221,10 @@ export const AdvancedNumberInput = memo(
         const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
             cancelAutoCommit();
             if (e.key === 'Enter') {
+                if (isCleared) {
+                    clear();
+                    return;
+                }
                 const value = getNumericValue();
                 if (value !== undefined) {
                     setValue(value);
@@ -210,6 +276,7 @@ export const AdvancedNumberInput = memo(
                         value={inputString}
                         onBlur={onBlur}
                         onChange={onChange}
+                        onFocus={startLoadingMathjs}
                     >
                         <NumberInputField
                             borderLeftRadius={unit ? 0 : 'md'}
@@ -268,6 +335,7 @@ export const AdvancedNumberInput = memo(
                     w="full"
                     onBlur={onBlur}
                     onChange={onChange}
+                    onFocus={startLoadingMathjs}
                 >
                     <NumberInputField
                         borderLeftRadius={unit ? 0 : 'lg'}

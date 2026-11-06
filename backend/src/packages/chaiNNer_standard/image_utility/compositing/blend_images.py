@@ -196,7 +196,10 @@ def blend_images_node(
     (base_height, base_width, _), (overlay_height, overlay_width, _) = dimensions(
         base, ov
     )
-    if overlay_position == BlendOverlayPosition.PERCENT_OFFSET:
+    if isinstance(base, Color) or isinstance(ov, Color):
+        # A color fills the image's size: the position inputs are hidden, whatever they hold.
+        x0, y0 = 0, 0
+    elif overlay_position == BlendOverlayPosition.PERCENT_OFFSET:
         x0 = round((base_width - overlay_width) * x_percent / 100)
         y0 = round((base_height - overlay_height) * y_percent / 100)
     elif overlay_position == BlendOverlayPosition.PIXEL_OFFSET:

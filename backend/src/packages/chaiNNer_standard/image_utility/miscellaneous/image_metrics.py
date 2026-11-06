@@ -27,7 +27,16 @@ from .. import miscellaneous_group
         ImageInput("Comparison Image"),
     ],
     outputs=[
-        NumberOutput("MSE", output_type="0..1"),
+        NumberOutput(
+            "MSE",
+            output_type="""
+                if Input0 == Input1 {
+                    0..1
+                } else {
+                    error("The images must have the same size and number of channels.")
+                }
+            """,
+        ),
         NumberOutput("PSNR", output_type="0.."),
         NumberOutput("SSIM", output_type="-1..1 | nan"),
     ],

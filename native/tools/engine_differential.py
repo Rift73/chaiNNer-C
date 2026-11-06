@@ -27,6 +27,7 @@ import hashlib
 import itertools
 import json
 import subprocess
+import sys
 import time
 import traceback
 from collections import defaultdict
@@ -36,7 +37,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from bench_oracle import FFMPEG
+from bench_oracle import FFMPEG as WINDOWS_FFMPEG
+from scratch_storage import STORAGE
 from verify_runtime import sse_event_mismatches, sse_record
 
 import api
@@ -46,6 +48,7 @@ from api import ExecutionOptions, NodeId
 from chain.cache import OutputCache
 from chain.chain import Chain, CollectorNode, FunctionNode, GeneratorNode
 from events import Event, EventConsumer
+from folder_videos import run_executor
 from native_executor import NativeExecutor
 from nodes.impl import numpy_pool
 from nodes.impl.execution_scheduler import LatestBroadcasts
@@ -179,6 +182,8 @@ def _error_event(error: BaseException) -> dict[str, Any]:
     return {"event": "execution-error", "data": data}
 
 
+# The local gates' FFmpeg on Windows, the test storage's pinned one elsewhere.
+FFMPEG = WINDOWS_FFMPEG if sys.platform == "win32" else STORAGE / "ffmpeg" / "ffmpeg"
 LOSSLESS_VIDEO = frozenset({".mkv"})
 LOSSY_VIDEO = frozenset({".mp4", ".webm", ".avi", ".mov"})
 
@@ -307,8 +312,8 @@ def execute(
             if parent_cache is None
             else OutputCache(static_data=parent_cache.copy()),
         }
-        executor = (
-            Executor(**arguments) if kind == "python" else NativeExecutor(**arguments)
+        executor = run_executor(
+            Executor if kind == "python" else NativeExecutor, **arguments
         )
         start = time.perf_counter()
         error: BaseException | None = None

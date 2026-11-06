@@ -443,8 +443,28 @@ Image merge3(const Image &a, const Image &b, const Image &c)
  * BGR2YUV (2, 0, 3), YUV2BGR (3, 0, 3), BGR2HSV (4, 0, 3), HSV2BGR (5, 0, 3), BGR2HLS (6, 0, 3), HLS2BGR (7, 0, 3),
  * BGR2LAB (10, 0, 3), LAB2BGR (11, 0, 3). */
 Image rev3(const Image &image) { return cvt_color(image, 0, 2, 3); }
-Image hsv_to_rgb(const Image &image) { return cvt_color(representation(image, 3), 5, 0, 3); }
-Image hsl_to_rgb(const Image &image) { return cvt_color(representation(image, 5), 7, 0, 3); }
+/* A conversion and its representation, in one buffer. */
+Image represented(const Image &image, int op, int operation)
+{
+    MutableImage out = MutableImage::allocate(image.height, image.width, 3);
+    cvt_color_to(image.data, out.data(), image, op, 0, 3);
+    check(cn_color_representation(out.data(), out.data(), pixels(image), operation, nullptr, nullptr, nullptr, nullptr));
+    return std::move(out).publish();
+}
+
+/* A representation and HSV's or HLS's conversion to BGR, in one buffer. */
+Image from_represented(const Image &image, int operation, int op)
+{
+    if (image.channels != 3 || image.height == 0 || image.width == 0)
+        throw NodeError("ValueError", "Invalid image shape for transparency/color kernel");
+    MutableImage out = MutableImage::allocate(image.height, image.width, 3);
+    check(cn_color_representation(image.data, out.data(), pixels(image), operation, nullptr, nullptr, nullptr, nullptr));
+    cvt_color_to(out.data(), out.data(), image, op, 0, 3);
+    return std::move(out).publish();
+}
+
+Image hsv_to_rgb(const Image &image) { return from_represented(image, 3, 5); }
+Image hsl_to_rgb(const Image &image) { return from_represented(image, 5, 7); }
 
 Image yuv_to_rgb(const Image &image)
 {
@@ -488,15 +508,15 @@ const std::vector<Conversion> &conversions()
             {gray, rgba, 1, [](const Image &i) { return cvt_color(i, 0, 0, 4); }},
             {rgb, yuv, 1, [](const Image &i) { return rev3(cvt_color(i, 2, 0, 3)); }},
             {yuv, rgb, chroma, yuv_to_rgb},
-            {rgb, hsv, 1, [](const Image &i) { return representation(cvt_color(i, 4, 0, 3), 2); }},
+            {rgb, hsv, 1, [](const Image &i) { return represented(i, 4, 2); }},
             {hsv, rgb, chroma, hsv_to_rgb},
-            {rgb, hsl, 1, [](const Image &i) { return representation(cvt_color(i, 6, 0, 3), 4); }},
+            {rgb, hsl, 1, [](const Image &i) { return represented(i, 6, 4); }},
             {hsl, rgb, chroma, hsl_to_rgb},
             {hsv, hsl, 1, hsv_to_hsl},
             {hsl, hsv, 1, hsl_to_hsv},
             {rgb, cmyk, 1, [](const Image &i) { return representation(i, 0); }},
             {cmyk, rgb, chroma, [](const Image &i) { return representation(i, 1); }},
-            {rgb, lab, 1, [](const Image &i) { return representation(cvt_color(i, 10, 0, 3), 6); }},
+            {rgb, lab, 1, [](const Image &i) { return represented(i, 10, 6); }},
             {lab, rgb, 1, [](const Image &i) { return cvt_color(representation(i, 7), 11, 0, 3); }},
             {lab, lch, 1, [](const Image &i) { return lab_lch(i, false); }},
             {lch, lab, chroma, [](const Image &i) { return lab_lch(i, true); }},

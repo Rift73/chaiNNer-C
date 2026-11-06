@@ -1,8 +1,9 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "neighborhood_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* Median Blur's 3x3 and 5x5 interiors, AVX2 unit (/arch:AVX2, spec 4.3): no export, reached only through
- * small_median_range's dispatch on the call's ISA level, for images without NaN and -0 (median_shared.h). */
+/* Median Blur's 3x3 and 5x5 interiors, for images without NaN and -0, and its histogram rows, AVX2 unit (/arch:AVX2,
+ * spec 4.3): no export, reached only through small_median_range's and histogram_range's dispatch on the call's ISA level
+ * (median_shared.h). */
 #include "median_shared.h"
 
 #include <immintrin.h>
@@ -60,4 +61,72 @@ int cn_median_special_avx2(const float *src, size_t count)
         if ((word & 0x7fffffffu) > 0x7f800000u || word == 0x80000000u) return 1;
     }
     return 0;
+}
+
+/* The running sums of 16 counts: each 128-bit lane's own, then the low lane's total on every sum of the high one. */
+static inline __m256i count_sums(__m256i counts)
+{
+    counts = _mm256_add_epi16(counts, _mm256_slli_si256(counts, 2));
+    counts = _mm256_add_epi16(counts, _mm256_slli_si256(counts, 4));
+    counts = _mm256_add_epi16(counts, _mm256_slli_si256(counts, 8));
+    const __m256i low = _mm256_shufflehi_epi16(_mm256_permute2x128_si256(counts, counts, 0x08), 0xFF);
+    return _mm256_add_epi16(counts, _mm256_unpackhi_epi64(low, low));
+}
+
+/* The first of 16 running sums above limit; the last one is. */
+static inline size_t first_above(__m256i sums, uint32_t limit)
+{
+    const __m256i over = _mm256_subs_epu16(sums, _mm256_set1_epi16((short)limit));
+    const uint32_t within = (uint32_t)_mm256_movemask_epi8(_mm256_cmpeq_epi16(over, _mm256_setzero_si256()));
+    return _tzcnt_u32(~within) / 2;
+}
+
+void cn_median_row_avx2(const uint16_t *coarse, const uint16_t *fine, size_t w, size_t radius, uint8_t *out,
+                        size_t step)
+{
+    const size_t r = radius, kernel = 2 * r + 1;
+    const uint32_t middle = (uint32_t)(kernel * kernel / 2);
+    __m256i window = _mm256_setzero_si256(), buckets[16];
+    size_t updated[16];
+    for (size_t b = 0; b < 16; ++b) updated[b] = SIZE_MAX;
+    for (size_t x = 0; x <= r && x < w; ++x) {
+        size_t weight = x == 0 ? r + 1 : 1;
+        if (x == w - 1 && r >= w) weight += r - w + 1;
+        const __m256i counts = _mm256_loadu_si256((const __m256i *)(coarse + x * 16));
+        window = _mm256_add_epi16(window, _mm256_mullo_epi16(counts, _mm256_set1_epi16((short)weight)));
+    }
+    for (size_t x = 0; x < w; ++x) {
+        const __m256i sums = count_sums(window);
+        const size_t bucket = first_above(sums, middle);
+        uint16_t totals[16];
+        _mm256_storeu_si256((__m256i *)totals, sums);
+        const uint32_t below = bucket ? totals[bucket - 1] : 0;
+        const uint16_t *bins = fine + bucket * 16;
+        __m256i counts;
+        if (updated[bucket] == SIZE_MAX || x - updated[bucket] >= kernel) {
+            const size_t left = x < r ? 0 : x - r, right = x + r < w ? x + r : w - 1;
+            counts = _mm256_setzero_si256();
+            for (size_t xx = left; xx <= right; ++xx) {
+                size_t weight = 1;
+                if (!xx && x < r) weight += r - x;
+                if (xx == w - 1 && r >= w - x) weight += r - (w - x - 1);
+                counts = _mm256_add_epi16(counts,
+                    _mm256_mullo_epi16(_mm256_loadu_si256((const __m256i *)(bins + xx * 256)),
+                                       _mm256_set1_epi16((short)weight)));
+            }
+        } else {
+            counts = buckets[bucket];
+            for (size_t xx = updated[bucket]; xx < x; ++xx) {
+                const size_t leave = xx < r ? 0 : xx - r, enter = xx + r + 1 < w ? xx + r + 1 : w - 1;
+                counts = _mm256_sub_epi16(counts, _mm256_loadu_si256((const __m256i *)(bins + leave * 256)));
+                counts = _mm256_add_epi16(counts, _mm256_loadu_si256((const __m256i *)(bins + enter * 256)));
+            }
+        }
+        buckets[bucket] = counts;
+        updated[bucket] = x;
+        out[x * step] = (uint8_t)(bucket * 16 + first_above(count_sums(counts), middle - below));
+        const size_t leave = x < r ? 0 : x - r, enter = x + r + 1 < w ? x + r + 1 : w - 1;
+        window = _mm256_sub_epi16(window, _mm256_loadu_si256((const __m256i *)(coarse + leave * 16)));
+        window = _mm256_add_epi16(window, _mm256_loadu_si256((const __m256i *)(coarse + enter * 16)));
+    }
 }

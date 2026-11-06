@@ -37,4 +37,8 @@ void cn_median_interior_avx2(const float *src, float *out, size_t h, size_t w, s
 /* 1 when src[0, count) holds a NaN or -0 (bit tests, so only without DAZ, under which the entry's == 0 also takes
  * the negative denormals), else 0. */
 int cn_median_special_avx2(const float *src, size_t count);
+/* out[x * step], x < w: the histogram median's output row (median_row in neighborhood_ops.c) for a window of under 65536
+ * samples, whose counts and their sums fit 16 lanes of 16 bits. coarse holds 16 and fine 256 counts per column. */
+void cn_median_row_avx2(const uint16_t *coarse, const uint16_t *fine, size_t w, size_t radius, uint8_t *out,
+                        size_t step);
 #endif

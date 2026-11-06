@@ -21,15 +21,21 @@ from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
+from typing import TYPE_CHECKING
 
 import numpy as np
 from sanic.log import logger
 
-from api import NodeId
+from api import NodeId, Progress
 
 from .cache import SharedCache, engines
 from .drft import load_plugins
 from .model import TensorRTEngine
+from .tiling import ShapeBounds, one_tile, tile_input
+
+if TYPE_CHECKING:
+    # Annotation only: no new import at runtime.
+    from ..upscale.tile_report import TileReport
 
 RUNNER_VARIABLE = "CHAINNER_C_TRT_RUNNER"
 MODULE = "nodes.impl.tensorrt._chainner_trt"
@@ -67,6 +73,12 @@ def runner_enabled() -> bool:
     )
 
 
+def runner_takes(engine: TensorRTEngine) -> bool:
+    """Whether the runner takes this engine: 1 or 3 input and output channels. The Python
+    session takes the rest."""
+    return engine.input_channels in (1, 3) and engine.output_channels in (1, 3)
+
+
 def runner_plugin() -> Path | None:
     """AI Upscale's runner plugin (namespace chainner_trt), or None for the Python bridge:
     when CHAINNER_C_TRT_RUNNER is "0", or the build lacks the plugin."""
@@ -82,11 +94,15 @@ def runner_plugin() -> Path | None:
 def load_tensorrt() -> None:
     """Loads TensorRT's DLLs (tensorrt_libs), which the runner's delay-loaded imports find
     (on Linux its shared libraries, which the runner's dependencies resolve to by name),
-    and registers the DRFT plugins (drft.load_plugins) for the engines the runner loads."""
+    and registers TensorRT's plugins and the DRFT plugins (drft.load_plugins) for the
+    engines the runner loads."""
     import tensorrt
+
+    from .trt_logger import TRT_LOGGER
 
     if not tensorrt.__version__.startswith("11."):
         raise RuntimeError("The TensorRT runner requires TensorRT 11.")
+    tensorrt.init_libnvinfer_plugins(TRT_LOGGER, "")
     load_plugins()
 
 
@@ -104,12 +120,15 @@ class RunnerSession:
     def __init__(self, engine: TensorRTEngine, gpu_index: int) -> None:
         self.runner = native().Runner(engine.bytes, gpu_index, NODE_STREAMS)
         self._warned = False
-        # One image at a time, as TensorRTSession.lock.
+        # One image at a time: the runner upscales a whole image.
         self.lock = threading.Lock()
 
-    def upscale(self, img: np.ndarray) -> np.ndarray:
+    def upscale(
+        self, img: np.ndarray, report: TileReport, progress: Progress
+    ) -> np.ndarray:
         """A float32 BGR or gray image (HxW, HxWx1 or HxWx3) upscaled, as tiled_upscale
-        makes it from an image with the engine's input channels."""
+        makes it from an image with the engine's input channels; Stop and the progress
+        between its tiles, as tiled_upscale's."""
         img = img.astype(np.float32, copy=False)
         runner = self.runner
         h, w = img.shape[:2]
@@ -128,11 +147,19 @@ class RunnerSession:
         # Planes in R, G, B order: a BGR image's channel views, uploaded as one block.
         inputs = [img] if img.ndim == 2 else [img[:, :, c] for c in range(planes)[::-1]]
         outputs = [out] if out.ndim == 2 else [out[:, :, c] for c in range(out_c)[::-1]]
-        runner.upscale(inputs, outputs)
+
+        def on_tile(done: int, tiles: int) -> None:
+            progress.check_aborted()
+            progress.set_progress(done / tiles)
+
+        runner.upscale(inputs, outputs, on_tile=on_tile)
+        progress.set_progress(1)
         failure = runner.capture_failure()
         if failure and not self._warned:
             self._warned = True
             logger.warning("%s", failure)
+        bounds = ShapeBounds(*runner.bounds)
+        report.record(*tile_input(h, w, bounds), whole=one_tile(h, w, bounds))
         return out
 
     def close(self) -> None:

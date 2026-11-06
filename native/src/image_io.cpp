@@ -11,6 +11,7 @@
 #include "image_encode.hpp"
 #include "image_preview.hpp"
 #include "numpy_pool.hpp"
+#include "parallel.h"
 #include "save_path.hpp"
 #include <pybind11/numpy.h>
 #include <pybind11/stl/filesystem.h>
@@ -81,6 +82,20 @@ void with_object(O context, const std::function<void(O)>& body) {
 }
 O get_ext(py::dict g, O path) { return index(name(g,"split_file_path")(path),2).attr("lower")(); }
 
+// swap_channels' rows: strided samples in, C-contiguous pixels out.
+struct ChannelSwap {
+    const char* data; py::ssize_t row_stride,pixel_stride,channel_stride,width,channels; char* output; size_t row_bytes;
+};
+template<typename T> void swap_rows(const ChannelSwap& job,size_t begin,size_t end) {
+    for (size_t y=begin;y<end;++y) {
+        const char* row=job.data+static_cast<py::ssize_t>(y)*job.row_stride;
+        char* dst=job.output+y*job.row_bytes;
+        for (py::ssize_t x=0;x<job.width;++x,row+=job.pixel_stride) {
+            for (py::ssize_t c=0;c<job.channels;++c,dst+=sizeof(T))
+                std::memcpy(dst,row+(c<3?2-c:c)*job.channel_stride,sizeof(T));
+        }
+    }
+}
 // Copy a channel permutation with the codec's native-endian dtype. Reading
 // through byte pointers also supports unaligned, negative and readonly strides.
 O swap_channels(py::dict g, O image, const char* code) {
@@ -97,18 +112,22 @@ O swap_channels(py::dict g, O image, const char* code) {
     const py::ssize_t row_stride=a.strides(0),pixel_stride=a.strides(1),channel_stride=a.strides(2);
     const char* data=static_cast<const char*>(a.data());
     py::array output(dtype, {height,width,channels});
-    auto* dst = static_cast<char*>(output.mutable_data());
+    const size_t row_bytes=static_cast<size_t>(width*channels*bytes);
+    ChannelSwap job{data,row_stride,pixel_stride,channel_stride,width,channels,static_cast<char*>(output.mutable_data()),row_bytes};
+    const auto rows=[](void* context,size_t begin,size_t end) {
+        const auto& swap=*static_cast<const ChannelSwap*>(context);
+        const size_t sample=swap.row_bytes/static_cast<size_t>(swap.width*swap.channels);
+        if(sample==1)swap_rows<uint8_t>(swap,begin,end);
+        else if(sample==2)swap_rows<uint16_t>(swap,begin,end);
+        else swap_rows<uint32_t>(swap,begin,end);
+    };
+    cn_status status;
     {
         // Owners outlive this scope; only snapshotted buffer metadata is used.
         py::gil_scoped_release release;
-        for (py::ssize_t y=0;y<height;++y) for (py::ssize_t x=0;x<width;++x) {
-            for (py::ssize_t c=0;c<channels;++c) {
-                const py::ssize_t source = c<3 ? 2-c : c;
-                const char* src=data+y*row_stride+x*pixel_stride+source*channel_stride;
-                std::memcpy(dst,src,static_cast<size_t>(bytes)); dst+=bytes;
-            }
-        }
+        status=cn_parallel_for(static_cast<size_t>(height),1+(size_t(1)<<18)/row_bytes,rows,&job);
     }
+    if(status!=CN_OK)throw std::runtime_error("the channel swap could not run");
     return output;
 }
 O remove_alpha(py::dict g, O image) {
@@ -310,9 +329,14 @@ O read_pil(py::dict g,O path) {
     if(extension_in(ext,{".jpg",".jpeg",".jfif"}))
         if(O native=native_decode(g,path,NativeDecoder::pillow_jpeg);!native.is_none())return native;
     O im=name(g,"Image").attr("open")(path);
-    if(equal(im.attr("mode"),py::str("P")))im=im.attr("convert")(im.attr("palette").attr("mode"));
+    if(equal(im.attr("mode"),py::str("P"))) {
+        if(im.attr("palette").is_none())raise(PyExc_ValueError,format("The image \"{}\" uses a palette but has no palette; it may be corrupt.",path));
+        im=im.attr("convert")(im.attr("palette").attr("mode"));
+    }
     // Four CMYK samples are not RGBA: K would become the alpha. Pillow's RGB of them.
     else if(equal(im.attr("mode"),py::str("CMYK")))im=im.attr("convert")("RGB");
+    // Grey + alpha loads as BGRA with the grey in B, G and R, as a PNG's does; no node takes two channels.
+    else if(equal(im.attr("mode"),py::str("LA")))im=im.attr("convert")("RGBA");
     O image=name(g,"np").attr("array")(im);
     // Read after the decode, which also collects a PNG's eXIf after IDAT. Pillow keeps
     // a TIFF's tags elsewhere, so TIFFs stay as decoded.
@@ -368,13 +392,18 @@ O load_image(py::dict g,O path) {
 }
 // A writer's Subdirectory Path or file name (its input `label`) that leaves the output directory or names a Windows
 // device: the node's error (save_path.hpp). Encoded with surrogatepass, so any str is checked.
-void refuse(const O& value,const O& node,const O& label) {
+void refuse(const O& value,const O& node,const O& label,bool file_name) {
     if(!py::isinstance<py::str>(value))return;
     const std::string text=value.attr("encode")("utf-8","surrogatepass").cast<std::string>();
+    if(file_name && (text.empty() || text.back()=='/' || text.back()=='\\'))
+        raise(PyExc_ValueError,format("{}: the {} \"{}\" has no file name; give the file a name.",node,label,value));
     const cn::save_path::Refusal refusal=cn::save_path::check(text);
     if(refusal.kind==cn::save_path::Refusal::leaves)
         raise(PyExc_ValueError,format("{}: the {} \"{}\" leaves the output directory: \"..\" and absolute paths are not"
             " allowed; give a path inside it.",node,label,value));
+    if(refusal.kind==cn::save_path::Refusal::character)
+        raise(PyExc_ValueError,format("{}: the {} \"{}\" has a character not allowed in a Windows file or folder name"
+            " (< > : \" | ? * or a control character); choose another name.",node,label,value));
     if(refusal.kind!=cn::save_path::Refusal::reserved)return;
     if(refusal.part.size()==text.size())
         raise(PyExc_ValueError,format("{}: the {} \"{}\" is a reserved Windows device name; choose another name.",node,
@@ -383,9 +412,21 @@ void refuse(const O& value,const O& node,const O& label) {
     raise(PyExc_ValueError,format("{}: the {} \"{}\" contains the reserved Windows device name \"{}\"; choose another"
         " name.",node,label,value,part));
 }
+#ifdef _WIN32
+// A str value through save_path.hpp's windows_folders, so this body's path is the file the engine's Save Image writes.
+O windows_value(const O& value,bool last_is_folder) {
+    if(!py::isinstance<py::str>(value))return value;
+    const std::string text=value.attr("encode")("utf-8","surrogatepass").cast<std::string>();
+    return py::bytes(cn::save_path::windows_folders(text,last_is_folder)).attr("decode")("utf-8","surrogatepass");
+}
+#endif
 O full_path(O base,O relative,O filename,O format_type,O node,O name_label) {
-    refuse(relative,node,py::str("Subdirectory Path"));
-    refuse(filename,node,name_label);
+    refuse(relative,node,py::str("Subdirectory Path"),false);
+    refuse(filename,node,name_label,true);
+#ifdef _WIN32
+    relative=windows_value(relative,true);
+    filename=windows_value(filename,false);
+#endif
     O file=format("{}.{}",filename,format_type.attr("extension"));
     if(truth(relative)&&!equal(relative,py::str(".")))base=path_join(base,relative);
     return path_join(base,file).attr("resolve")();
@@ -396,8 +437,10 @@ O full_path(O base,O relative,O filename,O format_type,O node,O name_label) {
 // the precision conversion.
 struct Encoding {O image; bool pillow=false,exact_webp=false; py::dict options; py::list params;};
 // Save Image's inputs in order: 0-11 as upstream's, 12-22 the DDS inputs (save_dds_inputs),
-// then AVIF's chroma subsampling and skip existing files.
-constexpr size_t save_inputs=25,avif_subsampling=23,skip_existing=24;
+// then AVIF's chroma subsampling, EXR's depth and compression, skip existing files and the
+// metadata.
+constexpr size_t save_inputs=28,avif_subsampling=23,exr_depth=24,exr_compression=25,skip_existing=26,
+    save_metadata=save_inputs-1;
 bool pillow_format(const py::dict& g,const O& format_type) {
     return option(g,format_type,"ImageFormat","GIF")||option(g,format_type,"ImageFormat","TGA")||option(g,format_type,"ImageFormat","AVIF");
 }
@@ -419,7 +462,10 @@ Encoding encoding(py::dict g,O image,py::tuple args) {
         equal(index(name(g,"get_h_w_c")(image),2),py::int_(4));
     if(pillow_format(g,format_type) || exact_webp) {
         image=name(g,"to_uint8")(image,py::arg("normalized")=true);
-        if(option(g,format_type,"ImageFormat","AVIF")){result.options["quality"]=args[7];result.options["subsampling"]=O(args[avif_subsampling]).attr("value");}
+        if(option(g,format_type,"ImageFormat","AVIF")) {
+            result.options["quality"]=args[7];result.options["subsampling"]=O(args[avif_subsampling]).attr("value");
+            if(!O(args[save_metadata]).is_none())result.options.attr("update")(name(g,"avif_tag_options")(args[save_metadata],image,result.options["subsampling"]));
+        }
         if(exact_webp){result.options["lossless"]=py::bool_(true);result.options["exact"]=py::bool_(true);}
         O channels=index(name(g,"get_h_w_c")(image),2);
         if(equal(channels,py::int_(3)))image=swap_channels(g,image,"COLOR_BGR2RGB");
@@ -434,8 +480,13 @@ Encoding encoding(py::dict g,O image,py::tuple args) {
         params.append(cv.attr("IMWRITE_JPEG_PROGRESSIVE"));params.append(graphpy::builtin("int")(args[9]));
     } else if(option(g,format_type,"ImageFormat","WEBP")) {params.append(cv.attr("IMWRITE_WEBP_QUALITY"));params.append(truth(args[6])?O(py::int_(101)):O(args[7]));}
     else if(option(g,format_type,"ImageFormat","TIFF")&&!option(g,args[10],"TiffColorDepth","F32")) {params.append(cv.attr("IMWRITE_TIFF_COMPRESSION"));params.append(O(args[11]).attr("cv2_code"));}
+    else if(option(g,format_type,"ImageFormat","EXR")) {
+        params.append(cv.attr("IMWRITE_EXR_TYPE"));params.append(O(args[exr_depth]).attr("value"));
+        params.append(cv.attr("IMWRITE_EXR_COMPRESSION"));params.append(O(args[exr_compression]).attr("value"));
+    }
     int precision=8;
-    if(option(g,format_type,"ImageFormat","PNG")){if(option(g,args[5],"PngColorDepth","U16"))precision=16;}
+    if(option(g,format_type,"ImageFormat","EXR"))precision=32;
+    else if(option(g,format_type,"ImageFormat","PNG")){if(option(g,args[5],"PngColorDepth","U16"))precision=16;}
     else if(option(g,format_type,"ImageFormat","TIFF")) {
         if(option(g,args[10],"TiffColorDepth","U16"))precision=16;
         else if(option(g,args[10],"TiffColorDepth","F32"))precision=32;
@@ -514,10 +565,13 @@ bool extension_is(const O& extension,std::initializer_list<const char*> names) {
 }
 // cv2.imencode's bytes from the vendored encoders (image_codecs.h) for the formats and parameters Save Image uses:
 // JPEG (quality, sampling factor, progressive), PNG and BMP (no parameters), WebP (quality), TIFF (compression);
-// None for anything else, which keeps cv2.imencode.
+// OpenEXR (type, compression), which the runtime's OpenCV cannot write, so it takes the vendored encoder either way
+// and any float32 layout; None for anything else, which keeps cv2.imencode.
 O native_encode(py::dict g,O extension,O image,O params) {
     cn_codec_image view;
-    if(!cn::image_decode::enabled() || !codec_image(image,view))return py::none();
+    const bool exr=extension_is(extension.attr("lower")(),{".exr"});
+    if(exr)if(py::array contiguous=py::array::ensure(image,py::array::c_style))image=contiguous;
+    if((!exr && !cn::image_decode::enabled()) || !codec_image(image,view))return py::none();
     if(!PyList_CheckExact(params.ptr()) && !PyTuple_CheckExact(params.ptr()))return py::none();
     const py::sequence list=py::reinterpret_borrow<py::sequence>(params);
     const py::ssize_t count=py::len(list);
@@ -560,6 +614,17 @@ O native_encode(py::dict g,O extension,O image,O params) {
             compression=value;
         }
         return run_encoder([&](cn_codec_output& out){return cn_tiff_encode(&view,int(compression),&out);});
+    }
+    if(exr) {
+        // Float32 ZIP without parameters.
+        long long type=2,compression=3;
+        for(const auto& [key,value]:pairs) {
+            if(key==constant("IMWRITE_EXR_TYPE"))type=value;
+            else if(key==constant("IMWRITE_EXR_COMPRESSION"))compression=value;
+            else return py::none();
+        }
+        if(type<1 || type>2 || compression<0 || compression>4)return py::none();
+        return run_encoder([&](cn_codec_output& out){return cn_exr_encode(&view,int(type),int(compression),&out);});
     }
     if(!pairs.empty())return py::none();
     if(extension_is(lower,{".png"}))return run_encoder([&](cn_codec_output& out){return cn_png_encode(&view,&out);});
@@ -639,6 +704,11 @@ void save_dds_inputs(py::dict g,O path,O image,O kind,O dds) {
         py::arg("colour_conversion")=O(dds[py::int_(8)]).attr("value"),py::arg("premultiply_alpha")=dds[py::int_(9)],
         py::arg("gpu")=dds[py::int_(10)],py::arg("mip_filter")=O(dds[py::int_(6)]).attr("value"),py::arg("kind")=kind);
 }
+// An encoded file with the tags of Save Image's metadata input (nodes/impl/image_tags.py); as it is without one.
+O tagged(py::dict g,const py::tuple& args,const O& data,const O& image) {
+    const O metadata=args[save_metadata];
+    return metadata.is_none()?data:O(name(g,"embed_image_tags")(data,metadata,image));
+}
 void save_image(py::dict g,py::tuple args,O prepared) {
     if(args.size()!=save_inputs)raise(PyExc_TypeError,format("Image save expects {} input values",save_inputs));
     O lazy=args[0],base=args[1],relative=args[2],filename=args[3],format_type=args[4];
@@ -663,10 +733,14 @@ void save_image(py::dict g,py::tuple args,O prepared) {
     }
     Encoding encoded=encoding(g,image,args);
     if(encoded.pillow) {
-        write_file(path,pillow_bytes(g,encoded,add(py::str("."),format_type.attr("extension"))));
+        write_file(path,tagged(g,args,pillow_bytes(g,encoded,add(py::str("."),format_type.attr("extension"))),image));
         return;
     }
-    name(g,"cv_save_image")(path,encoded.image,encoded.params);
+    if(O(args[save_metadata]).is_none()) {
+        name(g,"cv_save_image")(path,encoded.image,encoded.params);
+        return;
+    }
+    write_file(path,tagged(g,args,encode(g,index(name(g,"split_file_path")(path),2),encoded.image,encoded.params),image));
 }
 // Save Image's prepare phase (SP3-P9): the bytes save_image writes for these
 // inputs (input 0 the image itself) to a path with the format's own extension,
@@ -680,8 +754,7 @@ O save_prepare(py::dict g,py::tuple args) {
     if(truth(args[skip_existing]) && truth(name(g,"get_full_path")(args[1],args[2],args[3],format_type).attr("exists")()))return py::none();
     O extension=add(py::str("."),format_type.attr("extension"));
     Encoding encoded=encoding(g,args[0],args);
-    if(encoded.pillow)return pillow_bytes(g,encoded,extension);
-    return encode(g,extension,encoded.image,encoded.params);
+    return tagged(g,args,encoded.pillow?pillow_bytes(g,encoded,extension):encode(g,extension,encoded.image,encoded.params),args[0]);
 }
 // LargeImageOutput.get_broadcast_data's previews of an enforced image (cn::image_preview, without the GIL): a list
 // of {"width", "height", "url"}, or None when the native path declines and today's Python loop runs.
@@ -1136,6 +1209,13 @@ void cn_bind_image_io(py::module_& module) {
         return asked?O(py::make_tuple(shape.height,shape.width,shape.channels)):O(py::none());
     });
     module.attr("image_io_max_pixels")=py::int_(CN_MAX_IMAGE_PIXELS);
+    // A file's EXIF block as the orientation reads it (image_decode.hpp), or None: Pillow has a PNG's eXIf after IDAT
+    // only once it decoded the pixels.
+    module.def("image_io_exif_block",[](py::bytes data)->O {
+        const std::string_view bytes=data;
+        const std::string_view exif=exif_block(reinterpret_cast<const uint8_t*>(bytes.data()),bytes.size());
+        return exif.empty()?O(py::none()):O(py::bytes(exif.data(),exif.size()));
+    });
     module.def("image_io_for_ext",&for_ext);module.def("image_io_load",&load_image);
     module.def("image_io_full_path",&full_path);module.def("image_io_save",&save_image);module.def("image_io_view",&view_image);
     module.def("image_io_save_prepare",&save_prepare);module.def("image_io_orient",&orient_tag);

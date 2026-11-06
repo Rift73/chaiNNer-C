@@ -10,7 +10,7 @@ from sanic.log import logger
 
 from .drft import load_plugins
 from .dual import input_alignment
-from .memory import check_cuda, get_cuda_compute_capability
+from .memory import check_cuda, get_cuda_compute_capability, gpu_setup_lock
 from .model import DeserializedEngine, TensorRTEngineInfo
 from .trt_logger import TRT_LOGGER
 
@@ -26,7 +26,8 @@ def deserialize_engine(engine_bytes: bytes, gpu_index: int) -> DeserializedEngin
     trt.init_libnvinfer_plugins(TRT_LOGGER, "")
     load_plugins()
     runtime = trt.Runtime(TRT_LOGGER)
-    engine = runtime.deserialize_cuda_engine(engine_bytes)
+    with gpu_setup_lock:
+        engine = runtime.deserialize_cuda_engine(engine_bytes)
     if engine is None:
         raise RuntimeError(
             "Failed to deserialize the TensorRT engine. It may have been built with"
@@ -61,13 +62,15 @@ def read_engine_info(loaded: DeserializedEngine) -> TensorRTEngineInfo:
 
     # The scale comes from TensorRT's shape inference at the profile's minimum
     # shape; a user-managed context allocates no activation memory for this.
-    probe = engine.create_execution_context(
-        trt.ExecutionContextAllocationStrategy.USER_MANAGED
-    )
+    with gpu_setup_lock:
+        probe = engine.create_execution_context(
+            trt.ExecutionContextAllocationStrategy.USER_MANAGED
+        )
     if probe is None or not probe.set_input_shape(input_name, min_shape):
         raise RuntimeError("Failed to infer the TensorRT engine's output shape.")
     output_shape = _dims(probe.get_tensor_shape(output_name))
-    del probe
+    with gpu_setup_lock:
+        del probe
     logger.info("TensorRT engine: %s -> %s", min_shape, output_shape)
 
     in_h, in_w = min_shape[2], min_shape[3]
@@ -77,13 +80,13 @@ def read_engine_info(loaded: DeserializedEngine) -> TensorRTEngineInfo:
             f"Input {min_shape} -> output {output_shape} is not a uniform integer upscale."
         )
 
-    input_dtype = engine.get_tensor_dtype(input_name)
+    output_dtype = engine.get_tensor_dtype(output_name)
     precision: Literal["fp32", "fp16", "bf16", "mixed"] = "fp32"
     if input_alignment(input_name) is not None:  # DUAL's or DRFT's
         precision = "mixed"
-    elif input_dtype == trt.DataType.HALF:
+    elif output_dtype == trt.DataType.HALF:
         precision = "fp16"
-    elif input_dtype == trt.DataType.BF16:
+    elif output_dtype == trt.DataType.BF16:
         precision = "bf16"
 
     return TensorRTEngineInfo(

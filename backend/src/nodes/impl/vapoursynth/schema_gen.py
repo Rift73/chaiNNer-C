@@ -13,7 +13,12 @@ Input ids: 0 main clip, 1 Method, 2 Simple/Advanced, 3 Use as filter; every othe
 catalog.input_ids' hash of family/method/parameter, so saved chains keep their values
 when the catalog changes. A value an input cannot take (a choice a newer catalog
 dropped, no value at all) never fails the run by itself: the parameter takes its
-default and one warning names it."""
+default and one warning names it.
+
+An image: a method measured to look only at the current frame (frame_route) also takes
+an image at the Clip input, which the input's type says through the Method dropdown's
+option types, and the node then gives an image: it runs its statement at once on a clip
+of that one frame (OnImage). The other clip inputs then take images too, not clips."""
 
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ import operator
 from dataclasses import dataclass, field, replace
 from typing import Callable, Iterable, Mapping, Sequence, TypeVar, cast
 
+import numpy as np
 from sanic.log import logger
 
 from api import BaseInput, Group, NestedGroup, NodeContext, NodeGroup, SpecialSuggestion
@@ -34,6 +40,7 @@ from ...properties.inputs import (
     BoolInput,
     DropDownGroup,
     DropDownInput,
+    DropDownOption,
     TextInput,
     VideoClipInput,
     VSFilterInput,
@@ -127,8 +134,41 @@ _FILTER_HELP = (
     " prefilter). The Clip input is not used then."
 )
 
+# The types of the Method dropdown's options and the inputs that follow them: Clip takes
+# an image under a method that looks only at the current frame, a method's other clip
+# inputs take images when Clip has one, and the node gives what Clip got.
+FRAME_OPTION = '"frame"'
+CLIP_OPTION = '"clip"'
+MAIN_TYPE = (
+    f"match Input{METHOD_ID} {{ {FRAME_OPTION} => VideoClip | Image, _ => VideoClip }}"
+)
+SECOND_IMAGE = "Image { channels: 1 | 3 }"
+SECOND_TYPE = f"match Input{MAIN_ID} {{ Image => {SECOND_IMAGE}, _ => VideoClip }}"
+SECOND_FILTER_TYPE = (
+    f"match Input{MAIN_ID} {{ Image => {SECOND_IMAGE} | VSFilter,"
+    " _ => VideoClip | VSFilter }"
+)
+OUTPUT_TYPE = f"match Input{MAIN_ID} {{ Image => Image, _ => VideoClip }}"
+_MAIN_HELP = (
+    "A clip. With a method that looks only at the current frame, also an image: the node"
+    " then gives an image. Methods that use other frames take clips only. On an image a"
+    " temporal radius counts as 0, whatever its setting shows: one image has no other"
+    " frames."
+)
+
 I = TypeVar("I", bound=BaseInput)
 Item = BaseInput | NestedGroup
+# Runs a node on the image at its Clip input: (context, method, input values, what writes
+# the statement from input values whose images became clips) -> the image.
+OnImage = Callable[
+    [
+        NodeContext,
+        Method,
+        Mapping[int, object],
+        Callable[[Mapping[int, object]], "VideoClip | VSFilter"],
+    ],
+    np.ndarray,
+]
 
 
 class Dropped:
@@ -358,6 +398,7 @@ class _Family:
         self.family = family
         self.enums = enums
         self.has_main = family != LOAD_CLIP
+        self.images = self.has_main and any(m.frame_route for m in methods)
         self.switch = family not in NO_FILTER
         # Common first (methods with an overlay), each part by label; Any Function's
         # by module (its dropdown groups).
@@ -431,6 +472,10 @@ class _Family:
                     )
                     start = _start_value(member, param, adapter)
                     made = adapter.make_input(label, param, ids[method.id, key], start)
+                    if method.frame_route and adapter.kind in _CLIP_KINDS:
+                        cast(VideoClipInput, made).take_images(SECOND_TYPE)
+                    elif method.frame_route and adapter.kind == "clip_or_filter":
+                        cast(VSFilterInput, made).take_images(SECOND_FILTER_TYPE)
                     doc = member.arg_docs.get(param.name)
                     if doc:
                         made.with_docs(doc)
@@ -483,7 +528,7 @@ class _Family:
                 ids[method.id, f"{main.name}#{n}"] for n in range(2, parsed.more + 2)
             )
             sockets = [
-                _tolerant(VideoClipInput(f"Clip {n}").make_optional().with_id(input_id))
+                _tolerant(_more_clip(n, method).make_optional().with_id(input_id))
                 for n, input_id in enumerate(plan.more_clips, start=2)
             ]
             plan.simple.insert(0, (frozenset(), optional_list_group(*sockets)))
@@ -506,11 +551,17 @@ class _Family:
             DropDownInput(
                 input_type="string",
                 label="Method",
-                options=[{"option": m.label, "value": m.id} for m in self.methods],
+                options=[self._method_option(m) for m in self.methods],
                 default_value=self.methods[0].id,
                 groups=groups,
             ).with_id(METHOD_ID)
         )
+
+    def _method_option(self, method: Method) -> DropDownOption:
+        option: DropDownOption = {"option": method.label, "value": method.id}
+        if self.images:
+            option["type"] = FRAME_OPTION if method.frame_route else CLIP_OPTION
+        return option
 
     def _module_groups(self) -> list[DropDownGroup]:
         groups: dict[str, DropDownGroup] = {}
@@ -520,7 +571,10 @@ class _Family:
         return list(groups.values())
 
     def _main_input(self) -> Item:
-        clip = _tolerant(VideoClipInput("Clip").make_optional().with_id(MAIN_ID))
+        main = VideoClipInput("Clip")
+        if self.images:
+            main.take_images(MAIN_TYPE).with_docs(_MAIN_HELP)
+        clip = _tolerant(main.make_optional().with_id(MAIN_ID))
         if self.family == ANY_FUNCTION:
             return clip
         optional = [m.id for m in self.methods if not self.plans[m.id].main_required()]
@@ -535,7 +589,7 @@ class _Family:
             items.append(self._main_input())
         items.append(self._method_input())
         if self.family == ANY_FUNCTION:
-            return [*items, *_any_inputs()]
+            return [*items, *_any_inputs(self.images)]
         items.append(
             _tolerant(
                 DropDownInput(
@@ -591,7 +645,12 @@ def _by_choices(
     return items
 
 
-def _any_inputs() -> list[Item]:
+def _more_clip(number: int, method: Method) -> VideoClipInput:
+    clip = VideoClipInput(f"Clip {number}")
+    return clip.take_images(SECOND_TYPE) if method.frame_route else clip
+
+
+def _any_inputs(images: bool) -> list[Item]:
     rows = [
         _tolerant(
             TextInput(f"Argument {n}", placeholder="name = value, e.g. sigma = 0.8")
@@ -604,11 +663,10 @@ def _any_inputs() -> list[Item]:
     for n, (socket_id, name_id) in enumerate(
         zip(ANY_SOCKET_IDS, ANY_SOCKET_NAME_IDS), start=1
     ):
-        items.append(
-            _tolerant(
-                VSFilterInput(f"Clip or filter {n}").make_optional().with_id(socket_id)
-            )
-        )
+        socket = VSFilterInput(f"Clip or filter {n}")
+        if images:
+            socket.take_images(SECOND_FILTER_TYPE)
+        items.append(_tolerant(socket.make_optional().with_id(socket_id)))
         items.append(
             _tolerant(
                 TextInput(f"Argument name {n}", placeholder="e.g. ref")
@@ -893,10 +951,44 @@ def _imports(method: Method) -> frozenset[str]:
     return frozenset(lines)
 
 
+def _picked_values(
+    family: str, plan: _Plan, values: Mapping[int, object], as_filter: bool
+) -> dict[int, object]:
+    """The input values without images on inputs the run does not read: another method's,
+    which stay connected while hidden, and Clip's under Use as filter."""
+    read = {*plan.more_clips}
+    if not as_filter:
+        read.add(MAIN_ID)
+    if family == ANY_FUNCTION:
+        read.update(ANY_SOCKET_IDS)
+    for member in plan.members.values():
+        read.update(slot.input_id for slot in member.slots.values())
+    return {
+        input_id: None
+        if isinstance(value, np.ndarray) and input_id not in read
+        else value
+        for input_id, value in values.items()
+    }
+
+
+def _frame_values(plan: _Plan, values: Mapping[int, object]) -> dict[int, object]:
+    """An image's input values: the method's frame_args replace what they name."""
+    forced = dict(values)
+    for member in plan.members.values():
+        for (_, name), slot in member.slots.items():
+            if name in plan.method.frame_args:
+                value = plan.method.frame_args[name]
+                forced[slot.input_id] = slot.adapter.start_value(value)
+    return forced
+
+
 def _runner(
-    family: str, plans: Mapping[str, _Plan], input_order: Sequence[int]
-) -> Callable[..., VideoClip | VSFilter]:
-    def run(context: NodeContext, *values: object) -> VideoClip | VSFilter:
+    family: str,
+    plans: Mapping[str, _Plan],
+    input_order: Sequence[int],
+    on_image: OnImage | None,
+) -> Callable[..., VideoClip | VSFilter | np.ndarray]:
+    def run(context: NodeContext, *values: object) -> VideoClip | VSFilter | np.ndarray:
         by_id = dict(zip(input_order, values))
         method_id = by_id.get(METHOD_ID)
         plan = plans.get(method_id) if isinstance(method_id, str) else None
@@ -906,10 +998,24 @@ def _runner(
                 f"The method {shown!r} is not among the VapourSynth functions any more"
                 " (vs-jetpack or a plugin changed); pick another one in Method."
             )
-        if family == ANY_FUNCTION:
-            return _any_statement(plan.method, by_id, context.node_id)
-        run_ = _Run(f"{family} ({plan.method.label})", by_id)
-        return _statement(plan, run_, context.node_id, by_id.get(FILTER_ID) is True)
+
+        def write(given: Mapping[int, object]) -> VideoClip | VSFilter:
+            if family == ANY_FUNCTION:
+                return _any_statement(plan.method, given, context.node_id)
+            run_ = _Run(f"{family} ({plan.method.label})", given)
+            return _statement(plan, run_, context.node_id, given.get(FILTER_ID) is True)
+
+        picked = _picked_values(family, plan, by_id, by_id.get(FILTER_ID) is True)
+        if isinstance(picked.get(MAIN_ID), np.ndarray):
+            if on_image is None:
+                raise ValueError(f"{family} takes clips, not images.")
+            return on_image(context, plan.method, _frame_values(plan, picked), write)
+        if any(isinstance(value, np.ndarray) for value in picked.values()):
+            raise ValueError(
+                "Images and clips do not mix on one node: connect an image to its Clip"
+                " input too, or a clip here."
+            )
+        return write(picked)
 
     run.__name__ = f"{slug(family)}_node"
     return run
@@ -974,9 +1080,10 @@ def register_families(
     group: NodeGroup,
     enums: Enums | None = None,
     families: Sequence[str] = FAMILIES,
+    on_image: OnImage | None = None,
 ) -> None:
     """Registers in `group` the node of each of `families` that has methods. `enums`
-    is the catalog's enums map (Catalog.enums)."""
+    is the catalog's enums map (Catalog.enums); `on_image` runs a node on an image."""
     by_family: dict[str, list[Method]] = {}
     for method in methods:
         if method.id not in EXCLUDED:
@@ -986,11 +1093,15 @@ def register_families(
         if family == ANY_FUNCTION:
             found = _any_methods(found)
         if found:
-            _register(family, found, group, enums or {})
+            _register(family, found, group, enums or {}, on_image)
 
 
 def _register(
-    family: str, methods: Sequence[Method], group: NodeGroup, enums: Enums
+    family: str,
+    methods: Sequence[Method],
+    group: NodeGroup,
+    enums: Enums,
+    on_image: OnImage | None,
 ) -> None:
     builder = _Family(family, methods, enums)
     if family == ANY_FUNCTION:
@@ -999,13 +1110,15 @@ def _register(
         builder.build()
     inputs = builder.inputs()
     flat = _flat(inputs)
+    clip_type = OUTPUT_TYPE if builder.images else "VideoClip"
     output = VideoClipOutput(
         label="Clip or filter" if builder.switch else "Clip",
-        output_type="if Input3 { VSFilter } else { VideoClip }"
+        output_type=f"if Input3 {{ VSFilter }} else {{ {clip_type} }}"
         if builder.switch
-        else "VideoClip",
+        else clip_type,
+        images=builder.images,
     )
-    run = _runner(family, builder.plans, [i.id for i in flat])
+    run = _runner(family, builder.plans, [i.id for i in flat], on_image)
     # For chaiNNer's schema check (CHECK_LEVEL): the inputs' and the output's types.
     types = [i.associated_type for i in flat]
     run.__annotations__ = {

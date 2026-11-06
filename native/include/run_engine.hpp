@@ -91,8 +91,9 @@ public:
  * node_error) also keeps that exception object, and the cause is that object itself. */
 struct NodeError : std::runtime_error {
     NodeError(std::string python_type, const std::string &message)
-        : std::runtime_error(message), python_type(std::move(python_type)) {}
+        : std::runtime_error(message), python_type(std::move(python_type)), message(message) {}
     std::string python_type;
+    std::string message;  // what() ends at a NUL, which a text input's value can hold
     PyRef exception;  // the original Python exception; empty for an entry point's own error
 };
 

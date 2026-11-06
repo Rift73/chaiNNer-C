@@ -8,8 +8,8 @@ when its last user returns. A cache built on another (sessions on Load Engine's
 engines) keys its entries `(value, ...)` by the other's values: closing one of
 those also releases every entry built on it, since no run can pass that value
 again (its node makes a new one). One lock guards the tables; an entry's own lock
-makes its use exclusive, since a session owns one stream and one context. The
-wait for that lock is not the waiting node's time (`util.held`).
+makes its use exclusive, for values that serve one user at a time. The wait for that
+lock is not the waiting node's time (`util.held`).
 
 This module must not import TensorRT: the server calls `release_node` whether
 or not the TensorRT package is installed.
@@ -19,12 +19,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Hashable, Iterator
 from contextlib import contextmanager
-from threading import Lock, local
+from threading import Condition, Lock, local
 from typing import Any, Generic, TypeVar
 from weakref import WeakSet, WeakValueDictionary
 
+from sanic.log import logger
+
 from api import NodeId
-from util import held
+from util import held, waiting
 
 from .model import TensorRTEngine
 
@@ -70,6 +72,10 @@ class _Entry(Generic[T]):
         self.value: T | None = None
         self.refs: set[NodeId] = set()
         self.users = 0
+        # A shared use: the users of the value, and that one of them gave it up.
+        self.sharers = 0
+        self.given_up = False
+        self.closed = Condition(self.lock)
 
 
 class SharedCache(Generic[T]):
@@ -154,12 +160,22 @@ class SharedCache(Generic[T]):
 
     @contextmanager
     def use(
-        self, key: Hashable, node_id: NodeId, create: Callable[[], T]
+        self,
+        key: Hashable,
+        node_id: NodeId,
+        create: Callable[[], T],
+        *,
+        exclusive: bool = True,
     ) -> Iterator[T]:
         """Reference the entry of `key` for `node_id` and use its value exclusively.
 
         The value is created on first use. An exception from the body closes the
         value (its state is unknown); the next use creates it again.
+
+        exclusive=False, for a value that takes turns itself: users run together. One's
+        exception gives the value up: the users already in it go on, the last of them
+        closes it, and a new use waits for that to create the next value. So one value
+        lives at a time, and a new one finds the memory of the last freed.
         """
         preview = _preview.current
         if preview is not None and preview.node_id != node_id:
@@ -179,20 +195,61 @@ class SharedCache(Generic[T]):
             entry.users += 1
         try:
             self._close_value(doomed)
-            with held(entry.lock):
-                if entry.value is None:
-                    entry.value = create()
-                try:
-                    yield entry.value
-                except BaseException:
-                    value, entry.value = entry.value, None
-                    self._close_value(value)
-                    raise
+            if exclusive:
+                with held(entry.lock):
+                    if entry.value is None:
+                        entry.value = create()
+                    try:
+                        yield entry.value
+                    except BaseException:
+                        value, entry.value = entry.value, None
+                        self._close_value(value)
+                        raise
+            else:
+                with self._shared_value(entry, create) as value:
+                    yield value
         finally:
             with self._lock:
                 entry.users -= 1
                 doomed = self._detach(key)
             self._close_value(doomed)
+
+    @contextmanager
+    def _shared_value(self, entry: _Entry[T], create: Callable[[], T]) -> Iterator[T]:
+        with held(entry.lock):
+            if entry.given_up:
+                with waiting():
+                    while entry.given_up:
+                        entry.closed.wait()
+            if entry.value is None:
+                entry.value = create()
+            value = entry.value
+            entry.sharers += 1
+        try:
+            yield value
+        except BaseException:
+            with entry.lock:
+                entry.given_up = True
+            raise
+        finally:
+            with entry.lock:
+                entry.sharers -= 1
+                last = entry.given_up and not entry.sharers
+            if last:
+                self._close_given_up(entry, value)
+
+    def _close_given_up(self, entry: _Entry[T], value: T) -> None:
+        """Close a value given up, for its last user, whose image may have succeeded:
+        an error here is logged with its traceback, and the item keeps its own result."""
+        try:
+            self._close_value(value)
+        except Exception:
+            logger.exception("Closing a TensorRT value given up after an error failed")
+        finally:
+            with entry.lock:
+                entry.value = None
+                entry.given_up = False
+                entry.closed.notify_all()
 
 
 # Load Engine's deserialized engines. Closing one releases the sessions built on it

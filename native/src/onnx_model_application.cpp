@@ -130,8 +130,12 @@ py::list perform_interp(const O &weights_a, const O &weights_b, const O &amount,
 
 O will_upscale(const O &node_context, const O &model, const py::dict &context) {
     if (graphpy::compare(model.attr("sub_type"), py::str("Generic"), Py_NE)) return py::bool_(true);
-    py::array_t<float> image({3, 3, 3}, {4, 12, 36});
-    for (size_t i = 0; i < 27; ++i) image.mutable_data()[i] = 1.0F;
+    // White, in the model's planes where no image holds that many: 3 for 1, 3 or 4, which Upscale Image converts.
+    const O in_nc = model.attr("info").attr("input_channels");
+    py::ssize_t planes = in_nc.is_none() ? 3 : py::cast<py::ssize_t>(in_nc);
+    if (planes == 1 || planes == 4) planes = 3;
+    py::array_t<float> image({py::ssize_t(3), py::ssize_t(3), planes}, {4, 12, 36});
+    for (py::ssize_t i = 0; i < 9 * planes; ++i) image.mutable_data()[i] = 1.0F;
     O result = context["upscale_image_node"](node_context, image, model, context["NO_TILING"], 0, false);
     O mean;
     if (graphpy::compare(result.attr("dtype"), context["np"].attr("float32"), Py_EQ))

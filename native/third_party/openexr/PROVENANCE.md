@@ -31,5 +31,5 @@ on, `IlmThread_3_5`) and `OpenEXRConfigInternal.h` (external libdeflate and zstd
 runtime AVX/F16C check; the DWA AVX kernel itself needs an LP64 target and stays off on Windows).
 
 Built by `native/cmake/codecs.cmake` as `chainner_openexr` and called only by `native/src/codecs/exr_codec.c`
-(Load Image's `.exr`, by signature as OpenCV's imdecode). The fixtures of `native/tests/test_exr_decode.py` come from
+(Load Image's `.exr`, by signature as OpenCV's imdecode, and Save Image's `.exr`). The fixtures of `native/tests/test_exr_decode.py` come from
 this library's writer (`native/tests/exr/gen_exr_fixtures.c`).

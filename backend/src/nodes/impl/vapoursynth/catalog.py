@@ -13,8 +13,14 @@ text, e.g. a catalog enums key; a name the function does not have becomes one mo
 keyword argument of its **kwargs), `defaults` (parameter -> the value its input
 starts with: a number, a text or a dropdown choice's Python source, which the node
 then writes) and, for a group, `class_default` (the class or member preselected in its
-dropdown, whose key is "class" in `simple` and `labels`); shipped overlays load first,
-the user's win. A method with an overlay is listed under "Common" in its node.
+dropdown, whose key is "class" in `simple` and `labels`) and `images` (true: the function looks
+only at the current frame, so its Clip input also takes an image; false: it does not);
+shipped overlays load first, the user's win. A method with an overlay is listed under
+"Common" in its node.
+
+Images: frame_methods.json lists what was measured to look only at the current frame
+(native/tools/vs_frame_probe.py), for the versions it names. Under other versions, and
+for functions it does not list, Clip takes clips only unless an overlay says otherwise.
 
 Calls and enum members are module-qualified (`import vsdenoise`, then
 `vsdenoise.bm3d(...)`; catalog_types.qualified), so that no two imports of a script
@@ -53,11 +59,13 @@ from .runner import (
     vspipe,
 )
 from .scan import SCHEMA, STEP, project_name, user_module_names
+from .script import BRIDGE_IMPORT
 from .user_modules import MODULES_FILE
 
 SCAN_PY = Path(__file__).with_name("scan.py")
 SCAN_TIMEOUT = 120
 SHIPPED_OVERLAYS = Path(__file__).with_name("overlays")
+FRAME_METHODS = Path(__file__).with_name("frame_methods.json")
 CATALOG = "catalog.json"
 USER_DIR = "user"
 OVERLAY_DIR = "overlays"
@@ -71,6 +79,8 @@ GROUP_MIN = 5
 CLASS = "class"
 # Overlay keys a group passes on to each member.
 _MEMBER_KEYS = ("hidden", "annotations", "labels", "defaults")
+# Enum members called through chaiNNer's helper in the script, in place of vs-jetpack's.
+BRIDGED_MEMBERS = {"vsdeband.Grainer.POISSON": "chainner_vs.poisson_grain"}
 _ID_MASK = 0x7FFFFFFF
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -453,6 +463,8 @@ def _overlay_problem(key: str, value: object) -> str | None:
         return None if texts else "not a table of texts"
     if key == "defaults":
         return None if isinstance(value, dict) else "not a table"
+    if key == "images":
+        return None if isinstance(value, bool) else "not true or false"
     return "not an overlay key"
 
 
@@ -706,7 +718,14 @@ def _enum_group(
             base,
             id=f"{fn['id']}.{member}",
             label=member,
-            call=base.call.replace("<member>", member),
+            call=BRIDGED_MEMBERS.get(
+                f"{fn['id']}.{member}", base.call.replace("<member>", member)
+            ),
+            import_line=(
+                BRIDGE_IMPORT
+                if f"{fn['id']}.{member}" in BRIDGED_MEMBERS
+                else base.import_line
+            ),
             kind="function",
             choice=member,
         )
@@ -730,6 +749,7 @@ def load_catalog(catalog: Path, overlays: Sequence[Path]) -> Catalog:
     skipped."""
     data = json.loads(catalog.read_text(encoding="utf-8"))
     tables = read_overlays(overlays)
+    measured = _measured_methods(data.get("key") or {})
     user_dir = catalog.parent / USER_DIR
     by_method: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
     for fn in data["functions"]:
@@ -750,7 +770,9 @@ def load_catalog(catalog: Path, overlays: Sequence[Path]) -> Catalog:
                 method = _class_group(key, by_method[key], tables)
             else:
                 continue
-            methods.append(_with_search_path(method, fn, user_dir))
+            method = _with_search_path(method, fn, user_dir)
+            overlay = tables.get(method.id) or {}
+            methods.append(_with_frame_use(method, measured, overlay))
         except (KeyError, TypeError, ValueError) as error:
             logger.warning("Skipping the catalog entry %s: %r", fn.get("id"), error)
     return Catalog(methods, data.get("enums", {}))
@@ -764,6 +786,42 @@ def _with_search_path(method: Method, fn: Mapping[str, Any], user_dir: Path) -> 
     path = str(user_dir)
     members = tuple(replace(m, search_path=path) for m in method.members)
     return replace(method, search_path=path, members=members)
+
+
+def _with_frame_use(
+    method: Method, measured: Mapping[str, Any], overlay: Mapping[str, Any]
+) -> Method:
+    """The method with how an image goes through it: as measured, unless an overlay's
+    `images` says otherwise."""
+    entry = measured.get(method.id)
+    if not overlay.get("images", entry is not None):
+        return method
+    entry = entry or {}
+    return replace(
+        method,
+        frame_route=entry.get("route", "rgb"),
+        frame_args=entry.get("args", {}),
+        frame_min_side=entry.get("min_side", 0),
+    )
+
+
+def _measured_methods(key: Mapping[str, Any]) -> Mapping[str, Any]:
+    """frame_methods.json's methods, when the catalog is of the versions it measured."""
+    table = json.loads(FRAME_METHODS.read_text(encoding="utf-8"))
+    if not key:
+        return {}
+    if any(key.get(name) != table[name] for name in ("vsjetpack", "vapoursynth")):
+        logger.warning(
+            "The VapourSynth nodes take clips only, not images: which methods may take an"
+            " image was measured on vs-jetpack %s and VapourSynth %s, and this is vs-jetpack"
+            " %s and VapourSynth %s. native/tools/vs_frame_probe.py measures them again.",
+            table["vsjetpack"],
+            table["vapoursynth"],
+            key.get("vsjetpack"),
+            key.get("vapoursynth"),
+        )
+        return {}
+    return table["frame"]
 
 
 def current_catalog() -> Catalog:

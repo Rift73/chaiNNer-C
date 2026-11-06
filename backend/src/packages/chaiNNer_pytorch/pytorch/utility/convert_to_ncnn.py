@@ -5,6 +5,8 @@ from spandrel import ImageModelDescriptor
 from spandrel.architectures.DAT import DAT
 from spandrel.architectures.DRFT import DRFT
 from spandrel.architectures.DRFT.__arch import legacy_drft_arch as legacy
+from spandrel.architectures.FIGSR import FIGSR
+from spandrel.architectures.GFISRv2 import GFISRV2
 from spandrel.architectures.HAT import HAT
 from spandrel.architectures.NAFNet import NAFNet
 from spandrel.architectures.OmniSR import OmniSR
@@ -69,6 +71,7 @@ def convert_to_ncnn_node(
 
     # NCNN's layers have fixed shapes; DRFT's windows and NAFNet's padding to a multiple
     # (and its LayerNorm's weight views) take theirs from the image's size as it runs.
+    # NCNN has no Fourier transform for GFISRv2's and FIGSR's Fourier units.
     assert is_onnx_supported(model) and not isinstance(
         model.model,
         (
@@ -83,6 +86,8 @@ def convert_to_ncnn_node(
             DRFT,
             legacy.DRFT,
             NAFNet,
+            GFISRV2,
+            FIGSR,
         ),
     ), f"{model.architecture.name} is not supported for NCNN conversions at this time."
 

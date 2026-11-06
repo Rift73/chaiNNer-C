@@ -120,6 +120,18 @@ class AudioStreamOutput(BaseOutput):
         )
 
 
+class ImageMetadataOutput(BaseOutput):
+    def __init__(self, label: str = "Metadata"):
+        super().__init__(
+            output_type="ImageMetadata",
+            label=label,
+            kind="generic",
+        )
+        self.with_docs(
+            "The file's colour profile, EXIF and DPI, for Save Image to write. Save Image reads them from the file as it writes: if the chain overwrites this file before that, it writes what the file holds by then. With Convert To sRGB on they are read at load."
+        )
+
+
 class AnyOutput(BaseOutput):
     def __init__(self, label: str = "Any", output_type: navi.ExpressionJson = "Any"):
         super().__init__(

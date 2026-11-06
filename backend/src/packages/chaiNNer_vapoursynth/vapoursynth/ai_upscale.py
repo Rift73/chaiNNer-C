@@ -4,10 +4,12 @@ import os
 from enum import Enum
 from pathlib import Path
 
+import numpy as np
+
 from api import NodeContext
 from nodes.groups import if_enum_group
 from nodes.impl.upscale.auto_split_tiles import CUSTOM, TILE_SIZE_256, TileSize
-from nodes.impl.vapoursynth.script import VideoClip, clip_var, one_clip
+from nodes.impl.vapoursynth.script import BRIDGE_IMPORT, VideoClip, clip_var, one_clip
 from nodes.properties.inputs import (
     EnumInput,
     FileInput,
@@ -17,10 +19,8 @@ from nodes.properties.inputs import (
 )
 from nodes.properties.outputs import VideoClipOutput
 
+from ..chains import filter_image
 from . import functions_group
-
-# The script imports chaiNNer's bridge from backend/src (the prologue's sys.path line).
-BRIDGE_IMPORT = "from nodes.impl.vapoursynth import chainner_vs"
 
 
 class AiUpscaleBackend(Enum):
@@ -53,10 +53,14 @@ class AiUpscalePrecision(Enum):
             "Each frame is clipped to 0-1 before the model, as chaiNNer's images"
             " always are."
         ),
+        (
+            "It also takes an image and then gives an image; Upscale Image does the same"
+            " faster, without starting VapourSynth."
+        ),
     ],
     icon="MdAutoFixHigh",
     inputs=[
-        VideoClipInput().with_id(0),
+        VideoClipInput().take_images("VideoClip | Image").with_id(0),
         FileInput(
             label="Model",
             file_kind="pth",
@@ -156,29 +160,39 @@ class AiUpscalePrecision(Enum):
             ),
         ),
     ],
-    outputs=[VideoClipOutput()],
+    outputs=[
+        VideoClipOutput(
+            output_type="match Input0 { Image => Image, _ => VideoClip }", images=True
+        )
+    ],
     node_context=True,
 )
 def ai_upscale_node(
     context: NodeContext,
-    clip: VideoClip,
+    clip: VideoClip | np.ndarray,
     model: Path,
     backend: AiUpscaleBackend,
     precision: AiUpscalePrecision,
     tile_size: TileSize,
     custom_tile_size: int,
     streams: int,
-) -> VideoClip:
+) -> VideoClip | np.ndarray:
     var = clip_var(context.node_id)
     tile = custom_tile_size if tile_size == CUSTOM else tile_size
-    call = (
-        f"chainner_vs.upscale({one_clip(clip, 'Clip')}, {os.path.abspath(model)!r},"
-        f" {backend.value!r}, {precision.value!r}, {int(tile)}, {int(streams)})"
-    )
-    return VideoClip(
-        var=var,
-        stmt=f"{var} = {call}",
-        deps=(clip,),
-        imports=frozenset({BRIDGE_IMPORT}),
-        node_id=context.node_id,
-    )
+
+    def upscaled(source: VideoClip) -> VideoClip:
+        call = (
+            f"chainner_vs.upscale({one_clip(source, 'Clip')}, {os.path.abspath(model)!r},"
+            f" {backend.value!r}, {precision.value!r}, {int(tile)}, {int(streams)})"
+        )
+        return VideoClip(
+            var=var,
+            stmt=f"{var} = {call}",
+            deps=(source,),
+            imports=frozenset({BRIDGE_IMPORT}),
+            node_id=context.node_id,
+        )
+
+    if isinstance(clip, np.ndarray):
+        return filter_image(context, [clip], lambda clips: upscaled(clips[0]))
+    return upscaled(clip)

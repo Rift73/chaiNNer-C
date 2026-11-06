@@ -26,6 +26,7 @@ import {
     useRef,
     useState,
 } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
     Condition,
     DropDownInput,
@@ -214,6 +215,7 @@ interface SearchListProps {
     onPick: (value: InputSchemaValue) => void;
 }
 const SearchList = memo(({ items, unavailable, selection, searchRef, onPick }: SearchListProps) => {
+    const { t } = useTranslation();
     const [query, setQuery] = useState('');
     // the option index of the highlighted option; the first match if it isn't among the matches
     const [highlight, setHighlight] = useState<number | undefined>(selection);
@@ -257,7 +259,7 @@ const SearchList = memo(({ items, unavailable, selection, searchRef, onPick }: S
                 <Input
                     borderBottomRadius={0}
                     borderTopRadius="md"
-                    placeholder="Search..."
+                    placeholder={t('inputs.dropdown.search', 'Search...')}
                     ref={searchRef}
                     spellCheck={false}
                     value={query}
@@ -315,7 +317,7 @@ const SearchList = memo(({ items, unavailable, selection, searchRef, onPick }: S
                         px={2}
                         py={0.5}
                     >
-                        No matching options.
+                        {t('inputs.dropdown.noMatchingOptions', 'No matching options.')}
                     </Text>
                 )}
             </Box>

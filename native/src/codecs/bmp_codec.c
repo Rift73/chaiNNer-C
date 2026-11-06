@@ -1,6 +1,8 @@
 /* BMP as OpenCV 5.0's own codec reads and writes it (grfmt_bmp.cpp; utils.cpp's FillGrayPalette, IsColorPalette,
  * CvtPaletteToGray, FillUniColor/FillUniGray and the row fillers) (GPL-3.0; the format logic follows OpenCV's
- * Apache-2.0 code). */
+ * Apache-2.0 code), but where OpenCV reads a valid file wrongly: an OS/2 image's colours (it makes them grey), masks
+ * after a 40-byte header (it takes the pad byte for alpha), RLE4's end of bitmap and a delta's rows (it takes them for
+ * ends of line), and 5- and 6-bit samples (it leaves their low bits 0, so white is not white). */
 #include "image_codecs.h"
 
 #include <limits.h>
@@ -119,8 +121,8 @@ static int bmp_rle8(bmp_stream *s, bmp_rle *r, uint8_t (*colours)[3]) {
     }
 }
 
-/* readData's RLE4 loop: runs never move to the next row themselves; the end of the bitmap is one more end of
- * line, and a delta moves right only (its vertical offset is read and dropped), filling with palette entry 0. */
+/* readData's RLE4 loop: runs never move to the next row themselves; an end of line, the end of the bitmap and a delta
+ * fill the pixels they skip with palette entry 0. */
 static int bmp_rle4(bmp_stream *s, bmp_rle *r, uint8_t (*colours)[3]) {
     for (;;) {
         const uint8_t *op = bmp_take(s, 2);
@@ -141,12 +143,14 @@ static int bmp_rle4(bmp_stream *s, bmp_rle *r, uint8_t (*colours)[3]) {
                 bmp_put(p, colours[(indices[i >> 1] >> (i & 1 ? 0 : 4)) & 15], r->channels);
             r->x += code * r->channels;
         } else { /* 0 end of line, 1 end of bitmap, 2 delta */
-            uint64_t shift = r->row_bytes - r->x;
+            uint64_t shift = r->row_bytes - r->x, rows = r->height - r->y;
             if (code == 2) {
                 const uint8_t *delta = bmp_take(s, 2);
                 if (!delta) return 0;
                 shift = (uint64_t)delta[0] * r->channels;
+                rows = delta[1];
             }
+            if (code) shift += rows * r->row_bytes;
             bmp_rle_fill(r, shift, colours[0]);
             if (r->y >= r->height) return 1;
         }
@@ -178,9 +182,11 @@ cn_codec_status cn_bmp_decode(const uint8_t *data, size_t size, cn_codec_allocat
         bmp_skip(&s, 12);
         colours_used = bmp_dword(&s);
         if (compression > 3) return CN_CODEC_FALLBACK; /* BMP_RGB, BMP_RLE8, BMP_RLE4, BMP_BITFIELDS */
-        if (bpp == 32 && compression == 3 && header >= 56) {
+        if (bpp == 32 && compression == 3) {
+            /* Red, green and blue follow a 40-byte header or end a 52-byte one, at the same place; alpha takes 56. */
             bmp_skip(&s, 4);
-            for (int i = 0; i < 4; ++i) {
+            const int count = header >= 56 ? 4 : 3;
+            for (int i = 0; i < count; ++i) {
                 uint32_t mask = masks[i] = bmp_dword(&s);
                 if (!mask) continue;
                 int shift = 0;
@@ -188,7 +194,7 @@ cn_codec_status cn_bmp_decode(const uint8_t *data, size_t size, cn_codec_allocat
                 offsets[i] = shift;
                 scales[i] = 255.0f / (float)mask;
             }
-            bmp_skip(&s, header - 56);
+            if (header >= 56) bmp_skip(&s, header - 56);
         } else {
             bmp_skip(&s, header - 36);
         }
@@ -214,15 +220,19 @@ cn_codec_status cn_bmp_decode(const uint8_t *data, size_t size, cn_codec_allocat
                 bpp = 15;
             }
         }
-    } else if (header == 12) { /* OS/2 BITMAPCOREHEADER: the image is always grey (iscolor stays false) */
+    } else if (header == 12) { /* OS/2 BITMAPCOREHEADER */
         width = bmp_word(&s);
         height_field = bmp_word(&s);
         bpp = bmp_dword(&s) >> 16;
         if (width && height_field && (bpp == 1 || bpp == 4 || bpp == 8 || bpp == 24 || bpp == 32)) {
+            colour = bpp > 8;
             if (bpp <= 8) {
                 const uint8_t *entry = bmp_take(&s, (uint64_t)3 << bpp);
                 if (!entry) return CN_CODEC_FALLBACK;
-                for (uint32_t i = 0; i < 1u << bpp; ++i, entry += 3) memcpy(palette[i], entry, 3);
+                for (uint32_t i = 0; i < 1u << bpp; ++i, entry += 3) {
+                    memcpy(palette[i], entry, 3);
+                    if (entry[0] != entry[1] || entry[0] != entry[2]) colour = 1;
+                }
             }
             valid = 1;
         }
@@ -230,7 +240,9 @@ cn_codec_status cn_bmp_decode(const uint8_t *data, size_t size, cn_codec_allocat
         return CN_CODEC_FALLBACK;
     }
     if (!valid || s.at == UINT64_MAX || height_field == 0x80000000u) return CN_CODEC_FALLBACK;
-    const uint32_t channels = !colour ? 1 : bpp == 32 && compression != 0 ? 4 : 3;
+    const int has_masks = offsets[0] >= 0 && offsets[1] >= 0 && offsets[2] >= 0;
+    /* Masks with no alpha mask leave the fourth byte unused. */
+    const uint32_t channels = !colour ? 1 : bpp == 32 && compression != 0 && (!has_masks || offsets[3] >= 0) ? 4 : 3;
     const int bottom_up = height_field <= INT32_MAX;
     const uint32_t height = bottom_up ? height_field : 0u - height_field;
     /* imdecode's validateInputImageSize */
@@ -257,7 +269,6 @@ cn_codec_status cn_bmp_decode(const uint8_t *data, size_t size, cn_codec_allocat
         const int done = compression == 1 ? bmp_rle8(&s, &cursor, colours) : bmp_rle4(&s, &cursor, colours);
         return done ? CN_CODEC_OK : CN_CODEC_FALLBACK;
     }
-    const int has_masks = offsets[0] >= 0 && offsets[1] >= 0 && offsets[2] >= 0;
     for (uint32_t y = 0; y < height; ++y) {
         const uint8_t *src = data + offset + y * pitch;
         uint8_t *dst = out + (size_t)(bottom_up ? height - 1 - y : y) * row_bytes;
@@ -274,12 +285,14 @@ cn_codec_status cn_bmp_decode(const uint8_t *data, size_t size, cn_codec_allocat
             for (uint32_t x = 0; x < width; ++x, dst += nch) bmp_put(dst, colours[src[x]], nch);
             break;
         case 15:
-        case 16: /* icvCvt_BGR5552BGR_8u_C2C3R, icvCvt_BGR5652BGR_8u_C2C3R */
+        case 16: /* 5- and 6-bit samples to 8, top bits repeated: 31 is 255 */
             for (uint32_t x = 0; x < width; ++x, src += 2, dst += 3) {
                 const uint32_t v = (uint32_t)src[0] | (uint32_t)src[1] << 8;
-                dst[0] = (uint8_t)((v << 3) & 0xf8);
-                dst[1] = (uint8_t)(bpp == 15 ? (v >> 2) & 0xf8 : (v >> 3) & 0xfc);
-                dst[2] = (uint8_t)(bpp == 15 ? (v >> 7) & 0xf8 : (v >> 8) & 0xf8);
+                const uint32_t blue = v & 31, red = bpp == 15 ? (v >> 10) & 31 : v >> 11;
+                const uint32_t green = bpp == 15 ? (v >> 5) & 31 : (v >> 5) & 63;
+                dst[0] = (uint8_t)(blue << 3 | blue >> 2);
+                dst[1] = (uint8_t)(bpp == 15 ? green << 3 | green >> 2 : green << 2 | green >> 4);
+                dst[2] = (uint8_t)(red << 3 | red >> 2);
             }
             break;
         case 24:
@@ -290,20 +303,20 @@ cn_codec_status cn_bmp_decode(const uint8_t *data, size_t size, cn_codec_allocat
         default: /* 32 */
             if (channels == 1) {
                 for (uint32_t x = 0; x < width; ++x, src += 4) dst[x] = bmp_grey(src); /* icvCvt_BGRA2Gray_8u_C4C1R */
-            } else if (channels == 3) {
-                for (uint32_t x = 0; x < width; ++x, src += 4, dst += 3)
-                    memcpy(dst, src, 3); /* icvCvt_BGRA2BGR_8u_C4C3R */
-            } else if (!has_masks) {
-                memcpy(dst, src, (size_t)width * 4);
-            } else {
-                for (uint32_t x = 0; x < width; ++x, src += 4, dst += 4) {
+            } else if (has_masks) {
+                for (uint32_t x = 0; x < width; ++x, src += 4, dst += channels) {
                     const uint32_t v =
                         (uint32_t)src[0] | (uint32_t)src[1] << 8 | (uint32_t)src[2] << 16 | (uint32_t)src[3] << 24;
                     dst[0] = bmp_mask(v, masks[2], offsets[2], scales[2]);
                     dst[1] = bmp_mask(v, masks[1], offsets[1], scales[1]);
                     dst[2] = bmp_mask(v, masks[0], offsets[0], scales[0]);
-                    dst[3] = offsets[3] >= 0 ? bmp_mask(v, masks[3], offsets[3], scales[3]) : 255;
+                    if (channels == 4) dst[3] = bmp_mask(v, masks[3], offsets[3], scales[3]);
                 }
+            } else if (channels == 3) {
+                for (uint32_t x = 0; x < width; ++x, src += 4, dst += 3)
+                    memcpy(dst, src, 3); /* icvCvt_BGRA2BGR_8u_C4C3R */
+            } else {
+                memcpy(dst, src, (size_t)width * 4);
             }
             break;
         }

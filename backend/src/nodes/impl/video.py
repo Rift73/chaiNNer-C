@@ -1,6 +1,7 @@
 # `x as x` imports: the native mirror reads these names in native/src/video_io.cpp
 from __future__ import annotations
 
+import hashlib
 import itertools
 import math
 import os
@@ -22,6 +23,8 @@ import ffmpeg as ffmpeg
 
 # Also read as "np" by global(globals_, "np") in native/src/video_io.cpp
 import numpy as np
+from ffmpeg import dag as ffmpeg_dag
+from ffmpeg._utils import _recursive_repr
 from sanic.log import logger as logger
 
 from ..utils.utils import file_identity
@@ -42,6 +45,7 @@ from .colour_info import (
     swscale_matrix,
 )
 from .ffmpeg import FFMpegEnv
+from .native_buffers import freeze_normalized
 from .native_framework_images import planes_to_interleaved
 from .native_graph import graph
 
@@ -53,6 +57,15 @@ if TYPE_CHECKING:
     from av.rational import AVRational
     from av.video.frame import VideoFrame
     from av.video.stream import VideoStream
+
+
+def _node_hash(item: object) -> str:
+    """ffmpeg-python's get_hash, with the lone surrogates of a file name that is not text, which have no plain UTF-8."""
+    text = _recursive_repr(item).encode("utf-8", "surrogatepass")
+    return hashlib.md5(text).hexdigest()
+
+
+ffmpeg_dag.get_hash = _node_hash
 
 
 @dataclass(frozen=True)
@@ -77,13 +90,31 @@ class ReadSettings:
     choices: tuple[Matrix, Transfer, Primaries, Range, ChromaLocation]
 
 
+def float_rgb_levels(layout: PixelLayout, colour: ColourInfo) -> tuple[float, float]:
+    """The gain and offset that make libswscale's float RGB of this source read black as
+    0 and white as 1. It writes its 16-bit values over 65535, and those reach white at
+    the source's highest code shifted to 16 bits (65280 at 8 bits, 65472 at 10).
+    Limited-range YUV goes through its matrix, whose white is the 8-bit 65280 at every
+    depth. Its gray path converts no range, so limited-range gray takes all of it here:
+    (code - 16 s) / (219 s) at s = 2 ** (bits - 8), which over those 16-bit values is the
+    same gain and offset at every depth."""
+    if not colour.full_range:
+        if layout.kind == "yuv":
+            return 65535 / 65280, 0.0
+        if layout.kind == "gray":
+            return 65535 / (219 * 256), -16 / 219
+    bits = min(layout.bit_depth, 16)
+    return 65535 / (((1 << bits) - 1) << (16 - bits)), 0.0
+
+
 @dataclass(frozen=True)
 class FrameFormat:
     """One conversion a reader applies to every frame: the scale filter `scale` (its
     arguments; None for no scale filter), then `pix_fmt`, after the display matrix's
     rotation when `upright`. A `size` (width, height) frame arrives as `planes`, (rows,
     bytes per row) each, one after another without padding, as the CLI's rawvideo pipe
-    writes them; planes are coded as `colour` says."""
+    writes them; planes are coded as `colour` says, and float RGB takes `gain` and
+    `offset` (float_rgb_levels)."""
 
     pix_fmt: str
     scale: str | None
@@ -91,6 +122,8 @@ class FrameFormat:
     size: tuple[int, int]
     planes: tuple[tuple[int, int], ...]
     colour: ColourInfo | None = None
+    gain: float = 1.0
+    offset: float = 0.0
 
     @property
     def frame_bytes(self) -> int:
@@ -115,7 +148,9 @@ class FrameFormat:
             return data.reshape(height, width, 3)
         if self.pix_fmt == "gbrpf32le":
             g, b, r = data.view(np.float32).reshape(3, height, width)
-            return planes_to_interleaved((b, g, r))
+            return freeze_normalized(
+                planes_to_interleaved((b, g, r), self.gain, self.offset)
+            )
         dtype = self.code_dtype
         codes: list[np.ndarray] = []
         offset = 0
@@ -244,7 +279,8 @@ def _frame_bytes(frame: VideoFrame, frame_format: FrameFormat) -> np.ndarray:
 
 def _frame_values(frame: VideoFrame, frame_format: FrameFormat) -> object:
     """A converted frame's values, as unpack gives them for the CLI's bytes. A float
-    RGB frame's G, B and R planes go straight into the BGR image, and Y, U and V codes
+    RGB frame's G, B and R planes go straight into the BGR image, frozen and registered
+    so Load Video's output check borrows it instead of copying it, and Y, U and V codes
     straight to their values, without the bytes."""
     if frame_format.pix_fmt == "bgr24":
         return frame_format.unpack(_frame_bytes(frame, frame_format))
@@ -267,49 +303,76 @@ def _frame_values(frame: VideoFrame, frame_format: FrameFormat) -> object:
         )
         for plane in frame.planes
     )
-    return planes_to_interleaved((blue, green, red))
+    return freeze_normalized(
+        planes_to_interleaved(
+            (blue, green, red), frame_format.gain, frame_format.offset
+        )
+    )
+
+
+def _video_track(container: InputContainer) -> VideoStream:
+    """The track Load Video reads: the first video track that is not an attached picture
+    (cover art, which an MP4 lists first when its metadata stands before its tracks),
+    else the first, as video_io.cpp probe_metadata picks ffprobe's entry."""
+    tracks = container.streams.video
+    if len(tracks) > 1:
+        for track in tracks:
+            disposition = track.disposition
+            if not disposition & type(disposition).attached_pic:
+                return track
+    return tracks[0]
 
 
 def _variable_timestamps(
-    path: Path, rate: Fraction | AVRational, av: ModuleType
+    path: Path,
+    rate: Fraction | AVRational,
+    time_base: Fraction | AVRational,
+    av: ModuleType,
 ) -> bool:
     """Whether the first video track's frames leave the grid of `rate` by half a frame
-    or more: its packets' timestamps, demuxed without decoding and sorted (B-frames
-    store them out of order). The scan reads the whole file, so its answer is kept for
-    the file's version (file_identity) and `rate`: a file read again is not scanned
-    again until it changes."""
-    return _timestamps_vary(file_identity(path), path, rate, av)
+    or more: its packets' timestamps (`time_base`), from _scan_frames's scan. The answer
+    is kept for the file's version (file_identity) and `rate`: a file read again is not
+    checked again until it changes."""
+    return _timestamps_vary(file_identity(path), path, rate, time_base, av)
 
 
 @lru_cache(maxsize=64)
 def _timestamps_vary(
-    _identity: tuple, path: Path, rate: Fraction | AVRational, av: ModuleType
+    identity: tuple,
+    path: Path,
+    rate: Fraction | AVRational,
+    time_base: Fraction | AVRational,
+    av: ModuleType,
 ) -> bool:
-    """_variable_timestamps's scan; `_identity` is the file version it is kept for."""
-    with av.open(str(path)) as container:
-        stream = container.streams.video[0]
-        stamps = sorted(p.pts for p in container.demux(stream) if p.pts is not None)
-        step = float(1 / (rate * stream.time_base))
+    """_variable_timestamps's check, of the file version `identity`. Packets that cannot
+    number the frames do not vary here: _pyav_index gives their reason."""
+    index = _scan_frames(identity, path, av)
+    if isinstance(index, _Unindexed):
+        return False
+    step = float(1 / (rate * time_base))
     return any(
-        abs(pts - stamps[0] - index * step) >= step / 2
-        for index, pts in enumerate(stamps)
+        abs(pts - index.pts[0] - number * step) >= step / 2
+        for number, pts in enumerate(index.pts)
     )
 
 
 def _variable_rate(path: Path, container: InputContainer, av: ModuleType) -> bool:
     """Whether the CLI reader would resample the first video track's frames: it makes a
     variable frame rate constant (rawvideo output has no timestamps), duplicating or
-    dropping frames, where PyAV yields them as stored. Matroska and WebM report the
-    track's default frame duration as both rates, so their timestamps decide there."""
-    stream = container.streams.video[0]
+    dropping frames, where PyAV yields them as stored. Only MP4 and MOV count both rates
+    from their samples; another container can report the track's default frame duration
+    or the codec's rate as both, so its timestamps decide. Those also catch captures
+    joined by a file copy, whose timestamps start again, where a seek would find the
+    wrong frame and the CLI reads them in file order."""
+    stream = _video_track(container)
     rate = stream.average_rate
     return (
         # None (no rate known), which PyAV's stubs leave out.
         not rate
         or rate != stream.guessed_rate
         or (
-            "matroska" in container.format.name.split(",")
-            and _variable_timestamps(path, rate, av)
+            "mov" not in container.format.name.split(",")
+            and _variable_timestamps(path, rate, stream.time_base, av)
         )
     )
 
@@ -384,7 +447,7 @@ def _scan_frames(
     packets = shown = 0
     untimed = False
     with av.open(str(path)) as container:
-        stream = container.streams.video[0]
+        stream = _video_track(container)
         for packet in container.demux(stream):
             # The empty packet that ends the demux flushes the decoder: no frame.
             if packet.size == 0:
@@ -429,12 +492,28 @@ def _pyav_index(
     return _scan_frames(file_identity(path), path, av)
 
 
-def _past_the_end(n: int, count: int) -> ValueError:
-    return ValueError(f"frame {n} is past the end (the video has {count} frames)")
+class PastTheEnd(ValueError):
+    """A frame past the end of a video of `count` frames."""
+
+    def __init__(self, n: int, count: int):
+        super().__init__(f"frame {n} is past the end (the video has {count} frames)")
+        self.count = count
+
+
+def _past_the_end(n: int, count: int) -> PastTheEnd:
+    return PastTheEnd(n, count)
 
 
 def _before_the_start(n: int) -> ValueError:
     return ValueError(f"frame {n} is before the start (the first frame is 0)")
+
+
+def _set_up_decoder(stream: VideoStream, av: ModuleType) -> None:
+    """Threads, and a stream's crop as stored: without `unaligned`, libavcodec keeps the
+    planes aligned by cropping less at the left, so the frame is wider than the file's
+    (the CLI crops exactly, ffmpeg_dec.c: "lavfi does not require aligned frame data")."""
+    stream.thread_type = "AUTO"
+    stream.codec_context.flags |= av.codec.context.Flags.unaligned
 
 
 def _decode(
@@ -500,8 +579,8 @@ def _seek(
             return
         frames.close()
     with av.open(str(path)) as again:
-        stream = again.streams.video[0]
-        stream.thread_type = "AUTO"
+        stream = _video_track(again)
+        _set_up_decoder(stream, av)
         frames = _decode(again, stream, path, av)
         try:
             if (yield from _from_timestamp(frames, target)):
@@ -583,11 +662,11 @@ def _pyav_frames(
     FFmpeg's decoder and the same libswscale conversion without the pipe. Raises
     _UseCliReader before its first frame for a file the CLI would treat differently."""
     with av.open(str(path)) as container:
-        stream = container.streams.video[0]
+        stream = _video_track(container)
         index = _pyav_index(path, container, av)
         if isinstance(index, _Unindexed):
             raise _UseCliReader(index.reason)
-        stream.thread_type = "AUTO"
+        _set_up_decoder(stream, av)
         frames = (
             _decode(container, stream, path, av)
             if start == 0
@@ -689,6 +768,7 @@ class VideoLoader:
         self, path: Path, ffmpeg_env: FFMpegEnv, settings: ReadSettings | None = None
     ):
         graph().video_loader_init(globals(), self, path, ffmpeg_env)
+        self._guess_rate(path)
         self.settings = settings
         self.colour: ColourInfo | None = None
         self.formats: list[FrameFormat] = []
@@ -708,7 +788,7 @@ class VideoLoader:
                         globals(),
                         str(path),
                         ffmpeg_env.ffprobe,
-                        select_streams="v:0",
+                        select_streams=vars(self)["video_selector"],
                         read_intervals="%+#1",
                         show_frames=None,
                     )
@@ -744,6 +824,36 @@ class VideoLoader:
             self.colour = colour.with_choices(*settings.choices)
             self.formats = self._formats(path, stream, self.colour, settings)
 
+    def _guess_rate(self, path: Path) -> None:
+        """metadata at the rate the readers give the frames at, FFmpeg's guess (PyAV's
+        guessed_rate, the CLI's constant rate), where the track's average differs from
+        ffprobe's r_frame_rate: that is the timestamps' resolution in a recording whose
+        timestamps jitter (90000 for a phone's 25 fps video), and twice the rate of a
+        short or timeless H.264 track. A count by duration follows the rate."""
+        stream: dict[str, object] = vars(self)["video_stream"]
+        average = stream.get("avg_frame_rate")
+        if average is None or average == stream.get("r_frame_rate"):
+            return
+        av = _pyav()
+        if av is None:
+            return
+        try:
+            with av.open(str(path)) as container:
+                guessed = _video_track(container).guessed_rate
+        except av.error.FFmpegError as reason:
+            logger.warning("Keeping %s's rate from its probe: %s", path, reason)
+            return
+        metadata: VideoMetadata = vars(self)["metadata"]
+        if not guessed or float(guessed) == metadata.fps:
+            return
+        fps = float(guessed)
+        count = metadata.frame_count
+        if stream.get("nb_frames") is None:
+            count = int(count * fps / metadata.fps)
+        vars(self)["metadata"] = VideoMetadata(
+            metadata.width, metadata.height, fps, count
+        )
+
     def _formats(
         self,
         path: Path,
@@ -762,15 +872,15 @@ class VideoLoader:
             else:
                 formats.append(self.legacy_format())
         if settings.mode is not VideoMode.RGB:
-            if layout.kind == "rgb" or colour.matrix is Matrix.RGB:
-                raise ValueError(
-                    f"{path.name} is RGB-coded, so it has no Y, U and V planes; read it"
-                    " in RGB mode."
-                )
             if layout.kind == "gray":
                 raise ValueError(
                     f"{path.name} is gray video, so it has no U and V planes; read it in"
                     " RGB mode."
+                )
+            if layout.kind == "rgb" or colour.matrix is Matrix.RGB:
+                raise ValueError(
+                    f"{path.name} is RGB-coded, so it has no Y, U and V planes; read it"
+                    " in RGB mode."
                 )
             if layout.planar is None:
                 raise ValueError(
@@ -819,15 +929,20 @@ class VideoLoader:
         if layout.kind != "rgb":
             # libswscale would convert BT.2020 constant luminance as non-constant.
             matrix = swscale_matrix(colour.matrix.value)
-            if matrix is None or colour.matrix is Matrix.BT2020_CL:
+            convertible = matrix is not None and colour.matrix is not Matrix.BT2020_CL
+            # Gray has no chroma for a matrix to convert, whatever its tag says (a PNG
+            # stream's says RGB).
+            if not convertible and layout.kind != "gray":
                 raise ValueError(
                     f"RGB mode cannot convert the {MATRIX_LABELS[colour.matrix]} matrix;"
                     " read the video in Planes mode and convert it with Planes to RGB."
                 )
-            arguments += [
-                f"in_color_matrix={matrix}",
-                f"in_range={colour.range.value}",
-            ]
+            if convertible:
+                arguments.append(f"in_color_matrix={matrix}")
+            # Gray stays full range here, whatever its colour says: float_rgb_levels
+            # takes its range.
+            source_range = "pc" if layout.kind == "gray" else colour.range.value
+            arguments.append(f"in_range={source_range}")
             if settings.float_rgb:
                 position = SWSCALE_CHROMA_POSITION[colour.chroma_location]
                 arguments += [
@@ -837,7 +952,16 @@ class VideoLoader:
         scale = ":".join([*arguments, f"flags={VideoLoader.SWS_FLAGS}"])
         if settings.float_rgb:
             planes = ((height, width * 4),) * 3
-            return FrameFormat("gbrpf32le", scale, True, (width, height), planes)
+            gain, offset = float_rgb_levels(layout, colour)
+            return FrameFormat(
+                "gbrpf32le",
+                scale,
+                True,
+                (width, height),
+                planes,
+                gain=gain,
+                offset=offset,
+            )
         planes = ((height, width * 3),)
         return FrameFormat("bgr24", scale, True, (width, height), planes)
 
@@ -883,7 +1007,8 @@ class VideoLoader:
         """The number of frames the readers give: exact where PyAV reads the file
         (exact_frame_count), else an estimate, which the FFmpeg CLI's renumbered frames
         can pass or fall short of: the number of the video packets of a file whose
-        packets lack timestamps (_scan_frames), else the probe's (metadata.frame_count)."""
+        packets lack timestamps (_scan_frames), the track's duration at its rate for a
+        variable frame rate, else the probe's (metadata.frame_count)."""
         return self._count()[0]
 
     def header_frame_count(self) -> int | None:
@@ -901,14 +1026,24 @@ class VideoLoader:
             if self.exact_frame_count() is None:
                 return None
             return metadata.frame_count - frame_index(vars(self)["path"]).discarded
+        return self._duration_count()
+
+    def _duration_count(self) -> int:
+        """The frames the track's duration holds at metadata's rate, an estimate: its
+        duration, or a Matroska or WebM track's own DURATION tag before the container's
+        duration, which a longer audio track lengthens."""
+        stream: dict[str, object] = vars(self)["video_stream"]
+        metadata: VideoMetadata = vars(self)["metadata"]
+        duration = stream.get("duration")
+        if duration is not None:
+            return int(float(str(duration)) * metadata.fps)
         tags = stream.get("tags")
         tag = tags.get("DURATION") if isinstance(tags, dict) else None
-        if stream.get("duration") is None:
-            match = re.fullmatch(r"(\d+):(\d\d):(\d\d(?:\.\d+)?)", str(tag))
-            if match is not None:
-                hours, minutes, seconds = match.groups()
-                duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
-                return int(duration * metadata.fps)
+        match = re.fullmatch(r"(\d+):(\d\d):(\d\d(?:\.\d+)?)", str(tag))
+        if match is not None:
+            hours, minutes, seconds = match.groups()
+            total = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+            return int(total * metadata.fps)
         return metadata.frame_count
 
     def exact_frame_count(self) -> int | None:
@@ -941,6 +1076,8 @@ class VideoLoader:
                     return len(index.pts), True
                 if index.packets is not None:
                     return index.packets, False
+                # The CLI's constant rate: an MP4's sample count knows nothing of it.
+                return self._duration_count(), False
         return metadata.frame_count, False
 
     def _pyav_reader(
@@ -1061,8 +1198,8 @@ class PreviewReader:
             index = _pyav_index(self.path, self._container, av)
             if isinstance(index, _Unindexed):
                 raise _UseCliReader(index.reason)
-            stream = self._container.streams.video[0]
-            stream.thread_type = "AUTO"
+            stream = _video_track(self._container)
+            _set_up_decoder(stream, av)
             self._converters = _Converters(self.path, stream, [self.format], av)
         converters = self._converters
         assert converters is not None

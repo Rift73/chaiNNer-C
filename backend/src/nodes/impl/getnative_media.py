@@ -39,6 +39,7 @@ from .colour_info import (
 from .ffmpeg import FFMpegEnv
 from .video import (
     FrameFormat,
+    FrameIndex,
     ReadSettings,
     VideoLoader,
     VideoMetadata,
@@ -51,7 +52,7 @@ from .video import (
 
 # Vernier's native planar formats: the Y plane's code values over the maximum code.
 _PLANAR = re.compile(
-    r"(?:yuvj?(420|422|444|440|411|410)p|gray)(?:(9|10|12|14|16)(le|be))?"
+    r"(?:yuv[ja]?(420|422|444|440|411|410)p|gray)(?:(9|10|12|14|16)(le|be))?"
 )
 KEYFRAME = "Codec keyframe"
 REQUESTED = "Requested time"
@@ -135,8 +136,8 @@ def parse_times(text: str) -> list[float]:
 
 @dataclass(frozen=True)
 class SamplePoint:
-    """A frame candidate (media.hpp's SamplePoint); `frame` is the frame index's number of a
-    codec keyframe."""
+    """A frame candidate (media.hpp's SamplePoint); `frame` is its number in the frame index
+    where that can number the file's frames."""
 
     seconds: float
     kind: str
@@ -371,11 +372,16 @@ def discover(
             if 0 < t < plan.duration:
                 boundaries.add(t)
         edges = [*sorted(boundaries), plan.duration]
-        plan.candidates = [
-            SamplePoint((a + b) / 2, SCENE, a, b)
-            for a, b in zip(edges, edges[1:])
-            if b - a >= minimum_scene
-        ]
+        plan.candidates = _distinct_frames(
+            path,
+            info,
+            [
+                SamplePoint((a + b) / 2, SCENE, a, b)
+                for a, b in zip(edges, edges[1:])
+                if b - a >= minimum_scene
+            ],
+            check,
+        )
         if not plan.candidates:
             raise ValueError("No scenes meet the minimum duration; lower that setting")
         return plan
@@ -391,11 +397,55 @@ def discover(
             or abs(point.seconds - plan.candidates[-1].seconds) >= 1e-6
         ):
             plan.candidates.append(point)
+    if mode != "keyframes":
+        plan.candidates = _distinct_frames(path, info, plan.candidates, check)
     if not plan.candidates:
         raise ValueError(
             "No usable codec keyframes were found. Use Even or Scenes sampling."
         )
     return plan
+
+
+def _frame_number(
+    index: FrameIndex, point: SamplePoint, info: VideoInfo, time_base: Fraction
+) -> int:
+    """The number of the frame `point` reads: a codec keyframe's own, else the first frame
+    at or after the requested time, as FFmpeg's input seek gives it; past the last frame's
+    timestamp, the last frame, which stays on screen until the end of the video."""
+    if point.frame is not None:
+        return point.frame
+    # FFmpeg's -ss seconds (microseconds) after the format's start time.
+    target = Fraction(round(point.seconds * 1_000_000), 1_000_000) + Fraction(
+        info.start
+    )
+    n = bisect_left(index.pts, math.ceil(target / time_base))
+    return min(n, len(index.pts) - 1)
+
+
+def _distinct_frames(
+    path: Path,
+    info: VideoInfo,
+    points: list[SamplePoint],
+    check: Callable[[], None],
+) -> list[SamplePoint]:
+    """The points that read different frames, numbered by the frame index: on a clip of
+    fewer frames than points, one frame analyzed again would count as more evidence (the
+    kernel decision wants 7 frames that agree). The points as they are when PyAV cannot
+    index the file (logged)."""
+    av = _pyav()
+    assert av is not None
+    try:
+        index = frame_index(path, check)
+        with av.open(str(path)) as container:
+            time_base = container.streams.video[0].time_base
+    except (_UseCliReader, av.error.FFmpegError) as reason:
+        logger.warning("Reading frames of %s by time alone: %s", path, reason)
+        return points
+    distinct: dict[int, SamplePoint] = {}
+    for point in points:
+        n = _frame_number(index, point, info, time_base)
+        distinct.setdefault(n, replace(point, frame=n))
+    return list(distinct.values())
 
 
 def _indexed_keyframes(
@@ -569,9 +619,8 @@ def decode_frame(
     check: Callable[[], None],
     rgb: FrameFormat | None = None,
 ) -> tuple[np.ndarray, str, np.ndarray | None]:
-    """The As stored plane of the frame at `point`, its provenance and, given `rgb`, the
-    frame in that float RGB format (B, G, R): the first frame at or after the requested
-    time, as FFmpeg's input seek gives it (a keyframe candidate: that keyframe)."""
+    """The As stored plane of the frame at `point` (_frame_number), its provenance and,
+    given `rgb`, the frame in that float RGB format (B, G, R)."""
     av = _pyav()
     try:
         if av is None:
@@ -587,16 +636,7 @@ def decode_frame(
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
         stream.thread_type = "AUTO"
-        if point.frame is not None:
-            n = point.frame
-        else:
-            # FFmpeg's -ss seconds (microseconds) after the format's start time.
-            target = Fraction(round(point.seconds * 1_000_000), 1_000_000) + Fraction(
-                info.start
-            )
-            n = bisect_left(index.pts, math.ceil(target / stream.time_base))
-            if n >= len(index.pts):
-                raise ValueError("Decoder returned no complete frame at this timestamp")
+        n = _frame_number(index, point, info, stream.time_base)
         frames = _seek(container, stream, path, av, n)
         try:
             frame = next(frames)

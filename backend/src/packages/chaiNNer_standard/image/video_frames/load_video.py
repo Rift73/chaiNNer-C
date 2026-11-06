@@ -9,7 +9,7 @@ import numpy as np
 from sanic.log import logger
 
 import navi
-from api import Generator, IteratorOutputInfo, NodeContext, OutputId
+from api import BaseOutput, Generator, IteratorOutputInfo, NodeContext, OutputId
 from nodes.groups import if_enum_group
 from nodes.impl.colour_info import (
     VIDEO_MODE_LABELS,
@@ -25,7 +25,12 @@ from nodes.impl.colour_info import (
 # `x as x` imports: the native mirror reads these names in native/src/video_io.cpp
 from nodes.impl.ffmpeg import FFMpegEnv as FFMpegEnv
 from nodes.impl.native_graph import graph
-from nodes.impl.video import ReadSettings, VideoMetadata, preview_frame
+from nodes.impl.video import (
+    PastTheEnd,
+    ReadSettings,
+    VideoMetadata,
+    preview_frame,
+)
 from nodes.impl.video import VideoLoader as VideoLoader
 from nodes.properties.inputs import (
     EnumInput,
@@ -138,7 +143,14 @@ def load_preview(node_id: str, loader: VideoLoader, n: int) -> np.ndarray:
         ((_, y, _, _),) = list(loader.stream_items(n, n + 1))
         assert y is not None
         return np.dstack((y, y, y))
-    return preview_frame(node_id, loader, n)
+    try:
+        return preview_frame(node_id, loader, n)
+    except PastTheEnd as past:
+        # The Frame Count of a file the FFmpeg CLI reads is an estimate, which can pass
+        # its frames (a longer audio track, a cut file): the seek bar's last frame.
+        if past.count == 0:
+            raise
+        return preview_frame(node_id, loader, past.count - 1)
 
 
 RGB_MODES = "VideoMode::Rgb | VideoMode::Both"
@@ -152,6 +164,74 @@ def plane_output(label: str, output_id: int) -> ImageOutput:
         .with_id(output_id)
         .null_unless(3, PLANE_MODES)
     )
+
+
+def read_inputs() -> list[Any]:
+    """How Load Video and Load Videos read a video: Mode, RGB Precision and the colour
+    values."""
+    return [
+        EnumInput(
+            VideoMode,
+            "Mode",
+            default=VideoMode.RGB,
+            option_labels=VIDEO_MODE_LABELS,
+            preferred_style="tabs",
+        )
+        .with_id(3)
+        .with_docs(
+            "RGB gives each frame as an RGB image. Planes gives the Y, U and V planes as"
+            " they are stored, each at its own size (4:2:0 1080p: Y 1920x1080, U and V"
+            " 960x540) and at the video's full bit depth: Y is 0 at black and 1 at white,"
+            " U and V are 0.5 where neutral, and values outside 0-1 are kept. Both gives"
+            " both. An RGB-coded video has no planes, and gray video no U and V."
+        ),
+        if_enum_group(3, (VideoMode.RGB, VideoMode.BOTH))(
+            EnumInput(
+                RgbPrecision,
+                "RGB Precision",
+                default=RgbPrecision.FLOAT,
+                option_labels={
+                    RgbPrecision.FLOAT: "Float",
+                    RgbPrecision.EIGHT_BIT: "8-bit (as before)",
+                },
+            )
+            .with_id(4)
+            .with_docs(
+                "Float converts the video's own bit depth to RGB in floating point, with"
+                " the colour values below and the chroma siting. 8-bit converts as Load"
+                " Video did before this option (8-bit RGB, chroma assumed centred), with"
+                " a Matrix or Range chosen below; Chroma Siting does not apply to it."
+            ),
+        ),
+        *colour_override_inputs(5),
+    ]
+
+
+def later_outputs(preview_docs: str) -> list[BaseOutput]:
+    """Load Video's and Load Videos' outputs after the first six (ids 0 to 5): a run's
+    per-file Load Video gives Load Videos' outputs (folder_videos.py), so their ids are
+    one."""
+    return [
+        plane_output("Y", 6),
+        plane_output("U", 7),
+        plane_output("V", 8),
+        ColourInfoOutput().with_id(9),
+        TextOutput("Colour")
+        .with_id(10)
+        .with_docs(
+            "The colour information: tagged values, and which were guessed or chosen."
+        ),
+        LargeImageOutput("Preview", image_type=navi.Image(channels=3), has_handle=False)
+        .with_id(11)
+        .with_docs(preview_docs),
+        NumberOutput("Frame Count", output_type="uint")
+        .with_id(12)
+        .with_docs(
+            "The number of frames in the video. For a video with a variable frame rate,"
+            " which is read at a constant one, it is the probe's estimate; for a video"
+            " whose frames lack timestamps, an estimate by its video packets."
+        ),
+    ]
 
 
 @video_frames_group.register(
@@ -207,40 +287,7 @@ def plane_output(label: str, output_id: int) -> ImageOutput:
                 hint=True,
             ),
         ),
-        EnumInput(
-            VideoMode,
-            "Mode",
-            default=VideoMode.RGB,
-            option_labels=VIDEO_MODE_LABELS,
-            preferred_style="tabs",
-        )
-        .with_id(3)
-        .with_docs(
-            "RGB gives each frame as an RGB image. Planes gives the Y, U and V planes as"
-            " they are stored, each at its own size (4:2:0 1080p: Y 1920x1080, U and V"
-            " 960x540) and at the video's full bit depth: Y is 0 at black and 1 at white,"
-            " U and V are 0.5 where neutral, and values outside 0-1 are kept. Both gives"
-            " both. An RGB-coded video has no planes, and gray video no U and V."
-        ),
-        if_enum_group(3, (VideoMode.RGB, VideoMode.BOTH))(
-            EnumInput(
-                RgbPrecision,
-                "RGB Precision",
-                default=RgbPrecision.FLOAT,
-                option_labels={
-                    RgbPrecision.FLOAT: "Float",
-                    RgbPrecision.EIGHT_BIT: "8-bit (as before)",
-                },
-            )
-            .with_id(4)
-            .with_docs(
-                "Float converts the video's own bit depth to RGB in floating point, with"
-                " the colour values below and the chroma siting. 8-bit converts as Load"
-                " Video did before this option (8-bit RGB, chroma assumed centred), with"
-                " a Matrix or Range chosen below; Chroma Siting does not apply to it."
-            ),
-        ),
-        *colour_override_inputs(5),
+        *read_inputs(),
     ],
     outputs=[
         ImageOutput("Frame", channels=3).null_unless(3, RGB_MODES),
@@ -262,25 +309,7 @@ def plane_output(label: str, output_id: int) -> ImageOutput:
         FileNameOutput("Name", of_input=0),
         NumberOutput("FPS", output_type="0.."),
         AudioStreamOutput().suggest(),
-        plane_output("Y", 6),
-        plane_output("U", 7),
-        plane_output("V", 8),
-        ColourInfoOutput().with_id(9),
-        TextOutput("Colour")
-        .with_id(10)
-        .with_docs(
-            "The colour information: tagged values, and which were guessed or chosen."
-        ),
-        LargeImageOutput("Preview", image_type=navi.Image(channels=3), has_handle=False)
-        .with_id(11)
-        .with_docs("The seek bar's frame in RGB, whatever the Mode."),
-        NumberOutput("Frame Count", output_type="uint")
-        .with_id(12)
-        .with_docs(
-            "The number of frames in the video. For a video with a variable frame rate,"
-            " which is read at a constant one, it is the probe's estimate; for a video"
-            " whose frames lack timestamps, an estimate by its video packets."
-        ),
+        *later_outputs("The seek bar's frame in RGB, whatever the Mode."),
     ],
     iterator_outputs=IteratorOutputInfo(
         outputs=[0, 1, 6, 7, 8],

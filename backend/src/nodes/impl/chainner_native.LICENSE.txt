@@ -3939,7 +3939,7 @@ DEALINGS IN THE SOFTWARE.
 OpenEXR 3.5.2 (OpenEXRCore)
 ========================================================================
 
-Load Image's OpenEXR decoder links OpenEXRCore and the libraries it is built with, vendored from their
+Load Image's OpenEXR decoder and Save Image's encoder link OpenEXRCore and the libraries it is built with, vendored from their
 releases (each folder's PROVENANCE.md names the release, its SHA-256 and the one line patched in OpenEXRCore):
 libdeflate 1.26, Zstandard 1.5.7, OpenJPH 0.32.0 and Imath 3.2.3 (half.h). Its channel rules follow OpenCV
 5.0.0's imgcodecs grfmt_exr.cpp (Apache License 2.0, reproduced above).

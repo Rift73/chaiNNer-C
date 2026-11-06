@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from nodes.impl.native_neighborhood import median
+from nodes.impl.native_resample import finish_alpha, has_transparency
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -27,4 +28,8 @@ def median_blur_node(
 ) -> np.ndarray:
     if radius == 0:
         return img
+    # A median picks a value and never averages, so colour keeps no fringe from alpha; a
+    # transparent pixel just holds no colour.
+    if has_transparency(img):
+        img = finish_alpha(img, divide=False)
     return median(img, radius)

@@ -45,7 +45,7 @@
  * lookup table (a NaN, infinite or reversed range). The Python boundary
  * preserves OpenCV's exception, without reproducing its invalid gather/access
  * violation, and nothing is written to the output. */
-#define CN_BILATERAL_RANGE_ERROR ((cn_status)4)
+#define CN_BILATERAL_RANGE_ERROR CN_KERNEL_FAILED
 
 typedef struct bilateral_context {
     const float *padded, *weights, *lut;
@@ -338,5 +338,108 @@ CN_EXPORT cn_status cn_bilateral_f32(const float *src, float *dst,
     if (result == CN_OK && staged) memcpy(dst, out, bytes);
     free(padded); free(weights); free(offsets); free(lut); free(invalid);
     if (staged) free(out);
+    return result;
+}
+
+typedef struct straight_context {
+    const float *padded, *weights, *lut;
+    const ptrdiff_t *offsets;
+    float *out;
+    size_t width, stride, radius, count;
+    float scale, top;
+} straight_context;
+
+static void straight_range(void *opaque, size_t begin, size_t end) {
+    const straight_context *j = opaque;
+    for (size_t y = begin; y < end; ++y) {
+        const float *row = j->padded + (y + j->radius) * j->stride + j->radius * 4;
+        float *out = j->out + y * j->width * 3;
+        for (size_t x = 0; x < j->width; ++x) {
+            const float *centre = row + x * 4;
+            int seen = centre[3] > 0;
+            double sum[3] = {0, 0, 0}, total = 0;
+            for (size_t k = 0; k < j->count; ++k) {
+                const float *other = centre + j->offsets[k];
+                if (!(other[3] > 0)) continue;
+                float weight = j->weights[k] * other[3];
+                if (seen) {
+                    float distance = (fabsf(other[0] - centre[0]) + fabsf(other[1] - centre[1])
+                                      + fabsf(other[2] - centre[2])) * j->scale;
+                    /* The table holds two past its bins; rounding can pass the top by a step. */
+                    if (!(distance < j->top + 1.0f)) continue;
+                    size_t index = (size_t)distance;
+                    weight *= j->lut[index] + (distance - (float)index) * (j->lut[index + 1] - j->lut[index]);
+                }
+                for (size_t c = 0; c < 3; ++c) sum[c] += (double)weight * other[c];
+                total += weight;
+            }
+            for (size_t c = 0; c < 3; ++c) out[x * 3 + c] = total > 0 ? (float)(sum[c] / total) : 0.0f;
+        }
+    }
+}
+
+/* Surface Blur's colour for an RGBA image with transparency: the algorithm above on the three colours (L1 range through
+ * an interpolated table, a circular window, BORDER_REFLECT_101), each tap's weight times its alpha, so a transparent
+ * pixel's hidden colour takes no part. A transparent pixel has no colour to compare with: the range term leaves it. dst
+ * holds three channels. */
+CN_EXPORT cn_status cn_bilateral_straight_f32(const float *src, float *dst,
+    size_t height, size_t width, size_t radius, double sigma_color, double sigma_space) {
+    if (!src || !dst || !height || !width || height > INT_MAX || width > INT_MAX
+        || !radius || radius > 100 || !isfinite(sigma_color) || !isfinite(sigma_space)
+        || sigma_color <= 0 || sigma_space <= 0)
+        return CN_INVALID_ARGUMENT;
+    if (height > SIZE_MAX / width || height * width > SIZE_MAX / 4 / sizeof(float))
+        return CN_SIZE_OVERFLOW;
+    size_t padded_h = height + 2 * radius, padded_w = width + 2 * radius;
+    if (padded_h > SIZE_MAX / padded_w || padded_h * padded_w > PTRDIFF_MAX / sizeof(float) / 4)
+        return CN_SIZE_OVERFLOW;
+    enum { bins = 4096 * 3 };
+    size_t stride = padded_w * 4, diameter = radius * 2 + 1, max_taps = diameter * diameter;
+    float *padded = malloc(padded_h * stride * sizeof(float));
+    float *weights = malloc(max_taps * sizeof(float));
+    ptrdiff_t *offsets = malloc(max_taps * sizeof(ptrdiff_t));
+    float *lut = malloc((bins + 2) * sizeof(float));
+    if (!padded || !weights || !offsets || !lut) {
+        free(padded); free(weights); free(offsets); free(lut);
+        return CN_ALLOCATION_FAILED;
+    }
+    float low = FLT_MAX, high = -FLT_MAX;
+    for (size_t i = 0; i < height * width; ++i) {
+        const float *pixel = src + i * 4;
+        if (!(pixel[3] > 0)) continue;
+        for (size_t c = 0; c < 3; ++c) {
+            if (!isfinite(pixel[c])) continue;
+            if (pixel[c] < low) low = pixel[c];
+            if (pixel[c] > high) high = pixel[c];
+        }
+    }
+    double length = high > low ? ((double)high - (double)low) * 3 : 0;
+    float scale = length > 0 ? (float)(bins / length) : 0;
+    double color_coefficient = -0.5 / (sigma_color * sigma_color);
+    double space_coefficient = -0.5 / (sigma_space * sigma_space);
+    for (size_t i = 0; i < bins + 2; ++i) {
+        double value = length > 0 ? i * length / bins : 0;
+        lut[i] = (float)exp(value * value * color_coefficient);
+    }
+    size_t count = 0;
+    ptrdiff_t r = (ptrdiff_t)radius;
+    for (ptrdiff_t y = -r; y <= r; ++y) {
+        for (ptrdiff_t x = -r; x <= r; ++x) {
+            double distance = sqrt((double)y * (double)y + (double)x * (double)x);
+            if (distance > (double)radius) continue;
+            weights[count] = (float)exp(distance * distance * space_coefficient);
+            offsets[count++] = y * (ptrdiff_t)stride + x * (ptrdiff_t)4;
+        }
+    }
+    for (size_t y = 0; y < padded_h; ++y) {
+        const float *row = src + reflect101((ptrdiff_t)y - r, height) * width * 4;
+        for (size_t x = 0; x < padded_w; ++x)
+            memcpy(padded + y * stride + x * 4, row + reflect101((ptrdiff_t)x - r, width) * 4, 4 * sizeof(float));
+    }
+    straight_context job = {padded, weights, lut, offsets, dst, width, stride, radius, count, scale, (float)bins};
+    size_t work_per_row = width * count;
+    size_t grain = work_per_row >= 32768 ? 1 : 32768 / work_per_row;
+    cn_status result = cn_parallel_for(height, grain, straight_range, &job);
+    free(padded); free(weights); free(offsets); free(lut);
     return result;
 }

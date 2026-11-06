@@ -90,7 +90,7 @@ export const canConnect = (
     if (outputType !== undefined && !targetFn.canAssign(targetInputId, outputType)) {
         const schema = targetSchema;
         const input = schema.inputs.find((i) => i.id === targetInputId)!;
-        const inputType = withoutNull(targetFn.definition.inputDefaults.get(targetInputId)!);
+        const inputType = withoutNull(targetFn.inputExpectations.get(targetInputId)!);
 
         const error = simpleError(outputType, inputType);
         if (error) {

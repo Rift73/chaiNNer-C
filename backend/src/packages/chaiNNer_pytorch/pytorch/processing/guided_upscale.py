@@ -7,7 +7,7 @@ from nodes.impl.pytorch.pix_transform.auto_split import pix_transform_auto_split
 from nodes.impl.pytorch.pix_transform.pix_transform import Params
 from nodes.impl.pytorch.utils import safe_cuda_cache_empty
 from nodes.impl.upscale.grayscale import SplitMode
-from nodes.properties.inputs import EnumInput, ImageInput, SliderInput
+from nodes.properties.inputs import EnumInput, ImageInput, NumberInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
 from ...settings import get_settings
@@ -42,6 +42,20 @@ from .. import processing_group
             "Channel split mode",
             default=SplitMode.LAB,
             option_labels={SplitMode.RGB: "RGB", SplitMode.LAB: "L*a*b"},
+        ),
+        NumberInput("Tile Size", min=16, max=2048, default=80, unit="px")
+        .with_id(4)
+        .with_docs(
+            "The largest part of the source, in source pixels, that one network trains on."
+            " Each tile trains for all the Iterations, so the time grows with the number"
+            " of tiles, which grows with the source's area.",
+            "Measured on the CPU at 4x and 500 iterations with a 128x128 RGB source, on one"
+            " image: one tile 40.85 dB in 22.6 s, tiles of 80 px 46.15 dB in 33.6 s, tiles"
+            " of 48 px 47.18 dB in 158.8 s.",
+            "The gain varies by image: one tile against tiles of 80 px gave 43.47 against"
+            " 42.58 dB on a second image and 43.37 against 46.45 dB on a third. On a 192x192"
+            " source (one channel), tiles of 80 px took 37.3 s against 4.8 s for one tile.",
+            hint=True,
         ),
     ],
     outputs=[
@@ -78,6 +92,7 @@ def guided_upscale_node(
     guide: np.ndarray,
     iterations: float,
     split_mode: SplitMode,
+    tile_size: int,
 ) -> np.ndarray:
     exec_options = get_settings(context)
     context.add_cleanup(
@@ -90,4 +105,6 @@ def guided_upscale_node(
         device=exec_options.device,
         params=Params(iteration=int(iterations * 1000)),
         split_mode=split_mode,
+        tile_size=tile_size,
+        progress=context,
     )

@@ -29,6 +29,9 @@ export default defineConfig((env) => {
             },
             rollupOptions: {
                 external,
+                // main.js keeps the window's code and lends it to run.js, instead of being a stub
+                // in front of a third file.
+                preserveEntrySignatures: 'allow-extension',
                 output: {
                     entryFileNames: `[name].js`,
                     chunkFileNames: `[name].js`,

@@ -252,10 +252,13 @@ static float kernel(int filter, float x)
         return cubic(&mitchell, x);
     case 7:
         return cubic(&bspline, x);
+    /* Hamming and Hann end at 1: the weights' sum also reads taps past the support, where these formulas go on. */
     case 8:
+        if (fabsf(x) > 1.0f) return 0.0f;
         x = fabsf(x) * pi;
         return sinc(x) * (0.54f + 0.46f * cn_crt.cosf(x));
     case 9:
+        if (fabsf(x) > 1.0f) return 0.0f;
         x = fabsf(x) * pi;
         return sinc(x) * (0.5f + 0.5f * cn_crt.cosf(x));
     case 10: {
@@ -269,6 +272,23 @@ static float kernel(int filter, float x)
         }
         return value;
     }
+    /* John Costella's Magic Kernel m (the quadratic B-spline) with its sharpening step folded in:
+     * 13 is (6 m(x) - m(x - 1) - m(x + 1)) / 4 (2013), 14 is
+     * (204 m(x) - 35 m(x +- 1) + 6 m(x +- 2) - m(x +- 3)) / 144 (2021), written out piece by piece. */
+    case 13:
+        x = fabsf(x);
+        if (x < 0.5f) return 1.0625f - 1.75f * x * x;
+        if (x < 1.5f) return (1.0f - x) * (1.75f - x);
+        if (x < 2.5f) return -0.125f * (2.5f - x) * (2.5f - x);
+        return 0.0f;
+    case 14:
+        x = fabsf(x);
+        if (x < 0.5f) return 577.0f / 576.0f - 239.0f / 144.0f * x * x;
+        if (x < 1.5f) return 35.0f / 36.0f * (x - 1.0f) * (x - 239.0f / 140.0f);
+        if (x < 2.5f) return (x - 2.0f) * (65.0f / 24.0f - x) / 6.0f;
+        if (x < 3.5f) return (x - 3.0f) * (x - 3.75f) / 36.0f;
+        if (x < 4.5f) return -(x - 4.5f) * (x - 4.5f) / 288.0f;
+        return 0.0f;
     default:
         /* gaussian(x, 0.5): the reference's compiler folds 1 / (sqrt(2 pi) * 0.5), each
          * step rounded to nearest, to this constant, and computes -x.powi(2) as (-x) * x
@@ -294,7 +314,7 @@ static cn_status coefficients(size_t source, size_t target, int filter,
     coefficient_line *lines, coefficient_entry *cache, size_t cache_size,
     size_t *allocated_bytes)
 {
-    float support = filter == 1 || filter == 11 ? 3.0f :
+    float support = filter == 14 ? 4.5f : filter == 13 ? 2.5f : filter == 1 || filter == 11 ? 3.0f :
         (filter == 3 || filter == 6 || filter == 7 || filter == 10 ? 2.0f : 1.0f);
     double ratio = (double)source / (double)target;
     double scale = ratio > 1.0 ? ratio : 1.0;
@@ -479,7 +499,7 @@ CN_EXPORT cn_status cn_resample_filtered(const float *source, float *out,
     size_t target_width, int filter, int gamma, int vector_clip)
 {
     if (!source || !out || !height || !width || !target_height || !target_width ||
-        channels < 1 || channels > 4 || filter < 1 || filter > 11 ||
+        channels < 1 || channels > 4 || filter < 1 || filter == 12 || filter > 14 ||
         gamma < 0 || gamma > 1 || vector_clip < 0 || vector_clip > 1)
         return CN_INVALID_ARGUMENT;
     if (height > INT32_MAX || width > INT32_MAX ||

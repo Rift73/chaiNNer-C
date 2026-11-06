@@ -1,15 +1,16 @@
 import { Box, HStack, IconButton, Tooltip } from '@chakra-ui/react';
 import { memo, useCallback, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { IoMdLink } from 'react-icons/io';
 import { IoUnlink } from 'react-icons/io5';
 import { InputId, InputValue } from '../../../common/common-types';
-import { joinEnglish } from '../../../common/util';
 import { NodeState } from '../../helpers/nodeState';
 import { useMemoObject } from '../../hooks/useMemo';
 import { GroupProps } from './props';
 
 export const LinkedInputsGroup = memo(
     ({ inputs, nodeState, ItemRenderer }: GroupProps<'linked-inputs'>) => {
+        const { t, i18n } = useTranslation();
         const { inputData, setInputValue, isLocked } = nodeState;
 
         const [linked, setLinked] = useState<boolean>(() => {
@@ -43,15 +44,19 @@ export const LinkedInputsGroup = memo(
 
         const allConnected = inputs.every((input) => nodeState.connectedInputs.has(input.id));
 
+        const inputList = new Intl.ListFormat(i18n.language, {
+            style: 'long',
+            type: 'conjunction',
+        }).format(inputs.map((input) => input.label));
         const label = linked
-            ? `The values of ${joinEnglish(
-                  inputs.map((input) => input.label),
-                  'and'
-              )} are currently linked to the same value. Click here to undo this link.`
-            : `Click here to link ${joinEnglish(
-                  inputs.map((input) => input.label),
-                  'and'
-              )} to the same value.`;
+            ? t(
+                  'linkedInputs.currentlyLinked',
+                  'The values of {{inputs}} are currently linked to the same value. Click here to undo this link.',
+                  { inputs: inputList }
+              )
+            : t('linkedInputs.clickToLink', 'Click here to link {{inputs}} to the same value.', {
+                  inputs: inputList,
+              });
 
         const linkButtonWidth = 1.4;
         const linkButtonHeight = 1.6;

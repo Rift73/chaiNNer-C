@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Literal, TypedDict, Union, cast
+from typing import Dict, Final, Literal, TypedDict, Union, cast
 
 import navi
 from api import BroadcastData, ErrorValue, InputId, IterOutputId, NodeId, OutputId
@@ -133,6 +133,15 @@ Event = Union[ExecutionEvent, BackendEvent]
 
 
 class EventConsumer(ABC):
+    # The events of an individual run (/run/individual): a warning too, since /run takes
+    # the node's output from the cache and does not run the node again.
+    INDIVIDUAL_RUN_EVENTS: Final = {
+        "node-finish",
+        "node-broadcast",
+        "execution-error",
+        "execution-warning",
+    }
+
     @abstractmethod
     def put(self, event: Event) -> None: ...
 

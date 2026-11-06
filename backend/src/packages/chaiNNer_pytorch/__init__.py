@@ -207,13 +207,14 @@ package = add_package(
             # as neighborhood attention; c11 exports HAT's and DAT's attention in the
             # layout MIGraphX fuses, on request; c12 runs depthwise 3x3 convolutions
             # and ESRGAN's dense blocks on HIP kernels under ROCm; c13 runs DUAL's
-            # inference with fewer passes over memory.
-            version="0.4.2+c13",
+            # inference with fewer passes over memory; c14 makes DySample's ONNX grid
+            # follow the size, folds SPAN once and loads Flex Attention on first use.
+            version="0.4.2+c14",
             size_estimate=600 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c13/"
-                "spandrel-0.4.2%2Bc13-py3-none-any.whl"
-                "#sha256=20e149794cf16a4f4fbb2930173ffca3ad5264fa585c1acf1c672e019e418950"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c14/"
+                "spandrel-0.4.2%2Bc14-py3-none-any.whl"
+                "#sha256=91a99eef3ab39ca1c3d4098a7d2e280d8e3b73873a79a96a3d86b323d52198f3"
             ),
         ),
         Dependency(

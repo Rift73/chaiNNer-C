@@ -96,6 +96,32 @@ inline void encode_light(MutableImage &image, int64_t transfer)
                           int(transfer), 1, image.channels() == 4));
 }
 
+/* native_resample.has_transparency: a nonempty four-channel image with an alpha other than exactly 1. */
+inline bool has_transparency(const Image &image)
+{
+    if (image.channels != 4 || pixels(image) == 0) return false;
+    int transparent = 0;
+    check(cn_alpha_transparent(image.data, pixels(image), &transparent));
+    return transparent != 0;
+}
+
+/* native_resample.premultiply of a nonempty four-channel image. */
+inline Image premultiplied(const Image &image)
+{
+    MutableImage out = MutableImage::allocate(image.height, image.width, 4);
+    check(cn_resample_alpha(image.data, out.data(), pixels(image), 0));
+    return std::move(out).publish();
+}
+
+/* native_resample.finish_alpha of a nonempty four-channel image: colour 0 under alpha 0, elsewhere colour / alpha with
+ * divide, or the colour as it is. */
+inline Image finish_alpha(const Image &image, bool divide)
+{
+    MutableImage out = MutableImage::allocate(image.height, image.width, 4);
+    check(cn_alpha_finish(image.data, out.data(), pixels(image), divide));
+    return std::move(out).publish();
+}
+
 /* The image's channels in the given order as a new image (NumPy's img[:, :, i] or img[:, :, a:b] slices, copied as
  * the output enforce copies them); an empty image gives an empty result of the same size. */
 inline Image select_channels(const Image &image, std::initializer_list<int> channels)
@@ -296,17 +322,22 @@ inline std::vector<uint8_t> to_uint8(const Image &image, bool /* normalized */)
 /* native_color_complete.cvt_color of a float32 image for one code of its _CODES table, given as (operation, blue
  * index, output channels): OpenCV's row loop lanes of the operation's dispatched family (Lab's baseline: 4) and its
  * IPP state. An untested OpenCV declines to the Python body (cv2.cvtColor). */
-inline Image cvt_color(const Image &image, int op, int blue, int32_t output_channels)
+inline void cvt_color_to(const float *source, float *target, const Image &shape, int op, int blue, int32_t output_channels)
 {
     if (!dispatch::cv2_tested("nodes.impl.native_color_complete")) throw RunPython{};
-    if (image.height == 0 || image.width == 0) throw NodeError("ValueError", "Color conversion requires a nonempty image");
+    if (shape.height == 0 || shape.width == 0) throw NodeError("ValueError", "Color conversion requires a nonempty image");
     const char *family = op <= 1 ? "color_rgb" : op <= 3 || op == 8 || op == 9 ? "color_yuv"
                          : op <= 7 || op == 14                                ? "color_hsv"
                                                                               : nullptr;
-    MutableImage out = MutableImage::allocate(image.height, image.width, output_channels);
-    check(cn_color_convert_f32(image.data, out.data(), size_t(image.height), size_t(image.width),
-                               size_t(image.channels), size_t(output_channels), op, blue,
+    check(cn_color_convert_f32(source, target, size_t(shape.height), size_t(shape.width),
+                               size_t(shape.channels), size_t(output_channels), op, blue,
                                int(family ? dispatch::opencv_lanes(family) : 4), dispatch::cv2_use_ipp() ? 1 : 0));
+}
+
+inline Image cvt_color(const Image &image, int op, int blue, int32_t output_channels)
+{
+    MutableImage out = MutableImage::allocate(image.height, image.width, output_channels);
+    cvt_color_to(image.data, out.data(), image, op, blue, output_channels);
     return std::move(out).publish();
 }
 

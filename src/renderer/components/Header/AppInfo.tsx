@@ -16,6 +16,7 @@ import {
     useDisclosure,
 } from '@chakra-ui/react';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useContext } from 'use-context-selector';
 import { log } from '../../../common/log';
 import { chainnerCVersion, isDevelopmentBuild } from '../../../common/version';
@@ -38,6 +39,7 @@ let automaticCheckStarted = false;
 
 // The update check only announces a release: nothing is downloaded or installed.
 export const AppInfo = memo(() => {
+    const { t } = useTranslation();
     const { checkForUpdatesOnStartup } = useSettings();
     const { sendAlert } = useContext(AlertBoxContext);
 
@@ -90,10 +92,17 @@ export const AppInfo = memo(() => {
                     } else {
                         sendAlert({
                             type: AlertType.INFO,
-                            title: 'Check for Updates',
-                            message: `You're up to date: chaiNNer-C v${chainnerCVersion}.${
+                            title: t('header.checkForUpdates', 'Check for Updates'),
+                            message: `${t(
+                                'header.upToDate',
+                                "You're up to date: chaiNNer-C v{{version}}.",
+                                { version: chainnerCVersion }
+                            )}${
                                 isDevelopmentBuild(buildInfo)
-                                    ? ' This is a development build: only a newer version counts as an update.'
+                                    ? ` ${t(
+                                          'header.developmentBuildUpdates',
+                                          'This is a development build: only a newer version counts as an update.'
+                                      )}`
                                     : ''
                             }`,
                         });
@@ -103,11 +112,15 @@ export const AppInfo = memo(() => {
                     log.warn(`Could not check for updates: ${String(error)}`);
                     sendAlert({
                         type: AlertType.WARN,
-                        title: 'Check for Updates',
-                        message: `Could not check for updates: ${String(error)}`,
+                        title: t('header.checkForUpdates', 'Check for Updates'),
+                        message: t(
+                            'header.couldNotCheckForUpdates',
+                            'Could not check for updates: {{error}}',
+                            { error: String(error) }
+                        ),
                     });
                 });
-        }, [onAlertOpen, sendAlert])
+        }, [onAlertOpen, sendAlert, t])
     );
 
     const updateTitle = updateVersion && getReleaseTitle(updateVersion, chainnerCVersion);
@@ -132,12 +145,14 @@ export const AppInfo = memo(() => {
                         closeOnClick
                         closeOnMouseDown
                         borderRadius={8}
-                        label={`Update available (${updateTitle ?? ''})`}
+                        label={t('header.updateAvailable', 'Update available ({{version}})', {
+                            version: updateTitle ?? '',
+                        })}
                         px={2}
                         py={1}
                     >
                         <IconButton
-                            aria-label="Update available"
+                            aria-label={t('header.updateAvailableAria', 'Update available')}
                             colorScheme="green"
                             icon={<DownloadIcon />}
                             variant="ghost"
@@ -158,12 +173,17 @@ export const AppInfo = memo(() => {
                             fontSize="lg"
                             fontWeight="bold"
                         >
-                            Update Available ({updateTitle})
+                            {t('header.updateAvailableTitle', 'Update Available ({{version}})', {
+                                version: updateTitle,
+                            })}
                         </AlertDialogHeader>
 
                         <AlertDialogBody>
-                            There is an update available: {updateTitle}. Would you like to open its
-                            release page?
+                            {t(
+                                'header.updateAvailableOpenRelease',
+                                'There is an update available: {{version}}. Would you like to open its release page?',
+                                { version: updateTitle }
+                            )}
                         </AlertDialogBody>
 
                         <AlertDialogFooter>
@@ -173,7 +193,7 @@ export const AppInfo = memo(() => {
                                     variant="ghost"
                                     onClick={onAlertClose}
                                 >
-                                    Close
+                                    {t('common.close', 'Close')}
                                 </Button>
                                 <Button
                                     onClick={() => {
@@ -183,7 +203,7 @@ export const AppInfo = memo(() => {
                                         onAlertClose();
                                     }}
                                 >
-                                    Don&apos;t show again for this release
+                                    {t('header.ignoreRelease', "Don't show again for this release")}
                                 </Button>
                                 <Button
                                     colorScheme="green"
@@ -198,7 +218,7 @@ export const AppInfo = memo(() => {
                                         onAlertClose();
                                     }}
                                 >
-                                    Open release page
+                                    {t('header.openReleasePage', 'Open release page')}
                                 </Button>
                             </HStack>
                         </AlertDialogFooter>

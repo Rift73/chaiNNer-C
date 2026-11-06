@@ -36,7 +36,21 @@ from .. import correction_group
             unit="%",
         ),
     ],
-    outputs=[ImageOutput(shape_as=0)],
+    outputs=[
+        ImageOutput(
+            image_type="""
+                let referenceWidth = max(ceil(Input1.width * (Input2 / 100)), 1);
+                let referenceHeight = max(ceil(Input1.height * (Input2 / 100)), 1);
+
+                if referenceWidth < Input0.width and referenceHeight < Input0.height {
+                    Image
+                } else {
+                    error("The image must be larger than the reference image at its scale factor.")
+                }
+            """,
+            shape_as=0,
+        )
+    ],
 )
 def average_color_fix_node(
     input_img: np.ndarray, ref_img: np.ndarray, scale_factor: float

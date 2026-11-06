@@ -412,7 +412,7 @@ def _fast_gaussian_blur(
     """fast_gaussian_blur's raw result."""
     if sigma_y is None:
         sigma_y = sigma_x
-    if sigma_x == 0 or sigma_y == 0:
+    if sigma_x == 0 and sigma_y == 0:
         return img.copy()
 
     h, w, _ = get_h_w_c(img)
@@ -455,6 +455,9 @@ def _fast_gaussian_blur(
     # and just use the smaller one. There are potentially better ways of combining them, but
     # this is good enough for now.
     scale_factor = min(get_scale_factor(sigma_x), get_scale_factor(sigma_y))
+    if math.ceil(h / scale_factor) == h and math.ceil(w / scale_factor) == w:
+        # too small to shrink, so only the plain blur can give the whole sigma
+        scale_factor = 1
     h_down, y_down_sigma, y_up_sigma = get_sizing(h, sigma_y, scale_factor)
     w_down, x_down_sigma, x_up_sigma = get_sizing(w, sigma_x, scale_factor)
 
@@ -481,14 +484,16 @@ def _fast_gaussian_blur(
 
     if x_up_sigma != 0 or y_up_sigma != 0:
         # post blur to smooth out artifacts
+        # One tap on an axis with sigma 0: without a size, its sigma means the other axis's.
+        size = (0 if x_up_sigma else 1, 0 if y_up_sigma else 1)
         if img.dtype == np.float32:
             from .native_gaussian import gaussian
 
-            img = gaussian(img, x_up_sigma, y_up_sigma)
+            img = gaussian(img, x_up_sigma, y_up_sigma, size=size)
         else:
             img = cv2.GaussianBlur(
                 img,
-                (0, 0),
+                size,
                 sigmaX=x_up_sigma,
                 sigmaY=y_up_sigma,
                 borderType=cv2.BORDER_REFLECT,

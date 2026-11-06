@@ -9,7 +9,14 @@ from sanic.log import logger
 from spandrel import ImageModelDescriptor, ModelTiling
 
 from api import KeyInfo, NodeContext, Progress
+from gpu import nvidia
 from nodes.groups import Condition, if_enum_group, if_group
+from nodes.impl.image_op import ImageOp
+from nodes.impl.pytorch.auto_engine import (
+    ENGINE_MODEL_NAVI,
+    release_engine,
+    upscale_through_engine,
+)
 from nodes.impl.pytorch.auto_split import pytorch_auto_split
 from nodes.impl.pytorch.utils import safe_cuda_cache_empty
 from nodes.impl.upscale.auto_split_tiles import (
@@ -21,6 +28,7 @@ from nodes.impl.upscale.auto_split_tiles import (
     parse_tile_size_input,
 )
 from nodes.impl.upscale.basic_upscale import PaddingType, UpscaleInfo, basic_upscale
+from nodes.impl.upscale.tile_report import TileReport
 from nodes.impl.upscale.tiler import MaxTileSize
 from nodes.properties.inputs import (
     BoolInput,
@@ -30,7 +38,7 @@ from nodes.properties.inputs import (
     SrModelInput,
     TileSizeDropdown,
 )
-from nodes.properties.outputs import ImageOutput
+from nodes.properties.outputs import ImageOutput, TextOutput
 
 from ...settings import PyTorchSettings, get_settings
 from .. import processing_group
@@ -44,6 +52,7 @@ def upscale(
     tile_size: TileSize,
     options: PyTorchSettings,
     progress: Progress,
+    report: TileReport | None = None,
 ):
     with torch.no_grad():
         # Borrowed from iNNfer
@@ -106,6 +115,7 @@ def upscale(
             tiler=parse_tile_size_input(tile_size, estimate),
             progress=progress,
             use_bf16=options.use_cpu_bf16 and model.supports_bfloat16,
+            report=report,
         )
         logger.debug("Done upscaling")
 
@@ -213,6 +223,31 @@ def upscale(
                 " transparent and opaque regions.",
             )
         ),
+        if_group(
+            Condition.const(nvidia.is_available)
+            & Condition.type(0, ENGINE_MODEL_NAVI, if_not_connected=True)
+        )(
+            BoolInput("Use TensorRT Engine", default=False)
+            .with_id(8)
+            .with_docs(
+                "Runs this model through a TensorRT engine instead of PyTorch, on NVIDIA GPUs:"
+                " on a 4x ESRGAN at 512 px, about twice as fast.",
+                "The first run for a model at a Tile Size exports and builds its engine (about a"
+                " minute for a 4x ESRGAN, longer for larger models); later runs read it, also after"
+                " a restart. Stop waits for a running build to end.",
+                "While this is on, engines take disk space, whether TensorRT's Engine Cache"
+                " setting is on or off: about 43 MB for a 4x ESRGAN, in that cache's folder and"
+                " within its limit of 16 GiB, the least recently used removed first. While this"
+                " is off, this node keeps nothing on disk.",
+                "The output differs slightly from PyTorch's: the engine runs in the model's"
+                " automatic precision, in overlapping tiles up to the Tile Size. Auto, Maximum"
+                " and No Tiling take 512 px, and RGT stops at 256 px. The node's Clear frees its"
+                " GPU memory.",
+                "When the engine cannot be built or fails, the image runs on PyTorch and a warning"
+                " says why.",
+                hint=True,
+            ),
+        ),
     ],
     outputs=[
         ImageOutput(
@@ -236,7 +271,12 @@ def upscale(
                 }
             """,
             assume_normalized=True,  # pytorch_auto_split already does clipping internally
-        )
+        ),
+        TextOutput("Tile Size").with_docs(
+            "The size of the tiles the model ran, with their overlap and after any cut for"
+            " lack of memory, or Whole image. For an image that takes several passes"
+            " (transparency, Separate Alpha, Custom Scale), the last pass's."
+        ),
     ],
     key_info=KeyInfo.type(
         """
@@ -267,7 +307,8 @@ def upscale_image_node(
     custom_tile_size: int,
     padding: PaddingType,
     separate_alpha: bool,
-) -> np.ndarray:
+    use_engine: bool,
+) -> tuple[np.ndarray, str]:
     exec_options = get_settings(context)
 
     context.add_cleanup(
@@ -281,18 +322,43 @@ def upscale_image_node(
     if not use_custom_scale or not info.supports_custom_scale:
         custom_scale = model.scale
 
-    return basic_upscale(
-        img,
-        lambda i: upscale(
+    report = TileReport()
+
+    def upscale_with(op: ImageOp) -> np.ndarray:
+        return basic_upscale(
+            img,
+            op,
+            upscale_info=info,
+            scale=custom_scale,
+            separate_alpha=separate_alpha,
+            padding=padding,
+            clip=False,  # pytorch_auto_split and the engine's node already clip
+        )
+
+    size = TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size
+
+    def pytorch(i: np.ndarray) -> np.ndarray:
+        return upscale(
             i,
             model,
-            TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
+            size,
             exec_options,
             context,
-        ),
-        upscale_info=info,
-        scale=custom_scale,
-        separate_alpha=separate_alpha,
-        padding=padding,
-        clip=False,  # pytorch_auto_split already does clipping internally
-    )
+            report,
+        )
+
+    if use_engine:
+        image = upscale_through_engine(
+            context,
+            model,
+            exec_options.device,
+            exec_options.gpu_index,
+            size,
+            upscale_with,
+            pytorch,
+            report,
+        )
+    else:
+        release_engine(context.node_id)
+        image = upscale_with(pytorch)
+    return image, report.text

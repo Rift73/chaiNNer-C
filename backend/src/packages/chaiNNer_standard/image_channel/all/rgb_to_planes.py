@@ -97,7 +97,26 @@ CHROMA_IMAGE = """
         .with_docs("The kernel that downsamples U and V."),
     ],
     outputs=[
-        ImageOutput("Y", size_as=0, channels=1, assume_normalized=True),
+        ImageOutput(
+            "Y",
+            image_type="""
+                match Input2 {
+                    Matrix::Bt2020Cl | Matrix::Ictcp => {
+                        error("This matrix is not a plain matrix: RGB cannot be converted to planes with it here.")
+                    },
+                    Matrix::Rgb => {
+                        match Input7 {
+                            ChromaSubsampling::Yuv444 => Image,
+                            _ => error("RGB (identity) planes cannot be subsampled: use 4:4:4."),
+                        }
+                    },
+                    _ => Image,
+                }
+            """,
+            size_as=0,
+            channels=1,
+            assume_normalized=True,
+        ),
         ImageOutput("U", image_type=CHROMA_IMAGE, channels=1, assume_normalized=True),
         ImageOutput("V", image_type=CHROMA_IMAGE, channels=1, assume_normalized=True),
         ColourInfoOutput().with_docs(

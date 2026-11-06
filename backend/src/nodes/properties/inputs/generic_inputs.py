@@ -556,12 +556,14 @@ def BlendModeDropdown() -> DropDownInput:
         BlendMode,
         option_labels={
             BlendMode.ADD: "Linear Dodge (Add)",
+            BlendMode.LUMINOSITY: "Luminosity (Luminance)",
         },
         categories=[
             DropDownGroup.divider(start_at=BlendMode.DARKEN),
             DropDownGroup.divider(start_at=BlendMode.LIGHTEN),
             DropDownGroup.divider(start_at=BlendMode.OVERLAY),
             DropDownGroup.divider(start_at=BlendMode.DIFFERENCE),
+            DropDownGroup.divider(start_at=BlendMode.COLOR),
         ],
     )
 
@@ -611,6 +613,11 @@ class AudioStreamInput(BaseInput):
         super().__init__("AudioStream", label, kind="generic")
 
 
+class ImageMetadataInput(BaseInput):
+    def __init__(self, label: str = "Metadata"):
+        super().__init__("ImageMetadata", label, kind="generic")
+
+
 class OrderEnum(Enum):
     ROW_MAJOR = 0
     COLUMN_MAJOR = 1
@@ -634,6 +641,12 @@ class Anchor(Enum):
     BOTTOM_LEFT = "bottom_left"
     BOTTOM = "bottom_centered"
     BOTTOM_RIGHT = "bottom_right"
+
+    def offsets(self, extra_width: int, extra_height: int) -> tuple[int, int]:
+        """The part of the extra width that goes left of this anchor's position and the
+        part of the extra height that goes above it. Centered, each is rounded down."""
+        row, column = divmod(list(Anchor).index(self), 3)
+        return extra_width * column // 2, extra_height * row // 2
 
 
 def AnchorInput(label: str = "Anchor", icon: str = "BsFillImageFill") -> DropDownInput:

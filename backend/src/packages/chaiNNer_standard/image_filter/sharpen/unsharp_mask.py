@@ -4,6 +4,7 @@ import numpy as np
 
 from nodes.impl.image_utils import fast_gaussian_blur
 from nodes.impl.native_analysis import binary
+from nodes.impl.native_resample import finish_alpha, has_transparency, premultiply
 from nodes.impl.native_unsharp import weighted
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
@@ -59,12 +60,18 @@ def unsharp_mask_node(
     if radius == 0 or amount == 0:
         return img
 
-    blurred = fast_gaussian_blur(img, radius)
+    transparent = has_transparency(img)
+    if transparent:
+        blurred = finish_alpha(
+            fast_gaussian_blur(premultiply(img), radius), divide=True
+        )
+    else:
+        blurred = fast_gaussian_blur(img, radius)
 
     threshold /= 100
     if threshold == 0:
-        img = weighted(img, blurred, amount)
+        result = weighted(img, blurred, amount)
     else:
-        img = binary(img, blurred, 1, amount, threshold)
+        result = binary(img, blurred, 1, amount, threshold)
 
-    return img
+    return finish_alpha(result, divide=False) if transparent else result

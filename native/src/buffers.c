@@ -49,6 +49,7 @@ typedef struct {
     const float *src;
     uint16_t *out;
     size_t pixels;
+    float white;
     cn_isa_level isa;
     volatile long events;
 } gbr_planes_job;
@@ -58,10 +59,10 @@ static void gbr_planes_range(void *opaque, size_t begin, size_t end) {
     long events;
 #if CN_ISA_UNITS()
     if (j->isa >= CN_ISA_AVX2)
-        events = cn_gbr_planes_avx2(j->src, j->out, j->pixels, begin, end);
+        events = cn_gbr_planes_avx2(j->src, j->out, j->pixels, j->white, begin, end);
     else
 #endif
-        events = gbr_planes_scalar(j->src, j->out, j->pixels, begin, end);
+        events = gbr_planes_scalar(j->src, j->out, j->pixels, j->white, begin, end);
     merge_events(&j->events, events);
 }
 
@@ -69,12 +70,13 @@ static void gbr_planes_range(void *opaque, size_t begin, size_t end) {
  * a C-contiguous BGR float32 image of `pixels` pixels to its G, B and R planes in
  * uint16, plane after plane in out (3 x pixels), each element and the event bits as
  * cn_pixels_convert_checked's (type 0, output 2) give them, so the planes equal its
- * output rearranged; one pass instead of the conversion and a gather. */
+ * output rearranged; one pass instead of the conversion and a gather. white: the code
+ * of 1.0, 65535 for that conversion's values (Save Video's YUV output takes 65280). */
 CN_EXPORT cn_status cn_pixels_gbr_planes_u16(const float *src, uint16_t *out, size_t pixels,
-                                            int *events) {
-    if (!src || !out) return CN_INVALID_ARGUMENT;
+                                            float white, int *events) {
+    if (!src || !out || !(white > 0.0f && white <= 65535.0f)) return CN_INVALID_ARGUMENT;
     if (pixels > SIZE_MAX / (3 * sizeof(float))) return CN_SIZE_OVERFLOW;
-    gbr_planes_job job = {src, out, pixels, cn_isa_current(), 0};
+    gbr_planes_job job = {src, out, pixels, white, cn_isa_current(), 0};
     /* cn_pixels_convert_checked's grain of 262,144 elements, in pixels of three. */
     cn_status status = cn_parallel_for(pixels, 87382, gbr_planes_range, &job);
     if (events) *events = (int)job.events;
@@ -103,29 +105,49 @@ CN_EXPORT cn_status cn_pixels_convert(const void *src, void *out, size_t count,
     return cn_pixels_convert_checked(src, out, count, type, output, normalize, NULL);
 }
 
+typedef struct {
+    const float *src;
+    cn_isa_level isa;
+    volatile long refused;
+} normalized_job;
+
+static void normalized_range(void *opaque, size_t begin, size_t end) {
+    normalized_job *j = opaque;
+    int same = 1;
+    if (j->refused) return; /* a chunk already refused: the answer is known */
+#if CN_ISA_UNITS()
+    if (j->isa >= CN_ISA_AVX2) {
+        same = cn_pixels_normalized_avx2(j->src + begin, end - begin);
+    } else
+#endif
+    for (size_t i = begin; i < end; ++i) {
+        uint32_t bits;
+        memcpy(&bits, j->src + i, sizeof(bits));
+        if (bits > UINT32_C(0x3f800000) || (bits != 0 && bits < UINT32_C(0x00800000))) {
+            same = 0;
+            break;
+        }
+    }
+    if (!same) merge_events(&j->refused, 1);
+}
+
 /* A borrow is safe only if clipping would leave every bit unchanged. Inspect
  * integer representations so negative zero and all nonfinite values take the
  * existing conversion path (including its floating-point exception behavior).
  * At ISA level avx2 or above (read once) cn_pixels_normalized_avx2 applies the same
- * bit tests in 8-lane groups. */
+ * bit tests in 8-lane groups. Across the pool, in cn_pixels_convert_checked's grain:
+ * the conversion's output is read once more, as fast as it was written. */
 CN_EXPORT cn_status cn_pixels_normalized_f32(const float *src, size_t count, int *same) {
     if (!src || !same) return CN_INVALID_ARGUMENT;
     if (count > SIZE_MAX / sizeof(float)) return CN_SIZE_OVERFLOW;
-#if CN_ISA_UNITS()
-    if (cn_isa_current() >= CN_ISA_AVX2) {
-        *same = cn_pixels_normalized_avx2(src, count);
+    if (count == 0) {
+        *same = 1;
         return CN_OK;
     }
-#endif
-    *same = 0;
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t bits;
-        memcpy(&bits, src + i, sizeof(bits));
-        if (bits > UINT32_C(0x3f800000) ||
-            (bits != 0 && bits < UINT32_C(0x00800000))) return CN_OK;
-    }
-    *same = 1;
-    return CN_OK;
+    normalized_job job = {src, cn_isa_current(), 0};
+    cn_status status = cn_parallel_for(count, 262144, normalized_range, &job);
+    *same = !job.refused;
+    return status;
 }
 
 typedef struct {

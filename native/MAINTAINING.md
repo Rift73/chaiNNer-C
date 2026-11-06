@@ -250,8 +250,9 @@ package from upstream's Windows nightly (sections 5, 6 and 8) and have no Linux 
    zip from `package.json`'s version (`chaiNNer-linux-x64-<version>.zip`): give it the release's name before attaching
    it (section 9, step 4).
 7. **Tests (section 10).** On Linux, from a checkout on a Linux file system with the natives built
-   (`native/build_linux.sh`), with `PYTHONNOUSERSITE=1`, scratch `APPDATA` and `TMPDIR`, and the pinned Linux FFmpeg
-   first on `PATH`: `<runtime>/bin/python3 -B native/tools/run_tests.py --workers 3 --deselect
+   (`native/build_linux.sh`), with `PYTHONNOUSERSITE=1`, scratch `APPDATA` and `TMPDIR`, the pinned Linux FFmpeg
+   first on `PATH`, and `CHAINNER_C_TEST_MODELS` naming the local model folder (`test_vapoursynth_upscale.py` skips
+   without its models): `<runtime>/bin/python3 -B native/tools/run_tests.py --workers 3 --deselect
    native/tests/test_matting_complete.py` (`run_tests.py` sets `NPY_DISABLE_CPU_FEATURES` there). Cases whose Linux
    reference library rounds differently from the Windows build are listed with their reason in
    `native/tests/linux_differences.json`; both conftests skip them on Linux.

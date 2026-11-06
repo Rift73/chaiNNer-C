@@ -59,15 +59,27 @@ if(CHAINNER_C_FUZZ)
     add_link_options(/DEBUG /INCREMENTAL:NO "${chainner_c_clang_rt}/clang_rt.asan_dynamic-x86_64.lib"
         "/WHOLEARCHIVE:${chainner_c_clang_rt}/clang_rt.asan_static_runtime_thunk-x86_64.lib")
 endif()
-# chainner_ext.pyd's directory. A PDB or fuzzing build places it under CHAINNER_C_OUTPUT_DIR by default.
-if(CHAINNER_C_PDB OR CHAINNER_C_FUZZ)
+# Sanitizer builds (tests/fuzz/README.md), Linux only: every target with AddressSanitizer, without ThinLTO, with line
+# tables and whole call stacks, for test runs with the runtime preloaded into the interpreter; a report does not end the
+# process unless the run asks it to. Never over the gate and package binaries.
+option(CHAINNER_C_SANITIZE "Linux: build with AddressSanitizer and UndefinedBehaviorSanitizer outside backend/src" OFF)
+if(CHAINNER_C_SANITIZE)
+    if(WIN32)
+        message(FATAL_ERROR "CHAINNER_C_SANITIZE builds are Linux-only (tests/fuzz/README.md)")
+    endif()
+    add_compile_options(-fno-lto -gline-tables-only -fno-omit-frame-pointer -fno-optimize-sibling-calls
+        -fsanitize=address -fsanitize-recover=address)
+    add_link_options(-fno-lto -fsanitize=address -shared-libsan)
+endif()
+# chainner_ext.pyd's directory. A PDB, fuzzing or sanitizer build places it under CHAINNER_C_OUTPUT_DIR by default.
+if(CHAINNER_C_PDB OR CHAINNER_C_FUZZ OR CHAINNER_C_SANITIZE)
     set(chainner_c_ext_output_default "${CHAINNER_C_OUTPUT_DIR}/chainner_ext")
 else()
     set(chainner_c_ext_output_default "${CMAKE_CURRENT_SOURCE_DIR}/../backend/src/chainner_ext")
 endif()
 set(CHAINNER_C_EXT_OUTPUT_DIR "${chainner_c_ext_output_default}" CACHE PATH
     "Output directory of chainner_ext.pyd")
-if(CHAINNER_C_PDB OR CHAINNER_C_FUZZ)
+if(CHAINNER_C_PDB OR CHAINNER_C_FUZZ OR CHAINNER_C_SANITIZE)
     # A relative output directory is resolved against the build directory, as the
     # generator resolves the targets' output directories.
     cmake_path(SET chainner_c_backend NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../backend/src")
@@ -78,7 +90,7 @@ if(CHAINNER_C_PDB OR CHAINNER_C_FUZZ)
         string(TOLOWER "${chainner_c_output}" chainner_c_output)
         cmake_path(IS_PREFIX chainner_c_backend "${chainner_c_output}" NORMALIZE chainner_c_inside)
         if(chainner_c_inside)
-            message(FATAL_ERROR "CHAINNER_C_PDB and CHAINNER_C_FUZZ need ${chainner_c_dir_var} outside backend/src "
+            message(FATAL_ERROR "CHAINNER_C_PDB, CHAINNER_C_FUZZ and CHAINNER_C_SANITIZE need ${chainner_c_dir_var} outside backend/src "
                 "(${chainner_c_dir_var}=${${chainner_c_dir_var}})")
         endif()
     endforeach()
@@ -146,7 +158,8 @@ add_library(chainner_native SHARED
     src/resample_avx2.c src/spectral_avx2.c src/color_avx2.c src/planar_avx2.c
     src/yuv_planes_avx2.c src/plane_resample_avx2.c src/png_encode_avx2.c src/alpha_gamma_avx2.c
     src/neighborhood_avx2.c src/statistics_avx2.c src/unsharp_avx2.c
-    src/wavelet_avx2.c src/cast_half_avx2.c src/linear_light_avx2.c src/separable_avx512.c src/convolution_avx512.c)
+    src/wavelet_avx2.c src/cast_half_avx2.c src/linear_light_avx2.c src/denoise_avx2.c src/separable_avx512.c
+    src/convolution_avx512.c src/denoise_avx512.c src/lens_avx512.c)
 # The levels' instruction sets, exactly what src/isa.c checks: AVX2 is AVX2, FMA, BMI1 and
 # BMI2; AVX-512 adds F, DQ, CD, BW and VL.
 set(chainner_c_avx2_options /clang:-mavx2 /clang:-mfma /clang:-mbmi /clang:-mbmi2)
@@ -155,9 +168,9 @@ set_source_files_properties(src/separable_avx2.c src/convolution_avx2.c src/conv
     src/blend_avx2.c src/resample_avx2.c src/spectral_avx2.c src/color_avx2.c
     src/planar_avx2.c src/yuv_planes_avx2.c src/plane_resample_avx2.c src/png_encode_avx2.c src/alpha_gamma_avx2.c
     src/neighborhood_avx2.c src/statistics_avx2.c src/unsharp_avx2.c src/wavelet_avx2.c src/cast_half_avx2.c
-    src/linear_light_avx2.c
+    src/linear_light_avx2.c src/denoise_avx2.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options}")
-set_source_files_properties(src/separable_avx512.c src/convolution_avx512.c
+set_source_files_properties(src/separable_avx512.c src/convolution_avx512.c src/denoise_avx512.c src/lens_avx512.c
     PROPERTIES COMPILE_OPTIONS "${chainner_c_avx2_options};/clang:-mavx512f;/clang:-mavx512dq;/clang:-mavx512cd;/clang:-mavx512bw;/clang:-mavx512vl")
 # Vendor source of vapoursynth-descale Release 12 (MIT) with one patch (third_party/descale/PATCHES):
 # its solver core and AVX2 unit, without the VapourSynth and AviSynth plugin layers. src/descale_ops.c
@@ -328,9 +341,22 @@ endif()
 if(CHAINNER_C_FUZZ)
     add_subdirectory(tests/fuzz)
 endif()
+# UndefinedBehaviorSanitizer on chaiNNer-C's own code (the vendored libraries are left as they are): the checks of
+# tests/fuzz/CMakeLists.txt, for the reasons given there, plus alignment.
+if(CHAINNER_C_SANITIZE)
+    set(chainner_c_ubsan
+        -fsanitize=signed-integer-overflow,shift,integer-divide-by-zero,float-cast-overflow,bool,enum,bounds,null,return,unreachable,vla-bound,pointer-overflow,nonnull-attribute,alignment)
+    foreach(target chainner_native _chainner_graph chainner_ext chainner_ext_c chainner_codecs chainner_regex)
+        target_compile_options(${target} PRIVATE ${chainner_c_ubsan})
+    endforeach()
+endif()
 
 # texconv for Linux (texconv/CMakeLists.txt), the DDS nodes' converter there; Windows ships Microsoft's texconv.exe.
 if(NOT WIN32)
+    if(CHAINNER_C_SANITIZE)
+        set(CHAINNER_C_TEXCONV_OUTPUT_DIR "${CHAINNER_C_OUTPUT_DIR}/texconv" CACHE PATH
+            "Output directory of the Linux texconv and its notices")
+    endif()
     add_subdirectory(texconv)
 endif()
 

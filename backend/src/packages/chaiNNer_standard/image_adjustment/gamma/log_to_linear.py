@@ -23,7 +23,7 @@ from .. import gamma_group
             min=0.0001,
             max=1.0,
             default=0.6,
-            precision=2,
+            precision=4,
             step=0.0001,
             scale="log",
         ),
@@ -31,7 +31,18 @@ from .. import gamma_group
             "When checked this will convert the input image back to the Kodak Cineon Logarithmic encoding"
         ),
     ],
-    outputs=[ImageOutput(shape_as=0)],
+    outputs=[
+        ImageOutput(
+            image_type="""
+                if Input1 == Input2 {
+                    error("Black and White must differ.")
+                } else {
+                    Image
+                }
+            """,
+            shape_as=0,
+        )
+    ],
 )
 def log_to_linear_node(
     img: np.ndarray,

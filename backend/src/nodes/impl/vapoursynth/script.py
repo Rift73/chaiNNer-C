@@ -15,6 +15,10 @@ NODE_TAG = "  # node:"
 # backend/src, put on the script's sys.path for chaiNNer's helpers in the child.
 BACKEND_SRC = Path(__file__).resolve().parents[3]
 
+# The import of chaiNNer's helpers in a script (from backend/src, the prologue's sys.path
+# line).
+BRIDGE_IMPORT = "from nodes.impl.vapoursynth import chainner_vs"
+
 # vsview names the outputs (it has imported itself when it runs a script); else, as in
 # vspipe, the clips' own. (vs-jetpack 2.2.6's vstools has no set_output: importing it
 # for one cost each vspipe evaluation about 90 ms, only to fail.)
@@ -69,6 +73,18 @@ def clip_var(node_id: str, output: int = 0) -> str:
     """The script variable of a node's output: a valid identifier, the same for the
     same node and output (chaiNNer's node ids are UUIDs)."""
     return f"n_{re.sub(r'[^0-9A-Za-z_]', '_', node_id)}_{output}"
+
+
+def image_clip(path: Path, node_id: str, index: int, route: str) -> VideoClip:
+    """The one-frame clip of an image saved at `path`, the `index`-th of its node."""
+    var = f"{clip_var(node_id)}_image{index}"
+    return VideoClip(
+        var=var,
+        stmt=f"{var} = chainner_vs.image_clip({str(path)!r}, {route!r})",
+        deps=(),
+        imports=frozenset({BRIDGE_IMPORT}),
+        node_id=node_id,
+    )
 
 
 def _one_line(stmt: str) -> str:

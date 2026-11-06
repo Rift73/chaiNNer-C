@@ -2,8 +2,12 @@
 # It is important that is does not contain types that depend on ONNX.
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Final, Literal, Union
+from weakref import WeakKeyDictionary
 
 OnnxSubType = Literal["Generic", "RemBg"]
 
@@ -51,14 +55,63 @@ class SizeReq:
 # is not recorded: the export's graph pads to it (spandrel traces that padding).
 SIZE_REQ_METADATA_KEY = "chainner_c.size_requirements"
 
-# The architectures (spandrel's ids, which are also their names) that convert and build
-# in FP16 with no precision choice.
-FP16_ARCHS: Final = ("ESRGAN", "HAT", "DAT")
-# The same, as a navi union of strings
+# The architectures (spandrel's names, as a PyTorch model's type carries them) that convert in
+# FP16, each one measured on TensorRT on trained weights, with the sizes measured (spandrel's
+# tags), or none for every size: FP16's reach can differ by 300 times between sizes. Every
+# other architecture or size, and any that spandrel adds, converts in FP32, which is always
+# right and only slower. A pass on the CPU does not earn a line: HVI-CIDNet reads 74 dB there
+# and 34 dB on TensorRT. The numbers are an FP16 engine against an FP32 engine (Fixed 256 px,
+# level 3, TF32 off) on real crops and smooth images, in dB; those of the first seven are in
+# native/STATUS.md.
+FP16_ARCHS: Final[dict[str, tuple[str, ...]]] = {
+    "ESRGAN": (),
+    "HAT": (),
+    "DAT": (),
+    "RealESRGAN Compact": (),
+    "SPAN": (),
+    "PLKSR": (),
+    "OmniSR": (),
+    "RCAN": (),  # 63.87, 65.50
+    "Swift-SRGAN": (),  # 63.29, 67.92
+    "MoSR": (),  # 68.69, 69.22
+    "DRUNet": (),  # 63.85, 63.47
+    "DCTLSA": (),  # 61.77, 63.96
+    "FBCNN": (),  # 64.63, 67.41
+    "RealCUGAN": (),  # 63.62, 62.58
+    "DnCNN": (),  # 54.88, 52.74
+    "MMRealSR": (),  # 55.04, 64.03
+    "MixDehazeNet": (),  # 58.92, 55.22
+    "SwinIR": ("small", "medium", "large"),  # 59.55, 54.11; 64.18, 64.74; 62.01, 54.50
+    "FDAT": ("medium", "xl"),  # 66.15, 70.85; 67.84, 68.85
+    "Swin2SR": ("medium",),  # 63.31, 66.94
+    "RGT": (),  # 64.61, 64.16
+    "DRCT": ("large",),  # 63.15, 65.13
+    # SeemoRe stays FP32: in FP16 its router's logits tie on about 1 % of natural images
+    # and two experts fire; one crop reads 33.42 dB even with the tie broken.
+    "RetinexFormer": (),  # 68.44 to 72.75, flat white 48.19
+    # On gradients and bars its FP32 misses 50 dB too (FFT rounding: 34 dB on a horizontal one)
+    "FIGSR": (),  # 53.88 to 65.93, flats 65.48 to 72.42
+}
+# The names, as a navi union of strings: a type knows no sizes.
 FP16_ARCHS_NAVI: Final = " | ".join(f'"{arch}"' for arch in FP16_ARCHS)
-# The ONNX metadata key of the architecture Convert To ONNX records for FP16_ARCHS, so
-# that a saved ONNX loaded later builds with no precision choice too (load.py).
+
+
+def converts_in_fp16(arch: str, tags: Iterable[str]) -> bool:
+    """Whether FP16_ARCHS lists a model of this architecture and these tags. The tags are read
+    only at conversion: the ONNX records its precision."""
+    sizes = FP16_ARCHS.get(arch)
+    return sizes is not None and (not sizes or any(tag in sizes for tag in tags))
+
+
+# The ONNX metadata keys of the architecture (a PyTorch model's name for it) and the
+# precision ("fp16" or "fp32") Convert To ONNX records, so that a saved ONNX loaded later
+# builds with no precision choice too (load.py). Released versions recorded the
+# architecture alone, in FP16 files.
 ARCH_METADATA_KEY = "chainner_c.architecture"
+PRECISION_METADATA_KEY = "chainner_c.precision"
+# The arch of an ONNX's type once it is known to have no record, the one case that
+# leaves Build Engine's and Build Program's Precision to the user.
+NO_RECORD_ARCH: Final = "unrecorded"
 
 
 # The dtype of a DUAL or legacy DRFT ONNX from Convert To ONNX (a BF16 or FP16 body, FP32
@@ -82,8 +135,9 @@ class OnnxInfo:
 
     size_req: SizeReq = field(default_factory=SizeReq)
 
-    # The architecture Convert To ONNX recorded (one of FP16_ARCHS); None for any other
-    # ONNX. Set by load_onnx_model, as the native loader passes a fixed set of arguments.
+    # The architecture Convert To ONNX recorded, whose precision is `dtype`; None for any
+    # other ONNX. Set by load_onnx_model, as the native loader passes a fixed set of
+    # arguments.
     arch: str | None = None
 
 
@@ -107,3 +161,17 @@ class OnnxRemBg:
 
 OnnxModels = (OnnxGeneric, OnnxRemBg)
 OnnxModel = Union[OnnxGeneric, OnnxRemBg]
+
+_digest_lock = Lock()
+_digests: WeakKeyDictionary[OnnxModel, bytes] = WeakKeyDictionary()
+
+
+def content_digest(model: OnnxModel) -> bytes:
+    """The SHA-256 of `model`'s bytes, which keys what is kept of it (its size
+    requirement, sessions, engines and programs); computed once per model."""
+    with _digest_lock:
+        digest = _digests.get(model)
+        if digest is None:
+            digest = hashlib.sha256(model.bytes).digest()
+            _digests[model] = digest
+        return digest

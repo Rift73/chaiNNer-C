@@ -103,6 +103,8 @@ void blend(NodeContext &, std::span<const Value> inputs, std::vector<Value> &out
         y = factor(dy, !top && !bottom, bottom);
     }
 
+    /* A color fills the image's size: the position inputs are hidden, whatever they hold. */
+    if (!base.image || !overlay.image) x = y = 0;
     bool crop = std::get<bool>(inputs[8]) && base.image && overlay.image;
     const __int128 zero = 0;
     __int128 bh = base.height, bw = base.width, oh = overlay.height, ow = overlay.width;
@@ -154,7 +156,7 @@ Image kmeans_palette(const Image &image, int64_t colors)
     MutableImage out = MutableImage::allocate(1, int32_t(colors), image.channels);
     cn_status status = cn_palette_kmeans(image.data, out.data(), pixel_rows(image), size_t(image.channels),
                                          size_t(colors));
-    if (int(status) == 5)  // CN_KMEANS_NO_CONVERGENCE, beyond cn_status' enumerators
+    if (status == CN_KMEANS_NO_CONVERGENCE)
         throw NodeError("cv2.error", "kmeans: can't update cluster center (check input for huge or NaN values)");
     check(status);
     return std::move(out).publish();
@@ -168,7 +170,7 @@ Image median_cut_palette(const Image &image, int64_t colors)
     MutableImage out = MutableImage::allocate(1, int32_t(capacity), image.channels);
     cn_status status = cn_palette_median_cut(image.data, out.data(), rows, size_t(image.channels), size_t(colors), 0,
                                              0, 0, &written);
-    if (int(status) == 6)  // an empty child bucket, beyond cn_status' enumerators
+    if (status == CN_MEDIAN_CUT_EMPTY_BUCKET)
         throw NodeError("ValueError", "zero-size array to reduction operation minimum which has no identity");
     check(status);
     if (written == capacity) return std::move(out).publish();

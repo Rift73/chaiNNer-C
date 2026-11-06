@@ -65,7 +65,13 @@ def _api():
                 ct.POINTER(integer),
             ],
             "cn_pixels_normalized_f32": [fp, size, ct.POINTER(integer)],
-            "cn_pixels_gbr_planes_u16": [void, void, size, ct.POINTER(integer)],
+            "cn_pixels_gbr_planes_u16": [
+                void,
+                void,
+                size,
+                ct.c_float,
+                ct.POINTER(integer),
+            ],
             "cn_tile_mix": [fp, fp, fp, fp, size, size, size, integer, size, size],
             "cn_upscale_alpha": [fp, fp, fp, size, size, integer],
             "cn_constant_alpha": [fp, size, ct.POINTER(integer)],
@@ -159,7 +165,7 @@ def converted_pixels(
     return out
 
 
-def gbr_planes_u16(image: np.ndarray) -> np.ndarray | None:
+def gbr_planes_u16(image: np.ndarray, white: float = 65535.0) -> np.ndarray | None:
     """A C-contiguous height x width x 3 float32 (BGR) image's G, B and R planes in
     uint16 (3 x height x width): converted_pixels(image, 16) rearranged, its events
     included, in one pass. None for any other image."""
@@ -175,7 +181,7 @@ def gbr_planes_u16(image: np.ndarray) -> np.ndarray | None:
     events = ct.c_int()
     check(
         _api().cn_pixels_gbr_planes_u16(
-            image.ctypes.data, out.ctypes.data, height * width, ct.byref(events)
+            image.ctypes.data, out.ctypes.data, height * width, white, ct.byref(events)
         )
     )
     _report_events(events.value)

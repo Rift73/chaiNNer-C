@@ -15,11 +15,14 @@ struct Kernel {
     std::vector<double> values;
 };
 
+/* The "filter" dispatch lanes of cn_convolution_spatial for a kernel of this many coefficients. Where the body calls
+ * OpenCV (the spectral filter2D's cv2.dft, or cv2.filter2D for an untested OpenCV, IPP's inexact mode, a dispatch mode
+ * the kernel does not mirror or 130 coefficients and more) this throws RunPython. */
+size_t spatial_lanes(size_t coefficients);
+
 /* native_convolution.convolve(image, kernel, padding) with padding >= 0: in its order, ValueError for an empty image
  * or kernel, OverflowError for a padding beyond OpenCV's dimensions; OpenCV's spatial filter2D through
- * cn_convolution_spatial on the "filter" dispatch lanes. Where the body calls OpenCV (the spectral filter2D's
- * cv2.dft, or cv2.filter2D for an untested OpenCV, IPP's inexact mode, a dispatch mode the kernel does not mirror or
- * 130 coefficients and more) this throws RunPython before any output. */
+ * cn_convolution_spatial on spatial_lanes, whose RunPython comes before any output. */
 Image convolve(const Image &image, const Kernel &kernel, int64_t padding);
 
 /* np.rot90(kernel, 1): the kernel turned a quarter counterclockwise. */

@@ -163,14 +163,15 @@ void log_to_linear(NodeContext &, std::span<const Value> inputs, std::vector<Val
     outputs.push_back(std::move(out).publish());
 }
 
-/* chainner:image:generate_threshold (threshold/generate_threshold.py, native_color_ops.auto_threshold); enforced
- * images have at most four channels, so the channel-mean path for more than seven never runs. */
+/* chainner:image:generate_threshold (threshold/generate_threshold.py, native_color_ops.auto_threshold) of the colour
+ * channels; enforced images have at most four channels, so the channel-mean path for more than seven never runs. */
 void generate_threshold(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     const Image &image = std::get<Image>(inputs[0]);
-    adjustable_shape(image);
+    Image colours = image.channels == 4 ? select_channels(image, {0, 1, 2}) : image;
+    adjustable_shape(colours);
     int value = 0;
-    check(cn_auto_threshold(image.data, pixels(image), size_t(image.channels), int(std::get<int64_t>(inputs[1])),
+    check(cn_auto_threshold(colours.data, pixels(colours), size_t(colours.channels), int(std::get<int64_t>(inputs[1])),
                             &value));
     outputs.push_back(double(value) / 255 * 100);
 }
@@ -214,11 +215,12 @@ void hue_and_saturation(NodeContext &, std::span<const Value> inputs, std::vecto
         image = select_channels(input, {0, 1, 2});
     }
     if (hue != 0 || saturation != 0) {
-        Image hls = cvt_color(image, 6, 0, 3);
-        MutableImage adjusted = MutableImage::allocate(hls.height, hls.width, 3);
-        std::copy(hls.data, hls.data + hls.values(), adjusted.data());
-        check(cn_hls_adjust(adjusted.data(), pixels(hls), float(hue), float(1 + saturation)));
-        image = cvt_color(std::move(adjusted).publish(), 7, 0, 3);
+        /* One buffer through all three steps. */
+        MutableImage adjusted = MutableImage::allocate(image.height, image.width, 3);
+        cvt_color_to(image.data, adjusted.data(), image, 6, 0, 3);
+        check(cn_hls_adjust(adjusted.data(), pixels(image), float(hue), float(1 + saturation)));
+        cvt_color_to(adjusted.data(), adjusted.data(), image, 7, 0, 3);
+        image = std::move(adjusted).publish();
     }
     if (lightness != 0) image = with_lightness(image, lightness);
     outputs.push_back(alpha ? with_alpha(image, *alpha) : image);
@@ -308,7 +310,8 @@ Image stretch_range(const Image &image, double minimum, double maximum)
 /* chainner:image:stretch_contrast (adjustments/stretch_contrast.py): StretchMode 0 auto, 1 percentile, 2 manual; the
  * colour channels together (keep colours, manual or grey) or one by one; alpha passes through. The bounds reduce
  * the views the body reduces (the colour channels of an RGBA image, a channel plane), with their NumPy setups. An
- * empty image takes NumPy's own reductions for the automatic modes, so it declines to the Python body. */
+ * empty image takes NumPy's own reductions for the automatic modes, and a view holding a NaN the body's reduction of
+ * its other values, so both decline to the Python body. The automatic modes leave a flat view as it is. */
 void stretch_contrast(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     const Image &input = std::get<Image>(inputs[0]);
@@ -322,7 +325,14 @@ void stretch_contrast(NodeContext &, std::span<const Value> inputs, std::vector<
             return {manual_min / 255, manual_max / 255};
         }
         if (values.height == 0 || values.width == 0) throw RunPython{};
-        return contrast_bounds(values, setup, mode == 1 ? &percentile : nullptr);
+        auto bounds = contrast_bounds(values, setup, mode == 1 ? &percentile : nullptr);
+        if (std::isnan(bounds.first) || std::isnan(bounds.second)) throw RunPython{};
+        return bounds;
+    };
+    auto stretched = [&](const Image &values, const ReduceSetup &setup) -> Image {
+        auto [low, high] = range_of(values, setup);
+        if (low == high && mode != 2) return values;
+        return stretch_range(values, low, high);
     };
     Image image = input;
     std::optional<Image> alpha;
@@ -334,14 +344,12 @@ void stretch_contrast(NodeContext &, std::span<const Value> inputs, std::vector<
     int64_t pixel = c * 4, row = w * pixel;
     if (keep_colors || mode == 2 || c == 1) {
         ReduceSetup setup = c == 1 ? reduce_setup({h, w}, {row, pixel}) : reduce_setup({h, w, 3}, {row, pixel, 4});
-        auto [low, high] = range_of(image, setup);
-        image = stretch_range(image, low, high);
+        image = stretched(image, setup);
     } else {
         std::vector<Image> channels;
         for (int channel = 0; channel < 3; ++channel) {
             Image plane = select_channels(image, {channel});
-            auto [low, high] = range_of(plane, reduce_setup({h, w}, {row, pixel}));
-            channels.push_back(stretch_range(plane, low, high));
+            channels.push_back(stretched(plane, reduce_setup({h, w}, {row, pixel})));
         }
         std::vector<cn_channel_source> sources;
         for (const Image &plane : channels) sources.push_back({plane.data, 1, 0, 0.0f});

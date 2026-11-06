@@ -23,7 +23,7 @@ from .trt_logger import TRT_LOGGER
 class BuildConfig:
     """Configuration for TensorRT engine building."""
 
-    # "mixed": the ONNX's own per-node types (Convert To ONNX's Mixed data types).
+    # "mixed": the ONNX's own per-node types (DUAL, legacy DRFT, and an earlier version's Mixed data types).
     precision: Literal["fp32", "fp16", "bf16", "mixed"]
     # 0: TensorRT's default, as much as the GPU's total memory.
     workspace_size_gb: float
@@ -39,6 +39,13 @@ class BuildConfig:
     # TensorRT's tiling optimization (fused kernels that keep their intermediate tensors
     # in the L2 cache; not image tiling): "none" is TensorRT's default.
     tiling_optimization: Literal["none", "fast", "moderate", "full"] = "none"
+
+
+def activations_follow_tiles(config: BuildConfig) -> bool:
+    """Whether the engine takes activation memory by each tile's size (TensorRT's runtime
+    activation resize), for an engine of several sizes: else it takes its largest size's
+    at any tile, and Upscale Image's smaller tiles could not help when memory runs out."""
+    return config.min_shape != config.max_shape
 
 
 # TensorRT skipping a tactic for want of memory (a warning), and the bytes it asked for.
@@ -101,12 +108,13 @@ def _apply_precision(builder_config: Any, network: Any, precision: str) -> None:
         elif precision == "bf16":
             builder_config.set_flag(trt.BuilderFlag.BF16)
         return
-    # Strongly typed network: the ONNX model's tensor types decide the precision.
-    onnx_dtype = network.get_input(0).dtype
+    # Strongly typed network: the ONNX model's tensor types decide the precision. An FP16
+    # ONNX from Convert To ONNX may take FP32 for its first convolution, so its output says.
+    onnx_dtype = network.get_output(0).dtype
     if onnx_dtype != _PRECISION_DTYPES[precision]:
         raise ValueError(
             f"TensorRT {trt.__version__} builds strongly typed engines, so the precision"
-            f" comes from the ONNX model, whose input is {onnx_dtype}. To build a"
+            f" comes from the ONNX model, whose output is {onnx_dtype}. To build a"
             f" {precision} engine, convert the model to {precision} first (for example"
             " with the FP16 option of PyTorch's Convert To ONNX node), or pick the"
             " model's own precision."
@@ -190,6 +198,10 @@ def build_engine_from_onnx(
     # Set the CUDA device
     check_cuda(cudart.cudaSetDevice(gpu_index))
 
+    # TensorRT's own plugins: its ONNX parser takes a DFT through their FFTPlugin. Only a
+    # deserialized engine registered them before, so a process's first build lacked them.
+    trt.init_libnvinfer_plugins(TRT_LOGGER, "")
+
     # Create builder and network
     builder = trt.Builder(TRT_LOGGER)
     network = _create_network(builder)
@@ -260,6 +272,10 @@ def build_engine_from_onnx(
 
         profile.set_shape(input_tensor.name, min_dims, opt_dims, max_dims)
         builder_config.add_optimization_profile(profile)
+        if activations_follow_tiles(config):
+            builder_config.set_preview_feature(
+                trt.PreviewFeature.RUNTIME_ACTIVATION_RESIZE_10_10, True
+            )
 
     # Load the timing cache, or start one: TensorRT saves only a cache that was set
     # (get_timing_cache is None otherwise), and refuses one from another GPU.

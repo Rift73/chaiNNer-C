@@ -1,7 +1,8 @@
 import { Edge, Node, Project } from 'reactflow';
 import { EdgeData, InputId, NodeData, SchemaId } from '../../common/common-types';
 import { log } from '../../common/log';
-import { toEditorChain } from '../../common/nodes/editorChain';
+import { currentMigration, migrate } from '../../common/migrations';
+import { formatReplacedInputs, toEditorChain } from '../../common/nodes/editorChain';
 import { SchemaMap } from '../../common/SchemaMap';
 import { createUniqueId, deriveUniqueId } from '../../common/util';
 import { ipcRenderer } from '../safeIpc';
@@ -11,6 +12,8 @@ import { SetState } from './types';
 interface ClipboardChain {
     nodes: Node<NodeData>[];
     edges: Edge<EdgeData>[];
+    /** How old the chain is. Older versions neither write nor read it, and take such a chain. */
+    migration?: number;
 }
 
 const getCopySelection = (nodes: readonly Node<NodeData>[]): Set<string> => {
@@ -22,10 +25,13 @@ export const copyToClipboard = (
     edges: readonly Edge<EdgeData>[]
 ) => {
     const copyIds = getCopySelection(nodes);
+    // nothing to copy: an empty chain would replace what the clipboard holds
+    if (copyIds.size === 0) return;
 
     const data: ClipboardChain = {
         nodes: nodes.filter((n) => copyIds.has(n.id)),
         edges: edges.filter((e) => copyIds.has(e.source) && copyIds.has(e.target)),
+        migration: currentMigration,
     };
     ipcRenderer.invoke('clipboard-writeChain', JSON.stringify(data)).catch(log.error);
 };
@@ -61,7 +67,11 @@ export const pasteFromClipboard = async (
     const paste = await ipcRenderer.invoke('clipboard-readForPaste');
     if (paste.kind === 'chain') {
         try {
-            const clipboardChain = JSON.parse(paste.json) as ClipboardChain;
+            let clipboardChain = JSON.parse(paste.json) as ClipboardChain;
+            const { migration } = clipboardChain;
+            if (migration !== undefined) {
+                clipboardChain = migrate(null, clipboardChain, migration) as ClipboardChain;
+            }
             // as when a chain is opened: e.g. a chain copied from another chaiNNer may hold nodes
             // this one does not have, or lack inputs that its nodes have here
             const chain = toEditorChain(schemata, clipboardChain.nodes, clipboardChain.edges);
@@ -70,6 +80,13 @@ export const pasteFromClipboard = async (
             }
             if (chain.droppedEdges > 0) {
                 log.warn(`Pasted ${chain.droppedEdges} connection(s) that do not fit their nodes`);
+            }
+            if (chain.replacedInputs.length > 0) {
+                log.warn(
+                    `Pasted value(s) that their inputs cannot take:\n${formatReplacedInputs(
+                        chain.replacedInputs
+                    )}`
+                );
             }
 
             const duplicationId = createUniqueId();

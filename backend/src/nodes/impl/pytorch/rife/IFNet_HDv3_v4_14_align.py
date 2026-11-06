@@ -374,7 +374,10 @@ class IFNet(nn.Module):
 
             # feather mask
             mask_orig = functional.interpolate(
-                mask_orig, scale_factor=1 / 8, mode="bilinear", align_corners=True
+                mask_orig,
+                size=(max(mask_orig.shape[2] // 8, 1), max(mask_orig.shape[3] // 8, 1)),
+                mode="bilinear",
+                align_corners=True,
             )
             mask_grown = functional.conv2d(
                 mask_orig, grow_mask_kernel, padding=feather_inpaint // 2
@@ -451,7 +454,7 @@ class IFNet(nn.Module):
             mode="bilinear",
             align_corners=False,
         )
-        if fclip_w / fref_w_pad != 1:
+        if fclip_w != fref_w_pad or fclip_h != fref_h_pad:
             flow_x = compensated_flow[:, 0:1, :, :] * (float(fclip_w) / fref_w_pad)
             flow_y = compensated_flow[:, 1:2, :, :] * (float(fclip_h) / fref_h_pad)
             compensated_flow = torch.cat([flow_x, flow_y], dim=1)
@@ -462,21 +465,24 @@ class IFNet(nn.Module):
 
         # post-smoothing flow
         if smooth is not None and smooth > 0:
-            kernel_box = torch.ones((1, 1, smooth), device=device) / smooth
+            # no wider than a reflection of the flow can pad: an image under half the
+            # box's width has less to average
+            box_x = min(smooth, 2 * fref_w - 1)
+            box_y = min(smooth, 2 * fref_h - 1)
             compensated_flow = functional.pad(
-                compensated_flow, (smooth // 2, smooth // 2, 0, 0), mode="reflect"
+                compensated_flow, (box_x // 2, box_x // 2, 0, 0), mode="reflect"
             )
             compensated_flow = functional.conv2d(
                 compensated_flow,
-                kernel_box.unsqueeze(2).expand(2, 1, 1, smooth),
+                torch.full((2, 1, 1, box_x), 1 / box_x, device=device),
                 groups=2,
             )  # horizontal blur
             compensated_flow = functional.pad(
-                compensated_flow, (0, 0, smooth // 2, smooth // 2), mode="reflect"
+                compensated_flow, (0, 0, box_y // 2, box_y // 2), mode="reflect"
             )
             compensated_flow = functional.conv2d(
                 compensated_flow,
-                kernel_box.unsqueeze(3).expand(2, 1, smooth, 1),
+                torch.full((2, 1, box_y, 1), 1 / box_y, device=device),
                 groups=2,
             )  # vertical blur
 

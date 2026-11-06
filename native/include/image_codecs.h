@@ -172,6 +172,12 @@ cn_codec_status cn_bmp_encode(const cn_codec_image *image, cn_codec_output *out)
  * Deflate; 8- or 16-bit unsigned samples, or float32 uncompressed; grey, BGR or BGRA, written as RGB(A). */
 cn_codec_status cn_tiff_encode(const cn_codec_image *image, int compression, cn_codec_output *out);
 
+/* An OpenEXR file through OpenEXRCore 3.5.2 into memory: float32 samples, grey as Y, BGR(A) as R, G, B (and A), which
+ * cn_exr_decode reads back as the same image; one scanline part with both windows at the origin. `pixel_type` is
+ * IMWRITE_EXR_TYPE's (1 half, 2 float), `compression` IMWRITE_EXR_COMPRESSION's lossless ones (0 none, 1 RLE, 2 ZIPS,
+ * 3 ZIP, 4 PIZ). Chunks compress on many threads; the bytes do not depend on how many. */
+cn_codec_status cn_exr_encode(const cn_codec_image *image, int pixel_type, int compression, cn_codec_output *out);
+
 #ifdef __cplusplus
 }
 #endif

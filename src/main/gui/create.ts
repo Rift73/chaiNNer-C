@@ -1,5 +1,6 @@
 import electronLog from 'electron-log';
-import { app, dialog } from 'electron/main';
+import { Menu, app, dialog } from 'electron/main';
+import { activateLanguage } from '../../common/i18n';
 import { log } from '../../common/log';
 import { lazy } from '../../common/util';
 import { OpenArguments } from '../arguments';
@@ -48,6 +49,7 @@ export const createGuiApp = (args: OpenArguments) => {
     setupErrorHandling();
 
     const settings = readSettings();
+    activateLanguage(settings.language).catch(log.error);
     if (!settings.hardwareAcceleration) {
         app.disableHardwareAcceleration();
     }
@@ -57,6 +59,9 @@ export const createGuiApp = (args: OpenArguments) => {
         app.quit();
         return;
     }
+
+    // Electron builds a default menu if none is set before it is ready. The window sets its own.
+    Menu.setApplicationMenu(null);
 
     const createWindow = lazy(() => {
         createMainWindow(args, settings).catch((error) => {

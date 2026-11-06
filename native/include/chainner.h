@@ -37,7 +37,12 @@ typedef enum cn_status {
     CN_OK = 0,
     CN_INVALID_ARGUMENT = 1,
     CN_SIZE_OVERFLOW = 2,
-    CN_ALLOCATION_FAILED = 3
+    CN_ALLOCATION_FAILED = 3,
+    /* A kernel's own failures, which its bridges map to the original's errors. A C++ caller loads these as cn_status,
+     * so they are enumerators: a value outside the enumeration's range is undefined there. */
+    CN_KERNEL_FAILED = 4,
+    CN_KMEANS_NO_CONVERGENCE = 5,
+    CN_MEDIAN_CUT_EMPTY_BUCKET = 6
 } cn_status;
 
 /* ABI version changes whenever an exported signature or its meaning changes. */

@@ -426,9 +426,10 @@ static void png_store_range(void *context, size_t begin, size_t end) {
  * CRC comes right after them, their zlib stream declares the 32 KiB window (so zlib and libdeflate accept the same
  * distances) and inflates, Adler-32 included, to exactly the filtered rows, and every index is inside the palette.
  * The rows are unfiltered, then stored (png_store_range). For such a file libpng gives the same pixels and no error,
- * except for a crafted stream with codes zlib refuses and libdeflate reads (length symbols 286 and 287, distance
- * symbols 30 and 31, too many codes), which opens here where libpng fails; for every other file this returns 0 having
- * written only pixels, and libpng decodes from idat as before. */
+ * except for a stream with codes zlib refuses and libdeflate reads (length symbols 286 and 287, distance symbols 30
+ * and 31, too many codes, the unused codeword of a distance code that has one, which a flipped bit in a zlib stream of
+ * one distance can reach), which opens here where libpng fails; for every other file this returns 0 having written only
+ * pixels, and libpng decodes from idat as before. */
 static int png_decode_direct(const uint8_t *data, size_t size, size_t idat, uint32_t width, uint32_t height,
                              uint32_t channels, uint32_t sample_bytes, const png_palette *palette, uint8_t *pixels) {
     static const uint8_t iend[12] = {0, 0, 0, 0, 'I', 'E', 'N', 'D', 0xAE, 0x42, 0x60, 0x82};
@@ -536,7 +537,8 @@ cn_codec_status cn_png_decode(const uint8_t *data, size_t size, cn_codec_allocat
         } else {
             palette.color_count = 0;
         }
-    } else if (colour == PNG_COLOR_TYPE_GRAY_ALPHA || colour == PNG_COLOR_TYPE_RGB_ALPHA) {
+    } else if (colour == PNG_COLOR_TYPE_GRAY_ALPHA || colour == PNG_COLOR_TYPE_RGB_ALPHA ||
+               png_get_valid(png, info, PNG_INFO_tRNS)) { /* OpenCV drops a grey image's transparent value */
         channels = 4;
     }
     const uint32_t sample_bytes = depth == 16 ? 2 : 1;

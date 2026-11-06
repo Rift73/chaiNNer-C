@@ -21,7 +21,6 @@ from typing import Any
 import numpy as np
 import onnx
 import onnxruntime as ort
-from google.protobuf.message import DecodeError
 
 from .native import lib
 
@@ -131,16 +130,6 @@ def _call(function: Callable[..., int], *args: Any):
         raise exception(
             f"[ONNXRuntimeError] : {status} : {label} : {error.value.decode('utf-8', errors='replace')}"
         )
-
-
-def supports_model(model: bytes) -> bool:
-    """Inspect value kinds without constructing a second inference session."""
-    try:
-        graph = onnx.load_model_from_string(model).graph
-    except DecodeError:
-        # Let ORT produce its original InvalidProtobuf error from these bytes.
-        return True
-    return supports_graph(graph)
 
 
 def supports_graph(graph: onnx.GraphProto) -> bool:

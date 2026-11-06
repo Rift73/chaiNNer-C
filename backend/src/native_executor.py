@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import functools
 import json
 import os
 import sys
 import time
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Coroutine, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
@@ -79,15 +80,18 @@ from process import (
     compute_broadcast,
     compute_sequence_broadcast,
     folder_sources,
+    generator_loops,
     loop_node_error,
     on_failing_node,
     prepare_node,
     run_collector_complete,
     run_collector_iterate,
     run_node,
+    run_progress,
+    run_warning,
 )
 from progress_controller import Aborted
-from util import combine_sets, waited_seconds
+from util import waited_seconds
 
 if TYPE_CHECKING:
     from events import Event
@@ -118,6 +122,23 @@ def ending_runs() -> list[asyncio.Task[None]]:
     return [task for task in _ENDING_RUNS if not task.done()]
 
 
+def after_ending_runs(end: Callable[[], Coroutine[object, object, None]]) -> None:
+    """Runs `end`, the last step of a stopped run, in the background once the runs ending now have ended, as one of them:
+    a later run starts after it."""
+    ending = ending_runs()
+
+    async def after() -> None:
+        await asyncio.wait(ending)
+        try:
+            await end()
+        except Exception:
+            logger.exception("A stopped run's last step failed")
+
+    task = asyncio.ensure_future(after())
+    _ENDING_RUNS[task] = ""
+    task.add_done_callback(_ENDING_RUNS.pop)
+
+
 def _log_stopped_run_error(done: asyncio.Future[object]) -> None:
     """Reads a stopped run's result, which its request no longer does: the node's real error is only logged, never
     dropped, and asyncio does not report it as never retrieved."""
@@ -136,16 +157,23 @@ MEMO_PYTHON_NODES: frozenset[str] = frozenset(
         "chainner:image:balance_normals",
         "chainner:image:bilateral_blur",
         "chainner:image:convert_normal_map",
+        "chainner:image:crop_to_size",
         "chainner:image:generate_hash",
+        "chainner:image:image_diff",
+        "chainner:image:is_grayscale",
         "chainner:image:metal_to_specular",
         "chainner:image:normal_generator",
+        "chainner:image:normal_to_height",
         "chainner:image:normalize_normal_map",
+        "chainner:image:pad_to_square",
         "chainner:image:planes_to_rgb",
         "chainner:image:rgb_to_planes",
         "chainner:image:specular_to_metal",
         "chainner:image:strengthen_normals",
+        "chainner:image:white_balance",
         "chainner:utility:color_from_channels",
         "chainner:utility:derive_seed",
+        "chainner:utility:math_expression",
         "chainner:utility:separate_color",
     }
 )
@@ -185,9 +213,10 @@ def memo_eligible(data: NodeData, native: bool) -> bool:
 
 
 def memo_constant(value: object) -> str | None:
-    """A constant input's part of a memo key: its JSON, as the UI sent it; None when it has none."""
+    """A constant input's part of a memo key: its JSON, as the UI sent it, in ASCII (the lone surrogates of a name that
+    is not text have no UTF-8 for the engine's keys); None when it has none."""
     try:
-        return json.dumps(value, sort_keys=True, ensure_ascii=False)
+        return json.dumps(value, sort_keys=True)
     except (TypeError, ValueError):
         return None
 
@@ -219,7 +248,8 @@ def file_identity(path: object) -> str | None:
         stat = os.stat(path)
     except (OSError, ValueError):
         return None
-    return f"{os.fspath(path)}|{stat.st_size}|{stat.st_mtime_ns}|{stat.st_dev}|{stat.st_ino}"
+    # In ASCII, as memo_constant is.
+    return f"{os.fspath(path)!a}|{stat.st_size}|{stat.st_mtime_ns}|{stat.st_dev}|{stat.st_ino}"
 
 
 # Load Image outputs of individual runs, with their files' identities as they were loaded: a later run that finds one in
@@ -277,10 +307,10 @@ class _Engine(Protocol):
 def _iterated_nodes(
     chain: Chain, node: GeneratorNode
 ) -> tuple[list[CollectorNode], list[FunctionNode], set[Node]]:
-    """process.Executor.__get_iterated_nodes: the collectors and side-effect nodes a generator iterates and every
-    node it reaches (itself included), in the same set iteration orders."""
-    collectors: set[CollectorNode] = set()
-    output_nodes: set[FunctionNode] = set()
+    """process.Executor.__get_iterated_nodes: the collectors and side-effect nodes a generator iterates, in the order
+    the chain's edges reach them, and every node it reaches (itself included)."""
+    collectors: list[CollectorNode] = []
+    output_nodes: list[FunctionNode] = []
     seen: set[Node] = {node}
 
     def visit(n: Node):
@@ -288,12 +318,12 @@ def _iterated_nodes(
             return
         seen.add(n)
         if isinstance(n, CollectorNode):
-            collectors.add(n)
+            collectors.append(n)
         elif isinstance(n, GeneratorNode):
             raise ValueError("Nested sequences are not supported")
         else:
             if n.has_side_effects():
-                output_nodes.add(n)
+                output_nodes.append(n)
             for edge in chain.edges_from(n.id):
                 visit(chain.nodes[edge.target.id])
 
@@ -301,7 +331,7 @@ def _iterated_nodes(
     for edge in chain.edges_from(node.id):
         if edge.source.output_id in iterable_output.outputs:
             visit(chain.nodes[edge.target.id])
-    return list(collectors), list(output_nodes), seen
+    return collectors, output_nodes, seen
 
 
 def _groups(chain: Chain) -> list[list[GeneratorNode]]:
@@ -313,16 +343,7 @@ def _groups(chain: Chain) -> list[list[GeneratorNode]]:
             collectors, outputs, _ = _iterated_nodes(chain, node)
             for sink in [*collectors, *outputs]:
                 gens_by_outs.setdefault(sink.id, set()).add(node.id)
-    groups: list[list[GeneratorNode]] = []
-    for group in combine_sets(list(gens_by_outs.values())):
-        groups.append(
-            [
-                n
-                for n in (chain.nodes[node_id] for node_id in group)
-                if isinstance(n, GeneratorNode)
-            ]
-        )
-    return groups
+    return generator_loops(chain, gens_by_outs)
 
 
 def _temporal_nodes(
@@ -463,12 +484,16 @@ class _EngineContext(NodeContext):
         settings: SettingsParser,
         storage_dir: Path,
         node_id: NodeId,
+        warn: Callable[[str], None],
+        send_progress: Callable[[float], None],
     ):
         super().__init__()
         self.__engine = engine
         self.__settings = settings
         self.__storage_dir = storage_dir
         self.__node_id = node_id
+        self.__warn = warn
+        self.__send_progress = send_progress
         self.chain_cleanup_fns: set[Callable[[], None]] = set()
         self.node_cleanup_fns: set[Callable[[], None]] = set()
         self.iteration_view: _EngineIterationView | None = None
@@ -494,6 +519,7 @@ class _EngineContext(NodeContext):
 
     def set_progress(self, progress: float) -> None:
         self.check_aborted()
+        self.__send_progress(progress)
 
     @property
     def settings(self) -> SettingsParser:
@@ -506,6 +532,9 @@ class _EngineContext(NodeContext):
     @property
     def storage_dir(self) -> Path:
         return self.__storage_dir
+
+    def warn(self, message: str) -> None:
+        self.__warn(message)
 
     def add_cleanup(
         self, fn: Callable[[], None], after: Literal["node", "chain"] = "chain"
@@ -1137,6 +1166,8 @@ def build_plan(
     send_broadcast_data: bool,
     parent_cache: OutputCache[NodeOutput] | None,
     engine: Callable[[], _Engine],
+    warn: Callable[[str], None],
+    progress_sender: Callable[[NodeId], Callable[[float], None]],
 ) -> tuple[dict[str, object], list[Node], list[_EngineContext], InputMap]:
     """The engine's plan of an optimized chain (nodes, groups, sinks) with every node's context."""
     nodes = list(chain.nodes.values())
@@ -1151,7 +1182,12 @@ def build_plan(
         package_id = registry.get_package(data.schema_id).id
         contexts.append(
             _EngineContext(
-                engine, options.get_package_settings(package_id), storage_dir, node.id
+                engine,
+                options.get_package_settings(package_id),
+                storage_dir,
+                node.id,
+                warn,
+                progress_sender(node.id),
             )
         )
         ignored = (
@@ -1252,13 +1288,13 @@ def build_plan(
     groups: list[dict[str, object]] = []
     for generators in _groups(chain):
         entries: list[dict[str, object]] = []
-        output_nodes: set[FunctionNode] = set()
+        output_nodes: list[FunctionNode] = []
         iterated: set[int] = set()
         # A group's only generator may read context items for its temporal nodes (Generator.context).
         temporal: list[FunctionNode] = []
         for generator in generators:
             collectors, outputs, seen = _iterated_nodes(chain, generator)
-            output_nodes.update(outputs)
+            output_nodes.extend(n for n in outputs if n not in output_nodes)
             iterated.update(positions[n.id] for n in seen)
             entries.append(
                 {
@@ -1352,6 +1388,8 @@ class NativeExecutor:
             send_broadcast_data,
             parent_cache,
             lambda: engine[0],
+            run_warning(loop, queue),
+            functools.partial(run_progress, loop, queue),
         )
         self.__nodes = nodes
         self.__hooks = _Hooks(id, nodes, contexts, queue, loop, inputs, chain)
@@ -1455,6 +1493,13 @@ class NativeExecutor:
         await asyncio.wait((done,))
         _log_stopped_run_error(done)
         await self.loop.run_in_executor(None, self.__run_engine.close)
+
+    async def chain_cleanups(self, preserve_error: bool) -> None:
+        """The chain cleanups of nodes run without run(), whose engine ends with them (a folder's shared nodes,
+        folder_videos.py, which calls this once no stopped run still has a node running)."""
+        await self.loop.run_in_executor(
+            None, self.__hooks.chain_cleanups, preserve_error
+        )
 
     async def run(self) -> None:
         logger.debug("Running native executor %s", self.id)

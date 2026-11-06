@@ -32,7 +32,9 @@ import {
     VStack,
     useDisclosure,
 } from '@chakra-ui/react';
+import i18n from 'i18next';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { BsQuestionCircle } from 'react-icons/bs';
 import { HiOutlineRefresh } from 'react-icons/hi';
 import { MdSettings } from 'react-icons/md';
@@ -100,14 +102,15 @@ const getUninstallCommand = (packages: readonly Package[], pythonInfo: PythonInf
 
 const PackageDependencyView = memo(
     ({ pkg, installedVersion }: { pkg: PyPiPackage; installedVersion: Version | null }) => {
+        const { t } = useTranslation();
         let color = 'red.500';
-        let tagText = 'Missing';
+        let tagText = t('dependencyManager.missing', 'Missing');
         let versionString: string = pkg.version;
         if (installedVersion) {
             const outdated = versionGt(pkg.version, installedVersion);
             if (outdated) {
                 color = 'yellow.500';
-                tagText = 'Outdated';
+                tagText = t('dependencyManager.outdated', 'Outdated');
                 versionString = `${installedVersion} → ${pkg.version}`;
             } else {
                 color = 'inherit';
@@ -157,6 +160,7 @@ const PackageView = memo(
         onUninstall: () => void;
         onUpdate: () => void;
     }) => {
+        const { t } = useTranslation();
         const isDisabled = p.disabled ?? false;
         return (
             <AccordionItem
@@ -181,8 +185,11 @@ const PackageView = memo(
                                         textAlign="left"
                                         w="full"
                                     >
-                                        {p.name} ({p.dependencies.length} package
-                                        {p.dependencies.length === 1 ? '' : 's'})
+                                        {p.name} ({p.dependencies.length}{' '}
+                                        {t('dependencyManager.package', {
+                                            count: p.dependencies.length,
+                                        })}
+                                        )
                                     </Text>
                                     <Tooltip
                                         closeOnClick
@@ -214,7 +221,8 @@ const PackageView = memo(
                                             size="sm"
                                             onClick={onUpdate}
                                         >
-                                            Update ({formatSizeEstimate(packageInfo.outdated)})
+                                            {t('dependencyManager.update', 'Update')} (
+                                            {formatSizeEstimate(packageInfo.outdated)})
                                         </Button>
                                     )}
 
@@ -227,7 +235,7 @@ const PackageView = memo(
                                         size="sm"
                                         onClick={onUninstall}
                                     >
-                                        Uninstall
+                                        {t('dependencyManager.uninstall', 'Uninstall')}
                                     </Button>
                                 </HStack>
                             ) : (
@@ -247,7 +255,7 @@ const PackageView = memo(
                                             size="sm"
                                             onClick={onInstall}
                                         >
-                                            Install (
+                                            {t('dependencyManager.install', 'Install')} (
                                             {formatSizeEstimate([
                                                 ...packageInfo.missing,
                                                 ...packageInfo.outdated,
@@ -324,6 +332,7 @@ const PackagesSection = memo(
         isRunningShell,
         progress,
     }: PackagesSectionProps) => {
+        const { t } = useTranslation();
         const infos = packages.map((p) => new PackageUpdateInfo(p, installedPyPi || {}));
         // A disabled package's own Install and Update buttons are disabled (TensorRT
         // without an NVIDIA GPU), so the All button leaves it out too.
@@ -333,8 +342,8 @@ const PackagesSection = memo(
         const canInstall = enabledInfos.filter((i) => i.canInstall).length;
 
         const operationsForAll = [
-            ...(canUpdate ? ['Update'] : []),
-            ...(canInstall ? ['Install'] : []),
+            ...(canUpdate ? [t('dependencyManager.update', 'Update')] : []),
+            ...(canInstall ? [t('dependencyManager.install', 'Install')] : []),
         ].join('/');
         const showAll = canUpdate + canInstall > 1;
         const allOperation = getAllOperation(packages, infos);
@@ -350,7 +359,7 @@ const PackagesSection = memo(
                             fontWeight="bold"
                             lineHeight={8}
                         >
-                            Packages
+                            {t('dependencyManager.packages', 'Packages')}
                         </Text>
                     </HStack>
                     {showAll && (
@@ -365,9 +374,14 @@ const PackagesSection = memo(
                                 installPackages(...allOperation.packages);
                             }}
                         >
-                            {`${operationsForAll} All Packages (${formatSizeEstimate(
-                                allOperation.dependencies
-                            )})`}
+                            {t(
+                                'dependencyManager.installAllPackages',
+                                '{{operations}} All Packages ({{size}})',
+                                {
+                                    operations: operationsForAll,
+                                    size: formatSizeEstimate(allOperation.dependencies),
+                                }
+                            )}
                         </Button>
                     )}
                 </Flex>
@@ -418,6 +432,7 @@ interface FeaturesAccordionProps {
     featureStates: ReadonlyMap<FeatureId, FeatureState>;
 }
 const FeaturesAccordion = memo(({ features, featureStates }: FeaturesAccordionProps) => {
+    const { t } = useTranslation();
     return (
         <Accordion
             allowToggle
@@ -429,13 +444,13 @@ const FeaturesAccordion = memo(({ features, featureStates }: FeaturesAccordionPr
                 let stateLabel;
                 let stateColor;
                 if (state === undefined) {
-                    stateLabel = 'Unavailable';
+                    stateLabel = t('dependencyManager.unavailable', 'Unavailable');
                     stateColor = 'gray.500';
                 } else if (state.enabled) {
-                    stateLabel = 'Enabled';
+                    stateLabel = t('dependencyManager.enabled', 'Enabled');
                     stateColor = 'green.500';
                 } else {
-                    stateLabel = 'Disabled';
+                    stateLabel = t('dependencyManager.disabled', 'Disabled');
                     stateColor = 'gray.500';
                 }
 
@@ -508,6 +523,7 @@ interface FeaturesSectionProps {
     processingDeps: boolean;
 }
 const FeaturesSection = memo(({ processingDeps }: FeaturesSectionProps) => {
+    const { t } = useTranslation();
     const { packages, featureStates, refreshFeatureStates } = useContext(BackendContext);
 
     const features = useMemo(() => packages.flatMap((p) => p.features), [packages]);
@@ -524,7 +540,7 @@ const FeaturesSection = memo(({ processingDeps }: FeaturesSectionProps) => {
                         fontWeight="bold"
                         lineHeight={8}
                     >
-                        Features
+                        {t('dependencyManager.features', 'Features')}
                     </Text>
                 </HStack>
                 <Button
@@ -554,7 +570,7 @@ const FeaturesSection = memo(({ processingDeps }: FeaturesSectionProps) => {
                             .catch(log.error);
                     }}
                 >
-                    Refresh
+                    {t('dependencyManager.refresh', 'Refresh')}
                 </Button>
             </Flex>
             <FeaturesAccordion
@@ -573,6 +589,7 @@ interface PythonSectionProps {
 }
 const PythonSection = memo(
     ({ installMode, setInstallMode, isDisabled, consoleOutput }: PythonSectionProps) => {
+        const { t } = useTranslation();
         const { pythonInfo } = useContext(BackendContext);
 
         const [showMore, setShowMore] = useState(false);
@@ -596,7 +613,10 @@ const PythonSection = memo(
                         flex="1"
                         textAlign="left"
                     >
-                        Python ({pythonInfo.version}) [Integrated]
+                        {t('dependencyManager.python', 'Python')} ({pythonInfo.version}){' '}
+                        {t('dependencyManager.brackets.open', '[')}
+                        {t('dependencyManager.integrated', 'Integrated')}
+                        {t('dependencyManager.brackets.close', ']')}
                     </Text>
 
                     <Tooltip
@@ -604,7 +624,13 @@ const PythonSection = memo(
                         borderRadius={8}
                         label={
                             <Markdown nonInteractive>
-                                {`Copy Python path to clipboard\n\nPython path is: \\\n\`${pythonInfo.python}\``}
+                                {`${t(
+                                    'dependencyManager.copyPythonPath',
+                                    'Copy Python path to clipboard'
+                                )}\n\n${t(
+                                    'dependencyManager.pythonPath',
+                                    'Python path is:'
+                                )} \\\n\`${pythonInfo.python}\``}
                             </Markdown>
                         }
                         maxWidth="none"
@@ -612,7 +638,10 @@ const PythonSection = memo(
                         placement="top"
                     >
                         <IconButton
-                            aria-label="Copy Python path to clipboard"
+                            aria-label={t(
+                                'dependencyManager.copyPythonPath',
+                                'Copy Python path to clipboard'
+                            )}
                             icon={<CopyIcon />}
                             size="sm"
                             variant="ghost"
@@ -627,7 +656,7 @@ const PythonSection = memo(
                         size="sm"
                         onClick={() => setShowMore((prev) => !prev)}
                     >
-                        Advanced
+                        {t('dependencyManager.advanced', 'Advanced')}
                     </Button>
                 </Flex>
 
@@ -646,7 +675,9 @@ const PythonSection = memo(
                             my={2}
                         >
                             <Center>
-                                <Text whiteSpace="nowrap">Installation mode</Text>
+                                <Text whiteSpace="nowrap">
+                                    {t('dependencyManager.installationMode', 'Installation mode')}
+                                </Text>
                             </Center>
                             <Tooltip
                                 hasArrow
@@ -675,8 +706,12 @@ const PythonSection = memo(
                                         setInstallMode(mode);
                                     }}
                                 >
-                                    <option value={InstallMode.NORMAL}>Normal</option>
-                                    <option value={InstallMode.COPY}>Manual/Copy</option>
+                                    <option value={InstallMode.NORMAL}>
+                                        {t('dependencyManager.normal', 'Normal')}
+                                    </option>
+                                    <option value={InstallMode.COPY}>
+                                        {t('dependencyManager.manualCopy', 'Manual/Copy')}
+                                    </option>
                                 </Select>
                             </Box>
                         </Flex>
@@ -730,6 +765,7 @@ const PythonSection = memo(
 );
 
 export const DependencyProvider = memo(({ children }: React.PropsWithChildren<unknown>) => {
+    const { t } = useTranslation();
     const { isOpen, onOpen, onClose } = useDisclosure();
 
     const { showAlert, sendToast } = useContext(AlertBoxContext);
@@ -765,7 +801,9 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
 
     const [modifyingPackages, setModifyingPackages] = useState<readonly PackageId[]>(EMPTY_ARRAY);
 
-    const [consoleOutput, setConsoleOutput] = useState('Console output:\n\n');
+    const [consoleOutput, setConsoleOutput] = useState(
+        `${t('dependencyManager.consoleOutput', 'Console output:')}\n\n`
+    );
     const [isRunningShell, setIsRunningShell] = useState(false);
     const logOutput = useCallback(
         (message: string) => {
@@ -842,9 +880,11 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
             .then(() => {
                 sendToast({
                     status: 'success',
-                    title: 'Command copied to clipboard',
-                    description:
-                        'Open up an external terminal, paste the command, and run it. When it is done running, manually restart chaiNNer.',
+                    title: i18n.t('dependencyManager.commandCopied', 'Command copied to clipboard'),
+                    description: i18n.t(
+                        'dependencyManager.commandCopiedDescription',
+                        'Open up an external terminal, paste the command, and run it. When it is done running, manually restart chaiNNer.'
+                    ),
                     duration: 5_000,
                     id: 'copy-to-clipboard-toast',
                 });
@@ -862,9 +902,11 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
 
         const name = joinEnglish(packages.map((pkg) => pkg.name));
 
-        logOutput(`Installing ${name}...`);
-        changePackages(packages, `Failed to install ${name}`, () =>
-            backend.installPackages(packages.map((pkg) => pkg.id))
+        logOutput(i18n.t('dependencyManager.installing', 'Installing {{name}}...', { name }));
+        changePackages(
+            packages,
+            i18n.t('dependencyManager.failedToInstall', 'Failed to install {{name}}', { name }),
+            () => backend.installPackages(packages.map((pkg) => pkg.id))
         );
     };
 
@@ -879,9 +921,16 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
 
         const button = await showAlert({
             type: AlertType.WARN,
-            title: 'Uninstall',
-            message: `Are you sure you want to uninstall ${name}?`,
-            buttons: ['Cancel', 'Uninstall'],
+            title: i18n.t('dependencyManager.uninstallTitle', 'Uninstall'),
+            message: i18n.t(
+                'dependencyManager.uninstallMessage',
+                'Are you sure you want to uninstall {{name}}?',
+                { name }
+            ),
+            buttons: [
+                i18n.t('dependencyManager.cancel', 'Cancel'),
+                i18n.t('dependencyManager.uninstall', 'Uninstall'),
+            ],
             defaultId: 0,
         });
         if (button === 0) return;
@@ -889,19 +938,26 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
         if (hasRelevantUnsavedChangesRef.current) {
             const saveButton = await showAlert({
                 type: AlertType.WARN,
-                title: 'Unsaved Changes',
-                message:
-                    `You might lose your unsaved changes by uninstalling ${name}.` +
-                    `\n\nAre you sure you want to uninstall ${name}?`,
-                buttons: ['Cancel', 'Uninstall'],
+                title: i18n.t('dependencyManager.unsavedChanges', 'Unsaved Changes'),
+                message: i18n.t(
+                    'dependencyManager.unsavedChangesMessage',
+                    'You might lose your unsaved changes by uninstalling {{name}}.\n\nAre you sure you want to uninstall {{name}}?',
+                    { name }
+                ),
+                buttons: [
+                    i18n.t('dependencyManager.cancel', 'Cancel'),
+                    i18n.t('dependencyManager.uninstall', 'Uninstall'),
+                ],
                 defaultId: 0,
             });
             if (saveButton === 0) return;
         }
 
-        logOutput(`Uninstalling ${name}...`);
-        changePackages(packages, `Failed to uninstall ${name}`, () =>
-            backend.uninstallPackages(packages.map((pkg) => pkg.id))
+        logOutput(i18n.t('dependencyManager.uninstalling', 'Uninstalling {{name}}...', { name }));
+        changePackages(
+            packages,
+            i18n.t('dependencyManager.failedToUninstall', 'Failed to uninstall {{name}}', { name }),
+            () => backend.uninstallPackages(packages.map((pkg) => pkg.id))
         );
     };
 
@@ -954,7 +1010,7 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
                     bgColor="var(--chain-editor-bg)"
                     maxW="750px"
                 >
-                    <ModalHeader>Dependency Manager</ModalHeader>
+                    <ModalHeader>{t('dependencyManager.title', 'Dependency Manager')}</ModalHeader>
                     <ModalCloseButton isDisabled={currentlyProcessingDeps} />
                     <ModalBody>
                         <VStack
@@ -988,7 +1044,7 @@ export const DependencyProvider = memo(({ children }: React.PropsWithChildren<un
                             variant={currentlyProcessingDeps ? 'ghost' : 'solid'}
                             onClick={onClose}
                         >
-                            Close
+                            {t('dependencyManager.close', 'Close')}
                         </Button>
                     </ModalFooter>
                 </ModalContent>

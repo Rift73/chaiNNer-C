@@ -13,6 +13,7 @@ import {
 } from '@chakra-ui/react';
 import MiniSearch from 'minisearch';
 import { memo, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { BsFillJournalBookmarkFill } from 'react-icons/bs';
 import { useContext } from 'use-context-selector';
 import { CategoryMap } from '../../../common/CategoryMap';
@@ -65,6 +66,7 @@ const createSearchIndex = (schemata: readonly NodeSchema[], categories: Category
 };
 
 const NodeDocumentationModal = memo(() => {
+    const { t } = useTranslation();
     const { selectedSchemaId, isOpen, openNodeDocumentation, onClose } =
         useContext(NodeDocumentationContext);
     const { schemata, categories } = useContext(BackendContext);
@@ -87,7 +89,9 @@ const NodeDocumentationModal = memo(() => {
             combineWith: 'AND',
         });
 
-        const terms = new Set(searchResults.flatMap((r) => r.terms).map((t) => t.toLowerCase()));
+        const terms = new Set(
+            searchResults.flatMap((r) => r.terms).map((term) => term.toLowerCase())
+        );
 
         const scores = new Map<SchemaId, number>();
         for (const result of searchResults) {
@@ -143,7 +147,9 @@ const NodeDocumentationModal = memo(() => {
                                 m="auto"
                             />
                         </Box>
-                        <Box whiteSpace="nowrap">Node Documentation</Box>
+                        <Box whiteSpace="nowrap">
+                            {t('documentation.title', 'Node Documentation')}
+                        </Box>
                     </HStack>
                 </ModalHeader>
                 <ModalCloseButton />
@@ -174,6 +180,7 @@ const NodeDocumentationModal = memo(() => {
 });
 
 export const NodeDocumentationButton = memo(() => {
+    const { t } = useTranslation();
     const { openNodeDocumentation } = useContext(NodeDocumentationContext);
 
     return (
@@ -182,18 +189,18 @@ export const NodeDocumentationButton = memo(() => {
                 closeOnClick
                 closeOnMouseDown
                 borderRadius={8}
-                label="Node Documentation"
+                label={t('documentation.title', 'Node Documentation')}
                 px={2}
                 py={1}
             >
                 <IconButton
-                    aria-label="Node Documentation"
+                    aria-label={t('documentation.title', 'Node Documentation')}
                     icon={<BsFillJournalBookmarkFill />}
                     size="md"
                     variant="outline"
                     onClick={() => openNodeDocumentation()}
                 >
-                    Node Documentation
+                    {t('documentation.title', 'Node Documentation')}
                 </IconButton>
             </Tooltip>
             <NodeDocumentationModal />

@@ -108,10 +108,14 @@ class DescaleBorder(Enum):
     outputs=[
         ImageOutput(
             image_type="""
-                Image {
-                    width: Input1,
-                    height: Input2,
-                    channels: Input0.channels,
+                if Input1 > Input0.width or Input2 > Input0.height {
+                    error("The target size must be no larger than the image.")
+                } else {
+                    Image {
+                        width: Input1,
+                        height: Input2,
+                        channels: Input0.channels,
+                    }
                 }
             """
         )

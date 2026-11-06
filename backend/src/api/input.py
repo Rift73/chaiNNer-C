@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -135,6 +136,10 @@ class BaseInput(Generic[T]):
         if isinstance(value, bool):
             # bools need to be 0 or 1
             return {"type": "literal", "value": int(value)}
+
+        if isinstance(value, float) and not math.isfinite(value):
+            # JSON has no such number, and the renderer shows no error from a reply it cannot parse.
+            return {"type": "formatted", "formatString": str(value)}
 
         if isinstance(value, (int, float, str)) or value is None:
             return {"type": "literal", "value": value}

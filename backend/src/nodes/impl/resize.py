@@ -4,7 +4,7 @@ from enum import Enum
 
 import numpy as np
 
-from ..utils.utils import get_h_w_c
+from ..utils.utils import check_image_memory, get_h_w_c
 from . import native_resample
 from .linear_light import LightTransfer, encode_inplace, linearize
 
@@ -24,6 +24,8 @@ class ResizeFilter(Enum):
     HANN = 9
     LAGRANGE = 10
     GAUSS = 11
+    MKS2013 = 13
+    MKS2021 = 14
     DPID = 12
 
 
@@ -44,14 +46,7 @@ def resize(
     h, w, c = get_h_w_c(img)
     new_w, new_h = out_dims
 
-    # check memory
-    GB: int = 2**30  # noqa: N806
-    MAX_MEMORY = 16 * GB  # noqa: N806
-    new_memory = new_w * new_h * c * 4
-    if new_memory > MAX_MEMORY:
-        raise RuntimeError(
-            f"Resize would require {round(new_memory / GB, 3)} GB of memory, but only {MAX_MEMORY // GB} GB are allowed."
-        )
+    check_image_memory("Resize", new_h, new_w, c)
 
     if filter == ResizeFilter.AUTO:
         # automatically chose a method that works
@@ -59,6 +54,15 @@ def resize(
             filter = ResizeFilter.LANCZOS
         else:
             filter = ResizeFilter.BOX
+
+    if (
+        new_w > w
+        and new_h > 0
+        and filter not in (ResizeFilter.NEAREST, ResizeFilter.DPID)
+    ):
+        # The horizontal pass holds every source row at the new width, however few
+        # rows the result has.
+        check_image_memory("Resize", h, new_w, c)
 
     if (w, h) == out_dims and (
         filter in (ResizeFilter.NEAREST, ResizeFilter.BOX, ResizeFilter.DPID)
