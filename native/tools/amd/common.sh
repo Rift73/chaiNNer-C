@@ -25,8 +25,8 @@ EXAMPLE_OPS=test-ops/chainner_example_migx_ops.so
 # matching the pattern), else from the URL (empty: the dependency manager installs its own pin). An installed wheel of
 # the version a package lists is one the dependency manager keeps.
 ORT_MIGRAPHX_WHEEL_PATTERN="onnxruntime_migraphx-*.whl"
-ORT_MIGRAPHX_WHEEL_URL="https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14/onnxruntime_migraphx-1.30.0%2Brocm7.14-cp314-cp314-manylinux_2_28_x86_64.whl"
-ORT_MIGRAPHX_WHEEL_SHA256="d9dc6fbe7acb8d7b4a40cf33bb7345bae92b154bd9da7023e67c66c1d11cf153"
+ORT_MIGRAPHX_WHEEL_URL="https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph-cp314-cp314-manylinux_2_28_x86_64.whl"
+ORT_MIGRAPHX_WHEEL_SHA256="233e4ac76e3eb7712d4b968e4bce4649c1f2ba5bf0e686fec354ab9afd5466f6"
 SPANDREL_WHEEL_PATTERN="spandrel-*.whl"
 SPANDREL_WHEEL_URL="https://github.com/Rift73/spandrel/releases/download/v0.4.2-c14/spandrel-0.4.2%2Bc14-py3-none-any.whl"
 SPANDREL_WHEEL_SHA256="91a99eef3ab39ca1c3d4098a7d2e280d8e3b73873a79a96a3d86b323d52198f3"

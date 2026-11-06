@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 from sanic.log import logger
 
@@ -8,6 +10,7 @@ from nodes.groups import Condition, if_group
 from nodes.impl.migraphx.model import MIGraphXProgram
 from nodes.impl.migraphx.session import use_runner_session
 from nodes.impl.upscale.convenient_upscale import convenient_upscale
+from nodes.impl.upscale.tile_report import TileReport
 from nodes.properties.inputs import BoolInput, ImageInput, MIGraphXProgramInput
 from nodes.properties.outputs import ImageOutput
 from nodes.utils.utils import get_h_w_c
@@ -15,6 +18,48 @@ from util import held
 
 from ...settings import get_settings
 from .. import processing_group
+
+
+def program_upscale(
+    context: NodeContext,
+    img: np.ndarray,
+    program: MIGraphXProgram,
+    separate_alpha: bool,
+    before_clip: Callable[[np.ndarray], None] | None = None,
+) -> tuple[np.ndarray, str]:
+    """Upscale Image's image and its tiles' size, also for PyTorch's Upscale Image with Use
+    MIGraphX Program. The runner tiles at the program's one size; an image that fits is
+    padded to it by reflection and its result cropped to the image's own size, as a tile at
+    an edge (native/trt_runner/frame.cpp). before_clip: sees each result before its clip."""
+    settings = get_settings(context)
+    h, w, c = get_h_w_c(img)
+    logger.debug("Upscaling a %dx%dx%d image with MIGraphX", h, w, c)
+    tile_h, tile_w = program.info.height, program.info.width
+    report = TileReport()
+    report.record(tile_h, tile_w, whole=h <= tile_h and w <= tile_w)
+
+    # The session outlives the run; clearing this node, or Load Program letting go
+    # of its program, frees it. Its lock lets items computed ahead share it; their
+    # wait for it is not their time.
+    with use_runner_session(
+        program, settings.gpu_index, context.node_id
+    ) as runner, held(runner.lock):
+
+        def on_runner(i: np.ndarray) -> np.ndarray:
+            output = runner.upscale(i)
+            if before_clip is not None:
+                before_clip(output)
+            return output
+
+        image = convenient_upscale(
+            img,
+            program.input_channels,
+            program.output_channels,
+            on_runner,
+            separate_alpha,
+        )
+    return image, report.text
+
 
 if processing_group is not None:
 
@@ -58,20 +103,4 @@ if processing_group is not None:
         program: MIGraphXProgram,
         separate_alpha: bool,
     ) -> np.ndarray:
-        settings = get_settings(context)
-        h, w, c = get_h_w_c(img)
-        logger.debug("Upscaling a %dx%dx%d image with MIGraphX", h, w, c)
-
-        # The session outlives the run; clearing this node, or Load Program letting go
-        # of its program, frees it. Its lock lets items computed ahead share it; their
-        # wait for it is not their time.
-        with use_runner_session(
-            program, settings.gpu_index, context.node_id
-        ) as runner, held(runner.lock):
-            return convenient_upscale(
-                img,
-                program.input_channels,
-                program.output_channels,
-                runner.upscale,
-                separate_alpha,
-            )
+        return program_upscale(context, img, program, separate_alpha)[0]

@@ -5,6 +5,11 @@
 # no tests, device code for every gfx target ROCm 7.14.1 ships on Linux. The image's python-build-standalone 3.14.8
 # provides the headers and, for MIGraphX's separate embedding library libmigraphx_py_3.14.so (which only MIGraphX's
 # own driver opens), libpython; the extension module links no libpython.
+# With migraphx-hip-graph.patch (MIT, as MIGraphX), the GPU target's hipgraphify pass, off unless a compile asks for it:
+# AMDMIGraphX PR #4956 "Add support for HipGraph" (2f1f50dcc3) without its tests, and #5298's C linkage (e3fae06faa),
+# plus the capture boundaries of #5184 and #5364 for what this commit has (a view placed by a host value, select_module)
+# and gpu::loop, whose iterations run on the host. The target's files are restored and the patch applied again on every
+# run; the pass reads compile_options::backend_options["hip_graph"], which upstream reads through its options struct.
 # Install prefix: /work/migraphx-7.14, the --migraphx of native/tools/build_linux_release.sh.
 set -euo pipefail
 ROCM=$(cat /work/rocm-root.txt)
@@ -23,6 +28,9 @@ GCCTC=--gcc-toolchain=/opt/rh/gcc-toolset-14/root/usr
 LIBLINK="$GCCTC -Wl,-Bsymbolic-functions -Wl,--exclude-libs,ALL"
 export ROCM_PATH=$ROCM HIP_PATH=$ROCM
 test "$(git -C "$SRC" rev-parse HEAD)" = "2487b688c453b9007ac69ff1d79ad6cf9b509901"
+git -C "$SRC" checkout HEAD -- src/targets/gpu
+git -C "$SRC" clean -fdq -- src/targets/gpu
+git -C "$SRC" apply /recipe/migraphx-hip-graph.patch
 echo "[$(date -Is)] MIGraphX $(git -C "$SRC" rev-parse HEAD), targets $TARGETS"
 cmake -S "$SRC" -B "$B" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$I" -DCMAKE_INSTALL_LIBDIR=lib \

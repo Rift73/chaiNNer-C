@@ -32,6 +32,7 @@ struct CompileOptions {
     bool fp16 = false;
     bool fp8 = false;
     bool exhaustive_tune = false;
+    bool hip_graph = false;      // MIGraphX's hipgraphify pass on the gpu target; the ref target has none
     std::map<std::string, std::vector<std::size_t>> input_dims;
     std::vector<std::map<std::string, migraphx::argument>> calibration;  // host inputs, for fp8
 };
@@ -57,6 +58,9 @@ public:
     std::vector<std::string> const& input_names() const { return input_names_; }
     std::vector<migraphx::shape> const& input_shapes() const { return input_shapes_; }
     std::vector<migraphx::shape> const& output_shapes() const { return output_shapes_; }
+    // The hip::graph instructions it holds. Each records its kernels on its first run and replays them, on the pointers
+    // of the run that recorded them unless a parameter's buffer moves.
+    std::size_t hip_graphs() const { return hip_graphs_; }
 
     // Runs once on these buffers (device memory, ordered on `stream`; host memory for a ref program, which returns
     // when done): every input by name, every output in order. One run at a time per program.
@@ -76,6 +80,7 @@ private:
     bool closed_ = false;
     std::vector<std::string> input_names_;
     std::vector<migraphx::shape> input_shapes_, output_shapes_;
+    std::size_t hip_graphs_ = 0;
     bool output_parameters_ = false;  // outputs written into main:#output_<i> parameters
     std::unique_ptr<std::mutex> mutex_ = std::make_unique<std::mutex>();
 };

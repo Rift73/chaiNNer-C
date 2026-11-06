@@ -55,7 +55,7 @@ numpy==2.5.3
 nvidia-ml-py==13.615.71
 onnx==1.23.2
 onnxoptimizer==0.4.2
-onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14/onnxruntime_migraphx-1.30.0%2Brocm7.14-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=d9dc6fbe7acb8d7b4a40cf33bb7345bae92b154bd9da7023e67c66c1d11cf153
+onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=233e4ac76e3eb7712d4b968e4bce4649c1f2ba5bf0e686fec354ab9afd5466f6
 opencv-python==5.0.0.93
 packaging==26.3
 pillow==12.3.0

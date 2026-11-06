@@ -135,6 +135,18 @@ def _cached_program(
     return program
 
 
+def forget_program(key: str, directory: str) -> None:
+    """Drop the program of `key`, whose whole record MIGraphX cannot start (a driver update,
+    say): its next use builds it again. A file that cannot go is logged."""
+    with _lock:
+        _memory.pop(key, None)
+    path = Path(directory) / f"{key}{SUFFIX}"
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Program Cache: could not remove %s.", path, exc_info=True)
+
+
 def _magic() -> bytes:
     return f"chaiNNer-C MIGraphX program cache {FORMAT_VERSION}\n".encode()
 

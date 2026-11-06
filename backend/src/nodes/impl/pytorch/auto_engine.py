@@ -1,6 +1,10 @@
-"""PyTorch Upscale Image's "Use TensorRT Engine": a model that has an automatic recipe
-(FP16_ARCHS, DUAL, legacy DRFT) runs through a TensorRT engine, exported and built once
-through Convert To ONNX's and Build Engine's own paths.
+"""PyTorch Upscale Image's "Use TensorRT Engine" and, where MIGraphX runs, its "Use MIGraphX
+Program": a model that has an automatic recipe (FP16_ARCHS, DUAL, legacy DRFT) runs through
+a TensorRT engine, exported and built once through Convert To ONNX's and Build Engine's own
+paths, or a MIGraphX program through Convert To ONNX's and Build Program's. One flow
+(_engine_of, upscale_through_engine) on two routes (_TensorRT, _MIGraphX). What follows of
+an engine and the Engine Cache holds of a program and the Program Cache, except its size:
+a program takes one, the Tile Size (_program_size).
 
 An engine is kept on disk by the identity of its model's weights, not of its ONNX, so a
 later run, also after a restart, reads it without exporting. It stays among the Engine
@@ -10,8 +14,8 @@ used all the same, as the input that was turned on promises a build once, and it
 state the disk use. With the input off, this feature keeps nothing. A model that cannot
 use an engine runs on PyTorch for the rest of the chain, and the next run tries again.
 
-This module must not import TensorRT, ONNX or the modules that need them at its top:
-PyTorch's Upscale Image loads without them, and with the setting off it needs none.
+This module must not import TensorRT, MIGraphX, ONNX or the modules that need them at its
+top: PyTorch's Upscale Image loads without them, and with the setting off it needs none.
 """
 
 from __future__ import annotations
@@ -33,7 +37,7 @@ from sanic.log import logger
 from spandrel import ImageModelDescriptor
 
 from api import Aborted, NodeContext, NodeId
-from gpu import nvidia
+from gpu import amd, nvidia
 
 from ..image_op import ImageOp
 from ..onnx.model import FP16_ARCHS_NAVI, converts_in_fp16
@@ -42,6 +46,7 @@ from .utils import safe_cuda_cache_empty
 
 if TYPE_CHECKING:
     # Annotations only: no import at runtime.
+    from ..migraphx.model import MIGraphXProgram
     from ..tensorrt.model import TensorRTEngine
     from ..upscale.tile_report import TileReport
 
@@ -82,13 +87,19 @@ _RECIPE_SOURCES = (
     _HERE.parents[2] / "packages/chaiNNer_pytorch/pytorch/utility/convert_to_onnx.py",
     _HERE.parents[2] / "packages/chaiNNer_tensorrt/tensorrt/utility/build_engine.py",
 )
+# What a program's build runs besides those, its runner and its DUAL or DRFT route.
+_PROGRAM_SOURCES = (
+    _HERE.parent / "migraphx" / "program.py",
+    _HERE.parent / "migraphx" / "program_worker.py",
+    _HERE.parents[2] / "packages/chaiNNer_migraphx/migraphx/utility/build_program.py",
+)
 
 _lock = Lock()
 # Per model, the device, GPU and largest size it was asked for, and its engine or the reason it has
 # none. The app keeps a model between runs, so one model sees PyTorch's settings change.
 _Where = tuple[torch.device, int, int]
 _outcomes: WeakKeyDictionary[
-    ImageModelDescriptor, tuple[_Where, TensorRTEngine | str]
+    ImageModelDescriptor, tuple[_Where, TensorRTEngine | MIGraphXProgram | str]
 ] = WeakKeyDictionary()
 # The nodes that may hold a session on an automatic engine.
 _engine_nodes: set[NodeId] = set()
@@ -101,6 +112,7 @@ _rebuilt: set[str] = set()
 
 
 def _recipe(model: ImageModelDescriptor) -> str | None:
+    # Both routes take one list, whose FP16 was measured on TensorRT.
     if converts_in_fp16(model.architecture.name, model.tags):
         return "fp16"
     if model.architecture.id == "DUAL":
@@ -113,15 +125,35 @@ def _recipe(model: ImageModelDescriptor) -> str | None:
     return None
 
 
+def migraphx_here() -> bool:
+    """Whether the MIGraphX package can run on this PC, which makes MIGraphX the route. A PC
+    with an NVIDIA GPU or no worthwhile AMD one does not even import the package."""
+    if nvidia.is_available or not amd.eligible:
+        return False
+    from packages.chaiNNer_migraphx import disabled_reason
+
+    return disabled_reason() is None
+
+
 def _no_engine_here(device: torch.device) -> str | None:
-    """Why this machine or this run's settings have no engine; None if they may. Empty
-    without NVIDIA: the node hides the setting there, so a saved chain's On cannot be turned
-    off, and this is no surprise worth a warning."""
-    if torch.version.hip is not None or not nvidia.is_available:
+    """Why this machine or this run's settings have no engine or program; None if they may.
+    Empty without NVIDIA or MIGraphX: the node hides the setting there, so a saved chain's On
+    cannot be turned off, and this is no surprise worth a warning."""
+    migraphx = migraphx_here()
+    if not migraphx and (torch.version.hip is not None or not nvidia.is_available):
         logger.info("Use TensorRT Engine: no NVIDIA GPU here; running on PyTorch.")
         return ""
     if device.type != "cuda":
         return "PyTorch is set to the CPU."
+    if migraphx:
+        from packages.chaiNNer_migraphx import migraphx_loaded
+        from packages.chaiNNer_migraphx import package as migraphx_package
+
+        if migraphx_package.disabled:
+            return migraphx_package.disabled_reason
+        if not migraphx_loaded:
+            return "The MIGraphX package is not installed (see the Dependency Manager)."
+        return None
     from packages.chaiNNer_tensorrt import package
 
     if package.disabled:
@@ -145,9 +177,9 @@ def _weights_digest(model: ImageModelDescriptor) -> bytes:
 
 
 @cache
-def _recipe_identity() -> str:
+def _recipe_identity(route_sources: tuple[Path, ...] = ()) -> str:
     digest = hashlib.sha256(repr((torch.__version__, spandrel.__version__)).encode())
-    for source in _RECIPE_SOURCES:
+    for source in (*_RECIPE_SOURCES, *route_sources):
         digest.update(source.read_bytes())
     return digest.hexdigest()
 
@@ -156,6 +188,58 @@ def _engine_tile(model: ImageModelDescriptor, tile_size: TileSize) -> int:
     """The largest size of the model's engine for the node's Tile Size."""
     tile = max(int(tile_size), MIN_SIZE) if tile_size > 0 else DEFAULT_TILE
     return min(tile, LARGEST_TILE.get(model.architecture.name, tile))
+
+
+def _program_size(model: ImageModelDescriptor, recipe: str, tile: int) -> int:
+    """The one input size of the model's program for its `tile` (_engine_tile), as a program
+    has no range of sizes: the tile aligned up to the model's multiple, and at least its
+    smallest. DUAL's ONNX takes multiples of its own alignment, which its size requirement
+    does not name, and a legacy DRFT's smallest side is two windows."""
+    req = model.size_requirements
+    multiple, low = req.multiple_of, req.minimum
+    if recipe == "dual":
+        from ..tensorrt.dual import ALIGNMENT
+
+        multiple = ALIGNMENT
+    elif recipe == "drft":
+        from ..tensorrt import drft_export
+
+        low = max(low, drft_export.min_size(model.model.window_size))
+    return -(-max(tile, low) // multiple) * multiple
+
+
+def _program_key(
+    context: NodeContext, model: ImageModelDescriptor, recipe: str, tile: int
+) -> str:
+    """As migraphx.build_cache.program_key, with the weights in place of the ONNX, which a
+    later run does not export: everything the program depends on."""
+    from packages.chaiNNer_migraphx.settings import get_settings
+
+    from ..migraphx import build_cache, drft, dual
+    from ..migraphx.runner import runner_identity
+
+    settings = get_settings(context)
+    routes = {"dual": dual.build_identity, "drft": drft.build_identity}.get(recipe)
+    digest = hashlib.sha256(_weights_digest(model))
+    digest.update(
+        repr(
+            (
+                build_cache.FORMAT_VERSION,
+                (
+                    recipe,
+                    model.architecture.name,
+                    model.scale,
+                    _program_size(model, recipe, tile),
+                    _recipe_identity(_PROGRAM_SOURCES),
+                ),
+                settings.gpu_name,
+                settings.gfx,
+                runner_identity(),
+                None if routes is None else routes(),
+            )
+        ).encode()
+    )
+    return digest.hexdigest()
 
 
 def _engine_key(
@@ -288,6 +372,49 @@ def _build(
     return engine
 
 
+def _build_program(
+    context: NodeContext, model: ImageModelDescriptor, tile: int
+) -> MIGraphXProgram:
+    """Convert To ONNX's and Build Program's own paths. Both nodes read their settings from
+    `context`, PyTorch's here: the GPU's key is the same in both packages, and the MIGraphX
+    package's Program Cache is unset, so the program is kept only by `cached_program` in
+    `_engine_of`. The recipe's precision is the ONNX's record, or its own for DUAL and DRFT:
+    Build Program's Precision does not apply to any of them."""
+    from packages.chaiNNer_migraphx.migraphx.utility.build_program import (
+        ProgramPrecision,
+        build_program_node,
+    )
+    from packages.chaiNNer_pytorch.pytorch.utility.convert_to_onnx import (
+        DualShape,
+        OnnxDataType,
+        Opset,
+        convert_to_onnx_node,
+    )
+
+    recipe = _recipe(model)
+    assert recipe is not None
+    size = _program_size(model, recipe, tile)
+    onnx_model = convert_to_onnx_node(
+        context,
+        model,
+        OnnxDataType.FP16,
+        Opset(OPSET),
+        False,
+        DualShape.DYNAMIC,
+        size,
+        size,
+    )[0]
+    context.check_aborted()
+    program = build_program_node(
+        context, onnx_model, ProgramPrecision.FP16, size, size, False, False
+    )
+    if program.scale != model.scale:
+        raise ValueError(
+            f"The program upscales {program.scale}x, the model {model.scale}x."
+        )
+    return program
+
+
 def _described(error: Exception) -> str:
     return f"{type(error).__name__}: {error}"
 
@@ -304,27 +431,153 @@ def _no_engine(
 ) -> str:
     """Remember for this chain that the model runs on PyTorch, once saying why (an empty
     `reason` says nothing)."""
+    route = _route()
     with _lock:
         _outcomes[model] = (where, reason)
     context.add_cleanup(partial(_forget_reason, model), after="chain")
     if reason:
         context.warn(
             f"Upscale Image runs this {model.architecture.name} model on PyTorch, not"
-            f" through a TensorRT engine: {reason}"
+            f" through a {route.maker} {route.made}: {reason}"
         )
     return reason
 
 
-def _cache_folder(context: NodeContext) -> Path:
-    """The Engine Cache's folder, its setting on or off: the one the app sets, or where
-    the app would set it, in the root that holds the backend's storage folder."""
-    from packages.chaiNNer_tensorrt.settings import ENGINE_CACHE_DIRECTORY
-
-    settings = context.settings.of_package("chaiNNer_tensorrt")
-    location = settings.get_cache_location("engine_cache")
+def _cache_folder(
+    context: NodeContext, package: str, setting: str, directory: str
+) -> Path:
+    """A package's cache folder, its setting on or off: the one the app sets, or where the
+    app would set it, in the root that holds the backend's storage folder."""
+    location = context.settings.of_package(package).get_cache_location(setting)
     if location is not None:
         return Path(location)
-    return context.storage_dir.parent / "cache" / ENGINE_CACHE_DIRECTORY
+    return context.storage_dir.parent / "cache" / directory
+
+
+class _TensorRT:
+    """The route on NVIDIA GPUs: Build Engine's engines, in the Engine Cache's folder."""
+
+    input = "Use TensorRT Engine"
+    maker = "TensorRT"
+    made = "engine"
+
+    @staticmethod
+    def key(
+        context: NodeContext,
+        model: ImageModelDescriptor,
+        recipe: str,
+        gpu_index: int,
+        tile: int,
+    ) -> str:
+        return _engine_key(model, recipe, gpu_index, tile)
+
+    @staticmethod
+    def folder(context: NodeContext) -> Path:
+        from packages.chaiNNer_tensorrt.settings import ENGINE_CACHE_DIRECTORY
+
+        return _cache_folder(
+            context, "chaiNNer_tensorrt", "engine_cache", ENGINE_CACHE_DIRECTORY
+        )
+
+    @staticmethod
+    def cached(
+        key: str, build: Callable[[], TensorRTEngine], folder: str
+    ) -> TensorRTEngine:
+        from ..tensorrt.build_cache import cached_engine
+
+        return cached_engine(key, build, folder)
+
+    @staticmethod
+    def forget(key: str, folder: str) -> None:
+        from ..tensorrt.build_cache import forget_engine
+
+        forget_engine(key, folder)
+
+    @staticmethod
+    def build(
+        context: NodeContext, model: ImageModelDescriptor, tile: int
+    ) -> TensorRTEngine:
+        return _build(context, model, tile)
+
+    @staticmethod
+    def op(
+        context: NodeContext,
+        model: ImageModelDescriptor,
+        engine: TensorRTEngine,
+        report: TileReport | None,
+    ) -> ImageOp:
+        return _engine_op(context, model, engine, report)
+
+    @staticmethod
+    def short_of_memory(error: Exception) -> bool:
+        from ..tensorrt.memory import CudaOutOfMemory
+
+        return isinstance(error, CudaOutOfMemory)
+
+
+class _MIGraphX:
+    """The route where MIGraphX runs: Build Program's programs, in the Program Cache's
+    folder."""
+
+    input = "Use MIGraphX Program"
+    maker = "MIGraphX"
+    made = "program"
+
+    @staticmethod
+    def key(
+        context: NodeContext,
+        model: ImageModelDescriptor,
+        recipe: str,
+        _gpu_index: int,
+        tile: int,
+    ) -> str:
+        return _program_key(context, model, recipe, tile)
+
+    @staticmethod
+    def folder(context: NodeContext) -> Path:
+        from packages.chaiNNer_migraphx.settings import PROGRAM_CACHE_DIRECTORY
+
+        return _cache_folder(
+            context, "chaiNNer_migraphx", "program_cache", PROGRAM_CACHE_DIRECTORY
+        )
+
+    @staticmethod
+    def cached(
+        key: str, build: Callable[[], MIGraphXProgram], folder: str
+    ) -> MIGraphXProgram:
+        from ..migraphx.build_cache import cached_program
+
+        return cached_program(key, build, folder)
+
+    @staticmethod
+    def forget(key: str, folder: str) -> None:
+        from ..migraphx.build_cache import forget_program
+
+        forget_program(key, folder)
+
+    @staticmethod
+    def build(
+        context: NodeContext, model: ImageModelDescriptor, tile: int
+    ) -> MIGraphXProgram:
+        return _build_program(context, model, tile)
+
+    @staticmethod
+    def op(
+        context: NodeContext,
+        model: ImageModelDescriptor,
+        program: MIGraphXProgram,
+        report: TileReport | None,
+    ) -> ImageOp:
+        return _program_op(context, model, program, report)
+
+    @staticmethod
+    def short_of_memory(error: Exception) -> bool:
+        # The runner's HIP errors name hipErrorOutOfMemory; MIGraphX's own say it in words.
+        return "outofmemory" in str(error).replace(" ", "").lower()
+
+
+def _route() -> type[_TensorRT] | type[_MIGraphX]:
+    return _MIGraphX if migraphx_here() else _TensorRT
 
 
 def _engine_of(
@@ -333,8 +586,9 @@ def _engine_of(
     device: torch.device,
     gpu_index: int,
     tile_size: TileSize,
-) -> TensorRTEngine | str:
-    """The model's engine for this Tile Size, or why it has none. Stop raises Aborted."""
+) -> TensorRTEngine | MIGraphXProgram | str:
+    """The model's engine or program for this Tile Size, or why it has none. Stop raises
+    Aborted."""
     tile = _engine_tile(model, tile_size)
     where = (device, gpu_index, tile)
     with _lock:
@@ -342,14 +596,16 @@ def _engine_of(
     if kept is not None and kept[0] == where:
         return kept[1]
 
+    route = _route()
     recipe = _recipe(model)
     if recipe is None:
         # The node hides the setting for these, so this is no surprise worth a warning;
         # except a DRFT, whose type does not tell a legacy one.
         logger.info(
-            "Use TensorRT Engine: this %s model has no automatic engine; running on"
-            " PyTorch.",
+            "%s: this %s model has no automatic %s; running on PyTorch.",
+            route.input,
             model.architecture.name,
+            route.made,
         )
         reason = ""
         if model.architecture.name == "DRFT":
@@ -357,7 +613,7 @@ def _engine_of(
         return _no_engine(context, model, where, reason)
     if tile < tile_size:
         context.warn(
-            f"Use TensorRT Engine: this {model.architecture.name} model's engine stops at"
+            f"{route.input}: this {model.architecture.name} model's {route.made} stops at"
             f" {tile} px, so it runs in tiles of that size, not {tile_size} px: above that"
             " its memory can fill the GPU."
         )
@@ -365,25 +621,23 @@ def _engine_of(
         reason = _no_engine_here(device)
         if reason is not None:
             return _no_engine(context, model, where, reason)
-        from ..tensorrt.build_cache import cached_engine
-
-        key = _engine_key(model, recipe, gpu_index, tile)
-        folder = _cache_folder(context)
+        key = route.key(context, model, recipe, gpu_index, tile)
+        folder = route.folder(context)
         folder.mkdir(parents=True, exist_ok=True)
         # What PyTorch keeps cached on the GPU is the build's and the session's now.
         safe_cuda_cache_empty()
         built = False
 
-        def build() -> TensorRTEngine:
+        def build() -> TensorRTEngine | MIGraphXProgram:
             nonlocal built
             built = True
-            return _build(context, model, tile)
+            return route.build(context, model, tile)
 
-        engine = cached_engine(key, build, str(folder))
+        engine = route.cached(key, build, str(folder))
     except Aborted:
         raise
     except Exception as e:
-        logger.exception("Use TensorRT Engine: no engine for this model")
+        logger.exception("%s: no %s for this model", route.input, route.made)
         return _no_engine(context, model, where, _described(e))
     with _lock:
         _outcomes[model] = (where, engine)
@@ -393,8 +647,9 @@ def _engine_of(
 
 
 def release_engine(node_id: NodeId) -> None:
-    """Free a session this node holds on an automatic engine, if any: its GPU memory is
-    PyTorch's again."""
+    """Free a session this node holds on an automatic engine or program, if any: its GPU
+    memory is PyTorch's again. release_node goes through every session cache, MIGraphX's
+    too."""
     with _lock:
         held = node_id in _engine_nodes
         _engine_nodes.discard(node_id)
@@ -407,6 +662,22 @@ def release_engine(node_id: NodeId) -> None:
 def _is_finite(img: np.ndarray) -> bool:
     # NaN propagates through min and max: two passes and no temporary array
     return math.isfinite(img.min()) and math.isfinite(img.max())
+
+
+def _checked(
+    model: ImageModelDescriptor, made: str, img: np.ndarray
+) -> Callable[[np.ndarray], None]:
+    """What raises where PyTorch would on invalid values from the finite `img`."""
+
+    def check(raw: np.ndarray) -> None:
+        if not _is_finite(raw) and _is_finite(img):
+            raise RuntimeError(
+                f"The {made} of this {model.architecture.name} model returned invalid"
+                " values (NaN or infinity), which would be saved as black or white"
+                " pixels."
+            )
+
+    return check
 
 
 def _engine_op(
@@ -422,16 +693,35 @@ def _engine_op(
     )
 
     def run(img: np.ndarray) -> np.ndarray:
-        def checked(raw: np.ndarray) -> None:
-            if not _is_finite(raw) and _is_finite(img):
-                raise RuntimeError(
-                    f"The engine of this {model.architecture.name} model returned invalid"
-                    " values (NaN or infinity), which would be saved as black or white"
-                    " pixels."
-                )
-
         output, tiles = engine_upscale(
-            context, img, engine, False, False, before_clip=checked
+            context,
+            img,
+            engine,
+            False,
+            False,
+            before_clip=_checked(model, "engine", img),
+        )
+        if report is not None:
+            report.text = tiles
+        return output
+
+    return run
+
+
+def _program_op(
+    context: NodeContext,
+    model: ImageModelDescriptor,
+    program: MIGraphXProgram,
+    report: TileReport | None = None,
+) -> ImageOp:
+    """MIGraphX's own Upscale Image, on `context`'s GPU, as `_engine_op`."""
+    from packages.chaiNNer_migraphx.migraphx.processing.upscale_image import (
+        program_upscale,
+    )
+
+    def run(img: np.ndarray) -> np.ndarray:
+        output, tiles = program_upscale(
+            context, img, program, False, before_clip=_checked(model, "program", img)
         )
         if report is not None:
             report.text = tiles
@@ -441,20 +731,19 @@ def _engine_op(
 
 
 def _drop_refused_file(model: ImageModelDescriptor, error: Exception) -> bool:
-    """Whether `error`, which PyTorch did not repeat on the same image, is TensorRT refusing
-    the engine read from its file: then the file goes, and the next image builds. Never run
-    here, and not for want of memory. Once per engine in a process: one built anew and
-    refused too says nothing of the file."""
-    from ..tensorrt.build_cache import forget_engine
-    from ..tensorrt.memory import CudaOutOfMemory
-
+    """Whether `error`, which PyTorch did not repeat on the same image, is the route refusing
+    the engine or program read from its file: then the file goes, and the next image builds.
+    Never run here, and not for want of memory. Once per engine in a process: one built anew
+    and refused too says nothing of the file."""
+    route = _route()
+    short_of_memory = route.short_of_memory(error)
     with _lock:
         unproven = _unproven.pop(model, None)
-        if unproven is None or isinstance(error, CudaOutOfMemory):
+        if unproven is None or short_of_memory:
             return False
         _rebuilt.add(unproven[0])
         _outcomes.pop(model, None)
-    forget_engine(*unproven)
+    route.forget(*unproven)
     return True
 
 
@@ -468,9 +757,10 @@ def upscale_through_engine(
     pytorch: ImageOp,
     report: TileReport | None = None,
 ) -> np.ndarray:
-    """`upscale_with` the model's engine, or `pytorch` when it has none or fails. The whole
-    image starts over: an image with transparency must not mix the two (its two passes
-    are compared). `report` takes the engine's tiles; `pytorch` records its own."""
+    """`upscale_with` the model's engine or program, or `pytorch` when it has none or fails.
+    The whole image starts over: an image with transparency must not mix the two (its two
+    passes are compared). `report` takes the engine's tiles; `pytorch` records its own."""
+    route = _route()
     engine = _engine_of(context, model, device, gpu_index, tile_size)
     if isinstance(engine, str):
         release_engine(context.node_id)
@@ -478,11 +768,11 @@ def upscale_through_engine(
     with _lock:
         _engine_nodes.add(context.node_id)
     try:
-        output = upscale_with(_engine_op(context, model, engine, report))
+        output = upscale_with(route.op(context, model, engine, report))
     except Aborted:
         raise
     except Exception as e:
-        logger.exception("Use TensorRT Engine: the engine failed on this image")
+        logger.exception("%s: the %s failed on this image", route.input, route.made)
         error = e
     else:
         with _lock:
@@ -494,9 +784,9 @@ def upscale_through_engine(
     output = upscale_with(pytorch)
     if _drop_refused_file(model, error):
         context.warn(
-            f"Upscale Image ran this image on PyTorch: TensorRT could not start this"
-            f" {model.architecture.name} model's kept engine, so it is built again for"
-            f" the next image. {_described(error)}"
+            f"Upscale Image ran this image on PyTorch: {route.maker} could not start this"
+            f" {model.architecture.name} model's kept {route.made}, so it is built again"
+            f" for the next image. {_described(error)}"
         )
     else:
         where = (device, gpu_index, _engine_tile(model, tile_size))

@@ -191,7 +191,7 @@ wheels="$root/backend/src/dependencies/whls/chainner-pip"
 rocm_wheels="$root/backend/src/dependencies/whls/rocm"
 onnxruntime_pin='onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11.4-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=b67a9a5b03df5fd4687d33d41dc035542d4ec2c4da8da57741749ee21b783778'
 # The ONNX package's ORT_MIGRAPHX_URL: ONNX Runtime with the MIGraphX provider, MIGraphX inside it.
-[ "$rocm" = 0 ] || onnxruntime_pin='onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14/onnxruntime_migraphx-1.30.0%2Brocm7.14-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=d9dc6fbe7acb8d7b4a40cf33bb7345bae92b154bd9da7023e67c66c1d11cf153'
+[ "$rocm" = 0 ] || onnxruntime_pin='onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=233e4ac76e3eb7712d4b968e4bce4649c1f2ba5bf0e686fec354ab9afd5466f6'
 if [ "$relock" = 1 ]; then
     "${pip[@]}" install --no-cache-dir --upgrade pip
     # The backend's dependencies at their latest versions, torch from the PyTorch index (which also serves the CUDA

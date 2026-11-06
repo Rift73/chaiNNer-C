@@ -4,8 +4,8 @@
 # sources are compiled by the SDK's clang++ through custom commands, as nvcc compiles the .cu files: device code for
 # every architecture of CHAINNER_C_HIP_ARCHITECTURES (every target ROCm 7.14 ships for the system), host code with the
 # parent directory's intent (no contraction unless a target asks, hidden visibility, the stack protector); the modules
-# link with the parent toolchain. Windows (Build.ps1 -RocmRoot, -MigraphxRoot): the same modules as .pyd and .dll
-# except dual's, whose kernels come from Triton, which has no Windows build for AMD GPUs; the SDK's clang++ compiles
+# link with the parent toolchain. Windows (Build.ps1 -RocmRoot, -MigraphxRoot): the same modules as .pyd and .dll;
+# the SDK's clang++ compiles
 # against the MSVC toolset and Windows SDK that toolchain.cmake pins, for the C runtime of the target's directory
 # (CMAKE_MSVC_RUNTIME_LIBRARY). Without a root, Windows declares none of this file's cache entries, so such a build
 # configures as before the AMD parts existed.
@@ -155,12 +155,7 @@ function(chainner_c_hip_module target output_subdirectory)
     endif()
 endfunction()
 
-# DUAL's ops run kernels Triton compiles, and Triton has no Windows build for AMD GPUs: no dual_migx_ops.dll.
-set(chainner_c_hip_models drft dual vosr2)
-if(WIN32)
-    list(REMOVE_ITEM chainner_c_hip_models dual)
-endif()
-foreach(chainner_c_model IN LISTS chainner_c_hip_models)
+foreach(chainner_c_model IN ITEMS drft dual vosr2)
     if(EXISTS "${PROJECT_SOURCE_DIR}/src/${chainner_c_model}_hip/CMakeLists.txt")
         add_subdirectory("${PROJECT_SOURCE_DIR}/src/${chainner_c_model}_hip")
     endif()

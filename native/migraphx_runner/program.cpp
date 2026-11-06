@@ -263,6 +263,7 @@ Program Program::compile(std::string const& model, bool from_file, CompileOption
     compile.offload_copy = false;
     compile.fast_math = false;
     compile.exhaustive_tune = options.exhaustive_tune;
+    if (options.hip_graph) compile.backend_options["hip_graph"] = true;
     p.program_.compile(target, compile);
     p.describe();
     return p;
@@ -317,6 +318,9 @@ void Program::describe() {
         input_shapes_.push_back(shapes.at(name));
     }
     output_shapes_ = program_.get_output_shapes();
+    hip_graphs_ = 0;
+    for (auto ins : migraphx::iterator_for(*program_.get_main_module()))
+        if (ins->name() == "hip::graph") ++hip_graphs_;
 }
 
 std::vector<char> Program::save() const {

@@ -1,6 +1,7 @@
 """Turn the auditwheel-repaired onnxruntime_migraphx 1.30.0 wheel into the shipped one.
 
-1. Local version: 1.30.0 -> 1.30.0+rocm7.14 (METADATA and .dist-info name; onnxruntime.__version__ stays 1.30.0).
+1. Local version: 1.30.0 -> 1.30.0+rocm7.14.hipgraph, MIGraphX with migraphx-hip-graph.patch (METADATA and .dist-info
+   name; onnxruntime.__version__ stays 1.30.0).
 2. MIGraphX is not part of AMD's ROCm pip packages, so its libraries are added to onnxruntime/capi/ under their
    sonames: everything the MIGraphX provider needs (transitively), the gpu and ref targets MIGraphX dlopens by
    versioned soname, and migraphx-hiprtc-driver (MIGraphX looks for it next to libmigraphx_gpu and compiles kernels
@@ -24,7 +25,7 @@ import subprocess
 import sys
 import tempfile
 
-LOCAL = "+rocm7.14"
+LOCAL = "+rocm7.14.hipgraph"
 DIST = "onnxruntime_migraphx"
 RPATH = ":".join(
     [

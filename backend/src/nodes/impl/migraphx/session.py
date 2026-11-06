@@ -42,6 +42,11 @@ class RunnerSession:
 
     def __init__(self, program: MIGraphXProgram, gpu_index: int) -> None:
         self.runner = native().Runner(program.bytes, gpu_index, NODE_STREAMS)
+        if program.info.hip_graphs:
+            logger.info(
+                "This MIGraphX program holds %d HIP graphs (Use HIP Graph, experimental).",
+                program.info.hip_graphs,
+            )
         self._warned = False
         # One image at a time: the item window may run the node for several items at
         # once (execution_scheduler.LOCKED_DEVICE_NODES).

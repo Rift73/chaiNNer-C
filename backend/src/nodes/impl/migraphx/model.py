@@ -20,6 +20,8 @@ class MIGraphXProgramInfo:
     migraphx_version: str
     height: int
     width: int
+    # The HIP graphs it holds: Build Program's Use HIP Graph, 0 without it
+    hip_graphs: int = 0
 
 
 class MIGraphXProgram:

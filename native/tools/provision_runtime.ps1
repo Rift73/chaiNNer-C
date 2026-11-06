@@ -57,7 +57,9 @@ if ($Rocm) {
     $FromTorchIndex = '^(torch|torchvision|rocm-bootstrap|rocm-sdk-[a-z0-9-]+)=='
     $TorchPins = @('torch==2.12.0+rocm7.14.1', 'torchvision==0.27.0+rocm7.14.1', 'rocm==7.14.1+chainner')
     # onnxruntime-migraphx: ONNX Runtime 1.30.0 with DirectML and MIGraphX, the wheel on its fork's release
-    $OnnxRuntimePin = 'onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14/onnxruntime_migraphx-1.30.0%2Brocm7.14.dml-cp314-cp314-win_amd64.whl#sha256=9a8c2d1fddfd9a00e429d21fe8f50a32496d0dfe797db1675d3ef299782b870c'
+    $OnnxRuntimePin = 'onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph.dml-cp314-cp314-win_amd64.whl#sha256=940258f7c0f010d4250560b18cc95c359348f16ab7b060e65a32fd91cc5fc29f'
+    # triton-windows compiles DUAL's kernels for AMD targets (Build Program); 3.5.1 cannot
+    $AmdPins = @('triton-windows @ https://files.pythonhosted.org/packages/0c/3c/6be3de0febab8f0708b32377c59d6f963a492622ce79762ec08ddc7496a8/triton_windows-3.8.0.post29-cp314-cp314-win_amd64.whl#sha256=1d0fd6a6cf36ba5cced997177068e328d015e42cd4300f6995fff5a6f8707aff')
 } else {
     $LockPath = Join-Path $Root 'native\python-stack.lock.txt'
     $TorchIndex = 'https://download.pytorch.org/whl/cu132'
@@ -65,6 +67,7 @@ if ($Rocm) {
     $TorchPins = @('torch==2.14.1', 'torchvision==0.29.1')
     # onnxruntime-gpu: ONNX Runtime 1.30.0 rebuilt for TensorRT 11.4, the wheel on its fork's release
     $OnnxRuntimePin = 'onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11.4-cp314-cp314-win_amd64.whl#sha256=3ab12b436d5f6463867b0635366c29fd4a26c3ae489d2b3911c00391411d1ca6'
+    $AmdPins = @()
 }
 # UTF-8 without a BOM (Set-Content -Encoding utf8 writes one in Windows PowerShell 5.1).
 $Utf8 = New-Object Text.UTF8Encoding $false
@@ -199,7 +202,7 @@ if ($Relock) {
         'pynvml',  # oracle/reference only (upstream's server declares it; nvidia-ml-py provides the module)
         'pybind11==3.1.0', 'pytest', 'pytest-asyncio', 'pytest-cov'
     )
-    & $Python @Pip install @Packages
+    & $Python @Pip install @Packages @AmdPins
     if ($LASTEXITCODE -ne 0) { throw 'package install failed' }
     & $Python @Pip install --no-index --find-links $Wheels chainner-pip
     if ($LASTEXITCODE -ne 0) { throw 'chainner-pip install failed' }
@@ -262,7 +265,8 @@ if ($Relock) {
             '# backend/src/dependencies/whls/, spandrel and onnxruntime-migraphx from their forks'' release wheels',
             '# (github.com/Rift73/spandrel, github.com/Rift73/onnxruntime), the rest from PyPI). It is the Windows lock''s',
             '# set for AMD GPUs: ROCm in CUDA''s place and ONNX Runtime with DirectML and MIGraphX. The GPU kernel wheels',
-            '# (torch[device-gfx<arch>]) are a machine''s, never the lock''s: -Device adds them.'
+            '# (torch[device-gfx<arch>]) are a machine''s, never the lock''s: -Device adds them. triton-windows compiles DUAL''s',
+            '# kernels (Build Program), by its wheel''s URL on PyPI.'
         )
     } else {
         $Lock += @(

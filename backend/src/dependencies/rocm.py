@@ -1,5 +1,5 @@
 """The dependencies the packages share on AMD GPUs: ROCm, ONNX Runtime with the MIGraphX
-provider and Triton for ROCm.
+provider, Triton for ROCm and, on Windows, Triton for Windows.
 
 ROCm 7.14.1 ships as pip wheels: rocm-sdk-core (the HIP runtime), rocm-sdk-libraries
 (rocBLAS, hipBLASLt, MIOpen and the other math libraries) and one GPU kernel wheel per
@@ -329,25 +329,35 @@ WINDOWS_ARCHITECTURES = frozenset(
 # onnxruntime-migraphx 1.30.0 built with its MIGraphX provider against ROCm 7.14.1
 # (manylinux_2_28), MIGraphX's libraries inside it; PyPI's last onnxruntime-migraphx is
 # 1.27.1, for glibc 2.34 and a system ROCm 7.2.
-ORT_MIGRAPHX_VERSION = "1.30.0+rocm7.14"
+ORT_MIGRAPHX_VERSION = "1.30.0+rocm7.14.hipgraph"
 ORT_MIGRAPHX_URL = (
-    "https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14/"
-    "onnxruntime_migraphx-1.30.0%2Brocm7.14-cp314-cp314-manylinux_2_28_x86_64.whl"
+    "https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/"
+    "onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph-cp314-cp314-manylinux_2_28_x86_64.whl"
 )
-ORT_MIGRAPHX_SHA256 = "d9dc6fbe7acb8d7b4a40cf33bb7345bae92b154bd9da7023e67c66c1d11cf153"
+ORT_MIGRAPHX_SHA256 = "233e4ac76e3eb7712d4b968e4bce4649c1f2ba5bf0e686fec354ab9afd5466f6"
 ORT_MIGRAPHX_SIZE = 100 * MB
 # Its Windows build (win_amd64), in the same release: the DirectML provider beside
 # MIGraphX's, MIGraphX 2.16.1's DLLs and the MSVC runtime inside it, ROCm's from the ROCm
 # pip packages.
-ORT_MIGRAPHX_WINDOWS_VERSION = "1.30.0+rocm7.14.dml"
+ORT_MIGRAPHX_WINDOWS_VERSION = "1.30.0+rocm7.14.hipgraph.dml"
 ORT_MIGRAPHX_WINDOWS_URL = (
-    "https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14/"
-    "onnxruntime_migraphx-1.30.0%2Brocm7.14.dml-cp314-cp314-win_amd64.whl"
+    "https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/"
+    "onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph.dml-cp314-cp314-win_amd64.whl"
 )
 ORT_MIGRAPHX_WINDOWS_SHA256 = (
-    "9a8c2d1fddfd9a00e429d21fe8f50a32496d0dfe797db1675d3ef299782b870c"
+    "940258f7c0f010d4250560b18cc95c359348f16ab7b060e65a32fd91cc5fc29f"
 )
 ORT_MIGRAPHX_WINDOWS_SIZE = 74 * MB
+# Triton's Windows build (win_amd64): triton_windows.
+TRITON_WINDOWS_VERSION = "3.8.0.post29"
+TRITON_WINDOWS_URL = (
+    "https://files.pythonhosted.org/packages/0c/3c/6"
+    "be3de0febab8f0708b32377c59d6f963a492622ce79762ec08ddc7496a8/triton_windows-3.8.0.post29-cp314-cp314-win_amd64.whl"
+)
+TRITON_WINDOWS_SHA256 = (
+    "1d0fd6a6cf36ba5cced997177068e328d015e42cd4300f6995fff5a6f8707aff"
+)
+TRITON_WINDOWS_SIZE = 54097540
 # The other builds of ONNX Runtime, which own its onnxruntime module too: the CPU build
 # (Linux), DirectML's (Windows) and NVIDIA's (a computer whose NVIDIA GPU gave way to an
 # AMD one). The installer uninstalls an installed one first.
@@ -464,6 +474,22 @@ def onnxruntime_migraphx() -> Dependency:
         import_name="onnxruntime",
         url=f"{ORT_MIGRAPHX_URL}#sha256={ORT_MIGRAPHX_SHA256}",
         replaces=ORT_BUILDS,
+    )
+
+
+def triton_windows() -> Dependency:
+    """Triton for Windows on AMD GPUs, which compiles DUAL's kernels for a gfx target with
+    no GPU (Build Program, in a child process). 3.8.0.post29 is the floor: 3.5.1.post22,
+    which the TensorRT package pins for NVIDIA GPUs, fails on its temporary files there.
+    It replaces nothing: no other Triton has a Windows wheel, and pip upgrades the older
+    copy of a folder that ran on an NVIDIA GPU."""
+    return Dependency(
+        display_name="Triton",
+        pypi_name="triton-windows",
+        version=TRITON_WINDOWS_VERSION,
+        size_estimate=TRITON_WINDOWS_SIZE,
+        import_name="triton",
+        url=f"{TRITON_WINDOWS_URL}#sha256={TRITON_WINDOWS_SHA256}",
     )
 
 

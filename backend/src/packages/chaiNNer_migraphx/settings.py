@@ -10,6 +10,8 @@ from gpu import amd
 
 from . import devices, package
 
+PROGRAM_CACHE_DIRECTORY = "migraphx_program_cache"
+
 # The strongest GPU (gpu.amd.default_index) when MIGraphX runs on it, else the first listed
 default_index = (
     amd.default_index
@@ -38,8 +40,8 @@ if not package.disabled:
         CacheSetting(
             label="Program Cache",
             key="program_cache",
-            description="Directory where Build Program keeps the programs it compiles, so that a build of the same model with the same settings, GPU and MIGraphX reads its program instead of compiling it again, also after a restart. Up to 16 GiB; the least recently used programs are removed first.",
-            directory="migraphx_program_cache",
+            description="Directory where Build Program keeps the programs it compiles, so that a build of the same model with the same settings, GPU and MIGraphX reads its program instead of compiling it again, also after a restart. Up to 16 GiB; the least recently used programs are removed first. PyTorch Upscale Image's Use MIGraphX Program keeps its programs here too, within the same limit, also while this setting is off.",
+            directory=PROGRAM_CACHE_DIRECTORY,
         )
     )
 

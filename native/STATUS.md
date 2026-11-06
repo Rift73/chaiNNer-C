@@ -4,7 +4,20 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
-- v0.3.10, 2026-11-06: the entries below down to "Electron alternatives researched". Gates on `80c911b1d`: Windows suite
+- AMD: PyTorch's Upscale Image has Use MIGraphX Program (input 8's label on AMD PCs; one program per Tile Size, kept in
+  the Program Cache folder; smaller images padded by reflection to the program's size and the output cropped; a failure
+  falls back to PyTorch with a warning). DUAL builds on AMD Windows through `triton-windows` 3.8.0.post29 with
+  `dual_migx_ops.dll`. Build Program has Use HIP Graph (experimental, off by default), a backport in
+  `native/tools/migraphx/migraphx-hip-graph.patch` on pin 2487b688, in the wheels `1.30.0+rocm7.14.hipgraph` and
+  `.hipgraph.dml` (fork release `v1.30.0-rocm7.14-hipgraph`); Get Program Info shows HIP Graphs. Written without an AMD
+  GPU: DUAL's kernels lowered for gfx1100 on Windows, the Windows wheel imported, the Windows runner compiled against
+  the new MIGraphX; nothing run on a GPU. NVIDIA PCs rebuild kept automatic engines once (the key hashes
+  `auto_engine.py`). Gates on `1cf8df86b`: Windows suite 144,123 passed, 826 skipped, 2 failed (one test's file count,
+  fixed; `test_streamed_full_vae_matches_direct_encode_decode` failed once at 12 workers and passed alone, cause not
+  found); Linux suite 141,048 passed, 1 failed (the same count), 2,916 skipped on WSL 3.0.3, kernel 6.18.54.1; ROCm tests
+  572 passed, 94 skipped; `test_convert_to_onnx.py` on Linux 391 passed; VapourSynth 618 passed; type check and ESLint
+  clean. The tests copy FFmpeg from a local copy and never download it (`native/tools/scratch_storage.py`).
+- RELEASED 2026-11-06 as v0.3.10 (tag `5bda45d80`, one commit over `30b7ae113`, tree = local `a15ff71fc`; win-x64 `c19d6194`, linux-x64 `3b544543`): the entries below down to "Electron alternatives researched". Gates on `80c911b1d`: Windows suite
   144,053 passed, 815 skipped, 3 failed that later commits fixed (the files changed since: Windows 805 passed, Linux 645
   passed); Linux suite 140,975 passed, 0 failed, 2,913 skipped; AMD tests 515 passed, 92 skipped; vitest 547 passed, 27
   skipped; VapourSynth files 610 passed, 19 skipped; eslint and tsc clean. AddressSanitizer and UndefinedBehaviorSanitizer on
@@ -704,7 +717,7 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
     Program, Upscale Image, Get Program Info) on the native runner `_chainner_migraphx` (`native/migraphx_runner/`,
     MIGraphX unpatched; nodes of domain `chainner` reach custom ops through `custom_op.h`), with DRFT's kernels and
     VOSR's qkv ported to HIP (`native/src/drft_hip`, `vosr2_hip`) and DUAL's Triton kernels compiled for the GPU as
-    MIGraphX ops (`native/src/dual_hip`, Linux only: no Triton for AMD on Windows); VOSR's MIGraphX backends (FP8 by
+    MIGraphX ops (`native/src/dual_hip`, Linux only at the time; on Windows since v0.3.10 re-release 1, through `triton-windows`); VOSR's MIGraphX backends (FP8 by
     MIGraphX's own quantisation on gfx942/gfx950/gfx12xx); HAT's and DAT's attention in PyTorch's fused AMD kernels
     and, exported on a ROCm torch, in the layout MIGraphX fuses (spandrel `0.4.2+c11`); an installer that uninstalls
     the builds an AMD dependency replaces (`Dependency.replaces`), and the reverse: on a computer with an NVIDIA GPU or
@@ -1398,6 +1411,10 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 | Item | Plan |
 | --- | --- |
+| Use MIGraphX Program, DUAL on AMD Windows and Use HIP Graph have not run on an AMD GPU | Ask AMD users: does the first run finish, does a second skip the compile, does a small image come out at its size times the scale, and with Use HIP Graph on and off: the count, the time, whether the images match, and any out-of-memory |
+| HIP Graph's capture boundaries (views placed by host values, `select_module`, `gpu::loop`) have never executed; upstream's pass tests look runnable without a GPU | Run them when the patch next changes |
+| A folder moved from AMD to NVIDIA Windows keeps Triton 3.8.0.post29 (pins are floors), and TensorRT DUAL on it is untested; TensorRT's `dual_plugin_identity` reads only `triton`, so on Windows it ignores Triton's version | Check when such a folder turns up |
+| `test_streamed_full_vae_matches_direct_encode_decode` failed once at 12 workers on Windows and passed alone | Look if it repeats |
 | Yes/no questions from the 2026-10-23 hunt (`native/local/hunt-20261023/REPORT.md`, "Your yes/no list"): (1) Save Video FFV1 `-level 3 -slices 16` (14-46 % faster saves, frames identical, bytes change; ruling 7; may be stale: on FFmpeg 9.0.2 plain FFV1 already picks its own slices, Frames to Clip measured 2026-11-06; re-measure before deciding); (2) Save Image PNG compression level 5 (-24 % save time, +0.7 % size); (3) Blue Noise non-identical speedup (prototype 8-19x, 6 of 65,536 ranks differ; ruling 11); (4) upscale run-ahead: built 2026-10-29, removed 2026-10-30 (State) | The yes or no |
 | ONNX Upscale Image on CUDA: runs headless since `72e2b913`, with and without torch imported (2026-11-06); the node body with a stub context, not the app | Check in the app |
 | Electron 43 checks still to make by hand: first start of the packaged zip, a folder dropped onto inputs, dropdown group headers, dialogs remembering the folder, screenshot copy, Squirrel install and uninstall. Passed by hand on 2026-10-24 from source: first start, a `.chn` and an image dropped, chain copy and paste, image paste, Get Native Resolution's values in Number/Text nodes, Linear Light. A start listens on a socket (Vite, Electron, the backend): new program paths raise a Firewall prompt | By hand, announced first (`native/local/getnative-20261023/electron-report.md`, "Start check") |
@@ -1501,6 +1518,7 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | VapourSynth: `fmtc.bitdepth` on a gray image keeps a full-range tag on limited output (largest 0.0625) | The yes or no: refuse `fmtc.bitdepth` on images |
 | VapourSynth: Grainer's Placebo ends the process where there is no Vulkan device | The yes or no: refuse it there |
 | A Dynamic RGT engine up to 512 px or more, built by hand in Build Engine, can fill the card and hang the GPU for minutes: the automatic engine stops at 256 px, Build Engine does not warn | A warning before the build |
+| Valgrind Memcheck, one pass at `CHAINNER_C_ISA=avx2` on v0.3.10 (12 codec, filter and noise test files): no uninitialised read starts in first-party code. libwebp's encoder reads its own scratch (`InitVP8Encoder`) on 13x9 images, and its files still equal OpenCV's byte for byte; libjpeg-turbo's 4:4:0 decode of a 13x9 JPEG reports rows 0 and 1 as uninitialised, while its pixels equal Pillow's at every size and do not follow heap contents. Valgrind stops at an instruction inside `cv2` (0xC5 0x79 0xD6), which cut `test_gaussian_complete` and `test_convolution_ops` short; it reports a repeated stack once, so one report can stand for more rows | Look again on a libjpeg-turbo or libwebp update; a pass with `cv2` kept out would cover the two files |
 | SwinIR-L FP16 on a 64 px horizontal gradient reads 45.2 dB against FP32's 112 dB, rising with size: left on the list | If it shows |
 | Three alerts added to `GlobalNodeState.tsx` ("File contains invalid values", "Chain contains invalid values", "Error") do not go through `t()`, so they stay English in every language | When they are translated |
 | The opt-in runner against the Python session on RGBA with a hole, tiled, on an FP16 engine: largest difference 0.000977 on 3,549 of 3,040,000 alpha values, on the old and the new module (the runner runs the white pass in full) | If it shows |

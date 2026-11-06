@@ -96,12 +96,14 @@ Builds are reproducible: `/Brepro` (no timestamps, no PDB in Release) and a sour
 byte-identical wherever the repository is checked out, and `.gitattributes` gives every checkout LF line endings.
 
 **AMD GPUs** (optional; `native/cmake/rocm.cmake`): `-RocmRoot <ROCm 7.14 SDK root>` (the `rocm-sdk-devel` wheel's
-expanded `_rocm_sdk_devel`, with `lib\amdhip64.lib` and `lib\llvm\bin\clang++.exe`) builds `drft_migx_ops.dll` and
-`vosr2_migx_ops.dll` in `nodes\impl\migraphx`, device code for ROCm 7.14's 22 Windows targets by the SDK's `clang++`
+expanded `_rocm_sdk_devel`, with `lib\amdhip64.lib` and `lib\llvm\bin\clang++.exe`) builds `drft_migx_ops.dll`,
+`dual_migx_ops.dll` and `vosr2_migx_ops.dll` in `nodes\impl\migraphx`, device code for ROCm 7.14's 22 Windows targets
+by the SDK's `clang++` (DUAL's library is host code only: `triton-windows`, 3.8.0.post29 or newer, compiles its kernels
+when a program is built)
 against the pinned MSVC toolset and Windows SDK; with `-MigraphxRoot <MIGraphX 2.16 install>` (the very MIGraphX whose
 DLLs chaiNNer-C's Windows `onnxruntime-migraphx` wheel bundles; recipe in `native\tools\migraphx\windows`, below) also
 the runner `_chainner_migraphx.pyd`, which links MIGraphX's import libraries and, unlike the other modules, the DLL C
-runtime (`/MD`), MIGraphX's own. DUAL's op library is Linux only (its kernels come from Triton). Without either root
+runtime (`/MD`), MIGraphX's own. Without either root
 the configuration has no AMD cache entry and every other binary is the same. The runner's tests on Windows
 (`backend/tests/test_migraphx_runner.py`, `test_migraphx_windows.py`) need `onnxruntime-migraphx` and `rocm-sdk-core`,
 `rocm-sdk-libraries` installed, with the build directory's `migraphx_runner\chainner_example_migx_ops.dll` in
@@ -252,7 +254,8 @@ script prints the SHA-256 of the zip and of every module. The first run download
 `native/tools/migraphx/build.sh --rocm-wheels <directory> [--work <directory>] [--jobs <n>] [step...]` builds it from
 source on a Linux machine with Docker, in containers of the image `cnm-build` (`native/tools/migraphx/Dockerfile`:
 PyPA's manylinux_2_28, glibc 2.28, GCC Toolset 14), together with the ONNX Runtime 1.30.0 wheel with the MIGraphX
-provider that the dependency manager installs (`onnxruntime-migraphx` `1.30.0+rocm7.14`, CPython 3.14). Its steps, each
+provider (`onnxruntime-migraphx` `1.30.0+rocm7.14.hipgraph`, CPython 3.14; the dependency manager installs the wheel
+`rocm.py` pins). Its steps, each
 a script beside it, run in this order, and a finished one is kept for the next run:
 
 - `image`, then `sources`: ONNX Runtime's v1.30.0 tag and AMDMIGraphX 2.16.1 (`release/rocm-rel-7.14` at `2487b688`),
@@ -260,10 +263,12 @@ a script beside it, run in this order, and a finished one is kept for the next r
 - `sdk`: AMD's ROCm 7.14.1 `rocm`, `rocm-sdk-core`, `-libraries` and `-devel` packages from `--rocm-wheels`
   (repo.amd.com/rocm/whl-multi-arch), checked against the SHA-256 in `setup_sdk.sh`, since AMD publishes none.
 - `deps`: MIGraphX's pinned dependencies (rocMLIR, composable_kernel, protobuf and the rest), each archive checked by
-  its SHA-256; `migraphx`: device code for the 25 Linux targets, every library linked with `-Bsymbolic-functions` and
-  `--exclude-libs,ALL`, installed in `<work>/migraphx-7.14`.
+  its SHA-256; `migraphx`: `migraphx-hip-graph.patch` on the checked commit (the GPU target's hipgraphify pass, a backport
+  whose origin `build_migraphx.sh` names; a compile turns it on through `backend_options["hip_graph"]`), device code for
+  the 25 Linux targets, every library linked with `-Bsymbolic-functions` and `--exclude-libs,ALL`, installed in
+  `<work>/migraphx-7.14`.
 - `ort`: ONNX Runtime with `ort-migraphx-cache-name.patch`, then `ort-migraphx-shape-programs.patch`; `wheel`:
-  `finalize_wheel.py` gives it the `+rocm7.14` version and MIGraphX's libraries in `onnxruntime/capi/` with a run path
+  `finalize_wheel.py` gives it the `+rocm7.14.hipgraph` version and MIGraphX's libraries in `onnxruntime/capi/` with a run path
   to the ROCm pip packages and their notices, and checks every ELF file against glibc 2.28 (the wheel: `<work>/dist`).
 
 A run needs about 21 GB of memory at its peak. **The release build's `--migraphx` is that run's `<work>/migraphx-7.14`,
@@ -272,8 +277,8 @@ which needs a new wheel as well.
 
 **The same on Windows.** AMD publishes no MIGraphX for Windows either. `native\tools\migraphx\windows` builds MIGraphX
 2.16.1 (device code for ROCm 7.14.1's 22 Windows targets, gfx908 to gfx1201; no composable_kernel, as in AMD's own
-Windows build) and the ONNX Runtime 1.30.0 wheel with the DirectML and MIGraphX providers that the dependency manager
-installs on Windows (`onnxruntime-migraphx` `1.30.0+rocm7.14.dml`, CPython 3.14, win_amd64), with the Visual Studio 2022
+Windows build) with the same patch, and the ONNX Runtime 1.30.0 wheel with the DirectML and MIGraphX providers
+(`onnxruntime-migraphx` `1.30.0+rocm7.14.hipgraph.dml`, CPython 3.14, win_amd64), with the Visual Studio 2022
 Build Tools' MSVC 14.44 and the ROCm SDK's AMD clang; no Docker. `settings_win.cmd` holds the settings, each an
 environment variable that is set before a script runs to replace its default: `MIGX_WORK` (the work directory, default
 `%USERPROFILE%\chainner-migraphx`, no parentheses in the path), `MIGX_JOBS` (12), `MIGX_VS` (the Build Tools),
@@ -300,13 +305,13 @@ whose folder must exist), run in this order, and a finished dependency or rocMLI
   the MIGraphX provider compiles as C++17 on MSVC, since MIGraphX's C++ header does not compile as C++20, and the HIP
   SDK DLL copy is skipped when ROCm 7.14's DLL names match none), re-applied on every run; `build.py --use_dml
   --use_migraphx --enable_lto` in Release, the wheel in `<work>\ort-build\Release\dist`.
-- `finalize_wheel_win.cmd` (`finalize_wheel_win.py`): the `+rocm7.14.dml` version, MIGraphX's DLLs (with
+- `finalize_wheel_win.cmd` (`finalize_wheel_win.py`): the `+rocm7.14.hipgraph.dml` version, MIGraphX's DLLs (with
   `migraphx_ref.dll`) and the Visual C++ 14.44 runtime in `onnxruntime\capi`, the third-party notices, and a check that
   every DLL import is in the wheel, in Windows or in the ROCm pip packages (the wheel: `<work>\dist`, then its SHA-256).
 
 ROCm itself is not in the wheel. The published wheel is
-`onnxruntime_migraphx-1.30.0+rocm7.14.dml-cp314-cp314-win_amd64.whl` (77,744,295 bytes), SHA-256
-`9a8c2d1fddfd9a00e429d21fe8f50a32496d0dfe797db1675d3ef299782b870c`. A new run is a new build with a new hash (even
+`onnxruntime_migraphx-1.30.0+rocm7.14.hipgraph.dml-cp314-cp314-win_amd64.whl` (77,771,607 bytes), SHA-256
+`940258f7c0f010d4250560b18cc95c359348f16ab7b060e65a32fd91cc5fc29f`. A new run is a new build with a new hash (even
 finalizing the same build twice differs, in the zip timestamps only). **The release build's `-MigraphxRoot` is the
 `<work>\install` of the run that made the published wheel**, for the reason given for Linux.
 

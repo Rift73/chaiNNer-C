@@ -254,6 +254,7 @@ PYBIND11_MODULE(_chainner_migraphx, module) {
         .def_property_readonly("device", &Program::device)
         .def_property_readonly("compute_type", &Program::compute_type)
         .def_property_readonly("custom_ops", &Program::custom_ops)
+        .def_property_readonly("hip_graphs", &Program::hip_graphs)
         .def_property_readonly("input_names", &Program::input_names)
         .def_property_readonly("input_shapes",
                                [](Program const& p) {
@@ -325,13 +326,14 @@ PYBIND11_MODULE(_chainner_migraphx, module) {
     module.def(
         "compile_onnx",
         [](py::object model, int device, bool fp16, bool fp8, std::optional<std::map<std::string, std::vector<std::size_t>>> input_dims,
-           bool exhaustive_tune, std::string target, py::sequence calibration) {
+           bool exhaustive_tune, bool hip_graph, std::string target, py::sequence calibration) {
             cn_migx::CompileOptions options;
             options.device = device;
             options.target = std::move(target);
             options.fp16 = fp16;
             options.fp8 = fp8;
             options.exhaustive_tune = exhaustive_tune;
+            options.hip_graph = hip_graph;
             if (input_dims) options.input_dims = *input_dims;
             for (py::handle inputs : calibration) {
                 std::map<std::string, migraphx::argument> arguments;
@@ -347,9 +349,11 @@ PYBIND11_MODULE(_chainner_migraphx, module) {
         "Compiles an ONNX model (bytes, or a path whose external data lies beside it) for the GPU `device`, or for "
         "target 'ref' (MIGraphX's CPU reference). Nodes of domain "
         "chainner run the custom ops of loaded libraries. fp16 or fp8 quantize it (fp8 calibrates with "
-        "`calibration`, a few dicts of typical inputs); input_dims fixes inputs' sizes.",
+        "`calibration`, a few dicts of typical inputs); input_dims fixes inputs' sizes; hip_graph captures runs of "
+        "kernels into HIP graphs on the GPU target (Program.hip_graphs counts them).",
         py::arg("model"), py::kw_only(), py::arg("device") = 0, py::arg("fp16") = false, py::arg("fp8") = false,
-        py::arg("input_dims") = py::none(), py::arg("exhaustive_tune") = false, py::arg("target") = "gpu",
+        py::arg("input_dims") = py::none(), py::arg("exhaustive_tune") = false, py::arg("hip_graph") = false,
+        py::arg("target") = "gpu",
         py::arg("calibration") = py::tuple());
 
     module.def(
@@ -396,8 +400,8 @@ PYBIND11_MODULE(_chainner_migraphx, module) {
             py::arg("clip") = false)
         .def(
             "capture_failure", [](Runner const&) { return std::string(); },
-            "Always empty: the runner does not capture HIP graphs (TensorRT's runner reports a failed CUDA graph "
-            "capture here).")
+            "Always empty: TensorRT's runner reports a failed CUDA graph capture here; a program's HIP graphs capture "
+            "inside MIGraphX, where a failed capture fails the run.")
         .def("close", [](Runner& r) {
             py::gil_scoped_release release;
             r.close();

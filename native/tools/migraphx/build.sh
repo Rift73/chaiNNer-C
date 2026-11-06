@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds MIGraphX 2.16.1 for ROCm 7.14.1 and chaiNNer-C's ONNX Runtime 1.30.0 MIGraphX wheel (onnxruntime-migraphx
-# 1.30.0+rocm7.14, CPython 3.14, manylinux_2_28 x86-64) on a Linux machine with Docker, in containers of the image
+# 1.30.0+rocm7.14.hipgraph, CPython 3.14, manylinux_2_28 x86-64) on a Linux machine with Docker, in containers of the image
 # cnm-build (this directory's Dockerfile). AMD ships no MIGraphX for ROCm 7.14, so it is built from source; the wheel
 # carries its libraries in onnxruntime/capi/, and the native release build takes its install prefix as --migraphx
 # (native/BUILDING.md, Linux).
@@ -49,7 +49,7 @@ for step in "${steps[@]}"; do
         migraphx) command=(bash /recipe/build_migraphx.sh) ;;
         ort) command=(bash /recipe/build_ort.sh) ;;
         wheel)
-            # The auditwheel-repaired wheel made final: the +rocm7.14 version, MIGraphX's libraries with a run path
+            # The auditwheel-repaired wheel made final: the +rocm7.14.hipgraph version, MIGraphX's libraries with a run path
             # to the ROCm pip packages, their notices, and a check of every ELF file (finalize_wheel.py).
             command=(bash -c 'rm -rf /work/dist && python3.14 -I /recipe/finalize_wheel.py \
                 /work/ort-build/Release/dist/onnxruntime_migraphx-1.30.0-cp314-cp314-manylinux_2_28_x86_64.whl \

@@ -122,7 +122,9 @@ typedef struct chainner_migx_op {
      * current HIP device is the program's. A GPU op only enqueues work on stream: no host
      * synchronization, no allocation (workspace: workspace_bytes of device memory for this call
      * only, its contents undefined, NULL when 0). It may keep per-device state (for example a loaded
-     * code object) keyed by attribute contents, guarded for concurrent calls. */
+     * code object) keyed by attribute contents, guarded for concurrent calls. In a program with HIP
+     * graphs, MIGraphX records what compute enqueues and replays it without calling compute again, on
+     * the same pointers, so what it enqueues depends on its arguments alone. */
     int (*compute)(void* stream, chainner_migx_tensor const* inputs, int32_t input_count,
                    chainner_migx_attribute const* attributes, int32_t attribute_count,
                    chainner_migx_tensor const* output, void* workspace, size_t workspace_bytes, char* error,

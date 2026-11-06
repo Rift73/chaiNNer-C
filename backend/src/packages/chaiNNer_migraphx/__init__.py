@@ -11,6 +11,7 @@ from dependencies.rocm import (
     onnxruntime_migraphx,
     rocm_runtime,
     triton_rocm,
+    triton_windows,
 )
 from dependencies.store import listed_version
 from gpu import amd, nvidia
@@ -97,9 +98,8 @@ package = add_package(
             # MIGraphX's libraries ship inside it (nodes/impl/migraphx/runner.py).
             onnxruntime_migraphx(),
             # Compiles DUAL's kernels for its MIGraphX operators (Build Program, in a
-            # child process). Linux only: Triton has no Windows build for AMD GPUs,
-            # so Windows has no DUAL programs.
-            *([triton_rocm()] if is_linux else []),
+            # child process).
+            triton_windows() if is_windows else triton_rocm(),
         ]
     ),
     icon="BsAmd",
