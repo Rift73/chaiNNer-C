@@ -19,6 +19,8 @@ from packages.chaiNNer_onnx.onnx.processing import upscale_image as onnx_node
 
 
 class StopProgress(Progress):
+    storage_dir = None
+
     def __init__(self):
         self.stopped = False
         self.cleanups = []

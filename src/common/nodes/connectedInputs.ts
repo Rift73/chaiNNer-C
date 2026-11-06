@@ -1,6 +1,6 @@
 import { Type } from '@chainner/navi';
 import { EdgeData, InputId, OutputId } from '../common-types';
-import { FunctionDefinition } from '../types/function';
+import { FunctionDefinition, FunctionInstance } from '../types/function';
 import { EMPTY_SET, parseTargetHandle } from '../util';
 import { isAutoIterable } from './lineage';
 import type { Edge } from 'reactflow';
@@ -41,11 +41,13 @@ export const getConnectedInputs = (
 /**
  * Returns the first compatible input that can be assigned the given type.
  * If `isIterated` is true, then the input will be given an iterator.
+ * `instance` is the node's current instance, when the node exists.
  */
 export const getFirstPossibleInput = (
     fn: FunctionDefinition,
     type: Type,
-    isIterated: boolean
+    isIterated: boolean,
+    instance?: FunctionInstance
 ): InputId | undefined => {
     return fn.schema.inputs.find((i) => {
         // check if the input has a handle
@@ -58,13 +60,14 @@ export const getFirstPossibleInput = (
             if (inputIterated !== isIterated) return false;
         }
 
-        return fn.canAssignInput(i.id, type);
+        return instance ? instance.canAssign(i.id, type) : fn.canAssignInput(i.id, type);
     })?.id;
 };
 export const getFirstPossibleOutput = (
     outputFn: FunctionDefinition,
     inputFn: FunctionDefinition,
-    inputId: InputId
+    inputId: InputId,
+    inputInstance?: FunctionInstance
 ): OutputId | undefined => {
     if (!inputFn.hasInput(inputId)) return undefined;
 
@@ -92,6 +95,9 @@ export const getFirstPossibleOutput = (
 
         // type check
         const type = outputFn.outputDefaults.get(o.id);
-        return type && inputFn.canAssignInput(inputId, type);
+        if (!type) return false;
+        return inputInstance
+            ? inputInstance.canAssign(inputId, type)
+            : inputFn.canAssignInput(inputId, type);
     })?.id;
 };

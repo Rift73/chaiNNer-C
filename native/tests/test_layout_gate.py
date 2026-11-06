@@ -91,6 +91,9 @@ CONSUMERS = frozenset(
         "chainner:image:stretch_contrast",
     }
 )
+# A node that enters those bridges and that the oracle does not have: test_every_other_node_equals_its_c_layout_result
+# checks its layouts.
+PORT_ONLY_CONSUMERS = frozenset({"chainner:image:white_balance"})
 # Nodes outside CONSUMERS whose values the oracle checks on both layouts, strides
 # aside (Consult 11 D-17): Alpha Matting and Chroma Key's foreground starts from
 # PyMatting 1.1.16's mean colours, and Blend's clip is np.clip's, which keeps -0.
@@ -101,6 +104,12 @@ ORACLE_VALUES = frozenset(
         "chainner:image:chroma_key",
     }
 )
+# Options of those nodes that the oracle does not have: test_every_other_node_equals_its_c_layout_result
+# checks their cases.
+PORT_ONLY_OPTIONS = ("|Blend Mode=23|", "|Blend Mode=24|")
+# Blend modes judged against the W3C compositing formulas, not the oracle: Color Burn, Color Dodge, Divide and Vivid
+# Light (test_blend.py); test_every_other_node_equals_its_c_layout_result still checks their layouts.
+JUDGED_OPTIONS = ("|Blend Mode=5|", "|Blend Mode=6|", "|Blend Mode=15|", "|Blend Mode=19|")
 # The producers whose upstream NumPy result np.clip keeps permuted (D-7's report,
 # concern 1): compared with the oracle strides included (Consult 11 D-16).
 ORACLE_EXACT = frozenset(
@@ -239,7 +248,7 @@ def test_every_image_input_node_has_cases_unless_it_takes_only_gray(gate):
 def test_the_consumers_are_the_nodes_that_enter_the_reduction_bridges(gate):
     port, _ = gate
     traced = {key.split("|")[0] for key, run in port["runs"].items() if run["traced"]}
-    assert traced == CONSUMERS
+    assert traced == CONSUMERS | PORT_ONLY_CONSUMERS
 
 
 def oracle_differences(
@@ -252,13 +261,15 @@ def oracle_differences(
         for case_id in schema_cases(port, wanted, True)
         for key in port["runs"]
         if key.startswith(f"{case_id}@")
+        and not any(option in key for option in PORT_ONLY_OPTIONS)
     ]
     assert {key.split("|")[0] for key in keys} == wanted
     assert set(keys) == {key for key in oracle["runs"] if key.split("|")[0] in wanted}
     return [
         key
         for key in keys
-        if bits(port["runs"][key], strides) != bits(oracle["runs"][key], strides)
+        if not any(option in key for option in JUDGED_OPTIONS)
+        and bits(port["runs"][key], strides) != bits(oracle["runs"][key], strides)
     ]
 
 

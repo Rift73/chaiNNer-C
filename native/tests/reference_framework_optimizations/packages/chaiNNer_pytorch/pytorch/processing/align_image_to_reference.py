@@ -181,7 +181,12 @@ def align_images(
             fref_points = descriptor.detectAndCompute(fref)[0]  # compute points
             kpts1, descs1 = fclip_points["keypoints"], fclip_points["descriptors"]
             kpts2, descs2 = fref_points["keypoints"], fref_points["descriptors"]
-            points_found = len(kpts1) > 100 and len(kpts2) > 100
+            points_found = (
+                len(kpts1) > 100
+                and len(kpts2) > 100
+                and min(fclip_h, fclip_w) > 1
+                and min(fref_h, fref_w) >= 16
+            )
 
             if points_found:  # only proceed if there are enough points
                 # match points between the two images
@@ -200,6 +205,10 @@ def align_images(
                         maxIters=1000,
                         confidence=0.995,
                     )  # find homography on cpu
+                    # None when the matches fit no homography (all on one line), which
+                    # OpenCV's type stubs do not allow for.
+                    match_found = np.ndim(homography) == 2
+                if match_found:
                     homography_t = torch.tensor(
                         homography, dtype=torch.float32, device=device
                     )  # send back to gpu

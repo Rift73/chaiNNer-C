@@ -191,7 +191,7 @@ def test_onnx_load_models_gives_what_load_model_gives(tmp_path: Path):
         path = tmp_path / f"{index}.onnx"
         path.write_bytes(gain_model({"index": str(index)}).SerializeToString())
         paths.append(path)
-    generator, _ = load_onnx_models_node(tmp_path, False)
+    generator, _ = load_onnx_models_node(cast(NodeContext, None), tmp_path, False)
     result = items(generator)
     for index, (path, item) in enumerate(zip(paths, result, strict=True)):
         assert isinstance(item, tuple)

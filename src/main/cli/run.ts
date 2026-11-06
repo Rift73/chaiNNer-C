@@ -3,6 +3,7 @@ import EventSource from 'eventsource';
 import { Backend, BackendEventMap, getBackend } from '../../common/Backend';
 import { EdgeData, NodeData, NodeSchema, SchemaId } from '../../common/common-types';
 import { formatExecutionErrorMessage } from '../../common/formatExecutionErrorMessage';
+import { activateLanguage } from '../../common/i18n';
 import { log } from '../../common/log';
 import { checkNodeValidity } from '../../common/nodes/checkNodeValidity';
 import { getConnectedInputs } from '../../common/nodes/connectedInputs';
@@ -281,6 +282,7 @@ export const runChainInCli = async (args: RunArguments) => {
     addProgressListeners(progressController);
 
     const settings = readSettings();
+    await activateLanguage(settings.language).catch(log.error);
 
     const backendProcess = await createBackend(progressController, args);
     if (!backendProcess.owned) {

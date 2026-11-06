@@ -22,9 +22,9 @@ from nodes.impl.colour_info import (
     option_value,
     pixel_layout,
 )
+from nodes.impl.ffmpeg import get_executable_path
 
-FFMPEG = STORAGE / "ffmpeg" / "ffmpeg.exe"
-FFPROBE = STORAGE / "ffmpeg" / "ffprobe.exe"
+FFMPEG, FFPROBE = get_executable_path(STORAGE / "ffmpeg")
 
 
 def entry(**fields: object) -> dict[str, object]:

@@ -1,6 +1,8 @@
 import { evaluate } from '@chainner/navi';
 import { Code, ListItem, Text, UnorderedList } from '@chakra-ui/react';
+import i18n from 'i18next';
 import { memo } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { useContext } from 'use-context-selector';
 import { Condition, InputId, NodeSchema, OfKind } from '../../../common/common-types';
 import { simplifyCondition } from '../../../common/nodes/condition';
@@ -11,6 +13,7 @@ import { fromJson } from '../../../common/types/json';
 import { prettyPrintType } from '../../../common/types/pretty';
 import { assertNever } from '../../../common/util';
 import { BackendContext } from '../../contexts/BackendContext';
+import { TransElement } from '../TransElement';
 import { DropDownOptions } from './DropDownOptions';
 
 type PossiblePrimitive = OfKind<Condition, Exclude<Condition['kind'], 'and' | 'or'>>;
@@ -30,6 +33,52 @@ interface RenderOptions {
     readonly schema: NodeSchema;
     readonly schemata: SchemaMap;
 }
+
+// Whole sentences, so each language can order the input name, the options
+// and the verb its own way. Each ends with its own punctuation.
+const SENTENCES = {
+    enumIs: '<name>{{name}}</name> is <options/>.',
+    enumIsNot: '<name>{{name}}</name> is not <options/>.',
+    enumIsOneOf: '<name>{{name}}</name> is one of <options/>.',
+    enumIsNotOneOf: '<name>{{name}}</name> is not one of <options/>.',
+    typeIs: '<name>{{name}}</name> is {{type}}.',
+    typeIsNot: '<name>{{name}}</name> is not {{type}}.',
+    typeIsOfType: '<name>{{name}}</name> is of type <type/>.',
+    typeIsNotOfType: '<name>{{name}}</name> is not of type <type/>.',
+    iteratedBy: '<name>{{name}}</name> is iterated by <name>{{source}}</name>.',
+    notIteratedBy: '<name>{{name}}</name> is not iterated by <name>{{source}}</name>.',
+} as const;
+
+const InputName = (
+    <Text
+        as="span"
+        fontWeight="600"
+        userSelect="text"
+    />
+);
+
+interface SentenceProps {
+    sentence: keyof typeof SENTENCES;
+    name: string;
+    type?: string;
+    source?: string;
+    components?: Record<string, JSX.Element>;
+}
+const Sentence = memo(({ sentence, name, type, source, components }: SentenceProps) => {
+    // Passing the hook's t makes this re-render when the language changes;
+    // Trans on its own doesn't.
+    const { t } = useTranslation();
+    return (
+        <Trans
+            components={{ name: InputName, ...components }}
+            defaults={SENTENCES[sentence]}
+            i18nKey={`nodeDocumentation.conditionExplanation.${sentence}`}
+            t={t}
+            values={{ name, type, source }}
+        />
+    );
+});
+
 const renderPrimitive = (condition: PossiblePrimitive, options: RenderOptions): JSX.Element => {
     const { schema, schemata } = options;
 
@@ -55,79 +104,70 @@ const renderPrimitive = (condition: PossiblePrimitive, options: RenderOptions): 
 
             const { values } = condition;
             const valueOptions = input.options.filter((o) => values.includes(o.value));
+            const single = valueOptions.length === 1;
+            let sentence: keyof typeof SENTENCES;
+            if (negated) {
+                sentence = single ? 'enumIsNot' : 'enumIsNotOneOf';
+            } else {
+                sentence = single ? 'enumIs' : 'enumIsOneOf';
+            }
 
             return (
-                <>
-                    <Text
-                        as="span"
-                        fontWeight="600"
-                        userSelect="text"
-                    >
-                        {getInputLabel(schema, condition.enum)}
-                    </Text>{' '}
-                    is {negated && ' not'}
-                    {valueOptions.length === 1 ? '' : ' one of '}
-                    <DropDownOptions options={valueOptions} />
-                </>
+                <Sentence
+                    components={{
+                        options: (
+                            <TransElement element={<DropDownOptions options={valueOptions} />} />
+                        ),
+                    }}
+                    name={getInputLabel(schema, condition.enum)}
+                    sentence={sentence}
+                />
             );
         }
         case 'type': {
-            const prefix = (
-                <>
-                    <Text
-                        as="span"
-                        fontWeight="600"
-                        userSelect="text"
-                    >
-                        {getInputLabel(schema, condition.input)}
-                    </Text>
-                    {negated ? ' is not' : ' is'}
-                </>
-            );
-
+            const name = getInputLabel(schema, condition.input);
             const type = evaluate(fromJson(condition.condition), getChainnerScope());
             const simple = explain(type, { strictUnion: true });
             if (simple) {
                 return (
-                    <>
-                        {prefix} {simple}
-                    </>
+                    <Sentence
+                        name={name}
+                        sentence={negated ? 'typeIsNot' : 'typeIs'}
+                        type={simple}
+                    />
                 );
             }
 
             return (
-                <>
-                    {prefix} of type{' '}
-                    <Code
-                        display="inline"
-                        userSelect="text"
-                        whiteSpace="pre-line"
-                    >
-                        {prettyPrintType(type, { omitDefaultFields: true })}
-                    </Code>
-                </>
+                <Sentence
+                    components={{
+                        type: (
+                            <TransElement
+                                element={
+                                    <Code
+                                        display="inline"
+                                        userSelect="text"
+                                        whiteSpace="pre-line"
+                                    >
+                                        {prettyPrintType(type, { omitDefaultFields: true })}
+                                    </Code>
+                                }
+                            />
+                        ),
+                    }}
+                    name={name}
+                    sentence={negated ? 'typeIsNotOfType' : 'typeIsOfType'}
+                />
             );
         }
         case 'iterated': {
             const { source } = condition;
             return (
-                <>
-                    <Text
-                        as="span"
-                        fontWeight="600"
-                        userSelect="text"
-                    >
-                        {getInputLabel(schema, condition.input)}
-                    </Text>
-                    {negated ? ' is not' : ' is'} iterated by{' '}
-                    <Text
-                        as="span"
-                        fontWeight="600"
-                        userSelect="text"
-                    >
-                        {schemata.has(source) ? schemata.get(source).name : source}
-                    </Text>
-                </>
+                <Sentence
+                    name={getInputLabel(schema, condition.input)}
+                    sentence={negated ? 'notIteratedBy' : 'iteratedBy'}
+                    source={schemata.has(source) ? schemata.get(source).name : source}
+                />
             );
         }
         default:
@@ -151,7 +191,7 @@ const renderCondition = (
                 userSelect="text"
             >
                 {prefix}
-                {renderPrimitive(condition, options)}.
+                {renderPrimitive(condition, options)}
             </Text>
         );
     }
@@ -163,8 +203,15 @@ const renderCondition = (
                 userSelect="text"
             >
                 {prefix}
-                {condition.kind === 'and' ? 'All of' : 'At least one of'} the following conditions
-                must be met:
+                {condition.kind === 'and'
+                    ? i18n.t(
+                          'nodeDocumentation.conditionExplanation.allConditions',
+                          'All of the following conditions must be met:'
+                      )
+                    : i18n.t(
+                          'nodeDocumentation.conditionExplanation.anyCondition',
+                          'At least one of the following conditions must be met:'
+                      )}
             </Text>
             <UnorderedList
                 alignItems="left"
@@ -195,6 +242,7 @@ interface CEProps {
 }
 // eslint-disable-next-line react/prop-types
 export const ConditionExplanation = memo(({ condition, schema }: CEProps) => {
+    const { t } = useTranslation();
     const { schemata } = useContext(BackendContext);
     return renderCondition(
         simplifyCondition(condition),
@@ -202,7 +250,7 @@ export const ConditionExplanation = memo(({ condition, schema }: CEProps) => {
             as="i"
             pr={1}
         >
-            Condition:
+            {t('nodeDocumentation.conditionExplanation.condition')}
         </Text>,
         { schema, schemata }
     );

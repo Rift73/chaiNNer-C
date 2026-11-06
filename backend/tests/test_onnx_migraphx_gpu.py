@@ -168,6 +168,7 @@ def test_models_of_one_architecture_keep_their_own_programs(tmp_path: Path):
 class Context:
     """The NodeContext members ONNX Upscale Image uses."""
 
+    storage_dir = None
     aborted = False
     paused = False
 
@@ -195,7 +196,7 @@ def test_upscale_image_tiles_on_migraphx_as_on_the_cpu():
 
     def upscale(provider: str) -> np.ndarray:
         context = cast(NodeContext, Context(provider))
-        return upscale_image_node(context, image, upscaler(1), CUSTOM, 32, False)
+        return upscale_image_node(context, image, upscaler(1), CUSTOM, 32, False)[0]
 
     got, want = upscale(MIGRAPHX), upscale(CPU)
     assert got.shape == want.shape == (140, 200, 3)

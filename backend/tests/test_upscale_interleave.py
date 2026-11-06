@@ -284,7 +284,7 @@ def test_ncnn_node_planes_interleaved_as_converted(
     rgba = image((20, 28, 4), 3, exceptional=False)
     rgba[:, :, 3] = np.linspace(0, 1, 28, dtype=np.float32)
     for img in (rgba[:, :, :1], rgba[:, :, :3], rgba):
-        new = ncnn_node.upscale_image_node(
+        new, _ = ncnn_node.upscale_image_node(
             context, img, model, tile_size, 0, separate_alpha
         )
 
@@ -354,7 +354,7 @@ def test_ncnn_node_returns_the_models_channels_in_bgr_order(
     img = rng.integers(0, 256, (20, 28, channels_in)).astype(np.float32) / 255
     if channels_in == 1:
         img = img[:, :, 0]
-    out = ncnn_node.upscale_image_node(context, img, model, tile_size, 0, False)
+    out, _ = ncnn_node.upscale_image_node(context, img, model, tile_size, 0, False)
 
     # The model sees RGB(A) and its identity convolution keeps the shared channels
     planes = img.reshape(20, 28, channels_in)

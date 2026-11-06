@@ -35,6 +35,11 @@ export interface IOFusion {
 }
 
 interface InputBase {
+    /**
+     * The input's type names other inputs, and it refuses a connection by that type, not only
+     * shows the mismatch after connecting.
+     */
+    readonly followsInputs?: boolean;
     readonly id: InputId;
     readonly type: ExpressionJson;
     /**
@@ -112,7 +117,8 @@ export interface TextInput extends InputBase {
 }
 export interface NumberInput extends InputBase {
     readonly kind: 'number';
-    readonly def: number;
+    /** Null for an optional input, whose empty field has no value. */
+    readonly def: number | null;
     readonly min?: number | null;
     readonly max?: number | null;
     readonly precision: number;
@@ -142,8 +148,9 @@ export interface SliderInput extends InputBase {
  * Frame Count output and steps by its FPS output, and sets the node's frame range: `framesInput`
  * (an enum of "all" and "range"), `inInput` and `outInput`.
  */
-export interface VideoSeekInput extends Omit<NumberInput, 'kind'> {
+export interface VideoSeekInput extends Omit<NumberInput, 'kind' | 'def'> {
     readonly kind: 'video-seek';
+    readonly def: number;
     readonly framesInput: InputId;
     readonly inInput: InputId;
     readonly outInput: InputId;

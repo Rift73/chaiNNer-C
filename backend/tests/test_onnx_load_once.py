@@ -18,10 +18,17 @@ from nodes.impl.compressed_file import Compression
 from nodes.impl.native_onnx_runtime import NativeSession
 from nodes.impl.onnx import load as load_module
 from nodes.impl.onnx.load import load_onnx_model, model_facts
-from nodes.impl.onnx.model import ARCH_METADATA_KEY
-from nodes.impl.onnx.model import MIXED, OnnxGeneric, OnnxInfo
+from nodes.impl.onnx.model import (
+    ARCH_METADATA_KEY,
+    MIXED,
+    NO_RECORD_ARCH,
+    PRECISION_METADATA_KEY,
+    OnnxGeneric,
+    OnnxInfo,
+)
 from nodes.impl.onnx.session import create_inference_session
 from nodes.impl.tensorrt.dual import METADATA_KEY
+from nodes.properties.outputs import OnnxModelOutput
 from packages.chaiNNer_onnx.onnx.io.load_model import load_model_node
 from packages.chaiNNer_onnx.onnx.io.save_model import save_model_node
 
@@ -174,17 +181,113 @@ def test_undecodable_bytes_reach_onnx_runtime(monkeypatch: pytest.MonkeyPatch):
     assert load_module.model_facts(model) is facts
 
 
+def fp16_gain_model(metadata: dict[str, str] | None = None) -> bytes:
+    model = gain_model(metadata)
+    model.graph.input[0].type.tensor_type.elem_type = TensorProto.FLOAT16
+    model.graph.output[0].type.tensor_type.elem_type = TensorProto.FLOAT16
+    model.graph.initializer[0].CopyFrom(
+        numpy_helper.from_array(
+            np.array([0.5, 1.0, 2.0], np.float16).reshape(1, 3, 1, 1), "w"
+        )
+    )
+    return model.SerializeToString()
+
+
+def fp32_input_gain_model(metadata: dict[str, str]) -> bytes:
+    """An FP16 model that takes its image in FP32 for its first layer."""
+    model = onnx.ModelProto()
+    model.ParseFromString(fp16_gain_model(metadata))
+    model.graph.input[0].type.tensor_type.elem_type = TensorProto.FLOAT
+    model.graph.node.insert(
+        0, helper.make_node("Cast", ["image"], ["x"], to=TensorProto.FLOAT16)
+    )
+    model.graph.input[0].name = "image"
+    return model.SerializeToString()
+
+
+def arch_in_type(data: bytes) -> dict[str, str]:
+    return OnnxModelOutput().get_broadcast_type(load_onnx_model(data))["fields"]["arch"]
+
+
 def test_an_onnx_without_a_record_has_no_architecture():
-    assert load_onnx_model(gain_model().SerializeToString()).info.arch is None
+    data = gain_model().SerializeToString()
+    assert load_onnx_model(data).info.arch is None
+    assert arch_in_type(data)["value"] == NO_RECORD_ARCH
 
 
-def test_a_record_on_a_model_that_is_not_fp16_is_left_out():
+def test_an_fp16_onnx_without_a_record_has_no_architecture():
+    # Other programs' files and earlier conversions: nothing tells what they need.
+    data = fp16_gain_model()
+    assert load_onnx_model(data).info.arch is None
+    assert arch_in_type(data)["value"] == NO_RECORD_ARCH
+
+
+@pytest.mark.parametrize("arch", ["ESRGAN", "A name a later version may record"])
+def test_a_released_record_of_the_architecture_alone_means_fp16(arch: str):
+    data = fp16_gain_model({ARCH_METADATA_KEY: arch})
+    loaded = load_onnx_model(data)
+    assert (loaded.info.arch, loaded.info.dtype) == (arch, "fp16")
+    assert arch_in_type(data)["value"] == arch
+
+
+def test_a_record_says_the_precision_of_a_file_that_takes_its_image_in_fp32():
+    metadata = {ARCH_METADATA_KEY: "Compact", PRECISION_METADATA_KEY: "fp16"}
+    loaded = load_onnx_model(fp32_input_gain_model(metadata))
+    assert (loaded.info.arch, loaded.info.dtype) == ("Compact", "fp16")
+    released = load_onnx_model(fp32_input_gain_model({ARCH_METADATA_KEY: "Compact"}))
+    assert (released.info.arch, released.info.dtype) == ("Compact", "fp16")
+
+
+@pytest.mark.parametrize("precision", ["fp16", "fp32"])
+def test_a_record_of_a_precision_the_file_has_is_kept(precision: str):
+    metadata = {ARCH_METADATA_KEY: "SwinIR", PRECISION_METADATA_KEY: precision}
+    data = (
+        fp16_gain_model(metadata)
+        if precision == "fp16"
+        else gain_model(metadata).SerializeToString()
+    )
+    loaded = load_onnx_model(data)
+    assert (loaded.info.arch, loaded.info.dtype) == ("SwinIR", precision)
+
+
+def test_a_released_record_on_a_model_that_is_not_fp16_is_left_out():
     # gain_model is FP32: another tool changed its precision and kept the metadata.
     model = gain_model({ARCH_METADATA_KEY: "ESRGAN"})
     assert load_onnx_model(model.SerializeToString()).info.arch is None
 
 
-def test_a_record_of_another_architecture_is_left_out():
-    loaded = load_onnx_model(gain_model({ARCH_METADATA_KEY: "Other"}).SerializeToString())
-    assert model_facts(loaded).arch is None
+@pytest.mark.parametrize("precision", ["fp16", "fp32"])
+def test_a_record_of_another_precision_than_the_file_has_is_left_out(precision: str):
+    metadata = {ARCH_METADATA_KEY: "SwinIR", PRECISION_METADATA_KEY: precision}
+    data = (
+        gain_model(metadata).SerializeToString()
+        if precision == "fp16"
+        else fp16_gain_model(metadata)
+    )
+    loaded = load_onnx_model(data)
+    assert model_facts(loaded).recorded is None
+    assert loaded.info.arch is None
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {ARCH_METADATA_KEY: ""},
+        {ARCH_METADATA_KEY: "SwinIR", PRECISION_METADATA_KEY: "bf16"},
+        # DUAL has its own route, and this one is what a type says of no record.
+        {ARCH_METADATA_KEY: "DUAL", PRECISION_METADATA_KEY: "fp16"},
+        {ARCH_METADATA_KEY: "DUAL"},
+        {ARCH_METADATA_KEY: NO_RECORD_ARCH, PRECISION_METADATA_KEY: "fp16"},
+        {ARCH_METADATA_KEY: NO_RECORD_ARCH},
+    ],
+)
+def test_a_record_it_cannot_have_written_is_left_out(metadata: dict[str, str]):
+    loaded = load_onnx_model(fp16_gain_model(metadata))
+    assert model_facts(loaded).recorded is None
+    assert loaded.info.arch is None
+
+
+def test_a_precision_without_an_architecture_is_no_record():
+    loaded = load_onnx_model(fp16_gain_model({PRECISION_METADATA_KEY: "fp16"}))
+    assert model_facts(loaded).recorded is None
     assert loaded.info.arch is None

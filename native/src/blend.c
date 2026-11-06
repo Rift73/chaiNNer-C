@@ -14,6 +14,7 @@ static void mode_range(void *context, size_t begin, size_t end)
         job->output[i] = apply_mode(job->overlay[i], job->base[i], job->mode);
 }
 
+/* Element by element: the separable modes only, a non-separable mode needs whole pixels. */
 CN_EXPORT cn_status cn_blend_mode(const float *overlay, const float *base,
     float *output, size_t count, int mode)
 {
@@ -44,7 +45,7 @@ static void image_range(void *context, size_t begin, size_t end)
 CN_EXPORT cn_status cn_blend_images(const float *overlay, const float *base,
     float *output, size_t pixels, int overlay_channels, int base_channels, int mode)
 {
-    if (overlay == NULL || base == NULL || output == NULL || mode < 0 || mode > 22
+    if (overlay == NULL || base == NULL || output == NULL || mode < 0 || mode > CN_BLEND_LUMINOSITY
         || !supported_channels(overlay_channels) || !supported_channels(base_channels))
         return CN_INVALID_ARGUMENT;
     int target = overlay_channels > base_channels ? overlay_channels : base_channels;

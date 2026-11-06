@@ -38,6 +38,8 @@ from packages.chaiNNer_standard.image.video_frames.save_video import (
     AudioSettings,
     BitDepth,
     FrameCollector,
+    NvencPreset,
+    ProResProfile,
     SimpleVideoFormat,
     Simplicity,
     SitingCorrection,
@@ -48,6 +50,9 @@ from packages.chaiNNer_standard.image.video_frames.save_video import (
     prepare_video_frame,
     save_video_node,
 )
+
+# The inputs of the encoders these tests do not use (AV1, ProRes, NVENC).
+OTHER_ENCODERS = (8, 35, ProResProfile.HQ, NvencPreset.P4, 23, 30)
 
 ITEM = 123
 AUTO_CHOICES = (
@@ -159,6 +164,7 @@ def node(
         encoder,
         VideoPreset.ULTRA_FAST,
         23,
+        *OTHER_ENCODERS,
         additional,
         simple,
         75,

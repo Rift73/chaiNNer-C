@@ -29,14 +29,25 @@ class ExecutionOptions:
     def get_package_settings(self, package_id: str) -> SettingsParser:
         parser = self.__parsers.get(package_id)
         if parser is None:
-            parser = SettingsParser(self.get_package_settings_json(package_id))
+            parser = SettingsParser(
+                self.get_package_settings_json(package_id), self.__settings
+            )
             self.__parsers[package_id] = parser
         return parser
 
 
 class SettingsParser:
-    def __init__(self, raw: SettingsJson) -> None:
+    def __init__(
+        self, raw: SettingsJson, packages: JsonExecutionOptions | None = None
+    ) -> None:
         self.__settings = raw
+        self.__packages = packages or {}
+
+    def of_package(self, package_id: str) -> SettingsParser:
+        """
+        Another package's settings in the same run, for a node that uses its resources.
+        """
+        return SettingsParser(self.__packages.get(package_id, {}), self.__packages)
 
     def get_bool(self, key: str, default: bool) -> bool:
         value = self.__settings.get(key, default)

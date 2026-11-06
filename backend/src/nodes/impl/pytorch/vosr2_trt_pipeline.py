@@ -81,6 +81,8 @@ class FullSession:
         budget for activations; TensorRT streams the rest from host memory as it runs."""
         import tensorrt as trt
 
+        from nodes.impl.tensorrt.memory import gpu_setup_lock
+
         check()
         if self.budget and reserve == self.reserve:
             return
@@ -121,9 +123,10 @@ class FullSession:
                         raise RuntimeError(
                             f"TensorRT rejected VOSR {stage.name} weight residency."
                         )
-                stage.context = engine.create_execution_context(
-                    trt.ExecutionContextAllocationStrategy.USER_MANAGED
-                )
+                with gpu_setup_lock:
+                    stage.context = engine.create_execution_context(
+                        trt.ExecutionContextAllocationStrategy.USER_MANAGED
+                    )
                 if stage.context is None:
                     raise RuntimeError(f"VOSR could not allocate {stage.name} context.")
                 check()

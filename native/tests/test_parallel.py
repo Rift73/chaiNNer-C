@@ -98,7 +98,14 @@ def chunks_of(count, grain, in_chunk=None):
     return sorted(seen)
 
 
-@pytest.mark.parametrize("mode", list(BlendMode))
+# The modes the reference implements; the non-separable Color and Luminosity have theirs
+# in test_blend_non_separable.py.
+REFERENCE_MODES = [
+    mode for mode in BlendMode if mode.value in {m.value for m in reference.BlendMode}
+]
+
+
+@pytest.mark.parametrize("mode", REFERENCE_MODES)
 def test_parallel_blends(images, mode):
     a, b = images
     expected = reference.blend_images(a, b, reference.BlendMode(mode.value))

@@ -21,8 +21,9 @@ def warp(tenInput, tenFlow, device):  # noqa: ANN001, N803
 
     tenFlow = torch.cat(  # noqa: N806
         [
-            tenFlow[:, 0:1, :, :] / ((tenInput.shape[3] - 1.0) / 2.0),
-            tenFlow[:, 1:2, :, :] / ((tenInput.shape[2] - 1.0) / 2.0),
+            # one pixel across has no motion to scale: grid_sample reads that pixel
+            tenFlow[:, 0:1, :, :] / (max(tenInput.shape[3] - 1.0, 1.0) / 2.0),
+            tenFlow[:, 1:2, :, :] / (max(tenInput.shape[2] - 1.0, 1.0) / 2.0),
         ],
         1,
     )

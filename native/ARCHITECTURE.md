@@ -7,7 +7,8 @@ Pre-SP1 history is readable at tag `chainner-c-checkpoint-20261001`.
 ## 1. Layers
 
 ```text
-Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle patches
+Electron / React UI: src/ on Electron 45 (release zips), or the installed 0.25.1-nightly.2025-10-21's Electron 25
+bundles + pinned patches (local package)
   -> owned Python/Sanic backend (backend/src): node registry, native run engine, HTTP + SSE
      -> Python node contracts: schemas, validation, model objects
         -> chainner_native.dll  C17 kernels, ctypes C ABI v2 (GIL released during calls)
@@ -31,7 +32,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 | Resize and PNG | `backend/src/nodes/impl/native_resample.py`, `native/src/resample_filters.c`, `native/src/dpid_ops.c` (DPID), `native/src/image_io.cpp`, `native/src/png_encode.c` (`png_encode_avx2.c`; the default PNG encoder, with `native/third_party/libdeflate`) |
 | Image codecs and atomic writes (instant-exec lane I) | `native/cmake/codecs.cmake`, `native/src/codecs/*.c` (`native/include/image_codecs.h`), `native/src/image_decode.cpp`, `image_encode.cpp`, `image_preview.cpp`, `native/src/atomic_file.cpp`, `native/src/run/nodes/io.cpp`, `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}`; OpenEXR: `native/src/codecs/exr_codec.c`, `native/third_party/{openexr,imath,libdeflate,zstd,openjph}` |
 | Linear Light (Descale, Resize) | `native/include/linear_light.h` (the curves), `native/src/linear_light_ops.c` (`linear_light_avx2.c`), `backend/src/nodes/impl/linear_light.py` |
-| Get Native Resolution | `native/third_party/vernier` (Vernier 0.2's core), `native/src/getnative_ops.cpp` (C entries), `getnative_unit.cpp` (session, reports), `getnative_kernel.cpp` (cross-frame kernel decision), `backend/src/nodes/impl/native_getnative.py`, `getnative_media.py` (sampling and frames) |
+| Get Native Resolution | `native/third_party/vernier` (Vernier 0.2's core), `native/src/getnative_ops.cpp` (C entries), `getnative_unit.cpp` (session, reports), `getnative_kernel.cpp` (cross-frame kernel decision, the unscaled axis of a one-axis upscale), `backend/src/nodes/impl/native_getnative.py`, `getnative_media.py` (sampling and frames) |
 | Video | `native/src/video_io.cpp`, `backend/src/nodes/impl/video.py`, `backend/src/nodes/impl/ffmpeg.py` (the pinned FFmpeg and its update) |
 | Packaging | `native/tools/package_port.py`, `package_files.py`, `package_manifest.py` |
 | UI patches | `native/tools/independent_ui.py`, `native/tools/input-drop.json`, `native/tools/tensorrt-types.json`, `native/tools/tensorrt-clear.json`, `verify_*.cjs` |
@@ -49,7 +50,7 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
   `native_graph.py`, `native_profile.py` (new)) and SP4b's (in `nodes/impl/`: `image_utils.py`, `native*.py`; the
   Gaussian, Box, Lens Blur, Dilate and Erode nodes) and SP4c's (`server.py`; in `nodes/impl/`: `numpy_pool.py` (new),
   `ffmpeg.py`, `native_profile.py`; `packages/chaiNNer_external/web_ui.py`), plus the rebuilt binaries, less the
-  nightly's GPU lease (below): 425 files, 11.3 MiB. B0 = the installed nightly backend (upstream `d56e507f` plus the
+  nightly's GPU lease (below), and every later change on this branch. B0 = the installed nightly backend (upstream `d56e507f` plus the
   nightly's local delta: 4 added files `gpu_lease.py`, `GPU_LEASE.md`, `tests/test_gpu_lease.py`,
   `tests/check_gpu_lease_wsl.py`, and 10 changed files including `server.py`, `server_host.py`, `process.py`,
   `events.py`, `chain/cache.py`) plus the port's 216 files (156 replaced, 60 added). The packager ships it as-is: no
@@ -62,17 +63,19 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
 - The two binaries are git-ignored (`.gitignore` names the DLL; `*.py[cod]` covers the `.pyd`): build or copy them.
 - The nightly's GPU lease was removed on 2026-10-05 (decision): its 4 files are gone and every spot it hooked is
   upstream again. The delta's TF32, ONNX export size 32, `gc.collect()` removals and 8-worker pool stay (deliberate choice).
-- UI: the package ships the installed Electron 25 bundles with pinned patches (section 9). `src/`
-  is upstream `d56e507f`, moved to Electron `^45.1.0` and Electron Forge 7.11.2, with the two UI patches ported to the TypeScript, its integrated Python
-  moved to CPython 3.14.8 (kept at 3.14.8 or newer) and its own root `%APPDATA%\chaiNNer-C`: the run-from-source UI (`npm start`), never part of the package. Do not
-  substitute newer frontend, preload or main assets into the installed runtime.
+- UI: the local package (`package_port.py`, the artifact the acceptance gates test) ships the installed nightly's
+  Electron 25 bundles with pinned patches (section 9). `src/` is upstream `d56e507f`, moved to Electron `^45.1.0` and
+  Electron Forge 7.11.2, with the two UI patches ported to the TypeScript, its integrated Python moved to CPython 3.14.8
+  (kept at 3.14.8 or newer) and its own root `%APPDATA%\chaiNNer-C`: the run-from-source UI (`npm start`) and the source
+  of the release zips (`npm run make`, `npm run make-linux-zip`), never part of the local package. Do not substitute
+  newer frontend, preload or main assets into the installed runtime.
 - The package owns its backend like normal chaiNNer. A `--remote-backend` launch changes ownership
   and restart/recovery behavior, so it is not used and is not proof of parity.
 
 ## 3. Native layer
 
-- Sources: 292 files under `native/src` and `native/include`, subfolders included (134 `.c`, 58 `.cpp`, 5 `.cu`,
-  63 `.h`, 30 `.hpp`, 2 `.inc`; 124,547 physical lines including generated tables and attributed adaptations).
+- Sources: 311 files under `native/src` and `native/include`, subfolders included (139 `.c`, 61 `.cpp`, 5 `.cu`,
+  2 `.hip`, 71 `.h`, 31 `.hpp`, 2 `.inc`; 130,269 physical lines including generated tables and attributed adaptations).
   Vendored libraries are under `native/third_party`.
 - `chainner_native.dll`: C17 image kernels behind a C ABI. `backend/src/nodes/impl/native.py`
   loads it with ctypes and requires `cn_abi_version() == 2`; a load or ABI failure raises, never
@@ -103,15 +106,16 @@ Installed Electron 25 / React UI (0.25.1-nightly.2025-10-21) + pinned bundle pat
   `/W4 /WX` on every first-party target is the strict check. The binaries run on any
   x86-64-v2 CPU, NumPy 2.5.3's own baseline (correction 2026-10-07; no CPU check of ours). LLVM leaves a NaN's sign and payload unspecified, so
   where upstream's NaN bits are observable they are derived from the operands as integers (the normal output, the
-  palette key), never read from the arithmetic. Only Windows x64 is validated and packaged.
+  palette key), never read from the arithmetic. This is the Windows x64 build; Linux x86-64 is validated and packaged
+  too (`native/toolchain-linux.cmake`, `BUILDING.md`, Linux).
 
 ## 4. Threading and scheduling
 
-Four pools. Only the native one is budgeted; the engines keep their defaults (see below):
+Five pools. Only the native one is budgeted; the engines keep their defaults (see below):
 
 | Pool | Behavior |
 | --- | --- |
-| asyncio loop + `ThreadPoolExecutor(max_workers=8)` | `backend/src/server.py:48` (`POOL_SIZE`; nightly delta; upstream has 4). Runs node functions, generator advance/iterate, collector completion and broadcast-data computation |
+| asyncio loop + `ThreadPoolExecutor(max_workers=8)` | `backend/src/server.py` (`POOL_SIZE`; nightly delta; upstream has 4). Runs node functions, generator advance/iterate, collector completion and broadcast-data computation |
 | Native `cn_parallel_for(count, grain)` | Windows threadpool; capacity = CPUs in the process affinity mask. `count <= grain` runs inline. A larger call runs `min(1 + (count - 1) / grain, 128)` chunks, a partition that depends on `(count, grain)` alone. The caller works on its own call; generic helpers join the active call with the fewest helpers and re-pick when the set of calls changes; a helper is admitted only while callers plus helpers fit the capacity. Every chunk runs under the caller's MXCSR. The DLL is never unloaded |
 | OpenCV internal pool | OpenCV defaults |
 | BLAS pool | NumPy's OpenBLAS defaults |
@@ -217,7 +221,7 @@ run stopped before it started releases its references at once. The Python execut
 (`await_owned_node`). Test: `native/tests/test_engine_stop.py`.
 
 Memo cache (amendment A3, in the same file). In-process outputs of allow-listed nodes (native nodes without side
-effects or a context, except Add Noise and Create Noise; 16 audited Python nodes listed in `native_executor.py` and
+effects or a context, except Add Noise and Create Noise; 23 audited Python nodes listed in `native_executor.py` and
 `test_engine_memo.py`; Load Image keyed by its file's identity read as it runs, or, precached, the identity its
 individual run recorded; Load Images' items by their file's identity), keyed by schema, constant inputs, package
 settings (but the Result Cache's own) and upstream keys; a generator's per-run outputs only when they follow from its
@@ -231,26 +235,48 @@ whole (a view keeps its parent), and one above a budget's eighth is not kept. A 
 node. A dependency change restarts the worker process, which drops it. Tests: `native/tests/test_engine_{differential,scenarios,robustness,memo,
 server}.py` (`native/tools/engine_differential.py` compares both executors' outcomes, events, A6 order and files).
 
+A folder of videos (Load Videos, `backend/src/folder_videos.py`). No second path through the engine: the part of the
+chain that Load Videos feeds (with any generator zipped with it) runs whole, once per file, on the run's executor, with
+a Load Video of the same id on that file in its place, so a file's run is that of a chain with Load Video: its own plan,
+item window, temporal state, Save Video and chain cleanups. The nodes feeding that part run once, first, with what they
+need, each as a preview does (`process_regular_node`) with what it read cached, and reach each file's run and the rest of
+the chain as a preview's output does (`parent_cache`), so a model is one object
+for the whole folder and the engines cached by it (TensorRT's outlive a run) stay loaded; a source read through a lazy
+input is left to the file's run, which may not read it; their chain cleanups wait for the run's end, and for a node Stop
+left running. Then the folders are listed, the rest of the chain runs once, then the files. Stop does not wait for the
+listing or the path check on the pool: they write nothing, and finish in the background. The file list is a snapshot from the start, so outputs
+written into the folder are not read. A file's error goes to the run's end (Stop on first error: ends the run, naming
+the file), and its Save Video has left no file. Two files that would give one path fail the run before anything else
+writes (`_colliding_files`): each file's final path, from Load Videos' outputs that follow from its path, the shared
+values and the pure scalar nodes over those, run for each file on the pool, compared across the folders; a path that
+reads anything else is not compared. A collector's output into what the file list reads is refused, naming the input:
+the list comes before any loop runs, and only `run()` runs a collector, whose output it does not hand back. `FolderVideosRun` has the executors' interface for `/pause`, `/resume`, `/kill` and `/status` (a new file's
+executor starts paused if the run is) and sends the UI one run's events: one chain-start, and Load Videos' progress
+over the folder, by file size (a stat, where a frame count takes a probe per file). Test: `native/tests/test_folder_videos.py`.
+
 A node's reported time (`node-finish`) is its own work: `timed_supplier` leaves out what its call spends in
 `util.waiting`, as the executor leaves out lazy inputs' evaluation. The waits so marked are those for other work: a
-peek, a TensorRT session's lock (`util.held`; the window runs the node for several items, each waiting its turn) and
-VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queue, about K times its 1.5 s.
+peek, a TensorRT session's turns and the tile ahead on its stream (the window runs the node for several items, which
+share the session) and VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queue, about K times
+its 1.5 s.
 
 ## 5. Invariants
 
 - Normalized float32 image semantics; BGR/BGRA channel order; grayscale flattening, dtype promotion, signed-zero and
   nonfinite behavior where defined; strided, reversed, unaligned and read-only inputs; explicit output ownership.
-- Bit-exact float32 against the installed chaiNNer, judged (section 7; the frozen B0 and B3 are regression proxies):
+- chaiNNer-C's own judged outputs are the reference; there is no parity with upstream or the installed chaiNNer
+  (section 7 lists the engines exactness depends on; the frozen B0 and B3 are regression proxies):
   SIMD only where bit-identical (elementwise, per-output lane); no FMA contraction, reordered reductions or fast-math
   (`/fp:strict`). ISA dispatch (SP4): engine-mirror parameters (`lanes`, `fused`) choose each output's operations, the
   level only the code that runs them: `scalar`, `avx2` or `avx512`, probed once in `isa.c` (`CHAINNER_C_ISA`
-  caps it), in export-free units compiled for their level only: twenty-two `*_avx2.c` (conversions, convolution, lens,
+  caps it), in export-free units compiled for their level only: twenty-four `*_avx2.c` (conversions, convolution, lens,
   separable filters, morphology with its exceptional scan, median cut and palette counts, dither, blend, resample, the
-  spectral multiply, the normal output, planar to interleaved, YUV plane codes, the plane resampler, PNG row filters,
-  Gamma's approximation, Median Blur's 3x3 and 5x5 interiors, the min/max reduce, Unsharp Mask's weighted sum, Wavelet
-  Color Fix's blur, the float16 cast and Linear Light's curves), the AVX2 build of Get Native Resolution's analysis
-  (below) and the kept `convolution_avx512.c` and `separable_avx512.c` (16-lane groups; spec 4.3's keep rule:
-  a timer win, no throughput loss; separable: kept on the 8-CPU timer by controller ruling), which `CHAINNER_C_ISA=avx2`
+  spectral multiply, the normal output, planar to interleaved, YUV plane codes, the plane resampler, PNG row filters, the PNG decoder's Paeth,
+  Gamma's approximation, Median Blur's 3x3 and 5x5 interiors and histogram rows, the min/max reduce, Unsharp Mask's weighted sum, Wavelet
+  Color Fix's blur, the float16 cast, Linear Light's curves and Denoise's rows), the AVX2 build of Get Native
+  Resolution's analysis (below) and the kept `convolution_avx512.c`, `separable_avx512.c`, `denoise_avx512.c` and `lens_avx512.c`
+  (16-lane groups; spec 4.3's keep rule: a timer win, no throughput loss; separable: kept on the 8-CPU timer by
+  controller ruling), which `CHAINNER_C_ISA=avx2`
   caps on parts that downclock. The multiply (`spectral_avx2.c`), the normal output (`color_avx2.c`) and Linear Light
   (`linear_light_avx2.c`) share their per-element code with the baseline unit through `spectral_shared.h`,
   `color_shared.h` and `linear_light_shared.h` (static helpers); the
@@ -318,7 +344,11 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
   multipart), even under `CHAINNER_C_NATIVE_CODECS=0`. It gives what OpenCV's ExrDecoder gives under IMREAD_UNCHANGED:
   float32 (no clipping), BGR(A), the data window, part 0, level 0; two choices differ, Y with A loads as BGRA (OpenCV
   gives two channels) and luminance/chroma uses OpenEXR's luminance weights (OpenCV uses the primaries' y). Chunks
-  decode in parallel on the native pool; a file it declines raises Load Image's error, as before.
+  decode in parallel on the native pool; a file it declines raises Load Image's error, as before. Save Image writes
+  `.exr` through the same library (`cn_exr_encode`), also under `CHAINNER_C_NATIVE_CODECS=0`: one scanline part, float32
+  or half, the lossless codecs None, RLE, ZIPS, ZIP and PIZ, values as they are; grey as Y and BGR(A) as R, G, B (and A),
+  so the decoder gives back every float32 bit. Chunks compress in parallel and are written in order, so the file's bytes
+  do not depend on the thread count.
 - File writers write `<final>.chainner-c-<pid>-<seq>.tmp` in the target folder and rename it (`MoveFileExW`, no
   fsync); a final file with the same bytes is left untouched; failures raise what `open()` raises for the final path.
 - File traversal order, Unicode paths, overwrite/skip options, error continuation, final UI state
@@ -336,6 +366,7 @@ VOSR's budget lock. Before, a TensorRT upscale run ahead reported its whole queu
 | Video transport | No redundant contiguous-frame copies; an owning read-only view is held until complete and short writes finish |
 | NCNN/ONNX | Repeated successful GC deferred to chain cleanup; direct-call, error and OOM cleanup and allocator handling preserved |
 | Model helpers | Align Image to Reference and Upscale Face take chain-scoped exclusive leases (`backend/src/nodes/impl/pytorch/resource_cache.py`); incomplete checkpoints are not cached; explicit memory budgets disable retention. Checked only with mocks and CPU contract tests (`GPU-DEFERRED.md` item 5). VOSR's weights and TensorRT sessions stay in `SharedCache`s (`nodes/impl/tensorrt/cache.py`) until `/clear-cache/individual` for their node |
+| PyTorch Upscale Image's engine | With Use TensorRT Engine on, a model with an automatic recipe (`FP16_ARCHS`, DUAL, legacy DRFT) gets one dynamic engine per Tile Size, up to that size (Auto, Maximum and No Tiling take 512 px, and RGT stops at 256 px), through Convert To ONNX's and Build Engine's own node functions, and runs through TensorRT's own Upscale Image node function (`nodes/impl/pytorch/auto_engine.py`), whose tiles its Tile Size output reports. Its input is named for the model's size requirement (`dual.aligned_input_name`), so an image pads only as far as PyTorch pads it, down to the engine's smallest size: 16 px on ESRGAN, Compact, SPAN and PLKSR, which are all convolutions, and 64 px on the others, where a smaller image pads by reflection to 64 px and its right and bottom edges differ from PyTorch's. The engine is kept per model object in memory, and on disk by the SHA-256 of the weights and of the recipe's code (with the GPU and the TensorRT version), so a later process reads it without exporting. It stays in the Engine Cache's folder, among its files, under its one 16 GiB limit and eviction: also while that setting is off (the folder is then the one the setting would use, beside the node storage), as the input promises a build once; with the input off the feature keeps nothing. A failure or invalid values give the whole image to PyTorch, with a run warning (`NodeContext.warn`), for the rest of the chain. Its session is a `SharedCache` entry like TensorRT's own, released when the node runs with the setting off, falls back or is cleared |
 | Preparation caches | Bounded parameter data only, never image sequences: font faces (`font_cache.py`, at most 16 idle faces, 8 MiB, 512 px), regex and replacement parsers (`text_cache.py`), lens/spectral/Gaussian/normal/palette preparation |
 
 ## 7. Retained engines and exactness exceptions
@@ -456,7 +487,10 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   is the fallback; cached per model), where upstream pads to the multiple of 16 that shape inference reports for
   nearly every model (upstream chaiNNer #3106; stand-in 2026-10-09). Convolution models' edges on images or
   tiles that are not a multiple of 16 now equal PyTorch's and NCNN's, and window-attention exports run at any size
-  (`backend/tests/test_onnx_size_probe.py`).
+  (`backend/tests/test_onnx_size_probe.py`). The answer is also kept in `<storage>/onnx-size-probe` (1024 files, least
+  recently used removed first) under a key of the model's bytes, ORT's version, the probe's code and shape inference's
+  answer; a damaged file is probed again. On a GPU provider Load Model starts the probe in the background, whose own
+  CPU session is most of its cost; on the CPU provider the node's session runs it.
 - PyTorch Upscale Image raises when the model turns a finite image into NaN or Inf (an fp16 overflow; the message
   says to turn FP16 off), where upstream saves NaN as black and clips Inf (upstream chaiNNer #3071; stand-in
   D15; `backend/tests/test_pytorch_nan_output.py`).
@@ -469,6 +503,20 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   budget is 1 PiB without a Memory Budget Limit and ncnn aborts the process when an allocation fails (stand-in
   D8, 2026-10-09). An image whose estimate fits is split exactly as before: whole without a limit, as the limit splits
   it with one (`backend/tests/test_ncnn_errors.py`).
+- Upscale Image on PyTorch, NCNN, ONNX and TensorRT has a Tile Size text output: the tiles the model ran, with their
+  overlap and after any cut for lack of memory, or Whole image; of an image's last pass (`upscale/tile_report.py`,
+  `backend/tests/test_upscale_tile_size.py`). MIGraphX's node does not have it.
+- TensorRT's Python session goes on in smaller tiles when an allocation for a tile finds no memory: the context and
+  stream are still good, so the image restarts in tiles half the size, as far as the profile and the overlap allow,
+  and the session's device buffers are freed first, after the tiles on the stream. Other items' tiles are not
+  disturbed. The run keeps to those tiles; the next starts from the largest. A Fixed engine, or a Dynamic one at its
+  smallest tile, stops with a message saying what to do, and a failed enqueue or wait still ends the session, as
+  retrying on it can crash inside TensorRT. The native runner has no retry (`backend/tests/test_tensorrt_session.py`).
+- Build Engine's Dynamic engines take activation memory by the tile (TensorRT's runtime activation resize, as VOSR's
+  engines do). Without it an engine needs its largest size's at any tile, and smaller tiles would save only their
+  input and output buffers; such an engine says so when it runs out. On a 2x ESRGAN of 64 to 512 px, 195.0 MB at any
+  size against 3.9, 15.7, 62.9 and 251.7 MB at 64, 128, 256 and 512 px, at the same speed. DUAL's and DRFT's builders
+  do not set it.
 - ONNX sessions raise when the chosen execution provider did not start, where upstream silently ran on CUDA or the CPU
   (upstream chaiNNer #2715; `backend/tests/test_onnx_session_providers.py`). On Windows with NVIDIA, the ONNX package
   installs `onnxruntime-gpu 1.30.0+trt11.4` (the fork release `v1.30.0-trt11`: the unmodified v1.30.0 source
@@ -604,10 +652,10 @@ verified copy, lock probe, atomic replace) and `package_manifest.py` (schema, id
    download table) becomes `gR.gte(s.version,"3.14.0")`, so a shipped CPython 3.14.x is kept. A missing runtime, or
    one below 3.14, no longer takes upstream's branch that deletes it and downloads 3.11.5: it throws "chaiNNer-C's
    integrated Python is missing or older than 3.14; reinstall chaiNNer-C", which upstream's setup catch logs and
-   offers Retry, system Python or exit (Consult 2 Q6). Main shows chaiNNer-C's version (About `chaiNNer v0.3.9`, the
-   startup log `chaiNNer-C 0.3.9 (upstream 0.25.1-nightly.2025-10-21)`, system information `app.version` 0.3.9 plus
+   offers Retry, system Python or exit (Consult 2 Q6). Main shows chaiNNer-C's version (About `chaiNNer v0.3.10`, the
+   startup log `chaiNNer-C 0.3.10 (upstream 0.25.1-nightly.2025-10-21)`, system information `app.version` 0.3.10 plus
    `app.upstream`), drops the Release Notes item and leaves `app.getVersion()` upstream's, since it stamps saved chains
-   (Consult 2 Q5). The renderer replaces the update header with the logo, the title and a `v0.3.9` tag (no Alpha
+   (Consult 2 Q5). The renderer replaces the update header with the logo, the title and a `v0.3.10` tag (no Alpha
    badge; the manifest's `app_version` stays the upstream baseline), removes the update toggle and rejects
    release-API strings. The renderer then applies the 11 drop edits in `input-drop.json`
    (own baseline pin): directory drops with toasts, locked/connected guards for file and node drops, directory
@@ -636,7 +684,7 @@ verified copy, lock probe, atomic replace) and `package_manifest.py` (schema, id
 6. Never touched after the first copy: `python\python` (recorded, not re-verified) and the profile.
 
 At run time the worker keeps numba's cache out of the runtime: `server.py`'s `main` sets `NUMBA_CACHE_DIR` to
-`<storage_dir>/numba-cache` before the node modules import numba, so PyMatting's `cache=True` kernels write their
+`<storage_dir>/numba-cache` before anything imports numba, so PyMatting's `cache=True` kernels write their
 `.nbi`/`.nbc` files there (in the package, `backend-storage/numba-cache`, a ruled root of the real-use pass), not into
 `python\python`'s site-packages. A chaiNNer-C deviation: upstream leaves numba's cache beside the package sources.
 

@@ -24,6 +24,8 @@ from packages.chaiNNer_standard.image.io.save_image import (
     DDSColourConversion,
     DDSErrorMetric,
     DDSMipFilter,
+    ExrColorDepth,
+    ExrCompression,
     ImageFormat,
     JpegSubsampling,
     PngColorDepth,
@@ -65,7 +67,10 @@ def inputs(
         False,
         True,
         AvifSubsampling.FACTOR_420,
+        ExrColorDepth.F32,
+        ExrCompression.ZIP,
         False,
+        None,
     ]
 
 
@@ -95,7 +100,10 @@ def save(directory: Path, image: np.ndarray, lossless: bool, quality: int) -> by
         False,
         True,
         AvifSubsampling.FACTOR_420,
+        ExrColorDepth.F32,
+        ExrCompression.ZIP,
         False,
+        None,
     )
     return (directory / "image.webp").read_bytes()
 

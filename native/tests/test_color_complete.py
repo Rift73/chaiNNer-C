@@ -340,3 +340,29 @@ def test_graph_does_not_call_original_kernels(monkeypatch) -> None:
         monkeypatch.setattr(np, name, forbidden)
     for source, source_space, target_space, expected in cases:
         exact(convert.convert(source, source_space, target_space), expected)
+
+
+@pytest.mark.parametrize("operation", [5, 7])
+@pytest.mark.parametrize("lanes", [4, 8])
+def test_hue_to_bgr_in_place(operation: int, lanes: int) -> None:
+    # Hue & Saturation runs HLS to BGR in its one buffer: the same pixels at every width's
+    # vector and scalar ends. No other operation, and no other overlap, may run in place.
+    function = native._api().cn_color_convert_f32
+    for width in (1, 7, 8, 9, 41):
+        source = input_image(
+            cv2.COLOR_HSV2BGR if operation == 5 else cv2.COLOR_HLS2BGR, width, 9
+        )
+        out = np.zeros_like(source)
+        pointer = native.ptr(source)
+        assert (
+            function(pointer, native.ptr(out), 9, width, 3, 3, operation, 0, lanes, 0)
+            == 0
+        )
+        assert function(pointer, pointer, 9, width, 3, 3, operation, 0, lanes, 0) == 0
+        exact(source, out)
+    source = np.zeros((9, 41, 3), np.float32)
+    pointer = native.ptr(source)
+    assert function(pointer, pointer, 9, 41, 3, 3, 6, 0, lanes, 0) != 0
+    shifted = ct.cast(ct.addressof(pointer.contents) + 12, type(pointer))
+    assert function(pointer, shifted, 8, 41, 3, 3, operation, 0, lanes, 0) != 0
+    assert function(pointer, pointer, 9, 41, 3, 4, operation, 0, lanes, 0) != 0

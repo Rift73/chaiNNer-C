@@ -2,6 +2,7 @@ import { Edge, Node } from 'reactflow';
 import { expect, test } from 'vitest';
 import {
     CategoryId,
+    DropDownInput,
     EdgeData,
     InputId,
     NodeData,
@@ -13,9 +14,11 @@ import {
 } from '../../src/common/common-types';
 import {
     formatDroppedNodes,
+    formatReplacedInputs,
     missingSchemata,
     toEditorChain,
 } from '../../src/common/nodes/editorChain';
+import { toBackendJson } from '../../src/common/nodes/toBackendJson';
 import { SchemaMap } from '../../src/common/SchemaMap';
 
 const DESCALE = 'chainner:image:descale' as SchemaId;
@@ -164,6 +167,144 @@ test('An input value that is no number or text gets its default', () => {
     );
 
     expect(chain.nodes[0].data.inputData).toEqual({ 1: 1280, 2: 720 });
+});
+
+const dropdown: DropDownInput = {
+    id: 3 as InputId,
+    type: 'any',
+    conversions: [],
+    kind: 'dropdown',
+    label: 'Mode',
+    optional: false,
+    hasHandle: false,
+    hint: false,
+    suggest: false,
+    def: 'near',
+    options: [
+        { option: 'Near', value: 'near' },
+        { option: 'Far', value: 'far' },
+        { option: 'Two', value: 2 },
+    ],
+    preferredStyle: 'dropdown',
+    labelStyle: 'default',
+    groups: [],
+};
+const withDropdown = new SchemaMap([
+    { ...descaleSchema, inputs: [...descaleSchema.inputs, dropdown] },
+]);
+
+test('A value that its dropdown or number input cannot take gets the default', () => {
+    // The dropdown of a collapsed node or in a hidden group never shows to correct the value, and
+    // the backend rejects it: a tile size option that was removed, or a value of an older input
+    // with this id, as in Blend Images from before its overlay position.
+    const inputsOf = (inputData: Record<number, unknown>) =>
+        toEditorChain(withDropdown, [node(A, DESCALE, inputData)], []).nodes[0].data.inputData;
+
+    expect(inputsOf({ 3: 100 })).toMatchObject({ 3: 'near' });
+    expect(inputsOf({ 3: 'D:models' })).toMatchObject({ 3: 'near' });
+    // the value as the option has it, not its text
+    expect(inputsOf({ 3: '2' })).toMatchObject({ 3: 'near' });
+    expect(inputsOf({ 3: 2 })).toMatchObject({ 3: 2 });
+    expect(inputsOf({ 3: 'far' })).toMatchObject({ 3: 'far' });
+
+    expect(inputsOf({ 1: '', 2: 'x' })).toMatchObject({ 1: 1280, 2: 720 });
+    expect(inputsOf({ 1: 5 })).toMatchObject({ 1: 5 });
+    // no such input: kept, as a later version of the chain may have it
+    expect(inputsOf({ 9: 'kept' })).toMatchObject({ 9: 'kept' });
+});
+
+test('A number in text in a number input becomes that number', () => {
+    // a chain from before its inputs' values were numbers, or edited by hand
+    const inputsOf = (inputData: Record<number, unknown>) =>
+        toEditorChain(schemata, [node(A, DESCALE, inputData)], []).nodes[0].data.inputData;
+
+    expect(inputsOf({ 1: '2', 2: ' 1.5 ' })).toEqual({ 1: 2, 2: 1.5 });
+
+    // no number
+    expect(inputsOf({ 1: '', 2: 'x' })).toEqual({ 1: 1280, 2: 720 });
+    expect(inputsOf({ 1: 'Infinity', 2: Infinity })).toEqual({ 1: 1280, 2: 720 });
+});
+
+test('A number in an input of text gets the default', () => {
+    // a file input parses its value as a path when it shows, which throws on a number
+    const textInput = (id: number, kind: string, def?: string) =>
+        ({ id, kind, def, label: kind, optional: true } as unknown as NodeSchema['inputs'][number]);
+    const withTexts = new SchemaMap([
+        {
+            ...descaleSchema,
+            inputs: [
+                textInput(3, 'file'),
+                textInput(4, 'directory'),
+                textInput(5, 'text', 'text'),
+                textInput(6, 'color', '{}'),
+            ],
+        },
+    ]);
+    const inputsOf = (inputData: Record<number, unknown>) =>
+        toEditorChain(withTexts, [node(A, DESCALE, inputData)], []).nodes[0].data.inputData;
+
+    expect(inputsOf({ 3: 5, 4: 5, 5: 5, 6: 5 })).toEqual({
+        3: undefined,
+        4: undefined,
+        5: 'text',
+        6: '{}',
+    });
+    expect(inputsOf({ 3: 'a.png', 4: 'C:\\a', 5: 'b', 6: '{"a":1}' })).toEqual({
+        3: 'a.png',
+        4: 'C:\\a',
+        5: 'b',
+        6: '{"a":1}',
+    });
+});
+
+test('A node of a damaged file runs and takes input by its schema and id', () => {
+    const generator = 'chainner:image:load_images' as SchemaId;
+    const withGenerator = new SchemaMap([
+        descaleSchema,
+        { ...descaleSchema, schemaId: generator, kind: 'generator' },
+    ]);
+    const nodeOf = (changes: Partial<Node<NodeData>>, schemaId = DESCALE) =>
+        toEditorChain(withGenerator, [{ ...node(A, schemaId, {}), ...changes }], []).nodes[0];
+
+    // toBackendJson throws on a node without a type, which is the alert on every run
+    const untyped = nodeOf({ type: undefined });
+    expect(untyped.type).toBe('regularNode');
+    expect(() => toBackendJson([untyped], [], withGenerator)).not.toThrow();
+
+    expect(nodeOf({ type: 'unknown' }).type).toBe('regularNode');
+    expect(nodeOf({ type: 'regularNode' }, generator).type).toBe('generator');
+    expect(nodeOf({ type: 'breakPoint' }).type).toBe('breakPoint');
+
+    const withoutId = { schemaId: DESCALE, inputData: {} } as unknown as NodeData;
+    expect(nodeOf({ data: withoutId }).data.id).toBe(A);
+});
+
+test('A value that was replaced is listed, and the chain is not complete', () => {
+    const replaced = toEditorChain(
+        withDropdown,
+        [node(A, DESCALE, { 1: 'x', 3: 100 }), node(D, DESCALE, { 3: 100 })],
+        []
+    );
+    expect(replaced.replacedInputs).toEqual([
+        { node: 'Descale', input: 'Width', value: 'x' },
+        { node: 'Descale', input: 'Mode', value: 100 },
+        { node: 'Descale', input: 'Mode', value: 100 },
+    ]);
+    expect(replaced.complete).toBe(false);
+    expect(formatReplacedInputs(replaced.replacedInputs)).toBe(
+        '- Descale: Width held "x" (1 node)\n- Descale: Mode held 100 (2 nodes)'
+    );
+
+    // Not replaced: no value, a value for no input of the node, one that converts, and a value of
+    // a connected input, which does not use it (Save Video's FPS "" of an old chain).
+    const kept = toEditorChain(
+        withDropdown,
+        [node(A, DESCALE, { 1: '', 2: '5', 3: null, 9: 'kept' }), node(D, DESCALE, {})],
+        [edge(D, A)]
+    );
+    expect(kept.nodes[0].data.inputData).toMatchObject({ 1: 1280, 2: 5, 3: 'near', 9: 'kept' });
+    expect(kept.replacedInputs).toEqual([]);
+    expect(kept.complete).toBe(true);
 });
 
 test('Missing and null inputs get their defaults', () => {

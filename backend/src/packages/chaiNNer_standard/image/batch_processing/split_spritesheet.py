@@ -41,10 +41,14 @@ Row major:    Column major:
     outputs=[
         ImageOutput(
             image_type="""
-            Image {
-                height: max(floor(Input0.height / Input1), 1),
-                width: max(floor(Input0.width / Input2), 1),
-                channels: Input0.channels,
+            if number::mod(Input0.height, Input1) != 0 or number::mod(Input0.width, Input2) != 0 {
+                error("The height of the image must be a multiple of the rows, and its width of the columns.")
+            } else {
+                Image {
+                    height: max(floor(Input0.height / Input1), 1),
+                    width: max(floor(Input0.width / Input2), 1),
+                    channels: Input0.channels,
+                }
             }"""
         ),
         NumberOutput("Index", output_type="min(uint, Input1 * Input2 - 1)").with_docs(

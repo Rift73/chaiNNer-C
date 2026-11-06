@@ -126,6 +126,15 @@ def test_text_pattern_matches(counts):
               lambda enforced: any_surrogate(enforced) or "{\u00e9}" in str(enforced[0]), counts)
 
 
+def test_an_error_keeps_the_text_after_a_nul():
+    inputs = ["a\x00b{}", *([None] * 9)]
+    message = ('Invalid replacement pattern. {} is not a valid replacement. Either specify a name or id number, or '
+               'escape a single "{" as "{{". Full pattern: a\x00b{}')
+    assert assert_native_matches("chainner:utility:text_pattern", inputs) == ("error", ("ValueError", message))
+    assert assert_native_matches("chainner:utility:regex_find", ["x", "a\\x00|\x00y", 0, "{0}"]) == (
+        "error", ("RuntimeError", "No match found. Unable to find the pattern 'a\\x00|\x00y' in the text."))
+
+
 @pytest.mark.parametrize(
     "pattern, message",
     [

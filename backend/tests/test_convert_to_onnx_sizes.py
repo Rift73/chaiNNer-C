@@ -4,10 +4,7 @@ padding of odd sizes."""
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Callable
-from types import ModuleType
-from typing import Any
 
 import numpy as np
 import onnx
@@ -16,14 +13,18 @@ import pytest
 import torch
 from spandrel import ImageModelDescriptor, ModelLoader
 from spandrel.architectures.Compact import Compact
+from spandrel.architectures.FIGSR import FIGSR
+from spandrel.architectures.GFISRv2 import GFISRV2
 from spandrel.architectures.RealCUGAN import UpCunet2x, UpCunet3x, UpCunet4x
 from spandrel.architectures.SST import SST
+from spandrel.architectures.Uformer import Uformer
+from torch import nn
 
 # Load Model and the node's padding run in the native backend, which GitHub's checks
 # do not build.
 pytest.importorskip("nodes.impl._chainner_graph")
 
-from nodes.impl.onnx.autocast import autocast
+from nodes.impl.onnx.autocast import METADATA_KEY
 from nodes.impl.onnx.load import load_onnx_model, model_facts
 from nodes.impl.onnx.model import SIZE_REQ_METADATA_KEY, OnnxGeneric, SizeReq
 from nodes.impl.onnx.session import create_inference_session
@@ -45,6 +46,10 @@ ARCHS: dict[str, Callable[[], torch.nn.Module]] = {
     "RealCUGAN 2x": lambda: UpCunet2x(in_channels=3, out_channels=3),
     "RealCUGAN 3x": lambda: UpCunet3x(in_channels=3, out_channels=3),
     "RealCUGAN 4x": lambda: UpCunet4x(in_channels=3, out_channels=3),
+    "GFISRv2": lambda: GFISRV2(dim=16, n_blocks=2, scale=2),
+    "FIGSR": lambda: FIGSR(
+        dim=16, n_blocks=2, gc=2, square_kernel_size=3, band_kernel_size=3, scale=2
+    ),
 }
 
 
@@ -99,6 +104,63 @@ def test_upscale_pads_an_export_below_its_minimum_as_pytorch_does(arch: str):
         )
 
 
+@pytest.mark.parametrize("arch", ["GFISRv2", "FIGSR"])
+def test_upscale_runs_a_fourier_export_as_pytorch_does(arch: str):
+    model = tiny_model(arch)
+    exported = load_onnx_model(
+        convert_to_onnx_impl(model, torch.device("cpu"), opset_version=20)
+    )
+    assert isinstance(exported, OnnxGeneric)
+    session = create_inference_session(exported, 0, "CPUExecutionProvider")
+    for h, w in [(37, 51), (48, 64)]:
+        img = image(h, w)
+        np.testing.assert_allclose(
+            np.clip(
+                upscale_with_session(img, exported, session, NO_TILING, False), 0, 1
+            ),
+            pytorch(model, img),
+            rtol=0,
+            atol=1e-4,
+        )
+
+
+def test_upscale_runs_a_square_requirement_as_pytorch_does():
+    # Uformer pads to a square multiple of 128 in its graph, in one step as PyTorch does.
+    # Weights that change the image, and an image with detail, to show a second step.
+    torch.manual_seed(3)
+    net = Uformer(embed_dim=8, depths=[1] * 9, win_size=8)
+    for module in net.modules():
+        if isinstance(module, nn.Conv2d | nn.ConvTranspose2d | nn.Linear):
+            nn.init.normal_(module.weight, std=0.12)
+    model = ModelLoader().load_from_state_dict(net.state_dict())
+    assert isinstance(model, ImageModelDescriptor)
+    model.model.requires_grad_(False)
+    model.eval()
+    exported = load_onnx_model(
+        convert_to_onnx_impl(model, torch.device("cpu"), opset_version=20)
+    )
+    assert isinstance(exported, OnnxGeneric)
+    session = create_inference_session(exported, 0, "CPUExecutionProvider")
+    for h, w in [(130, 72), (72, 130), (200, 100)]:
+        y, x = np.mgrid[0:h, 0:w].astype(np.float32)
+        img = np.stack(
+            [
+                0.5 + 0.4 * np.sin(y / 7) * np.cos(x / 11),
+                0.5 + 0.4 * np.sin(x / 5 + y / 13),
+                0.5 + 0.3 * np.cos(y / 3),
+            ],
+            axis=2,
+        )
+        np.testing.assert_allclose(
+            np.clip(
+                upscale_with_session(img, exported, session, NO_TILING, False), 0, 1
+            ),
+            pytorch(model, img),
+            rtol=0,
+            atol=1e-4,
+        )
+
+
 @pytest.mark.parametrize("arch", ["RealCUGAN 2x", "RealCUGAN 3x", "RealCUGAN 4x"])
 def test_a_realcugan_export_runs_odd_sizes_as_pytorch_does(arch: str):
     # RealCUGAN pads odd sizes (3x: sizes not divisible by 4) inside the model; its
@@ -118,26 +180,14 @@ def test_a_realcugan_export_runs_odd_sizes_as_pytorch_does(arch: str):
         )
 
 
-def test_mixed_precision_keeps_the_recorded_size_requirement(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    # ModelOpt's converter writes a model of its own, without the source's metadata.
-    def convert_to_mixed_precision(onnx_path: str, **_: Any) -> onnx.ModelProto:
-        converted = onnx.load(onnx_path)
-        del converted.metadata_props[:]
-        return converted
-
-    modules = ["modelopt", "modelopt.onnx", "modelopt.onnx.autocast"]
-    for name in modules:
-        monkeypatch.setitem(sys.modules, name, ModuleType(name))
-    vars(sys.modules[modules[-1]])["convert_to_mixed_precision"] = (
-        convert_to_mixed_precision
+def test_a_mixed_onnx_of_an_earlier_version_keeps_its_recorded_size_requirement():
+    mixed = onnx.load_from_string(
+        convert_to_onnx_impl(tiny_model("SST"), torch.device("cpu"))
     )
-    onnx_bytes = convert_to_onnx_impl(tiny_model("SST"), torch.device("cpu"))
-    calibration = np.zeros((1, 3, 32, 32), np.float32)
-    mixed = onnx.load_from_string(autocast(onnx_bytes, "fp16", calibration))
+    entry = mixed.metadata_props.add()
+    entry.key, entry.value = METADATA_KEY, "fp16"
     recorded = [e for e in mixed.metadata_props if e.key == SIZE_REQ_METADATA_KEY]
     assert len(recorded) == 1
-    assert model_facts(load_onnx_model(mixed.SerializeToString())).size_req == SizeReq(
-        24
-    )
+    loaded = load_onnx_model(mixed.SerializeToString())
+    assert loaded.info.dtype == "mixed-fp16"
+    assert model_facts(loaded).size_req == SizeReq(24)

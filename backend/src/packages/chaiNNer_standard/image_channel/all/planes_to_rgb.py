@@ -57,7 +57,35 @@ from .. import all_group
         .with_docs("The kernel that upsamples U and V to Y's size."),
     ],
     outputs=[
-        ImageOutput(size_as=0, channels=3, assume_normalized=True),
+        ImageOutput(
+            image_type="""
+                def fits(luma: uint, chroma: uint) =
+                    chroma == luma or chroma == ceil(luma / 2) or chroma == ceil(luma / 4);
+
+                if Input1.width != Input2.width or Input1.height != Input2.height {
+                    error("The U and V planes must have one size.")
+                } else if not (fits(Input0.width, Input1.width) and fits(Input0.height, Input1.height)) {
+                    error("The U and V planes must have Y's size, half of it or a quarter of it.")
+                } else {
+                    match Input4 {
+                        Matrix::Bt2020Cl | Matrix::Ictcp => {
+                            error("This matrix is not a plain matrix: planes with it cannot be converted to RGB here.")
+                        },
+                        Matrix::Rgb => {
+                            if Input1.width == Input0.width and Input1.height == Input0.height {
+                                Image
+                            } else {
+                                error("RGB (identity) planes cannot be subsampled: use 4:4:4.")
+                            }
+                        },
+                        _ => Image,
+                    }
+                }
+            """,
+            size_as=0,
+            channels=3,
+            assume_normalized=True,
+        ),
         ColourInfoOutput().with_docs(
             "The colour information, re-issued for the RGB image (its chroma at full"
             " size, so Save Video does not correct the siting again)."

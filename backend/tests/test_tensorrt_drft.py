@@ -13,11 +13,19 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import cuda.bindings
+import onnx
 import pytest
 from onnx import TensorProto, helper
 
 from api import NodeContext
-from nodes.impl.onnx.model import OnnxGeneric, OnnxInfo
+from nodes.impl.onnx import autocast
+from nodes.impl.onnx.load import load_onnx_model
+from nodes.impl.onnx.model import (
+    ARCH_METADATA_KEY,
+    PRECISION_METADATA_KEY,
+    OnnxGeneric,
+    OnnxInfo,
+)
 from nodes.impl.tensorrt import build_cache, drft, drft_engine_worker, dual
 from packages.chaiNNer_tensorrt.settings import TensorRTSettings
 from packages.chaiNNer_tensorrt.tensorrt.utility import build_engine
@@ -439,6 +447,24 @@ def test_build_engine_keeps_other_onnxs_on_their_routes(
     assert [name for name, _, _ in routed] == ["dual"]
 
 
+@pytest.mark.parametrize("low", ["fp16", "bf16"])
+def test_build_engine_keeps_the_types_of_an_earlier_versions_mixed_onnx(
+    monkeypatch: pytest.MonkeyPatch, low: str
+):
+    # Whatever Precision a saved chain holds: the file's own types are the engine's.
+    model = onnx.load_from_string(_onnx())
+    entry = model.metadata_props.add()
+    entry.key, entry.value = autocast.METADATA_KEY, low
+    data = model.SerializeToString()
+    loaded = load_onnx_model(data)
+    assert loaded.info.dtype == f"mixed-{low}"
+    ((name, args, _),) = _run_node(
+        monkeypatch, data, build_engine.ShapeMode.DYNAMIC, loaded.info
+    )
+    assert name == "generic"
+    assert args[1].precision == "mixed"
+
+
 def _stub_gpu(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(build_engine, "get_cuda_compute_capability", lambda _: (12, 0))
     monkeypatch.setattr(build_engine, "get_cuda_device_name", lambda _: "RTX 5090")
@@ -515,19 +541,76 @@ def test_build_engine_refuses_a_drft_profile_before_building(
 
 
 @pytest.mark.parametrize("hidden", ["FP32", "FP16", "BF16"])
-def test_build_engine_builds_a_recorded_architecture_in_fp16(
-    monkeypatch: pytest.MonkeyPatch, hidden: str
+@pytest.mark.parametrize("recorded", ["fp16", "fp32"])
+def test_build_engine_builds_a_record_in_its_precision(
+    monkeypatch: pytest.MonkeyPatch, hidden: str, recorded: str
 ):
     routes = _run_node(
         monkeypatch,
         _onnx(),
         build_engine.ShapeMode.FIXED,
-        OnnxInfo(opset=20, dtype="fp16", arch="ESRGAN"),
+        OnnxInfo(opset=20, dtype=recorded, arch="SwinIR"),
         build_engine.Precision[hidden],
     )
     ((name, args, _),) = routes
     assert name == "generic"
-    assert args[1].precision == "fp16"
+    assert args[1].precision == recorded
+
+
+def test_precision_is_shown_until_an_onnx_is_known_to_have_a_record():
+    # tests/common/backend-nodes.test.ts evaluates this condition.
+    assert build_engine.PRECISION_APPLIES.to_json() == {
+        "kind": "type",
+        "input": 0,
+        "condition": 'OnnxModel { arch: "unrecorded" }',
+        "ifNotConnected": True,
+    }
+
+
+def _file_of(precision: str, metadata: dict[str, str]) -> bytes:
+    elem_type = {"fp16": TensorProto.FLOAT16, "fp32": TensorProto.FLOAT}[precision]
+    graph = helper.make_graph(
+        [helper.make_node("Identity", ["input"], ["output"])],
+        "plain",
+        [helper.make_tensor_value_info("input", elem_type, [1, 3, 4, 4])],
+        [helper.make_tensor_value_info("output", elem_type, [1, 3, 4, 4])],
+    )
+    model = helper.make_model(graph)
+    for key, value in metadata.items():
+        model.metadata_props.add(key=key, value=value)
+    return model.SerializeToString()
+
+
+RELOADED = [
+    # This version's records, FP32 from the fallback or the table
+    ("fp32", {ARCH_METADATA_KEY: "SwinIR", PRECISION_METADATA_KEY: "fp32"}, "fp32"),
+    ("fp16", {ARCH_METADATA_KEY: "SwinIR", PRECISION_METADATA_KEY: "fp16"}, "fp16"),
+    # A released version's record, the architecture alone
+    ("fp16", {ARCH_METADATA_KEY: "ESRGAN"}, "fp16"),
+    # No record: the dropdown's value stands
+    ("fp16", {}, "bf16"),
+    ("fp32", {}, "bf16"),
+    # A record the file contradicts is no record
+    ("fp16", {ARCH_METADATA_KEY: "SwinIR", PRECISION_METADATA_KEY: "fp32"}, "bf16"),
+]
+
+
+@pytest.mark.parametrize(("precision", "metadata", "built"), RELOADED)
+def test_build_engine_takes_a_reloaded_file_s_record(
+    monkeypatch: pytest.MonkeyPatch,
+    precision: str,
+    metadata: dict[str, str],
+    built: str,
+):
+    data = _file_of(precision, metadata)
+    routes = _run_node(
+        monkeypatch,
+        data,
+        build_engine.ShapeMode.FIXED,
+        load_onnx_model(data).info,
+        build_engine.Precision.BF16,
+    )
+    assert routes[0][1][1].precision == built
 
 
 def test_build_engine_keeps_the_chosen_precision_without_a_record(

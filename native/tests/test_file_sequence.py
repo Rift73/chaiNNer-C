@@ -36,6 +36,53 @@ NODE = "packages/chaiNNer_standard/image/batch_processing/load_images.py"
 EXTENSIONS = [".png", ".jpg", ".jpeg", ".tif", ".webp"]
 
 
+class FourOutputs:
+    """The current node's iterator as the reference iterates: its items without Metadata,
+    the fifth iterated output (test_image_metadata's)."""
+
+    def __init__(self, iterator):
+        self.iterator = iterator
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.four(next(self.iterator))
+
+    @staticmethod
+    def four(item):
+        return item[:4] if isinstance(item, tuple) else item
+
+    def describe(self):
+        return self.iterator.describe()
+
+    def materialize(self, token):
+        return self.four(self.iterator.materialize(token))
+
+    def close(self):
+        self.iterator.close()
+
+
+def as_load_image(loader):
+    """A reference-shaped loader as the current node calls Load Image."""
+
+    def load(path, _convert_colours):
+        a, b, c = loader(path)
+        return a, b, c, path
+
+    return load
+
+
+def four_outputs(load_images_node):
+    def node(*inputs):
+        generator, directory = load_images_node(*inputs)
+        supplier = generator.supplier
+        generator.supplier = lambda: FourOutputs(supplier())
+        return generator, directory
+
+    return node
+
+
 def namespace(
     variant="installed", current=False, loader=None, extensions=None
 ) -> dict[str, Any]:
@@ -49,7 +96,8 @@ def namespace(
     def default_loader(p):
         return (str(p), p.parent, p.stem)
 
-    return declarations(
+    loader = default_loader if loader is None else loader
+    functions = declarations(
         base / NODE,
         {"extension_filter", "list_glob", "load_images_node"},
         {
@@ -59,12 +107,15 @@ def namespace(
             "graph": graph,
             "alphanumeric_sort": helper,
             "Generator": frozen_api(variant).Generator,
-            "load_image_node": default_loader if loader is None else loader,
+            "load_image_node": as_load_image(loader) if current else loader,
             "get_available_image_formats": lambda: (
                 EXTENSIONS if extensions is None else extensions
             ),
         },
     )
+    if current:
+        functions["load_images_node"] = four_outputs(functions["load_images_node"])
+    return functions
 
 
 @pytest.fixture
@@ -301,6 +352,9 @@ def test_native_walk_does_not_delegate_to_old_algorithm(tree, monkeypatch):
 def test_node_generator_options(
     tree, variant, use_glob, recursive, use_limit, fail_fast, limit
 ):
+    # The reference lists a folder named like an image as an item: not an option's matter.
+    (tree / "folder.png" / "inside.png").unlink()
+    (tree / "folder.png").rmdir()
     results = []
     for current in (False, True):
         ns = namespace(variant, current)
@@ -315,6 +369,29 @@ def test_node_generator_options(
         assert list(second) == values and list(first) == []
         results.append((generator.expected_length, values))
     assert results[0] == results[1]
+
+
+def test_a_folder_named_like_an_image_is_no_item(tmp_path):
+    (tmp_path / "album.png").mkdir()
+    (tmp_path / "album.png" / "inside.png").write_bytes(b"inside")
+    (tmp_path / "b.png").write_bytes(b"b")
+    ns = namespace(current=True)
+    listed = ns["list_glob"](tmp_path, "**/*", EXTENSIONS)
+    assert tmp_path / "album.png" in listed
+    paths = [tmp_path / "album.png" / "inside.png", tmp_path / "b.png"]
+    for use_glob in (False, True):
+        generator, _ = ns["load_images_node"](tmp_path, use_glob, True, "**/*", False, 0, True)
+        assert generator.source_paths == tuple(paths)
+        assert generator.expected_length == 2
+        assert [item[3] for item in generator.supplier()] == [0, 1]
+    # The limit counts images.
+    generator, _ = ns["load_images_node"](tmp_path, False, True, "", True, 1, False)
+    assert generator.source_paths == (paths[0],)
+    # A folder with only folders so named has no images.
+    (tmp_path / "b.png").unlink()
+    (tmp_path / "album.png" / "inside.png").unlink()
+    with pytest.raises(FileNotFoundError, match="has no valid images"):
+        ns["load_images_node"](tmp_path, False, True, "", False, 0, False)
 
 
 @pytest.mark.parametrize("limit", [0, -1, 2, None, 1.5])
@@ -441,7 +518,7 @@ def test_independent_concurrent_discovery_and_iteration(tree):
         results = list(executor.map(run, range(12)))
     for paths, values in results:
         assert paths == expected
-        assert len(values) == len(expected)
+        assert len(values) == len([path for path in expected if path.is_file()])
         assert [x[3] for x in values] == list(range(len(values)))
 
 
@@ -491,6 +568,16 @@ def test_lazy_iterator_reentry_matches_generator(tree, action):
     assert outcomes[0] == outcomes[1]
 
 
+# What the node has beyond the frozen source: Convert To sRGB and the Metadata output.
+ADDED_TO_LOAD_IMAGES = {
+    "        convert_to_srgb_input().with_id(7),\n": "",
+    "        ImageMetadataOutput(),\n": "",
+    "outputs=[0, 2, 3, 4, 5]": "outputs=[0, 2, 3, 4]",
+    "    convert_colours: bool = False,\n": "",
+    "int, ImageMetadata]": "int]",
+}
+
+
 @pytest.mark.parametrize("variant", ["source", "installed"])
 def test_frozen_source_and_public_metadata(variant):
     relative = f"{variant}/{NODE}"
@@ -500,7 +587,11 @@ def test_frozen_source_and_public_metadata(variant):
         == manifest["sha256"][relative]
     )
     old = ast.parse((FROZEN / relative).read_text())
-    new = ast.parse((ROOT / "backend/src" / NODE).read_text())
+    current = (ROOT / "backend/src" / NODE).read_text()
+    for added, frozen in ADDED_TO_LOAD_IMAGES.items():
+        assert added in current
+        current = current.replace(added, frozen)
+    new = ast.parse(current)
     for function in ("extension_filter", "list_glob", "load_images_node"):
         a = next(
             n for n in old.body if isinstance(n, ast.FunctionDef) and n.name == function
@@ -520,7 +611,7 @@ def test_frozen_source_and_public_metadata(variant):
 def test_load_images_declares_its_post_limit_snapshot(tree, use_limit):
     ns = namespace(current=True)
     generator, _ = ns["load_images_node"](tree, False, True, "", use_limit, 4, False)
-    discovered = ns["list_glob"](tree, "**/*", EXTENSIONS)
+    discovered = [p for p in ns["list_glob"](tree, "**/*", EXTENSIONS) if p.is_file()]
     assert generator.source_paths == tuple(discovered[:4] if use_limit else discovered)
     assert generator.expected_length == len(generator.source_paths)
 
@@ -658,9 +749,9 @@ def test_materialize_calls_load_image_node_once_per_token(monkeypatch, tmp_path)
         calls.append(("loader", path))
         return str(path), path.parent, path.stem
 
-    def replacement(path):
+    def replacement(path, _convert_colours):
         calls.append(("replacement", path))
-        return str(path), path.parent, path.stem
+        return str(path), path.parent, path.stem, path
 
     ns = namespace(current=True, loader=loader)
     generator = recursive_images(ns, tmp_path)
@@ -689,9 +780,9 @@ def test_materialize_runs_outside_the_guard(monkeypatch, tmp_path):
     iterator = generator.supplier()
     inner = []
 
-    def reentrant(path):
+    def reentrant(path, _convert_colours):
         inner.append(iterator.describe())
-        return str(path), path.parent, path.stem
+        return str(path), path.parent, path.stem, path
 
     monkeypatch.setitem(ns, "load_image_node", reentrant)
     assert iterator.materialize(iterator.describe()) == (str(paths[0]), ".", "1", 0)
@@ -712,7 +803,7 @@ def test_materialize_never_closes_the_iterator(monkeypatch, tmp_path, error_type
     iterator = generator.supplier()
     token = iterator.describe()
 
-    def interrupted(path):
+    def interrupted(path, _convert_colours):
         raise error_type(f"decode of {path.name} interrupted")
 
     with monkeypatch.context() as patch:
@@ -741,7 +832,7 @@ def test_next_still_closes_on_a_non_exception(monkeypatch, tmp_path, error_type)
     ns = namespace(current=True)
     iterator = recursive_images(ns, tmp_path).supplier()
 
-    def interrupted(path):
+    def interrupted(path, _convert_colours):
         raise error_type(f"decode of {path.name} interrupted")
 
     with monkeypatch.context() as patch:

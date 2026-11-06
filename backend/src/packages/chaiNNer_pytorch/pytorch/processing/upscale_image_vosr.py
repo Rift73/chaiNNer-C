@@ -51,6 +51,7 @@ from ...settings import get_settings
 from .. import processing_group
 
 LOAD_VIDEO = "chainner:image:load_video"
+LOAD_VIDEOS = "chainner:image:load_videos"
 # MIGraphX's backends are offered only on Linux and Windows with an AMD GPU worth running
 # models on and no NVIDIA GPU, so that the node is unchanged everywhere else
 OFFERS_MIGRAPHX = (
@@ -124,7 +125,9 @@ class _VideoState:
             *(BACKEND_DOCS if OFFERS_MIGRAPHX else BACKEND_DOCS[:1]),
             hint=True,
         ),
-        if_group(Condition.iterated(0, LOAD_VIDEO))(
+        if_group(
+            Condition.iterated(0, LOAD_VIDEO) | Condition.iterated(0, LOAD_VIDEOS)
+        )(
             EnumInput(
                 TemporalMode,
                 "Temporal Method",

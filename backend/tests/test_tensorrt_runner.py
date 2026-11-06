@@ -1,6 +1,6 @@
 """The native TensorRT runner (native/trt_runner): its tile planner, frame checks and CPU
 reference of the frame loop against the Python they replace (tiling.py, convenient_upscale,
-colour_info, bfloat16, NumPy's float16 and np.pad), on the CPU: the module loads without
+colour_info, NumPy's float16 and np.pad) and bfloat16's rounding, on the CPU: the module loads without
 TensorRT or a GPU. The GPU tests at the end run only with CHAINNER_C_GPU_TESTS=1 and an
 ESRGAN engine in CHAINNER_C_GPU_ENGINE."""
 
@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 from collections import deque
+from collections.abc import Callable
 from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
@@ -22,7 +23,6 @@ import numpy as np
 import pytest
 
 from nodes.impl.colour_info import code_to_float, float_to_code
-from nodes.impl.tensorrt.bfloat16 import bf16_bits_to_float32, float32_to_bf16_bits
 from nodes.impl.tensorrt.runner import PLUGIN, RUNNER_VARIABLE, runner_enabled
 from nodes.impl.tensorrt.tiling import (
     ShapeBounds,
@@ -33,11 +33,26 @@ from nodes.impl.tensorrt.tiling import (
     tiled_upscale,
 )
 from nodes.impl.upscale.convenient_upscale import convenient_upscale
+from nodes.impl.upscale.tile_report import TileReport
 
 BACKEND_SRC = Path(__file__).resolve().parents[1] / "src"
 SCALE = 4
 STATIC_512 = ShapeBounds(512, 512, 512, 512)
 DYNAMIC_64_512 = ShapeBounds(64, 64, 512, 512)
+
+
+def float32_to_bf16_bits(x: np.ndarray) -> np.ndarray:
+    """Round to nearest, ties to even; a NaN becomes the quiet NaN with its sign."""
+    bits = np.ascontiguousarray(x, dtype=np.float32).view(np.uint32)
+    rounded = bits + np.uint32(0x7FFF) + ((bits >> np.uint32(16)) & np.uint32(1))
+    out = (rounded >> np.uint32(16)).astype(np.uint16)
+    nan = (bits & np.uint32(0x7FFFFFFF)) > np.uint32(0x7F800000)
+    out[nan] = np.where(bits[nan] >> np.uint32(31), 0xFFC0, 0x7FC0)
+    return out
+
+
+def bf16_bits_to_float32(x: np.ndarray) -> np.ndarray:
+    return (x.astype(np.uint32) << np.uint32(16)).view(np.float32)
 
 
 def _module() -> ModuleType:
@@ -351,7 +366,7 @@ def test_half_planes_and_tensors_round_as_numpy(trt: ModuleType):
     np.testing.assert_array_equal(out16, half.repeat(2, 0).repeat(2, 1))
 
 
-def test_bf16_tensors_round_as_bfloat16_module(trt: ModuleType):
+def test_bf16_tensors_round_to_even(trt: ModuleType):
     plane = np.resize(SPECIAL, (4, 22)).astype(np.float32)
     out = np.empty((8, 44), dtype=np.float32)
     trt.reference_upscale(
@@ -522,17 +537,69 @@ class _ReferenceRunner:
     scale = SCALE
     input_channels = 3
     output_channels = 3
+    bounds = _bounds(STATIC_512)
 
     def __init__(self, trt: ModuleType) -> None:
         self.trt = trt
 
-    def upscale(self, inputs: list[np.ndarray], outputs: list[np.ndarray]) -> None:
+    def upscale(
+        self,
+        inputs: list[np.ndarray],
+        outputs: list[np.ndarray],
+        *,
+        on_tile: Callable[[int, int], None],
+    ) -> None:
+        h, w = inputs[0].shape
+        tiles = len(tile_starts(h, 512)) * len(tile_starts(w, 512))
+        for done in range(tiles):
+            on_tile(done, tiles)
         self.trt.reference_upscale(
             inputs, outputs, SCALE, _bounds(STATIC_512), 3, 3, "fp32", "fp32", chw_model
         )
 
     def capture_failure(self) -> str:
         return ""
+
+
+class _Stopped(Exception):
+    pass
+
+
+class _RecordedProgress:
+    """api.Progress that records what it is told and stops when asked to."""
+
+    def __init__(self, stop_at: int | None = None) -> None:
+        self.stop_at = stop_at
+        self.values: list[float] = []
+
+    def check_aborted(self) -> None:
+        if len(self.values) == self.stop_at:
+            raise _Stopped
+
+    def set_progress(self, progress: float) -> None:
+        self.values.append(progress)
+
+
+def test_node_session_stops_and_reports_between_tiles(
+    trt: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    """Stop and the progress reach the runner's tiles, as tiled_upscale's: an image is not
+    one long wait."""
+    from nodes.impl.tensorrt import runner as runner_module
+    from nodes.impl.tensorrt.model import TensorRTEngine, TensorRTEngineInfo
+
+    native = SimpleNamespace(Runner=lambda *_: _ReferenceRunner(trt))
+    monkeypatch.setattr(runner_module, "native", lambda: native)
+    info = TensorRTEngineInfo(
+        "fp32", 3, 3, SCALE, "sm_120", "11.2", False, None, None, None
+    )
+    session = runner_module.RunnerSession(TensorRTEngine(b"engine", info), 0)
+    img = _image(600, 700)
+    progress = _RecordedProgress()
+    session.upscale(img, TileReport(), progress)
+    assert progress.values == [0, 0.25, 0.5, 0.75, 1]
+    with pytest.raises(_Stopped):
+        session.upscale(img, TileReport(), _RecordedProgress(stop_at=2))
 
 
 def test_node_session_matches_python_session(
@@ -551,6 +618,7 @@ def test_node_session_matches_python_session(
     session = runner_module.RunnerSession(TensorRTEngine(b"engine", info), 0)
     rgba = _image(300, 700, 4)
     rgba[:, :350, 3] = 0.5
+    report = TileReport()
     for img in (_image(600, 700), rgba, _image(200, 150, 1)[:, :, 0]):
         expected = convenient_upscale(
             img,
@@ -558,7 +626,11 @@ def test_node_session_matches_python_session(
             3,
             lambda i: tiled_upscale(i, SCALE, STATIC_512, FakeEngine(STATIC_512)),
         )
-        assert np.array_equal(convenient_upscale(img, 3, 3, session.upscale), expected)
+        upscaled = convenient_upscale(
+            img, 3, 3, lambda i: session.upscale(i, report, _RecordedProgress())
+        )
+        assert np.array_equal(upscaled, expected)
+        assert report.text == ("512x512 px" if max(img.shape) > 512 else "Whole image")
 
 
 @pytest.mark.skipif(
@@ -652,6 +724,40 @@ def test_runner_is_ai_upscales_default_and_the_nodes_opt_in(
     assert runner_module.runner_plugin() == (plugin if clip else None)
 
 
+@pytest.mark.parametrize(
+    ("in_c", "out_c", "takes"),
+    [
+        (3, 3, True),
+        (1, 1, True),
+        (1, 3, True),
+        (3, 1, True),
+        (4, 4, False),
+        (4, 3, False),
+    ],
+)
+def test_runner_takes_the_engines_its_constructor_takes(
+    trt: ModuleType, in_c: int, out_c: int, takes: bool
+):
+    """A 4-channel engine goes to the Python session, not to the runner's refusal."""
+    from nodes.impl.tensorrt.model import TensorRTEngine, TensorRTEngineInfo
+    from nodes.impl.tensorrt.runner import runner_takes
+
+    info = TensorRTEngineInfo(
+        "fp32", in_c, out_c, SCALE, "sm_120", "11.2", False, None, None, None
+    )
+    assert runner_takes(TensorRTEngine(b"engine", info)) is takes
+    if not takes:
+        with pytest.raises(ValueError, match="input and output channels"):
+            trt.describe(
+                [np.zeros((8, 8), np.float32)],
+                [np.zeros((8 * SCALE, 8 * SCALE), np.float32)],
+                SCALE,
+                _bounds(STATIC_512),
+                in_c,
+                out_c,
+            )
+
+
 def test_a_build_without_the_runner_uses_the_python_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -680,6 +786,24 @@ def test_a_build_without_the_runner_uses_the_python_paths(
             f"module {runner_module.MODULE_FILE}",
         )
     ]
+
+
+FAULTS = BACKEND_SRC.parents[1] / "native/build/trt_runner/trt_runner_faults.exe"
+
+
+@pytest.mark.skipif(
+    not FAULTS.is_file(),
+    reason=f"{FAULTS.name} is not built (native/Build.ps1 with TensorRT)",
+)
+def test_runner_after_faults():
+    """runner.cpp over stand-ins that fail on demand (native/tests/trt_runner_faults): after
+    a failed allocation the next frame is good and nothing stale is used; after a failed
+    enqueue or wait nothing more is enqueued; a runner that fails while it is made leaves no
+    context; a tile hook sees each tile and can stop the frame."""
+    run = subprocess.run(
+        [str(FAULTS)], capture_output=True, text=True, timeout=60, check=False
+    )
+    assert run.returncode == 0, run.stdout
 
 
 # GPU tests: an approved GPU session only (ESRGAN engines only).
@@ -740,6 +864,36 @@ def test_gpu_runner_matches_python_session(size: tuple[int, int]):
             runner.upscale(bgr_planes(img), bgr_planes(out))
             assert np.array_equal(out, expected)
         assert runner.capture_failure() == ""
+    finally:
+        runner.close()
+        session.close()
+        engine.close()
+
+
+@gpu
+def test_gpu_a_frame_stopped_between_tiles_leaves_the_runner_good():
+    """What `on_tile` raises ends the frame, a tile from where the GPU is, and the next
+    frame is whole."""
+    from nodes.impl.tensorrt.runner import native
+
+    engine, session = _python_session()
+    runner = native().Runner(engine.bytes, 0, 1)
+    try:
+        img = _image(1100, 900)
+        expected = tiled_upscale(img, engine.scale, session.bounds, session)
+        out = np.empty_like(expected)
+        seen: list[tuple[int, int]] = []
+
+        def stop_at_second(done: int, tiles: int) -> None:
+            seen.append((done, tiles))
+            if done == 1:
+                raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            runner.upscale(bgr_planes(img), bgr_planes(out), on_tile=stop_at_second)
+        assert [done for done, _ in seen] == [0, 1]
+        runner.upscale(bgr_planes(img), bgr_planes(out), on_tile=lambda *_: None)
+        assert np.array_equal(out, expected)
     finally:
         runner.close()
         session.close()

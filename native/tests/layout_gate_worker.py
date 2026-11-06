@@ -71,6 +71,9 @@ MIXED = ("first", "rest")
 PACKAGE = "packages.chaiNNer_standard"
 LENS = "chainner:image:lens_blur"
 CHAIN_TARGETS = ("chainner:image:color_transfer", "chainner:image:stretch_contrast")
+# The nodes compared with the oracle that treat transparency on purpose as the oracle does not
+# (test_transparent_filters.py): their four-channel inputs are opaque, where they still equal it.
+OPAQUE_ALPHA = (LENS, "chainner:image:sharpen")
 # Nodes the gate can't run here, with the reason; test_layout_gate.py lists them too.
 EXCLUDED = {
     "chainner:image:save_video": "needs an FFmpeg environment from a node context; "
@@ -111,6 +114,9 @@ OVERRIDES: dict[str, dict[str, object]] = {
         "Width": 50,
         "Height": 40,
     },
+    "chainner:image:crop_to_size": {"Width": 50, "Height": 40},
+    "chainner:image:image_diff": {"Amplify": 3, "Tolerance": 2},
+    "chainner:image:is_grayscale": {"Tolerance": 2},
     # A descale's target is no larger than its image.
     "chainner:image:descale": {"Width": 60, "Height": 36},
     "chainner:image:divide": {"Divide": 1.7},
@@ -326,6 +332,8 @@ def noise(
     image[pick < 0.1] = 0.0
     image[(pick >= 0.1) & (pick < 0.2)] = -0.0
     image[pick >= 0.95] = 1.0
+    if shape[0] == 4 and case_id.startswith(OPAQUE_ALPHA):
+        image[3] = 1.0
     if levels is None:
         return image
     return np.round(image * levels) / np.float32(levels)

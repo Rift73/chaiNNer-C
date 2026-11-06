@@ -9,6 +9,7 @@ from nodes.groups import linked_inputs_group
 from nodes.impl.native_box import kernel_2d, separable_box
 from nodes.impl.native_buffers import freeze_normalized
 from nodes.impl.native_convolution import box_blur
+from nodes.impl.native_resample import finish_alpha, has_transparency, premultiply
 from nodes.impl.native_spectral_filter import filter2d
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
@@ -32,6 +33,42 @@ def get_kernel_1d(radius: float) -> np.ndarray:
 
 def get_kernel_2d(radius_x: float, radius_y: float) -> np.ndarray:
     return kernel_2d(radius_x, radius_y)
+
+
+def blurred(img: np.ndarray, radius_x: float, radius_y: float) -> np.ndarray:
+    """A helper's fresh float32 array, raw."""
+    # you can't tell the difference between a float and an integer when the radius is large enough
+    radius_x = round(radius_x) if radius_x > 200 else radius_x
+    radius_y = round(radius_y) if radius_y > 200 else radius_y
+
+    # both radii are integers
+    use_optimized_int = int(radius_x) == radius_x and int(radius_y) == radius_y
+
+    if use_optimized_int:
+        # we can use an optimized box blur implementation
+        radius_x = round(radius_x)
+        radius_y = round(radius_y)
+        return box_blur(img, radius_x, radius_y)
+
+    # cv2.blur is so much faster than the other methods, that it's worth manually separating the kernel.
+    # the idea here is that we blur with cv2.blur in x or y if we can
+    threshold = 15
+    if radius_x >= threshold and int(radius_x) == radius_x:
+        img = box_blur(img, int(radius_x), 0)
+        radius_x = 0
+    if radius_y >= threshold and int(radius_y) == radius_y:
+        img = box_blur(img, 0, int(radius_y))
+        radius_y = 0
+
+    # Separable filter is faster for relatively small kernels, but after a certain size it becomes
+    # slower than filter2D's DFT implementation. The exact cutoff depends on the hardware.
+    avg_radius = math.sqrt(radius_x * radius_y)
+    use_sep = avg_radius < 70
+
+    if use_sep:
+        return separable_box(img, radius_x, radius_y)
+    else:
+        return filter2d(img, get_kernel_2d(radius_x, radius_y))
 
 
 @blur_group.register(
@@ -74,41 +111,12 @@ def box_blur_node(
     if radius_x == 0 and radius_y == 0:
         return img
 
-    # Every other return is a helper's fresh float32 array, clamped in place as the
-    # output enforce would convert it, frozen and registered (freeze_normalized), so
-    # the enforce can borrow it.
-
-    # you can't tell the difference between a float and an integer when the radius is large enough
-    radius_x = round(radius_x) if radius_x > 200 else radius_x
-    radius_y = round(radius_y) if radius_y > 200 else radius_y
-
-    # both radii are integers
-    use_optimized_int = int(radius_x) == radius_x and int(radius_y) == radius_y
-
-    if use_optimized_int:
-        # we can use an optimized box blur implementation
-        radius_x = round(radius_x)
-        radius_y = round(radius_y)
-        return freeze_normalized(box_blur(img, radius_x, radius_y), clamp=True)
-
-    # cv2.blur is so much faster than the other methods, that it's worth manually separating the kernel.
-    # the idea here is that we blur with cv2.blur in x or y if we can
-    threshold = 15
-    if radius_x >= threshold and int(radius_x) == radius_x:
-        img = box_blur(img, int(radius_x), 0)
-        radius_x = 1
-    if radius_y >= threshold and int(radius_y) == radius_y:
-        img = box_blur(img, 0, int(radius_y))
-        radius_y = 1
-
-    # Separable filter is faster for relatively small kernels, but after a certain size it becomes
-    # slower than filter2D's DFT implementation. The exact cutoff depends on the hardware.
-    avg_radius = math.sqrt(radius_x * radius_y)
-    use_sep = avg_radius < 70
-
-    if use_sep:
-        return freeze_normalized(separable_box(img, radius_x, radius_y), clamp=True)
-    else:
-        return freeze_normalized(
-            filter2d(img, get_kernel_2d(radius_x, radius_y)), clamp=True
+    # The fresh result is clamped in place as the output enforce would convert it, frozen
+    # and registered (freeze_normalized), so the enforce can borrow it.
+    if has_transparency(img):
+        result = finish_alpha(
+            blurred(premultiply(img), radius_x, radius_y), divide=True
         )
+    else:
+        result = blurred(img, radius_x, radius_y)
+    return freeze_normalized(result, clamp=True)

@@ -18,6 +18,7 @@ from pathlib import Path
 from threading import Barrier
 
 import cv2
+import fp_control
 import numpy as np
 import pytest
 from PIL import ImageFont
@@ -463,14 +464,9 @@ def test_float_key_excludes_sticky_status():
     assert float_state() == before
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Public Windows CRT controls")
 def test_fp_control_keys_and_denormal_predicates():
-    control = ct.CDLL("ucrtbase.dll")._controlfp_s  # public CRT API
-    control.argtypes = [ct.POINTER(ct.c_uint), ct.c_uint, ct.c_uint]
-    control.restype = ct.c_int
-    saved, observed = ct.c_uint(), ct.c_uint()
-    assert control(ct.byref(saved), 0, 0) == 0
-    mask = 0x03000300
+    saved = fp_control.control(0, 0)
+    mask = fp_control.ROUNDING_MASK | fp_control.DENORMAL_MASK
     settings = [0, 0x100, 0x200, 0x300, 0x01000000, 0x02000000, 0x03000000]
     info = lib().cn_gaussian_cache_info
     info.argtypes = [ct.POINTER(ct.c_uint64), ct.c_int]
@@ -479,13 +475,13 @@ def test_fp_control_keys_and_denormal_predicates():
     expected = {}
     try:
         for setting in settings:
-            assert control(ct.byref(observed), setting, mask) == 0
+            fp_control.control(setting, mask)
             assert info(counters, 1) == 0
             expected[setting] = native_gaussian.kernel(19, 2.7)
         assert info(counters, 1) == 0
         keys = set()
         for setting in settings * 2:
-            assert control(ct.byref(observed), setting, mask) == 0
+            fp_control.control(setting, mask)
             keys.add(float_state())
             exact(native_gaussian.kernel(19, 2.7), expected[setting])
             values = np.array(
@@ -504,7 +500,7 @@ def test_fp_control_keys_and_denormal_predicates():
         assert info(counters, 0) == 0
         assert tuple(counters[:2]) == (len(settings), len(settings))
     finally:
-        assert control(ct.byref(observed), saved.value, mask) == 0
+        fp_control.control(saved, mask)
 
 
 def test_coefficient_cache_concurrent_eviction():

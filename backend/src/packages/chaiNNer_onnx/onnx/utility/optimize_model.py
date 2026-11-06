@@ -20,7 +20,7 @@ from .. import utility_group
         OnnxModelInput(),
     ],
     outputs=[
-        OnnxModelOutput(),
+        OnnxModelOutput(model_type="Input0"),
     ],
 )
 def optimize_model_node(model: OnnxModel) -> OnnxModel:

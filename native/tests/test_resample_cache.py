@@ -8,6 +8,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import fp_control
 import numpy as np
 import pytest
 from test_resample_complete import FILTERS, compare, exact
@@ -252,34 +253,35 @@ ROUNDING_HASHES = {
 
 
 @pytest.mark.parametrize("filter_id", FILTERS)
-@pytest.mark.skipif(sys.platform != "win32", reason="Public Windows CRT controls")
 def test_rounding_mode_is_part_of_coefficient_identity(filter_id):
-    runtime = ct.CDLL("ucrtbase.dll")
-    control = runtime._controlfp_s  # public CRT API
-    control.argtypes = [ct.POINTER(ct.c_uint), ct.c_uint, ct.c_uint]
-    control.restype = ct.c_int
-    saved = ct.c_uint()
-    assert control(ct.byref(saved), 0, 0) == 0
-    # _MCW_RC and the four documented rounding-control values. Preserve all
-    # unrelated controls and restore the current thread even if parity fails.
-    rounding_mask = 0x300
+    saved = fp_control.control(0, 0)
+    # The four documented rounding-control values. Preserve all unrelated controls
+    # and restore the current thread even if parity fails.
+    seen: dict[int, str] = {}
     try:
         for rounding in (0, 0x100, 0x200, 0x300, 0):
-            observed = ct.c_uint()
-            assert control(ct.byref(observed), rounding, rounding_mask) == 0
+            fp_control.control(rounding, fp_control.ROUNDING_MASK)
             source = np.arange(35, dtype=np.float32).reshape(5, 7, 1)
             source *= np.float32(0.03125)
-            expected_hash = ROUNDING_HASHES[filter_id][rounding >> 8]
             first = native.filtered(source, (13, 11), filter_id, False)
-            assert hashlib.sha256(first.tobytes()).hexdigest() == expected_hash
+            digest = hashlib.sha256(first.tobytes()).hexdigest()
+            # The CRT's math gives the recorded bits; glibc's sin and cos (cn_crt_math.h)
+            # round some filters' coefficients otherwise, so there each mode keeps its own.
+            expected_hash = (
+                ROUNDING_HASHES[filter_id][rounding >> 8]
+                if sys.platform == "win32"
+                else seen.setdefault(rounding, digest)
+            )
+            assert digest == expected_hash
             before = cache_info()
             repeated = native.filtered(source, (13, 11), filter_id, False)
             assert hashlib.sha256(repeated.tobytes()).hexdigest() == expected_hash
             after = cache_info()
             assert after[1] == before[1] + 1
+        if seen:
+            assert len(set(seen.values())) == len(set(ROUNDING_HASHES[filter_id]))
     finally:
-        restored = ct.c_uint()
-        assert control(ct.byref(restored), saved.value, rounding_mask) == 0
+        fp_control.control(saved, fp_control.ROUNDING_MASK)
 
 
 def test_cache_diagnostics_reject_invalid_buffers():

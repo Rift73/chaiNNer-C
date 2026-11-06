@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+import onnx
 import onnxruntime as ort
 import pytest
 from onnx import TensorProto, helper, numpy_helper
@@ -515,7 +516,7 @@ def test_explicit_provider_retention_without_gpu_execution(monkeypatch, tmp_path
 
 def test_string_graph_retains_original_binding():
     serialized = model(dtype=TensorProto.STRING, shape=[1])
-    assert not native.supports_model(serialized)
+    assert not native.supports_graph(onnx.load_model_from_string(serialized).graph)
     wrapper = OnnxGeneric(serialized, OnnxInfo(13, "fp32"))
     session = integration.create_inference_session(wrapper, 0, "CPUExecutionProvider")
     assert isinstance(session, ort.InferenceSession)

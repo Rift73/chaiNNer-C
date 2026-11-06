@@ -14,8 +14,11 @@ from ..processing.upscale_image import upscale_image_node
 
 
 def check_will_upscale(context: NodeContext, interp: NcnnModelWrapper):
-    fake_img = np.ones((3, 3, 3), dtype=np.float32, order="F")
-    result = upscale_image_node(context, fake_img, interp, NO_TILING, 0, False)
+    # White, in the model's planes where no image holds that many: 3 for 1, 3 or 4, which
+    # Upscale Image converts.
+    planes = 3 if interp.in_nc in (1, 4) else interp.in_nc
+    fake_img = np.ones((3, 3, planes), dtype=np.float32, order="F")
+    result, _ = upscale_image_node(context, fake_img, interp, NO_TILING, 0, False)
 
     mean_color = native_mean(result) if result.dtype == np.float32 else np.mean(result)
     del result

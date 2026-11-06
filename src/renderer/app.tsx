@@ -1,7 +1,7 @@
 import { Box, Center, ChakraProvider, ColorModeScript, Spinner } from '@chakra-ui/react';
 import TimeAgo from 'javascript-time-ago';
 import en from 'javascript-time-ago/locale/en.json';
-import { memo, useState } from 'react';
+import { memo, useLayoutEffect, useState } from 'react';
 import { BackendData } from '../common/Backend';
 import { PythonInfo } from '../common/common-types';
 import { log } from '../common/log';
@@ -12,13 +12,24 @@ import { ContextMenuProvider } from './contexts/ContextMenuContext';
 import { HotkeysProvider } from './contexts/HotKeyContext';
 import { SettingsProvider } from './contexts/SettingsContext';
 import { useAsyncEffect } from './hooks/useAsyncEffect';
+import { useSettings } from './hooks/useSettings';
+import { applyLanguage } from './i18n';
 import { Main } from './main';
 import { ipcRenderer } from './safeIpc';
 import { darktheme } from './theme';
-import './i18n';
 
 TimeAgo.addLocale(en);
 TimeAgo.setDefaultLocale(en.locale);
+
+// Applies a change of the language setting. Components using useTranslation re-render with the new
+// language.
+const LanguageSync = memo(() => {
+    const { language } = useSettings();
+    useLayoutEffect(() => {
+        applyLanguage(language).catch(log.error);
+    }, [language]);
+    return null;
+});
 
 const LoadingComponent = memo(() => (
     <Box
@@ -47,7 +58,12 @@ export const App = memo(() => {
     const [settings, setSettings] = useState<ChainnerSettings>();
     useAsyncEffect(
         () => ({
-            supplier: () => ipcRenderer.invoke('get-settings'),
+            supplier: async () => {
+                const saved = await ipcRenderer.invoke('get-settings');
+                // A saved language loads before the editor shows, so it does not flash in English.
+                await applyLanguage(saved.language).catch(log.error);
+                return saved;
+            },
             successEffect: setSettings,
         }),
         []
@@ -87,6 +103,7 @@ export const App = memo(() => {
                             <LoadingComponent />
                         ) : (
                             <SettingsProvider initialSettings={settings}>
+                                <LanguageSync />
                                 <BackendProvider
                                     cachedData={cachedData ?? undefined}
                                     pythonInfo={pythonInfo}

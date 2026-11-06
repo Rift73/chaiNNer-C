@@ -58,6 +58,7 @@ def get_pil_formats():
         # PNG, WebP, TIFF
         ".png",
         ".webp",
+        ".tif",
         ".tiff",
         # APNG
         # ".apng",

@@ -20,6 +20,8 @@ from packages.chaiNNer_standard.image.io.save_image import (
     DDSColourConversion,
     DDSErrorMetric,
     DDSMipFilter,
+    ExrColorDepth,
+    ExrCompression,
     ImageFormat,
     JpegSubsampling,
     PngColorDepth,
@@ -66,7 +68,10 @@ def test_4_0_0_saves_grayscale(tmp_path: Path):
         False,
         True,
         AvifSubsampling.FACTOR_400,
+        ExrColorDepth.F32,
+        ExrCompression.ZIP,
         False,
+        None,
     )
     with Image.open(tmp_path / "red.avif") as saved:
         assert saved.mode == "L"

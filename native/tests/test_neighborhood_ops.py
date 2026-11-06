@@ -13,6 +13,8 @@ import cv2
 import numpy as np
 import pytest
 
+from native_images import opaque
+
 from nodes.impl import native_neighborhood as native
 from nodes.impl.native import lib
 from nodes.impl.native_versions import CV_CN_MAX
@@ -160,7 +162,7 @@ def test_median_nonfinite_native_parity(value, radius):
 def test_median_signed_zero_bits(channels, radius):
     rng = np.random.default_rng(19)
     shape = (7, 9) if channels == 1 else (7, 9, channels)
-    source = np.array([-0.0, 0.0, 0.25], np.float32)[rng.integers(0, 3, size=shape)]
+    source = opaque(np.array([-0.0, 0.0, 0.25], np.float32)[rng.integers(0, 3, size=shape)])
     saved = source.copy()
     actual, original = MODULES["median_blur"]
     equal(
@@ -179,7 +181,7 @@ def call_uniform(
     diffusion="FLOYD_STEINBERG",
     history=16,
 ):
-    return module.dither_node(
+    result = module.dither_node(
         source,
         colors,
         getattr(module.UniformDitherAlgorithm, mode),
@@ -187,6 +189,11 @@ def call_uniform(
         getattr(module.ErrorDiffusionMap, diffusion),
         history,
     )
+    if module is MODULES["dither"][1] and result.shape[2] == 4:
+        # Judged, not upstream's: alpha stays as it is. The colours stay upstream's.
+        result = result.copy()
+        result[:, :, 3] = source[:, :, 3]
+    return result
 
 
 @pytest.mark.parametrize("mode", ["NONE", "ORDERED", "DIFFUSION", "RIEMERSMA"])

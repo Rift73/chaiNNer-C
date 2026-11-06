@@ -47,8 +47,6 @@ def test_box_coefficients_exact(rx, ry):
         (70.1, 70.1),
         (73.2, 169.7),
         (77.1, 102.3),
-        (199.9, 200),
-        (200.1, 169.7),
     ],
 )
 @pytest.mark.parametrize("channels", [1, 3, 7])
@@ -65,6 +63,31 @@ def test_box_branch_boundaries(radii, channels, pattern):
     expected = ORIGINAL_BOX.box_blur_node(image, *radii)
     assert_enforced_equal(BOX.box_blur_node(image, *radii), expected)
     exact(RAW_BOX.box_blur_node(image, *radii), expected)
+
+
+@pytest.mark.parametrize(
+    ("radii", "kernels"),
+    [
+        ((15, 2.5), ([1] * 31, [0.5, 1, 1, 1, 1, 1, 0.5])),
+        ((2.5, 16), ([0.5, 1, 1, 1, 1, 1, 0.5], [1] * 33)),
+        ((199.9, 200), ([0.9] + [1] * 399 + [0.9], [1] * 401)),
+        ((200.1, 169.7), ([1] * 401, [0.7] + [1] * 339 + [0.7])),
+    ],
+)
+@pytest.mark.parametrize("shape", [(1, 9), (13, 17), (13, 17, 3)])
+def test_box_integer_axis_takes_only_its_radius(radii, kernels, shape):
+    image = np.random.default_rng(592).random(shape, dtype=np.float32)
+    expected = image.astype(np.float64)
+    for axis, kernel in zip((1, 0), kernels, strict=True):
+        weights = np.array(kernel, np.float64) / np.sum(kernel)
+        pad = [(0, 0)] * image.ndim
+        pad[axis] = (len(kernel) // 2, len(kernel) // 2)
+        expected = np.apply_along_axis(
+            lambda line: np.convolve(line, weights, mode="valid"),
+            axis,
+            np.pad(expected, pad, mode="reflect"),
+        )
+    np.testing.assert_allclose(BOX.box_blur_node(image, *radii), expected, atol=2e-5)
 
 
 @pytest.mark.parametrize("channels", [1, 3, 4, 7, 513])

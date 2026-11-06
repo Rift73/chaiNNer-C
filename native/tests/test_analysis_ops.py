@@ -18,6 +18,8 @@ import cv2
 import numpy as np
 import pytest
 
+from native_images import opaque
+
 from nodes.impl import cas
 from nodes.impl import native_analysis as native
 from nodes.impl.color_transfer import mean_std
@@ -98,10 +100,14 @@ for _helper in ("distinct_colors_palette", "kmeans_palette", "median_cut_palette
     )
 
 
-def source(channels=3, layout="contiguous", height=31, width=27, seed=143):
+def source(
+    channels=3, layout="contiguous", height=31, width=27, seed=143, solid=False
+):
     shape = (height, width) if channels == 1 else (height, width, channels)
     image = np.random.default_rng(seed).random(shape, dtype=np.float32)
     image.flat[:4] = [0, 1, 0.5, 0.01]
+    if solid:
+        image = opaque(image)
     if layout == "strided":
         image = image[::-1, ::2]
     elif layout == "transposed":
@@ -382,7 +388,7 @@ def test_high_pass(channels, mode, contrast, layout):
 @pytest.mark.parametrize("threshold", [0, 0.1, 11, 100])
 @pytest.mark.parametrize("amount", [0, 1, 2.7, 100])
 def test_unsharp(channels, threshold, amount):
-    image = source(channels, "readonly")
+    image = source(channels, "readonly", solid=True)
     actual, original = MODULES["unsharp_mask"]
     arrays(
         actual.unsharp_mask_node(image, 1.3, amount, threshold),

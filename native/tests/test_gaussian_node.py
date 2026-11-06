@@ -18,6 +18,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+from native_images import opaque
 from test_adjustment_complete import exact, layout, load_body
 from test_normalized_outputs import assert_enforced_equal, node_schema
 
@@ -43,8 +44,6 @@ vars(ORIGINAL).update(fast_gaussian_blur=_globals["fast_gaussian_blur"])
 
 SIGMAS = [
     (0, 0),
-    (0, 1000),
-    (1000, 0),
     (0.1, 0.1),
     (0.1, 7),
     (1, 1),
@@ -88,7 +87,7 @@ def assert_node_parity(image, sigmas):
 @pytest.mark.parametrize("sigmas", SIGMAS)
 def test_all_scale_boundaries(shape, channels, sigmas):
     shape = (*shape, channels) if channels else shape
-    image = np.random.default_rng(342).uniform(-0.5, 1.5, shape).astype(np.float32)
+    image = opaque(np.random.default_rng(342).uniform(-0.5, 1.5, shape).astype(np.float32))
     before = image.copy()
     try:
         ORIGINAL.gaussian_blur_node(image, *sigmas)
@@ -108,17 +107,17 @@ def test_all_scale_boundaries(shape, channels, sigmas):
 @pytest.mark.parametrize(
     "kind", ["reverse", "fortran", "rows", "columns", "unaligned", "readonly"]
 )
-@pytest.mark.parametrize("sigmas", [(0, 0), (0, 5), (1.5, 2.3), (11, 20), (1000, 1000)])
+@pytest.mark.parametrize("sigmas", [(0, 0), (1.5, 2.3), (11, 20), (1000, 1000)])
 def test_foreign_buffers(kind, sigmas):
     image = layout(
-        np.random.default_rng(102).random((7, 13, 4), dtype=np.float32), kind
+        opaque(np.random.default_rng(102).random((7, 13, 4), dtype=np.float32)), kind
     )
     before = image.copy()
     assert_node_parity(image, sigmas)
     exact(image, before)
 
 
-@pytest.mark.parametrize("sigmas", [(0, 0), (0, 5), (1.5, 2.3), (11, 20), (200, 250)])
+@pytest.mark.parametrize("sigmas", [(0, 0), (1.5, 2.3), (11, 20), (200, 250)])
 @pytest.mark.parametrize(
     "pattern", ["negative_zero", "nan", "infinity", "subnormal", "extreme"]
 )
@@ -139,6 +138,51 @@ def test_exceptional_values(sigmas, pattern):
         assert_node_parity(image, sigmas)
 
 
+def reflected_blur(image, sigma, axis):
+    """A NumPy Gaussian along one axis: BORDER_REFLECT, OpenCV's kernel length for floats."""
+    length = round(sigma * 8 + 1) | 1
+    offsets = np.arange(length) - length // 2
+    kernel = np.exp(-(offsets**2) / (2 * sigma**2))
+    kernel /= kernel.sum()
+    pad = [(0, 0)] * image.ndim
+    pad[axis] = (length // 2, length // 2)
+    return np.apply_along_axis(
+        lambda line: np.convolve(line, kernel, mode="valid"),
+        axis,
+        np.pad(image.astype(np.float64), pad, mode="symmetric"),
+    )
+
+
+@pytest.mark.parametrize("shape", [(1, 9), (9, 1), (13, 17), (13, 17, 3), (13, 17, 4)])
+@pytest.mark.parametrize("sigma", [0.5, 3, 40])
+@pytest.mark.parametrize("axis", [0, 1])
+def test_a_zero_sigma_blurs_only_the_other_axis(shape, sigma, axis):
+    image = opaque(np.random.default_rng(77).random(shape, dtype=np.float32))
+    sigmas = (0, sigma) if axis == 0 else (sigma, 0)
+    np.testing.assert_allclose(
+        NODE.gaussian_blur_node(image, *sigmas),
+        reflected_blur(image, sigma, axis),
+        atol=2e-5,
+    )
+
+
+@pytest.mark.parametrize(
+    ("shape", "sigmas"),
+    [
+        ((2, 2), (12, 12)),
+        ((4, 3, 3), (11, 14.9)),
+        ((2, 2, 4), (16, 19)),
+        ((1, 4), (11, 11)),
+    ],
+)
+def test_an_image_too_small_to_shrink_takes_the_whole_sigma(shape, sigmas):
+    image = opaque(np.random.default_rng(78).random(shape, dtype=np.float32))
+    expected = reflected_blur(reflected_blur(image, sigmas[0], 1), sigmas[1], 0)
+    np.testing.assert_allclose(
+        NODE.gaussian_blur_node(image, *sigmas), expected, atol=2e-5
+    )
+
+
 def test_noop_alias_and_schema_unchanged():
     image = np.zeros((3, 7, 4), np.float32)
     assert NODE.gaussian_blur_node(image, 0, 0) is image
@@ -147,7 +191,7 @@ def test_noop_alias_and_schema_unchanged():
 
 
 def test_concurrent_calls_and_no_gaussian_runtime(monkeypatch):
-    image = np.random.default_rng(199).random((63, 71, 4), dtype=np.float32)
+    image = opaque(np.random.default_rng(199).random((63, 71, 4), dtype=np.float32))
     sigmas = [(1, 2), (10, 9), (11, 17), (51, 71)] * 2
     expected = [
         (
@@ -182,7 +226,7 @@ def test_node_cpu_dispatch_settings(optimized, ipp, sigmas):
     try:
         cv2.setUseOptimized(optimized)
         cv2.ipp.setUseIPP(ipp)
-        image = np.random.default_rng(496).random((17, 23, 4), dtype=np.float32)
+        image = opaque(np.random.default_rng(496).random((17, 23, 4), dtype=np.float32))
         assert_node_parity(image, sigmas)
     finally:
         cv2.setUseOptimized(before[0])

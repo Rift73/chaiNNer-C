@@ -39,6 +39,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+from native_images import opaque
 from test_isa_dispatch import isa_get, isa_set
 from test_native_profile import child
 
@@ -327,7 +328,7 @@ def lens_images():
     bench = rng.random((384, 512, 3), dtype=np.float32)
     nan = rng.random((19, 23, 3), dtype=np.float32)
     nan[5, 7, 1] = np.nan
-    tiny = np.full((17, 21, 4), np.float32(3e-39), np.float32)
+    tiny = opaque(np.full((17, 21, 4), np.float32(3e-39), np.float32))
     return [
         ("bench", bench, BENCH),
         # Above 1, so the final clip stores exact 1.0 (NumPy 2.5's float32 kernel
@@ -336,7 +337,7 @@ def lens_images():
         ("nan", nan, (3, 2, 5)),
         ("denormal", tiny, (2, 1, 1)),
         ("gray", rng.random((17, 21), dtype=np.float32), (3, 3, 0.5)),
-        ("rgba", rng.random((13, 11, 4), dtype=np.float32), (4, 5, 2.2)),
+        ("rgba", opaque(rng.random((13, 11, 4), dtype=np.float32)), (4, 5, 2.2)),
     ]
 
 
@@ -409,7 +410,7 @@ def opt_in_cases():
     """(name, node, raw node, image, parameters) for Gaussian and Box Blur (Task
     3b2) and Dilate and Erode (Task 4). Gaussian: the gaussian and parallel-branches
     bench sigmas on the bench image, a large sigma on the downsample path (its last
-    operation is still the blur), and sigma 0 on one axis (the copy path). Box:
+    operation is still the blur), and sigma 0 on one axis. Box:
     integer radii (box_blur), fractional (separable_box), an integer axis then a
     fractional one (box_blur, then separable_box) and large fractional radii
     (filter2d). Dilate and Erode: the morphology bench's forms (an ellipse through
@@ -424,9 +425,9 @@ def opt_in_cases():
     bright = rng.uniform(0.5, 2.5, (29, 31, 3)).astype(np.float32)
     nan = rng.random((19, 23, 3), dtype=np.float32)
     nan[5, 7, 1] = np.nan
-    tiny = np.full((17, 21, 4), np.float32(3e-39), np.float32)
+    tiny = opaque(np.full((17, 21, 4), np.float32(3e-39), np.float32))
     gray = rng.random((17, 21), dtype=np.float32)
-    rgba = rng.random((13, 11, 4), dtype=np.float32)
+    rgba = opaque(rng.random((13, 11, 4), dtype=np.float32))
     gaussian = (GAUSSIAN.gaussian_blur_node, RAW_GAUSSIAN.gaussian_blur_node)
     box = (BOX.box_blur_node, RAW_BOX.box_blur_node)
     dilate = (DILATE.dilate_node, RAW_DILATE.dilate_node)
@@ -437,7 +438,7 @@ def opt_in_cases():
         ("gaussian-branch-3", *gaussian, bench, (3, 3)),
         ("gaussian-branch-6", *gaussian, bench, (6, 6)),
         ("gaussian-downsample", *gaussian, bench, (30, 40)),
-        ("gaussian-copy", *gaussian, signed, (0, 5)),
+        ("gaussian-one-axis", *gaussian, signed, (0, 5)),
         ("gaussian-signed", *gaussian, signed, (1.5, 2.3)),
         ("gaussian-nan", *gaussian, nan, (2, 3)),
         ("gaussian-denormal", *gaussian, tiny, (1, 1)),
@@ -464,7 +465,7 @@ def opt_in_cases():
 
 
 CLAMPED = (
-    "gaussian-copy",
+    "gaussian-one-axis",
     "gaussian-signed",
     "box-fractional",
     "box-integer-fractional",
@@ -553,7 +554,7 @@ WARNING_CASES = [
         in (
             "gaussian-bench",
             "gaussian-downsample",
-            "gaussian-copy",
+            "gaussian-one-axis",
             "box-integer",
             "box-fractional",
             "box-filter2d",
@@ -584,8 +585,7 @@ def test_no_float_warning_repeats_or_appears(name, node, raw, parameters, state)
         # quiets a signalling NaN. A new warning must fail here, not match.
         assert expected == []
     # Gaussian and Box: the two-step path (freeze_normalized's in-place clip, then
-    # the enforce) against the raw path's one conversion; on the copy path (sigma 0
-    # on one axis) the signalling NaN reaches both conversions unquieted.
+    # the enforce) against the raw path's one conversion.
     assert actual == expected
     assert output.tobytes() == raw_output.tobytes()
 

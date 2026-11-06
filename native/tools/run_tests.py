@@ -108,6 +108,11 @@ def environment(threads: int | None, report: Path) -> dict[str, str]:
             "NUMBA_NUM_THREADS",
         ):
             env[name] = str(threads)
+        # ONNX Runtime and OpenCV read no variable for it (shard_threads.py)
+        env["CHAINNER_C_SHARD_THREADS"] = str(threads)
+        env["PYTEST_PLUGINS"] = ",".join(
+            filter(None, [env.get("PYTEST_PLUGINS"), "shard_threads"])
+        )
     return env
 
 

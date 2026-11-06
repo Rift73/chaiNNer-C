@@ -13,6 +13,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+from native_images import opaque
 from test_adjustment_complete import exact, layout, load_body
 
 from nodes.impl import native_bilateral as native
@@ -48,7 +49,7 @@ def test_exact_exposed_dispatch(width, channels, parameters, optimized):
     cv2.setUseOptimized(optimized)
     cv2.ipp.setUseIPP(False)
     shape = (7, width, channels) if channels else (7, width)
-    image = np.random.default_rng(614).uniform(-0.5, 1.5, shape).astype(np.float32)
+    image = opaque(np.random.default_rng(614).uniform(-0.5, 1.5, shape).astype(np.float32))
     before = image.copy()
     exact(
         NODE.surface_blur_node(image, *parameters),
@@ -63,7 +64,7 @@ def test_exact_exposed_dispatch(width, channels, parameters, optimized):
 @pytest.mark.parametrize("radius", [16, 100])
 def test_large_radius_thin_images(shape, channels, radius):
     shape = (*shape, channels) if channels else shape
-    image = np.random.default_rng(44).random(shape, dtype=np.float32)
+    image = opaque(np.random.default_rng(44).random(shape, dtype=np.float32))
     exact(
         NODE.surface_blur_node(image, radius, 25, 25),
         ORIGINAL.surface_blur_node(image, radius, 25, 25),
@@ -89,6 +90,7 @@ def test_nan_zero_and_small_ranges(width, channels, pattern):
         image = np.float32(0.5) + image * np.float32(1e-6)
     else:
         image *= np.float32(1e-40)
+    image = opaque(image)
     exact(
         NODE.surface_blur_node(image, 4, 25, 25),
         ORIGINAL.surface_blur_node(image, 4, 25, 25),
@@ -111,7 +113,7 @@ def test_nan_range_of_strided_rows(width, channels, pattern, optimized):
         image[2:4, :2] = np.nan
     else:
         image[1:, 0] = np.nan
-    image = layout(image, "rows")
+    image = layout(opaque(image), "rows")
     exact(
         NODE.surface_blur_node(image, 4, 25, 25),
         ORIGINAL.surface_blur_node(image, 4, 25, 25),
@@ -128,7 +130,7 @@ def test_foreign_buffers(ipp, channels, kind):
     cv2.ipp.setUseIPP(ipp)
     try:
         shape = (7, 13, channels) if channels else (7, 13)
-        image = layout(np.random.default_rng(201).random(shape, dtype=np.float32), kind)
+        image = layout(opaque(np.random.default_rng(201).random(shape, dtype=np.float32)), kind)
         before = image.copy()
         exact(
             NODE.surface_blur_node(image, 4, 25, 25),
@@ -161,7 +163,7 @@ def test_default_ipp_saved_pixel_dependency():
 
 @pytest.mark.usefixtures("exposed")
 def test_concurrency_without_bilateral_runtime(monkeypatch):
-    image = np.random.default_rng(777).random((71, 83, 4), dtype=np.float32)
+    image = opaque(np.random.default_rng(777).random((71, 83, 4), dtype=np.float32))
     expected = ORIGINAL.surface_blur_node(image, 4, 25, 25)
 
     def forbidden(*_args, **_kwargs):

@@ -110,8 +110,9 @@ CONTRACT = {
         IMAGE_IO,
         (
             "BC7Compression DDSErrorMetric Image ImageFormat LEGACY_TO_DXGI PREFER_DX9"
-            " PngColorDepth TiffColorDepth cv2 cv_save_image get_full_path get_h_w_c"
-            " logger save_as_dds to_dxgi to_uint16 to_uint8"
+            " PngColorDepth TiffColorDepth avif_tag_options cv2 cv_save_image"
+            " embed_image_tags get_full_path get_h_w_c logger save_as_dds"
+            " split_file_path to_dxgi to_uint16 to_uint8"
         ),
         False,
     ),

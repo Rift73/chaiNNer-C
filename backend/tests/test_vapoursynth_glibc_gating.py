@@ -6,6 +6,8 @@ newer) publishes no wheels for an older glibc. Needs no VapourSynth."""
 from __future__ import annotations
 
 import re
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -13,13 +15,15 @@ from api import Dependency
 from packages.chaiNNer_vapoursynth import (
     AKARIN_GLIBC_2_28,
     NLM_ISPC_GLIBC_2_28,
+    NOISE_WHEELS,
     vapoursynth_dependencies,
     vsview_unavailable_reason,
 )
 
 
 def urls(dependencies: list[Dependency]) -> list[Dependency]:
-    return [dep for dep in dependencies if dep.url]
+    """The builds a glibc chooses; the noise plugin's wheel, on every system, is below."""
+    return [dep for dep in dependencies if dep.url and dep.pypi_name != "vsnoise"]
 
 
 @pytest.mark.parametrize("glibc", [None, (2, 35), (2, 39), (3, 0)])
@@ -83,3 +87,20 @@ def test_vsview_reason_names_the_found_glibc_and_the_floor(glibc: tuple[int, int
     assert f"has glibc {glibc[0]}.{glibc[1]}." in reason
     assert "glibc 2.34 or newer" in reason
     assert "The other VapourSynth nodes work" in reason
+
+
+def test_the_noise_plugin_is_its_own_wheel_pinned_by_hash():
+    assert set(NOISE_WHEELS) == {"win32", "linux"}
+    for wheel in NOISE_WHEELS.values():
+        assert re.fullmatch(
+            r"https://files\.pythonhosted\.org/packages/\S+/"
+            r"vsnoise-1\.3-py3-none-\S+\.whl#sha256=[0-9a-f]{64}",
+            wheel,
+        )
+    noise = next(
+        dep for dep in vapoursynth_dependencies(None) if dep.pypi_name == "vsnoise"
+    )
+    assert (noise.version, noise.url) == ("1.3", NOISE_WHEELS.get(sys.platform))
+    # A development runtime takes the same wheel.
+    script = Path(__file__).parents[2] / "native" / "tools" / "provision_runtime.sh"
+    assert f"vsnoise @ {NOISE_WHEELS['linux']}" in script.read_text(encoding="utf-8")

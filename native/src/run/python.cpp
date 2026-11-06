@@ -203,11 +203,11 @@ py::object exception_object(const NodeError &error)
 {
     if (error.exception.handle) return py::reinterpret_borrow<py::object>(static_cast<PyObject *>(error.exception.handle.get()));
     try {
-        return exception_type(error.python_type)(py::str(error.what()));
+        return exception_type(error.python_type)(py::str(error.message));
     } catch (py::error_already_set &) {
     } catch (const py::type_error &) {
     }
-    return py::reinterpret_borrow<py::object>(PyExc_RuntimeError)(py::str(error.python_type + ": " + error.what()));
+    return py::reinterpret_borrow<py::object>(PyExc_RuntimeError)(py::str(error.python_type + ": " + error.message));
 }
 
 /* A generator item's iterated outputs as its supplier yields them: one value, or a tuple of several. */

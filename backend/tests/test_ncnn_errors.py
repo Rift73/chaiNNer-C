@@ -24,6 +24,7 @@ from nodes.impl.ncnn.session import create_ncnn_net
 from nodes.impl.upscale.auto_split_tiles import ESTIMATE, NO_TILING, TileSize
 from nodes.impl.upscale.tiler import MaxTileSize
 from packages.chaiNNer_ncnn.ncnn.processing import upscale_image
+from packages.chaiNNer_ncnn.ncnn.utility import interpolate_models
 from packages.chaiNNer_ncnn.settings import NcnnSettings
 
 BACKEND = Path(__file__).resolve().parents[1] / "src"
@@ -78,6 +79,30 @@ def test_a_model_of_other_plane_counts_gets_its_planes(
     np.testing.assert_array_equal(
         result, to_uint8(image).astype(np.float32) * np.float32(1 / 255)
     )
+
+
+@pytest.mark.parametrize("planes", [1, 2, 3, 4, 5, 15])
+def test_an_interpolated_model_is_checked_with_the_planes_it_takes(
+    tmp_path: Path, planes: int, monkeypatch: pytest.MonkeyPatch
+):
+    (tmp_path / "copy.param").write_text(
+        PARAM.replace("0=3 1=1 6=9", f"0={planes} 1=1 6={planes**2}"), encoding="utf-8"
+    )
+    (tmp_path / "copy.bin").write_bytes(
+        b"\x00\x00\x00\x00" + np.eye(planes, dtype=np.float32).tobytes()
+    )
+    model = NcnnModelWrapper(
+        NcnnModel.load_from_file(
+            str(tmp_path / "copy.param"), str(tmp_path / "copy.bin")
+        )
+    )
+    monkeypatch.setattr(upscale_image, "get_settings", lambda _: SETTINGS)
+    context = SimpleNamespace(
+        add_cleanup=lambda fn, after: None,
+        check_aborted=lambda: None,
+        set_progress=lambda *_: None,
+    )
+    assert interpolate_models.check_will_upscale(cast(Any, context), model)
 
 
 class VulkanNet:

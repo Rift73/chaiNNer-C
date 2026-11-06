@@ -96,7 +96,9 @@ def test_concurrent_pool_users_complete_with_bounded_retention():
 def test_lease_size_overflow_fails_like_b3():
     """A lease whose 64-byte-rounded sum overflows size_t returns CN_ALLOCATION_FAILED
     (3), the status B3's first malloc (2**62 bytes) returned for the same call, before
-    any read of the 1-float buffers; no slot stays leased."""
+    any read of the 1-float buffers; no slot stays leased. The radius is above
+    CN_MORPH_FOLD_RADIUS: at or below it the kernel first scans its source, which holds
+    the pixels the call states in every real call, and only one float here."""
     function = native.lib()["cn_filter_morphology"]
     function.argtypes = (
         [ctypes.c_void_p] * 2 + [ctypes.c_size_t] * 5 + [ctypes.c_int] * 2
@@ -104,7 +106,7 @@ def test_lease_size_overflow_fails_like_b3():
     function.restype = ctypes.c_int
     src = np.zeros(1, np.float32)
     out = np.full(1, 0x7FC0DEAD, np.uint32)
-    assert function(src.ctypes.data, out.ctypes.data, 2**30, 2**30, 1, 2, 2, 1, 1) == 3
+    assert function(src.ctypes.data, out.ctypes.data, 2**30, 2**30, 1, 65, 2, 1, 1) == 3
     assert out[0] == 0x7FC0DEAD
     assert scratch_info()["leased"] == 0
 

@@ -210,15 +210,23 @@ PYBIND11_MODULE(_chainner_trt, module) {
                                })
         .def(
             "upscale",
-            [](Runner& r, py::sequence inputs, py::sequence outputs, int bits, bool full_range, bool clip) {
+            [](Runner& r, py::sequence inputs, py::sequence outputs, int bits, bool full_range, bool clip,
+               py::object on_tile) {
                 Frame const frame = frame_of(inputs, outputs, r.scale(), r.bounds(), r.input_channels(),
                                              r.output_channels(), bits, full_range);
+                TileHook hook;
+                if (!on_tile.is_none())
+                    hook = [&on_tile](std::size_t done, std::size_t total) {
+                        py::gil_scoped_acquire acquire;
+                        on_tile(done, total);
+                    };
                 py::gil_scoped_release release;
-                r.upscale(frame.job, frame.inputs.planes.data(), frame.outputs.planes.data(), clip);
+                r.upscale(frame.job, frame.inputs.planes.data(), frame.outputs.planes.data(), clip, hook);
             },
-            "Upscales one frame's planes into the result planes (the input's size times the scale).",
+            "Upscales one frame's planes into the result planes (the input's size times the scale). `on_tile`, "
+            "when given, is called with (tiles done, tiles) before each tile; what it raises ends the frame.",
             py::arg("inputs"), py::arg("outputs"), py::kw_only(), py::arg("bits") = 8, py::arg("full_range") = true,
-            py::arg("clip") = false)
+            py::arg("clip") = false, py::arg("on_tile") = py::none())
         .def("capture_failure", &Runner::capture_failure)
         .def("close", [](Runner& r) {
             py::gil_scoped_release release;

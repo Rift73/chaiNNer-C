@@ -15,6 +15,8 @@ _fp = ct.POINTER(ct.c_float)
 _n = ct.c_size_t
 _lib.cn_lens_kernel.argtypes = [_fp, _n, ct.c_float, ct.c_float, ct.c_float, ct.c_int]
 _lib.cn_lens_power.argtypes = [_fp, _fp, _n, ct.c_float, ct.c_int]
+_lib.cn_lens_straight.argtypes = [_fp, _fp, _n, ct.c_float]
+_lib.cn_lens_straight.restype = ct.c_int
 _lib.cn_lens_compose.argtypes = [_fp] * 5 + [_n, ct.c_float, ct.c_float, ct.c_int]
 for _name in ("kernel", "power", "compose"):
     getattr(_lib, "cn_lens_" + _name).restype = ct.c_int
@@ -47,6 +49,17 @@ def power(image: np.ndarray, exponent: float, *, finish: bool = False) -> np.nda
     source = f32(image)
     result = np.empty_like(source)
     check(_lib.cn_lens_power(ptr(source), ptr(result), source.size, exponent, finish))
+    return result
+
+
+def straight(sums: np.ndarray, exponent: float) -> np.ndarray:
+    source = f32(sums)
+    result = np.empty_like(source)
+    check(
+        _lib.cn_lens_straight(
+            ptr(source), ptr(result), source.shape[0] * source.shape[1], exponent
+        )
+    )
     return result
 
 

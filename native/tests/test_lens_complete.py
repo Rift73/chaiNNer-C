@@ -13,6 +13,8 @@ import cv2
 import numpy as np
 import pytest
 
+from native_images import opaque
+
 from nodes.impl import native_convolution, native_lens
 from nodes.impl.native import lib
 from nodes.impl.native_filters import normalize_lens
@@ -167,7 +169,7 @@ def test_component_complex_arithmetic(pattern, accumulate):
 @pytest.mark.parametrize("channels", [1, 3, 4])
 def test_full_lens_against_frozen_original(radius, count, gamma, channels):
     shape = (7, 9) if channels == 1 else (7, 9, channels)
-    image = np.random.default_rng(857).random(shape, dtype=np.float32)
+    image = opaque(np.random.default_rng(857).random(shape, dtype=np.float32))
     exact(
         LENS.lens_blur_node(image, radius, count, gamma),
         LENS_REF.lens_blur_node(image, radius, count, gamma),
@@ -200,6 +202,7 @@ def test_lens_dimensions_and_special_values(shape, pattern):
     elif pattern == "nonfinite":
         image.ravel()[::7] = np.nan
         image.ravel()[1::13] = np.inf
+    image = opaque(image)
     with np.errstate(all="ignore"):
         exact(
             LENS.lens_blur_node(image, 3, 2, 1), LENS_REF.lens_blur_node(image, 3, 2, 1)
@@ -244,7 +247,7 @@ def test_high_boost_modes(kind, amount, cas, channels):
 
 @pytest.mark.parametrize("layout", ["strided", "transposed", "readonly", "unaligned"])
 def test_lens_foreign_images(layout):
-    image = np.random.default_rng(9).random((9, 13, 4), dtype=np.float32)
+    image = opaque(np.random.default_rng(9).random((9, 13, 4), dtype=np.float32))
     if layout == "strided":
         image = image[::-1, ::-1]
     elif layout == "transposed":
@@ -263,7 +266,7 @@ def test_lens_foreign_images(layout):
 
 
 def test_filter_paths_use_c(monkeypatch):
-    image = np.random.default_rng(937).random((13, 17, 4), dtype=np.float32)
+    image = opaque(np.random.default_rng(937).random((13, 17, 4), dtype=np.float32))
     lens_expected = LENS_REF.lens_blur_node(image, 3, 3, 5)
     edge_expected = EDGE_REF.edge_detection_node(
         image,
@@ -304,7 +307,7 @@ def test_filter_paths_use_c(monkeypatch):
 
 def test_concurrent_lens_images():
     rng = np.random.default_rng(184)
-    images = [rng.random((17, 19, 4), dtype=np.float32) for _ in range(8)]
+    images = [opaque(rng.random((17, 19, 4), dtype=np.float32)) for _ in range(8)]
     expected = [LENS_REF.lens_blur_node(image, 3, 3, 5) for image in images]
     with ThreadPoolExecutor(max_workers=4) as pool:
         actual = list(

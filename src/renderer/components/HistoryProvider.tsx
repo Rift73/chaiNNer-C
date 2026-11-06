@@ -28,6 +28,7 @@ export const HistoryProvider = memo(
             GlobalVolatileContext,
             (c) => `${c.nodeChanges},${c.edgeChanges}`
         );
+        const chainLoads = useContextSelector(GlobalVolatileContext, (c) => c.chainLoads);
         const { changeNodes, changeEdges, flushInputChanges } = useContext(GlobalContext);
         const { getNodes, getEdges } = useReactFlow();
 
@@ -37,6 +38,7 @@ export const HistoryProvider = memo(
         });
         const historyRef = useRef(initialValue);
         const commitTimerRef = useRef<ReturnType<typeof setTimeout>>();
+        const committedChainLoads = useRef(chainLoads);
 
         const [selfUpdate, setSelfUpdate] = useState(false);
         useEffect(() => {
@@ -61,13 +63,19 @@ export const HistoryProvider = memo(
 
         const commitCurrent = useCallback(() => {
             clearTimeout(commitTimerRef.current);
-            historyRef.current = historyRef.current.commit(
-                historyState(
-                    getNodes().map((n) => ({ ...n, selected: false })),
-                    getEdges()
-                )
+            const state = historyState(
+                getNodes().map((n) => ({ ...n, selected: false })),
+                getEdges()
             );
-        }, [getNodes, getEdges]);
+            if (committedChainLoads.current === chainLoads) {
+                historyRef.current = historyRef.current.commit(state);
+            } else {
+                // An opened chain starts a new history: its file's path is the save path now, so
+                // a step back into the chain before it would be saved over that file.
+                committedChainLoads.current = chainLoads;
+                historyRef.current = EditHistory.create(state, historyRef.current.maxLength);
+            }
+        }, [getNodes, getEdges, chainLoads]);
 
         // commit to history
         useEffect(() => {

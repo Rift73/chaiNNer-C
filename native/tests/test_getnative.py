@@ -211,8 +211,16 @@ def scrub(text: str) -> str:
 
 
 @pytest.mark.skipif(isa_get()[2] < 1, reason="the CPU has no AVX2 level")
-def test_isa_units_identical():
-    plane = CASES["fractional-shift"]()
+@pytest.mark.parametrize(
+    "plane",
+    [
+        lambda: CASES["fractional-shift"](),
+        lambda: forward(natively_sharp(1280, 1080), 1920, 1),
+    ],
+    ids=["both axes", "one axis"],
+)
+def test_isa_units_identical(plane):
+    plane = plane()
     level = isa_get()[0]
     try:
         isa_set(0)

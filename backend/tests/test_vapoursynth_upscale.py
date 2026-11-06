@@ -117,6 +117,9 @@ def image_of(frame: Any) -> np.ndarray:
 class Context:
     """The NodeContext members the Load Model and Upscale Image nodes use."""
 
+    node_id = "upscale"
+
+    storage_dir = None
     aborted = False
     paused = False
 
@@ -174,7 +177,8 @@ def pytorch_reference(
             custom,
             PaddingType.NONE,
             False,
-        )
+            False,
+        )[0]
         for img in imgs
     ]
 
@@ -204,7 +208,7 @@ def test_onnx_bridge_matches_upscale_node():
     model = load_onnx_model_node(COMPACT_4X_ONNX)[0]
     assert isinstance(model, OnnxGeneric)
     expected = [
-        onnx_upscale_image_node(context, img, model, TILE_SIZE_256, 0, False)
+        onnx_upscale_image_node(context, img, model, TILE_SIZE_256, 0, False)[0]
         for img in imgs
     ]
 
@@ -263,7 +267,7 @@ def test_bridge_runs_onnx_on_migraphx(monkeypatch: pytest.MonkeyPatch):
     model = load_onnx_model_node(COMPACT_4X_ONNX)[0]
     assert isinstance(model, OnnxGeneric)
     expected = [
-        onnx_upscale_image_node(context, img, model, TILE_SIZE_256, 0, False)
+        onnx_upscale_image_node(context, img, model, TILE_SIZE_256, 0, False)[0]
         for img in imgs
     ]
 

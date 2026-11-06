@@ -127,7 +127,10 @@ SAVE_DEFAULTS: dict[str, Any] = {
     "dds_premultiply_alpha": False,
     "dds_gpu": True,
     "avif_chroma_subsampling": save_image.AvifSubsampling.FACTOR_420,
+    "exr_color_depth": save_image.ExrColorDepth.F32,
+    "exr_compression": save_image.ExrCompression.ZIP,
     "skip_existing_files": False,
+    "metadata": None,
 }
 
 

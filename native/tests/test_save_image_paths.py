@@ -29,6 +29,8 @@ from packages.chaiNNer_standard.image.io.save_image import (
     DDSColourConversion,
     DDSErrorMetric,
     DDSMipFilter,
+    ExrColorDepth,
+    ExrCompression,
     ImageFormat,
     JpegSubsampling,
     PngColorDepth,
@@ -51,7 +53,14 @@ LEAVING = [
     "\\x",
     *(["C:\\x", "C:x", "D:/x"] if sys.platform == "win32" else []),
 ]
-INSIDE = [("sub/./x", "sub/x"), ("..foo", "..foo"), (".", "."), ("a..b/c", "a..b/c")]
+INSIDE = [
+    ("sub/./x", "sub/x"),
+    ("..foo", "..foo"),
+    (".", "."),
+    ("a..b/c", "a..b/c"),
+    # Windows drops a path component's trailing dots and spaces.
+    *([("a ", "a"), ("a. /b", "a/b"), ("a.", "a")] if sys.platform == "win32" else []),
+]
 
 
 def message(node: str, label: str, value: str) -> str:
@@ -87,7 +96,10 @@ def save(directory: Path, relative: str | None, filename: str) -> None:
         False,
         True,
         AvifSubsampling.FACTOR_420,
+        ExrColorDepth.F32,
+        ExrCompression.ZIP,
         False,
+        None,
     )
 
 
@@ -200,6 +212,21 @@ def test_both_executors_save_inside(schemas, tmp_path: Path):
         )
         assert result.error is None, kind
         assert files(out) == ["sub/x/..image.png"]
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="Windows drops trailing dots and spaces"
+)
+def test_a_folder_with_a_trailing_space_is_one_place_on_both_paths(
+    schemas, tmp_path: Path
+):
+    for kind in KINDS:
+        out = tmp_path / kind
+        result = execute(kind, save_chain(schemas, out, "a /b. ", "c"), storage=tmp_path)
+        assert result.error is None, f"{kind}: {result.error!r}"
+        assert files(out) == ["a/b/c.png"]
+    save(tmp_path / "body", "a /b. ", "c")
+    assert files(tmp_path / "body") == ["a/b/c.png"]
 
 
 WINDOWS_ONLY = pytest.mark.skipif(

@@ -41,6 +41,7 @@ from chain.chain import Chain, FunctionNode, GeneratorNode
 from chain.json import JsonNode, parse_json
 from chain.optimize import optimize
 from events import EventConsumer, EventQueue, ExecutionErrorData, event_text
+from folder_videos import FolderVideosRun, run_executor
 from linux_libraries import log_missing_libraries
 from native_executor import NativeExecutor, ending_runs, executor_kind
 from nodes.impl import native, native_profile, numpy_pool
@@ -72,30 +73,28 @@ PACKAGES: Final = (
     "chaiNNer_onnx",
     "chaiNNer_tensorrt",
     "chaiNNer_migraphx",
-    "chaiNNer_modelopt",
     "chaiNNer_vapoursynth",
     "chaiNNer_external",
 )
 # The packages whose node modules load first, so their nodes run while the frameworks
-# load: none of their modules imports a framework or another heavy library, except
-# HEAVY_MODULES (test_light_nodes.py checks both).
+# load: none of their modules imports a framework or another heavy library at its top.
+# LATE_MODULES load after the frameworks all the same, which keeps their nodes' places
+# in the node list (test_light_nodes.py checks both).
 LIGHT_PACKAGES: Final = ("chaiNNer_standard", "chaiNNer_external")
-HEAVY_MODULES: Final = frozenset(
+LATE_MODULES: Final = frozenset(
     {
-        "packages.chaiNNer_standard.image.create_images.create_noise",  # SciPy
-        "packages.chaiNNer_standard.image_channel.misc.alpha_matting",  # PyMatting
+        "packages.chaiNNer_standard.image.create_images.create_noise",
+        "packages.chaiNNer_standard.image_channel.misc.alpha_matting",
     }
 )
 # The order the other node modules load in, a package at a time: PyTorch, the most
-# used framework (Load Model, Upscale Image), first; the standard package's last, as
-# PyMatting compiles its kernels (about 25 s) on a first start.
+# used framework (Load Model, Upscale Image), first.
 HEAVY_ORDER: Final = (
     "chaiNNer_pytorch",
     "chaiNNer_ncnn",
     "chaiNNer_onnx",
     "chaiNNer_tensorrt",
     "chaiNNer_migraphx",
-    "chaiNNer_modelopt",
     "chaiNNer_vapoursynth",
     "chaiNNer_external",
     "chaiNNer_standard",
@@ -295,7 +294,7 @@ def register_packages() -> tuple[
         name: api.registry.node_modules(__file__, packages[name]) for name in PACKAGES
     }
     light = {
-        name: [m for m in modules[name] if m.name not in HEAVY_MODULES]
+        name: [m for m in modules[name] if m.name not in LATE_MODULES]
         for name in LIGHT_PACKAGES
     }
     rest = {
@@ -308,7 +307,7 @@ def register_packages() -> tuple[
 class AppContext:
     def __init__(self):
         self.config: Final[ServerConfig] = ServerConfig.parse_argv()
-        self.executor: Executor | NativeExecutor | None = None
+        self.executor: Executor | NativeExecutor | FolderVideosRun | None = None
         # A /run is in its handler: set before its first await (it waits for previews
         # before its executor exists), so a second /run is refused meanwhile.
         self.run_starting = False
@@ -591,7 +590,8 @@ async def run(request: Request):
         logger.info("Running new executor...")
         # CHAINNER_C_EXECUTOR: the native run engine or process.Executor (native_executor.py).
         executor_class = NativeExecutor if executor_kind() == "native" else Executor
-        executor = executor_class(
+        executor = run_executor(
+            executor_class,
             id=executor_id,
             chain=chain,
             send_broadcast_data=full_data["sendBroadcastData"],
@@ -822,9 +822,7 @@ async def run_individual(request: Request):
                 chain.inputs.set(node_id, node.data.inputs[index].id, i)
 
             # only yield certain types of events
-            queue = EventConsumer.filter(
-                ctx.queue, {"node-finish", "node-broadcast", "execution-error"}
-            )
+            queue = EventConsumer.filter(ctx.queue, EventConsumer.INDIVIDUAL_RUN_EVENTS)
 
             execution_id = ExecutionId("individual-executor " + node_id)
             executor_class = NativeExecutor if executor_kind() == "native" else Executor

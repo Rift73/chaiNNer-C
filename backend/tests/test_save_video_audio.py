@@ -40,6 +40,8 @@ from packages.chaiNNer_standard.image.video_frames.load_video import (
 from packages.chaiNNer_standard.image.video_frames.save_video import (
     AudioSettings,
     BitDepth,
+    NvencPreset,
+    ProResProfile,
     SimpleVideoFormat,
     Simplicity,
     SitingCorrection,
@@ -49,6 +51,9 @@ from packages.chaiNNer_standard.image.video_frames.save_video import (
     VideoPreset,
     save_video_node,
 )
+
+# The inputs of the encoders these tests do not use (AV1, ProRes, NVENC).
+OTHER_ENCODERS = (8, 35, ProResProfile.HQ, NvencPreset.P4, 23, 30)
 
 # No Colour Info, every colour choice Auto, Bit Depth Auto, siting correction Auto.
 RGB_AUTO = (
@@ -188,6 +193,7 @@ def save(
         encoder,
         VideoPreset.ULTRA_FAST,
         23,
+        *OTHER_ENCODERS,
         None,
         SimpleVideoFormat.MP4_H264,
         75,
@@ -388,6 +394,7 @@ def save_frames(
         VideoEncoder.H264,
         VideoPreset.ULTRA_FAST,
         23,
+        *OTHER_ENCODERS,
         None,
         SimpleVideoFormat.MP4_H264,
         75,

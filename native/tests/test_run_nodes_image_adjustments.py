@@ -9,6 +9,10 @@ from native_differential import assert_native_matches
 from native_images import CHANNELS, EMPTY_SHAPES, SIZES, image, seed_of
 
 from nodes.impl.native_graph import graph
+from packages.chaiNNer_standard.image_adjustment.adjustments.stretch_contrast import (
+    StretchMode,
+    stretch_contrast_node,
+)
 
 CASES = [(size, channels) for size in SIZES for channels in CHANNELS]
 
@@ -189,7 +193,53 @@ STRETCHES = [(0, True, 1.0, 0.0, 255.0), (0, False, 1.0, 0.0, 255.0), (1, True, 
 def test_stretch_contrast_matches(edges, stretch, size, channels):
     height, width = size
     img = image(seed_of("stretch", stretch, size, channels), height, width, channels, edges=edges)
+    # The edge values start with a NaN, whose range only the Python body finds.
+    assert_native_matches("chainner:image:stretch_contrast", [img, *stretch], declines=edges and stretch[0] != 2)
+
+
+AUTOMATIC_STRETCHES = [(0, True, 1.0, 0.0, 255.0), (0, False, 1.0, 0.0, 255.0), (1, True, 1.0, 0.0, 255.0), (1, False, 1.0, 0.0, 255.0)]
+
+
+@pytest.mark.parametrize("channels", CHANNELS)
+@pytest.mark.parametrize("value", [0.0, 0.3, 1.0])
+@pytest.mark.parametrize("stretch", AUTOMATIC_STRETCHES)
+def test_stretch_contrast_leaves_a_flat_image(stretch, value, channels):
+    img = np.full((3, 4, channels) if channels > 1 else (3, 4), value, np.float32)
     assert_native_matches("chainner:image:stretch_contrast", [img, *stretch])
+    result = stretch_contrast_node(img, StretchMode(stretch[0]), *stretch[1:])
+    np.testing.assert_array_equal(result, img)
+
+
+def test_stretch_contrast_keeps_a_flat_channel():
+    img = np.random.default_rng(16).random((6, 7, 3), dtype=np.float32)
+    img[:, :, 1] = 1
+    stretch = (0, False, 1.0, 0.0, 255.0)
+    assert_native_matches("chainner:image:stretch_contrast", [img, *stretch])
+    result = stretch_contrast_node(img, StretchMode.AUTO, *stretch[1:])
+    np.testing.assert_array_equal(result[:, :, 1], 1)
+    for channel in (0, 2):
+        assert result[:, :, channel].min() == 0 and result[:, :, channel].max() == 1
+
+
+@pytest.mark.parametrize("stretch", AUTOMATIC_STRETCHES)
+@pytest.mark.parametrize("channels", CHANNELS)
+def test_stretch_contrast_takes_its_range_from_the_values_beside_a_nan(stretch, channels):
+    shape = (16, 17, channels) if channels > 1 else (16, 17)
+    img = np.random.default_rng(17).random(shape, dtype=np.float32)
+    colour = img[..., :3] if channels == 4 else img
+    colour[(3, 3, 0) if channels > 1 else (3, 3)] = np.nan
+    assert_native_matches("chainner:image:stretch_contrast", [img, *stretch], declines=True)
+    result = stretch_contrast_node(img, StretchMode(stretch[0]), *stretch[1:])
+    resultcolour = result[..., :3] if channels == 4 else result
+    assert np.isnan(resultcolour).sum() == 1
+
+    def expected(values):
+        low, high = np.nanpercentile(values, [stretch[2], 100 - stretch[2]]) if stretch[0] == 1 else (np.nanmin(values), np.nanmax(values))
+        return (values.astype(np.float64) - low) / (high - low)
+
+    keep_together = stretch[1] or channels == 1
+    wanted = expected(colour) if keep_together else np.dstack([expected(colour[:, :, i]) for i in range(3)])
+    np.testing.assert_allclose(resultcolour, wanted, atol=1e-4)
 
 
 @pytest.mark.parametrize("shape", EMPTY_SHAPES)

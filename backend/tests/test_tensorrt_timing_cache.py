@@ -32,6 +32,11 @@ class _Config:
         self.workspace: int | None = None  # TensorRT's default: the GPU's memory
         self.builder_optimization_level = 3
         self.tiling_optimization_level = "NONE"  # TensorRT's default
+        self.features: set[str] = set()
+
+    def set_preview_feature(self, feature: str, enabled: bool) -> None:
+        assert enabled
+        self.features.add(feature)
 
     def set_memory_pool_limit(self, _pool: object, size: int) -> None:
         self.workspace = size
@@ -56,6 +61,11 @@ class _Config:
 
     def get_timing_cache(self) -> _TimingCache | None:
         return self.cache
+
+
+class _Profile:
+    def set_shape(self, *_args: object) -> None:
+        pass
 
 
 class _Builder:
@@ -89,6 +99,9 @@ _CONFIGS: list[_Config] = []
 _FAILURE: list[tuple[int, str]] = []
 
 
+_REGISTRATIONS: list[str] = []
+
+
 def _fake_tensorrt() -> ModuleType:
     # stand-ins take attributes ModuleType does not declare
     trt: Any = ModuleType("tensorrt")
@@ -97,6 +110,7 @@ def _fake_tensorrt() -> ModuleType:
     trt.BuilderFlag = SimpleNamespace(
         FP16="fp16", BF16="bf16", TF32="tf32", SPARSE_WEIGHTS="sparse"
     )
+    trt.PreviewFeature = SimpleNamespace(RUNTIME_ACTIVATION_RESIZE_10_10="resize")
     trt.NetworkDefinitionCreationFlag = SimpleNamespace(EXPLICIT_BATCH=0)
     trt.MemoryPoolType = SimpleNamespace(WORKSPACE="workspace")
     trt.TilingOptimizationLevel = SimpleNamespace(
@@ -106,7 +120,13 @@ def _fake_tensorrt() -> ModuleType:
     severity = SimpleNamespace(INTERNAL_ERROR=0, ERROR=1, WARNING=2, INFO=3, VERBOSE=4)
     trt.ILogger = type("ILogger", (), {"Severity": severity})
     trt.Builder = _Builder
-    trt.OnnxParser = lambda _network, _logger: SimpleNamespace(parse=lambda _: True)
+    trt.OnnxParser = lambda _network, _logger: SimpleNamespace(
+        parse=lambda _: _REGISTRATIONS.append("parse") or True
+    )
+    trt.init_libnvinfer_plugins = lambda _logger, _namespace: _REGISTRATIONS.append(
+        "plugins"
+    )
+    trt.get_plugin_registry = lambda: SimpleNamespace(load_library=lambda _: object())
     return trt
 
 
@@ -139,6 +159,74 @@ def engine_builder(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     _CONFIGS.clear()
     _FAILURE.clear()
     return module
+
+
+def test_a_build_registers_tensorrts_plugins_before_it_parses(
+    engine_builder: ModuleType, tmp_path: Path
+):
+    # TensorRT's parser takes a DFT through FFTPlugin, in TensorRT's own plugin library
+    _REGISTRATIONS.clear()
+    _build(engine_builder, tmp_path / "cache")
+    assert _REGISTRATIONS[:2] == ["plugins", "parse"]
+
+
+def test_the_runner_registers_tensorrts_plugins(
+    engine_builder: ModuleType, monkeypatch: pytest.MonkeyPatch
+):
+    # The runner deserializes an engine in native code, with no Python session before it
+    monkeypatch.setattr(sys.modules["tensorrt"], "__version__", "11.4.0")
+    # Importing again also rebinds the package's attribute, which `from nodes.impl.tensorrt
+    # import runner` reads; undoing the patches restores both.
+    package = importlib.import_module("nodes.impl.tensorrt")
+    for name in ("runner", "drft"):
+        monkeypatch.delitem(sys.modules, f"{package.__name__}.{name}", raising=False)
+        monkeypatch.setattr(package, name, None, raising=False)
+    runner = importlib.import_module("nodes.impl.tensorrt.runner")
+    _REGISTRATIONS.clear()
+    runner.load_tensorrt()
+    assert _REGISTRATIONS == ["plugins"]
+
+
+@pytest.mark.parametrize(
+    ("smallest", "largest", "dynamic", "features"),
+    [
+        ((64, 64), (512, 512), True, {"resize"}),
+        ((64, 256), (64, 512), True, {"resize"}),
+        # One size has nothing to resize, whichever shape mode gave it
+        ((256, 256), (256, 256), True, set()),
+        ((256, 256), (256, 256), False, set()),
+    ],
+)
+def test_an_engine_of_several_sizes_takes_activation_memory_by_the_tile(
+    engine_builder: ModuleType,
+    smallest: tuple[int, int],
+    largest: tuple[int, int],
+    dynamic: bool,
+    features: set[str],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The build sets a profile for a Dynamic engine, and for an ONNX of dynamic axes.
+    monkeypatch.setattr(
+        engine_builder.trt,
+        "Builder",
+        type(
+            "Builder",
+            (_Builder,),
+            {"create_optimization_profile": lambda _self: _Profile()},
+        ),
+    )
+    config = engine_builder.BuildConfig(
+        precision="fp32",
+        workspace_size_gb=1.0,
+        min_shape=smallest,
+        opt_shape=largest,
+        max_shape=largest,
+        use_dynamic_shapes=dynamic,
+        allow_tf32=False,
+    )
+    engine_builder.build_engine_from_onnx(b"onnx", config)
+    assert _CONFIGS[-1].features == features if dynamic else not _CONFIGS[-1].features
+    assert engine_builder.activations_follow_tiles(config) == bool(features)
 
 
 def _build(engine_builder: ModuleType, cache: Path) -> None:

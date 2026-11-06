@@ -35,6 +35,8 @@ from packages.chaiNNer_standard.image.video_frames import save_video as module
 from packages.chaiNNer_standard.image.video_frames.save_video import (
     AudioSettings,
     BitDepth,
+    NvencPreset,
+    ProResProfile,
     SimpleVideoFormat,
     Simplicity,
     SitingCorrection,
@@ -44,6 +46,9 @@ from packages.chaiNNer_standard.image.video_frames.save_video import (
     VideoPreset,
     save_video_node,
 )
+
+# The inputs of the encoders these tests do not use (AV1, ProRes, NVENC).
+OTHER_ENCODERS = (8, 35, ProResProfile.HQ, NvencPreset.P4, 23, 30)
 
 FFMPEG = str(get_executable_path(STORAGE / "ffmpeg")[0])
 
@@ -138,6 +143,7 @@ def save(
         VideoEncoder.FFV1,
         VideoPreset.ULTRA_FAST,
         23,
+        *OTHER_ENCODERS,
         additional,
         SimpleVideoFormat.MP4_H264,
         75,

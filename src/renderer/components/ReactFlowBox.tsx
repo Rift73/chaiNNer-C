@@ -212,19 +212,21 @@ export const ReactFlowBox = memo(({ wrapperRef, nodeTypes, edgeTypes }: ReactFlo
                     const { outputId } = sourceHandle;
                     const { inputId } = parseTargetHandle(e.targetHandle);
                     const edgeType = typeState.functions.get(e.source)?.outputs.get(outputId);
-                    const targetEdgeDefinition = typeState.functions.get(e.target)?.definition;
-                    if (!edgeType || !targetEdgeDefinition) {
+                    const targetInstance = typeState.functions.get(e.target);
+                    if (!edgeType || !targetInstance) {
                         return EMPTY_ARRAY;
                     }
                     const firstPossibleInput = getFirstPossibleInput(
                         fn,
                         edgeType,
-                        chainLineage.getOutputLineage(sourceHandle) !== null
+                        chainLineage.getOutputLineage(sourceHandle) !== null,
+                        typeState.functions.get(node.id)
                     );
                     const firstPossibleOutput = getFirstPossibleOutput(
                         fn,
-                        targetEdgeDefinition,
-                        inputId
+                        targetInstance.definition,
+                        inputId,
+                        targetInstance
                     );
                     if (firstPossibleInput === undefined || firstPossibleOutput === undefined) {
                         return EMPTY_ARRAY;

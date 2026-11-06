@@ -10,7 +10,8 @@ archived vspreview).
 ## Install
 
 Install the **VapourSynth** package in the dependency manager: VapourSynth 81, vs-jetpack 2.2.6 with its source,
-deinterlacing, denoising and scaling plugins, MVTools 9, CAS, vszip CUDA (BM3D, NL-Means, DFTTest on NVIDIA GPUs),
+deinterlacing, denoising and scaling plugins, MVTools 9, CAS, the noise plugin (Deband and Grain's Grainer), vszip CUDA
+(BM3D, NL-Means, DFTTest on NVIDIA GPUs),
 DFTTest2 and vsview 0.13.0, about 1.75 GB. It goes into chaiNNer-C's own Python; a VapourSynth you installed yourself
 is not used, changed or loaded. Uninstall removes it with what pip pulled in for it that nothing else installed needs
 (vsview's PySide6, the plugins); NumPy, SciPy and what chaiNNer-C or your user modules need stay. VapourSynth runs in its own processes (vspipe, its command-line runner, and vsview),
@@ -86,6 +87,48 @@ Colour Info, and makes a 16-bit YUV clip tagged with it (the clip's `_Matrix`, `
 `_ChromaLocation`); each colour dropdown other than Auto replaces the Colour Info's value, and without Colour Info Auto
 guesses from the size as Load Video does for untagged video.
 
+## Images in the nodes
+
+A method that looks only at the current frame also takes an image at its **Clip** input (Load Image, or per item under
+Load Images) and then gives an image, ready for Save Image or any image node; each other clip input of that method then
+takes an image too. Methods that use other frames (Motion-compensated degrain, Field match, Temporal Median, Cut and
+Splice...) take clips only: while one is picked in Method the Clip input does not connect to an image, and picking one
+with an image connected shows an error on the node. Split Planes (R, G, B of an RGB image, as gray images) and AI Upscale
+take images too (Upscale Image is the faster way for that); Clip Frames, Frames to Clip, Preview Clips and Save Script
+take clips.
+
+- **Which methods.** Measured, not guessed: on a clip of different frames, frame n's output (pixels and frame properties)
+  must stay the same when every other frame changes, the clip must keep its length, and the function must run on a clip of
+  one frame whose result makes an image and is the result of the same frame among others (vs-jetpack's SangNom antialias on
+  one frame does what it does on a clip's last frame, so it takes clips only; a function that changes with the frame number
+  or the length, such as grain, stays). The result is `frame_methods.json` beside the catalog code, for vs-jetpack 2.2.6 and
+  VapourSynth 81; under other versions the log says so and Clip takes clips only, as it does for functions the file does not
+  list. `native/tools/vs_frame_probe.py` measures it again. A method with a Class dropdown takes images only if none of its
+  classes uses other frames, so Denoise > Prefilter takes clips only (one class, FluxSmooth, is temporal). A method that did
+  not run on such a clip with no GPU and its default settings (it wants a field order, a model file you download, integer
+  samples, or a GPU it cannot do without) takes clips only too: Based AA, Field match, Vine Dehalo. Some plugins crash on tiny
+  images: Median Blur, Remove Grain, Repair and zsmooth's Median, Interquartile Mean and Smart Median refuse an image under
+  4x4 by name. Your own function takes images when an overlay says `images = true`, which is your statement that it looks at
+  one frame.
+- **A setting that switches other frames on.** A method that uses other frames only through a temporal radius (`tr` of
+  BM3D, NL-Means and DFTTest, `temporal_radius` of Soothe) takes an image, and on an image that setting is 0, whatever it
+  says: one image has no other frames, and repeating the frame would change the result for nothing.
+- **The image as a clip.** The values go in as they are, 32-bit float: an RGB image is an RGBS clip and a gray image a
+  GRAYS clip, of one frame, tagged sRGB, BT.709 primaries, full range, progressive. An unfiltered round trip returns every
+  value unchanged. vs-jetpack's functions often filter only the first plane, meaning luma, which on RGB would be red: those
+  (measured: the result stays the same whatever green and blue are, or they refuse RGB) run on the image as YUV444PS (BT.709)
+  and back to RGB. A mask method that would mask each YUV plane runs on the image's luma alone and gives a gray mask. A plane
+  number in the Planes node means what it says: R, G or B. A result in another format comes back as RGB by its `_Matrix`, else
+  BT.709; a gray result stays gray. A result centred on 0 (Get U, Get V, Make Diff and the like) would lose everything below 0
+  in an image, so those methods take clips only. A result with NaN or infinity among its values is an error on the node, not
+  an image (NL-Means on the CPU makes them on float samples).
+- **Transparency.** A clip has no alpha. The method runs on the colour and the alpha stays exactly as it is. If the method
+  moves pixels (the Resize node's methods, flips and turns too) or changes the image's size, it also runs on the alpha, as
+  a gray image. A gray result has no alpha. A second image must be RGB or gray.
+- **Speed.** One process per chain run evaluates the images' scripts one after another, so VapourSynth, its plugins, the
+  vs-jetpack modules and AI Upscale's models load once per run, not per image. It ends with the run or at Stop. A plugin's
+  crash costs that process and the image's error, as a vspipe's would; the next image starts a new one.
+
 ## Family nodes
 
 A family node is one task, such as Denoise. Its **Method** dropdown lists the family's functions and the settings below
@@ -150,7 +193,8 @@ labels = { gain = "Gain" }         # plain names for settings
 defaults = { gain = 1.2 }          # what the input starts at, and what the node writes
 ```
 
-Other keys: `help`, `simple` (the settings in Simple), `hidden`, `annotations`, `class_default`. A function with an
+Other keys: `help`, `simple` (the settings in Simple), `hidden`, `annotations`, `class_default`, `images` (true: it looks
+only at the current frame, so it takes images; false: it does not). A function with an
 overlay is listed under "Common". A file may not be named `sys`, `vs`, `core` or `set_output` (names chaiNNer's scripts
 use), like a clip variable (`n_<word>_<number>`), like an installed module or like one of chaiNNer's own (`util`,
 `system`, `api`...); it is skipped with a line in the log. The
@@ -197,6 +241,13 @@ The same package works on Linux x86-64; paths read `<storage>/vapoursynth` and t
 - Any Function calls a class's method without constructor settings. An error in an import line shows on the node that
   runs the script, a bad filter setting on the node it is wired into.
 - Do not upgrade MVTools: the dependency manager accepts a newer version, but 10 breaks Motion-compensated degrain.
+- Grainer's Strength starts at 0, which adds no grain. Its noise plugin (vsnoise 1.3, GPL-3.0) has two faults of its own.
+  Poisson has no float path, so Grainer's Poisson runs a float clip or an image through 16 bits (values outside 0..1
+  clip there); for Poisson a higher Strength means less grain. Perlin, Simplex and FBM Simplex on RGB take the green and
+  blue planes' seed from past the end of the plugin's seed list, so a `seed` does not repeat them there. Any Function's
+  `noise.Add` is the plugin as it is and takes clips only: its type 4 on float samples gives what the frame's memory held.
+  Placebo does not use this plugin: libplacebo needs a Vulkan device, and without one the VapourSynth process ends.
+  An install without the plugin (one that has not been updated) gets the plugin's name in the error of these five types.
 - What always fails with vs-jetpack 2.2.6 is left out: base classes in Class and kernel dropdowns (Kernel, Scaler,
   Descaler...), MVTools' compensate, degrain, flow and mask methods (they need an analyze on the same object first; use
   Motion-compensated degrain), functions that need an object no input gives, and methods that give no clip. Another

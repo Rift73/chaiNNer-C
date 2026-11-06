@@ -1,7 +1,7 @@
 # chaiNNer-C
 
 **A faster [chaiNNer](https://github.com/chaiNNer-org/chaiNNer).** chaiNNer-C is the node-based image processing app
-you already know, with its CPU image nodes rewritten in C and C++ for speed. Same nodes, same chains, same results;
+you already know, with its CPU image nodes rewritten in C and C++ for speed. Same nodes, same chains;
 it just gets there sooner.
 
 chaiNNer-C is an independent fork of chaiNNer by [chaiNNer-org](https://github.com/chaiNNer-org) and its contributors.
@@ -15,13 +15,13 @@ chaiNNer-org. For chaiNNer itself, its documentation and its community, see the
   native code that uses all your cores and your CPU's AVX2 or AVX-512 when it has them. On our benchmark graphs,
   CPU-heavy chains ran 11 to 86 times faster than chaiNNer on the same PC; how much you gain depends on your CPU and
   your chains.
-- **The same results.** Every converted node is tested to produce the same output as chaiNNer's own code.
-  The rare, documented exceptions are listed in [the architecture notes](native/ARCHITECTURE.md#7-retained-engines-and-exactness-exceptions).
+- **Results judged on their own.** chaiNNer-C's own judged outputs are the reference; there is no parity with upstream
+  chaiNNer or an installed chaiNNer. The documented exceptions are listed in [the architecture notes](native/ARCHITECTURE.md#7-retained-engines-and-exactness-exceptions).
 - **TensorRT upscaling.** New TensorRT nodes run your `.engine` files on NVIDIA GPUs. Large images are split into
   overlapping tiles automatically, with no visible seams, and engines stay loaded between runs (right-click the node
   and choose **Clear** to free the memory).
 - **VOSR 2.0 generative upscaling.** A PyTorch node runs [VOSR 2.0](https://github.com/cswry/VOSR), a one-step
-  generative super-resolution model, on PyTorch or TensorRT (BF16 or FP8), and stabilize video frames from Load Video
+  generative super-resolution model, on PyTorch or TensorRT (BF16 or FP8), and stabilizes video frames from Load Video
   over time automatically. See the [VOSR guide](native/VOSR2.md).
 - **An up-to-date Python stack:** Python 3.14, NumPy 2, OpenCV 5, current PyTorch and ONNX Runtime.
 - **Lives next to chaiNNer.** chaiNNer-C keeps its settings and its Python in its own folder (the folder you
@@ -80,7 +80,8 @@ Alpine), and macOS.
 
 **Do my chaiNNer chains work in chaiNNer-C?** Yes. The nodes are the same, so chains open and run as in chaiNNer, and
 chains saved in chaiNNer-C open in chaiNNer too, except chains using the TensorRT nodes, which need a chaiNNer version
-with TensorRT support, or the VOSR node, which only chaiNNer-C has.
+with TensorRT support, or a node only chaiNNer-C has (VOSR, VapourSynth, Get Native Resolution, Load Videos, Crop to
+Size, Pad to Square, Image Diff, White Balance, Normal to Height and others).
 
 **Will it affect my existing chaiNNer?** No. chaiNNer-C uses its own folder for its settings and Python.
 
@@ -92,7 +93,8 @@ only for AI upscaling with PyTorch, ONNX Runtime or TensorRT models.
 ## Building from source
 
 You need Windows x64, [LLVM 23.1.2](https://github.com/llvm/llvm-project/releases), Visual Studio 2022 Build Tools
-(MSVC toolset 14.44.35207 and Windows SDK 10.0.26100.0), CMake, and Node.js. In PowerShell, from the repository folder:
+(MSVC toolset 14.44.35207 and Windows SDK 10.0.26100.0), CMake, NASM 3.01 and Node.js 24. In PowerShell, from the
+repository folder:
 
 ```powershell
 powershell -NoProfile -File native\tools\provision_runtime.ps1 -BuildOnly   # Python 3.14 headers for the build
@@ -101,7 +103,7 @@ npm ci                                                                      # in
 npm start                                                                   # run chaiNNer-C
 ```
 
-On Linux (x86-64) you need LLVM 23.1.2, NASM 3.01, CMake, Ninja and Node.js, and run
+On Linux (x86-64) you need LLVM 23.1.2, NASM 3.01, CMake, Ninja and Node.js 24, and run
 `native/tools/provision_runtime.sh --build-only` and `native/build_linux.sh` in place of the two PowerShell scripts;
 `native/tools/build_linux_release.sh` builds the zip in Docker.
 

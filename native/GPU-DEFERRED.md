@@ -22,7 +22,7 @@ rules of 2026-10-07:
 | 7 | Native TensorRT tile blend: timing. Measure: TensorRT Upscale Image tiled to 4K, 48 images, one paired run | A real TensorRT engine | instant-exec hunt-upscale |
 | 8 | Narrow the TensorRT session lock (`chaiNNer_tensorrt/tensorrt/processing/upscale_image.py:76,89`) to the tiled upscale calls. Measure: a folder of 48 with run-ahead, wall time and GPU idle gaps | Pays only when GPU work overlaps the CPU tail | instant-exec hunt-upscale |
 | 9 | Depth-2 pipelined tile loop with pinned buffers (PyTorch, ONNX, NCNN). Measure: tiled 4K wall time per image | Hides CPU work behind the device | instant-exec hunt-upscale |
-| 10 | Remember the working tile size per model, device, dtype and size. Measure: first-tile retries and time over a folder | Only with GPU out-of-memory retries (overlaps upstream #3318 in the open questions) | instant-exec hunt-upscale |
+| 10 | Remember the working tile size per model, device, dtype and size. Measure: first-tile retries and time over a folder | Done for a run (2026-11-06, State): the TensorRT session keeps the tile it fell back to until the run ends; across runs or per model not done | instant-exec hunt-upscale |
 | 11 | NCNN: clear the Vulkan allocators per image, not per tile. Measure: tiled NCNN wall time and VRAM per image | Vulkan only | instant-exec hunt-upscale |
 | 12 | Transparency mode: reuse the black-background pass for fully opaque tiles. Measure: RGBA folder wall time | Saves model passes | instant-exec hunt-upscale |
 | 13 | GPU node overlap in the native engine (two independent ESRGAN sinks). Measure: ms per item and VRAM, two sinks, 48 images | No GPU overlap in this run (ruling ruling B): nothing on the GPU could be measured | instant-exec engine |

@@ -346,7 +346,9 @@ CN_EXPORT cn_status cn_color_convert_f32(const float *src, float *dst,
     uintptr_t a = (uintptr_t)src, b = (uintptr_t)dst;
     if (a % _Alignof(float) || b % _Alignof(float)) return CN_INVALID_ARGUMENT;
     if (a > UINTPTR_MAX - input_bytes || b > UINTPTR_MAX - output_bytes) return CN_SIZE_OVERFLOW;
-    if (a < b + output_bytes && b < a + input_bytes) return CN_INVALID_ARGUMENT;
+    /* HSV and HLS to BGR read a pixel before they write it, so those two may run in place. */
+    int in_place = src == dst && (op == 5 || op == 7) && dcn == 3;
+    if (!in_place && a < b + output_bytes && b < a + input_bytes) return CN_INVALID_ARGUMENT;
     color_context ctx = {src, dst, width, scn, dcn, op, blue, lanes, ipp, cn_isa_current()};
     return cn_parallel_for(height, 8, color_range, &ctx);
 }

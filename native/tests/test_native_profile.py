@@ -60,11 +60,11 @@ stub = {
         Path("x/a.png"), Path("x/b.png")
     ],
     "Generator": Stream,
-    "load_image_node": lambda path: (path.stem, str(path.parent), path.name),
+    "load_image_node": lambda path, _: (path.stem, str(path.parent), path.name, path),
     "os": os,
 }
 stream, _ = graph().file_sequence_load_images(
-    stub, Path("x"), False, False, "", False, 0, False
+    stub, Path("x"), False, False, "", False, 0, False, False
 )
 items = list(stream.supplier())
 image = np.random.default_rng(20261003).random((64, 80, 3), dtype=np.float32)

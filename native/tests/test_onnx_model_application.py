@@ -478,7 +478,9 @@ def test_interpolation_orchestration_order(failure):
             return failure != "compatibility"
 
         module.__dict__.update(
-            onnx=types.SimpleNamespace(load_from_string=decode),
+            onnx=types.SimpleNamespace(
+                load_from_string=decode, load_model_from_string=onnx.load_from_string
+            ),
             safely_optimize_onnx_model=optimize,
             deepcopy=deep,
             load_onnx_model=load,
@@ -543,7 +545,10 @@ def test_compatibility_fixture_and_mean_boundary(dtype, value):
 
         module.__dict__.update(upscale_image_node=upscale)
         result = module.check_will_upscale(
-            "context", types.SimpleNamespace(sub_type="Generic")
+            "context",
+            types.SimpleNamespace(
+                sub_type="Generic", info=types.SimpleNamespace(input_channels=3)
+            ),
         )
         results.append((type(result), bool(result), seen))
         assert (
@@ -737,7 +742,8 @@ def test_initializer_rebuild_partial_failures(failure):
 
         module.__dict__.update(
             onnx=types.SimpleNamespace(
-                load_from_string=lambda data, a=a, b=b: a if data == b"a" else b
+                load_from_string=lambda data, a=a, b=b: a if data == b"a" else b,
+                load_model_from_string=lambda _data: tiny_model(),
             ),
             deepcopy=deep,
             load_onnx_model=load,

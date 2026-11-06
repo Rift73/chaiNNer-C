@@ -418,6 +418,212 @@ def test_fewer_candidates_than_the_cap(tmp_path, three_keyframes, monkeypatch):
     assert descaled is None
 
 
+def numbered_clip(path: Path, frames: int, rate: int) -> Path:
+    """A lossless 96x64 gray clip whose frame k is flat at code 20 + 10k."""
+    assert FFMPEG is not None
+    subprocess.run(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "-s",
+            "96x64",
+            "-framerate",
+            str(rate),
+            "-i",
+            "pipe:",
+            "-c:v",
+            "ffv1",
+            "-pix_fmt",
+            "gray",
+            str(path),
+        ],
+        check=True,
+        input=b"".join(bytes([20 + 10 * k]) * (96 * 64) for k in range(frames)),
+    )
+    return path
+
+
+def frame_read(path: Path, point: media.SamplePoint) -> int:
+    """Which frame of a numbered_clip `point` reads."""
+    info = media.probe(path)
+    plane = media.decode_frame(path, info, point, no_tools, lambda: None)[0]
+    return round((plane.mean() * 255 - 20) / 10)
+
+
+@needs_ffmpeg
+def test_a_time_past_the_last_frames_timestamp_reads_the_last_frame(tmp_path):
+    # The last frame's timestamp is 9 s, and it stays on screen until 10 s.
+    path = numbered_clip(tmp_path / "ten.mkv", 10, 1)
+    assert media.probe(path).duration == pytest.approx(10)
+    for seconds, frame in ((0, 0), (0.5, 1), (8.5, 9), (9, 9), (9.5, 9), (9.999, 9)):
+        assert frame_read(path, media.SamplePoint(seconds, media.REQUESTED)) == frame
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize(
+    ("frames", "rate", "cap", "numbers"),
+    [
+        (1, 24, 50, [0]),
+        (2, 24, 50, [1]),
+        (3, 24, 50, [1, 2]),
+        (10, 1, 50, list(range(1, 10))),
+        (10, 1, 2, [3, 8]),
+    ],
+)
+def test_even_samples_on_a_short_clip_are_different_frames(
+    tmp_path, frames, rate, cap, numbers
+):
+    path = numbered_clip(tmp_path / "short.mkv", frames, rate)
+    plan = media.discover(
+        path, media.probe(path), "even", cap, [], 0.3, 0.5, no_tools, lambda: None
+    )
+    assert [point.frame for point in plan.candidates] == numbers
+    for point, number in zip(plan.candidates, numbers, strict=True):
+        assert frame_read(path, point) == number
+
+
+@needs_ffmpeg
+def test_typed_times_on_one_frame_are_one_candidate(tmp_path):
+    path = numbered_clip(tmp_path / "ten.mkv", 10, 1)
+    times = [0.2, 0.7, 2.0, 2.5, 9.5]
+    plan = media.discover(
+        path, media.probe(path), "manual", 50, times, 0.3, 0.5, no_tools, lambda: None
+    )
+    assert [point.frame for point in plan.candidates] == [1, 2, 3, 9]
+    assert [point.seconds for point in plan.candidates] == [0.2, 2.0, 2.5, 9.5]
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("sampling", [M.EVEN, M.KEYFRAMES])
+def test_a_one_frame_video_is_analyzed(tmp_path, monkeypatch, sampling):
+    assert FFMPEG is not None
+    monkeypatch.setattr(node.FFMpegEnv, "get_integrated", lambda _: no_tools())
+    path = tmp_path / "one.mkv"
+    subprocess.run(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=192x128:rate=24",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "ffv1",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+        check=True,
+        stdin=subprocess.DEVNULL,
+    )
+    outputs = run(
+        Context(tmp_path),
+        source=S.VIDEO,
+        video_path=path,
+        sampling=sampling,
+    )
+    summary = json.loads(outputs[12])
+    assert summary["planned_frames"] == summary["analyzed_frames"] == 1
+    assert not summary["error"]
+
+
+@needs_ffmpeg
+def test_scene_midpoints_on_one_frame_are_one_candidate(tmp_path):
+    path = numbered_clip(tmp_path / "ten.mkv", 2, 24)
+    plan = media.discover(
+        path, media.probe(path), "scenes", 50, [], 0.3, 0, path_tools, lambda: None
+    )
+    assert [point.frame for point in plan.candidates] == [1]
+
+
+@needs_ffmpeg
+def test_a_three_frame_clip_is_not_the_evidence_of_fifty_frames(tmp_path, monkeypatch):
+    assert FFMPEG is not None
+    monkeypatch.setattr(node.FFMpegEnv, "get_integrated", lambda _: no_tools())
+    planes = [
+        forward(forward(natively_sharp(320, 180, seed), 480, 1), 270, 0)
+        for seed in (1, 2, 3)
+    ]
+    path = tmp_path / "three.mkv"
+    subprocess.run(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray16le",
+            "-s",
+            "480x270",
+            "-framerate",
+            "24",
+            "-i",
+            "pipe:",
+            "-c:v",
+            "ffv1",
+            "-pix_fmt",
+            "gray16le",
+            str(path),
+        ],
+        check=True,
+        input=b"".join((p * 65535).round().astype("<u2").tobytes() for p in planes),
+    )
+    outputs = run(Context(tmp_path), source=S.VIDEO, video_path=path, sampling=M.EVEN)
+    assert (outputs[0], outputs[1]) == (320, 180)
+    summary = json.loads(outputs[12])
+    assert summary["planned_frames"] == summary["analyzed_frames"] == 2
+    assert not summary["error"]
+    assert summary["kernel_decision"]["rule"] != "cross_frame"
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("pix_fmt", ["yuva420p", "yuva444p16le"])
+def test_a_video_with_alpha_is_analyzed_by_its_stored_luma(
+    tmp_path, monkeypatch, pix_fmt
+):
+    """ProRes 4444 and VP9 with alpha decode to yuva: the first plane is Y as in yuv."""
+    assert FFMPEG is not None
+    plain, alpha = tmp_path / "plain.mkv", tmp_path / "alpha.mkv"
+    source = "testsrc2=size=640x360:rate=24:duration=1"
+    for path, fmt in ((plain, pix_fmt.replace("yuva", "yuv")), (alpha, pix_fmt)):
+        subprocess.run(
+            [FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", source]
+            + ["-c:v", "ffv1", "-pix_fmt", fmt, str(path)],
+            check=True,
+            stdin=subprocess.DEVNULL,
+        )
+    point = media.SamplePoint(0.5, media.REQUESTED)
+    info = media.probe(alpha)
+    assert info.pix_fmt == pix_fmt
+    plane = media.decode_frame(alpha, info, point, no_tools, lambda: None)[0]
+    expected = media.decode_frame(
+        plain, media.probe(plain), point, no_tools, lambda: None
+    )[0]
+    assert np.array_equal(plane, expected)
+
+    def unindexed(_path, _check=None):
+        raise video._UseCliReader("test")
+
+    monkeypatch.setattr(media, "frame_index", unindexed)
+    cli = media.decode_frame(alpha, info, point, path_tools, lambda: None)[0]
+    assert np.array_equal(cli, expected)
+
+
 @needs_ffmpeg
 def test_cli_fallback_reads_the_same_planes(three_keyframes, monkeypatch):
     info = media.probe(three_keyframes)
@@ -647,6 +853,149 @@ def test_chain_to_descale_reproduces_the_source(tmp_path):
     assert np.abs(chained - source)[8:-8, 8:-8].max() <= 1e-3
 
 
+ONE_AXIS = "One axis scaled: the {} has a grid; the {} shows none and stays at the source's size."
+
+
+@pytest.mark.parametrize(
+    ("native", "seed", "axis", "size", "scaled", "unscaled"),
+    [
+        ((960, 360), 1, 0, 540, "height", "width"),
+        # The unscaled width passes foldEvidence by a little here, far under the height.
+        ((960, 360), 3, 0, 540, "height", "width"),
+        ((640, 540), 1, 1, 960, "width", "height"),
+    ],
+)
+def test_a_one_axis_upscale_is_found(
+    tmp_path, native, seed, axis, size, scaled, unscaled
+):
+    source = natively_sharp(native[0], native[1], seed).astype(np.float32)
+    upscaled = forward(source, size, axis).astype(np.float32)
+    outputs = run(Context(tmp_path), image=upscaled)
+    assert outputs[:2] == native
+    assert outputs[9] == "Bilinear"
+    status, descaled = outputs[11], outputs[15]
+    assert status.startswith(f"SUPPORTED CANDIDATE: {native[0]}x{native[1]}, Bilinear.")
+    assert ONE_AXIS.format(scaled, unscaled) in status
+    # The unscaled axis gives Descale nothing to do on it: no offset, the whole size.
+    assert outputs[5 + axis] == 0.0
+    assert outputs[7 + axis] == native[axis]
+    assert descaled is not None
+    assert np.abs(descaled - source)[8:-8, 8:-8].max() <= 1e-3
+
+
+def test_a_one_axis_upscale_chains_to_descale(tmp_path):
+    source = natively_sharp(640, 540, 1).astype(np.float32)
+    upscaled = forward(source, 960, 1).astype(np.float32)
+    outputs = run(Context(tmp_path), image=upscaled)
+    width, height, b, c, taps, left, top, src_w, src_h = outputs[:9]
+    chained = descale_node(
+        upscaled,
+        width,
+        height,
+        DescaleKernel.BILINEAR,
+        b,
+        c,
+        taps,
+        1.0,
+        left,
+        top,
+        src_w,
+        src_h,
+        DescaleBorder.EXTEND,
+        False,
+        LightTransfer.GAMMA_24,
+    )
+    descaled = outputs[15]
+    assert descaled is not None
+    assert np.array_equal(chained, descaled)
+    assert np.abs(chained - source)[8:-8, 8:-8].max() <= 1e-3
+
+
+@needs_ffmpeg
+def test_a_one_axis_upscaled_video_is_found(tmp_path, monkeypatch):
+    assert FFMPEG is not None
+    monkeypatch.setattr(node.FFMpegEnv, "get_integrated", lambda _: no_tools())
+    planes = [forward(natively_sharp(960, 360, seed), 540, 0) for seed in (1, 2, 3)]
+    path = tmp_path / "one_axis.mkv"
+    subprocess.run(
+        [
+            FFMPEG,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray16le",
+            "-s",
+            "960x540",
+            "-framerate",
+            "24",
+            "-i",
+            "pipe:",
+            "-c:v",
+            "ffv1",
+            "-pix_fmt",
+            "gray16le",
+            str(path),
+        ],
+        check=True,
+        input=b"".join((p * 65535).round().astype("<u2").tobytes() for p in planes),
+    )
+    outputs = run(Context(tmp_path), source=S.VIDEO, video_path=path, sampling=M.EVEN)
+    assert outputs[:2] == (960, 360)
+    assert ONE_AXIS.format("height", "width") in outputs[11]
+
+
+@pytest.mark.parametrize(
+    ("image", "grid", "verdict"),
+    [
+        (lambda: natively_sharp(960, 540, 4), None, "INCONCLUSIVE"),
+        # The heights show a fold peak by chance here, with no notch in their fits.
+        (lambda: natively_sharp(960, 540, 11), None, "INCONCLUSIVE"),
+        (lambda: planted_image()[1][:, :, 0], (1280, 720), "SUPPORTED CANDIDATE"),
+        # Both axes have a grid, the width's fold misses Vernier's participation bar.
+        (
+            lambda: forward(forward(natively_sharp(500, 400, 11), 960, 1), 540, 0),
+            (500, 400),
+            "INCONCLUSIVE",
+        ),
+        # The height's fold, close to the search's end, is half the width's.
+        (
+            lambda: forward(forward(natively_sharp(720, 500, 11), 960, 1), 540, 0),
+            (720, 500),
+            "SEARCH BOUNDARY",
+        ),
+        # The height's grid is past the search's end, where its fold still shows.
+        (
+            lambda: forward(forward(natively_sharp(640, 505, 32), 960, 1), 540, 0),
+            None,
+            "INCONCLUSIVE",
+        ),
+        (lambda: np.full((540, 960), 0.5), None, "INCONCLUSIVE"),
+    ],
+    ids=[
+        "no upscale",
+        "chance fold",
+        "both axes",
+        "participation",
+        "weak fold",
+        "past the search",
+        "flat",
+    ],
+)
+def test_other_verdicts_keep_both_axes_searched(tmp_path, image, grid, verdict):
+    plane = image().astype(np.float32)
+    outputs = run(Context(tmp_path), image=plane)
+    assert outputs[11].startswith(verdict)
+    assert "One axis scaled" not in outputs[11]
+    if grid is not None:
+        assert outputs[:2] == grid
+    if not (plane == plane.flat[0]).all():
+        assert outputs[0] < plane.shape[1] and outputs[1] < plane.shape[0]
+
+
 def test_permuted_layout_gives_the_same_result(tmp_path):
     _, upscaled = planted_image()
     permuted = np.ascontiguousarray(upscaled.transpose(2, 0, 1)).transpose(1, 2, 0)
@@ -704,3 +1053,18 @@ def test_linear_models_add_evidence_only(tmp_path):
     }
     assert outputs[:2] == (1280, 720)
     assert "sRGB model:" in outputs[11]
+
+
+@pytest.mark.parametrize("planes", [2, 5])
+def test_a_plane_stack_is_refused_by_the_image_input(planes):
+    """Stacks of other than 1, 3 or 4 planes (Stack Images) have no BT.709 luma: two planes
+    failed with a bare IndexError, and five were read as if their first three were BGR."""
+    data = next(
+        n
+        for n in node.utility_group.nodes
+        if n.schema_id == "chainner:image:get_native_resolution"
+    )
+    image_input = next(i for i in data.inputs if i.id == 1)
+    with pytest.raises(ValueError, match=f"only supports .* but was given .*{planes}"):
+        image_input.enforce(np.zeros((64, 64, planes), np.float32))
+    assert image_input.enforce(np.zeros((64, 64, 3), np.float32)).shape == (64, 64, 3)

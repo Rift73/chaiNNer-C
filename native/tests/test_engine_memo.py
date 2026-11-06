@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -19,8 +20,8 @@ import cv2
 import numpy as np
 import psutil
 import pytest
-from bench_oracle import FFMPEG
-from engine_differential import execute, load_registry_errors, mismatches
+from PIL import Image, ImageCms
+from engine_differential import FFMPEG, execute, load_registry_errors, mismatches
 from verify_runtime import edge, make_node
 
 import api
@@ -40,16 +41,23 @@ AUDITED = {
     "chainner:image:balance_normals",
     "chainner:image:bilateral_blur",
     "chainner:image:convert_normal_map",
+    "chainner:image:crop_to_size",
     "chainner:image:generate_hash",
+    "chainner:image:image_diff",
+    "chainner:image:is_grayscale",
     "chainner:image:metal_to_specular",
     "chainner:image:normal_generator",
+    "chainner:image:normal_to_height",
     "chainner:image:normalize_normal_map",
+    "chainner:image:pad_to_square",
     "chainner:image:planes_to_rgb",
     "chainner:image:rgb_to_planes",
     "chainner:image:specular_to_metal",
     "chainner:image:strengthen_normals",
+    "chainner:image:white_balance",
     "chainner:utility:color_from_channels",
     "chainner:utility:derive_seed",
+    "chainner:utility:math_expression",
     "chainner:utility:separate_color",
 }
 # Each generator's per-run (not iterated) outputs, audited as following from its inputs alone: its run is keyed
@@ -64,8 +72,9 @@ KEYED_GENERATORS = {
     "chainner:utility:range": [],
     "chainner:vapoursynth:clip_frames": ["FPS", "Colour Info"],
 }
-# Generators whose per-run outputs are read from a file, so their run has no key.
-UNKEYED_GENERATORS = {"chainner:image:load_video"}
+# Generators whose per-run outputs are read from a file, so their run has no key (Load
+# Videos reads its folder's first video; a run gives each file a Load Video).
+UNKEYED_GENERATORS = {"chainner:image:load_video", "chainner:image:load_videos"}
 
 
 @pytest.fixture(scope="module")
@@ -203,7 +212,7 @@ def test_allow_list_is_the_audited_set(schemas):
         "chainner:image:add_noise",
         "chainner:image:create_noise",
     }
-    # Every package's nodes (NVIDIA ModelOpt has none) are in the registry checked below.
+    # Every package's nodes are in the registry checked below.
     packages = {p.id: p for p in api.registry.packages.values()}
     assert packages.keys() >= set(PACKAGES)
     for package in packages.values():
@@ -741,3 +750,85 @@ def test_a_file_an_earlier_sink_writes_is_loaded_fresh(schemas, tmp_path):
         assert mismatches("write then load", chain, oracle, engine, tmp_path) == []
         loaded.append(engine.files)
     assert loaded[0] != loaded[1]
+
+
+def gamma_profile() -> bytes:
+    """ImageCms's sRGB profile with its tone curves made gamma 1.8."""
+    icc = bytearray(ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes())
+    start = icc.find(b"para")
+    assert start >= 0
+    while start >= 0:
+        icc[start + 8 : start + 16] = (0).to_bytes(4) + round(1.8 * 65536).to_bytes(4)
+        start = icc.find(b"para", start + 4)
+    return bytes(icc)
+
+
+def metadata_chain(
+    schemas, source: Mapping[int, object], kind: str, output: Path, index: int
+) -> list[dict]:
+    """Load Image or Load Images, whose Metadata (output `index`) goes to Save Image."""
+    name = edge("load", 2 if kind == "chainner:image:load" else 3)
+    return [
+        make_node(schemas, "load", kind, dict(source)),
+        make_node(
+            schemas,
+            "save",
+            "chainner:image:save",
+            {
+                0: edge("load"),
+                1: str(output),
+                2: None,
+                3: name,
+                4: "png",
+                15: "u8",
+                27: edge("load", index),
+            },
+        ),
+    ]
+
+
+@pytest.mark.parametrize("executor", ["python", "native"])
+@pytest.mark.parametrize("schema", ["chainner:image:load", "chainner:image:load_images"])
+def test_metadata_reaches_the_saved_file(schemas, tmp_path, executor, schema):
+    images, output = tmp_path / "images", tmp_path / "out"
+    images.mkdir()
+    icc = gamma_profile()
+    source = np.random.default_rng(5).integers(0, 256, (9, 11, 3), dtype=np.uint8)
+    path = images / "a.png"
+    Image.fromarray(source).save(path, icc_profile=icc, dpi=(300, 300))
+    if schema == "chainner:image:load":
+        nodes = metadata_chain(schemas, {0: str(path)}, schema, output, 3)
+    else:
+        inputs = {0: str(images), 2: 0, 4: 0, 6: 1}
+        nodes = metadata_chain(schemas, inputs, schema, output, 5)
+    _, result = run(executor, nodes, tmp_path, output)
+    assert result.error is None
+    with Image.open(output / "a.png") as saved:
+        assert saved.info["icc_profile"] == icc
+        assert saved.info["dpi"] == pytest.approx((300, 300), abs=0.5)
+        np.testing.assert_array_equal(np.array(saved), source)
+
+
+def test_convert_to_srgb_is_part_of_load_images_key(schemas, tmp_path):
+    images, output = tmp_path / "images", tmp_path / "out"
+    images.mkdir()
+    path = images / "a.png"
+    grey = np.full((9, 11, 3), 128, dtype=np.uint8)
+    Image.fromarray(grey).save(path, icc_profile=gamma_profile())
+    pixels = {}
+    for convert in (0, 1, 0, 1):
+        for schema, inputs, index in (
+            ("chainner:image:load", {0: str(path), 1: convert}, 3),
+            ("chainner:image:load_images", {0: str(images), 2: 0, 4: 0, 6: 1, 7: convert}, 5),
+        ):
+            nodes = metadata_chain(schemas, inputs, schema, output, index)
+            _, result = run("native", nodes, tmp_path, output)
+            assert result.error is None
+            with Image.open(output / "a.png") as saved:
+                assert ("icc_profile" in saved.info) is (not convert)
+                value = np.array(saved)
+            assert pixels.setdefault((convert, schema), value).tolist() == value.tolist()
+    for schema in ("chainner:image:load", "chainner:image:load_images"):
+        np.testing.assert_array_equal(pixels[0, schema], grey)
+        # Gamma 1.8's 128 is sRGB's 147.
+        assert abs(int(pixels[1, schema].max()) - 147) <= 1

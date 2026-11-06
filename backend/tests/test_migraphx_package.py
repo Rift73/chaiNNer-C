@@ -25,13 +25,20 @@ from migraphx_stand_ins import (
     import_package,
     package_imports,
 )
+from onnx import TensorProto, helper
 
 from api import Dependency
 from nodes.condition import Condition
 from nodes.impl.compressed_file import Compression, read_file
 from nodes.impl.migraphx import build_cache
 from nodes.impl.migraphx.model import MIGraphXProgram, MIGraphXProgramInfo
-from nodes.impl.onnx.model import OnnxGeneric, OnnxInfo
+from nodes.impl.onnx.load import load_onnx_model
+from nodes.impl.onnx.model import (
+    ARCH_METADATA_KEY,
+    PRECISION_METADATA_KEY,
+    OnnxGeneric,
+    OnnxInfo,
+)
 from nodes.impl.tensorrt import cache
 
 WINDOWS = Here(linux=False, windows=True)
@@ -497,14 +504,80 @@ def test_get_program_info(loaded: Imported):
 
 
 @pytest.mark.parametrize("hidden", ["FP32", "FP16", "FP8"])
-def test_a_recorded_architecture_compiles_in_fp16(build: SimpleNamespace, hidden: str):
+@pytest.mark.parametrize("recorded", ["fp16", "fp32"])
+def test_a_record_compiles_in_its_precision(
+    build: SimpleNamespace, hidden: str, recorded: str
+):
     # FP8 is not refused either, on a GPU without it: the hidden input does not apply.
     model = OnnxGeneric(
-        b"onnx model", OnnxInfo(17, "fp16", input_channels=3, arch="ESRGAN")
+        b"onnx model", OnnxInfo(17, recorded, input_channels=3, arch="SwinIR")
     )
     run(build, model, hidden)
     ((call,),) = [build.compiles.calls]
-    assert call["fp16"] is True and call["fp8"] is False
+    assert call["fp16"] is (recorded == "fp16") and call["fp8"] is False
+
+
+def test_precision_is_shown_until_an_onnx_is_known_to_have_a_record(
+    build: SimpleNamespace,
+):
+    # tests/common/backend-nodes.test.ts evaluates this condition.
+    module = build.imported.nodes["utility.build_program"]
+    assert module.PRECISION_APPLIES.to_json() == {
+        "kind": "type",
+        "input": 0,
+        "condition": 'OnnxModel { arch: "unrecorded" }',
+        "ifNotConnected": True,
+    }
+
+
+def recorded_file(fp16: bool, metadata: dict[str, str]) -> bytes:
+    elem_type = TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT
+    graph = helper.make_graph(
+        [helper.make_node("Identity", ["input"], ["output"])],
+        "plain",
+        [helper.make_tensor_value_info("input", elem_type, [1, 3, 4, 4])],
+        [helper.make_tensor_value_info("output", elem_type, [1, 3, 4, 4])],
+    )
+    model = helper.make_model(graph)
+    for key, value in metadata.items():
+        model.metadata_props.add(key=key, value=value)
+    return model.SerializeToString()
+
+
+@pytest.mark.parametrize(
+    ("file_fp16", "metadata", "chosen", "compiled_fp16"),
+    [
+        # This version's record of FP32, whatever a saved chain holds
+        (
+            False,
+            {ARCH_METADATA_KEY: "SwinIR", PRECISION_METADATA_KEY: "fp32"},
+            "FP16",
+            False,
+        ),
+        (
+            True,
+            {ARCH_METADATA_KEY: "SwinIR", PRECISION_METADATA_KEY: "fp16"},
+            "FP32",
+            True,
+        ),
+        # A released version's record, the architecture alone
+        (True, {ARCH_METADATA_KEY: "ESRGAN"}, "FP32", True),
+        # No record: the dropdown's value stands
+        (True, {}, "FP32", False),
+        (False, {}, "FP16", True),
+    ],
+)
+def test_a_reloaded_file_s_record_decides_the_precision(
+    build: SimpleNamespace,
+    file_fp16: bool,
+    metadata: dict[str, str],
+    chosen: str,
+    compiled_fp16: bool,
+):
+    loaded = load_onnx_model(recorded_file(file_fp16, metadata))
+    assert isinstance(loaded, OnnxGeneric)
+    run(build, loaded, chosen)
+    assert build.compiles.calls[0]["fp16"] is compiled_fp16
 
 
 def test_an_onnx_without_a_record_keeps_the_chosen_precision(build: SimpleNamespace):

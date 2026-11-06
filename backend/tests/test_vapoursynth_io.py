@@ -801,29 +801,78 @@ def test_frames_to_clip_errors(
 
 
 @pytest.mark.parametrize(
-    ("size", "planes", "sliced"),
+    ("size", "planes", "options"),
     [
-        ((1920, 1080), 3, True),
+        ((1920, 1080), 3, ["-level", "3", "-slices", "16"]),
         # 7 pixels a side at least: FFmpeg refuses 16 slices below 4 and misplaces
-        # slices from 4 to 6.
-        ((7, 7), 3, True),
-        ((6, 1080), 3, False),
-        ((1920, 6), 1, False),
-        ((3, 3), 1, False),
+        # slices from 4 to 6, and finds no slices of its own for a plane 1 sample wide.
+        ((7, 7), 3, ["-level", "3", "-slices", "16"]),
+        ((6, 1080), 3, ["-level", "1"]),
+        ((1920, 6), 1, ["-level", "1"]),
+        ((3, 3), 1, ["-level", "1"]),
         # A slice of at most 2^27 bits at 17 bits a sample: 2,631,720 samples a plane
         # of three planes, 7,895,160 of one. A side not a multiple of 4 rounds up.
-        ((4 * 1620, 4 * 1624), 3, True),
-        ((4 * 1620 + 1, 4 * 1624), 3, False),
-        ((4 * 1620 + 1, 4 * 1624), 1, True),
-        ((4 * 2809, 4 * 2810), 1, True),
-        ((4 * 2810, 4 * 2810), 1, False),
+        ((4 * 1620, 4 * 1624), 3, ["-level", "3", "-slices", "16"]),
+        ((4 * 1620 + 1, 4 * 1624), 3, []),
+        ((4 * 1620 + 1, 4 * 1624), 1, ["-level", "3", "-slices", "16"]),
+        ((4 * 2809, 4 * 2810), 1, ["-level", "3", "-slices", "16"]),
+        ((4 * 2810, 4 * 2810), 1, []),
     ],
 )
-def test_frames_to_clip_ffv1_slices(size: tuple[int, int], planes: int, sliced: bool):
+def test_frames_to_clip_ffv1_slices(
+    size: tuple[int, int], planes: int, options: list[str]
+):
     from packages.chaiNNer_vapoursynth.vapoursynth.frames_to_clip import ffv1_options
 
-    slices = ["-level", "3", "-slices", "16"] if sliced else []
-    assert ffv1_options(*size, planes) == ["-c:v", "ffv1", *slices]
+    assert ffv1_options(*size, planes) == ["-c:v", "ffv1", *options]
+
+
+@pytest.mark.parametrize("precision", ["16", "32"])
+@pytest.mark.parametrize("channels", [1, 3])
+@pytest.mark.parametrize("size", [(1, 1), (1, 2), (1, 9), (1, 300), (2, 1), (300, 1)])
+def test_frames_to_clip_of_frames_one_pixel_across(
+    tmp_path: Path,
+    vs: Any,
+    integrated_ffmpeg: FFMpegEnv,
+    size: tuple[int, int],
+    channels: int,
+    precision: str,
+):
+    width, height = size
+    shape = (height, width, channels) if channels == 3 else (height, width)
+    rng = np.random.default_rng(13)
+    images = [rng.random(shape, dtype=np.float32) for _ in range(3)]
+    clip = collect(
+        tmp_path, [(i, None, None, None) for i in images], precision=precision
+    )
+    script = tmp_path / "thin.vpy"
+    script.write_text(compile_script([(clip, "Frames")], cache_mb=256), "utf-8")
+    assert clip_info(script, 0).num_frames == 3
+    for image, frame in zip(images, read_frames(script, 0, 0, 3), strict=True):
+        assert np.abs(frame.reshape(shape) - image).max() <= 0.5 / 65535 + 1e-7
+
+
+@pytest.mark.parametrize(
+    ("luma", "chroma"),
+    [((1, 4), (1, 4)), ((2, 4), (1, 4)), ((2, 2), (1, 1)), ((2, 300), (1, 150))],
+)
+def test_frames_to_clip_of_planes_one_sample_across(
+    tmp_path: Path,
+    vs: Any,
+    integrated_ffmpeg: FFMpegEnv,
+    luma: tuple[int, int],
+    chroma: tuple[int, int],
+):
+    rng = np.random.default_rng(17)
+    planes = [
+        rng.random((size[1], size[0]), dtype=np.float32)
+        for size in (luma, chroma, chroma)
+    ]
+    clip = collect(tmp_path, [(None, *planes)], "planes")
+    script = tmp_path / "thin.vpy"
+    script.write_text(compile_script([(clip, "Frames")], cache_mb=256), "utf-8")
+    info = clip_info(script, 0)
+    assert (info.width, info.height, info.num_frames) == (*luma, 1)
 
 
 def ffv1_commands(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:

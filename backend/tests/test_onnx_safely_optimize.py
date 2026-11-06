@@ -70,3 +70,56 @@ def test_only_a_valid_model_is_optimized():
     )
     assert done.returncode == 0, done.stderr[-2000:]
     assert done.stdout.splitlines() == ["1", "1", "2"]
+
+
+def reshape_of_a_reshape(second_shape: list[int]) -> bytes:
+    """x, 1x1x4x6, through Reshape [0, 0, 2, 2, 6] (1x1x2x2x6), then `second_shape`."""
+    graph = helper.make_graph(
+        [
+            helper.make_node("Reshape", ["x", "first"], ["mid"], name="n0"),
+            helper.make_node("Reshape", ["mid", "second"], ["y"], name="n1"),
+        ],
+        "g",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 1, 4, 6])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 1, 2, 2, 3, 2])],
+        [
+            helper.make_tensor("first", TensorProto.INT64, [5], [0, 0, 2, 2, 6]),
+            helper.make_tensor("second", TensorProto.INT64, [6], second_shape),
+        ],
+    )
+    return helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8
+    ).SerializeToString()
+
+
+# PyTorch's pixel_unshuffle exports these two Reshapes; the second's 0s copy dimensions
+# from the first's output, so the optimizer's elimination of the first gave it another
+# shape, and the model failed in ONNX Runtime after Optimize Model and in Interpolate
+# Models.
+def test_a_reshape_that_copies_dimensions_keeps_the_reshape_before_it():
+    ort = pytest.importorskip("onnxruntime")
+    onnx = pytest.importorskip("onnx")
+    np = pytest.importorskip("numpy")
+    sys.path.insert(0, str(BACKEND))
+    from nodes.impl.onnx.utils import safely_optimize_onnx_model
+
+    data = reshape_of_a_reshape([0, 0, 0, 0, -1, 2])
+    x = np.arange(24, dtype=np.float32).reshape(1, 1, 4, 6)
+
+    def run(model: bytes) -> np.ndarray:
+        session = ort.InferenceSession(model, providers=["CPUExecutionProvider"])
+        return session.run(None, {"x": x})[0]
+
+    optimized = safely_optimize_onnx_model(onnx.load_model_from_string(data))
+    assert np.array_equal(run(optimized.SerializeToString()), run(data))
+    assert run(data).shape == (1, 1, 2, 2, 3, 2)
+
+
+def test_a_reshape_of_a_reshape_with_a_full_shape_is_still_fused():
+    onnx = pytest.importorskip("onnx")
+    sys.path.insert(0, str(BACKEND))
+    from nodes.impl.onnx.utils import safely_optimize_onnx_model
+
+    data = reshape_of_a_reshape([1, 1, 2, 2, 3, 2])
+    optimized = safely_optimize_onnx_model(onnx.load_model_from_string(data))
+    assert [node.op_type for node in optimized.graph.node] == ["Reshape"]

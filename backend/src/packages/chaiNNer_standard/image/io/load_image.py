@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import platform as platform
 import struct
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterable, Union
 
@@ -14,13 +15,20 @@ from PIL import TiffImagePlugin
 from sanic.log import logger as logger
 
 import image_limits
+from nodes.impl.colour_profile import convert_to_srgb
 from nodes.impl.dds.texconv import read_dds_texconv as read_dds_texconv
 from nodes.impl.image_formats import get_available_image_formats
 from nodes.impl.image_formats import get_opencv_formats as get_opencv_formats
 from nodes.impl.image_formats import get_pil_formats as get_pil_formats
+from nodes.impl.image_tags import ImageMetadata, read_image_tags
 from nodes.impl.native_graph import graph
-from nodes.properties.inputs import ImageFileInput
-from nodes.properties.outputs import DirectoryOutput, FileNameOutput, LargeImageOutput
+from nodes.properties.inputs import BaseInput, BoolInput, ImageFileInput
+from nodes.properties.outputs import (
+    DirectoryOutput,
+    FileNameOutput,
+    ImageMetadataOutput,
+    LargeImageOutput,
+)
 from nodes.utils.utils import get_h_w_c as get_h_w_c
 from nodes.utils.utils import split_file_path as split_file_path
 
@@ -156,6 +164,14 @@ _decoders: list[tuple[str, _Decoder]] = [
 valid_formats = get_available_image_formats()
 
 
+def convert_to_srgb_input() -> BaseInput:
+    """Load Image's and Load Images' Convert To sRGB."""
+    return BoolInput("Convert To sRGB", default=False).with_docs(
+        "Converts an image with an embedded colour profile (Adobe RGB, Display P3, ProPhoto, ...) to sRGB, so that it shows the colours the file means. Images without a profile and images already in sRGB load unchanged.",
+        "When off, the pixel values stay as the file stores them: connect Metadata to Save Image to keep the profile that gives them their colours.",
+    )
+
+
 @io_group.register(
     schema_id="chainner:image:load",
     name="Load Image",
@@ -168,7 +184,8 @@ valid_formats = get_available_image_formats()
     inputs=[
         ImageFileInput(primary_input=True).with_docs(
             "Select the path of an image file."
-        )
+        ),
+        convert_to_srgb_input().with_id(1),
     ],
     outputs=[
         LargeImageOutput()
@@ -180,8 +197,20 @@ valid_formats = get_available_image_formats()
         .suggest(),
         DirectoryOutput("Directory", of_input=0),
         FileNameOutput("Name", of_input=0),
+        ImageMetadataOutput().with_id(3),
     ],
     side_effects=True,
 )
-def load_image_node(path: Path) -> tuple[np.ndarray, Path, str]:
-    return graph().image_io_load(globals(), path)
+def load_image_node(
+    path: Path, convert_colours: bool = False
+) -> tuple[np.ndarray, Path, str, ImageMetadata]:
+    image, directory, name = graph().image_io_load(globals(), path)
+    if not convert_colours:
+        return image, directory, name, path
+    tags = read_image_tags(path)
+    if tags.icc_profile is None:
+        return image, directory, name, tags
+    converted = convert_to_srgb(image, tags.icc_profile, path)
+    if converted is not image:
+        tags = replace(tags, icc_profile=None)  # the pixels are sRGB's now
+    return converted, directory, name, tags

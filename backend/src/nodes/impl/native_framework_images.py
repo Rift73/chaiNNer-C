@@ -11,6 +11,7 @@ import sys
 import warnings
 from collections.abc import Callable, Sequence
 from functools import lru_cache
+from threading import Lock
 from typing import cast
 
 import numpy as np
@@ -19,26 +20,32 @@ from .native import check, f32, lib
 from .native_numpy_simd import fma3, loop_target
 from .native_transfer import contrast_bounds
 
+# As native_buffers._api: lru_cache does not serialize first calls, and items reach this
+# one's together.
+_api_lock = Lock()
+
 
 @lru_cache(maxsize=1)
 def _api():
-    dll = lib()
-    p, z, i, f = ct.c_void_p, ct.c_size_t, ct.c_int, ct.c_float
-    signatures = {
-        "cn_framework_pad": [p, p, z, z, z, z, z, z, i],
-        "cn_framework_ncnn": [p, p, z, z],
-        "cn_framework_affine": [p, p, z, z, z, f, i, p],
-        "cn_framework_mask_threshold": [p, p, z],
-        "cn_framework_trimap": [p, p, z, z, f, f, z],
-        "cn_framework_cloth_labels": [p, p, z, z, i, p],
-        "cn_framework_cloth_masks": [p, p, z],
-        "cn_planar_to_interleaved_f32": [p, i, z, z, z, z, z, i, p, p],
-        "cn_planes_to_interleaved_f32": [p, p, i, z, z, z, p],
-    }
-    for name, signature in signatures.items():
-        function = getattr(dll, name)
-        function.argtypes, function.restype = signature, i
-    return dll
+    with _api_lock:
+        dll = lib()
+        p, z, i, f = ct.c_void_p, ct.c_size_t, ct.c_int, ct.c_float
+        signatures = {
+            "cn_framework_pad": [p, p, z, z, z, z, z, z, i],
+            "cn_framework_ncnn": [p, p, z, z],
+            "cn_framework_affine": [p, p, z, z, z, f, i, p],
+            "cn_framework_mask_threshold": [p, p, z],
+            "cn_framework_trimap": [p, p, z, z, f, f, z],
+            "cn_framework_cloth_labels": [p, p, z, z, i, p],
+            "cn_framework_cloth_masks": [p, p, z],
+            "cn_planar_to_interleaved_f32": [p, i, z, z, z, z, z, i, p, p],
+            "cn_planes_to_interleaved_f32": [p, p, i, z, z, z, f, f, p],
+            "cn_interleaved_to_bfloat_planes": [p, z, z, z, z, i, p],
+        }
+        for name, signature in signatures.items():
+            function = getattr(dll, name)
+            function.argtypes, function.restype = signature, i
+        return dll
 
 
 def _report(events: int, operation: str) -> None:
@@ -145,14 +152,19 @@ def _assemble_four(image: np.ndarray) -> np.ndarray:
 
 
 def planar_to_interleaved(
-    planes: np.ndarray, reverse: bool = False, *, swap_red_blue: bool = False
+    planes: np.ndarray,
+    reverse: bool = False,
+    *,
+    swap_red_blue: bool = False,
+    bfloat16: bool = False,
 ) -> np.ndarray:
     """(C, H, W) float16 or float32 planes as a new (H, W, C) float32 image, every
     value exact (NumPy's cast). Rows may be cropped from a wider buffer (positive
     strides, contiguous within a row). reverse flips the channel order;
     swap_red_blue swaps the first and third of 3 or more channels (RGB(A) <->
-    BGR(A)), as swap_red_blue does for 3 or 4."""
-    return _interleave(planes, reverse, swap_red_blue)[0]
+    BGR(A)), as swap_red_blue does for 3 or 4. bfloat16: the planes are uint16 holding
+    bfloat16 bits, as NumPy has no such type; each value is exact too."""
+    return _interleave(planes, reverse, swap_red_blue, bfloat16)[0]
 
 
 def planar_to_interleaved_checked(
@@ -160,17 +172,22 @@ def planar_to_interleaved_checked(
 ) -> tuple[np.ndarray, bool]:
     """planar_to_interleaved's image, and whether every value in it is finite (no
     NaN or infinity), found in the same pass."""
-    return _interleave(planes, False, swap_red_blue)
+    return _interleave(planes, False, swap_red_blue, False)
 
 
 def _interleave(
-    planes: np.ndarray, reverse: bool, swap_red_blue: bool
+    planes: np.ndarray, reverse: bool, swap_red_blue: bool, bfloat16: bool
 ) -> tuple[np.ndarray, bool]:
-    if planes.ndim != 3 or planes.dtype not in (
-        np.dtype(np.float16),
-        np.dtype(np.float32),
-    ):
-        raise ValueError("Planar conversion needs (C, H, W) float16 or float32 planes")
+    if bfloat16:
+        allowed, sample = (np.dtype(np.uint16),), 2
+    else:
+        allowed = (np.dtype(np.float16), np.dtype(np.float32))
+        sample = int(planes.dtype == np.float16)
+    if planes.ndim != 3 or planes.dtype not in allowed:
+        raise ValueError(
+            "Planar conversion needs (C, H, W) float16 or float32 planes, or uint16"
+            " planes of bfloat16 bits"
+        )
     item = planes.itemsize
     plane_stride, row_stride, column_stride = planes.strides
     if column_stride != item or plane_stride % item or row_stride % item:
@@ -183,7 +200,7 @@ def _interleave(
     check(
         _api().cn_planar_to_interleaved_f32(
             planes.ctypes.data,
-            int(planes.dtype == np.float16),
+            sample,
             plane_stride // item,
             row_stride // item,
             h,
@@ -197,12 +214,47 @@ def _interleave(
     return result, bool(finite.value)
 
 
-def planes_to_interleaved(planes: Sequence[np.ndarray]) -> np.ndarray:
+def interleaved_to_bfloat_planes(
+    image: np.ndarray, out: np.ndarray, *, swap_red_blue: bool = False
+) -> None:
+    """A (H, W, C) image's values, rounded as bfloat16's cast rounds (to nearest, ties
+    to even; a NaN becomes the quiet NaN with its sign), as (C, H, W) planes of uint16
+    bits in out, as NumPy has no such type. swap_red_blue reads the first and third of
+    3 or more channels the other way round (BGR(A) -> RGB(A))."""
+    h, w, channels = image.shape
+    if out.shape != (channels, h, w) or out.dtype != np.uint16:
+        raise ValueError("The bfloat16 planes need (C, H, W) uint16 storage")
+    if not (out.flags.c_contiguous and out.flags.writeable):
+        raise ValueError("The bfloat16 planes need contiguous, writable storage")
+    if (
+        image.dtype != np.float32
+        or image.strides[1:] != (channels * image.itemsize, image.itemsize)
+        or image.strides[0] <= 0
+        or image.strides[0] % image.itemsize
+    ):
+        image = np.ascontiguousarray(image, np.float32)
+    check(
+        _api().cn_interleaved_to_bfloat_planes(
+            image.ctypes.data,
+            image.strides[0] // image.itemsize,
+            h,
+            w,
+            channels,
+            int(swap_red_blue),
+            out.ctypes.data,
+        )
+    )
+
+
+def planes_to_interleaved(
+    planes: Sequence[np.ndarray], gain: float = 1.0, offset: float = 0.0
+) -> np.ndarray:
     """(H, W) float16 or float32 planes, one per channel in the output's order, as a
     new (H, W, C) float32 image, every value exact (NumPy's cast). The planes share a
     shape and dtype; each may be anywhere, its rows `strides[0]` apart (positive,
     contiguous within a row): a decoder's padded planes, or (C, H, W) planes taken in
-    another order."""
+    another order. A `gain` other than 1 or an `offset` other than 0 gives value * gain +
+    offset in the same pass, between 0 and 1."""
     if not planes or any(
         plane.ndim != 2
         or plane.dtype != planes[0].dtype
@@ -230,6 +282,8 @@ def planes_to_interleaved(planes: Sequence[np.ndarray]) -> np.ndarray:
             h,
             w,
             len(planes),
+            gain,
+            offset,
             result.ctypes.data,
         )
     )

@@ -184,9 +184,12 @@ class StageExecution:
         with torch.cuda.stream(self.stream):
             entry = self.graphs.get(key)
             if entry is None:
-                context = engine.create_execution_context(
-                    trt.ExecutionContextAllocationStrategy.USER_MANAGED
-                )
+                from nodes.impl.tensorrt.memory import gpu_setup_lock
+
+                with gpu_setup_lock:
+                    context = engine.create_execution_context(
+                        trt.ExecutionContextAllocationStrategy.USER_MANAGED
+                    )
                 if context is None:
                     raise RuntimeError(f"VOSR cannot allocate {name} graph context.")
                 values = {}

@@ -549,6 +549,14 @@ export class FunctionInstance {
 
     readonly inputs: ReadonlyMap<InputId, NonNeverType>;
 
+    /**
+     * What each input accepts when connecting: its default type, or for an input the backend marks
+     * `followsInputs`, its type expression evaluated with the other inputs, before anything is
+     * assigned to it. `inputs` holds the type narrowed by the assigned value, which says nothing
+     * about a connection that would replace it.
+     */
+    readonly inputExpectations: ReadonlyMap<InputId, NonNeverType>;
+
     readonly outputs: ReadonlyMap<OutputId, NonNeverType>;
 
     readonly inputErrors: readonly FunctionInputAssignmentError[];
@@ -562,6 +570,7 @@ export class FunctionInstance {
     private constructor(
         definition: FunctionDefinition,
         inputs: ReadonlyMap<InputId, NonNeverType>,
+        inputExpectations: ReadonlyMap<InputId, NonNeverType>,
         outputs: ReadonlyMap<OutputId, NonNeverType>,
         inputErrors: readonly FunctionInputAssignmentError[],
         outputErrors: readonly FunctionOutputError[],
@@ -570,6 +579,7 @@ export class FunctionInstance {
     ) {
         this.definition = definition;
         this.inputs = inputs;
+        this.inputExpectations = inputExpectations;
         this.outputs = outputs;
         this.inputErrors = inputErrors;
         this.outputErrors = outputErrors;
@@ -580,6 +590,7 @@ export class FunctionInstance {
     static fromDefinition(definition: FunctionDefinition): FunctionInstance {
         return new FunctionInstance(
             definition,
+            definition.inputDefaults,
             definition.inputDefaults,
             definition.outputDefaults,
             [],
@@ -611,6 +622,7 @@ export class FunctionInstance {
 
         // evaluate inputs
         const inputs = new Map<InputId, NonNeverType>();
+        const inputExpectations = new Map<InputId, NonNeverType>();
         const inputLengths = new Map<InputId, NonNeverType>();
         for (const item of definition.inputEvaluationOrder) {
             let type: Type;
@@ -618,6 +630,13 @@ export class FunctionInstance {
                 type = evaluate(item.expression, scope);
             } else {
                 type = item.default;
+            }
+
+            if (item.type === 'Input') {
+                inputExpectations.set(
+                    item.input.id,
+                    item.input.followsInputs && type.type !== 'never' ? type : item.default
+                );
             }
 
             if (type.type !== 'never' && item.type === 'Input') {
@@ -721,6 +740,7 @@ export class FunctionInstance {
         return new FunctionInstance(
             definition,
             inputs,
+            inputExpectations,
             outputs,
             inputErrors,
             outputErrors,
@@ -730,10 +750,10 @@ export class FunctionInstance {
     }
 
     canAssign(inputId: InputId, type: Type): boolean {
-        const definitionType = this.definition.inputDefaults.get(inputId);
-        if (!definitionType) throw new Error(`Invalid input id ${inputId}`);
+        const expected = this.inputExpectations.get(inputId);
+        if (!expected) throw new Error(`Invalid input id ${inputId}`);
 
         // we say that types A is assignable to type B if they are not disjoint
-        return assignOk(this.definition.convertInput(inputId, type), definitionType);
+        return assignOk(this.definition.convertInput(inputId, type), expected);
     }
 }

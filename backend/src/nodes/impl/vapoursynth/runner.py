@@ -1,8 +1,9 @@
 """Runs compiled VapourSynth scripts in child processes: clip info and frames in vspipe,
-previews in vsview. The worker never imports VapourSynth; a plugin crash or a script
-error costs only the child, and its traceback names the node whose statement failed.
-vspipe ends with the worker, also a worker that is killed (owned_job.worker_child);
-vsview's window stays open after it."""
+images in one frame process per chain run (frame_worker.py), previews in vsview. The
+worker never imports VapourSynth; a plugin crash or a script error costs only the child,
+and its traceback names the node whose statement failed. vspipe and the frame process end
+with the worker, also a worker that is killed (owned_job.worker_child); vsview's window
+stays open after it."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import importlib.util
 import io
 import json
 import os
+import queue
 import re
 import signal
 import subprocess
@@ -20,7 +22,7 @@ import threading
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import Callable, Generator, Iterator, TypeVar
+from typing import Callable, Generator, Iterator, Sequence, TypeVar
 
 import numpy as np
 import psutil
@@ -31,7 +33,7 @@ from ..colour_info import high_definition, pixel_layout
 from ..native_framework_images import planes_to_interleaved
 from ..owned_job import worker_child
 from .colour_props import PROPS, vs_pix_fmt
-from .script import node_for_line
+from .script import BRIDGE_IMPORT, node_for_line
 
 T = TypeVar("T")
 
@@ -54,11 +56,12 @@ COLOUR_PROPS = tuple(prop for prop, _ in PROPS.values())
 # R81 says on every run that it refuses API 3 plugins, and vs-jetpack's extras install
 # one (bm3dcpu): the line says nothing about the script.
 _API3_NOTICE = re.compile(
-    r"^\w+: Plugin .* uses API 3, which is no longer supported\.$"
+    r"^(\w+: )?Plugin .* uses API 3, which is no longer supported\.$"
 )
 _TRACEBACK_FILE = re.compile(r'^\s*File "(?P<file>.+)", line (?P<line>\d+), in ')
 _FPS = re.compile(r"^(\d+)/(\d+)")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+FRAME_WORKER_PY = Path(__file__).with_name("frame_worker.py")
 
 
 @dataclass(frozen=True)
@@ -183,11 +186,11 @@ def vs_env() -> dict[str, str]:
 
 
 def script_error(
-    script: Path, stderr: str, returncode: int | None = None
+    script: Path, stderr: str, returncode: int | None = None, program: str = "vspipe"
 ) -> VSScriptError:
-    """The error of a failed run of `script`: the tail of vspipe's stderr, on the node
-    of the traceback's last line in the script that is a node's statement; without
-    stderr, vspipe's exit code (a plugin that crashes it leaves no message)."""
+    """The error of a failed run of `script`: the tail of the stderr of `program`, on
+    the node of the traceback's last line in the script that is a node's statement;
+    without stderr, its exit code (a plugin that crashes it leaves no message)."""
     lines = [line for line in stderr.splitlines() if not _API3_NOTICE.match(line)]
     target = os.path.normcase(os.path.abspath(script))
     try:
@@ -206,7 +209,7 @@ def script_error(
         # POSIX: a child that a signal ended has the signal's number, negated, as code.
         signal_name = signal.strsignal(-returncode) or "unknown signal"
         return VSScriptError(
-            f"vspipe was ended by signal {-returncode} ({signal_name}) and left no"
+            f"{program} was ended by signal {-returncode} ({signal_name}) and left no"
             " message (a plugin crashed).",
             node_id,
         )
@@ -217,8 +220,8 @@ def script_error(
             if not 0 < returncode < 256
             else returncode
         )
-        message = f"vspipe ended with code {code} and no message (a plugin crashed)."
-    return VSScriptError(message or "vspipe failed without a message.", node_id)
+        message = f"{program} ended with code {code} and no message (a plugin crashed)."
+    return VSScriptError(message or f"{program} failed without a message.", node_id)
 
 
 def _run_vspipe(script: Path, args: list[str], context: NodeContext | None) -> str:
@@ -336,6 +339,132 @@ def clip_props(
     finally:
         copy.unlink(missing_ok=True)
         props.unlink(missing_ok=True)
+
+
+def save_frames(
+    script: Path,
+    source: str,
+    paths: Sequence[Path],
+    context: NodeContext | None = None,
+) -> None:
+    """Saves the only frame of each output of the script `source` as an image, in one
+    evaluation of it: output i goes to paths[i], as a NumPy file of a float32 BGR or gray
+    image. `script` is the path its tracebacks name, which the caller deletes (it is
+    written only when vspipe runs it or an error needs its lines)."""
+    saves = "".join(
+        f"chainner_vs.save_frame(vapoursynth.get_output({index}).clip, {str(path)!r})\n"
+        for index, path in enumerate(paths)
+    )
+    lines = (
+        "\n# chaiNNer saves the frames as images.\n"
+        "import vapoursynth\n"
+        f"{BRIDGE_IMPORT}\n"
+        f"{saves}"
+    )
+    evaluate_script(script, source + lines, context)
+
+
+def evaluate_in_vspipe(script: Path, source: str, context: NodeContext | None) -> None:
+    script.write_text(source, encoding="utf-8")
+    _run_vspipe(script, ["--info", str(script), "-"], context)
+
+
+class _FrameProcess:
+    """frame_worker.py in a child process, which evaluates scripts one at a time."""
+
+    def __init__(self) -> None:
+        self._stderr = tempfile.TemporaryFile()
+        self._process = worker_child(
+            [str(vs_python()), "-P", str(FRAME_WORKER_PY)],
+            env=vs_env(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=self._stderr,
+            creationflags=_NO_WINDOW,
+        )
+        # A read waits as long as the script runs: a thread reads, so that a wait can
+        # check for Stop (None: the process has ended).
+        self._answers: queue.Queue[bytes | None] = queue.Queue()
+        # Where the stderr of the script being evaluated starts: what earlier scripts
+        # printed says nothing about how this one ended.
+        self._stderr_start = 0
+        threading.Thread(target=self._read, name="vs frames", daemon=True).start()
+
+    def _read(self) -> None:
+        stdout = self._process.stdout
+        assert stdout is not None
+        for line in stdout:
+            self._answers.put(line)
+        self._answers.put(None)
+
+    def alive(self) -> bool:
+        return self._process.poll() is None
+
+    def _ended(self, script: Path, source: str) -> VSScriptError:
+        returncode = self._process.wait()
+        self._stderr.seek(self._stderr_start)
+        text = self._stderr.read().decode("utf-8", "replace")
+        script.write_text(source, encoding="utf-8")
+        return script_error(script, text, returncode, "The VapourSynth process")
+
+    def evaluate(self, script: Path, source: str, context: NodeContext) -> None:
+        stdin = self._process.stdin
+        assert stdin is not None
+        request = {"source": source, "script": str(script)}
+        self._stderr_start = os.fstat(self._stderr.fileno()).st_size
+        try:
+            stdin.write(json.dumps(request).encode() + b"\n")
+            stdin.flush()
+        except OSError as error:
+            raise self._ended(script, source) from error
+        while True:
+            try:
+                answer = self._answers.get(timeout=STOP_POLL_SECONDS)
+            except queue.Empty:
+                if context.aborted:
+                    self.kill()
+                    context.check_aborted()
+                continue
+            if answer is None:
+                raise self._ended(script, source)
+            error = json.loads(answer)["error"]
+            if error is not None:
+                script.write_text(source, encoding="utf-8")
+                raise script_error(script, error)
+            return
+
+    def kill(self) -> None:
+        self._process.kill()
+        self._process.wait()
+        self._stderr.close()
+
+
+# The frame process of the chain run, one script at a time.
+frame_process: _FrameProcess | None = None
+_frame_process_lock = threading.Lock()
+
+
+def end_frame_process() -> None:
+    """The chain run's end: the process goes with its plugins, modules and models."""
+    global frame_process
+    with _frame_process_lock:
+        if frame_process is not None:
+            frame_process.kill()
+            frame_process = None
+
+
+def evaluate_script(script: Path, source: str, context: NodeContext | None) -> None:
+    """Evaluates the script once, in the chain run's frame process, which the first
+    script of a run starts, as does the first after a crash or a Stop."""
+    global frame_process
+    if context is None:
+        evaluate_in_vspipe(script, source, context)
+        return
+    with _frame_process_lock:
+        if frame_process is None or not frame_process.alive():
+            frame_process = _FrameProcess()
+        context.add_cleanup(end_frame_process)
+        frame_process.evaluate(script, source, context)
 
 
 def _yuv_to_rgbs(info: ClipInfo) -> str:

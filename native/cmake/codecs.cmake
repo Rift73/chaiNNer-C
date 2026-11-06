@@ -192,7 +192,7 @@ endif()
 target_sources(chainner_codecs PRIVATE src/codecs/tiff_codec.c)
 target_link_libraries(chainner_codecs PRIVATE chainner_tiff)
 
-# OpenEXR's C library OpenEXRCore 3.5.2 for Load Image's .exr (the runtime's OpenCV has no OpenEXR) with what it
+# OpenEXR's C library OpenEXRCore 3.5.2 for Load and Save Image's .exr (the runtime's OpenCV has no OpenEXR) with what it
 # builds against in its own release: libdeflate 1.26 (ZIP, ZIPS and the DWA and PXR24 stages), zstd 1.5.7 (ZSTD),
 # OpenJPH 0.32.0 (HTJ2K) and Imath 3.2.3's half.h, each as upstream's CMake builds it for a static Windows x64
 # library; every SIMD path behind its library's own CPUID check. third_party/*/PROVENANCE.md says what is whose.

@@ -27,6 +27,7 @@ from nodes.impl.colour_info import (
     VideoMode,
 )
 from nodes.impl.ffmpeg import FFMpegEnv
+from nodes.properties.outputs import ImageOutput
 
 FFMPEG = shutil.which("ffmpeg")
 FFPROBE = shutil.which("ffprobe")
@@ -105,7 +106,8 @@ def test_pyav_frames_equal_the_cli_reader(tmp_path, monkeypatch, case):
 @pytest.mark.parametrize(("size", "padded"), [("639x361", True), ("320x240", False)])
 def test_float_rgb_frames_are_todays_bytes(tmp_path, size, padded):
     # A float RGB frame goes from PyAV's G, B and R planes (rows padded to line_size)
-    # straight into the BGR image: today's image from the CLI's bytes, bit for bit.
+    # straight into the BGR image, with its gain in the same pass: the image from the
+    # CLI's bytes, bit for bit.
     av = video._pyav()
     assert av is not None and FFMPEG is not None and FFPROBE is not None
     path = _clip(
@@ -118,6 +120,8 @@ def test_float_rgb_frames_are_todays_bytes(tmp_path, size, padded):
     )
     (frame_format,) = loader.formats
     assert frame_format.pix_fmt == "gbrpf32le"
+    assert (frame_format.gain, frame_format.offset) == (65535 / 65280, 0.0)
+    gain = np.float32(frame_format.gain)
     width, height = frame_format.size
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
@@ -129,12 +133,13 @@ def test_float_rgb_frames_are_todays_bytes(tmp_path, size, padded):
             image = video._frame_values(converted, frame_format)
             data = video._frame_bytes(converted, frame_format)
             g, b, r = data.view(np.float32).reshape(3, height, width)
-            today = np.dstack((b, g, r))
+            today = np.minimum(np.dstack((b, g, r)) * gain, np.float32(1))
             assert isinstance(image, np.ndarray)
             assert (image.shape, image.dtype) == (today.shape, today.dtype)
             assert image.tobytes() == today.tobytes()
-            flags = ("C_CONTIGUOUS", "OWNDATA", "WRITEABLE", "ALIGNED")
+            flags = ("C_CONTIGUOUS", "OWNDATA", "ALIGNED")
             assert [image.flags[f] for f in flags] == [today.flags[f] for f in flags]
+            assert not image.flags.writeable
 
 
 ROTATIONS = {
@@ -326,6 +331,32 @@ def test_the_filter_graphs_go_when_the_reader_ends(tmp_path, monkeypatch):
         gc.enable()
 
 
+AUTO_COLOUR = (
+    Matrix.AUTO,
+    Transfer.AUTO,
+    Primaries.AUTO,
+    Range.AUTO,
+    ChromaLocation.AUTO,
+)
+
+
+def _float_rgb_loader(path: Path, mode: VideoMode = VideoMode.RGB):
+    assert FFMPEG is not None and FFPROBE is not None
+    settings = video.ReadSettings(mode, True, AUTO_COLOUR)
+    return video.VideoLoader(path, FFMpegEnv(ffmpeg=FFMPEG, ffprobe=FFPROBE), settings)
+
+
+def test_a_float_frame_is_borrowed_by_the_output_check_not_copied(tmp_path, monkeypatch):
+    # The output check copied each frame (24.9 MB at 1080p) unless told it is its own.
+    path = _clip(tmp_path / "clip.mkv", *_source("320x240"), "-c:v", "ffv1")
+    enforce = ImageOutput("Frame", channels=3).enforce
+    for reader in ("pyav", "cli"):
+        if reader == "cli":
+            monkeypatch.setenv("CHAINNER_C_VIDEO_READER", "cli")
+        image = next(iter(_float_rgb_loader(path).stream_items()))[0]
+        assert enforce(image) is image
+
+
 def test_a_matroska_file_is_scanned_once_per_version(tmp_path, monkeypatch):
     # The timestamp scan demuxes the whole file: a file read again is not scanned
     # again, and one that changed (here its modification time) is.
@@ -341,10 +372,10 @@ def test_a_matroska_file_is_scanned_once_per_version(tmp_path, monkeypatch):
 
     monkeypatch.setattr(av, "open", counting_open)
     rate = Fraction(30)
-    assert not video._variable_timestamps(path, rate, av)
-    assert not video._variable_timestamps(path, rate, av)
+    assert not video._variable_timestamps(path, rate, Fraction(1, 1000), av)
+    assert not video._variable_timestamps(path, rate, Fraction(1, 1000), av)
     assert opened == [str(path)]
     info = path.stat()
     os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
-    assert not video._variable_timestamps(path, rate, av)
+    assert not video._variable_timestamps(path, rate, Fraction(1, 1000), av)
     assert opened == [str(path)] * 2

@@ -27,6 +27,8 @@ from packages.chaiNNer_standard.image.io.save_image import (
     DDSColourConversion,
     DDSErrorMetric,
     DDSMipFilter,
+    ExrColorDepth,
+    ExrCompression,
     ImageFormat,
     JpegSubsampling,
     PngColorDepth,
@@ -71,7 +73,10 @@ def inputs(
         False,
         True,
         AvifSubsampling.FACTOR_420,
+        ExrColorDepth.F32,
+        ExrCompression.ZIP,
         False,
+        None,
     ]
 
 
@@ -106,7 +111,10 @@ def save(
         False,
         True,
         AvifSubsampling.FACTOR_420,
+        ExrColorDepth.F32,
+        ExrCompression.ZIP,
         False,
+        None,
     )
     return (directory / "image.tiff").read_bytes()
 

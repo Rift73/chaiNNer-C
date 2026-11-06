@@ -286,7 +286,7 @@ def normal_map_generator_node(
 
     padding = 0
     if tileable:
-        padding = max(1, filter_x.shape[0] // 2, math.ceil(abs(blur_sharp) * 2))
+        padding = max(1, filter_x.shape[0] // 2) + math.ceil(abs(blur_sharp) * 4)
         height = create_border(height, BorderType.WRAP, Padding.all(padding))
 
     if blur_sharp < 0:
@@ -299,8 +299,7 @@ def normal_map_generator_node(
 
     if min_z > 0:
         height = np.maximum(min_z, height)
-    if scale != 0:
-        height = height * scale  # type: ignore
+    height = height * scale
 
     dx = cv2.filter2D(height, -1, filter_x)
     dy = cv2.filter2D(height, -1, filter_y)

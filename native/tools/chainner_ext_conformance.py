@@ -2329,6 +2329,18 @@ def _same_image_outcome(a: Json, b: Json) -> bool:
     return same_outcome(core_a, core_b) and a.get("clipboard") == b.get("clipboard")
 
 
+def judged_reduction(row: Json) -> bool:
+    """A Hamming or Hann resize that reduces a side. The real module's weights there do
+    not sum to 1, so a flat image brightens; chaiNNer-C's are judged against a float64
+    reference and Pillow (test_resize_window_filters.py), and the case is checked as
+    "corrected" though it stays recorded as "compare"."""
+    if row["cell"].split("/")[:2] not in (["resize", "Hamming"], ["resize", "Hann"]):
+        return False
+    height, width = row["args"][0]["$img"]["shape"][:2]
+    new_width, new_height = row["args"][1]["$tuple"]
+    return new_width < width or new_height < height
+
+
 def check_candidate_case(
     cand: ModuleType, row: Json, binary: Path | None
 ) -> str | None:
@@ -2339,7 +2351,7 @@ def check_candidate_case(
     if case.call.startswith("Clipboard.") and binary is None:
         return "not run: no loaded binary of the module imports OpenClipboard"
     have = run_image_case(cand, case, binary)
-    kind = row["class"]
+    kind = "corrected" if judged_reduction(row) else row["class"]
     if kind == "compare":
         if _same_image_outcome(have, row["outcome"]):
             return None

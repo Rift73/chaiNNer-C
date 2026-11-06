@@ -5,6 +5,7 @@ from enum import IntEnum
 
 class cudaError_t(IntEnum):
     cudaSuccess = 0
+    cudaErrorMemoryAllocation = 2
 
 class cudaMemcpyKind(IntEnum):
     cudaMemcpyHostToHost = 0

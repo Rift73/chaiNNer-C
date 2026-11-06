@@ -65,6 +65,15 @@ class Method:
     many: bool = False
     # A function of the user's files or listed modules.
     user: bool = False
+    # How an image goes through it, when it looks only at the current frame
+    # (frame_methods.json): "rgb" as an RGBS clip, "yuv" as a YUV444PS one, "luma" as a
+    # GRAYS clip of its luma. "": clips only.
+    frame_route: str = ""
+    # Parameter name -> the value an image's run sets, which turns off its use of other
+    # frames (tr = 0).
+    frame_args: Mapping[str, object] = field(default_factory=dict, hash=False)
+    # The smallest width and height of an image it takes: below it, its plugin crashes.
+    frame_min_side: int = 0
 
 
 def qualified(import_line: str, expr: str) -> tuple[str, str]:

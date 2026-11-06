@@ -10,14 +10,18 @@ import onnx.inliner
 from google.protobuf.message import DecodeError
 from sanic.log import logger
 
+from api import NodeContext
+
 from ..native_graph import graph
 from ..tensorrt import drft
 from ..tensorrt.dual import export_manifest
 from .autocast import mixed_precision
+from .frozen_grid import FrozenGrid, find_frozen_grid
 from .model import (
     ARCH_METADATA_KEY,
-    FP16_ARCHS,
     MIXED,
+    NO_RECORD_ARCH,
+    PRECISION_METADATA_KEY,
     SIZE_REQ_METADATA_KEY,
     OnnxGeneric,
     OnnxInfo,
@@ -50,8 +54,10 @@ class ModelFacts:
     # The PyTorch model's size requirement, which Convert To ONNX records; None for any
     # other
     size_req: SizeReq | None = None
-    # The architecture Convert To ONNX records for FP16_ARCHS; None for any other
-    arch: str | None = None
+    # The architecture and precision Convert To ONNX records; None for any other
+    recorded: tuple[str, str] | None = None
+    # DySample's sampling grid frozen at one size; None for any other
+    frozen_grid: FrozenGrid | None = None
 
 
 # The facts load_onnx_model found while it parsed each model, so that its sessions and
@@ -70,6 +76,7 @@ def _facts_of(model: onnx.ModelProto) -> ModelFacts:
         drft.export_manifest(model),
         _recorded_size_req(model),
         _recorded_arch(model),
+        find_frozen_grid(model),
     )
 
 
@@ -93,26 +100,40 @@ def _recorded_size_req(model: onnx.ModelProto) -> SizeReq | None:
     return None
 
 
-def _recorded_arch(model: onnx.ModelProto) -> str | None:
-    """The architecture Convert To ONNX recorded in `model`'s metadata, if any. An entry
-    it cannot have written (edited, or another tool's) is logged and left out, and the
-    model is one with no record: Build Engine and Build Program show its Precision."""
-    for entry in model.metadata_props:
-        if entry.key == ARCH_METADATA_KEY:
-            if entry.value in FP16_ARCHS:
-                return entry.value
-            logger.warning(
-                f"The ONNX model {model.graph.name!r} has an unknown {entry.key} entry"
-                f" {entry.value!r}; it is treated as one without that entry."
-            )
-            return None
+def _recorded_arch(model: onnx.ModelProto) -> tuple[str, str] | None:
+    """The architecture and precision Convert To ONNX recorded in `model`'s metadata, if
+    any; an architecture alone is a released version's record, which means FP16. An entry
+    it cannot have written (edited, or another tool's, or one that kept the metadata and
+    changed the precision: an FP16 export has an FP16 input or output, whichever its first
+    layer takes, and an FP32 one neither) is logged and left out, and the model is one
+    with no record: Build Engine and Build Program show its Precision."""
+    entries = {entry.key: entry.value for entry in model.metadata_props}
+    arch = entries.get(ARCH_METADATA_KEY)
+    if arch is None:
+        return None
+    precision = entries.get(PRECISION_METADATA_KEY, "fp16")
+    has_fp16 = any(
+        value.type.tensor_type.elem_type == onnx.TensorProto.FLOAT16
+        for value in (*model.graph.input, *model.graph.output)
+    )
+    if (
+        arch not in ("", "DUAL", NO_RECORD_ARCH)
+        and precision in ("fp16", "fp32")
+        and has_fp16 == (precision == "fp16")
+    ):
+        return arch, precision
+    logger.warning(
+        f"The ONNX model {model.graph.name!r} records architecture {arch!r} and precision"
+        f" {precision!r}, which it cannot be; it is treated as one without a record."
+    )
     return None
 
 
-def with_recorded_arch(onnx_bytes: bytes, arch: str) -> bytes:
-    """The ONNX with its PyTorch model's architecture in its metadata."""
+def with_recorded_arch(onnx_bytes: bytes, arch: str, precision: str) -> bytes:
+    """The ONNX with its PyTorch model's architecture and its precision in its metadata."""
     model = onnx.load_model_from_string(onnx_bytes)
     model.metadata_props.add(key=ARCH_METADATA_KEY, value=arch)
+    model.metadata_props.add(key=PRECISION_METADATA_KEY, value=precision)
     return model.SerializeToString()
 
 
@@ -129,18 +150,35 @@ def model_facts(model: OnnxModel) -> ModelFacts:
     return facts
 
 
+def warn_if_grid_frozen(context: NodeContext, model: OnnxModel, subject: str) -> None:
+    """A warning, not a refusal: the model is right at the one size, and its weights may
+    be all there is of it."""
+    grid = model_facts(model).frozen_grid
+    if grid is not None:
+        size = "the one it was converted at"
+        if grid.right_at is not None:
+            size = f"{grid.right_at[0]}x{grid.right_at[1]}"
+        context.warn(
+            f"{subject} samples wrongly at every size but {size}, with no error: its"
+            " conversion froze DySample's sampling grid. It must be converted again from"
+            " the PyTorch model (Convert To ONNX)."
+        )
+
+
 def load_onnx_model(model_or_bytes: onnx.ModelProto | bytes) -> OnnxModel:
     parsed: list[ModelFacts] = []
 
     def fp_datatype(model: onnx.ModelProto) -> str:
         """A DUAL or legacy DRFT ONNX from Convert To ONNX keeps its own mixed
-        precision (a BF16 or FP16 body, FP32 input and output), as does one Convert To ONNX made
-        mixed with ModelOpt ("mixed-fp16" or "mixed-bf16"); any other model has one.
+        precision (a BF16 or FP16 body, FP32 input and output), as does one an earlier version
+        made mixed with ModelOpt ("mixed-fp16" or "mixed-bf16"); any other model has one.
         Called once with the parsed model, it also keeps the model's facts."""
         facts = _facts_of(model)
         parsed.append(facts)
         if facts.dual_manifest is not None or facts.drft_manifest is not None:
             return MIXED
+        if facts.recorded is not None:
+            return facts.recorded[1]
         return mixed_precision(model) or get_tensor_fp_datatype(model)
 
     def detect_size_req(infer: ModelShapeInference):
@@ -168,13 +206,6 @@ def load_onnx_model(model_or_bytes: onnx.ModelProto | bytes) -> OnnxModel:
     )
     (facts,) = parsed
     _facts[loaded] = facts
-    if facts.arch is not None:
-        # Another tool can change the precision and keep the metadata.
-        if loaded.info.dtype == "fp16":
-            loaded.info.arch = facts.arch
-        else:
-            logger.warning(
-                f"The ONNX model records {facts.arch}, which converts in FP16, but is"
-                f" {loaded.info.dtype}; its record is left out."
-            )
+    if facts.recorded is not None:
+        loaded.info.arch = facts.recorded[0]
     return loaded

@@ -13,9 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* A numerical failure has a distinct bridge mapping to the original cv2.error. */
-#define CN_KMEANS_NO_CONVERGENCE 5
-
 static uint32_t random_u32(uint64_t *state) {
     *state = (uint64_t)(uint32_t)*state * UINT32_C(4164903690) +
              (uint32_t)(*state >> 32);

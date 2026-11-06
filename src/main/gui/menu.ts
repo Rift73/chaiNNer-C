@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-misused-promises */
 import { shell } from 'electron/common';
 import { Menu, MenuItemConstructorOptions, app, dialog } from 'electron/main';
+import { t } from 'i18next';
 import os from 'os';
 import path from 'path';
 import { links } from '../../common/links';
@@ -31,7 +32,9 @@ export const setMainMenu = ({ mainWindow, menuData, enabled = false }: MainMenuA
         const response = await dialog.showMessageBox(mainWindow, {
             title: 'About chaiNNer',
             message: `chaiNNer v${chainnerCVersion}${
-                isDevelopmentBuild(buildInfo) ? ' (development build)' : ''
+                isDevelopmentBuild(buildInfo)
+                    ? ` ${t('menu.developmentBuild', '(development build)')}`
+                    : ''
             }`,
             detail: `chaiNNer is an open source (GPLv3 licensed) tool created by @joeyballentine, with support from other community members. Support the project by donating to my Ko-Fi via the button below. Also, many thanks to these members specifically: @RunDevelopment and @theflyingzamboni for ongoing development, and @Kim2091 for testing.`,
             buttons: ['Open Ko-Fi', 'Close'],
@@ -437,7 +440,7 @@ export const setMainMenu = ({ mainWindow, menuData, enabled = false }: MainMenuA
                     },
                 },
                 {
-                    label: 'Check for Updates...',
+                    label: t('menu.checkForUpdates', 'Check for Updates...'),
                     click: () => {
                         mainWindow.webContents.send('check-for-updates');
                     },

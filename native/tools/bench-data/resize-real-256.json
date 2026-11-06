@@ -104,7 +104,19 @@
         },
         {
           "type": "value",
+          "value": 2
+        },
+        {
+          "type": "value",
+          "value": 3
+        },
+        {
+          "type": "value",
           "value": 0
+        },
+        {
+          "type": "value",
+          "value": null
         }
       ],
       "parent": null,
@@ -137,6 +149,10 @@
         {
           "type": "value",
           "value": 256
+        },
+        {
+          "type": "value",
+          "value": 0
         },
         {
           "type": "value",
@@ -182,6 +198,14 @@
         {
           "type": "value",
           "value": 1.0
+        },
+        {
+          "type": "value",
+          "value": 0
+        },
+        {
+          "type": "value",
+          "value": 1
         }
       ],
       "parent": null,

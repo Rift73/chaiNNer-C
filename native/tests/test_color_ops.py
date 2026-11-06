@@ -186,8 +186,22 @@ def test_auto_threshold(channels, method, shape):
     current, reference = MODULES["generate_threshold"][0], AUTO_THRESHOLD_REFERENCE
     img = image(channels, "readonly", shape)
     actual = current.generate_threshold_node(img, current.AutoThreshold(method))
-    expected = reference.generate_threshold_node(img, reference.AutoThreshold(method))
+    # Judged, not upstream's: four channels are colour and alpha, and alpha is no brightness.
+    colours = img[:, :, :3] if channels == 4 else img
+    expected = reference.generate_threshold_node(colours, reference.AutoThreshold(method))
     equal(actual, expected)
+
+
+@pytest.mark.parametrize("method", [0, 1])
+@pytest.mark.parametrize("alpha", [0.0, 0.5, 1.0])
+def test_auto_threshold_of_rgba_ignores_alpha(method, alpha):
+    # Dark bimodal colours, at 0.1 and 0.3: opaque alpha would lift them to 0.325 and 0.475 in the mean.
+    current = MODULES["generate_threshold"][0]
+    rgb = np.where(np.arange(64 * 64).reshape(64, 64, 1) % 3 == 0, 0.1, 0.3).astype(np.float32) * np.ones(3, np.float32)
+    rgba = np.dstack([rgb, np.full((64, 64), alpha, np.float32)])
+    assert current.generate_threshold_node(rgba, current.AutoThreshold(method)) == current.generate_threshold_node(
+        rgb, current.AutoThreshold(method)
+    )
 
 
 @pytest.mark.parametrize("value", [0, 1, 0.5, -0.1, 1.2, np.nan, np.inf])
@@ -394,7 +408,7 @@ def test_parallel_concurrent_pipelines():
         current, reference = MODULES["generate_threshold"][0], AUTO_THRESHOLD_REFERENCE
         equal(
             current.generate_threshold_node(img, current.AutoThreshold.OTSU),
-            reference.generate_threshold_node(img, reference.AutoThreshold.OTSU),
+            reference.generate_threshold_node(img[:, :, :3], reference.AutoThreshold.OTSU),
         )
         current, reference = MODULES["metal_to_specular"]
         metal = img[:, :, 0]

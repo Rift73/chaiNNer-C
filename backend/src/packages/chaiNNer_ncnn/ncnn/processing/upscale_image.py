@@ -23,6 +23,7 @@ from nodes.impl.upscale.auto_split_tiles import (
     parse_tile_size_input,
 )
 from nodes.impl.upscale.convenient_upscale import convenient_upscale
+from nodes.impl.upscale.tile_report import TileReport
 from nodes.impl.upscale.tiler import MaxTileSize
 from nodes.properties.inputs import (
     BoolInput,
@@ -31,7 +32,7 @@ from nodes.properties.inputs import (
     NumberInput,
     TileSizeDropdown,
 )
-from nodes.properties.outputs import ImageOutput
+from nodes.properties.outputs import ImageOutput, TextOutput
 from nodes.utils.utils import get_h_w_c
 from system import is_mac
 
@@ -84,6 +85,7 @@ def upscale_impl(
     collect_after: bool = True,
     swap_red_blue: bool = False,
     progress: Progress | None = None,
+    report: TileReport | None = None,
 ):
     net = get_ncnn_net(model, settings=settings)
     on_vulkan = use_gpu and settings.gpu_index != CPU_DEVICE
@@ -134,6 +136,7 @@ def upscale_impl(
                     size_multiple=model.size_multiple,
                     swap_red_blue=swap_red_blue,
                     progress=progress,
+                    report=report,
                 )
         else:
             result = ncnn_auto_split(
@@ -148,6 +151,7 @@ def upscale_impl(
                 size_multiple=model.size_multiple,
                 swap_red_blue=swap_red_blue,
                 progress=progress,
+                report=report,
             )
     except Aborted:
         raise
@@ -216,7 +220,14 @@ def upscale_impl(
             )
         ),
     ],
-    outputs=[ImageOutput(image_type="convenientUpscale(Input0, Input1)")],
+    outputs=[
+        ImageOutput(image_type="convenientUpscale(Input0, Input1)"),
+        TextOutput("Tile Size").with_docs(
+            "The size of the tiles the model ran, with their overlap and after any cut for"
+            " lack of memory, or Whole image. For an image that takes several passes"
+            " (transparency, Separate Alpha), the last pass's."
+        ),
+    ],
     limited_to_8bpc=True,
     node_context=True,
 )
@@ -227,9 +238,10 @@ def upscale_image_node(
     tile_size: TileSize,
     custom_tile_size: int,
     separate_alpha: bool,
-) -> np.ndarray:
+) -> tuple[np.ndarray, str]:
     settings = get_settings(context)
     context.add_cleanup(_collect_garbage, after="chain")
+    report = TileReport()
 
     def upscale(i: np.ndarray) -> np.ndarray:
         ic = get_h_w_c(i)[2]
@@ -249,9 +261,11 @@ def upscale_image_node(
             collect_after=False,
             swap_red_blue=True,
             progress=context,
+            report=report,
         )
 
-    return convenient_upscale(img, model.in_nc, model.out_nc, upscale, separate_alpha)
+    image = convenient_upscale(img, model.in_nc, model.out_nc, upscale, separate_alpha)
+    return image, report.text
 
 
 def _collect_garbage() -> None:

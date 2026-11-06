@@ -1,7 +1,7 @@
 /* eslint-disable prefer-destructuring */
 /* eslint-disable no-param-reassign */
 
-import { Edge, Node, Viewport, getConnectedEdges, getOutgoers } from 'reactflow';
+import { Edge, Node, Viewport } from 'reactflow';
 import semver from 'semver';
 import {
     ColorJson,
@@ -379,19 +379,25 @@ const onnxConvertUpdate: ModernMigration = (data) => {
         return [newID, newNode, newEdge] as const;
     };
 
+    const getConnectedEdges = (nodeId: string): E[] => {
+        return data.edges.filter((edge) => edge.source === nodeId || edge.target === nodeId);
+    };
+
     const edgesToRemove: E[] = [];
     const nodesToRemove: N[] = [];
     data.nodes.forEach((node) => {
         if (node.data.schemaId === 'chainner:pytorch:convert_to_onnx') {
-            const connectedEdges = getConnectedEdges([node], data.edges);
-            const nameInputEdge = connectedEdges.find((edge) => {
+            const nameInputEdge = getConnectedEdges(node.id).find((edge) => {
                 return edge.targetHandle === `${node.id}-2`;
             });
 
-            const downstreamNodes = getOutgoers(node, data.nodes, data.edges);
+            const downstreamIds = data.edges
+                .filter((edge) => edge.source === node.id)
+                .map((edge) => edge.target);
+            const downstreamNodes = data.nodes.filter((n) => downstreamIds.includes(n.id));
             downstreamNodes.forEach((downstreamNode) => {
                 if (downstreamNode.data.schemaId === 'chainner:onnx:load_model') {
-                    const edgesConnectedToLoad = getConnectedEdges([downstreamNode], data.edges);
+                    const edgesConnectedToLoad = getConnectedEdges(downstreamNode.id);
                     edgesConnectedToLoad.forEach((loadEdge) => {
                         if (loadEdge.target === downstreamNode.id) {
                             edgesToRemove.push(loadEdge);
@@ -2120,6 +2126,30 @@ const loadVideoFrames: ModernMigration = (data) => {
     return data;
 };
 
+const convertToOnnxMixedTypes: ModernMigration = (data) => {
+    // Convert To ONNX's Mixed FP16 and Mixed BF16 (Data Type 2 and 3) and their Calibration Image
+    // (input 7) are gone. Data Type is hidden and its value ignored, so any value it still has will do.
+    const convertIds = new Set<string>();
+    data.nodes.forEach((node) => {
+        if (node.data.schemaId === 'chainner:pytorch:convert_to_onnx') {
+            convertIds.add(node.id);
+            const inputData = node.data.inputData;
+            if (Number(inputData[1]) > 1) {
+                inputData[1] = 0;
+            }
+            delete inputData[7];
+        }
+    });
+
+    // an edge into Calibration Image has no input left to go to
+    data.edges = data.edges.filter((edge) => {
+        if (!convertIds.has(edge.target) || !edge.targetHandle) return true;
+        return parseTargetHandle(edge.targetHandle).inputId !== 7;
+    });
+
+    return data;
+};
+
 // ==============
 
 const versionToMigration = (version: string) => {
@@ -2183,6 +2213,7 @@ const migrations = [
     newIteratorToGenerator,
     splitLoadImagePairs,
     loadVideoFrames,
+    convertToOnnxMixedTypes,
 ];
 
 export const currentMigration = migrations.length;

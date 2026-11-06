@@ -3242,10 +3242,37 @@ def f26_outputs(case):
     }
 
 
+def judged_blend_outputs(case):
+    """The judged modes of reference_blend (Color Burn, Color Dodge, Vivid Light and
+    Divide, whose corners and whose clip before the mix differ from B3's record): the
+    reference's outputs; None for every other case."""
+    if case.entry in golden_kernels.KERNEL_ENTRIES["blend"]:
+        upstream = upstream_blend
+    elif case.entry == golden_kernels.COMPOSITE_ENTRY:
+        upstream = upstream_composite
+    else:
+        return None
+    judged = (
+        reference_blend.BlendMode.COLOR_BURN,
+        reference_blend.BlendMode.COLOR_DODGE,
+        reference_blend.BlendMode.VIVID_LIGHT,
+        reference_blend.BlendMode.DIVIDE,
+    )
+    if case.args["mode"] not in [mode.value for mode in judged]:
+        return None
+    return {"out": digest(upstream(case), case.payloads)}
+
+
 def current_outputs(case, outputs):
     """A manifest case's outputs on the current DLL: B3's record (outputs), except
-    the independent F26 saturation or D-17.1 signed-zero reference."""
-    return f26_outputs(case) or d17_outputs(case, outputs) or outputs
+    the independent F26 saturation, judged blend modes or D-17.1 signed-zero
+    reference."""
+    return (
+        f26_outputs(case)
+        or judged_blend_outputs(case)
+        or d17_outputs(case, outputs)
+        or outputs
+    )
 
 
 @pytest.mark.parametrize("level", range(len(native.ISA_LEVELS)), ids=native.ISA_LEVELS)
@@ -3270,7 +3297,7 @@ def test_current_dll_matches_the_b3_manifest(kernel, level):
 
 
 @pytest.mark.parametrize("level", range(len(native.ISA_LEVELS)), ids=native.ISA_LEVELS)
-@pytest.mark.parametrize("kernel,count", [("blend", 20), ("composite", 16)])
+@pytest.mark.parametrize("kernel,count", [("blend", 14), ("composite", 14)])
 def test_d17_cases_give_upstreams_clip(kernel, count, level):
     effective, _, cpu = isa_get()
     if level > cpu:

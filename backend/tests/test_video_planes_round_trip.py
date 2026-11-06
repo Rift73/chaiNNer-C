@@ -31,6 +31,7 @@ from nodes.impl.colour_info import (
     Transfer,
     VideoMode,
     code_to_float,
+    float_to_code,
 )
 from nodes.impl.ffmpeg import get_executable_path
 from nodes.impl.plane_resample import Kernel, resample_plane
@@ -42,6 +43,8 @@ from packages.chaiNNer_standard.image.video_frames.load_video import (
 from packages.chaiNNer_standard.image.video_frames.save_video import (
     AudioSettings,
     BitDepth,
+    NvencPreset,
+    ProResProfile,
     SimpleVideoFormat,
     Simplicity,
     SitingCorrection,
@@ -51,6 +54,12 @@ from packages.chaiNNer_standard.image.video_frames.save_video import (
     VideoPreset,
     save_video_node,
 )
+from packages.chaiNNer_standard.image_channel.all.planes_to_rgb import (
+    planes_to_rgb_node,
+)
+
+# The inputs of the encoders these tests do not use (AV1, ProRes, NVENC).
+OTHER_ENCODERS = (8, 35, ProResProfile.HQ, NvencPreset.P4, 23, 30)
 
 FFMPEG, FFPROBE = map(str, get_executable_path(STORAGE / "ffmpeg"))
 # The local gates' FFmpeg (native/tools/bench_oracle.py), a newer FFmpeg than the
@@ -142,6 +151,7 @@ def save(
         encoder,
         VideoPreset.ULTRA_FAST,
         0,
+        *OTHER_ENCODERS,
         additional,
         SimpleVideoFormat.MP4_H264,
         75,
@@ -644,6 +654,7 @@ def test_encoders_refuse_pixel_formats_they_cannot_write(tmp_path: Path):
         VideoEncoder.H264,
         VideoPreset.ULTRA_FAST,
         23,
+        *OTHER_ENCODERS,
         None,
         SimpleVideoFormat.MP4_H264,
         75,
@@ -701,3 +712,314 @@ def test_hdr10_metadata_round_trips_through_h265(tmp_path: Path):
         Primaries.BT2020,
         10,
     )
+
+
+BT709 = (0.2126, 0.0722)
+
+
+def coded(
+    depth: int, colour_range: str, seed: int = 1
+) -> tuple[list[np.ndarray], np.ndarray]:
+    """In-gamut BT.709 Y, U and V codes (a neutral ramp in the first rows, then random
+    colours) and the exact float BGR image they code, by the matrix's own arithmetic."""
+    rng = np.random.default_rng(seed)
+    rgb = rng.random((64, 256, 3))
+    rgb[:8] = np.linspace(0, 1, 256)[None, :, None]
+    kr, kb = BT709
+    kg = 1 - kr - kb
+    r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    y = kr * r + kg * g + kb * b
+    u, v = (b - y) / (2 * (1 - kb)), (r - y) / (2 * (1 - kr))
+    mid = 1 << (depth - 1)
+    step = 1 << (depth - 8)
+    if colour_range == "pc":
+        top = (1 << depth) - 1
+        codes = [y * top, u * top + mid, v * top + mid]
+    else:
+        codes = [y * 219 * step + 16 * step, u * 224 * step + mid, v * 224 * step + mid]
+    planes = [np.round(code).astype(np.int64) for code in codes]
+    if colour_range == "pc":
+        top = (1 << depth) - 1
+        y2 = planes[0] / top
+        u2, v2 = (planes[1] - mid) / top, (planes[2] - mid) / top
+    else:
+        y2 = (planes[0] - 16 * step) / (219 * step)
+        u2, v2 = (planes[1] - mid) / (224 * step), (planes[2] - mid) / (224 * step)
+    r2 = y2 + 2 * (1 - kr) * v2
+    b2 = y2 + 2 * (1 - kb) * u2
+    g2 = (y2 - kr * r2 - kb * b2) / kg
+    return planes, np.dstack((b2, g2, r2))
+
+
+def coded_file(
+    path: Path, depth: int, colour_range: str
+) -> tuple[list[np.ndarray], np.ndarray]:
+    planes, image = coded(depth, colour_range)
+    fmt = "yuv444p" if depth == 8 else f"yuv444p{depth}le"
+    dtype = np.uint8 if depth == 8 else np.dtype("<u2")
+    data = b"".join(plane.astype(dtype).tobytes() for plane in planes)
+    ffmpeg(
+        *("-f", "rawvideo", "-pix_fmt", fmt, "-s", "256x64", "-r", "5"),
+        *("-color_range", colour_range, "-colorspace", "bt709", "-i", "pipe:"),
+        *("-c:v", "ffv1", "-pix_fmt", fmt, "-color_range", colour_range),
+        *("-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"),
+        *("-chroma_sample_location", "left", str(path)),
+        data=data,
+    )
+    return planes, image
+
+
+@pytest.mark.parametrize("cli", [False, True])
+@pytest.mark.parametrize("colour_range", ["tv", "pc"])
+@pytest.mark.parametrize("depth", [8, 9, 10, 12, 14, 16])
+def test_float_rgb_is_the_exact_matrix_at_every_depth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    depth: int,
+    colour_range: str,
+    cli: bool,
+):
+    """libswscale's float RGB reaches 65280 / 65535 at white (0.9961 at 8 bits): 1 of 255
+    too dark at the top, where the 8-bit reading is right."""
+    if cli:
+        monkeypatch.setenv("CHAINNER_C_VIDEO_READER", "cli")
+    else:
+        monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    path = tmp_path / "coded.mkv"
+    _, exact = coded_file(path, depth, colour_range)
+    items, _ = load(path, VideoMode.RGB)
+    frame = items[0][0].astype(np.float64)
+    inside = (exact >= 0) & (exact <= 1)
+    assert np.abs(frame - exact)[inside].max() <= 1e-4
+    # The ramp's last column is white.
+    assert np.abs(frame[0, -1] - 1).max() <= 1e-4
+    assert frame.max() <= 1
+
+
+@pytest.mark.parametrize(
+    ("source", "options", "depth"),
+    [
+        ("gray", ("-c:v", "ffv1", "-pix_fmt", "gray"), 8),
+        ("gray10le", ("-c:v", "ffv1", "-pix_fmt", "gray10le"), 10),
+        ("gray12le", ("-c:v", "ffv1", "-pix_fmt", "gray12le"), 12),
+        ("gray16le", ("-c:v", "ffv1", "-pix_fmt", "gray16le"), 16),
+        ("gbrp", ("-c:v", "ffv1", "-pix_fmt", "bgr0"), 8),
+        ("gbrp", ("-c:v", "png", "-pix_fmt", "rgb24"), 8),
+        ("gbrp10le", ("-c:v", "ffv1", "-pix_fmt", "gbrp10le"), 10),
+        ("gbrp12le", ("-c:v", "ffv1", "-pix_fmt", "gbrp12le"), 12),
+        ("gbrp16le", ("-c:v", "ffv1", "-pix_fmt", "gbrp16le"), 16),
+    ],
+    ids=[
+        "gray8",
+        "gray10",
+        "gray12",
+        "gray16",
+        "bgr0",
+        "rgb24",
+        "gbrp10",
+        "gbrp12",
+        "gbrp16",
+    ],
+)
+def test_float_rgb_of_gray_and_rgb_coded_video_is_code_over_top(
+    tmp_path: Path, source: str, options: tuple[str, ...], depth: int
+):
+    top = (1 << depth) - 1
+    codes = np.linspace(0, top, 256).round().astype(np.uint16)
+    dtype = np.uint8 if depth == 8 else np.dtype("<u2")
+    plane = np.tile(codes.astype(dtype), (4, 1)).tobytes()
+    data = plane if source.startswith("gray") else plane * 3
+    path = tmp_path / "ramp.mkv"
+    ffmpeg(
+        *(
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            source,
+            "-s",
+            "256x4",
+            "-r",
+            "5",
+            "-i",
+            "pipe:",
+        ),
+        *options,
+        str(path),
+        data=data,
+    )
+    items, _ = load(path, VideoMode.RGB)
+    row = items[0][0][2].astype(np.float64)
+    assert np.abs(row - (codes / top)[:, None]).max() <= 1e-4
+    assert np.abs(row[-1] - 1).max() <= 1e-4
+
+
+def reread_codes(path: Path) -> tuple[list[np.ndarray], ColourInfo]:
+    items, colour = load(path, VideoMode.PLANES)
+    return [
+        float_to_code(plane, colour.bit_depth, colour.full_range, k > 0)
+        for k, plane in enumerate(items[0][2:])
+    ], colour
+
+
+@pytest.mark.parametrize(("colour_range", "flips"), [("tv", 0.001), ("pc", 0.015)])
+def test_8_bit_video_to_video_keeps_its_luma_codes(
+    tmp_path: Path, colour_range: str, flips: float
+):
+    """Load Video in Float RGB, then Save Video's RGB pipe into the same 8-bit format:
+    read and write are corrected together. Y codes flip by one where libswscale's RGB to
+    Y rounds them so, as it does for the exact image: about 7 of 16,384 at limited range,
+    none of them neutral, and 215 at full range, as many as before the correction."""
+    path = tmp_path / "coded.mkv"
+    planes, _ = coded_file(path, 8, colour_range)
+    items, colour = load(path, VideoMode.RGB)
+    saved = save(
+        tmp_path,
+        [(item[0], None, None, None) for item in items],
+        VideoInputMode.RGB,
+        colour,
+        additional="-pix_fmt yuv444p",
+    )
+    (y, *_), again = reread_codes(saved)
+    assert again.full_range == (colour_range == "pc")
+    moved = y.astype(np.int64) - planes[0]
+    assert colour_range == "pc" or not moved[:8].any()
+    assert np.abs(moved).max() <= 1
+    assert np.count_nonzero(moved) <= flips * moved.size
+
+
+@pytest.mark.parametrize("colour_range", ["tv", "pc"])
+@pytest.mark.parametrize("depth", [8, 10, 16])
+def test_the_exact_image_saves_as_its_codes(
+    tmp_path: Path, depth: int, colour_range: str
+):
+    """Save Video's RGB pipe against the matrix: white was 236 at 8 bits, limited range."""
+    path = tmp_path / "coded.mkv"
+    planes, exact = coded_file(path, depth, colour_range)
+    _, colour = load(path, VideoMode.RGB)
+    fmt = "yuv444p" if depth == 8 else f"yuv444p{depth}le"
+    saved = save(
+        tmp_path,
+        [(exact.clip(0, 1).astype(np.float32), None, None, None)],
+        VideoInputMode.RGB,
+        colour,
+        additional=f"-pix_fmt {fmt}",
+    )
+    codes, _ = reread_codes(saved)
+    step = 1 << (depth - 8)
+    assert codes[0].dtype == (np.uint8 if depth == 8 else np.uint16)
+    assert np.abs(codes[0].astype(np.int64) - planes[0]).max() <= max(1, step // 64)
+    white = (1 << depth) - 1 if colour_range == "pc" else 235 * step
+    assert abs(int(codes[0][0, -1]) - white) <= max(1, step // 64)
+
+
+def test_planes_to_rgb_is_untouched_and_agrees_with_float_rgb(tmp_path: Path):
+    """Planes mode and Planes to RGB never went through libswscale's scale: the codes and
+    the exact matrix, with float RGB now equal to them."""
+    path = tmp_path / "coded.mkv"
+    planes, exact = coded_file(path, 8, "tv")
+    items, colour = load(path, VideoMode.PLANES)
+    for k, plane in enumerate(items[0][2:]):
+        np.testing.assert_array_equal(
+            float_to_code(plane, 8, False, k > 0), planes[k].astype(np.uint8)
+        )
+    image, _, _ = planes_to_rgb_node(*items[0][2:], colour, *AUTO, next(iter(Kernel)))
+    inside = (exact >= 0) & (exact <= 1)
+    assert np.abs(image.astype(np.float64) - exact)[inside].max() <= 1e-5
+    rgb, _ = load(path, VideoMode.RGB)
+    assert np.abs(rgb[0][0].astype(np.float64) - image)[inside].max() <= 1e-4
+
+
+def gray_ramp(path: Path, depth: int, colour_range: str) -> np.ndarray:
+    """A gray FFV1 file holding a ramp with the range's black and white codes in it, tagged
+    with `colour_range`; returns the codes."""
+    top = (1 << depth) - 1
+    step = 1 << (depth - 8)
+    marks = [0, 16 * step, 235 * step, top]
+    codes = np.unique(np.concatenate((marks, np.linspace(0, top, 256).round()))).astype(
+        np.int64
+    )
+    dtype = np.uint8 if depth == 8 else np.dtype("<u2")
+    source = "gray" if depth == 8 else f"gray{depth}le"
+    ffmpeg(
+        *("-f", "rawvideo", "-pix_fmt", source, "-s", f"{codes.size}x4", "-r", "5"),
+        *("-color_range", colour_range, "-i", "pipe:"),
+        *("-c:v", "ffv1", "-pix_fmt", source, "-color_range", colour_range, str(path)),
+        data=np.tile(codes.astype(dtype), (4, 1)).tobytes(),
+    )
+    return codes
+
+
+def exact_levels(codes: np.ndarray, depth: int, limited: bool) -> np.ndarray:
+    step = 1 << (depth - 8)
+    black, white = (16 * step, 235 * step) if limited else (0, (1 << depth) - 1)
+    return np.clip((codes - black) / (white - black), 0, 1)
+
+
+@pytest.mark.parametrize("cli", [False, True])
+@pytest.mark.parametrize("colour_range", ["tv", "pc"])
+@pytest.mark.parametrize("depth", [8, 10, 12, 16])
+def test_float_rgb_of_gray_video_is_the_exact_range_mapping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    depth: int,
+    colour_range: str,
+    cli: bool,
+):
+    """libswscale's gray path converts no range, with or without in_range: limited-range
+    gray read code 16 as 0.0627 and 235 as 0.9216."""
+    if cli:
+        monkeypatch.setenv("CHAINNER_C_VIDEO_READER", "cli")
+    else:
+        monkeypatch.delenv("CHAINNER_C_VIDEO_READER", raising=False)
+    path = tmp_path / "ramp.mkv"
+    codes = gray_ramp(path, depth, colour_range)
+    items, colour = load(path, VideoMode.RGB)
+    assert colour.full_range == (colour_range == "pc")
+    row = items[0][0][2].astype(np.float64)
+    exact = exact_levels(codes, depth, colour_range == "tv")
+    assert np.abs(row - exact[:, None]).max() <= 1e-4
+    assert row.min() == 0
+    assert abs(row.max() - 1) <= 1e-6
+
+
+@pytest.mark.parametrize(
+    ("colour_range", "chosen", "limited"),
+    [("pc", Range.LIMITED, True), ("tv", Range.FULL, False)],
+)
+def test_a_chosen_range_sets_how_gray_reads(
+    tmp_path: Path, colour_range: str, chosen: Range, limited: bool
+):
+    path = tmp_path / "ramp.mkv"
+    codes = gray_ramp(path, 10, colour_range)
+    choices = (*AUTO[:3], chosen, AUTO[4])
+    items, _ = load(path, VideoMode.RGB, RgbPrecision.FLOAT, choices)
+    row = items[0][0][2].astype(np.float64)
+    assert np.abs(row - exact_levels(codes, 10, limited)[:, None]).max() <= 1e-4
+
+
+def test_8_bit_gray_stays_as_before(tmp_path: Path):
+    """8-bit (as before) reads every code as itself, limited range or not."""
+    path = tmp_path / "ramp.mkv"
+    codes = gray_ramp(path, 8, "tv")
+    items, _ = load(path, VideoMode.RGB, RgbPrecision.EIGHT_BIT)
+    np.testing.assert_array_equal(items[0][0][2][:, 0], codes)
+
+
+def test_limited_gray_saved_as_gray_keeps_its_picture(tmp_path: Path):
+    """FFmpeg writes gray output in full range whatever its tag asks: no inverse applies,
+    and the codes 16 to 235 become 0 to 255, the same picture to within libswscale's RGB
+    to gray rounding."""
+    path = tmp_path / "ramp.mkv"
+    codes = gray_ramp(path, 8, "tv")
+    items, _ = load(path, VideoMode.RGB)
+    saved = save(
+        tmp_path,
+        [(items[0][0], None, None, None)],
+        VideoInputMode.RGB,
+        None,
+        additional="-pix_fmt gray -color_range tv",
+    )
+    again, colour = load(saved, VideoMode.RGB)
+    assert colour.full_range
+    row = again[0][0][2].astype(np.float64)
+    assert np.abs(row - exact_levels(codes, 8, True)[:, None]).max() <= 1 / 255

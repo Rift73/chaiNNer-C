@@ -8,7 +8,7 @@ import sys
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import cv2
 import numpy as np
@@ -87,7 +87,7 @@ NATIVE = {
 @pytest.mark.parametrize("name", sorted(NATIVE))
 def test_load_image_matches(tmp_path, name):
     path = NATIVE[name](tmp_path / name)
-    outcome = assert_native_matches("chainner:image:load", [path])
+    outcome = assert_native_matches("chainner:image:load", [path, False])
     assert outcome[0] == "outputs"
 
 
@@ -104,7 +104,7 @@ def test_load_image_matches(tmp_path, name):
 )
 def test_load_image_declines_to_python(tmp_path, name, make):
     path = make(tmp_path / name)
-    assert_native_matches("chainner:image:load", [path], declines=True)
+    assert_native_matches("chainner:image:load", [path, False], declines=True)
 
 
 SAVE = "chainner:image:save"
@@ -123,7 +123,7 @@ def save_inputs(
 
     import packages.chaiNNer_standard.image.io.save_image as module
 
-    values = dict(
+    values: dict[str, object] = dict(
         lazy_image=img,
         base_directory=directory,
         relative_path=relative,
@@ -148,7 +148,10 @@ def save_inputs(
         dds_premultiply_alpha=False,
         dds_gpu=False,
         avif_chroma_subsampling=module.AvifSubsampling.FACTOR_420,
+        exr_color_depth=module.ExrColorDepth.F32,
+        exr_compression=module.ExrCompression.ZIP,
         skip_existing_files=False,
+        metadata=None,
     )
     for key, value in options.items():
         values[key] = getattr(module, value[0])[value[1]] if isinstance(value, tuple) else value
@@ -194,6 +197,8 @@ SAVE_CASES = [
     ("TIFF", {"tiff_compression": ("TiffCompression", "NONE")}),
     ("TIFF", {"tiff_compression": ("TiffCompression", "ZIP"), "tiff_color_depth": ("TiffColorDepth", "U16")}),
     ("TIFF", {"tiff_color_depth": ("TiffColorDepth", "F32")}),
+    ("EXR", {}),
+    ("EXR", {"exr_color_depth": ("ExrColorDepth", "F16"), "exr_compression": ("ExrCompression", "PIZ")}),
 ]
 
 
@@ -209,6 +214,34 @@ def test_save_image_writes_todays_bytes(tmp_path, fmt, options, channels):
     assert written[0] == written[1] and len(written[0]) == 1
 
 
+def test_load_image_gives_its_file_as_metadata_and_declines_conversion(tmp_path):
+    path = jpeg(tmp_path / "image.jpg")
+    outcome = assert_native_matches("chainner:image:load", [path, False])
+    assert cast("list[tuple[str, str]]", outcome[1])[3][1] == str(path)
+    assert_native_matches("chainner:image:load", [path, True], declines=True)
+
+
+def test_save_image_declines_metadata_to_the_python_body(tmp_path):
+    import api
+    import process
+    from native_differential import node_data
+    from nodes.impl.native_graph import graph
+
+    source = jpeg(tmp_path / "source.jpg", dpi=(300, 300))
+    inputs: Sequence[object] = save_inputs(
+        float_image(3), tmp_path / "out", metadata=source
+    )
+    enforced = process.enforce_inputs(
+        list(inputs), node_data(SAVE), api.NodeId("save"), []
+    )
+    with pytest.raises(graph().NativeDeclined):
+        graph().run_native(SAVE, enforced)
+    assert not (tmp_path / "out").exists()
+    run_save(inputs, False)
+    with Image.open(tmp_path / "out" / "image.png") as im:
+        assert im.info["dpi"] == pytest.approx((300, 300), abs=0.5)
+
+
 @pytest.mark.parametrize("fmt", ["GIF", "TGA", "AVIF", "DDS"])
 def test_save_image_declines_other_formats(tmp_path, fmt):
     from nodes.impl.native_graph import graph
@@ -219,7 +252,7 @@ def test_save_image_declines_other_formats(tmp_path, fmt):
 
 
 @pytest.mark.parametrize("channels", [2, 5, 15])
-@pytest.mark.parametrize("fmt", ["PNG", "JPG", "WEBP", "BMP", "TIFF", "GIF", "TGA", "AVIF"])
+@pytest.mark.parametrize("fmt", ["PNG", "JPG", "WEBP", "BMP", "TIFF", "GIF", "TGA", "AVIF", "EXR"])
 def test_save_image_refuses_plane_counts_no_format_holds(tmp_path, fmt, channels):
     # The engine's Image holds 1, 3 or 4 channels, so only the Python body meets these.
     inputs = save_inputs(float_image(channels), tmp_path, fmt=fmt)
@@ -402,6 +435,24 @@ def test_view_image_external_refuses_what_no_image_holds(planes):
     pixels = np.zeros((2, 2, planes), dtype=np.float32)
     with pytest.raises(RuntimeError, match="Viewing images"):
         graph().image_io_view({}, pixels)
+
+
+@pytest.mark.parametrize("planes", [2, 5])
+def test_view_image_refuses_what_its_previews_cannot_show(planes):
+    from packages.chaiNNer_standard.image.io.view_image import view_image_node
+
+    # 400 px: past the lossless first preview, the next one of 2 planes fails in the JPEG encoder.
+    with pytest.raises(ValueError, match="1, 3 or 4 channels"):
+        view_image_node(np.zeros((400, 400, planes), dtype=np.float32))
+
+
+@pytest.mark.parametrize("shape", [(400, 400), (400, 400, 1), (400, 400, 3), (400, 400, 4)])
+def test_view_image_previews_what_it_takes(shape):
+    from nodes.properties.outputs import LargeImageOutput
+    from packages.chaiNNer_standard.image.io.view_image import view_image_node
+
+    image = view_image_node(np.zeros(shape, dtype=np.float32))
+    assert len(LargeImageOutput().get_broadcast_data(image)["previews"]) == 2
 
 
 @pytest.mark.parametrize("shape", [(2, 2), (2, 2, 1), (2, 2, 3), (2, 2, 4)])

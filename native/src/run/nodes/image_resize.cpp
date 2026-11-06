@@ -67,21 +67,6 @@ double scaled_product(uint64_t mantissa_a, uint64_t mantissa_b, uint64_t factor,
     return std::ldexp(double(top), shift + exponent);
 }
 
-/* resize()'s memory check: new_w * new_h * c * 4 bytes against 16 GiB, with the message's round(.. / GB, 3). */
-void check_memory(Extent width, Extent height, int32_t channels)
-{
-    uint64_t factor = channels == 3 ? 3 : 1;
-    int exponent = width.exponent + height.exponent + (channels == 4 ? 4 : 2);
-    /* new_memory = width.mantissa * height.mantissa * factor * 2^exponent; the limit is 2^34. */
-    unsigned __int128 product = static_cast<unsigned __int128>(width.mantissa) * height.mantissa * factor;
-    bool over = exponent > 34 ? product != 0 : product > (static_cast<unsigned __int128>(1) << (34 - exponent));
-    if (!over) return;
-    double gigabytes = scaled_product(width.mantissa, height.mantissa, factor, exponent - 30);
-    if (std::isinf(gigabytes)) throw NodeError("OverflowError", "integer division result too large for a float");
-    throw NodeError("RuntimeError", "Resize would require " + python_repr(python_round3(gigabytes)) +
-                                        " GB of memory, but only 16 GB are allowed.");
-}
-
 /* The bridges' coordinate check, then the engine's image limit (decline: the body would return a larger image). */
 void check_target(uint64_t width, uint64_t height)
 {
@@ -133,6 +118,21 @@ MutableImage dpid(const Image &image, uint64_t width, uint64_t height, double la
 
 }  // namespace
 
+void check_image_memory(const char *name, Extent height, Extent width, int32_t channels)
+{
+    uint64_t factor = uint64_t(channels);
+    int exponent = width.exponent + height.exponent + 2;
+    for (; factor % 2 == 0; factor /= 2) ++exponent;
+    /* memory = width.mantissa * height.mantissa * factor * 2^exponent; the limit is 2^34. */
+    unsigned __int128 product = static_cast<unsigned __int128>(width.mantissa) * height.mantissa * factor;
+    bool over = exponent > 34 ? product != 0 : product > (static_cast<unsigned __int128>(1) << (34 - exponent));
+    if (!over) return;
+    double gigabytes = scaled_product(width.mantissa, height.mantissa, factor, exponent - 30);
+    throw NodeError("RuntimeError", std::string(name) + " would require " +
+                                        (std::isinf(gigabytes) ? "inf" : python_repr(python_round3(gigabytes))) +
+                                        " GB of memory, but only 16 GB are allowed.");
+}
+
 Extent Extent::of(int64_t value)
 {
     return Extent{uint64_t(value), 0};
@@ -152,12 +152,15 @@ Extent Extent::round_half_up(double value)
 Value resize(const Image &image, Extent width, Extent height, int64_t filter, bool separate_alpha,
              std::optional<int64_t> light, double dpid_lambda)
 {
-    check_memory(width, height, image.channels);
+    check_image_memory("Resize", height, width, image.channels);
     /* A dimension beyond 2^63 compares as UINT64_MAX: above every image size and coordinate limit. */
     uint64_t new_w = width.exponent ? std::numeric_limits<uint64_t>::max() : width.mantissa;
     uint64_t new_h = height.exponent ? std::numeric_limits<uint64_t>::max() : height.mantissa;
     uint64_t w = uint64_t(image.width), h = uint64_t(image.height);
     if (filter == filter_auto) filter = new_w > w || new_h > h ? filter_lanczos : filter_box;
+    /* The horizontal pass holds every source row at the new width, however few rows the result has. */
+    if (new_w > w && new_h > 0 && filter != filter_nearest && filter != filter_dpid)
+        check_image_memory("Resize", Extent::of(image.height), width, image.channels);
     if (new_w == w && new_h == h && (filter == filter_nearest || filter == filter_box || filter == filter_dpid))
         return image;
     if (filter == filter_nearest) {

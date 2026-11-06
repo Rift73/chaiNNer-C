@@ -7,7 +7,6 @@ import './i18n';
 import { LEVEL_NAME, log } from '../common/log';
 import { parseArgs } from './arguments';
 import { createCli } from './cli/create';
-import { runChainInCli } from './cli/run';
 import { createGuiApp } from './gui/create';
 import { getLogsFolder, getRootDir } from './platform';
 import { handleSquirrel } from './squirrel';
@@ -19,6 +18,8 @@ const startApp = () => {
     electronLog.transports.file.resolvePathFn = (variables) =>
         path.join(getLogsFolder(), variables.fileName!);
     electronLog.transports.file.level = 'info';
+    // A long batch outgrows the 1 MB default and loses its first lines to the rotation.
+    electronLog.transports.file.maxSize = 64 * 1024 * 1024;
     electronLog.transports.console.level = 'debug';
 
     log.addTransport({
@@ -70,7 +71,11 @@ const startApp = () => {
     if (args.command === 'open') {
         createGuiApp(args);
     } else {
-        createCli(() => runChainInCli(args));
+        // Only a run needs the type engine and its regex WebAssembly: a window launch does not load them.
+        createCli(async () => {
+            const { runChainInCli } = await import('./cli/run');
+            await runChainInCli(args);
+        });
     }
 };
 

@@ -2,7 +2,7 @@
  * BGR <-> Lab byte conversion. Sources: modules/photo/src/denoising.cpp,
  * fast_nlmeans_denoising_invoker{,_commons}.hpp; imgproc/src/color_lab.cpp;
  * core/src/softfloat.cpp. The mathematical integer-distance/weight contract
- * is retained; bounded row tiles and owned vectors replace cv::Mat/invokers.
+ * is retained; blocks of row tiles and owned buffers replace cv::Mat/invokers.
  * No OpenCV implementation or framework is called by these kernels.
  * Copyright (C) 2000, Intel Corporation, all rights reserved.
  * Redistribution and use in source and binary forms, with or without
@@ -29,6 +29,8 @@
  * OpenCV SoftFloat (Regents of the University of California, 2011-2017).
  * Full additional OpenCV/SoftFloat notices accompany chainner_native.LICENSE.txt.
  */
+#include "denoise_shared.h"
+#include "isa.h"
 #include "parallel.h"
 #include "run_kernels.h"
 #include <algorithm>
@@ -37,6 +39,7 @@
 #include <climits>
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <stdexcept>
 #include <vector>
@@ -145,111 +148,193 @@ void color_range(void *opaque, size_t begin, size_t end) {
         if (j.channels == 4) j.out[p*4+3] = j.src[p*4+3];
     }
 }
-struct Scratch { std::vector<int> columns; std::vector<uint32_t> sums; };
-struct NlmJob {
-    const Byte *padded;
-    Byte *out;
-    size_t height, width, padded_width, channels, tile_rows;
-    size_t tiles_per_chunk, extra_tiles;
-    int patch, search, border, shift;
-    const int *weights;
-    Scratch *scratch;
-};
-int distance(const Byte *a, const Byte *b, size_t channels) {
-    int sum = 0;
-    for (size_t c = 0; c < channels; ++c) { int d = a[c]-b[c]; sum += d*d; }
-    return sum;
+/* The scalar level's row functions: denoise_block_shared.h says what each one does. */
+template <size_t C> void column_add(uint32_t *columns, const Byte *row, ptrdiff_t displacement, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        const Byte *a = row+i*C;
+        for (size_t c = 0; c < C; ++c) { int d = a[c]-a[displacement+static_cast<ptrdiff_t>(c)]; columns[i] += static_cast<uint32_t>(d*d); }
+    }
 }
-void nlm_tiles(void *opaque, size_t begin, size_t end) noexcept {
-    const auto &j = *static_cast<NlmJob *>(opaque);
-    size_t stride = j.padded_width*j.channels;
-    size_t columns = j.width+static_cast<size_t>(j.patch)*2;
-    size_t patch_size = static_cast<size_t>(j.patch)*2+1;
-    auto &scratch = j.scratch[begin];
-    size_t first_tile = begin*j.tiles_per_chunk+std::min(begin,j.extra_tiles);
-    size_t last_tile = end*j.tiles_per_chunk+std::min(end,j.extra_tiles);
-    for (size_t tile = first_tile; tile < last_tile; ++tile) {
-        size_t first = tile*j.tile_rows, last = std::min(first+j.tile_rows, j.height);
-        std::fill(scratch.sums.begin(), scratch.sums.end(), 0);
-        for (int dy = -j.search; dy <= j.search; ++dy) {
-            for (int dx = -j.search; dx <= j.search; ++dx) {
-                ptrdiff_t displacement = static_cast<ptrdiff_t>(dy)*static_cast<ptrdiff_t>(stride) + dx*static_cast<ptrdiff_t>(j.channels);
-                std::fill(scratch.columns.begin(), scratch.columns.end(), 0);
-                for (size_t py = 0; py < patch_size; ++py) {
-                    const Byte *row = j.padded + (first+static_cast<size_t>(j.border-j.patch)+py)*stride + static_cast<size_t>(j.border-j.patch)*j.channels;
-                    for (size_t x = 0; x < columns; ++x) {
-                        const Byte *a = row+x*j.channels;
-                        scratch.columns[x] += distance(a, a+displacement, j.channels);
-                    }
-                }
-                for (size_t y = first; y < last; ++y) {
-                    if (y != first) {
-                        const Byte *up = j.padded+(y+static_cast<size_t>(j.border-j.patch)-1)*stride+static_cast<size_t>(j.border-j.patch)*j.channels;
-                        const Byte *down = up+patch_size*stride;
-                        for (size_t x = 0; x < columns; ++x) {
-                            const Byte *a = up+x*j.channels, *b = down+x*j.channels;
-                            scratch.columns[x] += distance(b,b+displacement,j.channels)-distance(a,a+displacement,j.channels);
-                        }
-                    }
-                    int patch_distance = 0;
-                    for (size_t x = 0; x < patch_size; ++x) patch_distance += scratch.columns[x];
-                    const Byte *candidate = j.padded+(y+static_cast<size_t>(j.border))*stride+static_cast<size_t>(j.border)*j.channels+displacement;
-                    for (size_t x = 0; x < j.width; ++x) {
-                        uint32_t weight = static_cast<uint32_t>(j.weights[patch_distance >> j.shift]);
-                        uint32_t *sum = scratch.sums.data()+((y-first)*j.width+x)*(j.channels+1);
-                        for (size_t c = 0; c < j.channels; ++c) sum[c] += weight*candidate[x*j.channels+c];
-                        sum[j.channels] += weight;
-                        if (x+1 < j.width) patch_distance += scratch.columns[x+patch_size]-scratch.columns[x];
-                    }
-                }
-            }
-        }
-        for (size_t p = 0; p < (last-first)*j.width; ++p) {
-            const uint32_t *sum = scratch.sums.data()+p*(j.channels+1);
-            uint32_t divisor = sum[j.channels];
-            for (size_t c = 0; c < j.channels; ++c)
-                j.out[(first*j.width+p)*j.channels+c] = static_cast<Byte>((sum[c]+divisor/2)/divisor);
+template <size_t C> void column_slide(uint32_t *columns, const Byte *down, const Byte *up, ptrdiff_t displacement, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        const Byte *a = down+i*C, *b = up+i*C;
+        for (size_t c = 0; c < C; ++c) {
+            int in = a[c]-a[displacement+static_cast<ptrdiff_t>(c)], out = b[c]-b[displacement+static_cast<ptrdiff_t>(c)];
+            columns[i] += static_cast<uint32_t>(in*in-out*out);
         }
     }
 }
-cn_status nlm(const Byte *src, Byte *out, size_t height, size_t width, size_t channels, float strength, int patch, int search) {
+template <size_t C> void accumulate(const nlm_block *b, size_t count, uint32_t *a_sums, const Byte *a_pixels, uint32_t *b_sums, const Byte *b_pixels) {
+    size_t plane = b->rows*b->row_lanes;
+    for (size_t x = 0; x < count; ++x) {
+        uint32_t distance = b->distances[x];
+        if (distance >= b->limit) continue;
+        uint32_t weight = static_cast<uint32_t>(b->weights[distance >> b->shift]);
+        if (a_sums) {
+            a_sums[x] += weight;
+            for (size_t c = 0; c < C; ++c) a_sums[(c+1)*plane+x] += weight*a_pixels[x*C+c];
+        }
+        if (b_sums) {
+            b_sums[x] += weight;
+            for (size_t c = 0; c < C; ++c) b_sums[(c+1)*plane+x] += weight*b_pixels[x*C+c];
+        }
+    }
+}
+void nlm_column_add(uint32_t *columns, const Byte *row, ptrdiff_t displacement, size_t count, size_t channels) {
+    switch (channels) {
+        case 1: column_add<1>(columns,row,displacement,count); break;
+        case 2: column_add<2>(columns,row,displacement,count); break;
+        case 3: column_add<3>(columns,row,displacement,count); break;
+        default: column_add<4>(columns,row,displacement,count);
+    }
+}
+void nlm_column_slide(uint32_t *columns, const Byte *down, const Byte *up, ptrdiff_t displacement, size_t count, size_t channels) {
+    switch (channels) {
+        case 1: column_slide<1>(columns,down,up,displacement,count); break;
+        case 2: column_slide<2>(columns,down,up,displacement,count); break;
+        case 3: column_slide<3>(columns,down,up,displacement,count); break;
+        default: column_slide<4>(columns,down,up,displacement,count);
+    }
+}
+void nlm_window_pass(uint32_t *out, const uint32_t *in, const uint32_t *columns, size_t count, size_t span, int odd) {
+    if (odd) for (size_t i = 0; i < count; ++i) out[i] = in[i]+in[i+span]+columns[i+2*span];
+    else for (size_t i = 0; i < count; ++i) out[i] = in[i]+in[i+span];
+}
+void nlm_accumulate(const nlm_block *b, size_t count, uint32_t *a_sums, const Byte *a_pixels, uint32_t *b_sums, const Byte *b_pixels) {
+    switch (b->channels) {
+        case 1: accumulate<1>(b,count,a_sums,a_pixels,b_sums,b_pixels); break;
+        case 2: accumulate<2>(b,count,a_sums,a_pixels,b_sums,b_pixels); break;
+        case 3: accumulate<3>(b,count,a_sums,a_pixels,b_sums,b_pixels); break;
+        default: accumulate<4>(b,count,a_sums,a_pixels,b_sums,b_pixels);
+    }
+}
+#include "denoise_block_shared.h"
+
+struct NlmJob {
+    nlm_block block;
+    Byte *out;
+    size_t height, width, block_width, tile_rows;
+    size_t tiles_per_chunk, extra_tiles;
+    void (*block_sums)(const nlm_block *);
+    uint32_t *workspace;
+    size_t column_lanes, chunk_lanes;
+};
+void nlm_tiles(void *opaque, size_t begin, size_t end) noexcept {
+    const auto &j = *static_cast<NlmJob *>(opaque);
+    nlm_block block = j.block;
+    block.columns = j.workspace+begin*j.chunk_lanes;
+    block.distances = block.columns+j.column_lanes;
+    block.sums = block.distances+j.column_lanes;
+    std::fill_n(block.distances, j.column_lanes, 0u);
+    size_t channels = block.channels;
+    size_t first_tile = begin*j.tiles_per_chunk+std::min(begin,j.extra_tiles);
+    size_t last_tile = end*j.tiles_per_chunk+std::min(end,j.extra_tiles);
+    for (size_t tile = first_tile; tile < last_tile; ++tile) {
+        block.first = tile*j.tile_rows;
+        block.rows = std::min(block.first+j.tile_rows, j.height)-block.first;
+        size_t plane = block.rows*block.row_lanes;
+        for (block.column = 0; block.column < j.width; block.column += j.block_width) {
+            block.width = std::min(j.block_width, j.width-block.column);
+            std::fill_n(block.sums, plane*(channels+1), 0u);
+            j.block_sums(&block);
+            for (size_t y = 0; y < block.rows; ++y) {
+                const uint32_t *sums = block.sums+y*block.row_lanes+block.search;
+                Byte *row = j.out+((block.first+y)*j.width+block.column)*channels;
+                for (size_t x = 0; x < block.width; ++x) {
+                    uint32_t divisor = sums[x];
+                    for (size_t c = 0; c < channels; ++c)
+                        row[x*channels+c] = static_cast<Byte>((sums[(c+1)*plane+x]+divisor/2)/divisor);
+                }
+            }
+        }
+    }
+}
+void nlm_scalar(const nlm_block *block) { nlm_block_sums(block); }
+void (*block_function(cn_isa_level level, size_t channels))(const nlm_block *) {
+#if CN_ISA_UNITS()
+    if (channels <= 2 && level >= CN_ISA_AVX512) return cn_nlm_block_avx512;
+    if (channels <= 2 && level >= CN_ISA_AVX2) return cn_nlm_block_avx2;
+#else
+    (void)level; (void)channels;
+#endif
+    return nlm_scalar;
+}
+cn_status nlm(const Byte *src, Byte *out, size_t height, size_t width, size_t channels, float strength, int patch, int search, cn_isa_level level) {
     int border = patch+search, patch_size = patch*2+1, search_size = search*2+1;
     size_t pw = width+static_cast<size_t>(border)*2, ph = height+static_cast<size_t>(border)*2;
-    if (pw > SIZE_MAX/ph || pw*ph > static_cast<size_t>(PTRDIFF_MAX)/channels) return CN_SIZE_OVERFLOW;
-    std::vector<Byte> padded(pw*ph*channels);
+    if (pw > SIZE_MAX/ph || pw*ph > (static_cast<size_t>(PTRDIFF_MAX)-NLM_PADDED_SLACK)/channels) return CN_SIZE_OVERFLOW;
+    size_t padded_bytes = pw*ph*channels;
+    auto padded = std::make_unique_for_overwrite<Byte[]>(padded_bytes+NLM_PADDED_SLACK);
+    std::memset(padded.get()+padded_bytes, 0, NLM_PADDED_SLACK);
+    std::vector<size_t> sources(pw);
+    for (size_t x = 0; x < pw; ++x) sources[x] = static_cast<size_t>(reflect(static_cast<int64_t>(x)-border, static_cast<int>(width)));
     for (size_t y = 0; y < ph; ++y) {
-        size_t sy = static_cast<size_t>(reflect(static_cast<int64_t>(y)-border, static_cast<int>(height)));
-        for (size_t x = 0; x < pw; ++x) {
-            size_t sx = static_cast<size_t>(reflect(static_cast<int64_t>(x)-border, static_cast<int>(width)));
-            std::memcpy(padded.data()+(y*pw+x)*channels, src+(sy*width+sx)*channels, channels);
+        const Byte *row = src+static_cast<size_t>(reflect(static_cast<int64_t>(y)-border, static_cast<int>(height)))*width*channels;
+        Byte *to = padded.get()+y*pw*channels;
+        for (size_t x = 0; x < static_cast<size_t>(border); ++x) {
+            std::memcpy(to+x*channels, row+sources[x]*channels, channels);
+            std::memcpy(to+(static_cast<size_t>(border)+width+x)*channels, row+sources[static_cast<size_t>(border)+width+x]*channels, channels);
         }
+        std::memcpy(to+static_cast<size_t>(border)*channels, row, width*channels);
     }
     int shift = 0;
     while ((1 << shift) < patch_size*patch_size) ++shift;
     double multiplier = static_cast<double>(1 << shift)/(patch_size*patch_size);
     int fixed = INT_MAX/(search_size*search_size*255);
     size_t max_distance = static_cast<size_t>(65025.0*static_cast<double>(channels)/multiplier+1);
-    std::vector<int> weights(max_distance);
+    // The weight falls with the distance, so the table ends at the first 0: every later distance weighs 0 too.
+    std::vector<int32_t> weights;
     float denominator = (strength*strength)*static_cast<float>(channels);
     for (size_t d = 0; d < max_distance; ++d) {
         double weight = std::exp(-(static_cast<double>(d)*multiplier)/denominator);
         if (std::isnan(weight)) weight = 1;
         int integer = rounded(fixed*weight);
-        weights[d] = integer < .001*fixed ? 0 : integer;
+        if (integer < .001*fixed) break;
+        weights.push_back(integer);
     }
-    constexpr size_t tile_rows = 16;
+    constexpr size_t tile_rows = 16, block_lanes = 512;
     size_t tiles = (height+tile_rows-1)/tile_rows;
-    if (width > SIZE_MAX/(tile_rows*(channels+1)*sizeof(uint32_t))) return CN_SIZE_OVERFLOW;
+    // A block's sums stay in the second cache level on wide images. Without a sideways displacement its columns end on
+    // a whole number of the widest vector step, so no row function runs past them for nothing.
+    size_t reach = static_cast<size_t>(patch)*2;
+    size_t block_width = std::min((block_lanes+reach+31)/32*32-reach, width);
+    size_t row_lanes = (block_width+static_cast<size_t>(search)*2+2*NLM_ROW_ROUND-1)/NLM_ROW_ROUND*NLM_ROW_ROUND;
     // At most 128 work items gives each workspace its own cn_parallel_for callback.
     size_t chunks = std::min(tiles,size_t{128});
-    std::vector<Scratch> scratch(chunks);
-    for (size_t i = 0; i < chunks; ++i) {
-        scratch[i].columns.resize(width+static_cast<size_t>(patch)*2);
-        scratch[i].sums.resize(std::min(tile_rows,height)*width*(channels+1));
-    }
-    NlmJob job{padded.data(),out,height,width,pw,channels,tile_rows,tiles/chunks,tiles%chunks,
-        patch,search,border,shift,weights.data(),scratch.data()};
+    // Each chunk's lanes are first touched on the thread that runs it. A displacement's columns reach sideways by up to search.
+    size_t column_lanes = block_width+static_cast<size_t>(search)+reach+NLM_COLUMN_SLACK;
+    size_t chunk_lanes = column_lanes*2+std::min(tile_rows,height)*row_lanes*(channels+1);
+    auto workspace = std::make_unique_for_overwrite<uint32_t[]>(chunks*chunk_lanes);
+    nlm_block block{};
+    block.padded = padded.get();
+    block.stride = pw*channels;
+    block.channels = channels;
+    block.row_lanes = row_lanes;
+    block.patch = patch;
+    block.search = search;
+    block.border = border;
+    block.shift = shift;
+    block.limit = static_cast<uint32_t>(weights.size() << shift);
+    block.weights = weights.data();
+    NlmJob job{block,out,height,width,block_width,tile_rows,tiles/chunks,tiles%chunks,block_function(level,channels),workspace.get(),column_lanes,chunk_lanes};
     return cn_parallel_for(chunks, 1, nlm_tiles, &job);
+}
+struct SplitJob { const Byte *src; Byte *l, *ab; size_t channels; const LabTables *table; };
+void split_range(void *opaque, size_t begin, size_t end) {
+    const auto &j = *static_cast<SplitJob *>(opaque);
+    for (size_t p = begin; p < end; ++p) {
+        Byte lab[3]; to_lab(j.src+p*j.channels,lab,*j.table);
+        j.l[p] = lab[0]; j.ab[p*2] = lab[1]; j.ab[p*2+1] = lab[2];
+    }
+}
+struct MergeJob { const Byte *l, *ab, *src; Byte *out; size_t channels; const LabTables *table; };
+void merge_range(void *opaque, size_t begin, size_t end) {
+    const auto &j = *static_cast<MergeJob *>(opaque);
+    for (size_t p = begin; p < end; ++p) {
+        Byte lab[3] = {j.l[p],j.ab[p*2],j.ab[p*2+1]};
+        from_lab(lab,j.out+p*j.channels,*j.table);
+        if (j.channels == 4) j.out[p*4+3] = j.src[p*4+3];
+    }
 }
 }
 
@@ -266,7 +351,7 @@ extern "C" CN_EXPORT cn_status cn_denoise_nlm_u8(const uint8_t *src, uint8_t *ou
     cn_status status = image_span(src,out,height,width,channels);
     if (status != CN_OK) return status;
     if (patch < 1 || patch > 30 || search < 1 || search > 30) return CN_INVALID_ARGUMENT;
-    try { return nlm(src,out,height,width,channels,strength,patch,search); }
+    try { return nlm(src,out,height,width,channels,strength,patch,search,cn_isa_current()); }
     catch (const std::bad_alloc &) { return CN_ALLOCATION_FAILED; }
     catch (const std::length_error &) { return CN_SIZE_OVERFLOW; }
 }
@@ -276,23 +361,22 @@ extern "C" CN_EXPORT cn_status cn_denoise_u8(const uint8_t *src, uint8_t *out,
     if (status != CN_OK) return status;
     if ((channels != 1 && channels != 3 && channels != 4) || patch < 1 || patch > 30 || search < 1 || search > 30) return CN_INVALID_ARGUMENT;
     try {
-        if (channels == 1) return nlm(src,out,height,width,channels,strength,patch,search);
+        cn_isa_level level = cn_isa_current();
+        if (channels == 1) return nlm(src,out,height,width,channels,strength,patch,search,level);
         size_t count = height*width;
-        std::vector<Byte> l(count), ab(count*2), dl(count), dab(count*2);
+        auto planes = std::make_unique_for_overwrite<Byte[]>(count*6);
+        Byte *l = planes.get(), *ab = l+count, *dl = ab+count*2, *dab = dl+count;
         const LabTables &table = lab_tables();
-        for (size_t p = 0; p < count; ++p) {
-            Byte lab[3]; to_lab(src+p*channels,lab,table);
-            l[p] = lab[0]; ab[p*2] = lab[1]; ab[p*2+1] = lab[2];
-        }
-        status = nlm(l.data(),dl.data(),height,width,1,strength,patch,search);
+        SplitJob split{src,l,ab,channels,&table};
+        status = cn_parallel_for(count,65536,split_range,&split);
         if (status != CN_OK) return status;
-        status = nlm(ab.data(),dab.data(),height,width,2,color_strength,patch,search);
+        status = nlm(l,dl,height,width,1,strength,patch,search,level);
         if (status != CN_OK) return status;
-        for (size_t p = 0; p < count; ++p) {
-            Byte lab[3] = {dl[p],dab[p*2],dab[p*2+1]};
-            from_lab(lab,out+p*channels,table);
-            if (channels == 4) out[p*4+3] = src[p*4+3];
-        }
+        status = nlm(ab,dab,height,width,2,color_strength,patch,search,level);
+        if (status != CN_OK) return status;
+        MergeJob merge{dl,dab,src,out,channels,&table};
+        status = cn_parallel_for(count,65536,merge_range,&merge);
+        if (status != CN_OK) return status;
         return CN_OK;
     } catch (const std::bad_alloc &) { return CN_ALLOCATION_FAILED; }
       catch (const std::length_error &) { return CN_SIZE_OVERFLOW; }

@@ -394,3 +394,24 @@ def test_item_types_follow_the_mode():
         "name": "Image",
         "fields": {"width": 960, "height": 540, "channels": 1},
     }
+
+
+@pytest.mark.parametrize("cli", [False, True])
+@pytest.mark.parametrize("pix_fmt", ["gray", "ya8"])
+def test_gray_png_video_reads_in_rgb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cli: bool, pix_fmt: str
+):
+    """A PNG stream's frames carry the RGB matrix tag whatever their format. A gray
+    video's one plane needs no matrix, so RGB mode reads it, and Planes mode names what
+    it lacks: both refusals sent the reader to the other mode."""
+    path = make_video(tmp_path / "gray.mov", SOURCE, "-c:v", "png", "-pix_fmt", pix_fmt)
+    items, colour, _ = load(path, monkeypatch, cli, VideoMode.RGB)
+    assert colour.matrix is Matrix.RGB
+    raw = np.frombuffer(raw_planes(path, pix_fmt), np.uint8)
+    assert len(items) == 3
+    grays = raw[::2] if pix_fmt == "ya8" else raw
+    for (frame, *_), gray in zip(items, grays.reshape(3, 64, 96), strict=True):
+        for channel in range(3):
+            np.testing.assert_allclose(frame[:, :, channel], gray / 255, atol=0.004)
+    with pytest.raises(ValueError, match="is gray video, so it has no U and V planes"):
+        load(path, monkeypatch, cli, VideoMode.PLANES)

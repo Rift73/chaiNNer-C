@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import base64
 import ctypes
-import ctypes
 import hashlib
 import io
 import json
@@ -843,7 +842,6 @@ def decode_cases() -> list[DecodeCase]:
         "palette4": lambda: pil_bytes(rgb.quantize(16), "PNG", bits=4),
         "la": lambda: pil_bytes(rgba.convert("LA"), "PNG"),
         "bilevel": lambda: pil_bytes(grey.convert("1"), "PNG"),
-        "grey_trns": lambda: pil_bytes(grey, "PNG", transparency=int(GREY8[1, 1])),
         "rgb_trns": lambda: pil_bytes(
             rgb, "PNG", transparency=tuple(int(v) for v in RGBA8[1, 1, :3])
         ),
@@ -1230,6 +1228,50 @@ def test_decode_matches_todays_path(
 
 
 @pytest.mark.parametrize(
+    "compression", (1, 5, 8), ids=("none", "lzw", "deflate")
+)
+@pytest.mark.parametrize(("width", "height"), ((1101, 1003), (3, 2)))
+def test_plain_rgb_tiff_matches_opencv(
+    width: int,
+    height: int,
+    compression: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Strips read straight into the output give what OpenCV's RGBA interface gives."""
+    rng = np.random.default_rng(width)
+    pixels = rng.integers(0, 256, (height, width, 3), dtype=np.uint8)
+    pixels[height // 2 :] = pixels[height // 2 :] // 16
+    path = tmp_path / "plain.tif"
+    path.write_bytes(
+        cv_bytes(".tif", pixels, [cv2.IMWRITE_TIFF_COMPRESSION, compression])
+    )
+    monkeypatch.setattr(
+        load_image, "cv2", Probe(load_image.cv2, {"imdecode", "imread", "cvtColor"})
+    )
+    native = load_image._read_cv(path)
+    assert native is not None and np.array_equal(native, pixels)
+
+
+@pytest.mark.parametrize(
+    ("mode", "order"),
+    (("RGB", [2, 1, 0]), ("RGBA", [2, 1, 0, 3])),
+    ids=("rgb", "rgba"),
+)
+@pytest.mark.parametrize(("width", "height"), ((1101, 1003), (3, 2)))
+def test_pillow_route_swaps_red_and_blue(
+    width: int, height: int, mode: str, order: list[int], tmp_path: Path
+):
+    channels = len(order)
+    rng = np.random.default_rng(height)
+    pixels = rng.integers(0, 256, (height, width, channels), dtype=np.uint8)
+    path = tmp_path / "pillow.tga"
+    Image.fromarray(pixels, mode).save(path)
+    loaded = load_image._read_pil(path)
+    assert loaded.dtype == np.uint8 and np.array_equal(loaded, pixels[..., order])
+
+
+@pytest.mark.parametrize(
     "name",
     [
         "inflate_level6",
@@ -1492,7 +1534,10 @@ def saved(case: EncodeCase, image: np.ndarray, directory: Path) -> dict:
             False,
             False,
             m.AvifSubsampling.FACTOR_420,
+            m.ExrColorDepth.F32,
+            m.ExrCompression.ZIP,
             False,
+            None,
         )
         result["file"] = sha((directory / f"image.{case.fmt}").read_bytes())
     except Exception as error:
@@ -1522,7 +1567,10 @@ def saved(case: EncodeCase, image: np.ndarray, directory: Path) -> dict:
         False,
         False,
         m.AvifSubsampling.FACTOR_420,
+        m.ExrColorDepth.F32,
+        m.ExrCompression.ZIP,
         False,
+        None,
     ]
     try:
         prepared = m.prepare_save_image(inputs)

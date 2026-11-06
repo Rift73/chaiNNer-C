@@ -56,3 +56,39 @@ def test_worker_sets_numba_cache_dir_before_numba_imports(tmp_path):
         "numba_at_run": False,
         "numba_cache_dir": expected,
     }
+
+
+def test_the_standard_nodes_load_without_numba_pymatting_or_scipy():
+    """Alpha Matting and Create Noise run in C, and only their fallbacks for unusual
+    inputs reach PyMatting and SciPy: every start would otherwise pay for the imports,
+    and a first start for compiling the kernels."""
+    code = "\n".join(
+        [
+            "import __main__, importlib, json, sys",
+            f"__main__.__file__ = {str(BACKEND / 'server.py')!r}",
+            f"sys.path[:0] = [{str(BACKEND)!r}]",
+            "import api",
+            "importlib.import_module('packages.chaiNNer_standard')",
+            "(package,) = api.registry.packages.values()",
+            f"modules = api.registry.node_modules({str(BACKEND / 'server.py')!r}, package)",
+            "errors = api.registry.load_modules(modules)",
+            "heavy = {'numba', 'pymatting', 'scipy'} & set(sys.modules)",
+            "names = [str(e.module) + ': ' + str(e.error) for e in errors]",
+            "nodes = list(api.registry.nodes)",
+            "print(json.dumps({'errors': names, 'heavy': sorted(heavy), 'nodes': nodes}))",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    state = json.loads(result.stdout.splitlines()[-1])
+    assert state["errors"] == []
+    assert state["heavy"] == []
+    assert {"chainner:image:alpha_matting", "chainner:image:create_noise"} <= set(
+        state["nodes"]
+    )

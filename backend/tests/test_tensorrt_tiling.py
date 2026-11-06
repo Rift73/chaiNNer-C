@@ -14,11 +14,16 @@ import pytest
 # The blend runs in the native backend, which GitHub's checks do not build.
 pytest.importorskip("nodes.impl._chainner_graph")
 
-from nodes.impl.native_framework_shared import accumulate_tile
+from nodes.impl.native_buffers import normalized_readonly
+from nodes.impl.native_framework_shared import accumulate_tile, clip_image
 from nodes.impl.tensorrt import tiling
 from nodes.impl.tensorrt.tiling import (
     ShapeBounds,
     axis_weights,
+    balanced_tiles,
+    one_tile,
+    smaller_tiles,
+    tile_input,
     tile_starts,
     tiled_upscale,
 )
@@ -63,6 +68,63 @@ class FakeEngine:
 def _image() -> np.ndarray:
     rng = np.random.default_rng(0)
     return rng.uniform(0.1, 1.0, (1024, 1024, 3)).astype(np.float32)
+
+
+@pytest.mark.parametrize("bounds", [STATIC_512, DYNAMIC_64_512])
+@pytest.mark.parametrize(
+    ("h", "w", "one"),
+    [(1, 1, True), (512, 512, True), (513, 512, False), (512, 513, False)],
+)
+def test_one_tile_is_what_tiled_upscale_runs(
+    bounds: ShapeBounds, h: int, w: int, one: bool
+):
+    assert one_tile(h, w, bounds) is one
+    engine = FakeEngine(bounds)
+    tiled_upscale(np.zeros((h, w, 3), np.float32), SCALE, bounds, engine)
+    assert (len(engine.shapes) == 1) is one
+
+
+class OwningEngine(FakeEngine):
+    """Gives out fresh arrays, as TileRunner asks and TensorRT's session does."""
+
+    def collect(self, height: int, width: int) -> np.ndarray:
+        return super().collect(height, width).copy()
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [(100, 80, 3), (100, 80), (700, 600, 3), (700, 600)],
+    ids=["one tile", "one tile grey", "tiled", "tiled grey"],
+)
+@pytest.mark.parametrize("values", ["inside", "outside", "special"])
+def test_clip_gives_clip_image_of_the_result(
+    shape: tuple[int, ...], values: Literal["inside", "outside", "special"]
+):
+    rng = np.random.default_rng(5)
+    low, high = (0.1, 0.9) if values == "inside" else (-0.5, 1.5)
+    img = rng.uniform(low, high, shape).astype(np.float32)
+    if values == "special":
+        words = img.reshape(-1).view(np.uint32)
+        words[[3, 17, 29, 41, 53]] = (
+            0x7FC12345,  # a NaN's payload
+            0x7F800000,
+            0xFF800000,
+            0x80000000,  # -0
+            0x00000001,  # a denormal
+        )
+    with np.errstate(invalid="ignore"):
+        expected = clip_image(
+            tiled_upscale(img, SCALE, STATIC_512, OwningEngine(STATIC_512)), frozen=True
+        )
+        out = tiled_upscale(img, SCALE, STATIC_512, OwningEngine(STATIC_512), clip=True)
+    assert out.shape == expected.shape
+    assert out.dtype == expected.dtype == np.float32
+    assert out.tobytes() == expected.tobytes()
+    assert not out.flags.writeable
+    # ImageOutput borrows it under the same rule as clip_image's array.
+    assert (normalized_readonly(out) is out) == (
+        normalized_readonly(expected) is expected
+    )
 
 
 @pytest.mark.parametrize(
@@ -209,6 +271,136 @@ def test_axis_weights_partition_of_unity():
         np.testing.assert_allclose(total, 1.0, atol=1e-6)
 
 
+def test_the_default_tiles_stay_where_they_are():
+    # Upscale Image's default output depends on these.
+    assert tile_starts(540, 512) == [0, 28]
+    assert tile_starts(960, 512) == [0, 448]
+    assert tile_starts(1080, 512) == [0, 464, 568]
+    assert tile_starts(1920, 512) == [0, 464, 928, 1392, 1408]
+    assert tile_starts(3840, 2048) == [0, 1792]
+
+
+@pytest.mark.parametrize(
+    ("length", "tile", "min_size", "alignment", "expected"),
+    [
+        # 2 * size - 48 >= 540, in multiples of 64
+        (540, 512, 64, 64, (320, [0, 220])),
+        (1080, 512, 64, 64, (448, [0, 316, 632])),
+        (1920, 512, 64, 64, (448, [0, 368, 736, 1104, 1472])),
+        (3840, 2048, 64, 64, (1984, [0, 1856])),
+        # a DUAL engine's multiples of 4
+        (1080, 512, 64, 4, (392, [0, 344, 688])),
+        (1920, 512, 64, 4, (424, [0, 374, 748, 1122, 1496])),
+        # the profile's minimum holds
+        (540, 512, 400, 64, (400, [0, 140])),
+        # no smaller multiple covers it: the same tiles, spread evenly
+        (960, 512, 64, 64, (512, [0, 448])),
+        (1280, 512, 64, 64, (512, [0, 384, 768])),
+        # one size only, also when it is not a multiple
+        (1080, 500, 500, 64, (500, [0, 290, 580])),
+        # one tile
+        (300, 512, 64, 64, (512, [0])),
+        (512, 512, 64, 64, (512, [0])),
+    ],
+)
+def test_balanced_tiles_of_one_axis(
+    length: int,
+    tile: int,
+    min_size: int,
+    alignment: int,
+    expected: tuple[int, list[int]],
+):
+    assert balanced_tiles(length, tile, min_size, alignment) == expected
+
+
+@pytest.mark.parametrize("alignment", [1, 4, 16, 64])
+@pytest.mark.parametrize("tile", [64, 128, 256, 512])
+def test_balanced_tiles_cover_the_axis_and_overlap_as_much(alignment: int, tile: int):
+    for length in range(tile + 1, tile * 12, 7):
+        size, starts = balanced_tiles(length, tile, 64, alignment)
+        assert len(starts) == len(tile_starts(length, tile))
+        assert 64 <= size <= tile
+        assert size == tile or size % alignment == 0
+        assert starts[0] == 0
+        assert starts[-1] + size == length
+        assert all(b - a <= size - 48 for a, b in zip(starts, starts[1:]))
+        total = np.zeros(length * SCALE, dtype=np.float64)
+        for s, w in zip(starts, axis_weights(starts, size, length, SCALE)):
+            total[s * SCALE : s * SCALE + w.size] += w
+        np.testing.assert_allclose(total, 1.0, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "size", [(540, 960), (720, 1000), (1000, 600), (300, 1000)], ids=str
+)
+@pytest.mark.parametrize("alignment", [4, 64])
+def test_balanced_tiles_have_one_shape_and_no_seams(
+    size: tuple[int, int], alignment: int
+):
+    bounds = ShapeBounds(64, 64, 512, 512, alignment)
+    img = _image()[: size[0], : size[1]]
+    engine = FakeEngine(bounds)
+
+    out = tiled_upscale(img, SCALE, bounds, engine, balanced=True)
+
+    assert len(set(engine.shapes)) == 1
+    today = FakeEngine(bounds)
+    tiled_upscale(img, SCALE, bounds, today)
+    assert len(engine.shapes) == len(today.shapes)
+    assert sum(h * w for h, w in engine.shapes) < sum(h * w for h, w in today.shapes)
+    assert out.shape == (size[0] * SCALE, size[1] * SCALE, 3)
+    np.testing.assert_allclose(out, fake_model(img), rtol=0, atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    [STATIC_512, ShapeBounds(250, 200, 250, 200)],
+    ids=["fixed", "fixed unaligned"],
+)
+def test_balanced_tiles_of_a_fixed_engine_only_spread(bounds: ShapeBounds):
+    img = _image()[:1000, :900]
+    today = FakeEngine(bounds)
+    tiled_upscale(img, SCALE, bounds, today)
+    engine = FakeEngine(bounds)
+
+    out = tiled_upscale(img, SCALE, bounds, engine, balanced=True)
+
+    assert engine.shapes == today.shapes
+    np.testing.assert_allclose(out, fake_model(img), rtol=0, atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    "size", [(512, 512), (300, 200), (10, 7)], ids=["fits", "padded", "tiny"]
+)
+def test_balanced_tiles_change_nothing_for_one_tile(size: tuple[int, int]):
+    img = _image()[: size[0], : size[1]]
+    bounds = DYNAMIC_64_512
+    today = tiled_upscale(img, SCALE, bounds, FakeEngine(bounds))
+    out = tiled_upscale(img, SCALE, bounds, FakeEngine(bounds), balanced=True)
+    assert out.tobytes() == today.tobytes()
+
+
+def test_balanced_tiles_keep_a_grey_image_grey():
+    grey = np.random.default_rng(5).random((300, 700), np.float32)
+    bounds = ShapeBounds(64, 64, 256, 256)
+    engine = FakeEngine(bounds)
+    out = tiled_upscale(grey, SCALE, bounds, engine, balanced=True)
+    planes = tiled_upscale(
+        grey[:, :, np.newaxis], SCALE, bounds, FakeEngine(bounds), balanced=True
+    )
+    assert set(engine.shapes) == {(192, 256)}
+    assert out.shape == (1200, 2800)
+    np.testing.assert_array_equal(out, planes[:, :, 0])
+
+
+def test_balanced_tiles_refuse_an_engine_too_small_to_tile():
+    bounds = ShapeBounds(32, 32, 32, 32)
+    with pytest.raises(ValueError, match="needs an engine input over 48 px"):
+        tiled_upscale(
+            _image()[:20, :40], SCALE, bounds, FakeEngine(bounds), balanced=True
+        )
+
+
 def numpy_blend(
     result: np.ndarray | None,
     tile_out: np.ndarray,
@@ -341,3 +533,77 @@ def test_accumulate_tile_is_the_numpy_expression(
     assert actual_outcome == expected_outcome
     if mode != "raise":
         assert image.tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    [
+        STATIC_512,
+        DYNAMIC_64_512,
+        ShapeBounds(500, 500, 500, 500),
+        ShapeBounds(64, 256, 256, 256),
+        ShapeBounds(32, 32, 1088, 1920, 4),
+    ],
+)
+@pytest.mark.parametrize(
+    ("height", "width"), [(40, 50), (64, 64), (100, 700), (700, 100), (1000, 2000)]
+)
+def test_tile_input_is_the_size_the_engine_gets(
+    bounds: ShapeBounds, height: int, width: int
+):
+    sizes: list[tuple[int, int]] = []
+
+    class Recording(FakeEngine):
+        def submit(self, tile: np.ndarray) -> None:
+            sizes.append(tile.shape[:2])
+            super().submit(tile)
+
+    image = np.zeros((height, width, 3), np.float32)
+    tiled_upscale(image, SCALE, bounds, Recording(bounds))
+    assert set(sizes) == {tile_input(height, width, bounds)}
+
+
+@pytest.mark.parametrize(
+    ("bounds", "height", "width", "expected"),
+    [
+        # Half of the tile that failed, in the engine's multiples
+        (ShapeBounds(64, 64, 1024, 1024), 1024, 1024, (512, 512)),
+        (ShapeBounds(64, 64, 1024, 1024), 448, 256, (256, 128)),
+        (ShapeBounds(64, 64, 1024, 1024, 4), 450, 256, (228, 128)),
+        # Up to a multiple, not down to a third: 192 px goes to 128, 320 to 192
+        (ShapeBounds(64, 64, 1024, 1024), 192, 320, (128, 192)),
+        # An axis at its smallest stays, the other goes on
+        (ShapeBounds(64, 64, 1024, 1024), 64, 1024, (64, 512)),
+        (ShapeBounds(256, 64, 256, 1024), 256, 1024, (256, 512)),
+        # Never below the engine's smallest, or the size the overlap needs
+        (ShapeBounds(128, 128, 1024, 1024), 192, 192, (128, 128)),
+        (ShapeBounds(16, 16, 1024, 1024, 4), 64, 64, (52, 52)),
+        (ShapeBounds(1, 1, 1024, 1024, 1), 64, 64, (49, 49)),
+        # Nothing smaller: a Fixed engine, even of a size that is not a multiple, or a
+        # Dynamic one at its smallest
+        (ShapeBounds(512, 512, 512, 512), 512, 512, None),
+        (ShapeBounds(500, 500, 500, 500), 500, 500, None),
+        (ShapeBounds(64, 64, 1024, 1024), 64, 64, None),
+        (ShapeBounds(16, 16, 1024, 1024, 4), 52, 52, None),
+    ],
+)
+def test_smaller_tiles(
+    bounds: ShapeBounds,
+    height: int,
+    width: int,
+    expected: tuple[int, int] | None,
+):
+    smaller = smaller_tiles(bounds, height, width)
+    if expected is None:
+        assert smaller is None
+    else:
+        assert smaller is not None
+        assert (smaller.max_h, smaller.max_w) == expected
+        # The rest of the profile stays, and images still tile within the smaller bounds.
+        assert (smaller.min_h, smaller.min_w, smaller.alignment) == (
+            bounds.min_h,
+            bounds.min_w,
+            bounds.alignment,
+        )
+        image = np.zeros((height * 3, width * 3, 3), np.float32)
+        tiled_upscale(image, SCALE, smaller, FakeEngine(smaller))

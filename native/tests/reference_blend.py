@@ -1,4 +1,4 @@
-# Snapshot of upstream blend.py for differential validation (GPL-3.0).
+# Snapshot of upstream blend.py for differential validation (GPL-3.0); lines marked Judged differ on purpose.
 from enum import Enum
 
 import cv2
@@ -119,12 +119,20 @@ class ImageBlender:
         return a + b
 
     def __color_burn(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        # Judged, not upstream's: a white base stays white (the W3C spec, ISO 32000-2).
         return np.where(
-            a == 0, 0, np.maximum(0, (1 - ((1 - b) / np.maximum(0.0001, a))))
+            b == 1,
+            1,
+            np.where(a == 0, 0, np.maximum(0, (1 - ((1 - b) / np.maximum(0.0001, a))))),
         )
 
     def __color_dodge(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        return np.where(a == 1, 1, np.minimum(1, b / np.maximum(0.0001, (1 - a))))
+        # Judged, not upstream's: a black base stays black (the W3C spec, ISO 32000-2).
+        return np.where(
+            b == 0,
+            0,
+            np.where(a == 1, 1, np.minimum(1, b / np.maximum(0.0001, (1 - a)))),
+        )
 
     def __reflect(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         return np.where(a == 1, 1, np.minimum(1, b * b / np.maximum(0.0001, 1 - a)))
@@ -225,6 +233,9 @@ def blend_images(overlay: np.ndarray, base: np.ndarray, blend_mode: BlendMode):
         o_rgb = overlay[:, :, :3]
 
         blend_rgb = blender.apply_blend(o_rgb, base, blend_mode)
+        if blend_mode == BlendMode.DIVIDE:
+            # Judged, not upstream's: the quotient is clipped before it mixes.
+            blend_rgb = np.clip(blend_rgb, 0, 1)
         final_rgb = o_a * blend_rgb + (1 - o_a) * base  # type: ignore
         if needs_clipping:
             final_rgb = np.clip(final_rgb, 0, 1)
@@ -254,6 +265,9 @@ def blend_images(overlay: np.ndarray, base: np.ndarray, blend_mode: BlendMode):
     b_strength = b_a - blend_strength  # type: ignore
 
     blend_rgb = blender.apply_blend(o_rgb, b_rgb, blend_mode)
+    if blend_mode == BlendMode.DIVIDE:
+        # Judged, not upstream's: the quotient is clipped before it mixes.
+        blend_rgb = np.clip(blend_rgb, 0, 1)
 
     final_rgb = (
         (np.dstack((o_strength,) * 3) * o_rgb)

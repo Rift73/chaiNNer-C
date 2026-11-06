@@ -455,11 +455,13 @@ struct Cell {
     std::vector<Value> deferred_outputs;
 };
 
-/* A done cell's output; reading a released one (more reads than its counted hits) is an engine bug. */
+/* A done cell's output; reading a released one (more reads than its counted hits) is an engine bug. Only a collector
+ * has no outputs yet, until its loop ends: its reader fails as in process.Executor.__get_node_output. */
 const Value &output_of(const Cell &cell, int output)
 {
-    if (cell.state != State::done || size_t(output) >= cell.outputs.size())
-        throw std::logic_error("The engine read an output that is not there");
+    if (cell.state != State::done) throw std::logic_error("The engine read an output that is not there");
+    if (size_t(output) >= cell.outputs.size())
+        throw NodeError("ValueError", "A collector was not run before another node needed it.");
     return cell.outputs[size_t(output)];
 }
 
@@ -736,7 +738,7 @@ private:
     int target_ = -1;
     std::future<void> driver_;
     std::thread::id driver_thread_;  // the driver's thread, set as drive() starts
-    bool started_ = false, closed_ = false;
+    bool started_ = false, closed_ = false;  // under mutex_
     // Cleared at close: a lazy input a Python node kept and reads later no longer reaches the run.
     std::shared_ptr<std::atomic<bool>> open_ = std::make_shared<std::atomic<bool>>(true);
     std::string fault_;  // an engine thread's fault (under mutex_): the run's error
@@ -895,8 +897,13 @@ public:
      * error. */
     py::object python_value()
     {
-        if (!*open_ && (!read_ || error_)) {
+        if (!*open_ && (!read_ || error_ || failed_)) {
             PyErr_SetString(PyExc_RuntimeError, "A lazy input was read after its run ended");
+            throw py::error_already_set();
+        }
+        if (failed_) {
+            PyErr_SetString(PyExc_RuntimeError,
+                "A lazy input whose upstream failed was read again; its error was raised at the first read");
             throw py::error_already_set();
         }
         const Value *upstream = nullptr;
@@ -917,6 +924,11 @@ public:
             throw py::error_already_set();
         }
         if (failed.handle) {
+            // The api.Lazy keeps the error from here on. This reader must not: the error's traceback reaches it through
+            // the reading frames and that Lazy, a cycle through C++ that the collector cannot see. A second read finds
+            // failed_, not a value.
+            upstream_ = PyRef{};
+            failed_ = true;
             PyObject *error = static_cast<PyObject *>(failed.handle.get());
             PyErr_SetObject(reinterpret_cast<PyObject *>(Py_TYPE(error)), error);
             throw py::error_already_set();
@@ -938,6 +950,7 @@ private:
         }
         if (upstream_.handle) throw UpstreamFailed{upstream_};
         if (error_) std::rethrow_exception(error_);
+        if (failed_) throw std::logic_error("A lazy input whose upstream failed was read again");
         return raw_;
     }
 
@@ -948,6 +961,8 @@ private:
     CellRef source_;
     int output_;
     bool read_ = false, enforced_ = false;
+    // The upstream's failure was raised to the Python reader, which keeps the error (python_value).
+    bool failed_ = false;
     Value raw_, value_;
     PyRef upstream_;
     std::exception_ptr error_;
@@ -1099,6 +1114,10 @@ Run::Run(const py::dict &plan, py::object hooks_object) : hooks_object_(py_ref(h
             }
         }
     }
+    // A generator's loop reads its cell too, after any reader that comes first (a collector's construction, another
+    // generator, an earlier loop); the loop's end restores the cell with its own count for later readers.
+    for (const GroupPlan &group : groups_)
+        for (const GeneratorPlan &generator : group.generators) ++static_cells_[size_t(generator.node)].hits;
 }
 
 Run::~Run()
@@ -1128,15 +1147,20 @@ Cell &Run::cell(const CellRef &ref)
 CellRef Run::source_of(const CellRef &ref, int input) const
 {
     int source = nodes_[size_t(ref.node)].inputs[size_t(input)].source;
-    return {source, ref.slot >= 0 && iterated_[size_t(source)] ? ref.slot : -1};
+    // A collector is made once, outside the items: a reader in its own loop reads that cell.
+    bool item = ref.slot >= 0 && iterated_[size_t(source)] && nodes_[size_t(source)].kind != Kind::collector;
+    return {source, item ? ref.slot : -1};
 }
 
 // Threads
 
 void Run::start(const std::string &mode, int target)
 {
-    if (started_ || closed_) throw std::logic_error("A RunEngine starts once, before it closes");
-    started_ = true;
+    {
+        std::lock_guard<std::mutex> locked(mutex_);
+        if (started_ || closed_) throw std::logic_error("A RunEngine starts once, before it closes");
+        started_ = true;
+    }
     mode_ = mode;
     target_ = target;
     py::gil_scoped_release unlocked;
@@ -1199,11 +1223,15 @@ void Run::resume()
  * never sent): references the garbage collector cannot see, which would keep the executor and its outputs alive. */
 void Run::close()
 {
-    if (closed_) return;
-    // A run that never started (stopped while it waited for a stopped run's node) has no thread to join, but holds
-    // its plan's and hooks' references all the same: the hooks reach back to it, a cycle the collector cannot see.
-    if (started_ && serving_run == this) throw std::logic_error("A run cannot close on one of its own threads");
-    closed_ = true;
+    {
+        // Under the lock: Stop, Pause and Resume read them on other threads while a run closes.
+        std::lock_guard<std::mutex> locked(mutex_);
+        if (closed_) return;
+        // A run that never started (stopped while it waited for a stopped run's node) has no thread to join, but holds
+        // its plan's and hooks' references all the same: the hooks reach back to it, a cycle the collector cannot see.
+        if (started_ && serving_run == this) throw std::logic_error("A run cannot close on one of its own threads");
+        closed_ = true;
+    }
     *open_ = false;
     if (started_) {
         if (driver_.valid()) driver_.wait();
@@ -1892,7 +1920,10 @@ void Run::run_task(const Task &task)
                 continue;
             }
             const Cell &from = cell(source_of({task.index, task.slot}, int(i)));
-            values.push_back(from.state == State::done ? from.outputs[size_t(input.output)] : Value{});
+            // A collector has no outputs until its loop ends: its reader fails at its turn.
+            values.push_back(from.state == State::done && size_t(input.output) < from.outputs.size()
+                                 ? from.outputs[size_t(input.output)]
+                                 : Value{});
         }
         if (node.kind == Kind::collector) collector = loop.collector_of(task.index);
     }
@@ -2613,6 +2644,7 @@ void Run::iterate_group(const GroupPlan &group)
             Cell &c = static_cells_[size_t(generator.node)];
             c.state = State::done;
             c.outputs = generator.partial;
+            c.object = PyRef{};  // later readers read its outputs; what its items need ends with its loop
             c.hits = nodes_[size_t(generator.node)].hits;
         }
         submit_broadcast(generator.node, generator.partial);

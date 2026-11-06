@@ -8,10 +8,13 @@
 #include "plan.h"
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 
 namespace cn_trt {
+
+using TileHook = std::function<void(std::size_t done, std::size_t tiles)>;
 
 class Runner {
 public:
@@ -32,7 +35,10 @@ public:
 
     // Upscales `job` (describe_frame with this engine's bounds, scale and channels) from
     // `planes` into `result`. Up to `streams` calls run at once; more wait for a free slot.
-    void upscale(FrameJob const& job, HostPlane const* planes, HostPlane const* result, bool clip);
+    // `on_tile`, when given, sees each tile before it starts (the tiles done, their count), at
+    // most two tiles ahead of the GPU, and what it throws ends the frame.
+    void upscale(FrameJob const& job, HostPlane const* planes, HostPlane const* result, bool clip,
+                 TileHook const& on_tile = {});
 
     // Why a slot runs without CUDA graphs (the first failed capture); empty when none failed.
     std::string capture_failure() const;

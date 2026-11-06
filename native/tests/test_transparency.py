@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+import pymatting
 import pytest
 from numpy.typing import DTypeLike
 
@@ -183,9 +184,9 @@ def test_matting_solver_boundary(monkeypatch, channels, dtype, layout, singleton
     def estimate_foreground(img, alpha):
         return img.astype(np.float32)
 
-    monkeypatch.setattr(MATTING.pymatting, "estimate_alpha_cf", estimate_alpha)
+    monkeypatch.setattr(pymatting, "estimate_alpha_cf", estimate_alpha)
     monkeypatch.setattr(
-        MATTING.pymatting, "estimate_foreground_ml", estimate_foreground
+        pymatting, "estimate_foreground_ml", estimate_foreground
     )
     monkeypatch.setattr(MATTING, "estimate_alpha", estimate_alpha)
     monkeypatch.setattr(MATTING, "estimate_foreground", estimate_foreground)
@@ -200,8 +201,8 @@ def test_matting_solver_boundary(monkeypatch, channels, dtype, layout, singleton
 def real_solver_calls(monkeypatch):
     """Compare the C solvers' inputs with the live PyMatting 1.1.16's."""
     calls = {"alpha": [], "foreground": []}
-    estimate_alpha = MATTING.pymatting.estimate_alpha_cf
-    estimate_foreground = MATTING.pymatting.estimate_foreground_ml
+    estimate_alpha = pymatting.estimate_alpha_cf
+    estimate_foreground = pymatting.estimate_foreground_ml
     c_alpha, c_foreground = MATTING.estimate_alpha, MATTING.estimate_foreground
 
     def alpha(img, trimap):
@@ -220,8 +221,8 @@ def real_solver_calls(monkeypatch):
         calls["foreground"].append((img.copy(), matte.copy()))
         return c_foreground(img, matte)
 
-    monkeypatch.setattr(MATTING.pymatting, "estimate_alpha_cf", alpha)
-    monkeypatch.setattr(MATTING.pymatting, "estimate_foreground_ml", foreground)
+    monkeypatch.setattr(pymatting, "estimate_alpha_cf", alpha)
+    monkeypatch.setattr(pymatting, "estimate_foreground_ml", foreground)
     for module in (MATTING, CHROMA):
         monkeypatch.setattr(module, "estimate_alpha", native_alpha)
         monkeypatch.setattr(module, "estimate_foreground", native_foreground)

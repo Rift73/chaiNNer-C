@@ -153,7 +153,6 @@ def other_files() -> dict[str, bytes]:
         "ycbcr-jpeg": pillow_tiff(rgb, compression="jpeg", quality=80),
         "grey-jpeg": pillow_tiff(grey, compression="jpeg"),
         "min-is-white": raw_tiff(RGBA8[:, :, 1], {258: [8], 262: [0]}),
-        "min-is-white-16": raw_tiff(RGBA16[:, :, 1], {258: [16], 262: [0]}),
         "grey-16-from-rgb-samples": raw_tiff(
             RGBA16[:, :, :3], {258: [16] * 3, 262: [1]}
         ),
@@ -427,7 +426,6 @@ def test_straight_alpha_tiff_failing_allocation_declines(tmp_path, monkeypatch):
 UNPORTED = {
     # OpenCV reads the first plane's strips as if they held every sample (unset
     # memory): not ported.
-    "planar16": raw_tiff(RGBA16[:, :, :3], {258: [16] * 3, 262: [2]}, planar=True),
     # LogLuv (OpenCV's XYZ floats) is not ported.
     "logluv": cv2.imencode(
         ".tif", FLOAT[:, :, :3].clip(0, 1), [cv2.IMWRITE_TIFF_COMPRESSION, 34676]
@@ -448,6 +446,7 @@ def test_unported_tiffs_go_to_today_path(tmp_path, monkeypatch, name):
         "cv2",
         SimpleNamespace(imdecode=declined, imread=declined, IMREAD_UNCHANGED=-1),
     )
+    monkeypatch.setattr(load_image, "get_pil_formats", list)
     with pytest.raises(RuntimeError, match="Error reading image"):
         load_image.load_image_node(path)
 

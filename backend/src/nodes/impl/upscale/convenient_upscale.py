@@ -11,6 +11,7 @@ from ..native_framework_shared import (
     recover_alpha,
     recovered_alpha_image,
 )
+from .white_pass import white_pass
 
 
 def with_black_and_white_backgrounds(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -97,12 +98,13 @@ def convenient_upscale(
         else:
             # Transparency hack (white/black background difference alpha)
             black, white = with_black_and_white_backgrounds(img)
-            black_up = as_target_channels(
-                upscale(as_target_channels(black, model_in_nc, True)), 3, True
-            )
-            white_up = as_target_channels(
-                upscale(as_target_channels(white, model_in_nc, True)), 3, True
-            )
+            white_in = as_target_channels(white, model_in_nc, True)
+            with white_pass(white_in, img[:, :, 3] == 1) as tiles:
+                black_up = as_target_channels(
+                    upscale(as_target_channels(black, model_in_nc, True)), 3, True
+                )
+                tiles.start()
+                white_up = as_target_channels(upscale(white_in), 3, True)
 
             # Interpolate between the alpha values to get a more defined alpha
             image = recovered_alpha_image(white_up, black_up)

@@ -10,6 +10,7 @@ import { log } from '../../../common/log';
 import { assertNever } from '../../../common/util';
 import { BackendContext } from '../../contexts/BackendContext';
 import { InputContext } from '../../contexts/InputContext';
+import { parsePastedNumber } from '../../helpers/pastedNumber';
 import { LINEAR_SCALE, LogScale, PowerScale, Scale } from '../../helpers/sliderScale';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useInputRefactor } from '../../hooks/useInputRefactor';
@@ -157,8 +158,8 @@ export const SliderInput = memo(
                         navigator.clipboard
                             .readText()
                             .then((clipboardValue) => {
-                                const n = Number(clipboardValue);
-                                if (!Number.isNaN(n) && min <= n && max >= n) {
+                                const n = parsePastedNumber(clipboardValue, min, max, precision);
+                                if (n !== undefined) {
                                     setValue(n);
                                 }
                             })

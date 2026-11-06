@@ -1,9 +1,9 @@
 import { Bezier } from 'bezier-js';
-import ELK, { ElkExtendedEdge, ElkNode } from 'elkjs';
 import { Edge, Node, Position } from 'reactflow';
 import { Circle, Line, Point, Vec2 } from '../../common/2d';
 import { EdgeData, NodeData } from '../../common/common-types';
-import { assertNever } from '../../common/util';
+import { assertNever, lazy } from '../../common/util';
+import type { ElkExtendedEdge, ElkNode } from 'elkjs';
 
 export class AABB {
     readonly min: Vec2;
@@ -136,7 +136,11 @@ export const getBezierPathValues = ({
     return [source, sourceControl, targetControl, target];
 };
 
-const elk = new ELK();
+// Only formatting a chain needs ELK, so it does not load with the app.
+const getElk = lazy(async () => {
+    const { default: ELK } = await import('elkjs');
+    return new ELK();
+});
 
 const elkOptions = {
     'elk.algorithm': 'layered',
@@ -194,6 +198,7 @@ export const getLayoutedPositionMap = async (
         }),
     };
 
+    const elk = await getElk();
     const layoutedGraph = await elk.layout(graph);
     const positionMap = new Map<string, Point>();
     const layoutedNodes = layoutedGraph.children || [];

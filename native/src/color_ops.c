@@ -382,9 +382,7 @@ static void prepare_range(void *opaque, size_t begin, size_t end) {
     for (size_t i = begin; i < end; ++i) {
         float value = job->src[i];
         if (job->minimum > 0.0f && value < job->minimum) value = job->minimum;
-        /* The original node skips multiplication when its Scale input is zero. */
-        if (job->scale != 0.0f) value *= job->scale;
-        job->dst[i] = value;
+        job->dst[i] = value * job->scale;
     }
 }
 

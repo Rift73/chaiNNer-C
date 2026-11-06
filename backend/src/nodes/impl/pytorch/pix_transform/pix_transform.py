@@ -9,7 +9,14 @@ import torch
 import torch.utils.data
 from torch import optim
 
+from api import Progress
+
 from .pix_transform_net import PixTransformNet
+
+# The final prediction's pixels at a time. The network holds 2048 channels a pixel in
+# three maps at its widest (24.6 KB a pixel, so about 400 MiB here), and all of its layers
+# are 1x1, so that no pixel's result depends on its neighbours.
+PREDICTION_PIXELS = 1 << 14
 
 
 @dataclass
@@ -28,6 +35,7 @@ def pix_transform(
     guide_img: np.ndarray,
     device: torch.device,
     params: Params,
+    progress: Progress,
 ) -> np.ndarray:
     if len(guide_img.shape) < 3:
         guide_img = np.expand_dims(guide_img, 0)
@@ -108,6 +116,7 @@ def pix_transform(
             islice(train_loader, params.iteration) if epochs == 0 else train_loader
         )
         for x, y in batches:
+            progress.suspend()
             optimizer.zero_grad()
 
             y_pred = mynet(x)
@@ -120,8 +129,12 @@ def pix_transform(
 
     # compute final prediction, un-normalize, and back to numpy
     mynet.eval()
-    predicted_target_img = mynet(guide_tensor.unsqueeze(0)).squeeze()
-    predicted_target_img = source_img_mean + source_img_std * predicted_target_img
-    predicted_target_img = predicted_target_img.cpu().detach().squeeze().numpy()
+    bands = []
+    with torch.inference_mode():
+        for band in guide_tensor.split(max(1, PREDICTION_PIXELS // hr_width), dim=1):
+            progress.suspend()
+            predicted_band = mynet(band.unsqueeze(0))[0, 0]
+            predicted_band = source_img_mean + source_img_std * predicted_band
+            bands.append(predicted_band.cpu().numpy())
 
-    return predicted_target_img
+    return np.concatenate(bands)

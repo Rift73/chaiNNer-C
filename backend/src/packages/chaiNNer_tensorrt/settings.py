@@ -10,6 +10,8 @@ from gpu import nvidia
 
 from . import package
 
+ENGINE_CACHE_DIRECTORY = "tensorrt_engine_cache"
+
 package.add_setting(
     DropdownSetting(
         label="GPU",
@@ -33,8 +35,8 @@ package.add_setting(
     CacheSetting(
         label="Engine Cache",
         key="engine_cache",
-        description="Directory where Build Engine keeps the engines it builds, so that a build of the same model with the same settings, GPU and TensorRT version reads its engine instead of building it again, also after a restart. Up to 16 GiB; the least recently used engines are removed first.",
-        directory="tensorrt_engine_cache",
+        description="Directory where Build Engine keeps the engines it builds, so that a build of the same model with the same settings, GPU and TensorRT version reads its engine instead of building it again, also after a restart. Up to 16 GiB; the least recently used engines are removed first. PyTorch Upscale Image's Use TensorRT Engine keeps its engines here too, within the same limit, also while this setting is off.",
+        directory=ENGINE_CACHE_DIRECTORY,
     )
 )
 

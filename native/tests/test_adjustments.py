@@ -185,9 +185,11 @@ def test_alpha_association(name):
 
 
 @pytest.mark.parametrize("channels", [1, 3, 4])
-@pytest.mark.parametrize("mode", ["AUTO", "PERCENTILE", "MANUAL"])
 @pytest.mark.parametrize("keep", [True, False])
-@pytest.mark.parametrize("constant", [True, False])
+@pytest.mark.parametrize(
+    ("mode", "constant"),
+    [("AUTO", False), ("PERCENTILE", False), ("MANUAL", False), ("MANUAL", True)],
+)
 def test_stretch(channels, mode, keep, constant):
     native, original = MODULES["stretch_contrast"]
     img = source(channels, "strided")

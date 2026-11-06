@@ -268,16 +268,16 @@ static const size_t gbr_source[3] = {1, 0, 2};
 
 /* cn_pixels_gbr_planes_u16's pixels [begin, end) of a BGR float32 image to its G, B
  * and R uint16 planes of `pixels` samples each, every element as convert_generic's
- * (0, 2, *) loop converts it: clamp_unit, scaled_integer, then the signalling NaN bit.
- * Returns the event bits. */
-static long gbr_planes_scalar(const float *src, uint16_t *out, size_t pixels,
+ * (0, 2, *) loop converts it, with `white` for its 65535: clamp_unit, scaled_integer,
+ * then the signalling NaN bit. Returns the event bits. */
+static long gbr_planes_scalar(const float *src, uint16_t *out, size_t pixels, float white,
                               size_t begin, size_t end)
 {
     long events = 0;
     for (size_t i = begin; i < end; ++i)
         for (size_t k = 0; k < 3; ++k) {
             float value = src[3 * i + gbr_source[k]];
-            out[k * pixels + i] = (uint16_t)scaled_integer(clamp_unit(value), 65535.0f, &events);
+            out[k * pixels + i] = (uint16_t)scaled_integer(clamp_unit(value), white, &events);
             events |= signalling_nan(float_bits(value));
         }
     return events;
@@ -292,8 +292,8 @@ long cn_convert_avx2(const convert_job *j, size_t begin, size_t end);
 /* convert_avx2.c: gbr_planes_scalar's pixels [begin, end) in groups of 8 pixels, the
  * rest through gbr_planes_scalar; returns the event bits. The caller ensures ISA level
  * avx2 or above. */
-long cn_gbr_planes_avx2(const float *src, uint16_t *out, size_t pixels, size_t begin,
-                        size_t end);
+long cn_gbr_planes_avx2(const float *src, uint16_t *out, size_t pixels, float white,
+                        size_t begin, size_t end);
 
 /* convert_avx2.c: cn_pixels_normalized_f32's scan of src[0, count): 1 when every
  * element is +0 or a normal value in (0, 1] (the baseline loop's bit tests), else

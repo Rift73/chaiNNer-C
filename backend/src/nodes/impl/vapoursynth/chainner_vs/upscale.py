@@ -188,7 +188,6 @@ def _tensorrt(path: str) -> Upscaler:
     from nodes.impl.tensorrt.engine_info import deserialize_engine, read_engine_info
     from nodes.impl.tensorrt.inference import TensorRTSession
     from nodes.impl.tensorrt.model import TensorRTEngine
-    from nodes.impl.tensorrt.tiling import tiled_upscale
     from nodes.impl.upscale.convenient_upscale import convenient_upscale
 
     # As Load Engine and TensorRT's Upscale Image node do.
@@ -212,8 +211,9 @@ def _tensorrt(path: str) -> Upscaler:
             img,
             engine.input_channels,
             engine.output_channels,
-            lambda i: tiled_upscale(i, scale, session.bounds, session),
+            lambda i: session.upscale(i, scale),
             False,
+            clip=False,
         )
 
     return Upscaler(scale, scale, engine.input_channels, engine.output_channels, run)
@@ -267,7 +267,7 @@ def _upscaler(model: str, backend: str, precision: str) -> Upscaler:
     return upscaler
 
 
-def _image(frame: Any) -> np.ndarray:
+def frame_image(frame: Any) -> np.ndarray:
     """A frame as the float32 BGR image (HxW for gray) chaiNNer's nodes take."""
     if frame.format.color_family == vs.GRAY:
         return np.array(frame[0])
@@ -404,7 +404,7 @@ def upscale(
     stretched = upscaler.scale_width != upscaler.scale_height
 
     def frame(n: int, f: Any) -> Any:
-        img = _image(f)  # a copy of the frame's planes, clipped in place
+        img = frame_image(f)  # a copy of the frame's planes, clipped in place
         np.clip(img, 0.0, 1.0, out=img)
         with _model_call:
             upscaled = upscaler.run(img, tile)

@@ -5,7 +5,8 @@ from pathlib import Path
 
 from sanic.log import logger
 
-from api import Generator, IteratorOutputInfo
+from api import Generator, IteratorOutputInfo, NodeContext
+from nodes.impl.onnx.load import warn_if_grid_frozen
 from nodes.impl.onnx.model import OnnxModel
 from nodes.impl.read_ahead import from_list_read_ahead
 from nodes.properties.inputs import BoolInput, DirectoryInput
@@ -48,8 +49,10 @@ from ..io.load_model import load_model_node
     ],
     iterator_outputs=IteratorOutputInfo(outputs=[0, 2, 3, 4]),
     kind="generator",
+    node_context=True,
 )
 def load_models_node(
+    context: NodeContext,
     directory: Path,
     fail_fast: bool,
 ) -> tuple[Generator[tuple[OnnxModel, str, str, int]], Path]:
@@ -60,6 +63,7 @@ def load_models_node(
         path: Path, loaded: tuple[OnnxModel, Path, str], index: int
     ) -> tuple[OnnxModel, str, str, int]:
         model, dirname, basename = loaded
+        warn_if_grid_frozen(context, model, path.name)
         # Get relative path from root directory passed by Iterator directory input
         rel_path = os.path.relpath(dirname, directory)
         return model, rel_path, basename, index

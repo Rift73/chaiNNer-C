@@ -8,6 +8,7 @@ synthetic inputs."""
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import re
 import shutil
@@ -20,8 +21,8 @@ import bench_cases
 import cv2
 import numpy as np
 import pytest
-from bench_oracle import FFMPEG
 from engine_differential import (
+    FFMPEG,
     LAYOUT_DIFFERENCES,
     execute,
     fatal_load_errors,
@@ -29,12 +30,14 @@ from engine_differential import (
     mismatches,
     order_violations,
 )
+from scratch_storage import NO_FFMPEG, STORAGE
 from verify_runtime import edge, make_node
 
 import api
 import process
 from chain.json import LAZY_LINK_DEPTH, MAX_CHAIN_DEPTH, JsonNode, parse_json
 from chain.optimize import optimize
+from nodes.impl.ffmpeg import get_executable_path
 from nodes.impl.native_graph import graph
 
 BACKEND = Path(__file__).resolve().parents[2] / "backend" / "src"
@@ -44,6 +47,7 @@ IMAGE_CASES = [
     if not case.startswith("video-") and case != "resize-real-256"
 ]
 VIDEO_CASES = [case for case in bench_cases.CASES if case.startswith("video-")]
+SAVE_VIDEO = "chainner:image:save_video"
 
 
 @pytest.fixture(scope="module")
@@ -104,11 +108,16 @@ def assets(tmp_path_factory):
             str(root / "moving.mkv"),
         ]
         subprocess.run(command, check=True, timeout=120, stdin=subprocess.DEVNULL)
-        import _winapi
+        if sys.platform == "win32":
+            import _winapi
 
-        _winapi.CreateJunction(str(FFMPEG.parent), str(root / "storage" / "ffmpeg"))
+            _winapi.CreateJunction(str(FFMPEG.parent), str(root / "storage" / "ffmpeg"))
+        else:
+            (root / "storage" / "ffmpeg").symlink_to(FFMPEG.parent)
     yield root
-    if (root / "storage" / "ffmpeg").exists():
+    if (root / "storage" / "ffmpeg").is_symlink():
+        (root / "storage" / "ffmpeg").unlink()
+    elif (root / "storage" / "ffmpeg").exists():
         os.rmdir(root / "storage" / "ffmpeg")
 
 
@@ -298,6 +307,17 @@ def run_case(schemas, assets: Path, tmp_path: Path, case: str) -> list[str]:
 @pytest.mark.parametrize("case", [*CHAINS, *IMAGE_CASES])
 def test_image_chain_matches(schemas, assets, tmp_path, case):
     assert run_case(schemas, assets, tmp_path, case) == []
+
+
+def test_the_saved_resize_request_gives_every_input_a_value(schemas):
+    # /run reads a request's inputs by position and refuses a missing one.
+    request = json.loads(
+        (bench_cases.DATA / "resize-real-256.json").read_text(encoding="utf-8")
+    )
+    for node in request["data"]:
+        assert len(node["inputs"]) == len(schemas[node["schemaId"]]["inputs"]), node[
+            "schemaId"
+        ]
 
 
 def test_native_node_error_matches(schemas, assets, tmp_path):
@@ -697,6 +717,53 @@ def test_video_chain_matches(schemas, assets, tmp_path, case):
     assert run_case(schemas, assets, tmp_path, case) == []
 
 
+@pytest.mark.parametrize("case", ["resize", "video-ffv1", "video-frames"])
+def test_names_that_are_not_text_run_as_any_other(schemas, assets, tmp_path, case):
+    # A POSIX name is bytes, and Python gives those that are not UTF-8 as lone surrogates; a Windows name is UTF-16 units,
+    # any of them alone.
+    windows = sys.platform == "win32"
+    if windows and case != "resize":
+        pytest.skip("FFmpeg takes its arguments as UTF-8, on Windows from UTF-16")
+    folder, file, out = map(
+        chr, (0xD800, 0xD801, 0xD802) if windows else (0xDCE9, 0xDCFF, 0xDCFE)
+    )
+    named = tmp_path / f"caf{folder}"
+    named.mkdir()
+    shutil.copytree(assets / "images", named / "images")
+    (named / "images" / "000.jpg").rename(named / "images" / f"{file}.jpg")
+    if case == "resize":
+        (named / "storage").mkdir()
+    else:
+        shutil.copyfile(assets / "moving.mkv", named / "moving.mkv")
+        (named / "storage").symlink_to(assets / "storage")
+    output = tmp_path / out
+    output.mkdir()
+    assert run_case(schemas, named, output, case) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="FFmpeg on POSIX takes any bytes")
+@pytest.mark.parametrize("kind", ["python", "native"])
+@pytest.mark.parametrize("where", ["folder", "name"])
+def test_save_video_says_ffmpeg_cannot_take_a_name_that_is_not_text(
+    schemas, assets, tmp_path, kind, where
+):
+    if not (assets / "moving.mkv").exists():
+        pytest.skip(f"the pinned FFmpeg ({FFMPEG}) is not installed")
+    unit = chr(0xD800)
+    output = tmp_path / unit if where == "folder" else tmp_path
+    output.mkdir(exist_ok=True)
+    nodes, _, _ = bench_cases.graph(schemas, "video-ffv1", assets, output)
+    if where == "name":
+        save = next(node for node in nodes if node["schemaId"] == SAVE_VIDEO)
+        save["inputs"][2] = {"type": "value", "value": f"v{unit}"}
+    chain = parse_json(cast("list[JsonNode]", nodes))
+    optimize(chain)
+    error = execute(kind, chain, storage=assets / "storage").error
+    assert isinstance(error, process.NodeExecutionError), repr(error)
+    assert "FFmpeg cannot write" in str(error) and "\\ud800" in str(error)
+    assert [path for path in output.rglob("*") if path.is_file()] == []
+
+
 @pytest.fixture(scope="module")
 def lazy_images(tmp_path_factory):
     """Four PNGs, 83 to 86 pixels wide and 61 to 64 high, that the lazy shapes' comparisons split."""
@@ -1061,3 +1128,59 @@ def test_registry_fixtures_ignore_only_missing_optional_modules():
         "packages.d",
         "packages.e",
     ]
+
+
+@pytest.mark.parametrize(
+    ("inputs", "codec", "profile"),
+    [
+        ({4: "webm", 3: "libsvtav1", 31: 11, 32: 40}, "av1", "Main"),
+        ({4: "mov", 3: "prores_ks", 33: "standard"}, "prores", "Standard"),
+        ({4: "mkv", 3: "prores_ks", 33: "4444xq"}, "prores", "XQ"),
+    ],
+)
+def test_save_video_encoders_run_on_both_engines(
+    schemas, assets, tmp_path, inputs, codec, profile
+):
+    """The inputs as /run passes them, by schema id, reach the encoder's options."""
+    ffprobe = get_executable_path(STORAGE / "ffmpeg")[1]
+    if not FFMPEG.exists() or not ffprobe.exists():  # the clip, and the writer's build
+        pytest.skip(NO_FFMPEG)
+    for kind in ("python", "native"):
+        output = tmp_path / kind
+        nodes = [
+            make_node(
+                schemas,
+                "load",
+                "chainner:image:load_video",
+                {0: str(assets / "moving.mkv")},
+            ),
+            make_node(
+                schemas,
+                "save",
+                "chainner:image:save_video",
+                {0: edge("load"), 1: str(output), 2: "out", 16: 1, **inputs},
+            ),
+        ]
+        chain = parse_json(cast("list[JsonNode]", nodes))
+        optimize(chain)
+        assert execute(kind, chain, storage=STORAGE).error is None, kind
+        probe = subprocess.run(
+            [
+                str(ffprobe),
+                "-v",
+                "error",
+                "-count_frames",
+                "-select_streams",
+                "v",
+                "-show_entries",
+                "stream=codec_name,profile,nb_read_frames",
+                "-of",
+                "csv=p=0",
+                str(output / f"out.{inputs[4]}"),
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert probe.stdout.strip() == f"{codec},{profile},24"

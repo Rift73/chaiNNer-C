@@ -291,7 +291,8 @@ def normal_map_generator_node(
 
     padding = 0
     if tileable:
-        padding = max(1, filter_x.shape[0] // 2, math.ceil(abs(blur_sharp) * 2))
+        # The filter reads what the blur wrote: their reaches add (the blur's is 4 sigma).
+        padding = max(1, filter_x.shape[0] // 2) + math.ceil(abs(blur_sharp) * 4)
         height = pad(height, 3, None, padding, padding, padding, padding)
 
     if blur_sharp < 0:

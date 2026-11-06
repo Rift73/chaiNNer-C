@@ -110,15 +110,18 @@ def planes_colour(
 def ffv1_options(width: int, height: int, planes: int) -> list[str]:
     """FFmpeg's encoder options for 16-bit frames of this size and plane count:
     lossless FFV1 in 16 slices (level 3), which FFmpeg encodes on up to 16 threads,
-    where they are valid, else today's FFV1 options (FFmpeg then picks the version and
-    slice count itself).
+    where they are valid; level 1, which has no slices, on frames too small for them;
+    else plain FFV1 (FFmpeg picks the version and slice count itself).
 
     The integrated FFmpeg 5.1 refuses 16 slices (4x4) below 4 pixels or chroma samples
     a side, and from 4 to 6 pixels writes slice positions that decoders misread,
-    corrupting the frames; from 7 every slice is where it belongs. It also refuses a
-    slice of more than 2^27 bits, at 17 bits a sample."""
+    corrupting the frames; from 7 every slice is where it belongs. Its own choice of
+    slices finds none for a plane one sample wide. It also refuses a slice of more than
+    2^27 bits, at 17 bits a sample."""
+    if min(width, height) < 7:
+        return ["-c:v", "ffv1", "-level", "1"]
     slice_samples = -(-width // 4) * -(-height // 4) * planes
-    if min(width, height) >= 7 and slice_samples * 17 <= 1 << 27:
+    if slice_samples * 17 <= 1 << 27:
         return ["-c:v", "ffv1", "-level", "3", "-slices", "16"]
     return ["-c:v", "ffv1"]
 

@@ -39,7 +39,8 @@ import pytest
 
 from api import Generator
 from nodes.impl import colour_info
-from nodes.impl.image_utils import to_uint8, to_uint16, to_uint16_gbr_planes
+from nodes.impl.image_utils import to_uint8, to_uint16
+from nodes.impl.native_buffers import freeze_normalized, gbr_planes_u16
 from nodes.impl.native_framework_images import planes_to_interleaved
 from nodes.impl.native_graph import graph
 from nodes.impl.yuv_rgb import resolve_colour_info
@@ -414,6 +415,10 @@ INTENDED_MUX = (
                     if settings in (AudioSettings.TRANSCODE, AudioSettings.AUTO):
                         params["acodec"] = "libopus"
                         params["b:a"] = "320k"
+                        params["af"] = (
+                            "aformat=channel_layouts="
+                            "mono|stereo|3.0|quad|5.0|5.1|6.1|7.1"
+                        )
                         for index, stream in enumerate(audio_streams()):  # (h)
                             if stream.get("channels") == 1:
                                 params[f"b:a:{index}"] = "256k"
@@ -438,6 +443,26 @@ INTENDED_MUX = (
                         )
                         settings = AudioSettings.TRANSCODE
                         break
+            if (
+                self.container == VideoFormat.MOV
+                and settings != AudioSettings.TRANSCODE
+            ):
+                for stream in audio_streams():
+                    codec = stream.get("codec_name", "")
+                    if not codec.startswith("wma"):
+                        continue
+                    if settings == AudioSettings.COPY:
+                        raise RuntimeError(
+                            f"Save Video could not copy the {codec} audio into the"
+                            " .mov file: nothing could read it there. Set Audio to"
+                            " Auto or Transcode to re-encode it."
+                        )
+                    logger.info(
+                        f"Auto transcodes the {codec} audio, which nothing can read"
+                        " in a .mov file"
+                    )
+                    settings = AudioSettings.TRANSCODE
+                    break
             output_params = options(settings)  # (a)
             transcode_on_failure = (  # (c)
                 settings == AudioSettings.AUTO and output_params["acodec"] == "copy"
@@ -655,8 +680,9 @@ class Writer:
 
 
 # (l) RGB frames are piped as gbrp16le (16-bit G, B and R planes), so FFmpeg's YUV
-# conversion keeps more than 8 bits of the float image; GIF and RGB output of up to 8
-# bits keep bgr24, which stays exact there.
+# conversion keeps more than 8 bits of the float image, with 1.0 as the code libswscale
+# takes for white (65280 for YUV or gray output, measured on the pinned FFmpeg and 8.1);
+# GIF and RGB output of up to 8 bits keep bgr24, which stays exact there.
 INTENDED_RGB16 = [
     (
         """@dataclass
@@ -670,6 +696,15 @@ class Writer:
     ):
         return "bgr24"
     return "gbrp16le"
+
+
+def rgb_white(encoder, params):  # (l)
+    fmt = str(params.get("pix_fmt", "")) if hasattr(params, "get") else ""
+    if not fmt:
+        # No -pix_fmt: FFmpeg keeps the piped RGB on an encoder that takes RGB and
+        # converts to YUV on H.264 or a container's default encoder.
+        return 65280.0 if encoder is None or encoder.name == "H264" else 65535.0
+    return 65280.0 if pixel_layout(fmt).kind in ("yuv", "gray") else 65535.0
 
 
 @dataclass
@@ -688,8 +723,11 @@ class Writer:
         """        if rgb_pipe(self.container, self.output_params) == "bgr24":
             out_frame = to_uint8(img, normalized=True)
         else:
+            scaled = np.clip(img, 0, 1) * np.float32(
+                rgb_white(self.encoder, self.output_params)
+            )
             out_frame = np.ascontiguousarray(
-                to_uint16(img, normalized=True).transpose(2, 0, 1)[[1, 0, 2]]
+                np.rint(scaled).astype(np.uint16).transpose(2, 0, 1)[[1, 0, 2]]
             )
 """,
     ),
@@ -963,7 +1001,7 @@ def load(kind, component, env=None):
             "get_h_w_c": get_h_w_c,
             "to_uint8": to_uint8,
             "to_uint16": to_uint16,
-            "to_uint16_gbr_planes": to_uint16_gbr_planes,
+            "gbr_planes_u16": gbr_planes_u16,
             "pixel_layout": colour_info.pixel_layout,
             "split_file_path": split_file_path,
             "Generator": API["Generator"],
@@ -982,6 +1020,7 @@ def load(kind, component, env=None):
         g.update({name: getattr(colour_info, name) for name in COLOUR_NAMES})
         g["file_identity"] = file_identity
         g["planes_to_interleaved"] = planes_to_interleaved
+        g["freeze_normalized"] = freeze_normalized
         g["replace"] = replace
         g["OrderedDict"] = collections.OrderedDict
         g["Lock"] = threading.Lock
@@ -1152,6 +1191,79 @@ REPLACED = {
 }
 
 
+ADVANCED_GROUP = "if_enum_group(16, Simplicity.ADVANCED)"
+
+
+def advanced_group_kept(old_group: ast.expr, new_group: ast.expr) -> None:
+    """Save Video's Advanced group with this repository's encoders: every installed input
+    stays in order with its id, and the Encoder only gains options: its option tables
+    hold the installed entries, and the rest of its call (id, label, default) is equal."""
+    assert isinstance(old_group, ast.Call) and isinstance(new_group, ast.Call)
+    tables = ("option_labels", "conditions")
+
+    def options(item: ast.expr, table: str) -> set[tuple[str, str]]:
+        return {
+            (ast.dump(key), ast.dump(value))
+            for node in ast.walk(item)
+            if isinstance(node, ast.Call)
+            for argument in node.keywords
+            if argument.arg == table and isinstance(argument.value, ast.Dict)
+            for key, value in zip(
+                argument.value.keys, argument.value.values, strict=True
+            )
+            if key is not None
+        }
+
+    def without_options(item: ast.expr) -> str:
+        stripped = copy.deepcopy(item)
+        for node in ast.walk(stripped):
+            if isinstance(node, ast.Call):
+                node.keywords = [k for k in node.keywords if k.arg not in tables]
+        return ast.dump(stripped)
+
+    children = iter(new_group.args)
+    for child in old_group.args:
+        if "EnumInput(VideoEncoder" in ast.unparse(child):
+            encoder = next(
+                x for x in children if "EnumInput(VideoEncoder" in ast.unparse(x)
+            )
+            assert without_options(child) == without_options(encoder)
+            for table in tables:
+                assert options(child, table) <= options(encoder, table), table
+        else:
+            assert ast.dump(child) in (ast.dump(x) for x in children), ast.unparse(
+                child
+            )
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (".with_id(3)", ".with_id(37)"),
+        ('label="Encoder",', 'label="Encoder", default=VideoEncoder.FFV1,'),
+        ('label="Encoder",', 'label="Codec",'),
+        ('VideoEncoder.H265: "H.265 (HEVC)",', ""),
+        ("VideoEncoder.H265: Condition.enum(4, VideoEncoder.H265.formats),", ""),
+    ],
+)
+def test_the_advanced_group_contract_guards_the_encoder(tmp_path, old, new):
+    def group(path: Path) -> ast.expr:
+        _, keywords = registration(path, "save_video")
+        items = keywords["inputs"]
+        assert isinstance(items, ast.List)
+        return next(x for x in items.elts if ast.unparse(x).startswith(ADVANCED_GROUP))
+
+    installed = group(REFERENCE / "installed" / (NODE + "save_video.py"))
+    source = ROOT / "backend/src" / (NODE + "save_video.py")
+    advanced_group_kept(installed, group(source))
+    text = source.read_text(encoding="utf-8")
+    assert old in text
+    mutated = tmp_path / "save_video.py"
+    mutated.write_text(text.replace(old, new, 1), encoding="utf-8")
+    with pytest.raises(AssertionError):
+        advanced_group_kept(installed, group(mutated))
+
+
 def test_reference_hashes_and_registration_contracts():
     for entry in json.loads((REFERENCE / "manifest.json").read_text())["files"]:
         assert (
@@ -1186,6 +1298,15 @@ def test_reference_hashes_and_registration_contracts():
                     assert key == "inputs" or label(new_items.elts[position]) == label(
                         item
                     )
+                    continue
+                if ast.unparse(item).startswith(ADVANCED_GROUP):
+                    group = next(
+                        x
+                        for x in new_items.elts
+                        if ast.unparse(x).startswith(ADVANCED_GROUP)
+                    )
+                    advanced_group_kept(item, group)
+                    assert unwrapped(group) in remaining, (name, key)
                     continue
                 assert unwrapped(item) in remaining, (name, key, ast.unparse(item))
         new_arguments = iter([ast.dump(a) for a in new.args.args])
@@ -1265,15 +1386,23 @@ def test_simple_quality_all_boundaries(format_name, quality):
 
 @pytest.mark.parametrize("enum_name", ["VideoEncoder", "VideoFormat"])
 def test_enum_compatibility(enum_name):
+    # This repository's further encoders are judged in
+    # backend/tests/test_save_video_encoders.py.
+    reference = ("H264", "H265", "VP9", "FFV1")
     values = []
     for kind in ("installed", "native"):
         g = load(kind, "save_video")
         values.append(
             [
-                snap(
-                    getattr(v, "formats" if enum_name == "VideoEncoder" else "encoders")
-                )
+                [
+                    snap(x)
+                    for x in getattr(
+                        v, "formats" if enum_name == "VideoEncoder" else "encoders"
+                    )
+                    if enum_name == "VideoEncoder" or x.name in reference
+                ]
                 for v in g[enum_name]
+                if enum_name == "VideoFormat" or v.name in reference
             ]
         )
     assert values[0] == values[1]
@@ -2091,6 +2220,12 @@ def node_args(g, context, directory, **changes):
             chroma_location=colour_info.ChromaLocation.AUTO,
             bit_depth=g["BitDepth"].AUTO,
             siting_correction=g["SitingCorrection"].AUTO,
+            av1_preset=8,
+            av1_crf=35,
+            prores_profile=g["ProResProfile"].HQ,
+            nvenc_preset=g["NvencPreset"].P4,
+            nvenc_cq=23,
+            av1_nvenc_cq=30,
         )
     kwargs.update(changes)
     return kwargs
@@ -2323,7 +2458,7 @@ def frames_read(items):
 def past_the_end(n, count):
     return (
         "error",
-        ("ValueError", f"frame {n} is past the end (the video has {count} frames)"),
+        ("PastTheEnd", f"frame {n} is past the end (the video has {count} frames)"),
     )
 
 
@@ -2379,7 +2514,10 @@ def test_a_range_s_context_frames_are_clipped_by_eof_not_an_estimate():
     generated = run_load_video(g, context, Path("folder/test.mkv"), 3, 5)[0]
     items, before, after = generated.context(2, 0)
     assert (before, after) == (2, 0)
-    assert outcome(lambda: frames_read(items)) == past_the_end(3, 3)
+    assert outcome(lambda: frames_read(items)) == (
+        "error",
+        ("ValueError", "frame 3 is past the end (the video has 3 frames)"),
+    )
     # All reads every frame: no context frames.
     whole = run_load_video(g, context, Path("folder/test.mkv"))[0]
     assert whole.index_base == 0 and whole.chosen_item is None
@@ -3528,12 +3666,14 @@ def test_prepared_frames_write_todays_payload():
         g = load("native", "save_video", env)
         converted = []
         payload = g["rgb_payload"]
-        g["rgb_payload"] = lambda value: converted.append(value) or payload(value)
+        g["rgb_payload"] = lambda value, white: converted.append(value) or payload(
+            value, white
+        )
         w = writer(g)
         holders = []
         for frame in frames:
             if prepared:
-                holders.append(Prepared(payload(frame)))
+                holders.append(Prepared(payload(frame, w.rgb_white)))
                 w.write_frame(frame, holders[-1])
             else:
                 w.write_frame(frame)

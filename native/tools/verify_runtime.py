@@ -1856,6 +1856,12 @@ def canonical(value: Any, directory: Path):
     return value
 
 
+def is_own_progress(event: dict) -> bool:
+    """A node's own progress (NodeContext.set_progress: no items), which the clock sends: how
+    many of it a run has, and its last value, are not the run's outcome."""
+    return event["event"] == "node-progress" and event["data"]["total"] == 0
+
+
 def event_contract(events: list[dict], directory: Path):
     # Parallel graph scheduling can reorder independent events. Preserve event
     # multiplicities and output values, never compare elapsed time/ETA.
@@ -1887,6 +1893,8 @@ def sse_contract(events: list[dict], directory: Path) -> dict:
             raise TypeError(f"Malformed SSE event: {original!r}")
         event: dict[str, Any] = normalized
         kind = event["event"]
+        if is_own_progress(event):
+            continue
         if kind in {"chain-start", "execution-error"}:
             if kind == "chain-start":
                 event["data"]["nodes"] = sorted(set(event["data"]["nodes"]))
@@ -1919,7 +1927,9 @@ def sse_record(events: list[dict], directory: Path) -> dict:
     events are in the order received; the final state depends on it, the rest not.
     """
     return {
-        "event_kinds": sorted({event["event"] for event in events}),
+        "event_kinds": sorted(
+            {event["event"] for event in events if not is_own_progress(event)}
+        ),
         "events": event_contract(events, directory),
         "final_state": final_broadcasts(events, directory),
     }

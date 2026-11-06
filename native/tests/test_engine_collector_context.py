@@ -169,6 +169,8 @@ def test_temporal_radii_follow_dependency_paths(
         False,
         None,
         lambda: pytest.fail("Planning must not execute nodes"),
+        lambda _: pytest.fail("Planning must not warn"),
+        lambda _: lambda _: pytest.fail("Planning must not report progress"),
     )
     groups = plan["groups"]
     assert isinstance(groups, list)

@@ -1,5 +1,8 @@
 """Native image_utility entry points (native/src/run/nodes/image_utility.cpp) against their Python bodies."""
 
+import re
+from pathlib import Path
+
 import numpy as np
 import pytest
 from native_differential import assert_native_matches
@@ -130,6 +133,18 @@ def test_blend_color_layers_match(color_is_base, color, image_channels, mode):
     assert_native_matches(BLEND, inputs)
 
 
+@pytest.mark.parametrize("pixels", [(16, 200), (-7, 3), (3, -2)])
+@pytest.mark.parametrize("color_is_base", [True, False])
+def test_blend_color_layer_ignores_its_hidden_offset(color_is_base, pixels):
+    # Position, its offsets and the crop are hidden while a layer is a color, and the type gives
+    # the image's size.
+    img = image(seed_of(BLEND, "hidden", pixels), 7, 9, 3)
+    layers = (COLORS[1], img) if color_is_base else (img, COLORS[1])
+    moved = blend_inputs(*layers, 0, "pixel_offset", (0, 0), pixels)
+    still = blend_inputs(*layers, 0, "pixel_offset", (0, 0), (0, 0))
+    assert assert_native_matches(BLEND, moved) == assert_native_matches(BLEND, still)
+
+
 def test_blend_two_colors_error():
     outcome = assert_native_matches(BLEND, blend_inputs(COLORS[1], COLORS[2]))
     assert outcome == ("error", ("ValueError", "At least one layer must be an image"))
@@ -216,3 +231,12 @@ def test_palette_from_image_too_many_distinct_colors(channels):
 def test_palette_from_image_empty_image(shape, method):
     outcome = assert_native_matches(PALETTE, [np.zeros(shape, np.float32), method, 8])
     assert outcome[0] == "error"
+
+
+def test_kernel_failure_statuses_are_cn_status_enumerators():
+    """kmeans_palette and median_cut_palette load their kernels' 5 and 6 as cn_status, and check() a bilateral's,
+    Canny's or inpaint's 4: outside the enumeration's range, each load would be undefined."""
+    header = Path(__file__).resolve().parents[1] / "include" / "chainner.h"
+    enumeration = re.search(r"enum cn_status \{(.*?)\} cn_status;", header.read_text(encoding="utf-8"), re.DOTALL)
+    values = {int(value) for value in re.findall(r"=\s*(\d+)", enumeration.group(1))}
+    assert values >= {4, 5, 6}

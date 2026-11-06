@@ -267,6 +267,66 @@ def test_closed_executors_are_freed(tmp_path):
     assert [ref() for ref in alive] == [None] * len(alive)
 
 
+def test_a_run_failed_through_a_lazy_read_is_collected(tmp_path):
+    # The upstream's error raised in a Python reader's lazy read holds the reader's frames, they its Lazy, and the Lazy
+    # the engine's reader of that input: a cycle the collector cannot see while that reader keeps the error, which kept
+    # the run's executor, and the values in those frames (a model, an image), for the life of the process.
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from events import EventConsumer
+    from native_executor import NativeExecutor
+    from process import ExecutionId, NodeExecutionError
+
+    class Output:
+        """An output object whose life the test follows."""
+
+    class Sink(EventConsumer):
+        def put(self, event) -> None:
+            pass
+
+    alive: list[weakref.ref[object]] = []
+
+    def made(_: object) -> Output:
+        output = Output()
+        alive.append(weakref.ref(output))
+        return output
+
+    def fails(_: object) -> None:
+        raise ValueError("the upstream fails")
+
+    b = Builder()
+    b.node("make", made)
+    b.value("make", 0, 1)
+    b.node("fails", fails)
+    b.edge("make", 0, "fails", 0)
+    b.node("reader", lambda lazy: lazy.value, outputs=0, side_effects=True, lazy=(0,))
+    b.edge("fails", 0, "reader", 0)
+
+    async def drive() -> None:
+        pool = ThreadPoolExecutor(2)
+        executor = NativeExecutor(
+            id=ExecutionId("main-executor"),
+            chain=b.chain,
+            send_broadcast_data=True,
+            options=api.ExecutionOptions.parse({}),
+            loop=asyncio.get_running_loop(),
+            queue=Sink(),
+            storage_dir=tmp_path,
+            pool=pool,
+            pool_size=8,
+        )
+        alive.append(weakref.ref(executor))
+        with pytest.raises(NodeExecutionError, match="the upstream fails"):
+            await executor.run()
+        pool.shutdown()
+
+    asyncio.run(drive())
+    gc.collect()
+    assert len(alive) == 2
+    assert [ref() for ref in alive] == [None, None]
+
+
 def test_closed_executors_are_freed_without_a_collection(tmp_path):
     # server.py never collects after a successful run or preview, so a closed executor and the output an individual
     # run returned must go with their last reference, as process.Executor's do: a reference cycle through the
@@ -592,3 +652,72 @@ def test_loop_previews_are_rate_limited(registry, tmp_path):
     ), (len(limited), seconds)
     assert len(limited) < len(unlimited), (len(limited), len(unlimited))
     assert limited[-1] == unlimited[-1]
+
+
+def test_a_second_read_of_a_failed_lazy_input_raises(tmp_path):
+    # The reader's first read raised the upstream's error, which its api.Lazy keeps; the
+    # engine's reader let go of it. A second read through the engine must say so, not hand
+    # out a value that was never computed.
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from events import EventConsumer
+    from native_executor import NativeExecutor
+    from process import ExecutionId, NodeExecutionError
+
+    class Sink(EventConsumer):
+        def put(self, event) -> None:
+            pass
+
+    seen: list[object] = []
+
+    def fails() -> None:
+        raise ValueError("the upstream fails")
+
+    def engine_lazy(outer):
+        # process.enforce_inputs wraps the engine's api.Lazy (whose factory is the C++
+        # reader) in one of its own, which would answer a second read from its cache.
+        enforce = outer._factory.__closure__[0].cell_contents
+        return next(
+            cell.cell_contents
+            for cell in enforce.__closure__
+            if isinstance(cell.cell_contents, api.Lazy)
+        )
+
+    def reads_twice(lazy) -> None:
+        inner = engine_lazy(lazy)
+        for read in (lambda: lazy.value, lambda: inner._factory().result()):
+            try:
+                seen.append(read())
+            except Exception as error:
+                seen.append(error)
+
+    b = Builder()
+    b.node("fails", fails, inputs=0)
+    b.node("reader", reads_twice, outputs=0, side_effects=True, lazy=(0,))
+    b.edge("fails", 0, "reader", 0)
+
+    async def drive() -> None:
+        pool = ThreadPoolExecutor(2)
+        executor = NativeExecutor(
+            id=ExecutionId("main-executor"),
+            chain=b.chain,
+            send_broadcast_data=True,
+            options=api.ExecutionOptions.parse({}),
+            loop=asyncio.get_running_loop(),
+            queue=Sink(),
+            storage_dir=tmp_path,
+            pool=pool,
+            pool_size=8,
+        )
+        try:
+            await executor.run()
+        except NodeExecutionError:
+            pass
+        pool.shutdown()
+
+    asyncio.run(drive())
+    assert len(seen) == 2
+    assert "the upstream fails" in str(seen[0])
+    assert isinstance(seen[1], RuntimeError)
+    assert "read again" in str(seen[1])

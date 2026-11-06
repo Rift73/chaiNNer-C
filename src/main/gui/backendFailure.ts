@@ -1,4 +1,5 @@
 import { app, dialog } from 'electron/main';
+import { t } from 'i18next';
 import { log } from '../../common/log';
 import { OwnedBackendProcess } from '../backend/process';
 import { getLogsFolder } from '../platform';
@@ -29,10 +30,12 @@ export const exitOnBackendFailure = (
     backend.addErrorListener((error) => {
         dialog.showMessageBoxSync({
             type: 'error',
-            title: 'Unexpected Error',
-            message: `The Python backend encountered an unexpected error. ChaiNNer will now exit. Error: ${String(
-                error
-            )}`,
+            title: t('backendFailure.unexpectedErrorTitle', 'Unexpected Error'),
+            message: t(
+                'backendFailure.unexpectedError',
+                'The Python backend encountered an unexpected error. ChaiNNer will now exit. Error: {{error}}',
+                { error: String(error) }
+            ),
         });
         exitAfterFailure(settingsWriter);
     });
@@ -45,14 +48,23 @@ export const exitOnBackendFailure = (
         if (backendReady) {
             return;
         }
-        const exitStatus = code !== null ? `exit code ${code}` : `signal ${String(signal)}`;
-        const lastOutput = stderrTail ? `\n\nIts last output:\n${stderrTail}` : '';
+        const exitStatus =
+            code !== null
+                ? t('backendFailure.exitCode', 'exit code {{code}}', { code })
+                : t('backendFailure.signal', 'signal {{signal}}', { signal: String(signal) });
+        const lastOutput = stderrTail
+            ? `\n\n${t('backendFailure.lastOutput', 'Its last output:')}\n${stderrTail}`
+            : '';
         dialog.showMessageBoxSync({
             type: 'error',
-            title: 'Unable to start the backend',
-            message:
-                `The Python backend stopped while chaiNNer was starting (${exitStatus}). ChaiNNer will now exit.` +
-                `${lastOutput}\n\nThe full log is in ${getLogsFolder()}.`,
+            title: t('backendFailure.unableToStart', 'Unable to start the backend'),
+            message: `${t(
+                'backendFailure.stoppedWhileStarting',
+                'The Python backend stopped while chaiNNer was starting ({{status}}). ChaiNNer will now exit.',
+                { status: exitStatus }
+            )}${lastOutput}\n\n${t('backendFailure.fullLog', 'The full log is in {{folder}}.', {
+                folder: getLogsFolder(),
+            })}`,
         });
         exitAfterFailure(settingsWriter);
     });

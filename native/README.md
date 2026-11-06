@@ -1,8 +1,8 @@
 # chaiNNer-C: build, test, package, bench
 
-chaiNNer-C v0.3.9, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
+chaiNNer-C v0.3.10, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
 installed nightly `0.25.1-nightly.2025-10-21` UI with pinned bundle patches, the single backend in `backend/src`, and a
-native C17/C++20 layer. The UI shows v0.3.9 (header, About, startup log, system information with `app.upstream`), while
+native C17/C++20 layer. The UI shows v0.3.10 (header, About, startup log, system information with `app.upstream`), while
 `app.getVersion()` stays upstream's, so saved chains keep the upstream version stamp and upstream's migrations read
 them correctly. Design: `ARCHITECTURE.md`. State and
 decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md` (user guide) and
@@ -96,7 +96,9 @@ locations (`chainner_c_llvm`, `chainner_c_vc_tools`, `chainner_c_sdk`, `chainner
 paths above, in `toolchain.cmake`; also on a directory's first configure), `CHAINNER_C_PDB=ON` (PDBs and linker maps; it must
 set `CHAINNER_C_OUTPUT_DIR` outside `backend/src`, as in `native\build\pdb-out`), `CHAINNER_C_FUZZ=ON` (AddressSanitizer
 and the libFuzzer harnesses over the image decoders and the regex engine, `native/tests/fuzz/README.md`; also with
-`CHAINNER_C_OUTPUT_DIR` outside `backend/src`) or `CHAINNER_C_REGEX_ONLY=ON` (the
+`CHAINNER_C_OUTPUT_DIR` outside `backend/src`), on Linux `CHAINNER_C_SANITIZE=ON` (AddressSanitizer and
+UndefinedBehaviorSanitizer over every native module, for test runs, in the same README; also with the output directory
+outside `backend/src`) or `CHAINNER_C_REGEX_ONLY=ON` (the
 regex library and `regex_probe.exe` alone, in `native\build-regex`: `src/regex/README.md`); for builds that stay
 on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>` to every target (for example
 `native` or `icelake-server`).
@@ -106,20 +108,20 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 `CHAINNER_C_EXT_OUTPUT_DIR`, default `backend/src/chainner_ext`), replacing the only known-good copies. Copy them to
 `native\build\held\` first and check `Get-FileHash` against those copies. The build is reproducible: the same sources
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
-map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` of 2026-11-05,
-`_chainner_graph.pyd` of 2026-11-05, `drft_trt_plugins.dll` of 2026-10-20, the others of 2026-10-18, with TensorRT 11.4.0.106 and
+map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` of 2026-11-06,
+`_chainner_graph.pyd`, `_chainner_trt.pyd` and `chainner_trt_vs.dll` of 2026-11-06, `drft_trt_plugins.dll` of 2026-10-20, `vosr2_qkv.dll` of 2026-10-18, with TensorRT 11.4.0.106 and
 CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2; the AMD GPU parts of 2026-11-01, built with `-RocmRoot` and
 `-MigraphxRoot` for ROCm 7.14.1 and MIGraphX 2.16.1), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
-| `chainner_native.dll` | `6f298decf017cf23a8ab08a99b895cb851db6514b352cc83e1c7d0212087ecfa` |
-| `_chainner_graph.pyd` | `f5c9551a6706a42a4c2af29bf6c61c6f8ccc45fa09e0a066b4a074ecb5749042` |
+| `chainner_native.dll` | `f4da1a5e2b04370f72672b3e9de2f7e1c78e560edcb226b9b1d7eb7cb7999d8a` |
+| `_chainner_graph.pyd` | `72897c2b1672035850d9033908cae315d0fbb297b09a94c2cf5f9d0e1215e611` |
 | `chainner_ext.pyd` | `e59941177c46cc8a5f97c812750d8ea69d8e3f1b3ccb37dc1162a451a3232276` |
 | `vosr2_qkv.dll` | `5b5cde9c2c037f0ed3d48ce0fe59b3ff01432c610edc358fdb7b0155e5b93497` |
 | `drft_trt_plugins.dll` | `2bc86cb6918a196d9a03b1f0bc3ab7e3a78c6440567eb6e191642f3f1bb89091` |
-| `_chainner_trt.pyd` | `7d0f774c3426fb2900f05493ef5650f90aa66a997bb000d12c9c71f3cb05d947` |
-| `chainner_trt_vs.dll` | `f7d12717a7cbd02a09ea34728de92a1421ff0902acb73705107b095741b09a9c` |
+| `_chainner_trt.pyd` | `6b9037300ddfc3f5422baef5e0ffbbc5320a086a71bcfcdfd00145088ca22bb0` |
+| `chainner_trt_vs.dll` | `9bcb0a1d3f1bc046b294c73cc7f10667810a2c334ecc479b20fdd3c4d0e39527` |
 | `_chainner_migraphx.pyd` | `42ad0760fa976d260995df653443cc219ee61eaf205a373eac1c9dd1e2ff9c4a` |
 | `drft_migx_ops.dll` | `8a6f3e905b8cec8c65918cf255aa60b44c583c066a2d2181fb3df3ba3d95e07a` |
 | `vosr2_migx_ops.dll` | `67aae7b7517ebfdd572579122cb9aa2ab5aad88b1acce687b182dd5f603a0301` |

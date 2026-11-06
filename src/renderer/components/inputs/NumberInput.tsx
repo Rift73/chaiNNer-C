@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { MdContentCopy, MdContentPaste } from 'react-icons/md';
 import { log } from '../../../common/log';
 import { areApproximatelyEqual } from '../../../common/util';
+import { parsePastedNumber } from '../../helpers/pastedNumber';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useInputRefactor } from '../../hooks/useInputRefactor';
 import { AdvancedNumberInput } from './elements/AdvanceNumberInput';
@@ -15,6 +16,7 @@ export const NumberInput = memo(
     ({
         value,
         setValue,
+        resetValue,
         input,
         isConnected,
         isLocked,
@@ -23,10 +25,13 @@ export const NumberInput = memo(
     }: InputProps<'number', number>) => {
         const { def, min, max, unit, precision, controlsStep, hideTrailingZeros } = input;
 
-        const [inputString, setInputString] = useState(String(value ?? def));
+        const [inputString, setInputString] = useState(String(value ?? def ?? ''));
 
         useEffect(() => {
             setInputString((prev) => {
+                if (value === undefined && input.optional) {
+                    return '';
+                }
                 const asNumber = parseFloat(prev);
                 if (
                     !Number.isNaN(asNumber) &&
@@ -38,10 +43,10 @@ export const NumberInput = memo(
 
                 return prev;
             });
-        }, [value]);
+        }, [value, input.optional]);
 
         useEffect(() => {
-            if (value === undefined) {
+            if (value === undefined && def !== null) {
                 setValue(def);
             }
         }, [value, def, setValue]);
@@ -69,12 +74,8 @@ export const NumberInput = memo(
                         navigator.clipboard
                             .readText()
                             .then((clipboardValue) => {
-                                const n = Number(clipboardValue);
-                                if (
-                                    !Number.isNaN(n) &&
-                                    (min == null || min <= n) &&
-                                    (max == null || max >= n)
-                                ) {
+                                const n = parsePastedNumber(clipboardValue, min, max, precision);
+                                if (n !== undefined) {
                                     setValue(n);
                                 }
                             })
@@ -92,7 +93,7 @@ export const NumberInput = memo(
                 <HStack w="full">
                     <AdvancedNumberInput
                         controlsStep={controlsStep}
-                        defaultValue={def}
+                        defaultValue={def ?? 0}
                         hideTrailingZeros={hideTrailingZeros}
                         inputString={displayString}
                         isDisabled={isLocked || isConnected}
@@ -102,6 +103,7 @@ export const NumberInput = memo(
                         setInput={setValue}
                         setInputString={setInputString}
                         unit={unit}
+                        onClear={input.optional ? resetValue : undefined}
                         onContextMenu={menu.onContextMenu}
                     />
                 </HStack>

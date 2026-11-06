@@ -48,7 +48,7 @@ jet_index="https://jaded-encoding-thaumaturgy.github.io/vs-wheels/simple"
 # ROCm's meta package, bundled (see --rocm); the ROCm version its kernel wheels have.
 rocm_pin="rocm==7.14.1+chainner"
 rocm_version="7.14.1"
-spandrel_pin="spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c13/spandrel-0.4.2%2Bc13-py3-none-any.whl#sha256=20e149794cf16a4f4fbb2930173ffca3ad5264fa585c1acf1c672e019e418950"
+spandrel_pin="spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c14/spandrel-0.4.2%2Bc14-py3-none-any.whl#sha256=91a99eef3ab39ca1c3d4098a7d2e280d8e3b73873a79a96a3d86b323d52198f3"
 
 die() {
     echo "error: $*" >&2
@@ -238,17 +238,19 @@ else
         # their dependencies under the lock's pins.
         constraints="$runtime_dir/constraints-$version.txt"
         printf '%s\n' "${pins[@]}" | grep -E '^[A-Za-z0-9._-]+==' >"$constraints"
+        # The noise plugin's own wheel by hash, as the backend's VapourSynth package pins it.
+        noise='vsnoise @ https://files.pythonhosted.org/packages/e3/86/497a531cc75061b609790542de3816cf61e8a902201aa0df909b75f583f7/vsnoise-1.3-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=35cc606ef085cd140d62108023f30c16e9dddcea91f23c074cf798db520d66db'
         if [ "$rocm" = 1 ]; then
             extras=(
                 'VapourSynth==81' 'vsjetpack[deinterlace]==2.2.6' 'vapoursynth-mvutensils==9' 'vapoursynth-cas==3.0'
-                'vsview==0.13.0'
+                "$noise" 'vsview==0.13.0'
                 'ruff==0.16.10' 'pyright==1.1.414' 'appdirs==1.4.4' 'viztracer==1.1.1'
             )
         else
             extras=(
                 'tensorrt==11.4.0.106' 'cuda-python==13.4.1'
                 'VapourSynth==81' 'vsjetpack[deinterlace]==2.2.6' 'vapoursynth-mvutensils==9' 'vapoursynth-cas==3.0'
-                'vapoursynth-vszipcu==1.2.0' 'dfttest2[cpu,cufft,nvrtc]==11.0.0' 'vsview==0.13.0'
+                "$noise" 'vapoursynth-vszipcu==1.2.0' 'dfttest2[cpu,cufft,nvrtc]==11.0.0' 'vsview==0.13.0'
                 'ruff==0.16.10' 'pyright==1.1.414' 'appdirs==1.4.4' 'viztracer==1.1.1'
             )
         fi

@@ -1,7 +1,24 @@
 import { Edge, Node } from 'reactflow';
-import { EdgeData, InputData, NodeData, NodeSchema, SchemaId } from '../common-types';
+import {
+    EdgeData,
+    Input,
+    InputData,
+    InputSchemaValue,
+    InputValue,
+    NodeData,
+    NodeSchema,
+    SchemaId,
+} from '../common-types';
 import { SchemaMap } from '../SchemaMap';
-import { parseSourceHandle, parseTargetHandle } from '../util';
+import { parseSourceHandle, parseTargetHandle, stringifyTargetHandle } from '../util';
+
+export interface ReplacedInput {
+    /** The name of the node's schema. */
+    readonly node: string;
+    /** The label of the input. */
+    readonly input: string;
+    readonly value: unknown;
+}
 
 export interface EditorChain {
     readonly nodes: Node<NodeData>[];
@@ -15,9 +32,12 @@ export interface EditorChain {
      * throw on each of them, after every change, and a cycle overflows its stack.
      */
     readonly droppedEdges: number;
+    /** The values that their inputs cannot take, now the default. */
+    readonly replacedInputs: readonly ReplacedInput[];
     /**
      * Whether the editor gets all of the chain. A load that is not complete leaves the chain
-     * unsaved, so that saving over the file without the dropped nodes is the user's choice.
+     * unsaved, so that saving over the file without what was dropped or replaced is the user's
+     * choice.
      */
     readonly complete: boolean;
 }
@@ -42,6 +62,35 @@ const fitsNodes = (edge: Edge<EdgeData>, schemaOf: ReadonlyMap<string, NodeSchem
         source.outputs.some((o) => o.id === output.outputId) &&
         target.inputs.some((i) => i.id === input.inputId)
     );
+};
+
+/**
+ * The value in a chain as the input takes it, or undefined if it cannot. A value for no input of
+ * the node stays as it is.
+ */
+const toInputValue = (input: Input | undefined, value: unknown): InputSchemaValue | undefined => {
+    // Input data holds numbers and texts; any other value (an object from a crafted file) would
+    // throw in the editor's type evaluation of the input.
+    if (typeof value !== 'number' && typeof value !== 'string') return undefined;
+    // The backend rejects the rest. A dropdown corrects its value only when it shows, and the input
+    // of a collapsed node or in a group that its condition hides does not.
+    switch (input?.kind) {
+        case 'dropdown':
+            return input.options.some((o) => o.value === value) ? value : undefined;
+        case 'number':
+        case 'slider': {
+            const number = typeof value === 'string' && value.trim() ? Number(value) : value;
+            return typeof number === 'number' && Number.isFinite(number) ? number : undefined;
+        }
+        // a file input parses its value as a path when it shows, which throws on a number
+        case 'file':
+        case 'directory':
+        case 'text':
+        case 'color':
+            return typeof value === 'string' ? value : undefined;
+        default:
+            return value;
+    }
 };
 
 /** The edges without the ones that close a cycle (a depth-first walk, without recursion). */
@@ -85,9 +134,9 @@ const withoutCycles = (edges: readonly Edge<EdgeData>[]): Edge<EdgeData>[] => {
 /**
  * Prepares the nodes and edges of an opened or pasted chain for the editor: nodes whose schema the
  * backend does not have are dropped with their edges, edges that do not fit their nodes are
- * dropped (droppedEdges), inputs a node lacks (e.g. added after it was saved) or holds no number or
- * text in get their defaults, a node without a valid position gets the origin, and no edge is
- * animated.
+ * dropped (droppedEdges), inputs a node lacks (e.g. added after it was saved) or holds no value
+ * they can take in get their defaults, a node without a valid position gets the origin, a node's
+ * type and data id are those of its schema and its id, and no edge is animated.
  */
 export const toEditorChain = (
     schemata: SchemaMap,
@@ -97,26 +146,43 @@ export const toEditorChain = (
     const droppedNodes = nodes
         .filter((node) => !schemata.has(node.data.schemaId))
         .map((node) => node.data.schemaId);
+    const replacedBy = new Map<string, ReplacedInput>();
     const validNodes = nodes
         .filter((node) => schemata.has(node.data.schemaId))
-        .map((node) => ({
-            ...node,
-            position: isPosition(node.position) ? node.position : { x: 0, y: 0 },
-            data: {
-                ...node.data,
-                inputData: {
-                    ...schemata.getDefaultInput(node.data.schemaId),
-                    // Input data holds numbers and texts; any other value (an object from a
-                    // crafted file) would throw in the editor's type evaluation of the input.
-                    ...Object.fromEntries(
-                        // a chain file may hold no input data or null
-                        Object.entries(
-                            (node.data.inputData as Partial<InputData> | null | undefined) ?? {}
-                        ).filter(([, v]) => typeof v === 'number' || typeof v === 'string')
-                    ),
+        .map((node) => {
+            const schema = schemata.get(node.data.schemaId);
+            const inputData: Record<string | number, InputValue> = {
+                ...schemata.getDefaultInput(node.data.schemaId),
+            };
+            // a chain file may hold no input data or null
+            const stored = (node.data.inputData as Partial<InputData> | null | undefined) ?? {};
+            for (const [id, value] of Object.entries<unknown>(stored)) {
+                const input = schema.inputs.find((i) => String(i.id) === id);
+                const inputValue = toInputValue(input, value);
+                if (inputValue !== undefined) {
+                    inputData[id] = inputValue;
+                } else if (input && value != null) {
+                    replacedBy.set(stringifyTargetHandle({ nodeId: node.id, inputId: input.id }), {
+                        node: schema.name,
+                        input: input.label,
+                        value,
+                    });
+                }
+            }
+            return {
+                ...node,
+                // The editor shows a node by its type, and the backend runs it by its type: a node
+                // without one cannot run. A breakpoint is the one type its schema does not have.
+                type: node.type === 'breakPoint' ? node.type : schema.kind,
+                position: isPosition(node.position) ? node.position : { x: 0, y: 0 },
+                data: {
+                    ...node.data,
+                    // the inputs of a node go by this one: without it, the node takes no input
+                    id: node.id,
+                    inputData,
                 },
-            },
-        }));
+            };
+        });
     const schemaOf = new Map(validNodes.map((n) => [n.id, schemata.get(n.data.schemaId)]));
     // An input takes one edge: the first one stays.
     const connected = new Set<string>();
@@ -135,13 +201,19 @@ export const toEditorChain = (
     const droppedEdges =
         edges.filter((edge) => schemaOf.has(edge.source) && schemaOf.has(edge.target)).length -
         validEdges.length;
+    // a connected input does not use its value
+    for (const { targetHandle } of validEdges) {
+        replacedBy.delete(targetHandle as string);
+    }
+    const replacedInputs = [...replacedBy.values()];
 
     return {
         nodes: validNodes,
         edges: validEdges,
         droppedNodes,
         droppedEdges,
-        complete: droppedNodes.length === 0 && droppedEdges === 0,
+        replacedInputs,
+        complete: droppedNodes.length === 0 && droppedEdges === 0 && replacedInputs.length === 0,
     };
 };
 
@@ -154,15 +226,29 @@ export const missingSchemata = (
     nodes: readonly Node<NodeData>[]
 ): SchemaId[] => [...new Set(nodes.map((n) => n.data.schemaId))].filter((id) => !schemata.has(id));
 
+/** The list of an alert: one line per label, with the number of nodes. */
+const countedLines = (labels: readonly string[]): string => {
+    const counts = new Map<string, number>();
+    for (const label of labels) {
+        counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    return [...counts]
+        .map(([label, count]) => `- ${label} (${count} ${count === 1 ? 'node' : 'nodes'})`)
+        .join('\n');
+};
+
 /**
  * Lists the dropped nodes for an alert: one line per schema ID, with the number of nodes.
  */
-export const formatDroppedNodes = (droppedNodes: readonly SchemaId[]): string => {
-    const counts = new Map<SchemaId, number>();
-    for (const schemaId of droppedNodes) {
-        counts.set(schemaId, (counts.get(schemaId) ?? 0) + 1);
-    }
-    return [...counts]
-        .map(([schemaId, count]) => `- ${schemaId} (${count} ${count === 1 ? 'node' : 'nodes'})`)
-        .join('\n');
-};
+export const formatDroppedNodes = (droppedNodes: readonly SchemaId[]): string =>
+    countedLines(droppedNodes);
+
+/**
+ * Lists the replaced values for an alert: one line per input and value, with the number of nodes.
+ */
+export const formatReplacedInputs = (replacedInputs: readonly ReplacedInput[]): string =>
+    countedLines(
+        replacedInputs.map(
+            ({ node, input, value }) => `${node}: ${input} held ${JSON.stringify(value)}`
+        )
+    );

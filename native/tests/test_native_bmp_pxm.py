@@ -1,7 +1,9 @@
 """Native BMP and PxM decoding (OpenCV 5.0's BmpDecoder and PxMDecoder ported to C): Load Image's result is today's.
 
 Each file is generated here. Today's path (CHAINNER_C_NATIVE_CODECS=0) is the oracle; the native path must give
-the same array, and run on its own: a copy of load_image whose cv2 and Image raise on any decode."""
+the same array, and run on its own: a copy of load_image whose cv2 and Image raise on any decode. The kinds of BMP
+OpenCV reads wrongly (OS/2 colours, masks after a 40-byte header, no alpha mask, RLE4's end of bitmap and vertical
+delta, 16-bit samples) are held to their samples in test_image_file_faults.py instead."""
 
 from __future__ import annotations
 
@@ -80,7 +82,6 @@ BW = entries([(0, 0, 0), (255, 255, 255)])
 TWO = entries([(10, 20, 30), (200, 100, 50)])
 MASKS32 = {
     "8888": (0xFF0000, 0xFF00, 0xFF, 0xFF000000),
-    "888": (0xFF0000, 0xFF00, 0xFF, 0),
     "1010102": (0x3FF00000, 0xFFC00, 0x3FF, 0xC0000000),
     "nored": (0, 0xFF00, 0xFF, 0xFF000000),
     "odd": (0xFFFFFFFF, 0xFFFF, 0xF0F000, 0x80000001),
@@ -118,8 +119,6 @@ RLE4 = {
         (0, 5, 0xAB, 0xCD, 0xE0, 0),
         EOL,
     ],
-    "eof_is_eol": [(7, 0x11), EOF, (7, 0x22), EOF, (7, 0x33), EOF],
-    "delta": [(2, 0x18), (0, 2, 3, 2), (2, 0x29), EOL, (7, 0x31), EOL, (1, 1), EOL],
     "delta_wrap": [(5, 0x81), (0, 2, 4, 0), (2, 0x92), EOL, (7, 3), EOL],
 }
 
@@ -149,48 +148,23 @@ def bmp_cases():
             px = rows(w, h, bpp, w + bpp)
             yield f"{w}x{h}_{tag}", bmp(w, h, bpp, px, palette=palette)
             yield f"{w}x{h}_{tag}_topdown", bmp(w, -h, bpp, px, palette=palette)
-            os2 = b"".join(palette[i : i + 3] for i in range(0, len(palette), 4))
-            yield f"{w}x{h}_{tag}_os2", bmp(w, h, bpp, px, palette=os2, header=12)
+            if tag in ("bw", "g16", "g256"):
+                os2 = b"".join(palette[i : i + 3] for i in range(0, len(palette), 4))
+                yield f"{w}x{h}_{tag}_os2", bmp(w, h, bpp, px, palette=os2, header=12)
         yield (
             f"{w}x{h}_8_clrused5",
             bmp(w, h, 8, rows(w, h, 8, 3), palette=COLOUR256[:20], clrused=5),
         )
-        for bpp in [16, 24, 32]:
+        for bpp in [24, 32]:
             px = rows(w, h, bpp, w * bpp)
             yield f"{w}x{h}_{bpp}", bmp(w, h, bpp, px)
             yield f"{w}x{h}_{bpp}_topdown", bmp(w, -h, bpp, px, header=124)
-        yield f"{w}x{h}_24_os2", bmp(w, h, 24, rows(w, h, 24, 5), header=12)
-        yield f"{w}x{h}_32_os2", bmp(w, h, 32, rows(w, h, 32, 5), header=12)
-        px = rows(w, h, 16, 6)
-        yield (
-            f"{w}x{h}_565",
-            bmp(
-                w, h, 16, px, compression=3, gap=struct.pack("<3I", 0xF800, 0x7E0, 0x1F)
-            ),
-        )
-        yield (
-            f"{w}x{h}_555",
-            bmp(
-                w, h, 16, px, compression=3, gap=struct.pack("<3I", 0x7C00, 0x3E0, 0x1F)
-            ),
-        )
         px = rows(w, h, 32, 7)
         for name, masks in MASKS32.items():
             yield (
                 f"{w}x{h}_32_{name}_v5",
                 bmp(w, h, 32, px, compression=3, header=124, masks=masks),
             )
-        yield (
-            f"{w}x{h}_32_bitfields_v3",
-            bmp(
-                w,
-                h,
-                32,
-                px,
-                compression=3,
-                gap=struct.pack("<3I", 0xFF, 0xFF00, 0xFF0000),
-            ),
-        )
     for name, stream in RLE8.items():
         for tag, palette in [("colour", COLOUR256), ("grey", GREY256)]:
             yield (

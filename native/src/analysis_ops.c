@@ -105,6 +105,48 @@ CN_EXPORT cn_status cn_analysis_binary(const float *a, const float *b, float *ou
     return cn_parallel_for(n, 65536, binary_range, &job);
 }
 
+/* np.sum(image[:, :, :3], axis=(0, 1), dtype=np.float64) of pixels in raster order, step floats apart: that reduce
+   starts from 0 and adds each pixel's three values in turn, so it stays one thread. */
+CN_EXPORT cn_status cn_analysis_channel_sums(const float *image, size_t pixels, size_t step, double *out) {
+    if (!image || !out || step < 3) return CN_INVALID_ARGUMENT;
+    if (pixels > SIZE_MAX / sizeof(float) / step) return CN_SIZE_OVERFLOW;
+    double first = 0, second = 0, third = 0;
+    for (size_t p = 0; p < pixels; ++p, image += step) {
+        first += image[0];
+        second += image[1];
+        third += image[2];
+    }
+    out[0] = first;
+    out[1] = second;
+    out[2] = third;
+    return CN_OK;
+}
+
+typedef struct channel_scale_job {
+    float *image;
+    size_t step;
+    const float *gains;
+} channel_scale_job;
+
+static void channel_scale_range(void *opaque, size_t begin, size_t end) {
+    channel_scale_job *j = (channel_scale_job *)opaque;
+    const float first = j->gains[0], second = j->gains[1], third = j->gains[2];
+    float *pixel = j->image + begin * j->step;
+    for (size_t p = begin; p < end; ++p, pixel += j->step) {
+        pixel[0] *= first;
+        pixel[1] *= second;
+        pixel[2] *= third;
+    }
+}
+
+/* image[:, :, :3] *= gains in place, on pixels in raster order, step floats apart. */
+CN_EXPORT cn_status cn_analysis_scale_channels(float *image, size_t pixels, size_t step, const float *gains) {
+    if (!image || !gains || step < 3) return CN_INVALID_ARGUMENT;
+    if (pixels > SIZE_MAX / sizeof(float) / step) return CN_SIZE_OVERFLOW;
+    channel_scale_job job = {image, step, gains};
+    return cn_parallel_for(pixels, 16384, channel_scale_range, &job);
+}
+
 typedef struct ssim_job {
     const float *mu1, *mu2, *v1, *v2, *cov;
     float *out;
@@ -455,9 +497,9 @@ static void correction_range(void *context, size_t begin, size_t end) {
         }
         if (!j->add && ((j->alpha && j->alpha[p] == 0) ||
                        (j->reference_alpha && j->reference_alpha[p] == 0)))
-            /* Preserve upstream's (H,W,1) nonzero indexing: only channel 0
-               is cleared. Changing all three would change existing output. */
-            j->out[p * 3] = 0;
+            /* A transparent pixel's colour says nothing, so it corrects nothing, in
+               any channel (upstream's (H,W,1) nonzero indexing cleared only channel 0). */
+            j->out[p * 3] = j->out[p * 3 + 1] = j->out[p * 3 + 2] = 0;
         if (j->alpha_out) {
             if (j->add) j->alpha_out[p] = j->alpha[p] +
                 (j->alpha[p] == 0 ? 0.0f : j->reference_alpha[p]);

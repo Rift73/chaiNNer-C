@@ -14,7 +14,7 @@ from nodes.impl.migraphx.program import compile_in_child
 from nodes.impl.migraphx.program_info import read_program_info
 from nodes.impl.migraphx.runner import runner_identity
 from nodes.impl.onnx.load import model_facts
-from nodes.impl.onnx.model import FP16_ARCHS_NAVI, OnnxModel
+from nodes.impl.onnx.model import NO_RECORD_ARCH, OnnxModel
 from nodes.properties.inputs import (
     BoolInput,
     EnumInput,
@@ -41,10 +41,10 @@ PRECISION_LABELS = {
 }
 
 # Shown until the ONNX is known to have one automatic precision: DUAL's keeps its own,
-# and one with a recorded architecture compiles in FP16
+# and one with a record compiles in its recorded precision
 PRECISION_APPLIES = Condition.type(
     0,
-    f'OnnxModel {{ arch: invStrSet("DUAL" | {FP16_ARCHS_NAVI}) }}',
+    f'OnnxModel {{ arch: "{NO_RECORD_ARCH}" }}',
     if_not_connected=True,
 )
 
@@ -61,7 +61,7 @@ if utility_group is not None:
             "Compiling can take several minutes depending on the model size and settings; it runs in a process of its own, which Stop ends.",
             "A program takes one input size, Height x Width; Upscale Image splits images of any size into overlapping tiles of that size. It is compiled for your GPU's target (gfx) and MIGraphX version: save it for reuse, as compiling is slow.",
             "A DUAL ONNX from Convert To ONNX compiles in its own mixed precision with chaiNNer-C's DUAL operators; a dynamic one takes this node's size (multiples of 4 px), a fixed one keeps its own. Precision does not apply and is hidden. Linux only: DUAL's operators need Triton, which has no AMD build for Windows.",
-            "An ESRGAN, HAT or DAT ONNX from Convert To ONNX compiles in FP16, also after it is saved and loaded again: it records its architecture, and Precision does not apply and is hidden. An ONNX with no such record, such as one converted by an earlier version, works as before, with Precision shown.",
+            "An ONNX from Convert To ONNX compiles in the precision it records (FP16 for the architectures that hold in it, else FP32), also after it is saved and loaded again, so Precision does not apply and is hidden. An ONNX with no record, from another program or an earlier version's conversion, works as before, with Precision shown.",
             "A legacy DRFT ONNX from Convert To ONNX also compiles in its own mixed precision, with chaiNNer-C's DRFT operators. Its size must be a multiple of the ONNX's alignment and at least its minimum size on each side (Build Program says which if not). Precision does not apply.",
         ],
         icon="BsAmd",
@@ -85,7 +85,7 @@ if utility_group is not None:
                     "FP8: MIGraphX's FP8 quantization, on GPUs that support it (shown only"
                     " then). Fastest, but the least precise; check its output against FP16.",
                     "An FP16 ONNX stays FP16 in FP32 (MIGraphX does not widen a model), and a"
-                    " mixed-precision ONNX (Convert To ONNX's Mixed FP16 or Mixed BF16) keeps"
+                    " mixed-precision ONNX (Mixed FP16 or Mixed BF16 from an earlier version) keeps"
                     " its own precision. Get Program Info shows what a program runs in.",
                 ),
             ),
@@ -143,17 +143,16 @@ if utility_group is not None:
                 size,
                 exhaustive_tune,
             )
-        # A recorded architecture compiles in FP16, whatever a saved chain's hidden input
-        # holds.
+        # A record compiles in its precision, whatever a saved chain's hidden input holds.
         if onnx_model.info.arch is not None:
-            precision = ProgramPrecision.FP16
+            precision = ProgramPrecision(onnx_model.info.dtype)
         if precision == ProgramPrecision.FP8 and not settings.supports_fp8:
             raise ValueError(
                 f"FP8 needs a GPU that supports it; {settings.gpu_name}"
                 f" ({settings.gfx}) does not. Pick FP16 or FP32."
             )
 
-        # A mixed-precision ONNX (ModelOpt AutoCast) keeps its own types.
+        # A mixed-precision ONNX from an earlier version keeps its own types.
         mixed = onnx_model.info.dtype.startswith("mixed-")
         fp16 = not mixed and precision == ProgramPrecision.FP16
         fp8 = not mixed and precision == ProgramPrecision.FP8

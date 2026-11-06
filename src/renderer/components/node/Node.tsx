@@ -1,4 +1,5 @@
 import { Center, VStack } from '@chakra-ui/react';
+import i18n from 'i18next';
 import path from 'path';
 import {
     DragEvent,
@@ -256,7 +257,11 @@ const NodeInner = memo(({ data, selected }: NodeProps) => {
                 if (event.dataTransfer.files.length !== 1) {
                     sendToast({
                         status: 'error',
-                        description: `Only one file is accepted by ${fileInput.label}.`,
+                        description: i18n.t(
+                            'node.onlyOneFile',
+                            'Only one file is accepted by {{label}}.',
+                            { label: fileInput.label }
+                        ),
                     });
                 } else {
                     const ext = path.extname(getFilePath(event.dataTransfer.files[0]));

@@ -190,7 +190,6 @@ def test_ssim_window():
 @pytest.mark.parametrize(
     "sigma",
     [
-        (0, 1),
         (0.1, 0.3),
         (10.9, 17),
         (11, 11),

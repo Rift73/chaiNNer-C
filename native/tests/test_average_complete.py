@@ -120,6 +120,24 @@ def test_average_full_node(channels, ref_channels, scale, shape, ref_shape, ipp)
     )
 
 
+@pytest.mark.parametrize("ref_channels", [3, 4])
+def test_transparent_pixels_correct_no_channel(ref_channels):
+    # The opaque left half already matches the reference. The transparent right half holds other colours, which must
+    # not reach the opaque pixels through the upsampled difference, in any channel.
+    image = np.full((32, 32, 4), 0.5, np.float32)
+    image[:, 16:, 3] = 0
+    reference = np.full((8, 8, ref_channels), 0.5, np.float32)
+    reference[:, 4:, :3] = 0.1
+    if ref_channels == 4:
+        reference[:, 4:, 3] = 0
+    else:
+        # A reference without alpha: the input's own alpha still marks the pixels.
+        reference[:, 4:, :3] = 0.5
+        image[:, 16:, :3] = 0.9
+    result = ACTUAL.average_color_fix_node(image, reference, 100)
+    np.testing.assert_allclose(result[:, :12, :3], 0.5, atol=1e-5)
+
+
 @pytest.mark.parametrize("layout", ["strided", "reverse", "transpose", "unaligned"])
 @pytest.mark.parametrize("channels,ref_channels", [(3, 3), (3, 4), (4, 3), (4, 4)])
 def test_average_foreign_buffers(layout, channels, ref_channels, ipp):

@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 from native_differential import assert_native_matches
 from native_images import image, seed_of
+from test_isa_dispatch import isa_get, isa_set
 
 from nodes.impl.native_graph import graph
 
@@ -129,8 +130,71 @@ LENS = "chainner:image:lens_blur"
 def test_lens_blur_matches(size, channels, radius, components, gamma):
     height, width = size
     key = (LENS, size, channels, radius, components, gamma)
-    img = image(seed_of(*key), height, width, channels)
+    img = image(seed_of(*key), height, width, channels, edges=False)
     assert_native_matches(LENS, [img, radius, components, gamma])
+
+
+@pytest.mark.parametrize("gamma", [0.5, 1, 3])
+@pytest.mark.parametrize("radius", [1, 5, 64])
+@pytest.mark.parametrize("channels", [1, 3, 4])
+@pytest.mark.parametrize("size", [(3, 5), (40, 57)])
+def test_lens_blur_exceptional_values_decline(size, channels, radius, gamma):
+    # A NaN's payload depends on the body's vector groups: the body runs for any exceptional value after the power.
+    height, width = size
+    img = image(seed_of(LENS, "edges", size, channels, radius, gamma), height, width, channels)
+    assert_native_matches(LENS, [img, radius, 3, gamma], declines=True)
+
+
+@pytest.mark.parametrize("gamma", [1, 2])
+@pytest.mark.parametrize("radius", [1, 5, 30])
+@pytest.mark.parametrize("size", [(17, 31), (40, 57)])
+def test_lens_blur_finite_extremes_match(size, radius, gamma):
+    # Out-of-range values and sums that overflow to infinities of both signs, whose differences are generated NaNs.
+    height, width = size
+    rng = np.random.default_rng(seed_of(LENS, "extremes", size, radius, gamma))
+    large = 3e38 if gamma == 1 else 1.5e19
+    extremes = np.array([large, -large, 1e-45, 0.25, 1.75, 1.0, 0.0], np.float32)
+    img = extremes[rng.integers(0, extremes.size, (height, width, 3))]
+    effective, _, cpu = isa_get()
+    try:
+        for level in range(cpu + 1):
+            assert isa_set(level) == level
+            assert_native_matches(LENS, [img, radius, 5, gamma])
+    finally:
+        assert isa_set(effective) == effective
+
+
+@pytest.mark.parametrize(
+    ("channels", "radius", "components", "gamma"),
+    [(1, 1, 1, 1), (3, 3, 5, 5), (4, 10, 6, 2), (3, 40, 2, 0.5), (4, 64, 1, 3)],
+)
+@pytest.mark.parametrize(
+    "size", [(1, 9), (9, 1), (33, 8), (65, 127), (129, 128), (130, 300)]
+)
+def test_lens_blur_bands_match_at_every_isa_level(
+    size, channels, radius, components, gamma
+):
+    # Bands, their seams and the reflected rows of images shorter than the kernel, on both sides of the 8-lane columns.
+    height, width = size
+    key = (LENS, "bands", size, channels, radius, components, gamma)
+    img = image(seed_of(*key), height, width, channels, edges=False)
+    effective, _, cpu = isa_get()
+    try:
+        for level in range(cpu + 1):
+            assert isa_set(level) == level
+            assert_native_matches(LENS, [img, radius, components, gamma])
+    finally:
+        assert isa_set(effective) == effective
+
+
+@pytest.mark.parametrize("gamma", [0.37, 3, 5])
+@pytest.mark.parametrize("colors", [1, 2, 256, 70000])
+def test_lens_blur_power_on_few_and_many_values_matches(colors, gamma):
+    # The first power's results, kept per value, whatever the slots' collisions: zero among the values included.
+    rng = np.random.default_rng(seed_of(LENS, "values", colors, gamma))
+    values = np.float32(np.arange(colors) / max(colors - 1, 1))
+    img = values[rng.integers(0, colors, (300, 300, 3))]
+    assert_native_matches(LENS, [img, 2, 3, gamma])
 
 
 @pytest.mark.parametrize("channels", [1, 3, 4])

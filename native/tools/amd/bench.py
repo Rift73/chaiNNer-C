@@ -172,7 +172,6 @@ class Bench:
                 OnnxDataType.FP32,
                 Opset.OPSET_20,
                 False,
-                None,
                 DualShape.DYNAMIC,
                 512,
                 512,
@@ -196,7 +195,7 @@ class Bench:
             model = self.pytorch_model(route.model)
             return lambda img: upscale_image_node(
                 context, img, model, False, 4, NO_TILING, 0, PaddingType.NONE, False
-            )
+            )[0]
         if name.startswith("ONNX Runtime"):
             from nodes.impl.upscale.auto_split_tiles import NO_TILING
             from packages.chaiNNer_onnx.onnx.processing.upscale_image import (
@@ -213,7 +212,7 @@ class Bench:
             model = self.onnx_model(route.model)
             return lambda img: upscale_image_node(
                 context, img, model, NO_TILING, 0, False
-            )
+            )[0]
         if name.startswith("MIGraphX"):
             import packages.chaiNNer_migraphx as migraphx_package
             from packages.chaiNNer_migraphx.migraphx.processing import upscale_image
@@ -259,7 +258,7 @@ class Bench:
             context_out.append(context)
             return lambda img: upscale_image_node(
                 context, img, model, NO_TILING, 0, False
-            )
+            )[0]
         raise ValueError(f"no route {name}")
 
     def vosr_step(self, name: str, context_out: list[Context]) -> Step:

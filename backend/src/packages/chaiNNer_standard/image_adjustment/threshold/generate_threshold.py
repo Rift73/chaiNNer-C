@@ -7,6 +7,7 @@ import numpy as np
 from nodes.impl.native_color_ops import auto_threshold
 from nodes.properties.inputs import EnumInput, ImageInput
 from nodes.properties.outputs import NumberOutput
+from nodes.utils.utils import get_h_w_c
 
 from .. import threshold_group
 
@@ -39,4 +40,7 @@ _AUTO_THRESHOLD_LABELS: dict[AutoThreshold, str] = {
     ],
 )
 def generate_threshold_node(img: np.ndarray, method: AutoThreshold) -> float:
+    # Alpha is no brightness (upstream averaged it into the histogram).
+    if get_h_w_c(img)[2] == 4:
+        img = img[:, :, :3]
     return auto_threshold(img, method.value)

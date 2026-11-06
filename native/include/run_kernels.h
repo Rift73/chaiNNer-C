@@ -200,6 +200,11 @@ CN_RUN_KERNEL cn_status cn_lens_power(const float *src, float *out, size_t count
 CN_RUN_KERNEL cn_status cn_lens_compose(const float *f1, const float *f2,
     const float *f3, const float *f4, float *out, size_t count,
     float a, float b, int accumulate);
+CN_RUN_KERNEL cn_status cn_lens_blur(const float *src, float *out, size_t h, size_t w, size_t c,
+    const float *kernels, const float *weights, size_t components, size_t length, size_t fused_lanes, float exponent);
+CN_RUN_KERNEL cn_status cn_lens_blur_sums(const float *src, float *out, size_t h, size_t w, size_t c,
+    const float *kernels, const float *weights, size_t components, size_t length, size_t fused_lanes);
+CN_RUN_KERNEL cn_status cn_lens_straight(const float *sums, float *out, size_t pixels, float exponent);
 /* linear_light_ops.c: transfer is linear_light.h's CN_LIGHT_*; encode 0 linearizes, 1 encodes; skip_alpha leaves the
  * last channel as is (two or four channels). An empty image is a no-op. */
 CN_RUN_KERNEL cn_status cn_linear_light(float *image, size_t height, size_t width, size_t channels,
@@ -257,6 +262,8 @@ CN_RUN_KERNEL cn_status cn_create_procedural(void *out, size_t height, size_t wi
 /* resample_ops.c (nearest and filtered: chainner_ext_kernels.h) */
 CN_RUN_KERNEL cn_status cn_resample_alpha(const float *src, float *out,
     size_t pixels, int undo);
+CN_RUN_KERNEL cn_status cn_alpha_transparent(const float *src, size_t pixels, int *transparent);
+CN_RUN_KERNEL cn_status cn_alpha_finish(const float *src, float *out, size_t pixels, int divide);
 CN_RUN_KERNEL cn_status cn_resample_border(const float *src, size_t h, size_t w,
     size_t c, float tolerance, int mode, size_t *bounds, int pairwise);
 /* rotate_ops.c */

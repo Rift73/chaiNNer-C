@@ -29,7 +29,8 @@ _library.cn_blend_images.restype = ctypes.c_int
 
 
 def raw_blend(a: np.ndarray, b: np.ndarray, mode: int) -> np.ndarray:
-    """Apply a mode to equally shaped float32 arrays, without output clipping."""
+    """Apply a separable mode to equally shaped float32 arrays, without output
+    clipping. Color and Luminosity need whole pixels: composite() takes them."""
     if mode == 0:
         f32(a)
         return a

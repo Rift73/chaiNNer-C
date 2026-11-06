@@ -69,7 +69,7 @@ def image(channels=3, height=7, width=11, seed=825):
 
 
 def uniform(module, source, colors=7, history=16, mode="RIEMERSMA", diffusion="FS"):
-    return module.dither_node(
+    result = module.dither_node(
         source,
         colors,
         module.UniformDitherAlgorithm[mode],
@@ -77,6 +77,11 @@ def uniform(module, source, colors=7, history=16, mode="RIEMERSMA", diffusion="F
         module.ErrorDiffusionMap(diffusion),
         history,
     )
+    if module is UNIFORM[1] and result.shape[2] == 4:
+        # Judged, not upstream's: alpha stays as it is. The colours stay upstream's.
+        result = result.copy()
+        result[:, :, 3] = source[:, :, 3]
+    return result
 
 
 def palette(module, source, colors, history=16, mode="RIEMERSMA", diffusion="FS"):
@@ -770,3 +775,26 @@ def test_palette_key_keeps_upstreams_nan(channels, path):
                 out = chainner_ext.quantize(pixel, quantization)
             first = words[1] if rank[i] > rank[j] else words[0]
             assert (out.reshape(channels).view(np.uint32) == first).all(), (i, j)
+
+
+@pytest.mark.parametrize(
+    ("mode", "diffusion"),
+    [
+        ("NONE", "FS"),
+        ("ORDERED", "FS"),
+        ("DIFFUSION", "FS"),
+        ("DIFFUSION", "JJN"),
+        ("RIEMERSMA", "FS"),
+    ],
+)
+@pytest.mark.parametrize("colors", [2, 7, 256])
+def test_uniform_dither_keeps_alpha(mode, diffusion, colors):
+    source = image(4, 31, 37, seed=91)
+    out = uniform(UNIFORM[0], source, colors, mode=mode, diffusion=diffusion)
+    bits_equal(out[:, :, 3], source[:, :, 3])
+    assert (out[:, :, :3] != source[:, :, :3]).any()
+    opaque = source.copy()
+    opaque[:, :, 3] = 1
+    result = uniform(UNIFORM[0], opaque, colors, mode=mode, diffusion=diffusion)
+    bits_equal(result[:, :, :3], out[:, :, :3])
+    assert (result[:, :, 3] == 1).all()

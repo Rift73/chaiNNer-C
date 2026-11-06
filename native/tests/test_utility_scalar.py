@@ -392,7 +392,7 @@ def test_directory_parent_protocol_and_large_range():
                 events.append("parent")
                 if len(events) == 4:
                     raise LookupError("parent failure")
-                return self
+                return Parent()
 
         ns = namespace("directory", current=current)
         return capture(lambda: ns["directory_go_up_node"](Parent(), 2**100)), events
@@ -401,6 +401,26 @@ def test_directory_parent_protocol_and_large_range():
     actual, b = run(True)
     equivalent(expected, actual)
     assert a == b == ["parent"] * 4
+
+
+def test_directory_up_stops_at_a_root():
+    # Each step would otherwise run: 2**100 of them never end.
+    events = []
+
+    class Root:
+        @property
+        def parent(self):
+            events.append("parent")
+            return self
+
+    go_up = namespace("directory", current=True)["directory_go_up_node"]
+    root = Root()
+    assert go_up(root, 2**100) is root
+    assert events == ["parent"]
+    assert str(go_up(PureWindowsPath("C:/a/b"), 2**100)) == "C:\\"
+    assert str(go_up(PureWindowsPath(r"\\server\share\a"), 2**100)) == "\\\\server\\share\\"
+    assert str(go_up(PurePosixPath("/a/b"), 2**100)) == "/"
+    assert str(go_up(PurePosixPath("a/b"), 2**100)) == "."
 
 
 @pytest.mark.parametrize("kind", ["math", "round"])

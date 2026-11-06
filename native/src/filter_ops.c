@@ -274,7 +274,7 @@ static double coordinate(size_t index, size_t length, double scale) {
 typedef struct reference_job {
     const float *src, *reference;
     float *out;
-    size_t width, height, ref_width, ref_height, channels, radius, scale;
+    size_t width, height, ref_width, ref_height, channels, radius, scale_x, scale_y;
     double spatial;
 } reference_job;
 
@@ -295,13 +295,9 @@ static void reference_range(void *context, size_t begin, size_t end) {
     reference_job *j = (reference_job *)context;
     for (size_t p = begin; p < end; ++p) {
         size_t y = p / j->width, x = p % j->width;
-        size_t block_y = y / j->scale, block_x = x / j->scale;
-        /* Preserve upstream's height-derived scale in both directions, including
-           untouched zero columns when width and height use different ratios. */
-        if (block_x >= j->ref_width) {
-            memset(j->out + p * j->channels, 0, j->channels * sizeof(float));
-            continue;
-        }
+        /* Each axis has its own ratio (upstream took the height's for both: black columns
+           where the width's was larger, and a part of the reference where it was smaller). */
+        size_t block_y = y / j->scale_y, block_x = x / j->scale_x;
         size_t best = 0;
         double best_distance = 0;
         int initialized = 0;
@@ -348,7 +344,7 @@ CN_EXPORT cn_status cn_filter_quantize_reference(const float *src, const float *
         width > (size_t)INT64_MAX / 2 || height > (size_t)INT64_MAX / 2)
         return CN_SIZE_OVERFLOW;
     reference_job job = {src, reference, out, width, height, ref_width, ref_height,
-                         channels, radius, height / ref_height, spatial};
+                         channels, radius, width / ref_width, height / ref_height, spatial};
     return cn_parallel_for(width * height, 4096, reference_range, &job);
 }
 

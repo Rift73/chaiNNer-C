@@ -150,7 +150,6 @@ def test_signed_integer_serialization_boundaries(bits, sign):
         {},
         b"123",
         b"abc",
-        Path("folder"),
         np.int64(123),
         np.uint64(2**64 - 1),
         np.float32(0.25),
@@ -184,7 +183,6 @@ def test_serialization_values_and_errors(value):
         tuple(range(16)),
         (Seed(-(2**521)), "\ud800"),
         (float("nan"),),
-        (Path("a"),),
     ],
 )
 def test_derive_order_serialization_and_noop(seed, sources):
@@ -192,6 +190,14 @@ def test_derive_order_serialization_and_noop(seed, sources):
     check("derive_seed_node", value, *sources)
     if all(source is None for source in sources):
         assert CURRENT["derive_seed_node"](value, *sources) is value
+
+
+def test_a_directory_source_seeds_as_its_path_text():
+    folder = Path("folder") / "\u00e9"
+    assert seed_to_bytes(folder) == seed_to_bytes(str(folder))
+    seed = Seed(7)
+    assert derive_seed(seed, (folder,)) == derive_seed(seed, (str(folder),))
+    assert derive_seed(seed, (folder,)) != derive_seed(seed, (Path("other"),))
 
 
 @pytest.mark.parametrize(

@@ -3,6 +3,7 @@
  * procs (GPL-3.0). libtiff reports errors through a handler, not a jump: any error it reports (and any libjpeg
  * warning), even one OpenCV would read past, falls back, so today's path decides those files. */
 #include "image_codecs.h"
+#include "parallel.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -242,6 +243,8 @@ typedef struct tiff_image {
     uint32_t width, height, channels, sample;
     uint16_t bpp, ncn, orientation;
     int tiled, dst_bits;
+    int separate;  /* raw samples in one plane per channel */
+    int min_white; /* raw grey samples where the smallest is white */
 } tiff_image;
 
 static int tiff_header(TIFF *tif, tiff_image *image) {
@@ -317,6 +320,7 @@ static int tiff_layout(TIFF *tif, tiff_image *image, uint32_t *tile_width, uint3
     image->orientation = ORIENTATION_TOPLEFT;
     TIFFGetField(tif, TIFFTAG_ORIENTATION, &image->orientation);
     image->dst_bits = (int)(image->sample & 0xFF) * 8;
+    image->separate = image->min_white = 0;
     uint32_t tw = image->width, th = 0;
     if (image->tiled) {
         if (!TIFFGetField(tif, TIFFTAG_TILEWIDTH, &tw) || !TIFFGetField(tif, TIFFTAG_TILELENGTH, &th)) return 0;
@@ -344,9 +348,12 @@ static int tiff_layout(TIFF *tif, tiff_image *image, uint32_t *tile_width, uint3
         uint16_t planar = PLANARCONFIG_CONTIG;
         TIFFGetFieldDefaulted(tif, TIFFTAG_PLANARCONFIG, &planar);
         /* Raw samples come from grey or RGB(A) files only (readHeader turns every other one with more than 8 bits
-         * into 8). OpenCV reads the first plane's strips as if they held every sample: not ported; neither are
-         * signed 10- to 14-bit samples, which its scaling saturates. */
-        if (planar == PLANARCONFIG_SEPARATE && image->ncn > 1) return 0;
+         * into 8). OpenCV reads the first plane's strips as if they held every sample and ignores MinIsWhite; here
+         * planes of whole bytes are interleaved as they are read, and grey is inverted. Packed planes are not read,
+         * nor signed 10- to 14-bit samples, which OpenCV's scaling saturates. */
+        image->separate = planar == PLANARCONFIG_SEPARATE && image->ncn > 1;
+        image->min_white = photometric == PHOTOMETRIC_MINISWHITE && image->ncn == 1;
+        if (image->separate && image->bpp % 8) return 0;
         if (image->bpp < image->dst_bits && image->sample == CN_SAMPLE_I16) return 0;
         if (image->dst_bits == 16) {
             const uint32_t bytes = image->bpp / 8 > 1 ? image->bpp / 8u : 1u;
@@ -365,8 +372,92 @@ static int tiff_layout(TIFF *tif, tiff_image *image, uint32_t *tile_width, uint3
     return 1;
 }
 
+/* One strip or tile of raw samples into `buffer`, each pixel's samples together; a separate image's come from one strip
+ * or tile per plane. Fewer bytes than the rows used would leave the buffer partly unset. */
+static int tiff_read_raw(TIFF *tif, const tiff_image *image, uint32_t index, uint32_t rows, size_t row_bytes,
+                         size_t buffer_size, uint8_t *buffer, uint8_t *plane) {
+    const uint32_t planes = image->separate ? image->ncn : 1;
+    const size_t read_size = buffer_size / planes, plane_row = row_bytes / planes, bytes = image->bpp / 8u;
+    const uint32_t per_plane = (image->tiled ? TIFFNumberOfTiles(tif) : TIFFNumberOfStrips(tif)) / planes;
+    for (uint32_t p = 0; p < planes; ++p) {
+        const uint32_t at = index + p * per_plane;
+        uint8_t *target = image->separate ? plane : buffer;
+        const tmsize_t read = image->tiled ? TIFFReadEncodedTile(tif, at, target, (tmsize_t)read_size)
+                                           : TIFFReadEncodedStrip(tif, at, target, (tmsize_t)read_size);
+        if (read < 0 || (uint64_t)read < (uint64_t)rows * plane_row) return 0;
+        if (!image->separate) continue;
+        for (uint32_t y = 0; y < rows; ++y)
+            for (size_t x = 0, n = plane_row / bytes; x < n; ++x)
+                memcpy(buffer + y * row_bytes + (x * planes + p) * bytes, plane + y * plane_row + x * bytes, bytes);
+    }
+    return 1;
+}
+
+/* A MinIsWhite image's grey as MinIsBlack's. Signed samples have no agreed white and stay as stored. */
+static void tiff_invert(const tiff_image *image, uint8_t *out) {
+    const size_t count = (size_t)image->height * image->width;
+    for (size_t i = 0; i < count; ++i) switch (image->sample) {
+        case CN_SAMPLE_U16: {
+            uint16_t *s = (uint16_t *)out + i;
+            *s = (uint16_t)(((UINT32_C(1) << image->bpp) - 1) - *s);
+            break;
+        }
+        case CN_SAMPLE_U32: ((uint32_t *)out)[i] = ~((uint32_t *)out)[i]; break;
+        case CN_SAMPLE_U64: ((uint64_t *)out)[i] = ~((uint64_t *)out)[i]; break;
+        case CN_SAMPLE_F32: ((float *)out)[i] = 1.0f - ((float *)out)[i]; break;
+        case CN_SAMPLE_F64: ((double *)out)[i] = 1.0 - ((double *)out)[i]; break;
+        default: return;
+    }
+}
+
+/* Whether readData's RGBA interface only adds alpha 255 to the samples as stored: 8-bit RGB in one plane, strips, top
+ * row first, with a codec whose samples do not depend on that interface (its JPEG setup does change them). */
+static int tiff_plain_rgb(TIFF *tif, const tiff_image *image) {
+    uint16_t photometric = 0, samples = 0, bits = 0, planar = 0, compression = 0;
+    if (image->sample != CN_SAMPLE_U8 || image->channels != 3 || image->tiled ||
+        image->orientation != ORIENTATION_TOPLEFT)
+        return 0;
+    TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &photometric);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &samples);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bits);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_PLANARCONFIG, &planar);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_COMPRESSION, &compression);
+    return photometric == PHOTOMETRIC_RGB && samples == 3 && bits == 8 && planar == PLANARCONFIG_CONTIG &&
+           (compression == COMPRESSION_NONE || compression == COMPRESSION_LZW ||
+            compression == COMPRESSION_ADOBE_DEFLATE || compression == COMPRESSION_DEFLATE);
+}
+
+typedef struct plain_rgb_job {
+    uint8_t *out;
+    size_t stride;
+    uint32_t width;
+} plain_rgb_job;
+
+static void plain_rgb_rows(void *context, size_t begin, size_t end) {
+    const plain_rgb_job *const job = context;
+    for (size_t y = begin; y < end; ++y) {
+        uint8_t *const row = job->out + y * job->stride;
+        swap_red_blue(row, row, job->width, 3, 1);
+    }
+}
+
+/* Each strip straight into its rows, then R and B exchanged: what TIFFReadRGBAStrip and rgba_row give, without the RGBA
+ * interface's setup per strip, its raster and a second pass per row. */
+static int tiff_read_plain_rgb(TIFF *tif, const tiff_image *image, uint32_t th, uint8_t *out) {
+    const size_t stride = (size_t)image->width * 3;
+    uint32_t index = 0;
+    for (uint32_t y = 0; y < image->height; y += th, ++index) {
+        const uint32_t rows = th < image->height - y ? th : image->height - y;
+        const tmsize_t bytes = (tmsize_t)((size_t)rows * stride);
+        if (TIFFReadEncodedStrip(tif, index, out + (size_t)y * stride, bytes) != bytes) return 0;
+    }
+    plain_rgb_job job = {out, stride, image->width};
+    return cn_parallel_for(image->height, 1 + (UINT32_C(1) << 18) / stride, plain_rgb_rows, &job) == CN_OK;
+}
+
 /* readData's loops over the strips or tiles into `out` (height x width x channels, rows as stored). */
 static int tiff_read(TIFF *tif, const tiff_image *image, uint32_t tw, uint32_t th, size_t row_bytes, uint8_t *out) {
+    if (tiff_plain_rgb(tif, image)) return tiff_read_plain_rgb(tif, image, th, out);
     const uint32_t width = image->width, height = image->height, channels = image->channels;
     const size_t sample_bytes = image->sample & 0xFF, pixel = channels * sample_bytes;
     const size_t stride = (size_t)width * pixel, buffer_size = (size_t)th * row_bytes;
@@ -377,7 +468,8 @@ static int tiff_read(TIFF *tif, const tiff_image *image, uint32_t tw, uint32_t t
     const size_t unpacked_bytes = (size_t)image->ncn * tw * 2;
     uint8_t *buffer = (uint8_t *)malloc(buffer_size ? buffer_size : 1);
     uint16_t *unpacked = unpack ? (uint16_t *)malloc(unpacked_bytes) : NULL;
-    int ok = buffer && (!unpack || unpacked);
+    uint8_t *plane = image->separate ? (uint8_t *)malloc(buffer_size ? buffer_size : 1) : NULL;
+    int ok = buffer && (!unpack || unpacked) && (!image->separate || plane);
     uint32_t index = 0;
     for (uint32_t y = 0; ok && y < height; y += th) {
         const uint32_t rows = th < height - y ? th : height - y;
@@ -397,13 +489,8 @@ static int tiff_read(TIFF *tif, const tiff_image *image, uint32_t tw, uint32_t t
                              columns, channels);
                 continue;
             }
-            const tmsize_t read = image->tiled ? TIFFReadEncodedTile(tif, index, buffer, (tmsize_t)buffer_size)
-                                               : TIFFReadEncodedStrip(tif, index, buffer, (tmsize_t)buffer_size);
-            /* Fewer bytes than the rows used would leave OpenCV's buffer partly unset. */
-            if (read < 0 || (uint64_t)read < (uint64_t)rows * row_bytes) {
-                ok = 0;
-                break;
-            }
+            ok = tiff_read_raw(tif, image, index, rows, row_bytes, buffer_size, buffer, plane);
+            if (!ok) break;
             for (uint32_t i = 0; i < rows; ++i) {
                 const uint8_t *row = buffer + (size_t)i * row_bytes;
                 uint8_t *target = out + (size_t)(image_y + i) * stride + x * pixel;
@@ -424,6 +511,8 @@ static int tiff_read(TIFF *tif, const tiff_image *image, uint32_t tw, uint32_t t
     }
     free(buffer);
     free(unpacked);
+    free(plane);
+    if (ok && image->min_white) tiff_invert(image, out);
     if (ok && unpack) {
         /* img *= 1 << (16 - bpp): exact for unsigned samples below 1 << bpp */
         uint16_t *samples = (uint16_t *)out;

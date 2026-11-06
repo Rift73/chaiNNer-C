@@ -33,7 +33,12 @@ from nodes.impl.vapoursynth.schema_gen import (
     register_families,
     schema_id,
 )
-from nodes.impl.vapoursynth.script import VideoClip, VSFilter, compile_script
+from nodes.impl.vapoursynth.script import (
+    BRIDGE_IMPORT,
+    VideoClip,
+    VSFilter,
+    compile_script,
+)
 from process import enforce_inputs
 
 DATA = Path(__file__).parent / "data" / "vapoursynth"
@@ -359,6 +364,30 @@ def test_use_as_filter_emits_bound_method(small: dict[str, NodeData]) -> None:
     )
     assert isinstance(out, VSFilter)
     assert out.expr == "lambda clip: vstools.depth(clip, 16)"
+
+
+def test_poisson_grain_goes_through_the_helper(tmp_path: Path) -> None:
+    grainer = {
+        "id": "vsdeband.Grainer",
+        "source": "jetpack",
+        "module": "vsdeband",
+        "import": "from vsdeband import Grainer",
+        "call": "Grainer.<member>",
+        "kind": "members",
+        "members": ["GAUSS", "POISSON"],
+        "params": [_param("clip", "VideoNode | MISSING", "vstools.MissingT")],
+        "returns": "VideoNode | GrainerPartial",
+        "doc": "Grain.",
+        "arg_docs": {},
+    }
+    cat = load_catalog(small_catalog(tmp_path, extra=[grainer]), SHIPPED)
+    node = nodes_of(cat)["Deband and Grain"]
+    gauss = run(node, "p", "vsdeband.Grainer", {CLASS: "GAUSS"}, clip=SRC)
+    assert gauss.stmt == "n_p_0 = vsdeband.Grainer.GAUSS(n_src_0)"
+    assert "import vsdeband" in gauss.imports
+    poisson = run(node, "p", "vsdeband.Grainer", {CLASS: "POISSON"}, clip=SRC)
+    assert poisson.stmt == "n_p_0 = chainner_vs.poisson_grain(n_src_0)"
+    assert BRIDGE_IMPORT in poisson.imports
 
 
 def test_vfm_accepts_filter(small: dict[str, NodeData]) -> None:

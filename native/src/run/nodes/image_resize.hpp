@@ -29,6 +29,9 @@ enum ResizeFilterValue : int64_t {
     filter_dpid = 12
 };
 
+/* utils.check_image_memory: a RuntimeError for a float32 image above the 16 GiB limit, before anything is allocated. */
+void check_image_memory(const char *name, Extent height, Extent width, int32_t channels);
+
 /* resize(img, (width, height), filter, separate_alpha, False, dpid_lambda, light) as the nodes call it, light a
  * LightTransfer value (linear_light.h's CN_LIGHT_*) or none: the resized image, or img itself where the body returns
  * img.copy() (a same-size Nearest, Box or DPID resize); the body's errors in its order. Throws RunPython before any

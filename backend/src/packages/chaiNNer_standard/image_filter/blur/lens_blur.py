@@ -8,7 +8,8 @@ from nodes.impl.image_utils import as_3d
 from nodes.impl.native_buffers import freeze_normalized
 from nodes.impl.native_convolution import convolve
 from nodes.impl.native_filters import normalize_lens
-from nodes.impl.native_lens import complex_kernel, compose, power
+from nodes.impl.native_lens import complex_kernel, compose, power, straight
+from nodes.impl.native_resample import has_transparency, premultiply
 from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
@@ -76,6 +77,9 @@ def weighted_sum(kernel: np.ndarray, params: Params) -> np.ndarray:
 def lens_blur(
     img: np.ndarray, radius: int, component_count: int, exposure_gamma: float
 ) -> np.ndarray:
+    premultiplied = has_transparency(img)
+    if premultiplied:
+        img = premultiply(img)
     img = np.ascontiguousarray(np.transpose(as_3d(img), (2, 0, 1)), dtype=np.float32)
     parameters, scale = get_parameters(component_count)
     components = [
@@ -109,6 +113,12 @@ def lens_blur(
                 out=output_image[channel],
                 accumulate=component_index != 0,
             )
+    # The kernels overshoot, and a clipped alpha would brighten the colour over it: the
+    # division comes first.
+    if premultiplied:
+        return freeze_normalized(
+            straight(output_image.transpose(1, 2, 0), 1.0 / exposure_gamma)
+        )
     # Upstream clips and powers the planar (c, h, w) image, then returns its
     # transpose(1, 2, 0): that view's strides reach the next node (ImageOutput keeps
     # np.clip's order K), so the port returns the same view of its frozen plane.

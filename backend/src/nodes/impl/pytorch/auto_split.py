@@ -12,9 +12,13 @@ from spandrel import ImageModelDescriptor
 
 from api import Aborted, Progress
 
+from ...utils.utils import Region
 from ..native_framework_images import planar_to_interleaved_checked
+from ..native_tensors import cast_numpy
 from ..upscale.auto_split import Split, Tiler, auto_split
 from ..upscale.bounded_tiler import BoundedTiler
+from ..upscale.tile_report import TileReport
+from ..upscale.white_pass import current_white_pass
 from .offload import offloaded
 from .utils import on_device, safe_cuda_cache_empty
 
@@ -180,19 +184,30 @@ def pytorch_auto_split(
     tiler: Tiler,
     progress: Progress,
     use_bf16: bool = False,
+    report: TileReport | None = None,
 ) -> np.ndarray:
     """`use_bf16` runs an FP32 model's forward in BF16 on the CPU (autocast: the
     weights stay FP32)."""
     dtype = torch.float16 if use_fp16 else torch.float32
     model = on_device(model, device, dtype)
     channels_last = _channels_last_input(model, device, dtype, use_bf16)
+    # Other devices' float16 casts were not compared with the host's.
+    tiles = current_white_pass() if not use_fp16 or device.type == "cuda" else None
 
-    def upscale(img: np.ndarray, _: object):
+    def model_input(img: np.ndarray) -> np.ndarray:
+        return cast_numpy(img, np.dtype(np.float16)) if use_fp16 else img
+
+    def upscale(img: np.ndarray, region: Region):
         progress.check_aborted()
         if progress.paused:
             # Only clear CUDA cache before pausing, skip gc.collect() (too slow)
             safe_cuda_cache_empty()
             progress.suspend()
+
+        if tiles is not None:
+            reused = tiles.reuse(region.x, region.y, img)
+            if reused is not None:
+                return reused
 
         input_tensor = None
         try:
@@ -271,7 +286,14 @@ def pytorch_auto_split(
                     " in the PyTorch settings to run this model in FP32."
                 )
             raise RuntimeError(message)
+        if tiles is not None:
+            tiles.keep(region.x, region.y, img, result, model_input)
         return result
 
     with _stoppable(model.model):
-        return auto_split(img, upscale, BoundedTiler(tiler))
+        return auto_split(
+            img,
+            upscale if report is None else report.recording(img, upscale),
+            BoundedTiler(tiler),
+            progress=progress,
+        )

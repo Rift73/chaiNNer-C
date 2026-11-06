@@ -21,6 +21,8 @@ def _api():
         "cn_resample_filtered": [fp, fp, *([size] * 5), integer, integer, integer],
         "cn_resample_dpid": [fp, fp, *([size] * 5), ct.c_float, integer, integer],
         "cn_resample_alpha": [fp, fp, size, integer],
+        "cn_alpha_transparent": [fp, size, ct.POINTER(integer)],
+        "cn_alpha_finish": [fp, fp, size, integer],
         "cn_resample_border": [
             fp,
             size,
@@ -75,7 +77,7 @@ def filtered(
     h, w, c = _shape(image)
     out_w, out_h = (operator.index(value) for value in dimensions)
     filter_id = operator.index(filter_id)
-    if filter_id not in range(1, 12):
+    if filter_id not in (*range(1, 12), 13, 14):
         raise ValueError("Unknown filtered resize method")
     if min(out_h, out_w) < 0:
         raise OverflowError("Resize dimensions cannot be negative")
@@ -169,6 +171,35 @@ def finish_alpha_inplace(image: np.ndarray) -> np.ndarray:
         raise ValueError("Expected a writable four-channel resampler result")
     out = f32(image)
     check(_api().cn_resample_alpha(ptr(out), ptr(out), h * w, 1))
+    return out
+
+
+def has_transparency(image: np.ndarray) -> bool:
+    """Whether image is a nonempty four-channel float32 image with an alpha other than
+    exactly 1. The other images run a filter as they always did, to the bit."""
+    if image.dtype != np.float32 or image.ndim != 3 or image.shape[2] != 4:
+        return False
+    if not all(image.shape):
+        return False
+    source = f32(image)
+    transparent = ct.c_int()
+    check(
+        _api().cn_alpha_transparent(
+            ptr(source), image.shape[0] * image.shape[1], ct.byref(transparent)
+        )
+    )
+    return bool(transparent.value)
+
+
+def finish_alpha(image: np.ndarray, *, divide: bool) -> np.ndarray:
+    """A new image with colour 0 under an alpha that is not above 0; elsewhere the
+    colour of a premultiplied image over its alpha, at most 1 (divide), or as it is."""
+    h, w, c = _shape(image)
+    if c != 4:
+        raise ValueError("Alpha resampling requires four channels")
+    source = f32(image)
+    out = np.empty(source.shape, np.float32)
+    check(_api().cn_alpha_finish(ptr(source), ptr(out), h * w, divide))
     return out
 
 

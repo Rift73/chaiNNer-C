@@ -11,6 +11,14 @@
 #else
 #include <pthread.h>
 #endif
+/* Under AddressSanitizer an idle slot's buffer and a lease's tail beyond its request are poisoned, so that an overrun
+ * of a reused buffer reports as one of a fresh allocation does. */
+#if __has_feature(address_sanitizer)
+#include <sanitizer/asan_interface.h>
+#else
+#define ASAN_POISON_MEMORY_REGION(address, size) ((void)0)
+#define ASAN_UNPOISON_MEMORY_REGION(address, size) ((void)0)
+#endif
 
 #define CN_SCRATCH_SLOTS 4
 /* An idle slot retains at most 16 MiB, so the pool retains at most 64 MiB. */
@@ -118,6 +126,8 @@ cn_status cn_scratch_lease(size_t bytes, cn_scratch *lease, int *allocated)
     }
     lease->data = slots[index].data;
     lease->bytes = slots[index].capacity;
+    ASAN_UNPOISON_MEMORY_REGION(lease->data, bytes);
+    ASAN_POISON_MEMORY_REGION((char *)lease->data + bytes, lease->bytes - bytes);
     lease->slot = index;
     if (allocated) *allocated = grew;
     return CN_OK;
@@ -134,6 +144,8 @@ void cn_scratch_release(cn_scratch *lease)
             drop = slot->data;
             slot->data = NULL;
             slot->capacity = 0;
+        } else {
+            ASAN_POISON_MEMORY_REGION(slot->data, slot->capacity);
         }
         return_slot(lease->slot);
         free(drop);
@@ -178,6 +190,7 @@ CN_EXPORT int cn_scratch_fill(uint32_t bits, size_t bytes)
             unsigned char *data = (unsigned char *)slots[i].data;
             size_t capacity = slots[i].capacity;
             size_t done = capacity < sizeof(bits) ? capacity : sizeof(bits);
+            ASAN_UNPOISON_MEMORY_REGION(data, capacity);
             memcpy(data, &bits, done);
             for (; done < capacity; done *= 2)
                 memcpy(data + done, data, capacity - done < done ? capacity - done : done);

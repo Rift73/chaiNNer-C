@@ -76,8 +76,8 @@ def server(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     return importlib.import_module("server")
 
 
-def test_every_heavy_module_exists(server: ModuleType):
-    for module in server.HEAVY_MODULES:
+def test_every_late_module_exists(server: ModuleType):
+    for module in server.LATE_MODULES:
         path = BACKEND.joinpath(*module.split(".")).with_suffix(".py")
         assert path.is_file(), module
 

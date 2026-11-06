@@ -136,10 +136,10 @@ static long f32_integer(const float *src, void *out, int output, size_t i, size_
  * take each position from the load holding the channel there (vblendps), and vpermd
  * puts the 8 pixels in order; the values are moved bit for bit. Each plane's 8 values
  * then convert as f32_integer's u16 lanes. */
-long cn_gbr_planes_avx2(const float *src, uint16_t *out, size_t pixels, size_t begin,
-                        size_t end)
+long cn_gbr_planes_avx2(const float *src, uint16_t *out, size_t pixels, float white,
+                        size_t begin, size_t end)
 {
-    const __m256 scale = _mm256_set1_ps(65535.0f);
+    const __m256 scale = _mm256_set1_ps(white);
     const __m256i blue = _mm256_setr_epi32(0, 3, 6, 1, 4, 7, 2, 5);
     const __m256i green = _mm256_setr_epi32(1, 4, 7, 2, 5, 0, 3, 6);
     const __m256i red = _mm256_setr_epi32(2, 5, 0, 3, 6, 1, 4, 7);
@@ -159,7 +159,7 @@ long cn_gbr_planes_avx2(const float *src, uint16_t *out, size_t pixels, size_t b
         store_u16(out + pixels + i, integer_lanes(b, scale, &events));
         store_u16(out + 2 * pixels + i, integer_lanes(r, scale, &events));
     }
-    return lane_event_bits(&events) | gbr_planes_scalar(src, out, pixels, i, end);
+    return lane_event_bits(&events) | gbr_planes_scalar(src, out, pixels, white, i, end);
 }
 
 /* cn_pixels_normalized_f32's bit tests per lane: all ones where the word is +0 or in

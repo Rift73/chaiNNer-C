@@ -455,8 +455,13 @@ def test_server_passes_its_pool_size_to_every_executor():
         and any(isinstance(t, ast.Name) and t.id == "POOL_SIZE" for t in n.targets)
     ]
     assert len(constants) == 1 and ast.literal_eval(constants[0].value) == 8
-    # executor_class: process.Executor or the native engine's NativeExecutor (CHAINNER_C_EXECUTOR).
-    wiring = {"ThreadPoolExecutor": "max_workers", "executor_class": "pool_size"}
+    # executor_class: process.Executor or the native engine's NativeExecutor (CHAINNER_C_EXECUTOR);
+    # a /run builds it through run_executor (folder_videos.py), an individual run directly.
+    wiring = {
+        "ThreadPoolExecutor": "max_workers",
+        "executor_class": "pool_size",
+        "run_executor": "pool_size",
+    }
     calls = [
         (n, n.func)
         for n in ast.walk(tree)
@@ -479,7 +484,7 @@ def test_server_passes_its_pool_size_to_every_executor():
     assert passed == [
         ("ThreadPoolExecutor", True),
         ("executor_class", True),
-        ("executor_class", True),
+        ("run_executor", True),
     ]
 
 
@@ -1633,10 +1638,11 @@ def test_dependents_of_a_stored_error_meet_it_at_the_nesting_point(
     assert stripped(runs["3"].events) == stripped(runs["1"].events)
 
 
-# The 118 schema ids admitted by pure_cpu_dependency's per-node conditions, each
+# The 125 schema ids admitted by pure_cpu_dependency's per-node conditions, each
 # audited in native/reports/sp3/thread-safety-audit.md (SP3 Task 4; the locked device
 # node, 2026-10-08; Descale, 2026-10-16; Planes to RGB and RGB to Planes, 2026-10-18;
-# MIGraphX's Upscale Image, the TensorRT runner's counterpart, 2026-10-29).
+# MIGraphX's Upscale Image, the TensorRT runner's counterpart, 2026-10-29; the small image
+# operation nodes, Is Grayscale and Math Expression, 2026-11-06).
 AUDITED_SPECULATION_IDS: frozenset[str] = frozenset(
     [
         f"chainner:image:{name}"
@@ -1645,17 +1651,17 @@ AUDITED_SPECULATION_IDS: frozenset[str] = frozenset(
         bilateral_blur blend blur brightness_and_contrast canny_edge_detection caption
         change_colorspace chroma_key clamp color_levels color_transfer combine_rgba
         convert_normal_map create_checkerboard create_color create_colorwheel
-        create_gradient create_noise crop crop_content descale dilate distance_transform dither
+        create_gradient create_noise crop crop_content crop_to_size descale dilate distance_transform dither
         divide edge_detection erode fast_nlmeans fill_alpha flip gamma gaussian_blur
         generate_hash generate_threshold get_bbox get_dims high_pass hue_and_saturation
-        image_convolve image_metrics image_statistics inpaint invert lens_blur log2lin
+        image_convolve image_diff image_metrics image_statistics inpaint invert is_grayscale lens_blur log2lin
         lut median_blur merge_channels merge_transparency metal_to_specular multiply
-        normal_generator normalize_normal_map opacity pad palette_dither
+        normal_generator normal_to_height normalize_normal_map opacity pad pad_to_square palette_dither
         palette_from_image pick_color pixelate planes_to_rgb premultiplied_alpha
         quantize_to_referece remove_border resize resize_pixel_art resize_to_side
         rgb_to_planes rotate sharpen sharpen_hbf
         shift specular_to_metal split_channels split_transparency stack
-        strengthen_normals stretch_contrast text_as_image threshold threshold_adaptive
+        strengthen_normals stretch_contrast text_as_image threshold threshold_adaptive white_balance
         z_stack
         """.split()
     ]
@@ -1663,7 +1669,7 @@ AUDITED_SPECULATION_IDS: frozenset[str] = frozenset(
         f"chainner:utility:{name}"
         for name in """
         back_directory color color_from_channels compare derive_seed directory
-        directory_to_text execution_number into_directory math math_round note number
+        directory_to_text execution_number into_directory math math_expression math_round note number
         parse_number pass_through percent random_number regex_find regex_replace
         resolutions separate_color switch text text_append text_length text_padding
         text_pattern text_replace text_slice
@@ -2899,6 +2905,7 @@ def save_image_pipeline(
     inputs = [BaseInput("any", f"Input{i}").with_id(i) for i in range(len(values))]
     inputs[0] = ImageInput().with_id(0).make_lazy()
     inputs[2].make_optional()  # the subdirectory
+    inputs[-1].make_optional()  # the metadata
     object.__setattr__(save.data, "inputs", inputs)
     set_schema(save, SAVE_SCHEMA)
     chain.add_node(save)
@@ -3293,6 +3300,7 @@ def batch(window, directory):
     inputs = [BaseInput("any", f"Input{i}").with_id(i) for i in range(len(values))]
     inputs[0].make_lazy()
     inputs[2].make_optional()
+    inputs[-1].make_optional()
     object.__setattr__(save.data, "inputs", inputs)
     save.schema_id = "test:fresh-pillow:save"
     object.__setattr__(save.data, "schema_id", save.schema_id)
@@ -3533,6 +3541,7 @@ def load_images_pipeline(monkeypatch, tmp_path, window, loader, *, fail_fast=Fal
     inputs = [BaseInput("any", f"Input{i}").with_id(i) for i in range(len(values))]
     inputs[0] = ImageInput().with_id(0).make_lazy()
     inputs[2].make_optional()  # the subdirectory
+    inputs[-1].make_optional()  # the metadata
     object.__setattr__(save.data, "inputs", inputs)
     set_schema(save, SAVE_SCHEMA)
     chain.add_node(save)
@@ -3653,7 +3662,7 @@ def test_load_images_two_phase_equals_k1_with_out_of_order_finishes(
             if window == "3" and index == 1:
                 second.wait(10)
             try:
-                return NEW.load.load_image_node(path)
+                return NEW.load.load_image_node(path)[:3]
             except Exception as failure:
                 raised[index] = failure
                 raise
@@ -3713,7 +3722,7 @@ def test_split_item_without_an_image_fails_at_its_slot_as_today(monkeypatch, tmp
             return None, path.parent, path.stem
         if path.stem == "4":
             return None
-        return NEW.load.load_image_node(path)
+        return NEW.load.load_image_node(path)[:3]
 
     runs = {}
     for window in ("1", "3"):
@@ -3761,7 +3770,7 @@ def test_load_image_node_runs_once_per_item_never_before_its_describe(
 
     def loader(path):
         log.append(("load", int(path.stem)))
-        return NEW.load.load_image_node(path)
+        return NEW.load.load_image_node(path)[:3]
 
     def save(name):
         pipeline.settle()  # the producer describes everything K admits
@@ -3796,7 +3805,7 @@ def test_materialize_never_runs_on_the_loop_thread(monkeypatch, tmp_path, source
 
         def loader(path):
             decodes.append(threading.get_ident())
-            return NEW.load.load_image_node(path)
+            return NEW.load.load_image_node(path)[:3]
 
         pipeline, _ = load_images_pipeline(monkeypatch, tmp_path, "3", loader)
     else:
@@ -3858,7 +3867,7 @@ def test_serial_producer_variable_never_changes_output(monkeypatch, tmp_path, va
     runs = {}
     for window in ("1", "3"):
         pipeline, directory = load_images_pipeline(
-            monkeypatch, tmp_path, window, NEW.load.load_image_node
+            monkeypatch, tmp_path, window, lambda path: NEW.load.load_image_node(path)[:3]
         )
         pipeline.on_save = pipeline.settle
         runs[window] = (pipeline, pipeline.run(workers=6), written(directory))

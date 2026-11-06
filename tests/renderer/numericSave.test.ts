@@ -1,9 +1,11 @@
 import { ComponentProps, ReactElement, SetStateAction } from 'react';
 import { Edge, Node } from 'reactflow';
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { Mock, afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { EdgeData, InputId, NodeData, SchemaId } from '../../src/common/common-types';
 import { chainSnapshot } from '../../src/common/nodes/chainSnapshot';
 import { AdvancedNumberInput } from '../../src/renderer/components/inputs/elements/AdvanceNumberInput';
+import { AlertBoxContext } from '../../src/renderer/contexts/AlertBoxContext';
+import { BackendContext } from '../../src/renderer/contexts/BackendContext';
 import { GlobalContext, GlobalProvider } from '../../src/renderer/contexts/GlobalNodeState';
 import type { SaveData } from '../../src/main/SaveFile';
 import type { NumberInputProps } from '@chakra-ui/react';
@@ -265,6 +267,81 @@ test.each(['file-new', 'file-open'])(
         expect(harness.stateWrites.mock.calls).toEqual(changes);
     }
 );
+
+test('a file with a value its input cannot take warns and stays unsaved', async () => {
+    const { sendAlert } = (AlertBoxContext as unknown as { value: { sendAlert: Mock } }).value;
+    const { schemata } = (
+        BackendContext as unknown as { value: { schemata: { get: (id: SchemaId) => unknown } } }
+    ).value;
+    const get = vi.spyOn(schemata, 'get').mockReturnValue({
+        name: 'Blend',
+        deprecated: false,
+        kind: 'regularNode',
+        inputs: [{ id: 3, kind: 'dropdown', label: 'Position', options: [{ value: 'center' }] }],
+    });
+    const open = async (value: string | number) => {
+        sendAlert.mockClear();
+        harness.stateWrites.mockClear();
+        harness.state.nodes = [];
+        await emit('file-open', {
+            kind: 'Success',
+            path: 'C:/chains/old.chn',
+            saveData: {
+                nodes: [
+                    {
+                        id: 'blend',
+                        position: { x: 0, y: 0 },
+                        data: {
+                            id: 'blend',
+                            schemaId: 'chainner:image:blend' as SchemaId,
+                            inputData: { 3: value },
+                        },
+                    },
+                ],
+                edges: [],
+                viewport: { x: 0, y: 0, zoom: 1 },
+                tamperedWith: false,
+            },
+        });
+        await vi.waitFor(() => expect(harness.state.nodes).toHaveLength(1));
+    };
+    renderProvider();
+
+    await open(100);
+    expect(sendAlert).toHaveBeenCalledOnce();
+    expect(sendAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+            title: 'File contains invalid values',
+            message: expect.stringContaining('Blend: Position held 100 (1 node)') as string,
+        })
+    );
+    // the saved snapshot of a chain that is unsaved
+    expect(harness.stateWrites).toHaveBeenCalledWith(null);
+
+    await open('center');
+    expect(sendAlert).not.toHaveBeenCalled();
+    expect(harness.stateWrites).not.toHaveBeenCalledWith(null);
+
+    get.mockRestore();
+});
+
+test('a new chain counts as a load: undo does not go back into the chain before it', async () => {
+    renderProvider();
+    const chainLoads = () => {
+        harness.state.slots = harness.providerSlots;
+        harness.state.cursor = 0;
+        const tree = GlobalProvider({ reactFlowWrapper: { current: null } }) as ReactElement<{
+            value: { chainLoads: number };
+        }>;
+        return tree.props.value.chainLoads;
+    };
+    const before = chainLoads();
+
+    await emit('file-new');
+    await vi.waitFor(() => expect(harness.state.nodes).toEqual([]));
+
+    expect(chainLoads()).toBe(before + 1);
+});
 
 test('an edit during Save keeps the snapshot of the data that was actually sent', async () => {
     const global = renderProvider();

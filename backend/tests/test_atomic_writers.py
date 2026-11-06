@@ -201,7 +201,7 @@ def test_align_model_download_writes_through_a_temporary_file(
         "packages.chaiNNer_pytorch.pytorch.processing.align_image_to_reference"
     )
     response = SimpleNamespace(content=DATA, raise_for_status=lambda: None)
-    monkeypatch.setattr(align.requests, "get", lambda url: response)
+    monkeypatch.setattr(align.requests, "get", lambda url, timeout: response)
     folder = tmp_path / "xfeat" / "weights"
     path = align.download_model("https://example.invalid/xfeat.pt", folder, "xfeat.pt")
     assert path == folder / "xfeat.pt"

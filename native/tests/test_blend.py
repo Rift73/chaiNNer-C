@@ -16,6 +16,9 @@ from nodes.impl.blend import (
 from nodes.impl.native import lib, ptr
 from nodes.impl.native_blend import composite
 
+# The modes of the frozen snapshot; test_blend_non_separable.py has the others.
+SEPARABLE = [BlendMode(mode.value) for mode in reference.BlendMode]
+
 
 @pytest.fixture(autouse=True)
 def saturating_xor_reference(monkeypatch):
@@ -38,6 +41,48 @@ def assert_parity(actual, expected):
     np.testing.assert_array_equal(
         actual.view(np.uint32)[~nan], expected.view(np.uint32)[~nan]
     )
+
+
+@pytest.mark.parametrize(
+    ("mode", "overlay", "base", "expected"),
+    [
+        (BlendMode.COLOR_BURN, 0.0, 1.0, 1.0),
+        (BlendMode.COLOR_BURN, 0.0, 0.5, 0.0),
+        (BlendMode.COLOR_BURN, 0.5, 1.0, 1.0),
+        (BlendMode.COLOR_DODGE, 1.0, 0.0, 0.0),
+        (BlendMode.COLOR_DODGE, 1.0, 0.5, 1.0),
+        (BlendMode.COLOR_DODGE, 0.5, 0.0, 0.0),
+        (BlendMode.VIVID_LIGHT, 0.0, 1.0, 1.0),
+        (BlendMode.VIVID_LIGHT, 1.0, 0.0, 0.0),
+    ],
+)
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_burn_keeps_white_and_dodge_keeps_black(mode, overlay, base, expected, channels):
+    # The W3C compositing spec's and ISO 32000-2's definitions at their 0 / 0 corners.
+    shape = (1, 1) if channels == 1 else (1, 1, channels)
+    a = np.full(shape, overlay, np.float32)
+    b = np.full(shape, base, np.float32)
+    if channels == 4:
+        a[:, :, 3] = b[:, :, 3] = 1
+    result = blend_images(a, b, mode)
+    assert (result if channels == 1 else result[:, :, :3]).ravel().tolist() == [expected] * min(channels, 3)
+
+
+@pytest.mark.parametrize("base_alpha", [None, 1.0, 0.5])
+def test_divide_mixes_its_clipped_quotient(base_alpha):
+    # A black overlay at 2 % over gray: 2 % of white and the rest of the base, source-over. Unclipped, the quotient
+    # 0.5 / 0.0001 turned every soft edge of such an overlay white.
+    overlay = np.array([[[0, 0, 0, 0.02]]], np.float32)
+    base = np.full((1, 1, 3), 0.5, np.float32)
+    o_a, b_a = 0.02, 1.0
+    if base_alpha is not None:
+        b_a = base_alpha
+        base = np.dstack([base, np.full((1, 1), base_alpha, np.float32)])
+    result = blend_images(overlay, base, BlendMode.DIVIDE)
+    final_a = o_a + b_a - o_a * b_a
+    both = o_a * b_a
+    expected = (both * 1.0 + (o_a - both) * 0.0 + (b_a - both) * 0.5) / final_a
+    np.testing.assert_allclose(result[0, 0, :3], expected, atol=1e-6)
 
 
 @pytest.mark.parametrize("shape", [(2, 2, 3, 0), (2, 2, 3, 1), (0, 2, 3), (2, 0, 3)])
@@ -79,7 +124,7 @@ def image(rng, channels, layout, height=7, width=11):
     return values
 
 
-@pytest.mark.parametrize("mode", list(BlendMode))
+@pytest.mark.parametrize("mode", SEPARABLE)
 @pytest.mark.parametrize("channels", [1, 3, 4])
 @pytest.mark.parametrize("layout", ["contiguous", "strided", "reversed", "readonly"])
 def test_raw_modes(mode, channels, layout):
@@ -95,7 +140,7 @@ def test_raw_modes(mode, channels, layout):
     np.testing.assert_array_equal(b, before_b)
 
 
-@pytest.mark.parametrize("mode", list(BlendMode))
+@pytest.mark.parametrize("mode", SEPARABLE)
 @pytest.mark.parametrize("channels", list(itertools.product([1, 3, 4], repeat=2)))
 @pytest.mark.parametrize("layout", ["contiguous", "strided", "reversed", "readonly"])
 def test_all_composition_paths(mode, channels, layout):
@@ -109,7 +154,7 @@ def test_all_composition_paths(mode, channels, layout):
     np.testing.assert_array_equal(b, before_b)
 
 
-@pytest.mark.parametrize("mode", list(BlendMode))
+@pytest.mark.parametrize("mode", SEPARABLE)
 @pytest.mark.parametrize("channels", list(itertools.product([1, 3, 4], repeat=2)))
 def test_boundaries_and_transparency(mode, channels):
     # Exercise branch cutoffs, epsilon denominators, and exactly transparent and
@@ -126,7 +171,7 @@ def test_boundaries_and_transparency(mode, channels):
     assert_parity(actual, expected)
 
 
-@pytest.mark.parametrize("mode", list(BlendMode))
+@pytest.mark.parametrize("mode", SEPARABLE)
 @pytest.mark.parametrize("channels", list(itertools.product([1, 3, 4], repeat=2)))
 def test_composition_signed_zero_and_specials(mode, channels):
     # Consult 11 D-17.1: every clip is np.clip(x, 0, 1), which keeps -0 and NaN.
@@ -145,7 +190,7 @@ def test_composition_signed_zero_and_specials(mode, channels):
     assert_parity(actual, expected)
 
 
-@pytest.mark.parametrize("mode", list(BlendMode))
+@pytest.mark.parametrize("mode", SEPARABLE)
 def test_raw_nan_infinity_and_signed_zero(mode):
     levels = np.array(
         [0.0, -0.0, 0.0001, 0.5, 1.0, np.nan, np.inf, -np.inf], dtype=np.float32
@@ -170,7 +215,7 @@ def test_xor_bankers_rounding():
 
 
 @pytest.mark.parametrize("shape", [(1, 1), (1, 11), (11, 1), (1, 1, 1)])
-@pytest.mark.parametrize("mode", list(BlendMode))
+@pytest.mark.parametrize("mode", SEPARABLE)
 def test_single_pixel_dimensions_and_grayscale_flattening(shape, mode):
     a, b = np.full(shape, 0.2, np.float32), np.full(shape, 0.7, np.float32)
     assert_parity(
@@ -191,7 +236,7 @@ def test_normal_alias_semantics():
 
 
 def test_normalization_metadata_unchanged():
-    for mode in BlendMode:
+    for mode in SEPARABLE:
         assert blend_mode_normalized(mode) == reference.blend_mode_normalized(
             reference.BlendMode(mode.value)
         )

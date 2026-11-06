@@ -26,10 +26,11 @@ from wcmatch import glob
 
 from nodes.impl.image_formats import get_available_image_formats
 
-pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows")
-
+WINDOWS = sys.platform == "win32"
 LONG = "\\\\?\\"
 EVERYONE = "*S-1-1-0"
+# Not a valid name's text: a lone UTF-16 unit on Windows, a byte no UTF-8 holds elsewhere.
+NOT_TEXT = chr(0xD800 if WINDOWS else 0xDCFF) + "x.png"
 
 
 class OracleGlob(glob.Glob[str]):
@@ -92,10 +93,20 @@ def write(path: Path, data: bytes = b"not decoded") -> None:
     path.write_bytes(data)
 
 
-def junction(link: Path, target: Path) -> None:
-    import _winapi
+def literal(path: Path) -> str:
+    """path in the form that reaches names Windows would rewrite."""
+    return LONG + str(path) if WINDOWS else str(path)
 
-    _winapi.CreateJunction(str(target), str(link))
+
+def junction(link: Path, target: Path) -> None:
+    """A folder link: a junction, which the walk enters, or on POSIX a symlink, which
+    it lists and does not enter."""
+    if WINDOWS:
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
 
 
 def attributes(path: Path, value: int) -> None:
@@ -104,8 +115,26 @@ def attributes(path: Path, value: int) -> None:
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-def icacls(path: Path, *arguments: str) -> None:
-    subprocess.run(["icacls", str(path), *arguments], check=True, capture_output=True)
+def deny_listing(folder: Path) -> None:
+    if WINDOWS:
+        subprocess.run(
+            ["icacls", str(folder), "/deny", f"{EVERYONE}:(RD)"],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        folder.chmod(0o300)
+
+
+def allow_listing(folder: Path) -> None:
+    if WINDOWS:
+        subprocess.run(
+            ["icacls", str(folder), "/remove:d", EVERYONE],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        folder.chmod(0o700)
 
 
 class EdgeTree:
@@ -150,7 +179,7 @@ class EdgeTree:
             "x.t\u0130f",  # re's IGNORECASE matches U+0130 and U+0131 to i
             "y.t\u0131f",
             "z.\u017fgi",  # and U+017F to s
-            "\ud800x.png",  # a lone surrogate
+            NOT_TEXT,
             "\U0001d7ce42.png",  # a decimal digit outside the BMP
             "😀1.png",
             "n" * 240 + ".png",
@@ -165,9 +194,14 @@ class EdgeTree:
         (root / "empty_nested" / "inner").mkdir(parents=True)
         for name in ["hidden_attr.png", "system_attr.png"]:
             write(root / name)
-        attributes(root / "hidden_attr.png", 0x2)
-        attributes(root / "system_attr.png", 0x4)
-        attributes(root / "hs", 0x2 | 0x4 | 0x10)
+        if WINDOWS:
+            attributes(root / "hidden_attr.png", 0x2)
+            attributes(root / "system_attr.png", 0x4)
+            attributes(root / "hs", 0x2 | 0x4 | 0x10)
+        else:
+            # What only POSIX lets a name hold.
+            for name in ["a:b.png", "back\\slash.png", "new\nline.png", "\udce9.png"]:
+                write(root / name)
         # Deep and long: past the classic MAX_PATH, with junctions in and out.
         deep = root / ("L" * 100) / ("M" * 100) / ("N" * 100)
         write(deep / "deep.png")
@@ -185,7 +219,7 @@ class EdgeTree:
             "con",
             "nul.d",
         ]:
-            write(Path(LONG + str(self.odd / name)) / f"in_{name}.png")
+            write(Path(literal(self.odd / name)) / f"in_{name}.png")
         # Junctions: a cycle to the root, back to an ancestor, a second way into a
         # folder, one sorted before the folder it targets, a chain, one outside the
         # tree whose target holds a junction back in, a dangling one, long ones.
@@ -218,7 +252,7 @@ class EdgeTree:
         # listing is denied, so the owner can still give it back).
         write(root / "locked" / "x.png")
         for folder in (root / "locked", locked):
-            icacls(folder, "/deny", f"{EVERYONE}:(RD)")
+            deny_listing(folder)
             self.locked.append(folder)
         write(base / "elsewhere" / "e.png")
         try:
@@ -236,27 +270,27 @@ class EdgeTree:
             self.symlinks = False
         sensitive = root / "cs"
         sensitive.mkdir()
-        result = subprocess.run(
-            ["fsutil", "file", "setCaseSensitiveInfo", str(sensitive), "enable"],
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode == 0:
+        if WINDOWS:
+            result = subprocess.run(
+                ["fsutil", "file", "setCaseSensitiveInfo", str(sensitive), "enable"],
+                capture_output=True,
+                check=False,
+            )
+            self.case_sensitive = result.returncode == 0
+        if self.case_sensitive:
             for name in ["a.png", "A.png", "Q.PNG", "q.png", "dir/x.png", "DIR/x.png"]:
                 write(sensitive / name)
-        else:
-            self.case_sensitive = False
 
     def remove(self) -> None:
         for folder in self.locked:
-            icacls(folder, "/remove:d", EVERYONE)
+            allow_listing(folder)
         for link in self.links:
-            if link.is_dir() or link.is_junction():
+            if WINDOWS and (link.is_dir() or link.is_junction()):
                 os.rmdir(link)  # the link only, never its target
             else:
                 link.unlink(missing_ok=True)
         # The literal path form reaches the names Windows would rewrite.
-        shutil.rmtree(LONG + str(self.base))
+        shutil.rmtree(literal(self.base))
 
 
 @pytest.fixture(scope="module")
@@ -286,7 +320,7 @@ def directories(edge: EdgeTree) -> list[Path]:
     root = edge.root
     return [
         root,
-        Path(LONG + str(root)),
+        Path(literal(root)),
         root / "sub",
         root / "outside",
         root / "into_long",
@@ -295,7 +329,7 @@ def directories(edge: EdgeTree) -> list[Path]:
         root / "a.png",
         root / "cs",
         edge.odd,
-        Path(LONG + str(edge.odd)),
+        Path(literal(edge.odd)),
         edge.odd / "space ",
         edge.odd / "dots..",
     ]
@@ -316,15 +350,25 @@ def test_edge_tree_exercises_its_edges(edge):
     paths, error = listing(namespace(current=True), edge.root, "**/*", extensions)
     assert error is None and paths is not None
     names = [Path(text).relative_to(edge.root).as_posix() for _, text in paths]
-    # Entered once: sub (the cycle, a second way in, a junction back from outside),
-    # z_real (through the junction listed before it) and the long folder.
-    assert [name for name in names if name.endswith("/b.png")] == ["again/b.png"]
-    assert "a_first/r.png" in names and "z_real/r.png" not in names
     assert sum(name.endswith("/deeper.png") for name in names) == 1
-    assert "outside/d.png" in names and "chain/t.png" in names
-    # Python's lower() folds KELVIN SIGN and OHM SIGN onto names listed before them.
-    assert "\u212a.png" not in names and "\u2126.png" not in names
-    assert {"x.t\u0130f", "y.t\u0131f", "z.\u017fgi", "\ud800x.png"} <= set(names)
+    if WINDOWS:
+        # Entered once: sub (the cycle, a second way in, a junction back from outside),
+        # z_real (through the junction listed before it) and the long folder.
+        assert [name for name in names if name.endswith("/b.png")] == ["again/b.png"]
+        assert "a_first/r.png" in names and "z_real/r.png" not in names
+        assert "outside/d.png" in names and "chain/t.png" in names
+        # Python's lower() folds KELVIN SIGN and OHM SIGN onto names listed before them.
+        assert "\u212a.png" not in names and "\u2126.png" not in names
+    else:
+        # A symlink to a folder is not entered; names differing in case are two files.
+        assert [name for name in names if name.endswith("/b.png")] == ["sub/b.png"]
+        assert "a_first/r.png" not in names and "z_real/r.png" in names
+        assert "outside/d.png" not in names and "chain/t.png" not in names
+        assert "\u212a.png" in names and "\u2126.png" in names
+        assert {"a:b.png", "back\\slash.png", "new\nline.png", "\udce9.png"} <= set(
+            names
+        )
+    assert {"x.t\u0130f", "y.t\u0131f", "z.\u017fgi", NOT_TEXT} <= set(names)
     assert {"hidden_attr.png", "system_attr.png", "hs/x.png", ".png"} <= set(names)
     assert "locked/x.png" not in names and "to_locked/l.png" not in names
     if edge.symlinks:
@@ -347,6 +391,7 @@ def test_relative_and_text_directories(edge, monkeypatch, pattern):
         assert listing(new, directory, pattern, EXTENSIONS) == expected, directory
 
 
+@pytest.mark.skipif(not WINDOWS, reason="FindFirstFileExW lists without os.scandir")
 @pytest.mark.parametrize("pattern", ["*", "**/*"])
 def test_plain_listing_is_native(edge, monkeypatch, pattern):
     """Load Images' own expressions list without os.scandir (FindFirstFileExW in C++);
@@ -376,4 +421,7 @@ def test_load_images_snapshot_matches(edge, recursive):
         edge.root, False, recursive, "", False, 0, False
     )
     expected, _ = listing(oracle(), edge.root, "**/*" if recursive else "*", EXTENSIONS)
-    assert [(type(p), str(p)) for p in generator.source_paths] == expected
+    # The listing keeps a folder named like an image; the node's items do not.
+    files = [(kind, text) for kind, text in expected if not os.path.isdir(text)]
+    assert files and len(files) < len(expected)
+    assert [(type(p), str(p)) for p in generator.source_paths] == files

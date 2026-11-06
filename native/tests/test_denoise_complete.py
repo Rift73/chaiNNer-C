@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from nodes.impl import native_denoise
+from test_isa_dispatch import isa_get, isa_set
 
 TESTS = Path(__file__).parent
 ROOT = TESTS.parents[1]
@@ -160,6 +161,84 @@ def test_every_registered_window_radius(patch, channels):
         searchWindowSize=search * 2 + 1,
     )
     exact(native_denoise.nlm(source, 17.3, patch, search), expected)
+
+
+@pytest.fixture
+def levels():
+    """Every level this CPU has, scalar first; the original level afterwards."""
+    effective, _, cpu = isa_get()
+    try:
+        yield range(cpu + 1)
+    finally:
+        assert isa_set(effective) == effective
+
+
+@pytest.mark.parametrize("channels", [1, 2, 3, 4])
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (1, 1),
+        (2, 7),
+        (5, 8),
+        (7, 15),
+        (17, 16),
+        (3, 17),
+        (33, 33),
+        (16, 153),
+        (17, 154),
+        (19, 155),
+        (3, 308),
+        (20, 333),
+        (3, 541),
+        (17, 542),
+        (16, 543),
+        (33, 559),
+        (2, 1085),
+    ],
+)
+@pytest.mark.parametrize(
+    "strength,patch,search",
+    [(6, 3, 10), (17.3, 1, 2), (40, 2, 4), (11, 8, 1), (9, 1, 30), (9, 8, 20)],
+)
+def test_every_level_matches_the_oracle(
+    levels, channels, shape, strength, patch, search
+):
+    # The left half weighs 0 almost everywhere and the right half looks its weights
+    # up, so vectors run both ways; the shapes end around the vectors, the tiles and the
+    # block widths (patch 1's first block is 542 columns, patch 8's 528, patch 2's 540, patch 3's 538).
+    source = image(shape, channels)
+    half = shape[1] // 2
+    source[:, half:] = source[:, half:] // 8 + 64
+    expected = cv2.fastNlMeansDenoising(
+        source,
+        h=strength,
+        templateWindowSize=patch * 2 + 1,
+        searchWindowSize=search * 2 + 1,
+    )
+    for level in levels:
+        assert isa_set(level) == level
+        exact(native_denoise.nlm(source, strength, patch, search), expected)
+
+
+@pytest.mark.parametrize("channels", [1, 2])
+def test_every_level_at_the_largest_patch(levels, channels):
+    source = image((3, 140), channels) // 8 + 64
+    expected = cv2.fastNlMeansDenoising(
+        source, h=17.3, templateWindowSize=61, searchWindowSize=3
+    )
+    for level in levels:
+        assert isa_set(level) == level
+        exact(native_denoise.nlm(source, 17.3, 30, 1), expected)
+
+
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_every_level_over_the_lab_chunks(levels, channels):
+    # More than one grain of pixels: the Lab split and merge run on the pool.
+    source = image((260, 261), channels).astype(np.float32) / 255
+    expected = REFERENCE.denoise_node(source, 9.3, 14.7, 1, 2)
+    for level in levels:
+        assert isa_set(level) == level
+        exact(CURRENT.denoise_node(source, 9.3, 14.7, 1, 2), expected)
 
 
 @pytest.mark.parametrize("channels", [1, 3, 4])

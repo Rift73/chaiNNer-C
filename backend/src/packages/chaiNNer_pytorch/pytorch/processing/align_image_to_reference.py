@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import zipfile
 from enum import Enum
 from pathlib import Path
@@ -48,23 +49,26 @@ def download_model(
     if model_path.exists():
         return model_path
     try:
-        response = requests.get(download_url)
+        response = requests.get(download_url, timeout=(15, 60))
         response.raise_for_status()
     except requests.RequestException as e:
         raise RuntimeError(
             f"Failed to download the file from {download_url}. Error: {e}"
         ) from e
     if zip_inner_path is not None:
-        zip_path = model_dir / "model_temp.zip"
-        with open(zip_path, "wb") as f:
-            f.write(response.content)
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            zipped_file_path = f"{zip_inner_path}/{model_file}"
-            zip_ref.extract(zipped_file_path, model_dir)
+        zipped_file_path = f"{zip_inner_path}/{model_file}"
+        try:
+            with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
+                zip_ref.extract(zipped_file_path, model_dir)
+        except (zipfile.BadZipFile, KeyError) as e:
+            # Google Drive answers an exceeded download quota with a web page.
+            raise RuntimeError(
+                f"The file from {download_url} is not the zip of {model_file}, perhaps a"
+                f" download quota's page. Error: {e}"
+            ) from e
         extracted_file_path = model_dir / zipped_file_path
         if extracted_file_path != model_path:
             extracted_file_path.rename(model_path)
-        zip_path.unlink(missing_ok=True)
         subfolder = model_dir / zip_inner_path
         try:
             subfolder.rmdir()
@@ -259,7 +263,14 @@ def _align_images(
             fref_points = descriptor.detectAndCompute(fref)[0]
             kpts1, descs1 = (fclip_points["keypoints"], fclip_points["descriptors"])
             kpts2, descs2 = (fref_points["keypoints"], fref_points["descriptors"])
-            points_found = len(kpts1) > 100 and len(kpts2) > 100
+            # The homography's grid divides by a clip's side less 1, and its crop has a
+            # minimum of 16 px, which a smaller (padded) reference cannot hold.
+            points_found = (
+                len(kpts1) > 100
+                and len(kpts2) > 100
+                and min(fclip_h, fclip_w) > 1
+                and min(fref_h, fref_w) >= 16
+            )
             if points_found:
                 idx0, idx1 = matcher.match(descs1, descs2, 0.82)
                 match_found = len(idx0) > 50
@@ -274,6 +285,10 @@ def _align_images(
                         maxIters=1000,
                         confidence=0.995,
                     )
+                    # None when the matches fit no homography (all on one line), which
+                    # OpenCV's type stubs do not allow for.
+                    match_found = np.ndim(homography) == 2
+                if match_found:
                     homography_t = torch.tensor(
                         homography, dtype=torch.float32, device=device
                     )

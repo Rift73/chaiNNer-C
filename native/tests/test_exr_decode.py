@@ -381,7 +381,7 @@ def test_decoded_with_native_codecs_off(monkeypatch: pytest.MonkeyPatch):
 
 def test_load_image_node_returns_the_raw_array():
     """The node gives the decoded float32 array, its folder and its name; LargeImageOutput normalises it later."""
-    image, directory, name = load_image.load_image_node(EXR / "rgba_half_dwaa.exr")
+    image, directory, name, _ = load_image.load_image_node(EXR / "rgba_half_dwaa.exr")
     assert image.dtype == np.float32 and image.shape == (37, 23, 4) and image.max() > 1
     assert (directory, name) == (EXR, "rgba_half_dwaa")
 

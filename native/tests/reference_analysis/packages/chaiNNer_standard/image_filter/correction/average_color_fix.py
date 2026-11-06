@@ -86,8 +86,8 @@ def average_color_fix_node(
             invalid_alpha_mask = ref_alpha == 0
         else:
             invalid_alpha_mask = downscaled_alpha == 0
-        invalid_alpha_indices = np.nonzero(invalid_alpha_mask)
-        downscaled_diff[invalid_alpha_indices] = 0
+        # Judged, not upstream's: its nonzero() of the (H, W, 1) mask cleared only channel 0.
+        downscaled_diff[invalid_alpha_mask[:, :, 0]] = 0
 
         if ref_alpha is not None and downscaled_alpha is not None:
             downscaled_alpha_diff = ref_alpha - downscaled_alpha  # type: ignore

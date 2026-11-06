@@ -131,7 +131,7 @@ def test_startup_finds_a_package_pip_lists_under_another_spelling(
     monkeypatch: pytest.MonkeyPatch,
 ):
     # pip lists a package by the name in its own metadata: onnx-graphsurgeon's is
-    # "onnx_graphsurgeon", and ModelOpt's package showed it missing after every
+    # "onnx_graphsurgeon", and a package listing it showed it missing after every
     # restart.
     environment = fake_environment(
         monkeypatch, {"onnx_graphsurgeon": "0.6.1", "Pillow": "12.0.0"}

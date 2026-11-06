@@ -82,12 +82,17 @@ def dither_node(
     history_length: int,
 ) -> np.ndarray:
     if dither_algorithm == UniformDitherAlgorithm.NONE:
-        return uniform_dither(img, num_colors, 0)
+        result = uniform_dither(img, num_colors, 0)
     elif dither_algorithm == UniformDitherAlgorithm.ORDERED:
         map_size = _THRESHOLD_MAP[threshold_map]
-        return uniform_dither(img, num_colors, 1, map_size=map_size)
+        result = uniform_dither(img, num_colors, 1, map_size=map_size)
     elif dither_algorithm == UniformDitherAlgorithm.DIFFUSION:
         algorithm = DIFFUSION_IDS[error_diffusion_map.value]
-        return uniform_dither(img, num_colors, 2, algorithm=algorithm)
+        result = uniform_dither(img, num_colors, 2, algorithm=algorithm)
     elif dither_algorithm == UniformDitherAlgorithm.RIEMERSMA:
-        return uniform_dither(img, num_colors, 3, history_length=history_length)
+        result = uniform_dither(img, num_colors, 3, history_length=history_length)
+    else:
+        raise ValueError(f"Unknown dither algorithm: {dither_algorithm}")
+    if result.shape[2] == 4:
+        result[:, :, 3] = img[:, :, 3]
+    return result

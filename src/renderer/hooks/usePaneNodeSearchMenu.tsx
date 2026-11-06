@@ -88,13 +88,18 @@ const getConnectionEnd = (
         case 'target': {
             const { nodeId, inputId } = start;
 
-            const sourceFn = typeState.functions.get(nodeId)?.definition;
+            const sourceInstance = typeState.functions.get(nodeId);
             const targetFn = functionDefinitions.get(schema.schemaId);
-            if (!sourceFn || !targetFn) {
+            if (!sourceInstance || !targetFn) {
                 return undefined;
             }
 
-            const output = getFirstPossibleOutput(targetFn, sourceFn, inputId);
+            const output = getFirstPossibleOutput(
+                targetFn,
+                sourceInstance.definition,
+                inputId,
+                sourceInstance
+            );
             if (output === undefined) {
                 return undefined;
             }

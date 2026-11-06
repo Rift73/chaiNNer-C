@@ -8,10 +8,13 @@ import numpy as np
 from api import Progress
 from nodes.impl.onnx.model import SizeReq
 
+from ...utils.utils import Region
 from ..native_framework_images import planar_to_interleaved, reflect_pad, swap_red_blue
 from ..native_tensors import cast_numpy
 from ..upscale.auto_split import Tiler, auto_split
 from ..upscale.bounded_tiler import BoundedTiler
+from ..upscale.tile_report import TileReport
+from ..upscale.white_pass import current_white_pass
 from .errors import is_out_of_memory, ort_error_message
 
 if TYPE_CHECKING:
@@ -116,17 +119,30 @@ def onnx_auto_split(
     size_req: SizeReq | None = None,
     collect_after: bool = True,
     progress: Progress | None = None,
+    report: TileReport | None = None,
 ) -> np.ndarray:
     input_name = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
     is_fp16_model = session.get_inputs()[0].type == "tensor(float16)"
+    tiles = current_white_pass()
+    fp32_into_fp16 = (
+        tiles is not None
+        and session.get_inputs()[0].type == "tensor(float)"
+        and session.get_outputs()[0].type == "tensor(float16)"
+    )
 
-    def upscale(img: np.ndarray, _: object):
+    def model_input(img: np.ndarray) -> np.ndarray:
+        return cast_numpy(img, np.dtype(np.float16)) if is_fp16_model else img
+
+    def upscale(img: np.ndarray, region: Region):
         if progress is not None:
             progress.check_aborted()
+        if tiles is not None:
+            reused = tiles.reuse(region.x, region.y, img)
+            if reused is not None:
+                return reused
         try:
-            lr_img = cast_numpy(img, np.dtype(np.float16)) if is_fp16_model else img
-            lr_img, remove_pad = _pad(lr_img, size_req or SizeReq())
+            lr_img, remove_pad = _pad(model_input(img), size_req or SizeReq())
             lr_img = _flip_r_b_channels(lr_img)
             lr_img = _into_batched_form(lr_img, change_shape)
             output = cast(
@@ -137,13 +153,17 @@ def onnx_auto_split(
                 # One pass from the cropped planes to the interleaved BGR(A) image
                 # the steps below make.
                 planes = remove_pad(planes.transpose(1, 2, 0)).transpose(2, 0, 1)
-                return planar_to_interleaved(
+                result = planar_to_interleaved(
                     planes, swap_red_blue=planes.shape[0] in (3, 4)
                 )
-            output = _into_standard_image_form(output, change_shape)
-            output = _flip_r_b_channels(output)
-            output = remove_pad(output)
-            return cast_numpy(output, np.dtype(np.float32))
+            else:
+                output = _into_standard_image_form(output, change_shape)
+                output = _flip_r_b_channels(output)
+                output = remove_pad(output)
+                result = cast_numpy(output, np.dtype(np.float32))
+            if tiles is not None:
+                tiles.keep(region.x, region.y, img, result, model_input, fp32_into_fp16)
+            return result
         except Exception as e:
             if is_out_of_memory(e):
                 raise RuntimeError(
@@ -155,7 +175,12 @@ def onnx_auto_split(
                 raise
 
     try:
-        return auto_split(img, upscale, BoundedTiler(tiler), progress=progress)
+        return auto_split(
+            img,
+            upscale if report is None else report.recording(img, upscale),
+            BoundedTiler(tiler),
+            progress=progress,
+        )
     finally:
         if collect_after:
             gc.collect()

@@ -198,10 +198,13 @@ def save_arguments(module, lazy, directory, *, fmt="PNG", filename="image", **op
             dds_premultiply_alpha=False,
             dds_gpu=True,
         )
-    values.update(
-        avif_chroma_subsampling=module.AvifSubsampling.FACTOR_420,
-        skip_existing_files=False,
-    )
+    values["avif_chroma_subsampling"] = module.AvifSubsampling.FACTOR_420
+    if hasattr(module, "ExrColorDepth"):  # the EXR inputs this port added
+        values.update(
+            exr_color_depth=module.ExrColorDepth.F32,
+            exr_compression=module.ExrCompression.ZIP,
+        )
+    values.update(skip_existing_files=False, metadata=None)
     for key, value in options.items():
         if isinstance(value, tuple):
             values[key] = getattr(getattr(module, value[0]), value[1])
@@ -382,7 +385,7 @@ def test_real_cpu_codec_save_load(tmp_path, fmt, options, channels, kind):
             exact(np.array(first), np.array(second))
         return
     exact(new_loaded[0], old_loaded[0])
-    assert new_loaded[1:] == old_loaded[1:]
+    assert new_loaded[1:3] == old_loaded[1:]
     exact(image_utils.normalize(new_loaded[0]), OLD_UTILS.normalize(old_loaded[0]))
 
 
@@ -605,7 +608,8 @@ def test_save_dds_all_exposed_format_options(tmp_path, dds_name, compression, un
 
 
 @pytest.mark.skipif(
-    platform.system() != "Windows", reason="texconv runs on Windows only"
+    platform.system() != "Windows",
+    reason="the frozen reference runs texconv on Windows only",
 )
 @pytest.mark.parametrize(
     "fmt", ["R8G8B8A8_UNORM", "BC1_UNORM", "BC3_UNORM", "BC7_UNORM"]
@@ -930,7 +934,14 @@ ADDED_SAVE_INPUTS = {
     21: "dds_gpu",
     22: "dds_mip_levels",
     23: "dds_mip_filter",
+    24: "exr_color_depth",
+    25: "exr_compression",
+    27: "metadata",
 }
+
+# Load Image's Convert To sRGB and Metadata output (the file's tags), by id.
+ADDED_LOAD_INPUTS = {1: "convert_colours", 3: "metadata"}
+ADDED_INPUTS = {**ADDED_SAVE_INPUTS, **ADDED_LOAD_INPUTS}
 
 
 # Save Image's labels this port changed, to the installed ones: AVIF's 4:0:0 keeps the
@@ -950,21 +961,20 @@ class StripAddedInputs(ast.NodeTransformer):
             expr = expr.func.value
         return None
 
+    @classmethod
+    def removed(cls, expr):
+        return cls.input_id(expr) in ADDED_INPUTS or (
+            isinstance(expr, ast.Call) and isinstance(expr.func, ast.Call) and not expr.args
+        )
+
     def visit_Call(self, node):
         self.generic_visit(node)
-        node.args = [
-            a
-            for a in node.args
-            if self.input_id(a) not in ADDED_SAVE_INPUTS
-            and not (
-                isinstance(a, ast.Call) and isinstance(a.func, ast.Call) and not a.args
-            )
-        ]
+        node.args = [a for a in node.args if not self.removed(a)]
         return node
 
     def visit_List(self, node):
         self.generic_visit(node)
-        node.elts = [e for e in node.elts if self.input_id(e) not in ADDED_SAVE_INPUTS]
+        node.elts = [e for e in node.elts if not self.removed(e)]
         return node
 
 
@@ -1005,8 +1015,10 @@ def test_frozen_hashes_and_metadata():
                     assert isinstance(returned.value, ast.List)
                     call.args = returned.value.elts
             node = StripAddedInputs().visit(node)
-            added = set(ADDED_SAVE_INPUTS.values())
+            added = set(ADDED_INPUTS.values())
             node.args.args = [a for a in node.args.args if a.arg not in added]
+            node.args.defaults = []
+            node.returns = None
             for constant in ast.walk(node):
                 if isinstance(constant, ast.Constant) and isinstance(
                     constant.value, str
@@ -1015,7 +1027,7 @@ def test_frozen_hashes_and_metadata():
         return ast.dump(node)
 
     for name in ["load_image", "save_image", "view_image_external"]:
-        strip = name == "save_image"
+        strip = name in ("load_image", "save_image")
         assert metadata(
             ROOT / "backend/src" / NODE_DIR / f"{name}.py", strip
         ) == metadata(REF / "source" / NODE_DIR / f"{name}.py", strip)

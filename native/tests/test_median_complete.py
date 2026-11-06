@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes as ct
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
@@ -12,6 +13,7 @@ import pytest
 from nodes.impl import native_neighborhood as native
 from nodes.impl.native import lib
 from nodes.impl.native_versions import CV_CN_MAX
+from test_isa_dispatch import isa_get, isa_set
 
 
 def equal_bits(actual, expected):
@@ -163,6 +165,33 @@ def test_wide_median_stripes(channels, shape, radius):
     )
     actual = native.median(bytes_image.astype(np.float32) / 255, radius)
     equal_bits(actual, cv2.medianBlur(bytes_image, 2 * radius + 1))
+
+
+@pytest.mark.parametrize("channels", [1, 3, 4])
+@pytest.mark.parametrize("shape", [(1, 1), (5, 3), (64, 64), (130, 9), (9, 130), (300, 257)])
+@pytest.mark.parametrize("radius", [3, 7, 30, 127, 128])
+@pytest.mark.parametrize("pattern", ["noise", "flat", "steps"])
+def test_wide_median_rows_at_every_isa_level(channels, shape, radius, pattern):
+    # Each output's bucket and bin, from window sums that reach 16 bits at radius 127, equal the scalar row's.
+    rng = np.random.default_rng(zlib.crc32(repr((channels, shape, radius, pattern)).encode()))
+    size = (*shape, channels)
+    if pattern == "noise":
+        image = rng.integers(0, 256, size, np.uint8)
+    elif pattern == "flat":
+        image = rng.integers(120, 124, size, np.uint8)
+    else:
+        image = np.uint8(np.indices(shape).sum(0) // 8 * 37 % 256)[..., None].repeat(channels, 2)
+    image = np.ascontiguousarray(image)
+    source = np.float32(image) / 255
+    effective, _, cpu = isa_get()
+    try:
+        assert isa_set(0) == 0
+        expected = np.array(native.median(source, radius))
+        for level in range(1, cpu + 1):
+            assert isa_set(level) == level
+            np.testing.assert_array_equal(native.median(source, radius), expected)
+    finally:
+        assert isa_set(effective) == effective
 
 
 @pytest.mark.parametrize("radius", [128, 180, 181, 255, 256, 511, 1000])

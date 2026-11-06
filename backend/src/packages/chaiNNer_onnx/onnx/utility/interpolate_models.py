@@ -29,15 +29,30 @@ def perform_interp(
     model_b_weights: RepeatedCompositeFieldContainer,
     amount: float,
 ) -> list[TensorProto]:
+    def interpolate(
+        a: np.ndarray, b: np.ndarray, amount_a: float, amount_b: float
+    ) -> np.ndarray:
+        # Integers that both models share are the graph's shapes, axes and slice bounds,
+        # not weights: the mix in floats would turn a slice's open end, INT64_MAX, which
+        # HAT and DAT export, into INT64_MIN.
+        if a.dtype.kind in "biu" and np.array_equal(a, b):
+            return a
+        return interpolate_numpy(a, b, amount_a, amount_b)
+
     return graph().onnx_perform_interp(
         model_a_weights,
         model_b_weights,
         amount,
         onph.to_array,
         onph.from_array,
-        interpolate_numpy,
+        interpolate,
         cast_numpy,
     )
+
+
+def _image_type(model: OnnxModel) -> int:
+    graph_proto = onnx.load_model_from_string(model.bytes).graph
+    return graph_proto.input[0].type.tensor_type.elem_type
 
 
 def check_will_upscale(context: NodeContext, model: OnnxModel):
@@ -47,7 +62,7 @@ def check_will_upscale(context: NodeContext, model: OnnxModel):
         {
             "np": np,
             "native_mean": native_mean,
-            "upscale_image_node": upscale_image_node,
+            "upscale_image_node": lambda *args: upscale_image_node(*args)[0],
             "NO_TILING": NO_TILING,
         },
     )
@@ -92,7 +107,15 @@ def interpolate_models_node(
     if 0 < amount < 100 and a.info.dtype != b.info.dtype:
         raise ValueError(
             f"These ONNX models have different precisions ({a.info.dtype} and"
-            f" {b.info.dtype}). Convert them to the same one to interpolate them."
+            f" {b.info.dtype}). Interpolate their PyTorch models and convert the result."
+        )
+    # An FP16 ONNX converted before takes an FP16 image, and FP32 weights in its first
+    # convolution would not fit B's graph.
+    if 0 < amount < 100 and _image_type(a) != _image_type(b):
+        raise ValueError(
+            "One of these ONNX models takes an FP16 image and the other an FP32 image, as"
+            " they were converted by different versions. Convert both again from their"
+            " PyTorch models to interpolate them."
         )
     return graph().onnx_interpolate_models(
         context,

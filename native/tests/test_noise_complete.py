@@ -371,3 +371,62 @@ def test_public_helper_numpy_seed_objects(name, seed_type):
         assert isinstance(actual_seed, np.random.Generator)
         assert isinstance(expected_seed, np.random.Generator)
         np.testing.assert_array_equal(actual_seed.random(31), expected_seed.random(31))
+
+
+def colour_of(out):
+    return out[:, :, :3] if out.ndim == 3 and out.shape[2] == 4 else out
+
+
+@pytest.mark.parametrize("name", NAMES[:2] + NAMES[3:])
+@pytest.mark.parametrize("color", ["RGB", "GRAY"])
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_flat_gray_keeps_its_mean(name, color, channels):
+    shape = (1000, 1000) if channels == 1 else (1000, 1000, channels)
+    image = np.full(shape, 0.5, np.float32)
+    out = getattr(noise, name)(image, 0.2, noise.NoiseColor[color], 31)
+    assert abs(float(colour_of(out).mean()) - 0.5) < 0.0005
+
+
+@pytest.mark.parametrize("color", ["RGB", "GRAY"])
+@pytest.mark.parametrize("amount", [0.05, 0.2, 0.5, 1])
+def test_poisson_keeps_the_mean_of_flat_gray_at_every_amount(amount, color):
+    image = np.full((1000, 1000, 3), 0.5, np.float32)
+    out = noise.poisson_noise(image, amount, noise.NoiseColor[color], 31)
+    assert abs(float(out.mean()) - 0.5) < 0.0005
+
+
+@pytest.mark.parametrize("value", [0.0625, 0.25, 0.5, 0.75])
+@pytest.mark.parametrize("amount", [0.001, 0.05])
+@pytest.mark.parametrize("color", ["RGB", "GRAY"])
+def test_poisson_mean_holds_and_deviation_follows_the_signal(value, amount, color):
+    image = np.full((1000, 1000, 3), value, np.float32)
+    out = noise.poisson_noise(image, amount, noise.NoiseColor[color], 77)
+    assert abs(float(out.mean()) - value) < 0.0005
+    np.testing.assert_allclose(float(out.std()), amount * value**0.5, rtol=0.02)
+
+
+def test_poisson_leaves_black_and_amount_zero_and_alpha():
+    image = np.random.default_rng(3).random((64, 96, 4), dtype=np.float32)
+    for color in noise.NoiseColor:
+        equal_bits(noise.poisson_noise(image, 0.0, color, 5), image)
+        out = noise.poisson_noise(image, 0.8, color, 5)
+        equal_bits(out[:, :, 3], image[:, :, 3])
+        assert (out[:, :, :3] != image[:, :, :3]).any()
+        black = np.zeros((16, 16, 3), np.float32)
+        equal_bits(noise.poisson_noise(black, 0.8, color, 5), black)
+
+
+def test_poisson_monochrome_moves_every_channel_alike():
+    rng = np.random.default_rng(4)
+    image = np.repeat(rng.uniform(0.3, 0.7, (64, 96, 1)), 3, axis=2).astype(np.float32)
+    out = noise.poisson_noise(image, 0.05, noise.NoiseColor.GRAY, 5)
+    assert (out[:, :, 0] == out[:, :, 1]).all() and (out[:, :, 1] == out[:, :, 2]).all()
+    colored = noise.poisson_noise(image, 0.05, noise.NoiseColor.RGB, 5)
+    assert (colored[:, :, 0] != colored[:, :, 1]).any()
+
+
+def test_poisson_seeds_repeat_and_differ():
+    image = np.full((32, 32, 3), 0.5, np.float32)
+    first = noise.poisson_noise(image, 0.2, noise.NoiseColor.RGB, 8)
+    equal_bits(noise.poisson_noise(image, 0.2, noise.NoiseColor.RGB, 8), first)
+    assert (noise.poisson_noise(image, 0.2, noise.NoiseColor.RGB, 9) != first).any()

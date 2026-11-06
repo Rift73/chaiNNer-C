@@ -34,6 +34,9 @@ O type_object(PyTypeObject &type) {
 }
 
 O source_bytes(O source, const O &seed_type) {
+    // The node's inputs take a Directory: it seeds as its path's text. The real type, without the class protocol.
+    const O pure_path = py::module_::import("pathlib").attr("PurePath");
+    if (PyType_IsSubtype(Py_TYPE(source.ptr()), reinterpret_cast<PyTypeObject *>(pure_path.ptr()))) source = py::str(source);
     if (instance(source, type_object(PyUnicode_Type))) {
         // Preserve an explicit str subclass's encode protocol as in the source.
         if (!PyUnicode_CheckExact(source.ptr()))

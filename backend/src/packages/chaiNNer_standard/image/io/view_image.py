@@ -27,6 +27,6 @@ from .. import io_group
 )
 def view_image_node(img: np.ndarray):
     c = get_h_w_c(img)[2]
-    if c > 4:
-        raise ValueError(f"View Image shows images of up to 4 channels, not {c}.")
+    if c not in (1, 3, 4):
+        raise ValueError(f"View Image shows images of 1, 3 or 4 channels, not {c}.")
     return img

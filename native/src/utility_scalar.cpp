@@ -74,7 +74,10 @@ O directory_up(const py::dict &globals, const O &directory, const O &amount) {
     O indices = name(globals, "range")(amount);
     for (py::handle index : py::reinterpret_borrow<py::iterable>(indices)) {
         (void)index;
-        result = result.attr("parent");
+        O parent = result.attr("parent");
+        // A root is its own parent: going further changes nothing, however many times are left.
+        if (parent.is(result)) break;
+        result = parent;
     }
     return result;
 }

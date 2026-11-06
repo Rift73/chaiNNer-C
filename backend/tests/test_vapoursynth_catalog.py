@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import zlib
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -744,7 +745,10 @@ def methods_of(path: Path, overlays: list[Path]) -> dict[str, Method]:
 
 def test_load_methods_overlay(tmp_path: Path) -> None:
     plain = methods_of(SMALL, [])
-    assert plain["vsdenoise.bm3d"] == Method(
+    # frame_methods.json's, as the catalog's versions are the ones it measured.
+    assert plain["vsdenoise.bm3d"].frame_route == "rgb"
+    assert plain["vsdenoise.bm3d"].frame_args == {"tr": 0}
+    assert replace(plain["vsdenoise.bm3d"], frame_route="", frame_args={}) == Method(
         id="vsdenoise.bm3d",
         family="Denoise",
         label="Bm3d",

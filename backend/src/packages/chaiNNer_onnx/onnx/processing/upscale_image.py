@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+from pathlib import Path
 
 import numpy as np
 from sanic.log import logger
@@ -15,7 +16,7 @@ from nodes.impl.onnx.session import (
     get_onnx_session,
     get_output_shape,
 )
-from nodes.impl.onnx.size_probe import get_size_req
+from nodes.impl.onnx.size_probe import get_size_req, probe_in_background
 from nodes.impl.upscale.auto_split_tiles import (
     CUSTOM,
     TILE_SIZE_256,
@@ -23,6 +24,7 @@ from nodes.impl.upscale.auto_split_tiles import (
     parse_tile_size_input,
 )
 from nodes.impl.upscale.convenient_upscale import convenient_upscale
+from nodes.impl.upscale.tile_report import TileReport
 from nodes.impl.upscale.tiler import ExactTileSize
 from nodes.properties.inputs import (
     BoolInput,
@@ -31,7 +33,7 @@ from nodes.properties.inputs import (
     OnnxGenericModelInput,
     TileSizeDropdown,
 )
-from nodes.properties.outputs import ImageOutput
+from nodes.properties.outputs import ImageOutput, TextOutput
 from nodes.utils.utils import get_h_w_c
 
 from ...settings import get_settings
@@ -47,6 +49,8 @@ def upscale(
     model: OnnxGeneric,
     collect_after: bool = True,
     progress: Progress | None = None,
+    storage_dir: Path | None = None,
+    report: TileReport | None = None,
 ) -> np.ndarray:
     logger.debug("Upscaling image")
     if exact_size is None:
@@ -55,7 +59,7 @@ def upscale(
             raise ValueError
 
         tiler = parse_tile_size_input(tile_size, estimate)
-        size_req = get_size_req(model, session)
+        size_req = get_size_req(model, session, storage_dir)
     else:
         tiler = ExactTileSize(exact_size)
         size_req = None
@@ -67,6 +71,7 @@ def upscale(
         size_req=size_req,
         collect_after=collect_after,
         progress=progress,
+        report=report,
     )
 
 
@@ -77,6 +82,8 @@ def upscale_with_session(
     tile_size: TileSize,
     separate_alpha: bool,
     progress: Progress | None = None,
+    storage_dir: Path | None = None,
+    report: TileReport | None = None,
 ) -> np.ndarray:
     """The node's upscale of one image with the model's session (also used by
     VapourSynth's AI Upscale, which has no node context)."""
@@ -111,6 +118,8 @@ def upscale_with_session(
             model,
             collect_after=False,
             progress=progress,
+            storage_dir=storage_dir,
+            report=report,
         ),
         separate_alpha,
     )
@@ -142,7 +151,14 @@ def upscale_with_session(
             )
         ),
     ],
-    outputs=[ImageOutput("Image", image_type="convenientUpscaleOnnx(Input0, Input1)")],
+    outputs=[
+        ImageOutput("Image", image_type="convenientUpscaleOnnx(Input0, Input1)"),
+        TextOutput("Tile Size").with_docs(
+            "The size of the tiles the model ran, with their overlap, or Whole image. For an"
+            " image that takes several passes (transparency, Separate Alpha), the last"
+            " pass's."
+        ),
+    ],
     name="Upscale Image",
     icon="ONNX",
     node_context=True,
@@ -154,9 +170,11 @@ def upscale_image_node(
     tile_size: TileSize,
     custom_tile_size: int,
     separate_alpha: bool,
-) -> np.ndarray:
+) -> tuple[np.ndarray, str]:
     settings = get_settings(context)
     context.add_cleanup(_collect_garbage, after="chain")
+    if settings.execution_provider != "CPUExecutionProvider":
+        probe_in_background(model, context.storage_dir)
     session = get_onnx_session(
         model,
         settings.gpu_index,
@@ -167,14 +185,18 @@ def upscale_image_node(
         settings.migraphx_cache_path,
         settings.migraphx_exhaustive_tune,
     )
-    return upscale_with_session(
+    report = TileReport()
+    image = upscale_with_session(
         img,
         model,
         session,
         TileSize(custom_tile_size) if tile_size == CUSTOM else tile_size,
         separate_alpha,
         progress=context,
+        storage_dir=context.storage_dir,
+        report=report,
     )
+    return image, report.text
 
 
 def _collect_garbage() -> None:

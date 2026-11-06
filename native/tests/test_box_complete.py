@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import cv2
 import numpy as np
 import pytest
+from native_images import opaque
 from test_convolution_ops import INSTALLED_BOX, MODULES
 from test_normalized_outputs import RAW_BOX, assert_enforced_equal
 
@@ -365,7 +366,7 @@ def test_concurrent_separable_calls_are_exact_and_immutable():
 @pytest.mark.parametrize("radii", [(73.2, 169.7), (77.1, 102.3)])
 @pytest.mark.parametrize("channels", [1, 3, 4])
 def test_large_fractional_box_preserves_ipp_pixel_ties(radii, channels, monkeypatch):
-    source = np.full((31, 37, channels), 0.5, np.float32)
+    source = opaque(np.full((31, 37, channels), 0.5, np.float32))
     expected = INSTALLED_BOX.box_blur_node(source, *radii)
 
     def forbidden(*_args, **_kwargs):

@@ -6,7 +6,7 @@ from enum import Enum
 import numpy as np
 
 from ..utils.utils import get_h_w_c
-from .image_utils import as_target_channels
+from .image_utils import as_3d, as_target_channels
 
 
 def __add_noises(
@@ -124,11 +124,28 @@ def poisson_noise(
     noise_color: NoiseColor,
     seed: int = 0,
 ) -> np.ndarray:
+    # Judged, not upstream's (which added Poisson(amount) as whole numbers, so it only
+    # brightened): each sample's Poisson count less its mean, from NumPy's own generator.
+    if amount == 0:
+        return __add_noise(
+            image,
+            lambda h, w: np.zeros((h, w, noise_color.channels), np.float32),
+        )
     rng = np.random.default_rng(seed)
-    return __add_noise(
-        image,
-        lambda h, w: rng.poisson(amount, (h, w, noise_color.channels)).astype(np.uint8),
-    )
+    signal = as_3d(image).astype(np.float64)
+    if noise_color == NoiseColor.GRAY and signal.shape[2] >= 3:
+        signal = (
+            0.114 * signal[:, :, 0] + 0.587 * signal[:, :, 1] + 0.299 * signal[:, :, 2]
+        )[:, :, None]
+
+    def gen_noise(h: int, w: int) -> np.ndarray:
+        mean = np.broadcast_to(
+            65536.0 * signal[:, :, : noise_color.channels], (h, w, noise_color.channels)
+        )
+        mean = np.where((mean > 0) & (mean < 1e18), mean, 0.0)
+        return (amount * (rng.poisson(mean) - mean) / 256.0).astype(np.float32)
+
+    return __add_noise(image, gen_noise)
 
 
 # Applies speckle noise to an image

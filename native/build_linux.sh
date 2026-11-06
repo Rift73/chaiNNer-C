@@ -7,7 +7,8 @@
 #   -B       the CMake build directory (default native/build-linux).
 #   -D       a CMake cache entry, as Build.ps1's -Define: CHAINNER_C_PYTHON_ROOT=<runtime> (bin/python3,
 #            include/python3.14 and NumPy), CHAINNER_C_NASM=<NASM 3.01> (else nasm on PATH, which must be 3.01),
-#            CHAINNER_C_OUTPUT_DIR=<dir>, CHAINNER_C_EXT_OUTPUT_DIR=<dir>, CHAINNER_C_PDB=ON, CHAINNER_C_REGEX_ONLY=ON
+#            CHAINNER_C_OUTPUT_DIR=<dir>, CHAINNER_C_EXT_OUTPUT_DIR=<dir>, CHAINNER_C_PDB=ON, CHAINNER_C_SANITIZE=ON
+#            (tests/fuzz/README.md), CHAINNER_C_REGEX_ONLY=ON
 #            or, for local builds only, CHAINNER_C_MARCH=<cpu> (never for releases); on a directory's first configure,
 #            toolchain-linux.cmake's chainner_c_llvm=<LLVM 23.1.2's bin>; CHAINNER_C_TENSORRT_ROOT with
 #            CHAINNER_C_CUDA_ROOT also builds the TensorRT parts (without them they are skipped); CHAINNER_C_ROCM_ROOT

@@ -1,4 +1,5 @@
 import { Expression } from '@chainner/navi';
+import i18n from 'i18next';
 import { dirname, parse } from 'path';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
@@ -29,7 +30,12 @@ import { IdSet } from '../../common/IdSet';
 import { log } from '../../common/log';
 import { chainSnapshot } from '../../common/nodes/chainSnapshot';
 import { getEffectivelyDisabledNodes } from '../../common/nodes/disabled';
-import { formatDroppedNodes, missingSchemata, toEditorChain } from '../../common/nodes/editorChain';
+import {
+    formatDroppedNodes,
+    formatReplacedInputs,
+    missingSchemata,
+    toEditorChain,
+} from '../../common/nodes/editorChain';
 import { ChainLineage } from '../../common/nodes/lineage';
 import { TypeState } from '../../common/nodes/TypeState';
 
@@ -606,7 +612,11 @@ export const GlobalProvider = memo(
                     sendToast({
                         status: 'info',
                         duration: 5_000,
-                        description: `${path} opens once chaiNNer has loaded all of its nodes.`,
+                        description: i18n.t(
+                            'chain.opensOnceLoaded',
+                            '{{path}} opens once chaiNNer has loaded all of its nodes.',
+                            { path }
+                        ),
                     });
                     return;
                 }
@@ -621,25 +631,44 @@ export const GlobalProvider = memo(
                     edges: validEdges,
                     droppedNodes,
                     droppedEdges,
+                    replacedInputs,
                     complete,
                 } = toEditorChain(schemata, savedData.nodes, savedData.edges);
 
                 if (droppedEdges > 0) {
                     sendAlert({
                         type: AlertType.WARN,
-                        title: 'File contains invalid connections',
-                        message: `The file you are trying to open contains ${droppedEdges} connection(s) that do not fit their nodes: an input or output that the node does not have, a second connection into one input, or a loop. The file will now be loaded without them and is marked as unsaved, so saving it removes them from the file.`,
+                        title: i18n.t(
+                            'chain.fileInvalidConnectionsTitle',
+                            'File contains invalid connections'
+                        ),
+                        message: i18n.t(
+                            'chain.fileInvalidConnections',
+                            'The file you are trying to open contains {{count}} connection(s) that do not fit their nodes: an input or output that the node does not have, a second connection into one input, or a loop. The file will now be loaded without them and is marked as unsaved, so saving it removes them from the file.',
+                            { count: droppedEdges }
+                        ),
                     });
                 }
                 if (droppedNodes.length > 0) {
                     sendAlert({
                         type: AlertType.WARN,
-                        title: 'File contains invalid nodes',
+                        title: i18n.t('chain.fileInvalidNodesTitle', 'File contains invalid nodes'),
+                        message: i18n.t(
+                            'chain.fileInvalidNodes',
+                            'The file you are trying to open contains {{count}} node(s) that are unavailable on your system:\n\n{{nodes}}\n\nCheck the dependency manager to see if you are missing any dependencies; nodes from another version of chaiNNer may not exist here. The file will now be loaded without these nodes and is marked as unsaved, so saving it removes them from the file.',
+                            { count: droppedNodes.length, nodes: formatDroppedNodes(droppedNodes) }
+                        ),
+                    });
+                }
+                if (replacedInputs.length > 0) {
+                    sendAlert({
+                        type: AlertType.WARN,
+                        title: 'File contains invalid values',
                         message: `The file you are trying to open contains ${
-                            droppedNodes.length
-                        } node(s) that are unavailable on your system:\n\n${formatDroppedNodes(
-                            droppedNodes
-                        )}\n\nCheck the dependency manager to see if you are missing any dependencies; nodes from another version of chaiNNer may not exist here. The file will now be loaded without these nodes and is marked as unsaved, so saving it removes them from the file.`,
+                            replacedInputs.length
+                        } value(s) that their inputs cannot take:\n\n${formatReplacedInputs(
+                            replacedInputs
+                        )}\n\nThese inputs have their default values now. The file will now be loaded with them and is marked as unsaved, so saving it replaces those values in the file.`,
                     });
                 }
                 if (savedData.tamperedWith) {
@@ -718,6 +747,8 @@ export const GlobalProvider = memo(
             }
 
             documentGeneration.current += 1;
+            // a new chain starts a new history, as an opened one does
+            addChainLoads();
             changeNodes([]);
             changeEdges([]);
             setSavedSnapshot(EMPTY_CHAIN_SNAPSHOT);
@@ -725,6 +756,7 @@ export const GlobalProvider = memo(
             setViewport({ x: 0, y: 0, zoom: 1 });
             outputDataActions.clear();
         }, [
+            addChainLoads,
             changeEdges,
             changeNodes,
             saveUnsavedChanges,
@@ -751,7 +783,11 @@ export const GlobalProvider = memo(
                         removeRecentPath(result.path);
                         sendAlert({
                             type: AlertType.ERROR,
-                            message: `Unable to open file ${result.path}\n\n${result.error}`,
+                            message: i18n.t(
+                                'chain.unableToOpenFile',
+                                'Unable to open file {{path}}\n\n{{error}}',
+                                { path: result.path, error: result.error }
+                            ),
                         });
                     }
                 }
@@ -772,11 +808,8 @@ export const GlobalProvider = memo(
                 return;
             }
 
-            const { nodes, edges, droppedNodes, droppedEdges, complete } = toEditorChain(
-                schemata,
-                getNodes(),
-                getEdges()
-            );
+            const { nodes, edges, droppedNodes, droppedEdges, replacedInputs, complete } =
+                toEditorChain(schemata, getNodes(), getEdges());
             if (chainSnapshot(nodes, edges) === chainSnapshot(getNodes(), getEdges())) {
                 return;
             }
@@ -784,19 +817,40 @@ export const GlobalProvider = memo(
                 if (droppedNodes.length > 0) {
                     sendAlert({
                         type: AlertType.WARN,
-                        title: 'Chain contains unavailable nodes',
-                        message: `The chain contains ${
-                            droppedNodes.length
-                        } node(s) that are unavailable on your system now:\n\n${formatDroppedNodes(
-                            droppedNodes
-                        )}\n\nCheck the dependency manager to see if you are missing any dependencies. The chain is now without these nodes and is marked as unsaved, so saving it removes them from the file.`,
+                        title: i18n.t(
+                            'chain.unavailableNodesTitle',
+                            'Chain contains unavailable nodes'
+                        ),
+                        message: i18n.t(
+                            'chain.unavailableNodes',
+                            'The chain contains {{count}} node(s) that are unavailable on your system now:\n\n{{nodes}}\n\nCheck the dependency manager to see if you are missing any dependencies. The chain is now without these nodes and is marked as unsaved, so saving it removes them from the file.',
+                            { count: droppedNodes.length, nodes: formatDroppedNodes(droppedNodes) }
+                        ),
                     });
                 }
                 if (droppedEdges > 0) {
                     sendAlert({
                         type: AlertType.WARN,
-                        title: 'Chain contains invalid connections',
-                        message: `The chain contains ${droppedEdges} connection(s) that do not fit their nodes now (an input or output that the node no longer has). The chain is now without them and is marked as unsaved, so saving it removes them from the file.`,
+                        title: i18n.t(
+                            'chain.invalidConnectionsTitle',
+                            'Chain contains invalid connections'
+                        ),
+                        message: i18n.t(
+                            'chain.invalidConnections',
+                            'The chain contains {{count}} connection(s) that do not fit their nodes now (an input or output that the node no longer has). The chain is now without them and is marked as unsaved, so saving it removes them from the file.',
+                            { count: droppedEdges }
+                        ),
+                    });
+                }
+                if (replacedInputs.length > 0) {
+                    sendAlert({
+                        type: AlertType.WARN,
+                        title: 'Chain contains invalid values',
+                        message: `The chain contains ${
+                            replacedInputs.length
+                        } value(s) that their inputs cannot take now:\n\n${formatReplacedInputs(
+                            replacedInputs
+                        )}\n\nThese inputs have their default values now. The chain is marked as unsaved, so saving it replaces those values in the file.`,
                     });
                 }
                 setSavedSnapshot(null);
@@ -821,7 +875,11 @@ export const GlobalProvider = memo(
                         removeRecentPath(result.path);
                         sendAlert({
                             type: AlertType.ERROR,
-                            message: `Unable to open file ${result.path}\n\n${result.error}`,
+                            message: i18n.t(
+                                'chain.unableToOpenFile',
+                                'Unable to open file {{path}}\n\n{{error}}',
+                                { path: result.path, error: result.error }
+                            ),
                         });
                     }
                 },
@@ -1338,12 +1396,15 @@ export const GlobalProvider = memo(
                 (droppedNodes) => {
                     sendAlert({
                         type: AlertType.WARN,
-                        title: 'Clipboard contains invalid nodes',
-                        message: `The copied chain contains ${
-                            droppedNodes.length
-                        } node(s) that are unavailable on your system:\n\n${formatDroppedNodes(
-                            droppedNodes
-                        )}\n\nCheck the dependency manager to see if you are missing any dependencies; nodes from another version of chaiNNer may not exist here. The chain was pasted without these nodes.`,
+                        title: i18n.t(
+                            'chain.clipboardInvalidNodesTitle',
+                            'Clipboard contains invalid nodes'
+                        ),
+                        message: i18n.t(
+                            'chain.clipboardInvalidNodes',
+                            'The copied chain contains {{count}} node(s) that are unavailable on your system:\n\n{{nodes}}\n\nCheck the dependency manager to see if you are missing any dependencies; nodes from another version of chaiNNer may not exist here. The chain was pasted without these nodes.',
+                            { count: droppedNodes.length, nodes: formatDroppedNodes(droppedNodes) }
+                        ),
                     });
                 }
             ).catch(log.error);

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy import ndimage
 
 from .. import native_blue
 
@@ -22,6 +21,9 @@ def find_largest_void(binary_pattern: np.ndarray, standard_deviation: float):
     @sa GetVoidAndClusterBlueNoise"""
     if binary_pattern.ndim == 2 and binary_pattern.size:
         return native_blue.find(binary_pattern, standard_deviation, False)
+    # SciPy's import is slow, and every start of the backend imports this module.
+    from scipy import ndimage
+
     # The minority value is always True for convenience
     if np.count_nonzero(binary_pattern) * 2 >= np.size(binary_pattern):
         binary_pattern = np.logical_not(binary_pattern)
@@ -43,6 +45,8 @@ def find_tightest_cluster(binary_pattern: np.ndarray, standard_deviation: float)
     @sa GetVoidAndClusterBlueNoise"""
     if binary_pattern.ndim == 2 and binary_pattern.size:
         return native_blue.find(binary_pattern, standard_deviation, True)
+    from scipy import ndimage
+
     if np.count_nonzero(binary_pattern) * 2 >= np.size(binary_pattern):
         binary_pattern = np.logical_not(binary_pattern)
     filtered_array = np.fft.ifftn(

@@ -79,7 +79,7 @@ def compare(base, overlay, mode, position, xy, crop):
     return actual
 
 
-@pytest.mark.parametrize("mode", [mode.name for mode in current.BlendMode])
+@pytest.mark.parametrize("mode", [mode.name for mode in reference_blend.BlendMode])
 @pytest.mark.parametrize("channels", [(a, b) for a in (1, 3, 4) for b in (1, 3, 4)])
 @pytest.mark.parametrize(
     "offset,crop", [((2, 1), True), ((-4, -3), True), ((-5, 4), False)]
@@ -115,7 +115,18 @@ def test_colors_and_nonoverlap(channels, constant, offset):
     sources: list[np.ndarray | Color] = [image(channels[0]), image(channels[1], (3, 5))]
     sources[constant] = Color(tuple(0.17 + c * 0.19 for c in range(channels[constant])))
     base, overlay = sources
-    compare(base, overlay, "NORMAL", "PIXEL_OFFSET", offset, True)
+    # A color fills the image's size: the node ignores the hidden position inputs.
+    expected = compare(base, overlay, "NORMAL", "PIXEL_OFFSET", (0, 0), True)
+    moved = current.blend_images_node(
+        base,
+        overlay,
+        current.BlendMode.NORMAL,
+        current.BlendOverlayPosition.PIXEL_OFFSET,
+        *offset,
+        *offset,
+        True,
+    )
+    assert moved.tobytes() == expected.tobytes()
     compare(
         image(channels[0]),
         image(channels[1]),
@@ -126,7 +137,7 @@ def test_colors_and_nonoverlap(channels, constant, offset):
     )
 
 
-@pytest.mark.parametrize("mode", [m.name for m in current.BlendMode])
+@pytest.mark.parametrize("mode", [m.name for m in reference_blend.BlendMode])
 def test_special_values(mode):
     base, overlay = image(4), image(3, (9, 13))
     for array in (base, overlay):

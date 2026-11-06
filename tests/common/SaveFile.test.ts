@@ -56,9 +56,9 @@ test('Load Image Pairs index migrates to one edge per input', () => {
         ],
         viewport: { x: 0, y: 0, zoom: 1 },
     };
-    // a v0.24 chain: the second to last migration splits Load Image Pairs into two Load Images
+    // a v0.24 chain: this migration splits Load Image Pairs into two Load Images
     const parsed = SaveFile.parse(
-        JSON.stringify({ version: '0.24.0', content, migration: currentMigration - 2 })
+        JSON.stringify({ version: '0.24.0', content, migration: currentMigration - 3 })
     );
 
     const toMath = parsed.edges.filter((e) => e.target === math);
@@ -105,9 +105,9 @@ test("Load Video's Use limit migrates to a frame range", () => {
         ],
         viewport: { x: 0, y: 0, zoom: 1 },
     };
-    // the last migration replaces Use limit and Limit (inputs 1 and 2) with Frames, In and Out
+    // this migration replaces Use limit and Limit (inputs 1 and 2) with Frames, In and Out
     const parsed = SaveFile.parse(
-        JSON.stringify({ version: '0.25.0', content, migration: currentMigration - 1 })
+        JSON.stringify({ version: '0.25.0', content, migration: currentMigration - 2 })
     );
 
     const inputsOf = (id: string) => parsed.nodes.find((n) => n.id === id)?.data.inputData;
@@ -117,6 +117,65 @@ test("Load Video's Use limit migrates to a frame range", () => {
     expect(inputsOf(number)).toEqual({ 0: 25 });
     // Limit is gone, and the edge into it with it
     expect(parsed.edges).toEqual([]);
+});
+
+test("Convert To ONNX's Mixed types and Calibration Image migrate away", () => {
+    const mixedFp16 = '00000000-0000-0000-0000-000000000001';
+    const mixedBf16 = '00000000-0000-0000-0000-000000000002';
+    const fp16 = '00000000-0000-0000-0000-000000000003';
+    const other = '00000000-0000-0000-0000-000000000004';
+    const image = '00000000-0000-0000-0000-000000000005';
+    const convert = (id: string, inputData: Record<number, string | number>) => ({
+        id,
+        type: 'regularNode',
+        position: { x: 0, y: 0 },
+        data: { id, schemaId: 'chainner:pytorch:convert_to_onnx', inputData },
+    });
+    const edge = (id: string, target: string, input: number) => ({
+        id,
+        source: image,
+        sourceHandle: `${image}-0`,
+        target,
+        targetHandle: `${target}-${input}`,
+        type: 'main',
+    });
+    const content = {
+        nodes: [
+            convert(mixedFp16, { 1: 2, 2: 20, 3: 0 }),
+            convert(mixedBf16, { 1: 3, 2: 17, 3: 1, 7: 'held by no input' }),
+            convert(fp16, { 1: 1, 2: 20, 3: 0 }),
+            // the same input number on another node is that node's
+            {
+                id: other,
+                type: 'regularNode',
+                position: { x: 0, y: 200 },
+                data: { id: other, schemaId: 'chainner:image:blend', inputData: { 1: 2, 7: 5 } },
+            },
+            {
+                id: image,
+                type: 'regularNode',
+                position: { x: -400, y: 0 },
+                data: { id: image, schemaId: 'chainner:image:load', inputData: { 0: 'a.png' } },
+            },
+        ],
+        edges: [
+            edge('calibration', mixedFp16, 7),
+            edge('kept-on-convert', mixedFp16, 0),
+            edge('kept-on-other', other, 7),
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+    };
+
+    const parsed = SaveFile.parse(
+        JSON.stringify({ version: '0.25.0', content, migration: currentMigration - 1 })
+    );
+
+    const inputsOf = (id: string) => parsed.nodes.find((n) => n.id === id)?.data.inputData;
+    expect(inputsOf(mixedFp16)).toEqual({ 1: 0, 2: 20, 3: 0 });
+    expect(inputsOf(mixedBf16)).toEqual({ 1: 0, 2: 17, 3: 1 });
+    expect(inputsOf(fp16)).toEqual({ 1: 1, 2: 20, 3: 0 });
+    expect(inputsOf(other)).toEqual({ 1: 2, 7: 5 });
+    expect(parsed.edges.map((e) => e.id)).toEqual(['kept-on-convert', 'kept-on-other']);
 });
 
 test.each([

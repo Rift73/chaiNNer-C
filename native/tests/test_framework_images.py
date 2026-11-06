@@ -461,6 +461,7 @@ def test_onnx_host_image_roundtrip(dtype, channels, nhwc, padding):
     modified = load(
         ROOT / "backend/src/nodes/impl/onnx/auto_split.py",
         SizeReq=SizeReq,
+        current_white_pass=lambda: None,
         reflect_pad=native.reflect_pad,
         swap_red_blue=native.swap_red_blue,
         cast_numpy=cast_numpy,
@@ -522,6 +523,7 @@ def test_onnx_padding_beyond_reflection(channels, shape):
     modified = load(
         ROOT / "backend/src/nodes/impl/onnx/auto_split.py",
         SizeReq=SizeReq,
+        current_white_pass=lambda: None,
         reflect_pad=native.reflect_pad,
         swap_red_blue=native.swap_red_blue,
         cast_numpy=cast_numpy,
@@ -862,6 +864,7 @@ def test_real_cpu_onnx_image_roundtrip(dtype, channels, nhwc):
     modified = load(
         ROOT / "backend/src/nodes/impl/onnx/auto_split.py",
         SizeReq=SizeReq,
+        current_white_pass=lambda: None,
         reflect_pad=native.reflect_pad,
         swap_red_blue=native.swap_red_blue,
         cast_numpy=cast_numpy,

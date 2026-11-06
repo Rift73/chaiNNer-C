@@ -20,9 +20,9 @@ import ctypes
 import dataclasses
 import math
 import re
-import sys
 from pathlib import Path
 
+import fp_control
 import golden_kernels
 import numpy as np
 import pytest
@@ -49,6 +49,7 @@ from test_isa_dispatch import isa_get, isa_set, straddling_cases
 from test_parallel import partition
 
 from nodes.impl import native, native_composite
+from nodes.impl.native_buffers import gbr_planes_u16
 from nodes.impl.color.color import Color
 
 GOLDEN = Path(__file__).resolve().parent / "golden"
@@ -104,7 +105,6 @@ SEPARABLE_TABLE_RADIUS = 4096
 SEPARABLE_GRAIN = 1024
 # The CRT's rounding-control values (_RC_DOWN, _RC_UP, _RC_CHOP) and mask (_MCW_RC).
 DIRECTED = {"down": 0x100, "up": 0x200, "chop": 0x300}
-RC_MASK = 0x300
 GAUSSIAN_FORMS = golden_kernels.ENTRIES["cn_gaussian_f32"].forms
 BOX_FORMS = golden_kernels.ENTRIES["cn_box_separable"].forms
 CONVOLUTION_FORMS = golden_kernels.ENTRIES["cn_convolution_spatial"].forms
@@ -1211,7 +1211,6 @@ def test_morphology_combine_chunks_start_off_the_lane_grid():
         assert any(begin % row % 8 for begin, _ in found[1:]), grain
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Public Windows CRT controls")
 @pytest.mark.parametrize("mode", DIRECTED)
 def test_u8_f32_follows_the_callers_rounding_mode(mode, levels):
     """Review M1, stand-in (iv): u8 -> f32 is B3's divss (float)k / 255.0f, which
@@ -1219,20 +1218,15 @@ def test_u8_f32_follows_the_callers_rounding_mode(mode, levels):
     quotients only. Every level, scalar heads and tails included, gives NumPy's
     float32 division under the same mode (count 7: a tail only; 17: two groups and
     a one-element tail; 196,613: 4 chunks whose heads start off the lane grid)."""
-    control = ctypes.CDLL("ucrtbase.dll")["_controlfp_s"]
-    control.argtypes = [ctypes.POINTER(ctypes.c_uint), ctypes.c_uint, ctypes.c_uint]
-    control.restype = ctypes.c_int
     convert = native.lib()["cn_pixels_convert_checked"]
     convert.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
     convert.argtypes += [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
     convert.restype = ctypes.c_int
     values = np.arange(256, dtype=np.float32)
     nearest = values / np.float32(255)
-    saved = ctypes.c_uint()
-    assert control(ctypes.byref(saved), 0, 0) == 0
+    saved = fp_control.control(0, 0)
     try:
-        observed = ctypes.c_uint()
-        assert control(ctypes.byref(observed), DIRECTED[mode], RC_MASK) == 0
+        fp_control.control(DIRECTED[mode], fp_control.ROUNDING_MASK)
         quotients = values / np.float32(255)  # NumPy divides under the same MXCSR
         # down and chop round 254 of the 256 quotients below the nearest ones.
         assert (quotients.tobytes() == nearest.tobytes()) == (mode == "up")
@@ -1254,8 +1248,7 @@ def test_u8_f32_follows_the_callers_rounding_mode(mode, levels):
                 assert (status, events.value) == (0, 0)
                 assert out.tobytes() == quotients[source].tobytes(), (count, level)
     finally:
-        restored = ctypes.c_uint()
-        assert control(ctypes.byref(restored), saved.value, RC_MASK) == 0
+        fp_control.control(saved, fp_control.ROUNDING_MASK)
 
 
 def test_conversion_chunk_starts_off_the_lane_grid(levels):
@@ -1419,7 +1412,7 @@ def test_gbr_planes_are_the_u16_conversion_rearranged_at_every_level(pixels, lev
     grid."""
     lib = native.lib()
     planes = lib["cn_pixels_gbr_planes_u16"]
-    planes.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
+    planes.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_float]
     planes.argtypes += [ctypes.POINTER(ctypes.c_int)]
     planes.restype = ctypes.c_int
     convert = lib["cn_pixels_convert_checked"]
@@ -1455,12 +1448,31 @@ def test_gbr_planes_are_the_u16_conversion_rearranged_at_every_level(pixels, lev
                     source.ctypes.data,
                     out.ctypes.data,
                     pixels,
+                    65535.0,
                     ctypes.byref(planar_events),
                 )
                 assert status == 0, where
                 expected = np.ascontiguousarray(flat.reshape(pixels, 3).T[[1, 0, 2]])
                 assert out.tobytes() == expected.tobytes(), where
                 assert planar_events.value == events.value, where
+
+
+@pytest.mark.parametrize("pixels", [1, 7, 8, 9, 17, 155])
+def test_gbr_planes_take_the_white_they_are_given_at_every_level(pixels, levels):
+    """Save Video's YUV output, whose white is 65280 in libswscale: each value clamped,
+    times white in float32, rounded half to even, as at 65535."""
+    image = np.random.default_rng(pixels).random((1, pixels, 3), dtype=np.float32)
+    image[0, -1] = 1.0
+    scaled = np.clip(image[0], 0, 1) * np.float32(65280)
+    expected = np.rint(scaled).astype(np.uint16).T[[1, 0, 2]]
+    for level in levels:
+        assert isa_set(level) == level
+        planes = gbr_planes_u16(image, 65280.0)
+        assert planes is not None
+        np.testing.assert_array_equal(
+            planes.reshape(3, pixels), expected, err_msg=str(level)
+        )
+    assert planes.reshape(3, pixels)[0, -1] == 65280
 
 
 @pytest.mark.parametrize("kernel", golden_kernels.CONVERSION_KERNELS)

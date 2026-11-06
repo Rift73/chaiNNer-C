@@ -24,6 +24,9 @@ from nodes.impl.dds.format import LEGACY_TO_DXGI as LEGACY_TO_DXGI
 from nodes.impl.dds.format import PREFER_DX9 as PREFER_DX9
 from nodes.impl.dds.format import to_dxgi as to_dxgi
 from nodes.impl.dds.texconv import save_as_dds as save_as_dds
+from nodes.impl.image_tags import ImageMetadata
+from nodes.impl.image_tags import avif_tag_options as avif_tag_options
+from nodes.impl.image_tags import embed_image_tags as embed_image_tags
 from nodes.impl.image_utils import to_uint8 as to_uint8
 from nodes.impl.image_utils import to_uint16 as to_uint16
 from nodes.impl.item_window import Prepared, register_phases
@@ -37,11 +40,13 @@ from nodes.properties.inputs import (
     DropDownInput,
     EnumInput,
     ImageInput,
+    ImageMetadataInput,
     NumberInput,
     RelativePathInput,
     SliderInput,
 )
 from nodes.utils.utils import get_h_w_c as get_h_w_c
+from nodes.utils.utils import split_file_path as split_file_path
 
 from .. import io_group
 
@@ -56,6 +61,7 @@ class ImageFormat(Enum):
     TGA = "tga"
     DDS = "dds"
     AVIF = "avif"
+    EXR = "exr"
 
     @property
     def extension(self) -> str:
@@ -72,6 +78,7 @@ IMAGE_FORMAT_LABELS: dict[ImageFormat, str] = {
     ImageFormat.TGA: "TGA",
     ImageFormat.DDS: "DDS",
     ImageFormat.AVIF: "AVIF",
+    ImageFormat.EXR: "EXR",
 }
 
 
@@ -109,6 +116,19 @@ class TiffCompression(Enum):
     def cv2_code(self) -> int:
         # OpenCV is a beautiful piece of software, so surely they won't forget to define the TIFF compression constants, right?
         return self.value
+
+
+class ExrColorDepth(Enum):
+    F16 = int(cv2.IMWRITE_EXR_TYPE_HALF)
+    F32 = int(cv2.IMWRITE_EXR_TYPE_FLOAT)
+
+
+class ExrCompression(Enum):
+    NONE = int(cv2.IMWRITE_EXR_COMPRESSION_NO)
+    RLE = int(cv2.IMWRITE_EXR_COMPRESSION_RLE)
+    ZIPS = int(cv2.IMWRITE_EXR_COMPRESSION_ZIPS)
+    ZIP = int(cv2.IMWRITE_EXR_COMPRESSION_ZIP)
+    PIZ = int(cv2.IMWRITE_EXR_COMPRESSION_PIZ)
 
 
 # Every format texconv writes but typeless, depth/stencil, YUV/video, palettized,
@@ -454,10 +474,44 @@ def dds_inputs() -> list[BaseInput | NestedGroup]:
                 },
             ).with_id(17)
         ),
+        if_enum_group(4, ImageFormat.EXR)(
+            EnumInput(
+                ExrColorDepth,
+                "Color Depth",
+                default=ExrColorDepth.F32,
+                option_labels={
+                    ExrColorDepth.F16: "16 Bits/Channel (Half Float)",
+                    ExrColorDepth.F32: "32 Bits/Channel (Float)",
+                },
+            )
+            .with_id(24)
+            .with_docs(
+                "The image's values are written as they are, without a conversion to linear light, so Load Image gives back the same values for those in 0..1 (every bit at 32 bits, rounded to half precision at 16); it clips the rest to 0..1."
+            ),
+            EnumInput(
+                ExrCompression,
+                "Compression",
+                default=ExrCompression.ZIP,
+                option_labels={
+                    ExrCompression.NONE: "None",
+                    ExrCompression.RLE: "RLE (lossless)",
+                    ExrCompression.ZIPS: "ZIPS (lossless, one line at a time)",
+                    ExrCompression.ZIP: "ZIP (lossless)",
+                    ExrCompression.PIZ: "PIZ (lossless)",
+                },
+            ).with_id(25),
+        ),
         BoolInput("Skip existing files", default=False)
         .with_id(1000)
         .with_docs(
             "If enabled, the node will not overwrite existing files.",
+        ),
+        ImageMetadataInput()
+        .make_optional()
+        .with_id(27)
+        .with_docs(
+            "Load Image's Metadata, to write its file's colour profile, EXIF and DPI into this file. PNG, JPG and TIFF hold all three, WEBP and AVIF the profile and EXIF, BMP the DPI; other formats hold none.",
+            "EXIF is written as it was, but for Orientation, which is 1 as the image is upright (AVIF leaves it out), and its stored size, which is the image's; its thumbnail stays as it was.",
         ),
     ],
     outputs=[],
@@ -490,7 +544,10 @@ def save_image_node(
     dds_premultiply_alpha: bool,
     dds_gpu: bool,
     avif_chroma_subsampling: AvifSubsampling,
+    exr_color_depth: ExrColorDepth,
+    exr_compression: ExrCompression,
     skip_existing_files: bool,
+    metadata: ImageMetadata | None,
 ) -> None:
     return graph().image_io_save(
         globals(),
@@ -519,7 +576,10 @@ def save_image_node(
             dds_premultiply_alpha,
             dds_gpu,
             avif_chroma_subsampling,
+            exr_color_depth,
+            exr_compression,
             skip_existing_files,
+            metadata,
         ),
         None,
     )

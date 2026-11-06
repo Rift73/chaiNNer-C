@@ -6,6 +6,7 @@
 #include "numeric.h"
 #include "parallel.h"
 #include "run_kernels.h"
+#include "scratch.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -179,29 +180,73 @@ CN_EXPORT cn_status cn_neighborhood_median_f32(const float *src, float *out,
     return cn_parallel_for(h * w * c, 8192, small_median_range, &job);
 }
 
-typedef struct column_histogram {
-    uint16_t fine[256], coarse[16];
-} column_histogram;
-
+/* Per column of a task's stripe, kept apart since every output reads two columns' coarse counts: coarse[x * 16 + b],
+   b the value's high four bits, and fine[x * 256 + v]. */
 typedef struct histogram_job {
     const uint8_t *src;
     uint8_t *out;
-    column_histogram *columns;
+    uint16_t *coarse, *fine;
     size_t h, w, c, radius, original_width, stripe, stripes;
-    int transpose;
+    int transpose, vector;
 } histogram_job;
 
 static size_t image_index(const histogram_job *job, size_t y, size_t x, size_t c) {
     return (job->transpose ? x * job->original_width + y : y * job->w + x) * job->c + c;
 }
 
-static void add_column(column_histogram *hist, uint8_t value, size_t weight) {
-    hist->fine[value] = (uint16_t)(hist->fine[value] + weight);
-    hist->coarse[value >> 4] = (uint16_t)(hist->coarse[value >> 4] + weight);
+/* One output row, out[x * step]: fine bins are updated only for the coarse bucket containing the median. */
+static void median_row(const uint16_t *coarse_columns, const uint16_t *fine_columns, size_t w, size_t r,
+        uint8_t *out, size_t step) {
+    size_t kernel = 2 * r + 1;
+    uint32_t middle = (uint32_t)(kernel * kernel / 2);
+    uint32_t coarse[16] = {0}, fine[16][16] = {{0}};
+    size_t updated[16];
+    for (size_t b = 0; b < 16; ++b) updated[b] = SIZE_MAX;
+    for (size_t x = 0; x <= r && x < w; ++x) {
+        uint32_t weight = (uint32_t)(x == 0 ? r + 1 : 1);
+        if (x == w - 1 && r >= w) weight += (uint32_t)(r - w + 1);
+        for (size_t b = 0; b < 16; ++b) coarse[b] += weight * coarse_columns[x * 16 + b];
+    }
+    for (size_t x = 0; x < w; ++x) {
+        uint32_t below = 0;
+        size_t bucket = 0;
+        while (bucket < 15 && below + coarse[bucket] <= middle)
+            below += coarse[bucket++];
+        const uint16_t *bins = fine_columns + bucket * 16;
+        if (updated[bucket] == SIZE_MAX || x - updated[bucket] >= kernel) {
+            memset(fine[bucket], 0, sizeof(fine[bucket]));
+            size_t left = low_edge(x, r), right = high_edge(x, r, w);
+            for (size_t xx = left; xx <= right; ++xx) {
+                uint32_t weight = 1;
+                if (!xx && x < r) weight += (uint32_t)(r - x);
+                if (xx == w - 1 && r >= w - x)
+                    weight += (uint32_t)(r - (w - x - 1));
+                for (size_t k = 0; k < 16; ++k)
+                    fine[bucket][k] += weight * bins[xx * 256 + k];
+            }
+        } else {
+            for (size_t xx = updated[bucket]; xx < x; ++xx) {
+                size_t leave = low_edge(xx, r), enter = high_edge(xx, r + 1, w);
+                for (size_t k = 0; k < 16; ++k) {
+                    fine[bucket][k] -= bins[leave * 256 + k];
+                    fine[bucket][k] += bins[enter * 256 + k];
+                }
+            }
+        }
+        updated[bucket] = x;
+        size_t k = 0;
+        while (k < 15 && below + fine[bucket][k] <= middle)
+            below += fine[bucket][k++];
+        out[x * step] = (uint8_t)(bucket * 16 + k);
+        size_t leave = low_edge(x, r), enter = high_edge(x, r + 1, w);
+        for (size_t b = 0; b < 16; ++b) {
+            coarse[b] -= coarse_columns[leave * 16 + b];
+            coarse[b] += coarse_columns[enter * 16 + b];
+        }
+    }
 }
 
-/* A two-level, lazily updated sliding histogram. Fine bins are updated only
-   for the coarse bucket containing the median. Each task is one channel's
+/* A two-level, lazily updated sliding histogram. Each task is one channel's
    stripe of rows along the longer side: it builds its columns' histograms from
    its first row's window (clamped rows, the multiset the slide from row 0
    reaches there), so the stripes give the same outputs as one slide. Scratch is
@@ -209,70 +254,38 @@ static void add_column(column_histogram *hist, uint8_t value, size_t weight) {
    never padded/copied. */
 static void histogram_range(void *context, size_t begin, size_t end) {
     histogram_job *job = (histogram_job *)context;
-    size_t r = job->radius, kernel = 2 * r + 1;
-    uint32_t middle = (uint32_t)(kernel * kernel / 2);
+    size_t r = job->radius, kernel = 2 * r + 1, w = job->w;
+    size_t step = (job->transpose ? job->original_width : 1) * job->c;
     for (size_t task = begin; task < end; ++task) {
         size_t c = task / job->stripes, first = task % job->stripes * job->stripe;
         size_t last = job->h - first < job->stripe ? job->h : first + job->stripe;
-        column_histogram *columns = job->columns + task * job->w;
-        for (size_t x = 0; x < job->w; ++x) {
-            for (size_t d = 0; d < kernel; ++d) {
-                size_t y = d < r ? low_edge(first, r - d) : high_edge(first, d - r, job->h);
-                add_column(columns + x, job->src[image_index(job, y, x, c)], 1);
+        uint16_t *coarse = job->coarse + task * w * 16, *fine = job->fine + task * w * 256;
+        memset(coarse, 0, w * 16 * sizeof(uint16_t));
+        memset(fine, 0, w * 256 * sizeof(uint16_t));
+        for (size_t d = 0; d < kernel; ++d) {
+            size_t y = d < r ? low_edge(first, r - d) : high_edge(first, d - r, job->h);
+            const uint8_t *row = job->src + image_index(job, y, 0, c);
+            for (size_t x = 0; x < w; ++x) {
+                uint8_t value = row[x * step];
+                ++fine[x * 256 + value];
+                ++coarse[x * 16 + (value >> 4)];
             }
         }
         for (size_t y = first; y < last; ++y) {
-            uint32_t coarse[16] = {0}, fine[16][16] = {{0}};
-            size_t updated[16];
-            for (size_t b = 0; b < 16; ++b) updated[b] = SIZE_MAX;
-            for (size_t x = 0; x <= r && x < job->w; ++x) {
-                uint32_t weight = (uint32_t)(x == 0 ? r + 1 : 1);
-                if (x == job->w - 1 && r >= job->w) weight += (uint32_t)(r - job->w + 1);
-                for (size_t b = 0; b < 16; ++b) coarse[b] += weight * columns[x].coarse[b];
-            }
-            for (size_t x = 0; x < job->w; ++x) {
-                uint32_t below = 0;
-                size_t bucket = 0;
-                while (bucket < 15 && below + coarse[bucket] <= middle)
-                    below += coarse[bucket++];
-                if (updated[bucket] == SIZE_MAX || x - updated[bucket] >= kernel) {
-                    memset(fine[bucket], 0, sizeof(fine[bucket]));
-                    size_t left = low_edge(x, r), right = high_edge(x, r, job->w);
-                    for (size_t xx = left; xx <= right; ++xx) {
-                        uint32_t weight = 1;
-                        if (!xx && x < r) weight += (uint32_t)(r - x);
-                        if (xx == job->w - 1 && r >= job->w - x)
-                            weight += (uint32_t)(r - (job->w - x - 1));
-                        for (size_t k = 0; k < 16; ++k)
-                            fine[bucket][k] += weight * columns[xx].fine[bucket * 16 + k];
-                    }
-                } else {
-                    for (size_t xx = updated[bucket]; xx < x; ++xx) {
-                        size_t leave = low_edge(xx, r), enter = high_edge(xx, r + 1, job->w);
-                        for (size_t k = 0; k < 16; ++k) {
-                            fine[bucket][k] -= columns[leave].fine[bucket * 16 + k];
-                            fine[bucket][k] += columns[enter].fine[bucket * 16 + k];
-                        }
-                    }
-                }
-                updated[bucket] = x;
-                size_t k = 0;
-                while (k < 15 && below + fine[bucket][k] <= middle)
-                    below += fine[bucket][k++];
-                job->out[image_index(job, y, x, c)] = (uint8_t)(bucket * 16 + k);
-                size_t leave = low_edge(x, r), enter = high_edge(x, r + 1, job->w);
-                for (size_t b = 0; b < 16; ++b) {
-                    coarse[b] -= columns[leave].coarse[b];
-                    coarse[b] += columns[enter].coarse[b];
-                }
-            }
+            uint8_t *out = job->out + image_index(job, y, 0, c);
+#if CN_ISA_UNITS()
+            if (job->vector)
+                cn_median_row_avx2(coarse, fine, w, r, out, step);
+            else
+#endif
+                median_row(coarse, fine, w, r, out, step);
             if (y + 1 == last) break;
-            size_t leave = low_edge(y, r), enter = high_edge(y, r + 1, job->h);
-            for (size_t x = 0; x < job->w; ++x) {
-                uint8_t old = job->src[image_index(job, leave, x, c)];
-                uint8_t next = job->src[image_index(job, enter, x, c)];
-                --columns[x].fine[old]; --columns[x].coarse[old >> 4];
-                ++columns[x].fine[next]; ++columns[x].coarse[next >> 4];
+            const uint8_t *old = job->src + image_index(job, low_edge(y, r), 0, c);
+            const uint8_t *next = job->src + image_index(job, high_edge(y, r + 1, job->h), 0, c);
+            for (size_t x = 0; x < w; ++x) {
+                uint8_t leaving = old[x * step], entering = next[x * step];
+                --fine[x * 256 + leaving]; --coarse[x * 16 + (leaving >> 4)];
+                ++fine[x * 256 + entering]; ++coarse[x * 16 + (entering >> 4)];
             }
         }
     }
@@ -291,12 +304,18 @@ CN_EXPORT cn_status cn_neighborhood_median_u8(const uint8_t *src, uint8_t *out,
     if (stripe < 64) stripe = 64;
     if (stripe < (wide + 7) / 8) stripe = (wide + 7) / 8;
     size_t stripes = (wide + stripe - 1) / stripe;
-    if (narrow > SIZE_MAX / sizeof(column_histogram) / c / stripes) return CN_SIZE_OVERFLOW;
-    column_histogram *columns = calloc(narrow * c * stripes, sizeof(column_histogram));
-    if (!columns) return CN_ALLOCATION_FAILED;
-    histogram_job job = { src, out, columns, wide, narrow, c, radius, w, stripe, stripes, h < w };
+    if (narrow > SIZE_MAX / (272 * sizeof(uint16_t)) / c / stripes) return CN_SIZE_OVERFLOW;
+    size_t columns = narrow * c * stripes;
+    cn_scratch lease;
+    status = cn_scratch_lease(columns * 272 * sizeof(uint16_t), &lease, NULL);
+    if (status != CN_OK) return status;
+    uint16_t *coarse = lease.data;
+    /* A window under 65536 samples: its counts and sums fit the vector row's 16 bits (radius 127). */
+    int vector = cn_isa_current() >= CN_ISA_AVX2 && radius <= 127;
+    histogram_job job = { src, out, coarse, coarse + columns * 16, wide, narrow, c, radius, w, stripe, stripes, h < w,
+                          vector };
     status = cn_parallel_for(c * stripes, 1, histogram_range, &job);
-    free(columns);
+    cn_scratch_release(&lease);
     return status;
 }
 

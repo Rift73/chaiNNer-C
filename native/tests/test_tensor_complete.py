@@ -459,10 +459,14 @@ def test_validation_mean_without_model_execution(family, layout):
     if family == "pytorch":
         # The shipped check keeps the original validation body in a module helper.
         _extract(current, "_check_interp_state", shipped)
+    else:
+        # The shipped node also returns its Tile Size output.
+        shipped["upscale_image_node"] = lambda *args: (image, "")
     converted = _extract(current, name, shipped)
-    args = (
-        ({}, {}) if family == "pytorch" else (None, SimpleNamespace(sub_type="Generic"))
+    model = SimpleNamespace(
+        sub_type="Generic", in_nc=3, info=SimpleNamespace(input_channels=3)
     )
+    args = ({}, {}) if family == "pytorch" else (None, model)
     assert original(*args) == converted(*args)
     assert len(means) == 1
 

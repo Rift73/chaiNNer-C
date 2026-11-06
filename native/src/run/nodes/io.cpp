@@ -186,9 +186,11 @@ Image normalized(const uint8_t *pixels, const cn::image_decode::Shape &shape)
     return std::move(image).publish();
 }
 
-/* chainner:image:load (image/io/load_image.py, image_io.cpp load_image): the image, its directory and its name. */
+/* chainner:image:load (image/io/load_image.py, image_io.cpp load_image): the image, its directory, its name and its
+ * metadata (the file's path, nodes/impl/image_tags.py). Convert To sRGB is the Python body's. */
 void load_image(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
+    if (std::get<bool>(inputs[1])) throw RunPython{};
 #ifdef _WIN32
     const std::wstring &text = std::get<Path>(inputs[0]).value.native();
     if (text.starts_with(L"\\\\?\\") || text.starts_with(L"\\\\.\\")) throw RunPython{}; // device paths: ntpath's own roots
@@ -226,6 +228,7 @@ void load_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
     outputs.push_back(normalized(pixels.get(), shape));
     outputs.push_back(Path{std::filesystem::path(parts.directory)});
     outputs.push_back(std::move(name));
+    outputs.push_back(Path{std::filesystem::path(text)});
 }
 
 /* to_uint8 / to_uint16 of an enforced image into `out` (cn_pixels_convert_checked: float32 to 8 or 16 bits, clamped,
@@ -244,14 +247,14 @@ void quantized(const Image &image, int bits, cn_codec_output &out)
 /* Save Image's file bytes for the formats whose encoders are native (save_image.py encoding() and image_io.cpp
  * encode()), held by `out`, or by `fixed` for a TIFF that took the ExtraSamples fix: PNG (chaiNNer-C's encoder for 8
  * bits, OpenCV's PngEncoder for 16), JPG, WEBP (lossless with alpha as Pillow's exact save), BMP, TIFF (8/16-bit with
- * its compression, or float32 as it is; then the ExtraSamples fix). */
+ * its compression, or float32 as it is; then the ExtraSamples fix), EXR (float32 as it is, or half). */
 std::span<const uint8_t> save_bytes(const Image &image, std::span<const Value> inputs, cn_codec_output &out,
                                     std::vector<uint8_t> &fixed)
 {
     const std::string &format = std::get<std::string>(inputs[4]);
     const std::string &depth = std::get<std::string>(inputs[format == "tiff" ? 10 : 5]);
     const uint32_t height = uint32_t(image.height), width = uint32_t(image.width), channels = uint32_t(image.channels);
-    const bool floats = format == "tiff" && depth == "f32";
+    const bool floats = format == "exr" || (format == "tiff" && depth == "f32");
     const bool sixteen = (format == "png" || format == "tiff") && depth == "u16";
     cn::codecs::PoolOutput pixels;
     if (!floats) quantized(image, sixteen ? 16 : 8, pixels.value);
@@ -278,6 +281,8 @@ std::span<const uint8_t> save_bytes(const Image &image, std::span<const Value> i
     else if (format == "bmp") status = cn_bmp_encode(&view, &out);
     else if (format == "tiff" && (floats || compression == 1 || compression == 5 || compression == 8))
         status = cn_tiff_encode(&view, floats ? 0 : int(compression), &out);
+    else if (format == "exr")
+        status = cn_exr_encode(&view, int(std::get<int64_t>(inputs[24])), int(std::get<int64_t>(inputs[25])), &out);
     if (status != CN_CODEC_OK) throw RunPython{};
     if (format == "tiff" && cn::image_encode::tiff_extra_samples({out.data, out.size}, fixed)) return fixed;
     return {out.data, out.size};
@@ -296,9 +301,10 @@ std::filesystem::path full_path(std::span<const Value> inputs)
     std::filesystem::path path = std::get<Path>(inputs[1]).value;
     const auto *relative = std::get_if<std::string>(&inputs[2]);
     const std::string &name = std::get<std::string>(inputs[3]);
-    // A value that leaves the output directory or names a Windows device takes the Python body's error (save_path.hpp).
+    // A value save_path.hpp refuses, or a name with no file name, takes the Python body's error.
     if ((relative && cn::save_path::check(*relative).kind != cn::save_path::Refusal::none) ||
-        cn::save_path::check(name).kind != cn::save_path::Refusal::none)
+        cn::save_path::check(name).kind != cn::save_path::Refusal::none || name.empty() || name.back() == '/' ||
+        name.back() == '\\')
         throw RunPython{};
     if (relative && !relative->empty() && *relative != ".") path /= utf8_path(*relative);
     path /= utf8_path(name + "." + std::get<std::string>(inputs[4]));
@@ -329,16 +335,18 @@ std::filesystem::path full_path(std::span<const Value> inputs)
 void save_image(NodeContext &, std::span<const Value> inputs, std::vector<Value> &)
 {
     const std::string &format = std::get<std::string>(inputs[4]);
-    if ((format != "png" && format != "jpg" && format != "webp" && format != "bmp" && format != "tiff") ||
+    if ((format != "png" && format != "jpg" && format != "webp" && format != "bmp" && format != "tiff" &&
+         format != "exr") ||
         !cn::image_decode::enabled())
         throw RunPython{}; // GIF, TGA, AVIF (Pillow), DDS (texconv)
+    if (!std::holds_alternative<std::monostate>(inputs.back())) throw RunPython{}; // metadata, the last input: its tags are Python's
     std::filesystem::path path = full_path(inputs);
 #ifdef _WIN32
     const DWORD attributes = GetFileAttributesW(path.c_str());
     if (attributes != INVALID_FILE_ATTRIBUTES) {
         // A link takes today's path (Path.exists() follows it, and a dangling one does not exist there).
         if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) throw RunPython{};
-        if (std::get<bool>(inputs[24])) return; // skip existing files
+        if (std::get<bool>(inputs[26])) return; // skip existing files
         // Path.resolve() names an existing file by its on-disk spelling, which an overwrite keeps; a folder in the
         // way takes today's path.
         if (attributes & FILE_ATTRIBUTE_DIRECTORY) throw RunPython{};
@@ -360,7 +368,7 @@ void save_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
     const std::filesystem::file_status status = std::filesystem::symlink_status(path, error);
     if (status.type() != std::filesystem::file_type::not_found) {
         if (error) throw RunPython{};
-        if (std::get<bool>(inputs[24])) return; // skip existing files (full_path declined a link)
+        if (std::get<bool>(inputs[26])) return; // skip existing files (full_path declined a link)
         // A folder in the way takes today's path; Linux names keep their case, so an overwrite keeps the path's.
         if (std::filesystem::is_directory(status)) throw RunPython{};
     } else {

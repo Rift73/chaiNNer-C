@@ -416,7 +416,7 @@ CN_EXPORT cn_status cn_palette_median_cut(const float *src, float *out,
         }
         if (!high_count || high_count == b.count) {
             /* Original construction of an empty child fails at np.min. */
-            status = 6;
+            status = CN_MEDIAN_CUT_EMPTY_BUCKET;
             break;
         }
         split_pixels(scratch, source, b.count, channels, b.channel, median, high_count);

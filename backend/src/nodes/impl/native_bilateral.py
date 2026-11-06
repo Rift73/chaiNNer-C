@@ -11,6 +11,7 @@ import numpy as np
 from .native import check, f32, lib
 from .native_channels import concatenate_channels
 from .native_opencv_simd import float32_lanes, target
+from .native_resample import finish_alpha, has_transparency
 from .native_versions import cv2_is_tested
 
 
@@ -31,6 +32,16 @@ def _api():
         ct.c_size_t,
     ]
     dll.cn_bilateral_f32.restype = ct.c_int
+    dll.cn_bilateral_straight_f32.argtypes = [
+        ct.c_void_p,
+        ct.c_void_p,
+        ct.c_size_t,
+        ct.c_size_t,
+        ct.c_size_t,
+        ct.c_double,
+        ct.c_double,
+    ]
+    dll.cn_bilateral_straight_f32.restype = ct.c_int
     return dll
 
 
@@ -103,6 +114,20 @@ def surface(
     image: np.ndarray, radius: int, sigma_color: int, sigma_space: int
 ) -> np.ndarray:
     sigma = sigma_color / 255
+    if has_transparency(image):
+        # OpenCV's bilateral filters colour and alpha apart, so premultiplied colours
+        # would meet an alpha filtered with other weights. The straight colour with
+        # each tap weighted by its alpha keeps a flat colour flat at every sigma.
+        source = f32(image)
+        h, w = source.shape[:2]
+        rgb = np.empty((h, w, 3), np.float32)
+        check(
+            _api().cn_bilateral_straight_f32(
+                source.ctypes.data, rgb.ctypes.data, h, w, radius, sigma, sigma_space
+            )
+        )
+        alpha = bilateral(image[:, :, 3], radius, sigma, sigma_space)
+        return finish_alpha(concatenate_channels(rgb, alpha), divide=False)
     if image.ndim == 3 and image.shape[2] == 4:
         rgb = bilateral(image[:, :, :3], radius, sigma, sigma_space)
         alpha = bilateral(image[:, :, 3], radius, sigma, sigma_space)

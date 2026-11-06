@@ -18,6 +18,16 @@ EDGES = np.concatenate(
 )
 
 
+def opaque(image: np.ndarray) -> np.ndarray:
+    """A copy with a fourth channel of exactly 1, for a four-channel image: the filters with an alpha rule then run
+    per channel, as the frozen originals do."""
+    if image.ndim != 3 or image.shape[2] != 4:
+        return image
+    out = image.copy()
+    out[:, :, 3] = 1
+    return out
+
+
 def seed_of(*key: object) -> int:
     """A stable seed for a parametrized case."""
     return zlib.crc32(repr(key).encode())

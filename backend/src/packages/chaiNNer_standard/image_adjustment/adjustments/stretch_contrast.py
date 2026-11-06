@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from enum import Enum
 
 import numpy as np
@@ -16,6 +17,15 @@ from .. import adjustments_group
 
 def _stretch(img: np.ndarray, range_min: float, range_max: float) -> np.ndarray:
     return stretch_range(img, range_min, range_max)
+
+
+def _bounds(values: np.ndarray, percentile: float | None) -> tuple[float, float]:
+    low, high = contrast_bounds(values, percentile)
+    if not (math.isnan(low) or math.isnan(high)):
+        return low, high
+    # One NaN value must not turn the whole image into NaN: the others give the range.
+    valid = values[~np.isnan(values)]
+    return contrast_bounds(valid, percentile) if valid.size else (low, high)
 
 
 class StretchMode(Enum):
@@ -72,13 +82,22 @@ def stretch_contrast_node(
 ) -> np.ndarray:
     def get_range_of(i: np.ndarray) -> tuple[float, float]:
         if mode == StretchMode.AUTO:
-            return contrast_bounds(i)
+            return _bounds(i, None)
         elif mode == StretchMode.PERCENTILE:
-            return contrast_bounds(i, percentile)
+            return _bounds(i, percentile)
         elif mode == StretchMode.MANUAL:
             if manual_min > manual_max:
                 raise ValueError("Minimum must be less than Maximum")
             return manual_min / 255, manual_max / 255
+
+    def stretched(i: np.ndarray) -> np.ndarray:
+        range_min, range_max = get_range_of(i)
+        # A flat image or channel has no range to stretch and stays as it is, as in
+        # Pillow's autocontrast and scikit-image's rescale_intensity (upstream turned
+        # it black).
+        if range_min == range_max and mode != StretchMode.MANUAL:
+            return i
+        return _stretch(i, range_min, range_max)
 
     _, _, c = get_h_w_c(img)
 
@@ -90,17 +109,13 @@ def stretch_contrast_node(
     if keep_colors or mode == StretchMode.MANUAL or c == 1:
         # stretch all channels together
 
-        range_min, range_max = get_range_of(img)
-        img = _stretch(img, range_min, range_max)
+        img = stretched(img)
     else:
         # stretch all channels individually
 
         channels: list[np.ndarray] = []
         for i in range(get_h_w_c(img)[2]):
-            channel = img[:, :, i]
-
-            range_min, range_max = get_range_of(channel)
-            channels.append(_stretch(channel, range_min, range_max))
+            channels.append(stretched(img[:, :, i]))
 
         img = stack_stretched(channels)
 

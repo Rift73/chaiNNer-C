@@ -193,7 +193,12 @@ struct Slot {
     std::vector<float> uploaded;      // the blend weights on the device
     std::list<Graph> graphs;          // most recently used first
     std::list<std::pair<int, int>> seen;  // input shapes run, oldest first
+    cudaEvent_t tile_done[2] = {};  // a frame with a hook: its last two tiles' ends
     bool graph_failed = false;
+    // Work on the stream failed: nothing more goes on it, since an enqueue after a failed one
+    // can crash inside TensorRT (TensorRTSession._failed). An allocation that fails is no such
+    // failure: the context and the stream stay good.
+    bool failed = false;
     int shape_h = 0;  // the context's input shape and tensor addresses are set for this size
     int shape_w = 0;
 };
@@ -238,6 +243,8 @@ struct Runner::Impl {
             for (DeviceBuffer* buffer : {&slot->source, &slot->input, &slot->output, &slot->activation,
                                          &slot->accumulator, &slot->result, &slot->weights})
                 attempt(buffer->release(), "cudaFree");
+            for (cudaEvent_t event : slot->tile_done)
+                if (event) attempt(cudaEventDestroy(event), "cudaEventDestroy");
             if (slot->stream) attempt(cudaStreamDestroy(slot->stream), "cudaStreamDestroy");
             slot->stream = nullptr;
         }
@@ -247,6 +254,11 @@ struct Runner::Impl {
         engine = nullptr;
         delete runtime;
         runtime = nullptr;
+    }
+
+    static void check_stream(Slot& s, cudaError_t error, char const* call) {
+        if (error != cudaSuccess) s.failed = true;
+        check(error, call);
     }
 
     static cudaError_t drop_graphs(Slot& slot) noexcept {
@@ -280,6 +292,7 @@ struct Runner::Impl {
     // points the context at them.
     void prepare(Slot& s, int height, int width) {
         if (s.shape_h == height && s.shape_w == width) return;
+        s.shape_h = s.shape_w = 0;  // until every step below has held
         nvinfer1::Dims4 const dims{1, input_channels, height, width};
         if (!s.context->setInputShape(input_name.c_str(), dims))
             logger.fail("Tile shape (1, " + std::to_string(input_channels) + ", " + std::to_string(height) + ", " +
@@ -294,7 +307,7 @@ struct Runner::Impl {
         std::size_t const out_bytes = output_channels * pixels * scale * scale * element_bytes(output_element);
         std::size_t const act_bytes = s.context->updateDeviceMemorySizeForShapes();
         if (!s.input.fits(in_bytes) || !s.output.fits(out_bytes) || !s.activation.fits(act_bytes)) {
-            check(cudaStreamSynchronize(s.stream), "cudaStreamSynchronize");
+            check_stream(s, cudaStreamSynchronize(s.stream), "cudaStreamSynchronize");
             check(drop_graphs(s), "cudaGraphDestroy");
             s.input.grow(in_bytes);
             s.output.grow(out_bytes);
@@ -314,10 +327,13 @@ struct Runner::Impl {
         for (auto it = s.graphs.begin(); it != s.graphs.end(); ++it) {
             if (it->height != s.shape_h || it->width != s.shape_w) continue;
             s.graphs.splice(s.graphs.begin(), s.graphs, it);
-            check(cudaGraphLaunch(s.graphs.front().exec, s.stream), "cudaGraphLaunch");
+            check_stream(s, cudaGraphLaunch(s.graphs.front().exec, s.stream), "cudaGraphLaunch");
             return;
         }
-        if (!s.context->enqueueV3(s.stream)) logger.fail("TensorRT failed to enqueue inference");
+        if (!s.context->enqueueV3(s.stream)) {
+            s.failed = true;
+            logger.fail("TensorRT failed to enqueue inference");
+        }
         std::pair<int, int> const shape{s.shape_h, s.shape_w};
         if (std::find(s.seen.begin(), s.seen.end(), shape) == s.seen.end()) {
             s.seen.push_back(shape);
@@ -331,7 +347,7 @@ struct Runner::Impl {
     // TensorRT's enqueue, its reason kept for capture_failure(); the error it left behind
     // is taken so that the next launch does not report it.
     void capture(Slot& s) {
-        check(cudaStreamSynchronize(s.stream), "cudaStreamSynchronize");
+        check_stream(s, cudaStreamSynchronize(s.stream), "cudaStreamSynchronize");
         cudaGraph_t graph = nullptr;
         bool enqueued = false;
         cudaError_t error = cudaStreamBeginCapture(s.stream, cudaStreamCaptureModeThreadLocal);
@@ -411,13 +427,15 @@ Runner::Runner(void const* engine, std::size_t size, int device, int streams) : 
                 static_cast<int>(max.d[3]), alignment_of(m.input_name)};
 
     for (int i = 0; i < streams; ++i) {
-        auto slot = std::make_unique<Slot>();
+        m.slots.push_back(std::make_unique<Slot>());  // teardown frees what a failure below leaves
+        Slot& slot = *m.slots.back();
         // Activation memory is sized for each tile shape, not the profile's maximum (prepare).
-        slot->context = m.engine->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED);
-        if (!slot->context) m.logger.fail("Failed to create a TensorRT execution context");
-        check(cudaStreamCreateWithFlags(&slot->stream, cudaStreamNonBlocking), "cudaStreamCreateWithFlags");
-        m.idle.push_back(slot.get());
-        m.slots.push_back(std::move(slot));
+        slot.context = m.engine->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED);
+        if (!slot.context) m.logger.fail("Failed to create a TensorRT execution context");
+        check(cudaStreamCreateWithFlags(&slot.stream, cudaStreamNonBlocking), "cudaStreamCreateWithFlags");
+        for (cudaEvent_t& event : slot.tile_done)
+            check(cudaEventCreateWithFlags(&event, cudaEventDisableTiming), "cudaEventCreateWithFlags");
+        m.idle.push_back(&slot);
     }
 
     // The scale from TensorRT's shape inference at the profile's minimum (read_engine_info).
@@ -452,7 +470,8 @@ void Runner::close() {
     if (first) std::rethrow_exception(first);
 }
 
-void Runner::upscale(FrameJob const& job, HostPlane const* planes, HostPlane const* result, bool clip) {
+void Runner::upscale(FrameJob const& job, HostPlane const* planes, HostPlane const* result, bool clip,
+                     TileHook const& on_tile) {
     Impl& m = *impl_;
     if (job.scale != m.scale) throw std::invalid_argument("The frame was described for another engine.");
     Slot& s = m.acquire();
@@ -462,11 +481,16 @@ void Runner::upscale(FrameJob const& job, HostPlane const* planes, HostPlane con
         Impl& m;
         Slot& s;
         ~Lease() {
-            if (std::uncaught_exceptions()) cudaStreamSynchronize(s.stream);
+            if (std::uncaught_exceptions() && cudaStreamSynchronize(s.stream) != cudaSuccess) s.failed = true;
             m.release(s);
         }
     } const lease{m, s};
     check(cudaSetDevice(m.device), "cudaSetDevice");
+    // What an earlier call left on this thread, such as another frame's failed allocation: the
+    // next launch or TensorRT's enqueue reads it and fails. Every call here is checked, so it is
+    // old news (TensorRTSession.submit).
+    cudaGetLastError();
+    if (s.failed) throw std::runtime_error("This TensorRT session failed on another image: run this one again.");
 
     int const out_w = job.width * job.scale, out_h = job.height * job.scale;
     int64_t const out_plane = static_cast<int64_t>(out_w) * out_h;
@@ -480,49 +504,57 @@ void Runner::upscale(FrameJob const& job, HostPlane const* planes, HostPlane con
         s.accumulator.grow(static_cast<std::size_t>(m.output_channels * out_plane) * sizeof(float));
         if (s.uploaded != job.weights) {
             std::size_t const bytes = job.weights.size() * sizeof(float);
+            s.uploaded.clear();  // until the upload below is on the stream
             s.host_weights.grow(bytes);
             s.weights.grow(bytes);
             std::memcpy(s.host_weights.get(), job.weights.data(), bytes);
-            check(cudaMemcpyAsync(s.weights.get(), s.host_weights.get(), bytes, cudaMemcpyHostToDevice, s.stream),
-                  "cudaMemcpyAsync");
+            Impl::check_stream(s, cudaMemcpyAsync(s.weights.get(), s.host_weights.get(), bytes, cudaMemcpyHostToDevice, s.stream),
+                               "cudaMemcpyAsync");
             s.uploaded = job.weights;
         }
     }
     pack(planes, job.planes, job.width, job.height, job.format.sample, job.source, static_cast<char*>(s.host_source.get()));
-    check(cudaMemcpyAsync(s.source.get(), s.host_source.get(), job.source.bytes, cudaMemcpyHostToDevice, s.stream),
-          "cudaMemcpyAsync");
+    Impl::check_stream(s, cudaMemcpyAsync(s.source.get(), s.host_source.get(), job.source.bytes, cudaMemcpyHostToDevice, s.stream),
+                       "cudaMemcpyAsync");
     float* acc = static_cast<float*>(s.accumulator.get());
     if (tiled)
-        check(cudaMemsetAsync(acc, 0, static_cast<std::size_t>(m.output_channels * out_plane) * sizeof(float), s.stream),
-              "cudaMemsetAsync");
+        Impl::check_stream(s, cudaMemsetAsync(acc, 0, static_cast<std::size_t>(m.output_channels * out_plane) * sizeof(float), s.stream),
+                           "cudaMemsetAsync");
 
     Source const source{s.source.get(), job.format.sample, job.planes, job.width, job.height, job.source.layout, job.codes};
     Result const target{s.result.get(), job.format.sample, job.result_planes, out_w, out_h, job.result.layout, job.codes};
     float const* weights = static_cast<float const*>(s.weights.get());
     for (std::size_t i = 0; i < job.tiles.size(); ++i) {
         TileIn const& tile = job.tiles[i];
+        if (on_tile) {
+            // tiled_upscale's two tiles on the stream, so that a Stop or the progress is a tile
+            // away, not the whole frame's enqueued tiles.
+            if (i >= 2) Impl::check_stream(s, cudaEventSynchronize(s.tile_done[i % 2]), "cudaEventSynchronize");
+            on_tile(i, job.tiles.size());
+        }
         m.prepare(s, tile.height, tile.width);
-        check(launch_to_tensor(source, tile, s.input.get(), m.input_element, m.input_channels, clip, s.stream),
-              "the input kernel");
+        Impl::check_stream(s, launch_to_tensor(source, tile, s.input.get(), m.input_element, m.input_channels, clip, s.stream),
+                           "the input kernel");
         m.execute(s);
         int const tile_out_w = tile.width * job.scale;
         Planar const out{s.output.get(), m.output_element, m.output_channels, tile_out_w,
                          static_cast<int64_t>(tile_out_w) * tile.height * job.scale};
         if (tiled) {
             Place const& place = job.places[i];
-            check(launch_accumulate(out, acc, out_w, out_plane, place.x0, place.y0, weights + place.wy, place.ny,
-                                    weights + place.wx, place.nx, s.stream),
-                  "the blend kernel");
+            Impl::check_stream(s, launch_accumulate(out, acc, out_w, out_plane, place.x0, place.y0, weights + place.wy, place.ny,
+                                                    weights + place.wx, place.nx, s.stream),
+                               "the blend kernel");
         } else {
-            check(launch_store(out, target, clip, s.stream), "the output kernel");
+            Impl::check_stream(s, launch_store(out, target, clip, s.stream), "the output kernel");
         }
+        if (on_tile) Impl::check_stream(s, cudaEventRecord(s.tile_done[i % 2], s.stream), "cudaEventRecord");
     }
     if (tiled)
-        check(launch_store({acc, Element::F32, m.output_channels, out_w, out_plane}, target, clip, s.stream),
-              "the output kernel");
-    check(cudaMemcpyAsync(s.host_result.get(), s.result.get(), job.result.bytes, cudaMemcpyDeviceToHost, s.stream),
-          "cudaMemcpyAsync");
-    check(cudaStreamSynchronize(s.stream), "cudaStreamSynchronize");
+        Impl::check_stream(s, launch_store({acc, Element::F32, m.output_channels, out_w, out_plane}, target, clip, s.stream),
+                           "the output kernel");
+    Impl::check_stream(s, cudaMemcpyAsync(s.host_result.get(), s.result.get(), job.result.bytes, cudaMemcpyDeviceToHost, s.stream),
+                       "cudaMemcpyAsync");
+    Impl::check_stream(s, cudaStreamSynchronize(s.stream), "cudaStreamSynchronize");
     unpack(static_cast<char const*>(s.host_result.get()), job.result, result, job.result_planes, out_w, out_h,
            job.format.sample);
 }

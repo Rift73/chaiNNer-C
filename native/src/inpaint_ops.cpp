@@ -706,5 +706,5 @@ extern "C" CN_EXPORT cn_status cn_inpaint_u8(const uint8_t *source,const uint8_t
         return CN_OK;
     }catch(const std::bad_alloc&){return CN_ALLOCATION_FAILED;}
     catch(const std::length_error&){return CN_SIZE_OVERFLOW;}
-    catch(...){return static_cast<cn_status>(4);}
+    catch(...){return CN_KERNEL_FAILED;}
 }

@@ -32,6 +32,9 @@ def exact(actual, expected):
 
 
 def compare(source, dimensions, filter_id, gamma=False, separate=True):
+    # Hamming's and Hann's reductions are judged: test_resize_window_filters.py.
+    if filter_id in (8, 9) and (dimensions[0] < source.shape[1] or dimensions[1] < source.shape[0]):
+        return None
     before = source.copy()
     with np.errstate(all="ignore"):
         expected = reference.resize(

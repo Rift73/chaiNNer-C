@@ -15,6 +15,7 @@ from ..image_utils import to_uint8
 from ..native_framework_images import ncnn_input, planar_to_interleaved
 from ..upscale.auto_split import Split, Tiler, auto_split
 from ..upscale.bounded_tiler import BoundedTiler
+from ..upscale.tile_report import TileReport
 
 use_gpu = ncnn.get_gpu_count() > 0
 # PyPI ncnn's Extractor has no Vulkan allocator setters, so an extractor takes them
@@ -75,6 +76,7 @@ def ncnn_auto_split(
     size_multiple: int = 1,
     swap_red_blue: bool = False,
     progress: Progress | None = None,
+    report: TileReport | None = None,
 ) -> np.ndarray:
     # A model that starts with a Reorg needs a height and width that are a multiple
     # of its stride (NcnnModelWrapper.size_multiple), so the image is padded with
@@ -193,7 +195,12 @@ def ncnn_auto_split(
         return result
 
     try:
-        result = auto_split(img, upscale, BoundedTiler(tiler), progress=progress)
+        result = auto_split(
+            img,
+            upscale if report is None else report.recording(img, upscale),
+            BoundedTiler(tiler),
+            progress=progress,
+        )
         if pad_h or pad_w:
             scale = result.shape[0] // img.shape[0]
             result = result[: h * scale, : w * scale]

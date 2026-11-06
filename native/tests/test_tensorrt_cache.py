@@ -159,6 +159,150 @@ def test_an_error_closes_the_value_and_the_next_use_recreates_it():
     assert len(r.created) == 2 and not again.closed
 
 
+def test_a_value_given_up_closes_with_its_last_user_before_the_next_is_made():
+    r = Recorder()
+    entered, leave = Event(), Event()
+    seen = []
+
+    def run():
+        with r.cache.use("session", A, r.create("session"), exclusive=False) as value:
+            seen.append(value)
+            entered.set()
+            assert leave.wait(10)
+
+    worker = Thread(target=run)
+    worker.start()
+    assert entered.wait(10)
+    # A second user runs while the first is inside; its error gives the value up, but
+    # the first still uses it.
+    with (
+        pytest.raises(RuntimeError),
+        r.cache.use("session", B, r.create("session"), exclusive=False) as value,
+    ):
+        assert value is seen[0]
+        raise RuntimeError("stopped")
+    assert r.closed == []
+    # A new use waits: the value given up holds memory the next may need.
+    using, finish = Event(), Event()
+    later = []
+
+    def next_use():
+        with r.cache.use("session", B, r.create("session"), exclusive=False) as value:
+            later.append(value)
+            using.set()
+            assert finish.wait(10)
+
+    third = Thread(target=next_use)
+    third.start()
+    assert not using.wait(0.2)
+    assert len(r.created) == 1
+    leave.set()
+    worker.join(10)
+    assert using.wait(10)
+    assert r.closed == seen and later[0] is not seen[0] and not later[0].closed
+    finish.set()
+    third.join(10)
+    assert len(r.created) == 2
+
+
+def test_a_failing_stream_of_errors_keeps_one_value_alive():
+    r = Recorder()
+    stop = Event()
+    errors = []
+
+    def steady():
+        try:
+            while not stop.is_set():
+                with r.cache.use("session", A, r.create("session"), exclusive=False):
+                    time.sleep(0.001)
+        except Exception as e:
+            errors.append(e)
+            raise
+
+    workers = [Thread(target=steady) for _ in range(3)]
+    for worker in workers:
+        worker.start()
+    for _ in range(10):
+        with (
+            pytest.raises(RuntimeError),
+            r.cache.use("session", B, r.create("session"), exclusive=False),
+        ):
+            raise RuntimeError("this item cannot be upscaled")
+        assert len(r.created) - len(r.closed) <= 1
+    stop.set()
+    for worker in workers:
+        worker.join(10)
+        assert not worker.is_alive()
+    assert errors == []
+    assert len(r.created) - len(r.closed) <= 1
+
+
+def test_a_close_error_after_a_shared_error_is_logged_and_the_next_use_goes_on(caplog):
+    closed = []
+
+    def close(value):
+        closed.append(value)
+        raise OSError(f"close {value}")
+
+    shared: SharedCache[str] = SharedCache(close)
+    values = iter(["first", "second"])
+    # The item's own error reaches its caller, not the close error.
+    with (
+        pytest.raises(RuntimeError, match="the item's"),
+        shared.use("key", A, lambda: next(values), exclusive=False),
+    ):
+        raise RuntimeError("the item's")
+    assert closed == ["first"]
+    assert "close first" in caplog.text
+    with shared.use("key", A, lambda: next(values), exclusive=False) as value:
+        assert value == "second"
+
+
+def test_two_shared_errors_close_the_value_once():
+    r = Recorder()
+    entered, leave = Event(), Event()
+
+    def run():
+        with (
+            pytest.raises(RuntimeError),
+            r.cache.use("session", A, r.create("session"), exclusive=False),
+        ):
+            entered.set()
+            assert leave.wait(10)
+            raise RuntimeError("stopped too")
+
+    worker = Thread(target=run)
+    worker.start()
+    assert entered.wait(10)
+    with (
+        pytest.raises(RuntimeError),
+        r.cache.use("session", B, r.create("session"), exclusive=False),
+    ):
+        raise RuntimeError("stopped")
+    leave.set()
+    worker.join(10)
+    assert len(r.created) == 1 and len(r.closed) == 1
+
+
+def test_freeing_a_shared_value_in_use_waits_for_its_last_user():
+    r = Recorder()
+    entered, leave = Event(), Event()
+
+    def run():
+        with r.cache.use("session", A, r.create("session"), exclusive=False):
+            entered.set()
+            assert leave.wait(10)
+
+    worker = Thread(target=run)
+    worker.start()
+    assert entered.wait(10)
+    r.cache.release_node(A)
+    assert r.closed == [] and len(r.cache) == 1
+    leave.set()
+    worker.join(10)
+    assert len(r.closed) == 1 and len(r.cache) == 0
+
+
 def test_a_changed_engine_file_reloads(tmp_path):
     # Load Engine's key: the file identity and the GPU.
     r = Recorder()

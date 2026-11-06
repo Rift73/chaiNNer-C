@@ -31,6 +31,8 @@ class BlendMode(Enum):
     SUBTRACT = 14
     DIVIDE = 15
     XOR = 13
+    COLOR = 23
+    LUMINOSITY = 24
 
 
 __normalized = {
@@ -57,6 +59,8 @@ __normalized = {
     BlendMode.LINEAR_LIGHT: False,
     BlendMode.PIN_LIGHT: True,
     BlendMode.LINEAR_BURN: False,
+    BlendMode.COLOR: False,
+    BlendMode.LUMINOSITY: False,
 }
 
 

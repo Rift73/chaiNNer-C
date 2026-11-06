@@ -8,10 +8,13 @@ add_executable(fuzz_image_decode fuzz_image_decode.cpp ../../src/image_decode.cp
 target_link_libraries(fuzz_image_decode PRIVATE chainner_codecs)
 # The parallel inflate at sizes -max_len reaches (README.md).
 target_compile_definitions(chainner_codecs PRIVATE PNG_INFLATE_MIN_STRETCH_BYTES=12288)
+# The PNG decoder's inflate paths against serial libdeflate and libpng, on streams and files with their checks made right.
+add_executable(fuzz_png_inflate fuzz_png_inflate.c ../../src/parallel.c)
+target_link_libraries(fuzz_png_inflate PRIVATE chainner_codecs chainner_png chainner_deflate)
 # The regex engine of chainner_ext and Text nodes.
 add_executable(fuzz_regex fuzz_regex.c)
 target_link_libraries(fuzz_regex PRIVATE chainner_regex)
-foreach(target fuzz_image_decode fuzz_regex)
+foreach(target fuzz_image_decode fuzz_png_inflate fuzz_regex)
     set_target_properties(${target} PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
         CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO RUNTIME_OUTPUT_DIRECTORY "${CHAINNER_C_OUTPUT_DIR}")
     target_include_directories(${target} PRIVATE ../../include)
@@ -26,7 +29,7 @@ target_compile_options(chainner_openjph PRIVATE -fno-sanitize=address,fuzzer-no-
 # UndefinedBehaviorSanitizer on chaiNNer-C's own code the harnesses run (the vendored libraries are left as they are),
 # stopping at the first report; its handlers are in the AddressSanitizer runtime. Unsigned wrapping is defined (the
 # regex engine relies on it) and so is IEEE float division by zero under /fp:strict, so neither is checked.
-foreach(target chainner_codecs chainner_regex fuzz_image_decode fuzz_regex)
+foreach(target chainner_codecs chainner_regex fuzz_image_decode fuzz_png_inflate fuzz_regex)
     target_compile_options(${target} PRIVATE
         -fsanitize=signed-integer-overflow,shift,integer-divide-by-zero,float-cast-overflow,bool,enum,bounds,null,return,unreachable,vla-bound,pointer-overflow,nonnull-attribute
         -fno-sanitize-recover=all)

@@ -1,6 +1,7 @@
 /* OpenEXR images as OpenCV 5.0's ExrDecoder reads them under IMREAD_UNCHANGED (grfmt_exr.cpp), decoded by OpenEXRCore
  * 3.5.2 (GPL-3.0; the channel rules follow OpenCV's Apache-2.0 code). OpenCV reads through OpenEXR's C++ InputFile
- * into float slices; the runtime's OpenCV is built without OpenEXR, so this is Load Image's EXR decoder. */
+ * into float slices; the runtime's OpenCV is built without OpenEXR, so this is Load Image's EXR decoder and Save Image's
+ * encoder. */
 #include "image_codecs.h"
 #include "parallel.h"
 
@@ -343,5 +344,153 @@ done:
     for (int s = 0; s < EXR_MAX_CHANNELS; ++s) free(planes[s]);
     free(slots);
     exr_finish(&ctxt);
+    return status;
+}
+
+/* The file in memory. OpenEXRCore writes the header, leaves room for the chunk table, writes the chunks and fills the
+ * table in at the last one. */
+static int64_t exr_output_write(exr_const_context_t ctxt, void *userdata, const void *buffer, uint64_t size,
+                                uint64_t offset, exr_stream_error_func_ptr_t error_cb) {
+    (void)ctxt;
+    (void)error_cb;
+    cn_codec_output *out = (cn_codec_output *)userdata;
+    const size_t end = (size_t)offset + (size_t)size;
+    if (end > out->capacity) cn_codec_output_reserve(out, end > out->capacity * 2 ? end : out->capacity * 2);
+    if (out->failed) return -1;
+    if (offset > out->size) memset(out->data + out->size, 0, (size_t)offset - out->size);
+    memcpy(out->data + offset, buffer, (size_t)size);
+    if (end > out->size) out->size = end;
+    return (int64_t)size;
+}
+
+/* One encode's chunks: compressed on many threads and kept, then written in order, the only order OpenEXRCore takes. */
+typedef struct exr_encode_job {
+    exr_context_t ctxt;
+    const cn_codec_image *image;
+    int32_t lines_per_chunk;
+    uint8_t **chunks;
+    uint64_t *sizes;
+    atomic_int failed;
+} exr_encode_job;
+
+static exr_result_t exr_keep_chunk(exr_encode_pipeline_t *encoder) {
+    exr_encode_job *job = (exr_encode_job *)encoder->encoding_user_data;
+    const size_t chunk = (size_t)(encoder->chunk.start_y / job->lines_per_chunk);
+    job->chunks[chunk] = (uint8_t *)malloc((size_t)encoder->compressed_bytes);
+    if (!job->chunks[chunk]) return EXR_ERR_OUT_OF_MEMORY;
+    memcpy(job->chunks[chunk], encoder->compressed_buffer, (size_t)encoder->compressed_bytes);
+    job->sizes[chunk] = encoder->compressed_bytes;
+    return EXR_ERR_SUCCESS;
+}
+
+static void exr_encode_chunks(void *context, size_t begin, size_t end) {
+    exr_encode_job *job = (exr_encode_job *)context;
+    const cn_codec_image *image = job->image;
+    exr_encode_pipeline_t encoder;
+    memset(&encoder, 0, sizeof encoder);
+    int started = 0;
+    for (size_t chunk = begin; chunk < end && !atomic_load(&job->failed); ++chunk) {
+        const size_t y = chunk * (size_t)job->lines_per_chunk;
+        exr_chunk_info_t info;
+        exr_result_t result = exr_write_scanline_chunk_info(job->ctxt, 0, (int)y, &info);
+        if (result == EXR_ERR_SUCCESS)
+            result = started ? exr_encoding_update(job->ctxt, 0, &info, &encoder)
+                             : exr_encoding_initialize(job->ctxt, 0, &info, &encoder);
+        if (result != EXR_ERR_SUCCESS) {
+            atomic_store(&job->failed, 1);
+            break;
+        }
+        for (int c = 0; c < encoder.channel_count; ++c) {
+            exr_coding_channel_info_t *channel = &encoder.channels[c];
+            const char name = channel->channel_name[0];
+            const size_t slot = name == 'A' ? 3 : name == 'R' ? 2 : name == 'G' ? 1 : 0;
+            channel->encode_from_ptr = image->data + y * image->stride + slot * 4;
+            channel->user_pixel_stride = (int32_t)(image->channels * 4);
+            channel->user_line_stride = (int32_t)image->stride;
+            channel->user_bytes_per_element = 4;
+            channel->user_data_type = EXR_PIXEL_FLOAT;
+        }
+        if (!started) {
+            result = exr_encoding_choose_default_routines(job->ctxt, 0, &encoder);
+            encoder.yield_until_ready_fn = NULL;
+            encoder.write_fn = exr_keep_chunk;
+            encoder.encoding_user_data = job;
+            started = 1;
+        }
+        if (result == EXR_ERR_SUCCESS) result = exr_encoding_run(job->ctxt, 0, &encoder);
+        if (result != EXR_ERR_SUCCESS) {
+            atomic_store(&job->failed, 1);
+            break;
+        }
+    }
+    exr_encoding_destroy(job->ctxt, &encoder);
+}
+
+cn_codec_status cn_exr_encode(const cn_codec_image *image, int pixel_type, int compression, cn_codec_output *out) {
+    const uint32_t channels = image->channels;
+    if (image->sample_bytes != 4 || (channels != 1 && channels != 3 && channels != 4) || !image->height || !image->width ||
+        image->height > INT32_MAX || image->width > INT32_MAX || image->stride > INT32_MAX ||
+        (pixel_type != EXR_PIXEL_HALF && pixel_type != EXR_PIXEL_FLOAT) || compression < EXR_COMPRESSION_NONE ||
+        compression > EXR_COMPRESSION_PIZ)
+        return CN_CODEC_FALLBACK;
+    exr_context_initializer_t init = EXR_DEFAULT_CONTEXT_INITIALIZER;
+    init.user_data = out;
+    init.write_fn = exr_output_write;
+    init.error_handler_fn = exr_quiet;
+    exr_context_t ctxt = NULL;
+    cn_codec_status status = CN_CODEC_FALLBACK;
+    exr_encode_job job = {.image = image};
+    size_t chunks = 0;
+    int part = 0;
+    const exr_attr_box2i_t window = {{0, 0}, {(int32_t)image->width - 1, (int32_t)image->height - 1}};
+    const exr_attr_v2f_t center = {0.f, 0.f};
+    if (exr_start_write(&ctxt, "", EXR_WRITE_FILE_DIRECTLY, &init) != EXR_ERR_SUCCESS ||
+        exr_add_part(ctxt, NULL, EXR_STORAGE_SCANLINE, &part) != EXR_ERR_SUCCESS ||
+        exr_initialize_required_attr(ctxt, part, &window, &window, 1.f, &center, 1.f, EXR_LINEORDER_INCREASING_Y,
+                                     (exr_compression_t)compression) != EXR_ERR_SUCCESS)
+        goto done;
+    /* The channels Load Image's decoder reads back as this image: Y alone is grey, R, G, B (and A) are BGR(A). */
+    if (channels == 1) {
+        if (exr_add_channel(ctxt, part, "Y", (exr_pixel_type_t)pixel_type, EXR_PERCEPTUALLY_LOGARITHMIC, 1, 1) !=
+            EXR_ERR_SUCCESS)
+            goto done;
+    } else {
+        static const char *const colours[] = {"B", "G", "R"};
+        for (int c = 0; c < 3; ++c)
+            if (exr_add_channel(ctxt, part, colours[c], (exr_pixel_type_t)pixel_type, EXR_PERCEPTUALLY_LOGARITHMIC, 1, 1) !=
+                EXR_ERR_SUCCESS)
+                goto done;
+        if (channels == 4 && exr_add_channel(ctxt, part, "A", (exr_pixel_type_t)pixel_type, EXR_PERCEPTUALLY_LINEAR, 1, 1) !=
+                                 EXR_ERR_SUCCESS)
+            goto done;
+    }
+    if (exr_write_header(ctxt) != EXR_ERR_SUCCESS ||
+        exr_get_scanlines_per_chunk(ctxt, part, &job.lines_per_chunk) != EXR_ERR_SUCCESS || job.lines_per_chunk < 1)
+        goto done;
+    chunks = ((size_t)image->height + (size_t)job.lines_per_chunk - 1) / (size_t)job.lines_per_chunk;
+    job.ctxt = ctxt;
+    job.chunks = (uint8_t **)calloc(chunks, sizeof *job.chunks);
+    job.sizes = (uint64_t *)calloc(chunks, sizeof *job.sizes);
+    if (!job.chunks || !job.sizes) goto done;
+    atomic_init(&job.failed, 0);
+    if (cn_parallel_for(chunks, 1, exr_encode_chunks, &job) != CN_OK || atomic_load(&job.failed)) goto done;
+    /* The chunk table, then each chunk's y and size before its bytes: the file's size, so most take one block more. */
+    size_t total = out->size + chunks * sizeof(uint64_t);
+    for (size_t chunk = 0; chunk < chunks; ++chunk) total += 2 * sizeof(int32_t) + (size_t)job.sizes[chunk];
+    cn_codec_output_reserve(out, total);
+    for (size_t chunk = 0; chunk < chunks; ++chunk) {
+        if (exr_write_scanline_chunk(ctxt, part, (int)(chunk * (size_t)job.lines_per_chunk), job.chunks[chunk],
+                                     job.sizes[chunk]) != EXR_ERR_SUCCESS)
+            goto done;
+        free(job.chunks[chunk]);
+        job.chunks[chunk] = NULL;
+    }
+    status = CN_CODEC_OK;
+done:
+    if (job.chunks)
+        for (size_t chunk = 0; chunk < chunks; ++chunk) free(job.chunks[chunk]);
+    free(job.chunks);
+    free(job.sizes);
+    if (exr_finish(&ctxt) != EXR_ERR_SUCCESS || out->failed) status = CN_CODEC_FALLBACK;
     return status;
 }

@@ -13,6 +13,8 @@ import cv2
 import numpy as np
 import pytest
 
+from native_images import opaque
+
 from nodes.impl import native_transfer, native_unsharp
 from nodes.impl.native import ptr
 from nodes.utils.utils import get_h_w_c
@@ -147,7 +149,7 @@ def test_weighted_extremes(amount, width):
 @pytest.mark.parametrize("amount", [0.3, 1, 9.7])
 def test_unsharp_whole_node(channels, radius, amount):
     shape = (11, 19) if channels == 1 else (11, 19, channels)
-    image = np.random.default_rng(102).random(shape, dtype=np.float32)
+    image = opaque(np.random.default_rng(102).random(shape, dtype=np.float32))
     expected = ORIGINAL_UNSHARP.unsharp_mask_node(image, radius, amount, 0)
     exact(UNSHARP.unsharp_mask_node(image, radius, amount, 0), expected)
 
@@ -192,15 +194,21 @@ def test_bounds_foreign_layouts(kind, percentile):
 
 
 @pytest.mark.parametrize("channels", [1, 3, 4])
-@pytest.mark.parametrize("mode", [0, 1, 2])
 @pytest.mark.parametrize("keep_colors", [False, True])
 @pytest.mark.parametrize(
-    "values",
+    "mode,values",
     [
-        [-0.0, 0.0],
-        [-np.inf, -1, -0.0, 0.0, 1, np.inf],
-        [0, np.nan, 1],
-        [-3.4e38, -1, 1, 3.4e38],
+        *(
+            (mode, values)
+            for mode in (0, 1, 2)
+            for values in (
+                [-0.0, 0.0],
+                [-np.inf, -1, -0.0, 0.0, 1, np.inf],
+                [-3.4e38, -1, 1, 3.4e38],
+            )
+        ),
+        # Manual alone: Auto and Percentile now take their range from the values that are not NaN.
+        (2, [0, np.nan, 1]),
     ],
 )
 def test_stretch_node_exceptional(channels, mode, keep_colors, values):

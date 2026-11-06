@@ -36,6 +36,18 @@ def round_half_up(number: float | int) -> int:
     return math.floor(number + 0.5)
 
 
+def check_image_memory(name: str, h: int, w: int, c: int) -> None:
+    """Raises for a float32 image above the 16 GiB limit, before anything is allocated.
+    The native entry points' check_image_memory (image_resize.cpp) has the same text."""
+    gib = 2**30
+    memory = h * w * c * 4
+    if memory > 16 * gib:
+        size = math.inf if memory >> 30 >= 2**1024 else round(memory / gib, 3)
+        raise RuntimeError(
+            f"{name} would require {size} GB of memory, but only 16 GB are allowed."
+        )
+
+
 def get_h_w_c(image: np.ndarray) -> tuple[int, int, int]:
     """Returns the height, width, and number of channels."""
     h, w = image.shape[:2]

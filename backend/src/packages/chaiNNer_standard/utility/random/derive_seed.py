@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Union
 
 from nodes.groups import optional_list_group, seed_group
@@ -11,7 +12,7 @@ from nodes.utils.utils import ALPHABET
 
 from .. import random_group
 
-Source = Union[int, float, str, Seed]
+Source = Union[int, float, str, Path, Seed]
 
 
 def SourceInput(label: str):

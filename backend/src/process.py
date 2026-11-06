@@ -40,7 +40,13 @@ from api import (
 from chain.cache import CacheStrategy, OutputCache, StaticCaching, get_cache_strategies
 from chain.chain import Chain, CollectorNode, FunctionNode, GeneratorNode, Node
 from chain.input import EdgeInput, Input, InputMap
-from events import EventConsumer, InputsDict, NodeBroadcastData
+from events import (
+    EventConsumer,
+    ExecutionWarningEvent,
+    InputsDict,
+    NodeBroadcastData,
+    NodeProgressUpdateEvent,
+)
 from nodes.impl import native_profile
 from nodes.impl.execution_cleanup import (
     await_owned_node,
@@ -509,6 +515,61 @@ def _relative_path_input(i: object) -> bool:
     return module is not None and isinstance(i, module.RelativePathInput)
 
 
+def run_warning(
+    loop: asyncio.AbstractEventLoop, queue: EventConsumer
+) -> Callable[[str], None]:
+    """NodeContext.warn in a run. It holds no executor, whose contexts keep it: server.py
+    collects nothing after a run, so a cycle would keep the run's outputs alive."""
+
+    def warn(message: str) -> None:
+        logger.warning(message)
+        event: ExecutionWarningEvent = {
+            "event": "execution-warning",
+            "data": {"message": message},
+        }
+        loop.call_soon_threadsafe(queue.put, event)
+
+    return warn
+
+
+NODE_PROGRESS_SECONDS = 0.1
+"""The least time between two of a node's own progress events: its bar repaints with each,
+and every repaint on screen interrupts the GPU's work."""
+
+
+def run_progress(
+    loop: asyncio.AbstractEventLoop, queue: EventConsumer, node_id: NodeId
+) -> Callable[[float], None]:
+    """NodeContext.set_progress's event in a run, without items (total 0). It holds no
+    executor, as run_warning. The first update of a pass (a value not above the last) only
+    starts its clock and its last (1) is left to the node's finish, so a pass shorter than
+    NODE_PROGRESS_SECONDS, a video's frame or an untiled image, sends nothing."""
+    sent = 0.0
+    last = 1.0
+
+    def send(progress: float) -> None:
+        nonlocal sent, last
+        now = time.monotonic()
+        if progress <= last:
+            sent = now
+        elif progress < 1 and now - sent >= NODE_PROGRESS_SECONDS:
+            sent = now
+            event: NodeProgressUpdateEvent = {
+                "event": "node-progress",
+                "data": {
+                    "nodeId": node_id,
+                    "progress": progress,
+                    "index": 0,
+                    "total": 0,
+                    "eta": 0,
+                },
+            }
+            loop.call_soon_threadsafe(queue.put, event)
+        last = progress
+
+    return send
+
+
 class _ExecutorNodeContext(NodeContext):
     def __init__(
         self,
@@ -516,12 +577,16 @@ class _ExecutorNodeContext(NodeContext):
         settings: SettingsParser,
         storage_dir: Path,
         node_id: NodeId,
+        warn: Callable[[str], None],
+        send_progress: Callable[[float], None],
     ) -> None:
         super().__init__()
         self.progress = progress
         self.__settings = settings
         self._storage_dir = storage_dir
         self._node_id = node_id
+        self.__warn = warn
+        self.__send_progress = send_progress
         self.chain_cleanup_fns: set[Callable[[], None]] = set()
         self.node_cleanup_fns: set[Callable[[], None]] = set()
         # Set while a generator loop runs this node on its commit path.
@@ -548,6 +613,7 @@ class _ExecutorNodeContext(NodeContext):
 
     def set_progress(self, progress: float) -> None:
         self.check_aborted()
+        self.__send_progress(progress)
 
     @property
     def settings(self) -> SettingsParser:
@@ -563,6 +629,9 @@ class _ExecutorNodeContext(NodeContext):
     @property
     def storage_dir(self) -> Path:
         return self._storage_dir
+
+    def warn(self, message: str) -> None:
+        self.__warn(message)
 
     def add_cleanup(
         self, fn: Callable[[], None], after: Literal["node", "chain"] = "chain"
@@ -855,6 +924,46 @@ def _computable_folder(
             return False
         pending.extend(i.id for i in inputs.get(current) if isinstance(i, EdgeInput))
     return True
+
+
+def generator_loops(
+    chain: Chain, gens_by_outs: dict[NodeId, set[NodeId]]
+) -> list[list[GeneratorNode]]:
+    """
+    The chain's loops from each sink's generators: the generators that share sinks, in the chain's order. combine_sets' order follows the number of passes it makes, so a loop whose sinks need another loop's collector moves after that loop and every other order stays. Of loops that need each other the first runs, and the reader of the other's collector reports it.
+    """
+    groups = combine_sets(list(gens_by_outs.values()))
+    loop_of = {
+        sink: next(index for index, group in enumerate(groups) if generators <= group)
+        for sink, generators in gens_by_outs.items()
+    }
+    needs: list[set[int]] = [set() for _ in groups]
+    for sink, loop in loop_of.items():
+        pending, seen = [sink], {sink}
+        while pending:
+            for edge in chain.edges_to(pending.pop()):
+                source = edge.source.id
+                if source in seen:
+                    continue
+                seen.add(source)
+                if not isinstance(chain.nodes[source], CollectorNode):
+                    pending.append(source)
+                elif source in loop_of and loop_of[source] != loop:
+                    needs[loop].add(loop_of[source])
+    loops: list[list[GeneratorNode]] = []
+    waiting = list(range(len(groups)))
+    while waiting:
+        ready = next((i for i in waiting if needs[i].isdisjoint(waiting)), waiting[0])
+        waiting.remove(ready)
+        # In the chain's order: a set's order changes with the hash seed.
+        loops.append(
+            [
+                node
+                for node in chain.nodes.values()
+                if node.id in groups[ready] and isinstance(node, GeneratorNode)
+            ]
+        )
+    return loops
 
 
 class _ItemPlanner:
@@ -1157,6 +1266,8 @@ class Executor:
         self.__budget: int | None = None
         # The nodes of loops that run one chosen item, and that item (chosen_item).
         self.__chosen_items: dict[NodeId, int] = {}
+        # The generators with a loop to run (__process_nodes)
+        self.__looped: set[NodeId] = set()
 
     async def process(
         self, node_id: NodeId, perform_cache: bool = True
@@ -1391,7 +1502,14 @@ class Executor:
     def __new_node_context(self, node: Node) -> _ExecutorNodeContext:
         package_id = registry.get_package(node.data.schema_id).id
         settings = self.options.get_package_settings(package_id)
-        return _ExecutorNodeContext(self.progress, settings, self._storage_dir, node.id)
+        return _ExecutorNodeContext(
+            self.progress,
+            settings,
+            self._storage_dir,
+            node.id,
+            run_warning(self.loop, self.queue),
+            run_progress(self.loop, self.queue, node.id),
+        )
 
     def __get_node_context(self, node: Node) -> _ExecutorNodeContext:
         context = self.__context_cache.get(node.id, None)
@@ -1481,7 +1599,13 @@ class Executor:
                 node, output.partial_output, generators=[output.generator]
             )
         if perform_cache and (not isinstance(output, CollectorOutput)):
-            self.node_cache.set(node.id, output, self.cache_strategy[node.id])
+            strategy = self.cache_strategy[node.id]
+            if node.id in self.__looped and not strategy.static:
+                # Its loop reads it too, after any reader that comes first (a collector's
+                # construction, another generator, an earlier loop); the loop's end
+                # restores it with its own strategy for later readers.
+                strategy = CacheStrategy(strategy.hits_to_live + 1)
+            self.node_cache.set(node.id, output, strategy)
         if self.__item_bytes is not None and isinstance(output, RegularOutput):
             self.__item_bytes[node.id] = output_nbytes(output.output)
         await self.progress.suspend()
@@ -1489,12 +1613,12 @@ class Executor:
 
     def __get_iterated_nodes(
         self, node: GeneratorNode
-    ) -> tuple[set[CollectorNode], set[FunctionNode], set[Node]]:
+    ) -> tuple[list[CollectorNode], list[FunctionNode], set[Node]]:
         """
-        Returns all collector and output nodes iterated by the given generator node
+        Returns all collector and output nodes iterated by the given generator node, in the order the chain's edges reach them
         """
-        collectors: set[CollectorNode] = set()
-        output_nodes: set[FunctionNode] = set()
+        collectors: list[CollectorNode] = []
+        output_nodes: list[FunctionNode] = []
         seen: set[Node] = {node}
 
         def visit(n: Node):
@@ -1502,13 +1626,13 @@ class Executor:
                 return
             seen.add(n)
             if isinstance(n, CollectorNode):
-                collectors.add(n)
+                collectors.append(n)
             elif isinstance(n, GeneratorNode):
                 raise ValueError("Nested sequences are not supported")
             else:
                 assert isinstance(n, FunctionNode)
                 if n.has_side_effects():
-                    output_nodes.add(n)
+                    output_nodes.append(n)
                 for edge in self.chain.edges_from(n.id):
                     target_node = self.chain.nodes[edge.target.id]
                     visit(target_node)
@@ -1700,7 +1824,7 @@ class Executor:
         self,
         generator_nodes: list[GeneratorNode],
         generator_outputs: dict[NodeId, GeneratorOutput],
-        output_nodes: set[FunctionNode],
+        output_nodes: list[FunctionNode],
         collectors: list[tuple[Collector, _Timer, CollectorNode]],
         all_iterated_nodes: set[NodeId],
         generator_suppliers: dict[NodeId, typing.Iterator[Output | Exception]],
@@ -2074,7 +2198,7 @@ class Executor:
         expected_lengths = {}
         collectors: list[tuple[Collector, _Timer, CollectorNode]] = []
         collector_ids: set[NodeId] = set()
-        output_nodes: set[FunctionNode] = set()
+        output_nodes: list[FunctionNode] = []
         all_iterated_nodes: set[NodeId] = set()
         generator_suppliers: dict[NodeId, typing.Iterator[Output | Exception]] = {}
         generator_outputs: dict[NodeId, GeneratorOutput] = {}
@@ -2099,7 +2223,8 @@ class Executor:
             for iterated_node in __all_iterated_nodes:
                 all_iterated_nodes.add(iterated_node.id)
             for o_node in __output_nodes:
-                output_nodes.add(o_node)
+                if o_node not in output_nodes:
+                    output_nodes.append(o_node)
             if len(collector_nodes) == 0 and len(output_nodes) == 0:
                 return
             if num_generators == 1 and generator.chosen_item is not None:
@@ -2396,12 +2521,10 @@ class Executor:
 
     async def __process_nodes(self):
         self.__send_chain_start()
-        generator_nodes: list[GeneratorNode] = []
         gens_by_outs: dict[NodeId, set[NodeId]] = {}
         for node_id in self.chain.topological_order():
             node = self.chain.nodes[node_id]
             if isinstance(node, GeneratorNode):
-                generator_nodes.append(node)
                 collector_nodes, output_nodes, __all_iterated_nodes = (
                     self.__get_iterated_nodes(node)
                 )
@@ -2415,14 +2538,12 @@ class Executor:
                         gens_by_outs[out_node.id].add(node.id)
                     else:
                         gens_by_outs[out_node.id] = {node.id}
-        groups: list[set[NodeId]] = list(gens_by_outs.values())
-        combined_groups = combine_sets(groups)
-        for group in combined_groups:
-            nodes_to_run: list[GeneratorNode] = []
-            for node_id in group:
-                generator_node = self.chain.nodes[node_id]
-                if isinstance(generator_node, GeneratorNode):
-                    nodes_to_run.append(generator_node)
+        self.__looped = {
+            generator
+            for generators in gens_by_outs.values()
+            for generator in generators
+        }
+        for nodes_to_run in generator_loops(self.chain, gens_by_outs):
             try:
                 await self.__iterate_generator_nodes(nodes_to_run)
             finally:
@@ -2461,19 +2582,28 @@ class Executor:
             finally:
                 try:
                     self.node_cache.clear()
-                    run_cleanup_groups(
-                        (
-                            callbacks
-                            for context in self.__context_cache.values()
-                            for callbacks in (
-                                context.node_cleanup_fns,
-                                context.chain_cleanup_fns,
-                            )
-                        ),
-                        preserve_error=preserve_error or sys.exc_info()[0] is not None,
-                    )
+                    self.__run_cleanups(preserve_error or sys.exc_info()[0] is not None)
                 finally:
                     pass
+
+    def __run_cleanups(self, preserve_error: bool) -> None:
+        run_cleanup_groups(
+            (
+                callbacks
+                for context in self.__context_cache.values()
+                for callbacks in (
+                    context.node_cleanup_fns,
+                    context.chain_cleanup_fns,
+                )
+            ),
+            preserve_error=preserve_error,
+        )
+
+    async def chain_cleanups(self, preserve_error: bool) -> None:
+        """
+        The chain cleanups of nodes run without run(), which ends with them (a folder's shared nodes, folder_videos.py).
+        """
+        self.__run_cleanups(preserve_error)
 
     def resume(self):
         logger.debug(f"Resuming executor {self.id}")

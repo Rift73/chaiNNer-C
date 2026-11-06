@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-import pymatting
 
 from nodes.impl.native_matting import estimate_alpha, estimate_foreground, output
 from nodes.impl.native_transparency import matting_input
@@ -96,7 +95,10 @@ def alpha_matting_node(
         assert isinstance(foreground, np.ndarray)
         return output(foreground, alpha)
 
-    # Preserve the original general-helper errors for empty/HWC trimaps.
+    # Preserve the original general-helper errors for empty/HWC trimaps. Imported only
+    # here: PyMatting loads Numba and SciPy, and compiles its kernels on a first start.
+    import pymatting
+
     alpha = pymatting.estimate_alpha_cf(img, trimap)
     foreground = pymatting.estimate_foreground_ml(img, alpha)
     assert isinstance(foreground, np.ndarray)

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
+
 import numpy as np
 import onnx
 import onnxruntime as ort
@@ -8,8 +12,16 @@ import torch
 from spandrel import ImageModelDescriptor, ModelLoader
 from spandrel.architectures.ESRGAN import ESRGAN
 
+from api import NodeContext
+from api.settings import SettingsParser
+from nodes.impl.onnx.load import load_onnx_model, model_facts
 from nodes.impl.pytorch import esrgan_export
 from nodes.impl.pytorch.convert_to_onnx_impl import convert_to_onnx_impl
+from packages.chaiNNer_onnx.onnx.utility import optimize_model
+from packages.chaiNNer_onnx.onnx.utility.interpolate_models import (
+    interpolate_models_node,
+)
+from packages.chaiNNer_onnx.onnx.utility.optimize_model import optimize_model_node
 
 CPU = torch.device("cpu")
 
@@ -75,7 +87,7 @@ def test_the_rewrite_works_on_a_copy():
     nested = esrgan_export.for_export(model)
     assert nested.model is not model.model
     assert not any(
-        isinstance(m, esrgan_export._NestedDenseBlock) for m in model.model.modules()
+        isinstance(m, esrgan_export.NestedDenseBlock) for m in model.model.modules()
     )
     # The same state dict under the same names
     state = nested.model.state_dict()
@@ -119,3 +131,69 @@ def test_onnx_runtime_runs_the_fp16_export(settings: dict[str, object], size: in
         expected = model.half()(torch.from_numpy(x).half()).float().numpy()
     assert actual.dtype == np.float16
     np.testing.assert_allclose(actual.astype(np.float32), expected, atol=2e-2)
+
+
+# A 12-plane first layer is what ESRGAN's 2x models with a pixel unshuffle have.
+@pytest.mark.parametrize("use_half", [True, False], ids=["fp16", "fp32"])
+def test_optimize_model_keeps_a_pixel_unshuffle_running(use_half: bool):
+    model = tiny(in_nc=12, scale=4)
+    assert (model.input_channels, model.scale) == (3, 2)
+    data = convert_to_onnx_impl(model, CPU, use_half=use_half, opset_version=20)
+    optimized = optimize_model_node(load_onnx_model(data))
+    assert (
+        model_facts(optimized).size_req == model_facts(load_onnx_model(data)).size_req
+    )
+
+    x = image(size=32)
+    x = x.astype(np.float16) if use_half else x
+    (expected,) = ort.InferenceSession(data, providers=["CPUExecutionProvider"]).run(
+        None, {"input": x}
+    )
+    (actual,) = ort.InferenceSession(
+        optimized.bytes, providers=["CPUExecutionProvider"]
+    ).run(None, {"input": x})
+    assert actual.shape == (1, 3, 64, 64)
+    assert np.array_equal(actual, expected)
+
+
+def test_interpolate_models_keeps_a_pixel_unshuffle_running(tmp_path: Path):
+    model = tiny(in_nc=12, scale=4)
+    # Interpolate Models checks that a white image stays bright, as trained weights keep it.
+    last = model.model.model[-1]
+    last.weight.data *= 0.01
+    last.bias.data.fill_(0.8)
+    data = convert_to_onnx_impl(model, CPU, use_half=True, opset_version=20)
+    onnx_model = load_onnx_model(data)
+    context = SimpleNamespace(
+        settings=SettingsParser(
+            {"execution_provider": "CPUExecutionProvider", "gpu_index": "0"}
+        ),
+        add_cleanup=lambda *_, **__: None,
+        check_aborted=lambda: None,
+        set_progress=lambda _: None,
+        storage_dir=tmp_path,
+    )
+    mixed, amount_a, amount_b = interpolate_models_node(
+        cast(NodeContext, context), onnx_model, onnx_model, 50
+    )
+    assert (amount_a, amount_b) == (50, 50)
+    x = image(size=32).astype(np.float16)
+    (expected,) = ort.InferenceSession(data, providers=["CPUExecutionProvider"]).run(
+        None, {"input": x}
+    )
+    (actual,) = ort.InferenceSession(
+        mixed.bytes, providers=["CPUExecutionProvider"]
+    ).run(None, {"input": x})
+    np.testing.assert_allclose(actual.astype(np.float32), expected, atol=2e-3)
+
+
+def test_optimize_model_keeps_the_type_build_engine_hides_precision_by():
+    # Build Engine hides Precision by the input's arch: from a Load Model, Convert To ONNX
+    # or another Optimize Model, Optimize Model's output has the model's type before any
+    # run, as optimizing changes neither its arch nor its scale or channels.
+    node = next(
+        n
+        for n in optimize_model.utility_group.nodes
+        if n.schema_id == "chainner:onnx:optimize_model"
+    )
+    assert [output.output_type for output in node.outputs] == ["Input0"]

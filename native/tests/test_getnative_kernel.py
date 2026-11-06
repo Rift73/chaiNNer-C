@@ -135,6 +135,30 @@ def test_one_frame_uses_the_single_frame_rule():
         }
 
 
+@pytest.mark.parametrize("preset", ["Bilinear", CATMULL_ROM])
+@pytest.mark.parametrize("axis", [0, 1], ids=["height", "width"])
+def test_a_one_axis_upscale_decides_on_the_scaled_axis(preset, axis):
+    """The unscaled axis stays neutral: its source size has no fit, the scaled axis's lines decide."""
+    native = (OBSERVED[0], NATIVE[1]) if axis == 0 else (NATIVE[0], OBSERVED[1])
+    plane = forward(natively_sharp(*native, seed=5), OBSERVED[1 - axis], axis, preset)
+    session = gn.Session(gn.SearchOptions(250, 650, threads=8))
+    session.add_frame(plane, gn.FrameFacts("", "Still image", "one axis"))
+    report = json.loads(session.report(0))
+    assert report["verdict"] == "Supported candidate"
+    leader = report["candidates"][0]
+    assert (leader["x"]["samples"], leader["y"]["samples"]) == native
+    assert report["parameters"]["kernel"]["axes"].startswith(
+        "The height only" if axis == 0 else "The width only"
+    )
+    for name in ("x", "y"):
+        logs = report["kernel_evidence"]["presets"][0]["log_score"]
+        assert logs[name] == logs["full"]
+    result = json.loads(session.summary(1, 1, 1, None))
+    assert result["kernel_decision"]["status"] == "supported_model"
+    assert result["kernel_decision"]["carried"] == preset
+    assert result["selection"]["consensus_grid"] == list(native)
+
+
 def test_a_single_tested_preset_is_not_identified():
     decision = summary(frames("Bilinear", 7), kernels=1)["kernel_decision"]
     assert (decision["status"], decision["rule"]) == ("unresolved", "single_preset")

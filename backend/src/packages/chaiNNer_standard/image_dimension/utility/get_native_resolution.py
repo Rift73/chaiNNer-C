@@ -131,6 +131,7 @@ def _watch(context: NodeContext, session: Session, done: threading.Event) -> Non
         "It fits every native size in the search range with each kernel and checks the best fits on both axes, on the whole frame and on withheld pixels. The verdict says how far the evidence goes: a supported candidate, an ambiguous kernel or grid, a search boundary, or inconclusive.",
         "For a video it analyzes up to Max Frames frames and lets them vote on the size; the frames on that size then decide the kernel together, which needs at least 7 of them favouring one preset consistently, else the smallest kernel in the ambiguity band is carried. Status names the rule that chose the kernel. The outputs carry the stored (As stored) analysis; the light models only add evidence to Status and Report.",
         "The Descaled output is the image through Descale with the result, Border set to Extend and Linear Light off (the outputs describe the stored values). Set Descale's Border to Extend and keep its Linear Light off to reproduce it.",
+        "An upscale of one axis alone (1440x1080 stretched to 1920x1080) is found when only that axis shows a grid: the other axis stays at the source's size, and Status says so. An axis scaled to within 32 pixels of the source's size shows no fold of its own, so it looks unscaled.",
         "Based on [getnative](https://github.com/Infiziert90/getnative) (MIT) and its C++ successor Vernier 0.2, whose analysis core it runs.",
     ],
     icon="MdOutlinePhotoSizeSelectSmall",
@@ -142,7 +143,7 @@ def _watch(context: NodeContext, session: Session, done: threading.Event) -> Non
             preferred_style="tabs",
         ).with_id(0),
         if_enum_group(0, NativeResolutionSource.IMAGE)(
-            required()(ImageInput().make_optional().with_id(1)),
+            required()(ImageInput(channels=[1, 3, 4]).make_optional().with_id(1)),
         ),
         if_enum_group(0, NativeResolutionSource.VIDEO)(
             VideoFileInput().make_optional().with_id(2),
@@ -570,6 +571,8 @@ def _status(summary: dict, selection: dict | None) -> str:
                 f"Carried frame: analysis {selection['analysis_id']} at"
                 f" {chosen['requested_seconds']:.3f} s ({chosen['verdict']})."
             )
+            if width == chosen["source_width"] or height == chosen["source_height"]:
+                lines.append(chosen["explanation"])
         lines.append(f"Kernel: {selection['rule']}.")
         free = selection.get("free_bicubic")
         if free is not None:

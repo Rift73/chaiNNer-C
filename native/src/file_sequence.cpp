@@ -758,6 +758,7 @@ class FileIterator {
     py::dict globals_;
     O directory_;
     O paths_;
+    O convert_colours_;
     O cursor_ = py::none();
     O index_ = py::int_(0);
     bool closed_ = false;
@@ -786,8 +787,8 @@ class FileIterator {
         return py::make_tuple(path, index);
     }
 public:
-    FileIterator(const py::dict &globals, const O &directory, const O &paths)
-        : globals_(globals), directory_(directory), paths_(paths) {}
+    FileIterator(const py::dict &globals, const O &directory, const O &paths, const O &convert_colours)
+        : globals_(globals), directory_(directory), paths_(paths), convert_colours_(convert_colours) {}
     O describe() {
         ActiveIteration active(running_);
         return describe_step();
@@ -801,10 +802,10 @@ public:
         O path = item(described, 0), index = item(described, 1);
         try {
             O callback = name(globals_, "load_image_node");
-            O loaded = graphpy::unpack(callback(path), 3);
+            O loaded = graphpy::unpack(callback(path, convert_colours_), 4);
             O image = item(loaded, 0), image_directory = item(loaded, 1), basename = item(loaded, 2);
             O relative = name(globals_, "os").attr("path").attr("relpath")(image_directory, directory_);
-            return py::make_tuple(image, relative, basename, index);
+            return py::make_tuple(image, relative, basename, index, item(loaded, 3));
         } catch (const py::error_already_set &error) {
             if (error.matches(PyExc_Exception)) return error.value();
             throw;
@@ -827,11 +828,26 @@ public:
     }
 };
 
-O load_images(const py::dict &globals, const O &directory, const O &use_glob,
-              const O &recursive, O expression, const O &use_limit, const O &limit, const O &fail_fast) {
+O load_images(const py::dict &globals, const O &directory, const O &use_glob, const O &recursive, O expression,
+              const O &use_limit, const O &limit, const O &fail_fast, const O &convert_colours) {
     O extensions = name(globals, "get_available_image_formats")();
     if (!graphpy::truth(use_glob)) expression = py::str(graphpy::truth(recursive) ? "**/*" : "*");
-    O paths = name(globals, "list_glob")(directory, expression, extensions);
+    O listed = name(globals, "list_glob")(directory, expression, extensions);
+    // A folder can be named like an image, and it is not one. Only as many as the limit asks for are looked at, and the
+    // run loads every path it keeps, so one check per path is no cost beside it.
+    O is_directory = name(globals, "os").attr("path").attr("isdir");
+    const bool bounded = graphpy::truth(use_limit) && PyLong_Check(limit.ptr()) && graphpy::compare(limit, py::int_(0), Py_GT);
+    py::list files;
+    bool dropped = false;
+    for (py::handle path : py::reinterpret_borrow<py::iterable>(listed)) {
+        if (graphpy::truth(is_directory(path))) {
+            dropped = true;
+            continue;
+        }
+        files.append(path);
+        if (bounded && graphpy::compare(py::int_(py::len(files)), limit, Py_GE)) break;
+    }
+    O paths = dropped ? O(files) : listed;
     Py_ssize_t length = PyObject_Length(paths.ptr());
     if (length < 0) throw py::error_already_set();
     if (!length) {
@@ -843,8 +859,8 @@ O load_images(const py::dict &globals, const O &directory, const O &use_glob,
     // list_glob is a native-backed public helper; retain its callable boundary.
     length = PyObject_Length(paths.ptr());
     if (length < 0) throw py::error_already_set();
-    py::cpp_function supplier([globals, directory, paths]() {
-        return std::make_shared<FileIterator>(globals, directory, paths);
+    py::cpp_function supplier([globals, directory, paths, convert_colours]() {
+        return std::make_shared<FileIterator>(globals, directory, paths, convert_colours);
     });
     O generator = name(globals, "Generator")(supplier, py::int_(length));
     O configured = generator.attr("with_fail_fast")(fail_fast);

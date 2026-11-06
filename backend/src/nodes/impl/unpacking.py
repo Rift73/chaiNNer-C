@@ -17,3 +17,8 @@ def unpack2(value: Iterable[object]) -> tuple[object, object]:
 def unpack3(value: Iterable[object]) -> tuple[object, object, object]:
     a, b, c = value
     return a, b, c
+
+
+def unpack4(value: Iterable[object]) -> tuple[object, object, object, object]:
+    a, b, c, d = value
+    return a, b, c, d

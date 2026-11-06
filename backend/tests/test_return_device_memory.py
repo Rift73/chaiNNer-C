@@ -23,7 +23,11 @@ import server
 emptied = []
 if os.environ["TORCH_STATE"] == "loaded":
     sys.modules["torch"] = SimpleNamespace(
-        cuda=SimpleNamespace(is_initialized=lambda: True, empty_cache=lambda: emptied.append(1))
+        cuda=SimpleNamespace(
+            is_initialized=lambda: True,
+            device_count=lambda: 0,
+            empty_cache=lambda: emptied.append(1),
+        )
     )
 server.return_device_memory()
 print(len(emptied), "torch" in sys.modules)
@@ -40,7 +44,11 @@ import server
 
 calls = []
 sys.modules["torch"] = SimpleNamespace(
-    cuda=SimpleNamespace(is_initialized=lambda: True, empty_cache=lambda: calls.append("empty"))
+    cuda=SimpleNamespace(
+        is_initialized=lambda: True,
+        device_count=lambda: 0,
+        empty_cache=lambda: calls.append("empty"),
+    )
 )
 server.gc = SimpleNamespace(collect=lambda: calls.append("collect"))
 
@@ -70,7 +78,11 @@ import server
 
 calls = []
 sys.modules["torch"] = SimpleNamespace(
-    cuda=SimpleNamespace(is_initialized=lambda: True, empty_cache=lambda: calls.append("empty"))
+    cuda=SimpleNamespace(
+        is_initialized=lambda: True,
+        device_count=lambda: 0,
+        empty_cache=lambda: calls.append("empty"),
+    )
 )
 server.gc = SimpleNamespace(collect=lambda: calls.append("collect"))
 server.parse_json = lambda _data: SimpleNamespace(nodes={})

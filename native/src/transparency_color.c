@@ -152,20 +152,25 @@ static void representation_range(void *opaque, size_t begin, size_t end) {
                 for (size_t c = 0; c < 3; ++c) o[c] = (1.0f - v[c]) * top;
                 break;
             }
-            case 2: o[0] = v[2]; o[1] = v[1]; o[2] = v[0] / 360.0f; break;
-            case 3: o[0] = v[2] * 360.0f; o[1] = v[1]; o[2] = v[0]; break;
-            case 4: o[0] = v[1]; o[1] = v[2]; o[2] = v[0] / 360.0f; break;
-            case 5: o[0] = v[2] * 360.0f; o[1] = v[0]; o[2] = v[1]; break;
-            case 6:
+            /* Operations 2 to 7 read a pixel before they write it, so they may run in place. */
+            case 2: { float x = v[0], y = v[1]; o[0] = v[2]; o[1] = y; o[2] = x / 360.0f; break; }
+            case 3: { float x = v[0], y = v[1]; o[0] = v[2] * 360.0f; o[1] = y; o[2] = x; break; }
+            case 4: { float x = v[0], y = v[1]; o[0] = y; o[1] = v[2]; o[2] = x / 360.0f; break; }
+            case 5: { float x = v[0], y = v[1]; o[0] = v[2] * 360.0f; o[1] = x; o[2] = y; break; }
+            case 6: {
+                float x = v[0], y = v[1];
                 o[0] = (v[2] + 127.0f) / 254.0f;
-                o[1] = (v[1] + 127.0f) / 254.0f;
-                o[2] = v[0] / 100.0f;
+                o[1] = (y + 127.0f) / 254.0f;
+                o[2] = x / 100.0f;
                 break;
-            case 7:
+            }
+            case 7: {
+                float x = v[0], y = v[1];
                 o[0] = v[2] * 100.0f;
-                o[1] = v[1] * 254.0f - 127.0f;
-                o[2] = v[0] * 254.0f - 127.0f;
+                o[1] = y * 254.0f - 127.0f;
+                o[2] = x * 254.0f - 127.0f;
                 break;
+            }
             case 8: {
                 float cmax = 0.5f / maximum(fabsf(j->c[p]), fabsf(j->d[p]));
                 o[0] = j->b[p] / (float)6.283185307179586 + 0.5f;

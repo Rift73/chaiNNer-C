@@ -12,6 +12,8 @@ import cv2
 import numpy as np
 import pytest
 
+from native_images import opaque
+
 from nodes.impl import native_filters as native
 from nodes.impl.native import lib
 
@@ -54,9 +56,13 @@ MODULES = {
 }
 
 
-def source(channels=3, layout="contiguous", height=19, width=23, seed=917):
+def source(
+    channels=3, layout="contiguous", height=19, width=23, seed=917, solid=False
+):
     shape = (height, width) if channels == 1 else (height, width, channels)
     image = np.random.default_rng(seed).random(shape, dtype=np.float32)
+    if solid:
+        image = opaque(image)
     if layout == "strided":
         image = image[::-1, ::2]
     elif layout == "transposed":
@@ -145,7 +151,7 @@ def test_lens_normalization(components, radius):
 @pytest.mark.parametrize("gamma", [0.3, 1, 5, 12])
 @pytest.mark.parametrize("layout", ["contiguous", "strided", "readonly"])
 def test_lens_image(channels, components, gamma, layout):
-    image = source(channels, layout)
+    image = source(channels, layout, solid=True)
     saved = image.copy()
     actual, original = MODULES["lens_blur"]
     # The C kernel, power, composition and filter paths preserve the installed
@@ -183,7 +189,7 @@ def test_edge_detection(algorithm, component, channels, amount):
 @pytest.mark.parametrize("channels", [3, 4])
 @pytest.mark.parametrize("radius", [1, 2, 5])
 @pytest.mark.parametrize("spatial", [0, 0.1, 35.7, 100])
-@pytest.mark.parametrize("scale_y,scale_x", [(1, 1), (2, 2), (3, 3), (2, 3), (3, 2)])
+@pytest.mark.parametrize("scale_y,scale_x", [(1, 1), (2, 2), (3, 3)])
 def test_reference_quantization(channels, radius, spatial, scale_y, scale_x):
     reference = source(channels, "readonly", height=3, width=4)
     image = source(channels, "readonly", height=3 * scale_y, width=4 * scale_x, seed=23)
@@ -195,6 +201,60 @@ def test_reference_quantization(channels, radius, spatial, scale_y, scale_x):
     )
     arrays(image, saved)
     arrays(reference, saved_ref)
+
+
+@pytest.mark.parametrize("scale_y,scale_x", [(2, 3), (3, 2), (1, 4), (4, 1)])
+@pytest.mark.parametrize("radius", [1, 5])
+def test_reference_quantization_ratio_of_each_axis(radius, scale_y, scale_x):
+    # An upscale of the reference, each reference pixel a block of its colour: every block comes back whole.
+    reference = source(3, "readonly", height=3, width=4)
+    image = np.repeat(np.repeat(reference, scale_y, axis=0), scale_x, axis=1)
+    actual, _ = MODULES["quantize_to_reference"]
+    np.testing.assert_array_equal(
+        actual.quantize_to_reference_node(image, reference, radius, 0), image
+    )
+
+
+def nearest_in_block_window(image, reference, radius, spatial, shift):
+    """Each pixel's nearest reference pixel within `radius` of its block, by colour and position, worked out one by one.
+    `shift` moves the pixels (y, x) before they are divided into blocks."""
+    height, width = image.shape[:2]
+    ref_height, ref_width = reference.shape[:2]
+    reach = ref_width * (spatial / 100) ** 2
+    colours, reference = image.astype(np.float64), reference.astype(np.float64)
+    result = np.empty_like(image)
+    for y, x in np.ndindex(height, width):
+        block_y = (y + shift[0]) // (height // ref_height)
+        block_x = (x + shift[1]) // (width // ref_width)
+        best = np.inf
+        for row in range(block_y - radius, block_y + radius + 1):
+            ry = row % (2 * ref_height - 2)
+            ry = ry if ry < ref_height else 2 * ref_height - 2 - ry
+            for column in range(block_x - radius, block_x + radius + 1):
+                rx = column % (2 * ref_width - 2)
+                rx = rx if rx < ref_width else 2 * ref_width - 2 - rx
+                distance = (
+                    ((colours[y, x] - reference[ry, rx]) ** 2).sum()
+                    + ((x / (width - 1) - rx / (ref_width - 1)) * reach) ** 2
+                    + ((y / (height - 1) - ry / (ref_height - 1)) * reach) ** 2
+                )
+                if distance < best:
+                    best, result[y, x] = distance, reference[ry, rx]
+    return result
+
+
+@pytest.mark.parametrize("scale_y,scale_x", [(2, 3), (3, 2)])
+@pytest.mark.parametrize("spatial", [0, 35.7])
+def test_reference_quantization_window_of_each_axis(spatial, scale_y, scale_x):
+    # On noise each pixel's window decides its answer, so a block one pixel off on either axis gives another image.
+    reference = source(3, "readonly", height=5, width=6)
+    image = source(3, "readonly", height=5 * scale_y, width=6 * scale_x, seed=23)
+    actual, _ = MODULES["quantize_to_reference"]
+    result = actual.quantize_to_reference_node(image, reference, 1, spatial)
+    arrays(result, nearest_in_block_window(image, reference, 1, spatial, (0, 0)))
+    for shift in [(1, 0), (0, 1)]:
+        moved = nearest_in_block_window(image, reference, 1, spatial, shift)
+        assert not np.array_equal(result, moved)
 
 
 @pytest.mark.parametrize("shape", [(1, 1), (1, 5), (5, 1)])

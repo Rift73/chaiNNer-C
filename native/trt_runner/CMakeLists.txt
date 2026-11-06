@@ -56,6 +56,15 @@ else()
 endif()
 set_target_properties(_chainner_trt PROPERTIES SUFFIX "${chainner_c_module_suffix}")
 
+if(WIN32)
+    # runner.cpp over stand-ins of CUDA and TensorRT that fail on demand; backend/tests/test_tensorrt_runner.py runs it.
+    add_executable(trt_runner_faults ../tests/trt_runner_faults/faults.cpp runner.cpp frame.cpp plan.cpp)
+    target_include_directories(trt_runner_faults BEFORE PRIVATE
+        ../tests/trt_runner_faults/stand_ins "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_target_properties(trt_runner_faults PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+    target_compile_options(trt_runner_faults PRIVATE /EHsc)
+endif()
+
 set(CHAINNER_C_VAPOURSYNTH_INCLUDE "" CACHE PATH
     "VapourSynth's API 4 headers (the directory of VapourSynth4.h) for chainner_trt_vs.dll; empty: not built")
 if(CHAINNER_C_VAPOURSYNTH_INCLUDE)
@@ -78,6 +87,9 @@ foreach(target ${chainner_c_trt_targets})
     target_compile_options(${target} PRIVATE /W4 /WX /EHsc)
     if(CHAINNER_C_PDB)
         target_compile_options(${target} PRIVATE /Zi)
+    endif()
+    if(CHAINNER_C_SANITIZE)
+        target_compile_options(${target} PRIVATE ${chainner_c_ubsan})
     endif()
 endforeach()
 if(CHAINNER_C_PDB)

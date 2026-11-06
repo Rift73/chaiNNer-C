@@ -28,6 +28,7 @@ from ncnn import ncnn
 from api import Generator, NodeContext, NodeId, SettingsParser
 from nodes.impl.pytorch import resource_cache as resources
 from nodes.impl.upscale.bounded_tiler import BoundedTiler
+from nodes.impl.upscale.tile_report import TileReport
 from nodes.impl.upscale.tiler import Tiler
 from nodes.utils.utils import file_identity, get_h_w_c, list_all_files_sorted
 
@@ -66,6 +67,8 @@ def functions(path, **bindings):
         "Tiler": Tiler,
         # The bound the auto splits put on their tiler (upscale/bounded_tiler.py).
         "BoundedTiler": BoundedTiler,
+        # What the nodes report as their Tile Size output (upscale/tile_report.py).
+        "TileReport": TileReport,
         **bindings,
     }
     exec(compile(ast.fix_missing_locations(tree), str(path), "exec"), namespace)
@@ -368,6 +371,7 @@ def test_collection_scales_with_invocation_not_tiles(backend, count, collect_aft
         planar_to_interleaved=lambda planes, **_: planes.transpose(1, 2, 0).copy(),
         gc=SimpleNamespace(collect=lambda: calls.append("collect")),
         auto_split=split,
+        current_white_pass=lambda: None,
         swap_red_blue=lambda i: i[..., ::-1],
         SizeReq=lambda: SimpleNamespace(get_padding=lambda w, h: (0, 0)),
     )
@@ -1020,7 +1024,7 @@ def test_ncnn_node_hands_its_network_logical_order(side):
 
 @pytest.mark.parametrize("backend", ["ncnn", "onnx"])
 @pytest.mark.parametrize("fail", [False, True])
-def test_registered_upscale_defers_collection_and_drains_once(backend, fail):
+def test_registered_upscale_defers_collection_and_drains_once(backend, fail, tmp_path):
     calls = []
 
     def collect():
@@ -1068,14 +1072,14 @@ def test_registered_upscale_defers_collection_and_drains_once(backend, fail):
         model=SimpleNamespace(layers=[SimpleNamespace(outputs=["name"])]),
         info=SimpleNamespace(scale_width=None, scale_height=None),
     )
-    context = Context()
+    context = Context(tmp_path)
     image = np.ones((2, 3, 1), np.float32)
     for _ in range(3):
         if fail:
             with pytest.raises(ValueError, match="inference failed"):
                 node(context, image, model, 1, 1, False)
         else:
-            assert node(context, image, model, 1, 1, False) is image
+            assert node(context, image, model, 1, 1, False)[0] is image
     assert calls == ["tile"] * 3 and len(context.cleanup) == 1
     context.finish()
     assert calls == ["tile"] * 3 + ["gc"]
@@ -1090,8 +1094,6 @@ def test_registered_upscale_defers_collection_and_drains_once(backend, fail):
         FACE,
         INTERP,
         LOAD,
-        "packages/chaiNNer_ncnn/ncnn/processing/upscale_image.py",
-        "packages/chaiNNer_onnx/onnx/processing/upscale_image.py",
     ],
 )
 def test_installed_delegate_registration_exact(path):

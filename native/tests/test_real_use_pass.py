@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 import independent_ui
@@ -308,6 +309,18 @@ def test_read_chain_accepts_a_current_save(tmp_path):
     }
 
 
+def test_the_driver_knows_every_migration_the_app_has():
+    common = Path(__file__).resolve().parents[2] / "src" / "common"
+    modern = (common / "migrations.ts").read_text(encoding="utf-8")
+    legacy = (common / "migrations-legacy.js").read_text(encoding="utf-8")
+    names = re.search(r"const migrations = \[(.*?)\];", modern, re.DOTALL)
+    legacy_names = re.search(r"const legacyMigrations = \[(.*?)\];", legacy, re.DOTALL)
+    assert names and legacy_names
+    assert r.CURRENT_MIGRATION == (
+        names[1].count(",") - names[1].count("...") + legacy_names[1].count(",") + 1
+    )
+
+
 def test_read_chain_accepts_pending_migrations_that_change_nothing(tmp_path):
     path = write_save(tmp_path / "c.chn", resize_chain(), migration=43)
     assert r.read_chain(path, SCHEMAS)["nodes"]
@@ -328,8 +341,22 @@ def test_read_chain_accepts_pending_migrations_that_change_nothing(tmp_path):
             44,
             "splitLoadImagePairs",
         ),
+        (
+            lambda c: c["nodes"][3]["data"].update(
+                schemaId="chainner:image:load_video"
+            ),
+            45,
+            "loadVideoFrames",
+        ),
+        (
+            lambda c: c["nodes"][3]["data"].update(
+                schemaId="chainner:pytorch:convert_to_onnx"
+            ),
+            46,
+            "convertToOnnxMixedTypes",
+        ),
         (lambda c: None, 42, "needs upstream migration 42"),
-        (lambda c: None, 46, "not one this driver reads"),
+        (lambda c: None, 48, "not one this driver reads"),
         (lambda c: None, None, "not one this driver reads"),
         (
             lambda c: c["nodes"][1]["data"].update(schemaId="chainner:x:unknown"),
