@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Builds MIGraphX 2.16.1 for ROCm 7.14.1 and chaiNNer-C's ONNX Runtime 1.30.0 MIGraphX wheel (onnxruntime-migraphx
-# 1.30.0+rocm7.14.hipgraph, CPython 3.14, manylinux_2_28 x86-64) on a Linux machine with Docker, in containers of the image
-# cnm-build (this directory's Dockerfile). AMD ships no MIGraphX for ROCm 7.14, so it is built from source; the wheel
+# Builds MIGraphX 2.17.0 for ROCm 10.0.0 and chaiNNer-C's ONNX Runtime 1.31.1 MIGraphX wheel (onnxruntime-migraphx
+# 1.31.1+rocm10.0.hipgraph, CPython 3.14, manylinux_2_28 x86-64) on a Linux machine with Docker, in containers of the image
+# cnm-build (this directory's Dockerfile). AMD ships no MIGraphX for ROCm 10.0, so it is built from source; the wheel
 # carries its libraries in onnxruntime/capi/, and the native release build takes its install prefix as --migraphx
 # (native/BUILDING.md, Linux).
 #
 # native/tools/migraphx/build.sh --rocm-wheels <directory> [--work <directory>] [--jobs <n>] [step...]
-#   --rocm-wheels  AMD's ROCm 7.14.1 packages from https://repo.amd.com/rocm/whl-multi-arch/: rocm-7.14.1.tar.gz and
-#                  rocm_sdk_core-, rocm_sdk_libraries- and rocm_sdk_devel-7.14.1-py3-none-linux_x86_64.whl
+#   --rocm-wheels  AMD's ROCm 10.0.0 packages from https://stable.repo.amd.com/rocm/whl-next/: rocm-10.0.0.tar.gz and
+#                  rocm_sdk_core-, rocm_sdk_libraries- and rocm_sdk_devel-10.0.0-py3-none-linux_x86_64.whl
 #                  (setup_sdk.sh checks their SHA-256). Mounted read-only at /rocm-wheels.
 #   --work         the work directory (default ~/chainner-migraphx), mounted at /work: src/ (ONNX Runtime's and
-#                  MIGraphX's sources), rocm-venv/ (the SDK), deps/, migraphx-7.14/ (MIGraphX's install prefix),
+#                  MIGraphX's sources), rocm-venv/ (the SDK), deps/, migraphx-10.0/ (MIGraphX's install prefix),
 #                  ort-build/, dist/ (the wheel), the build directories and logs. Steps that are done are kept, so a
 #                  run continues where the last one stopped.
 #   --jobs         parallel build jobs (default 12).
@@ -32,7 +32,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 if [ -z "$wheels" ] || [ ! -d "$wheels" ]; then
-    echo "build.sh: --rocm-wheels names the directory of AMD's ROCm 7.14.1 packages" >&2
+    echo "build.sh: --rocm-wheels names the directory of AMD's ROCm 10.0.0 packages" >&2
     exit 2
 fi
 if [ ${#steps[@]} -eq 0 ]; then
@@ -49,11 +49,11 @@ for step in "${steps[@]}"; do
         migraphx) command=(bash /recipe/build_migraphx.sh) ;;
         ort) command=(bash /recipe/build_ort.sh) ;;
         wheel)
-            # The auditwheel-repaired wheel made final: the +rocm7.14.hipgraph version, MIGraphX's libraries with a run path
+            # The auditwheel-repaired wheel made final: the +rocm10.0.hipgraph version, MIGraphX's libraries with a run path
             # to the ROCm pip packages, their notices, and a check of every ELF file (finalize_wheel.py).
             command=(bash -c 'rm -rf /work/dist && python3.14 -I /recipe/finalize_wheel.py \
-                /work/ort-build/Release/dist/onnxruntime_migraphx-1.30.0-cp314-cp314-manylinux_2_28_x86_64.whl \
-                /work/dist /work/migraphx-7.14 "$(dirname "$(cat /work/rocm-root.txt)")" /work \
+                /work/ort-build/Release/dist/onnxruntime_migraphx-1.31.1-cp314-cp314-manylinux_2_28_x86_64.whl \
+                /work/dist /work/migraphx-10.0 "$(dirname "$(cat /work/rocm-root.txt)")" /work \
                 && sha256sum /work/dist/*.whl') ;;
     esac
     docker run --rm --name "cnm-build-$step-$$" --user "$(id -u):$(id -g)" -e HOME=/work/home -e "JOBS=$jobs" \

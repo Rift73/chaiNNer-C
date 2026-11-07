@@ -5,7 +5,7 @@ BF16 TensorRT engines are built from (this code's export), with the plugin's Q/K
 as the custom op chainner_vosr2_qkv (vosr2_migx_compile). The reduced set (MIGraphX FP8)
 has MIGraphX quantize the products TensorRT's FP8 recipe quantizes, to the GPU's FP8
 format, calibrated on synthetic images, on GPUs with FP8 matrix math; elsewhere it is the
-BF16 set, or FP16 where BF16 math is slow (reduced_precision). MIGraphX 2.16 parses no OCP
+BF16 set, or FP16 where BF16 math is slow (reduced_precision). MIGraphX 2.17 parses no OCP
 FP8, so the hosted TensorRT FP8 graphs are not used. The VAE stages, whose shapes follow the image while
 MIGraphX compiles fixed shapes, run as the export's own BF16 modules in PyTorch on ROCm. A
 session is the TensorRT FullSession with these stages, so restoration

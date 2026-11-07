@@ -4,6 +4,52 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- 2026-11-07 **Spandrel 0.4.2+c17: HAT, ESRGAN and DUAL faster in PyTorch; HAT faster on TensorRT.** Same session, RTX 5090, FP16, before and after. HAT-L: 512
+  px 775 -> 507 ms, 256 px 194 -> 128 ms, taking DAT's path through `__arch_helpers/inference.py`. ESRGAN channels last on CUDA: 1200x864 621 -> 440 ms, peak 7.95 ->
+  4.00 GiB, same output. 2x DUAL Light, one product per 16x16 cell for all four window grids: 1200x864 249 -> 222 ms, 256 px 39.6 -> 32.8 ms, peak 2.11 -> 2.41
+  GiB. FP16 accuracy against strict FP32 the same to 0.03 dB. HAT's FP16 export pads its 180-channel trunk to 184 in the weights (`hat_export.py`) and PatchEmbed
+  is a permute: TensorRT Fixed 1200x864 1871.7 -> 1559.3 ms, Dynamic 64-512 at 512 px about 441 -> 388 ms, 256 px 78.6 -> 63.1 ms, crops the same to 0.2 dB. ESRGAN's
+  and DUAL's TensorRT plans have no moves left to remove (3.8 of 215.7 ms and 1.3 of 73.3 ms at 1200x864). On ROCm, HAT and DAT keep channels first and their
+  depthwise kernels, which c16's DAT path had left unused. HAT on TensorRT and DAT's planar form hold about 1,500 MHz above 512 px at about 350 W (power limit 600 W
+  of 800 W, sw_power_cap active) while 256 px holds 2,600 MHz at 550 W: untested whether a higher limit helps.
+- 2026-11-07 **DAT's FP16 export 17 % faster at 1200x864, less memory.** The lengths sum along each row and then the rows; the spatial attention takes
+  each branch's own channels in one pass, its spatial map from the tokens as linear layers and its mix in tokens. Trained 4x DAT2, FP16, Dynamic 64-1280
+  with the optimum at 1200x864: 1166.0 -> 970.8 ms (PyTorch: 1082 ms), Fixed 1141.8 -> 921.8 ms, context 14.63 -> 13.68 GiB; V3detail Fixed 256 px 47.60 ->
+  40.13 ms, Dynamic 512 px 249.04 -> 220.66 ms. Crops against strict FP32 the same to 0.1 dB, 65.0 to 70.0 dB, no NaN on 2x_bndl v1.2. Keeping the channel
+  attention planar as well removes more moves but is no faster: the GPU's clock falls from about 2700 to about 1600 MHz (1043.3 ms). The ONNX changes, so
+  automatic engines rebuild, and a saved engine keeps the old graph until it is converted again. UNTESTED: an AMD GPU.
+- 2026-11-07 **Spandrel 0.4.2+c16: PyTorch DAT 35 % faster, half the memory.** Profiled: most of the time was moving data and redoing constant
+  work. Inference runs channels last, so convolutions read and write tokens in place; a shifted window that does not wrap is a plain window at
+  an offset, with no roll and no mask (39 of 256 windows at 256 px take them); position biases, batch norms folded into their convolutions,
+  channels-last convolution weights and heads padded in qkv's weights are kept, and dropped when the model is moved, cast or loaded. Trained
+  4x DAT2, CUDA, FP16, same session: 256 px 99.91 -> 64.13 ms, 512 px 413.32 -> 269.22 ms, peak 4.28 -> 2.42 GiB; FP32 256 px 185.58 -> 138.85 ms;
+  CPU FP32 64 px 284.0 -> 213.9 ms. Crops against strict FP32 71.8-73.8 dB (71.8-73.9), FP32 against c15's FP32 135.6 dB or better. ONNX
+  exports byte-identical to c15. HAT is unchanged. UNTESTED: an AMD GPU.
+- 2026-11-07 **DAT's FP16 channel attention takes its product by rows instead of in FP32: the old speed with the FP32 product's
+  accuracy.** The per-layer profile put the cost in 18 FP32 GEMMs, 32.6 of 79.69 ms at Fixed 256 px. Scaling both sides so that no term
+  is subnormal changes nothing (512 px crops 43.4 dB): what loses the image is one FP16 sum of every pixel's small term. One FP16
+  product per row, each a short sum, with the rows added in FP32. 4x IllustrationJaNai DAT2 on TensorRT, level 3, TF32 off, against strict
+  PyTorch FP32, plain FP16 product / FP32 product / by rows, one session: Fixed 256 px 49.60 / 79.69 / 47.60 ms, Dynamic 512 px 260.08 /
+  366.72 / 249.04 ms; Dynamic 512 px crops 43.4-52.8 / 66.3-69.3 / 66.3-69.2 dB, largest error 74.63 / 1.71 / 1.83 codes. By rows on a
+  Dynamic engine: crops 65.0 dB or better at 64, 128, 256, 512, 128x512 and 512x128, no NaN; 2x_bndl v1.2 no NaN, crops 63.5 dB or better.
+  A saved FP16 ONNX or engine keeps the old form until converted again. UNTESTED: MIGraphX on an AMD GPU; above 512 px.
+- 2026-11-07 **AMD GPUs move to ROCm 10.0.0, PyTorch 2.13.0, TorchVision 0.28.0, MIGraphX 2.17.0 and ONNX Runtime 1.31.1.** Linux and
+  Windows both take AMD's builds from `stable.repo.amd.com/rocm/whl-next/` (Windows had PyTorch 2.12.0, Linux PyTorch's own 2.14.1):
+  one list in `get_pytorch_rocm`, by pinned URL and SHA-256 on Windows and by that index on Linux. Linux gains PyTorch's and
+  TorchVision's kernel wheels and rocm-bootstrap 0.3.0; its Triton is AMD's `triton 3.8.0+git4cff872c.rocm10.0.0`, which replaces
+  `triton-rocm` and which NVIDIA's and the CPU builds replace (`triton+git`). ROCm 10.0 keeps `amdhip64_7.dll` and `libamdhip64.so.7`
+  and reports HIP 7.15. AMD's Linux wheels need glibc 2.28 at most. MIGraphX 2.17.0 already has the literal fix 2.16.1 was made for; the
+  HIP Graph patch needed two hunks moved, and ONNX Runtime's three patches apply as they are. Fork release `v1.31.1-rocm10.0-hipgraph`:
+  Linux `3856b2f0...` (101,120,585 B), Windows `64feb4c6...` (80,406,026 B). NVIDIA and CPU stay on PyTorch 2.14.1 and ONNX Runtime
+  1.30.0. Nothing here has run on an AMD GPU: checked are the builds, imports, MIGraphX's ref target and pip's resolver.
+- 2026-11-07 **Spandrel 0.4.2+c15: PyTorch FP16 HAT and DAT keep the last two groups' sums in FP32.** The export's FP32 spots move into
+  the model. On CUDA PyTorch, against strict FP32, trained 2x DAT2 files that went all NaN on 5 to 11 of 12 inputs (natural crops too, at
+  256 px) go NaN on none; FP32 output is byte-identical on 9 model and size pairs; 4x IllustrationJaNai DAT2 and HAT-L keep their crops
+  (70.8-75.6, 71.4-74.4 dB). 256 px, c14 -> c15, DAT2 100.2 -> 102.6 ms, HAT-L 203.7 -> 205.3 ms; 512 px DAT2 413.2 -> 420.9 ms, with
+  builds running. BF16 in the same spots passes the same limits and is no faster (DAT2 256 px 106.0 ms, 512 px 412.9 ms; HAT-L crops
+  68.9-71.0 dB), so FP32 stays. Whole-model BF16 is as fast as FP16 mixed (DAT2 99.0-100.4 against 99.0-101.0 ms, 512 px 411 against 416 ms)
+  at 54.3-57.7 dB. Files saved before this that take the export route are unchanged, as its spots were the same.
+- RELEASED 2026-11-06 as **v0.3.10 re-release 1** (tag `bec124491`, one commit over `5bda45d80`, tree = local `e571f5674`; win-x64 `7e9256a9`, linux-x64 `f03bbdbe`): the entry below.
 - AMD: PyTorch's Upscale Image has Use MIGraphX Program (input 8's label on AMD PCs; one program per Tile Size, kept in
   the Program Cache folder; smaller images padded by reflection to the program's size and the output cropped; a failure
   falls back to PyTorch with a warning). DUAL builds on AMD Windows through `triton-windows` 3.8.0.post29 with
@@ -1433,7 +1479,6 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | Hunt O03: opt-in `CHAINNER_C_TRT_RUNNER=1` retains both Python and C++ TensorRT engine copies | Parked: the cross-boundary ownership change is riskier than the current saving |
 | After the wave, run the store step inside its tiles (drops a second pool dispatch, works on cache lines just written); unmeasured | A probe with a keep rule |
 | The output range check (`normalized_output`, `cn_pixels_normalized_f32`) reads every image a node returns without `assume_normalized` once more: 3.6 ms at 3840x2160 RGB on the 9950X3D, about as long as Invert Color's whole pass. Such a node's kernel could report whether every value it wrote is in range, so the engine skips the read (same outputs) | When CPU chains are next sped up, after PNG decode and encode (65 % of the measured chain) |
-| DAT's FP32 product costs speed (DAT2 FP16 at Fixed 256 px 43.83 -> 77.10 ms); it may come from losing a fused attention kernel, unmeasured. DAT2 Fixed accuracy not re-measured since the fix | A per-layer profile, then a cheaper form, with a keep rule |
 | Nested ESRGAN engines lose LeakyReLU fusion (about 7 % of a 512x512 run, at most about 3 % to win back); `nestfold` and `nestdeconv` unmeasured | A probe with a keep rule |
 | TensorRT 11.4's AOT plugin path leaks one module per plugin layer on every enqueue (State, 2026-11-06): a long assorted-size batch on a Dynamic DUAL engine holds 1.3 MiB VRAM and 4 MiB RAM per new size until the backend exits; the driver's 128 MiB after the first device-assert module is one-off. Balanced Tiles, whole-frame mode and the PyTorch engine route on DUAL make more sizes | Not reported, by ruling; re-test on the next TensorRT; whether Dynamic ESRGAN engines also keep the 128 MiB is UNTESTED; the native runner's path was not measured |
 | Hunt GPU corrections B16-B18: owning-device reuse/teardown, low-headroom split admission, activation restore recovery | CPU/source checks only; real-device confirmation deferred in `GPU-DEFERRED.md` |
@@ -1474,7 +1519,6 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | `ARCHITECTURE.md:10,65` says the package ships Electron 25; it ships 45.1.0 (stale) | Correct both lines |
 | App checks from 2026-11-06: the looks of the new inputs, outputs and nodes, the running app's Stop, previews and toasts (nothing launched the app) | By hand, at the next app start; the local checklist in `native/local/night-20261106/` |
 | Released v0.3.9 r3 has the DAT2 blank-image fault on its FP16 route (State) | Re-release, the yes or no; affected models then convert again |
-| PyTorch FP16 on smooth DAT2 tiles raises its invalid-values error; the same FP32 sums need the fork | The yes or no: publish a fork with them |
 | `test_vsview_of_an_earlier_worker_stays_the_window` failed once in a full Linux run, no failure text kept, then passed alone 3 of 3, under load 4 of 4 and in four full runs; `test_vosr2_streaming::test_streamed_full_vae_matches_direct_encode_decode` failed once under 13 shards, passes alone | Watch them |
 | SwinIR-family models stored at `img_size` 32 freeze the mask in the trace: wrong or crashing at other sizes (reach unknown, no real file seen; not from the FP16 rewrite). | A different example size for such models |
 | A renderer code cache through a custom scheme (`f7233ee8`, estimated 20-70 ms, never launched) | Keep it only if its checks pass and the real interface is at least 30 ms faster |

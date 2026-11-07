@@ -87,7 +87,7 @@ RoPE and the Q/K/V layout in the original rounding order; batch 1, 24 heads, 1 t
 (README Build; MAINTAINING section 4): SASS sm_80, 86, 89, 120 and compute_120 PTX (no sm_90 or sm_100), hash
 `14dfaec0…`; its sm_80 and sm_120 code equals the DLL validated on 2026-10-12. Packages ship it when it was built.
 
-On AMD the same kernel is `native/src/vosr2_hip` (HIP, every ROCm 7.14 target through `cmake/rocm.cmake`): 32-lane
+On AMD the same kernel is `native/src/vosr2_hip` (HIP, every ROCm 10.0 target through `cmake/rocm.cmake`): 32-lane
 groups whose shuffles have width 32, so wave64 GPUs run two heads per wavefront in the same order; contraction off. It
 is the MIGraphX op `chainner_vosr2_qkv` in `vosr2_migx_ops`: one output (custom ops have one), Q, K and V packed
 (3, 1, 24, tokens, 64), split back in the graph. Built through HIP's NVIDIA path with `--fmad=false` it matched the CUDA
@@ -101,7 +101,7 @@ SHA-256, pinned as `vosr2_fp8.MANIFEST_SHA256`), uploaded 2026-10-13 with server
 (this code's export), `manifest.json` (recipe, source and file SHA-256), `LICENSE` (Apache-2.0),
 `NOTICE` (authors, DINOv2, Qwen-Image VAE, changes). `ensure_fp8_engine` checks GPU, manifest,
 TensorRT, plugin and disk before it downloads (resumable, hashed) and compiles. No ModelOpt at run time. AMD does
-not use the set: MIGraphX 2.16.1's ONNX parser reads FNUZ FP8 only (not the set's OCP E4M3), so MIGraphX FP8 is
+not use the set: MIGraphX 2.17.0's ONNX parser reads FNUZ FP8 only (not the set's OCP E4M3), so MIGraphX FP8 is
 MIGraphX's own quantization (ruling 2026-10-29); converting the set to FNUZ (scales doubled) parsed on gfx942 and was
 dropped with it (commit 55639ec4 on the AMD branch).
 

@@ -1,16 +1,16 @@
 diff --git a/src/targets/gpu/CMakeLists.txt b/src/targets/gpu/CMakeLists.txt
-index 551d443..294156f 100644
+index 5b46eec..a5354d0 100644
 --- a/src/targets/gpu/CMakeLists.txt
 +++ b/src/targets/gpu/CMakeLists.txt
-@@ -222,6 +222,8 @@ add_library(migraphx_gpu
+@@ -220,6 +220,8 @@ add_library(migraphx_gpu
+     fuse_ops.cpp
+     gemm_impl.cpp
      hip.cpp
-     hipblaslt.cpp
-     hip_gemm_impl.cpp
 +    hip_graph.cpp
 +    hipgraphify.cpp
+     hipblaslt.cpp
+     hip_gemm_impl.cpp
      hsa_chiplet.cpp
-     kernel.cpp
-     lowering.cpp
 diff --git a/src/targets/gpu/code_object_op.cpp b/src/targets/gpu/code_object_op.cpp
 index 8165b64..529f0ce 100644
 --- a/src/targets/gpu/code_object_op.cpp
@@ -1302,18 +1302,18 @@ index a8e930e..a1b5ec7 100644
      }
      return kernargs;
 diff --git a/src/targets/gpu/target.cpp b/src/targets/gpu/target.cpp
-index e96fd0a..d3e6108 100644
+index 57f7706..2c4cacc 100644
 --- a/src/targets/gpu/target.cpp
 +++ b/src/targets/gpu/target.cpp
-@@ -74,6 +74,7 @@
+@@ -79,6 +79,7 @@
  #include <migraphx/gpu/fuse_ck.hpp>
  #include <migraphx/gpu/fuse_mlir.hpp>
  #include <migraphx/gpu/fuse_ops.hpp>
 +#include <migraphx/gpu/hipgraphify.hpp>
  #include <migraphx/gpu/prefuse_ops.hpp>
- #include <migraphx/gpu/lowering.hpp>
- #include <migraphx/gpu/propagate_reshape_layout.hpp>
-@@ -108,6 +109,13 @@ struct pipeline_factory
+ #include <migraphx/gpu/lower_device_ops.hpp>
+ #include <migraphx/gpu/lower_reshape.hpp>
+@@ -148,6 +149,13 @@ struct pipeline_factory
      // cppcheck-suppress CastIntegerToAddressAtReturn
      context* get_context() const { return any_cast<context>(gctx_ptr); }
  
@@ -1327,7 +1327,7 @@ index e96fd0a..d3e6108 100644
      std::vector<pass> dynamic_shapes_pipeline() const
      {
          return {
-@@ -236,6 +244,8 @@ struct pipeline_factory
+@@ -279,6 +287,8 @@ struct pipeline_factory
              promote_literals{},
              dead_code_elimination{},
              write_literals{.max_memory = max_memory},

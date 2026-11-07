@@ -14,11 +14,11 @@ then the freeze and a new lock (the freeze under a header with the interpreter, 
 above, with only the lock's numpy and pybind11 pins (no torch, no pip check or freeze comparison). The full run on the
 same runtime later installs the rest.
 -Rocm provisions the AMD GPU stack from native\python-stack.lock.rocm.txt: AMD's Windows build of torch and torchvision
-(2.12.0+rocm7.14.1) with ROCm's runtime and libraries (rocm-sdk-core, rocm-sdk-libraries) and rocm-bootstrap from AMD's
+(2.13.0+rocm10.0.0) with ROCm's runtime and libraries (rocm-sdk-core, rocm-sdk-libraries) and rocm-bootstrap from AMD's
 index, ROCm's meta package rocm from the backend's bundled wheel (backend\src\dependencies\whls\rocm) and ONNX Runtime
 with DirectML and MIGraphX in onnxruntime-gpu's place, as the app's packages install them on AMD GPUs. -Device gfx<arch> (with
 -Rocm; several are comma-separated) also installs that architecture's GPU kernels, torch[device-gfx<arch>] (PyTorch's
-kernel wheel, its family's flash attention wheel and ROCm's kernel wheel), as the app's PyTorch package does for the
+kernel wheel and its family's flash attention wheel), torchvision[device-gfx<arch>] and ROCm's kernel wheel, as the app's PyTorch package does for the
 GPUs it finds; the lock never holds them, so the freeze is compared without them.
 -RuntimeDir (default native\runtime) is where cpython-<version> is extracted, for a second runtime beside the first.
 Usage: powershell -NoProfile -File native\tools\provision_runtime.ps1 [-Relock | -BuildOnly] [-Version 3.14.8] [-Tag 20261003]
@@ -53,11 +53,11 @@ $Runtime = if ($RuntimeDir) { $RuntimeDir } else { Join-Path $Root "native\runti
 if ($Rocm) {
     $LockPath = Join-Path $Root 'native\python-stack.lock.rocm.txt'
     # AMD's index serves its Windows torch builds, ROCm's wheels and rocm-bootstrap, none of them on PyPI.
-    $TorchIndex = 'https://repo.amd.com/rocm/whl-multi-arch/'
+    $TorchIndex = 'https://stable.repo.amd.com/rocm/whl-next/'
     $FromTorchIndex = '^(torch|torchvision|rocm-bootstrap|rocm-sdk-[a-z0-9-]+)=='
-    $TorchPins = @('torch==2.12.0+rocm7.14.1', 'torchvision==0.27.0+rocm7.14.1', 'rocm==7.14.1+chainner')
+    $TorchPins = @('torch==2.13.0+rocm10.0.0', 'torchvision==0.28.0+rocm10.0.0', 'rocm==10.0.0+chainner')
     # onnxruntime-migraphx: ONNX Runtime 1.30.0 with DirectML and MIGraphX, the wheel on its fork's release
-    $OnnxRuntimePin = 'onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph.dml-cp314-cp314-win_amd64.whl#sha256=940258f7c0f010d4250560b18cc95c359348f16ab7b060e65a32fd91cc5fc29f'
+    $OnnxRuntimePin = 'onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.31.1-rocm10.0-hipgraph/onnxruntime_migraphx-1.31.1%2Brocm10.0.hipgraph.dml-cp314-cp314-win_amd64.whl#sha256=64feb4c6fcf1c030f1a48844d83de0bf729c3b37df7637d0dd9ef0581eba9fa4'
     # triton-windows compiles DUAL's kernels for AMD targets (Build Program); 3.5.1 cannot
     $AmdPins = @('triton-windows @ https://files.pythonhosted.org/packages/0c/3c/6be3de0febab8f0708b32377c59d6f963a492622ce79762ec08ddc7496a8/triton_windows-3.8.0.post29-cp314-cp314-win_amd64.whl#sha256=1d0fd6a6cf36ba5cced997177068e328d015e42cd4300f6995fff5a6f8707aff')
 } else {
@@ -193,7 +193,7 @@ if ($Relock) {
         'google-re2',  # oracle/reference only (upstream's onnx/load.py imports re2)
         'Sanic-Cors==2.2.0',  # oracle/reference only (upstream's server imports sanic_cors)
         # spandrel: the fork's build (DRFT, DUAL, SST, WSR, GaterV3, SMoSR, FIGSR, GFISRv2), the wheel on its release
-        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c14/spandrel-0.4.2%2Bc14-py3-none-any.whl#sha256=91a99eef3ab39ca1c3d4098a7d2e280d8e3b73873a79a96a3d86b323d52198f3',
+        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c17/spandrel-0.4.2%2Bc17-py3-none-any.whl#sha256=d0a2ff6c32c2389afc291c5f217fe98ca9022a49d7666e02a547bf5ab6bc4297',
         'spandrel_extra_arches', 'facexlib', 'einops', 'safetensors',
         $OnnxRuntimePin,
         'onnx', 'onnxoptimizer', 'protobuf', 'ncnn==1.0.20260526',
@@ -228,8 +228,11 @@ if ($Device.Count) {
     $Constraints = Join-Path $Runtime "constraints-$Version.txt"
     [IO.File]::WriteAllLines($Constraints, [string[]]@($Pins -cmatch '^[A-Za-z0-9._-]+=='), $Utf8)
     $TorchPin = @($Pins -cmatch '^torch==')[0]
+    $VisionPin = @($Pins -cmatch '^torchvision==')[0]
+    $RocmVersion = (@($Pins -cmatch '^rocm-sdk-core==')[0] -split '==')[1]
     $DeviceExtras = ($Device | ForEach-Object { "device-$_" }) -join ','
-    & $Python @Pip install -c $Constraints --index-url $TorchIndex ($TorchPin -replace '^torch==', "torch[$DeviceExtras]==")
+    $RocmKernels = @($Device | ForEach-Object { "rocm-sdk-device-$_==$RocmVersion" })
+    & $Python @Pip install -c $Constraints --index-url $TorchIndex ($TorchPin -replace '^torch==', "torch[$DeviceExtras]==") ($VisionPin -replace '^torchvision==', "torchvision[$DeviceExtras]==") @RocmKernels
     if ($LASTEXITCODE -ne 0) { throw 'GPU kernel install failed' }
 }
 & $Python -s -m chainner_pip --version
@@ -237,7 +240,7 @@ if ($LASTEXITCODE -ne 0) { throw 'chainner-pip does not run' }
 $PipVersion = ((& $Python @Pip --version) -split ' ')[1]
 if ($LASTEXITCODE -ne 0) { throw 'pip --version failed' }
 # The GPU kernel wheels are the machine's, never the lock's.
-$Freeze = @(& $Python @Pip freeze | Where-Object { $_ -cnotmatch '^(rocm-sdk-device-|amd-torch-device-)' })
+$Freeze = @(& $Python @Pip freeze | Where-Object { $_ -cnotmatch '^(rocm-sdk-device-|amd-torch-device-|amd-torchvision-device-)' })
 if ($LASTEXITCODE -ne 0) { throw 'pip freeze failed' }
 $FreezePath = Join-Path $Runtime "freeze-$Version.txt"
 [IO.File]::WriteAllLines($FreezePath, [string[]]$Freeze, $Utf8)

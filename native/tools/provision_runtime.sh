@@ -17,13 +17,14 @@
 # manager installs on demand (TensorRT, CUDA Python, VapourSynth with its plugins) at the backend's versions, and the
 # test tools (ruff, pyright, viztracer, appdirs), with the lock's pins as constraints. The freeze then has to contain
 # every pin of the lock instead of equalling them.
-# --rocm provisions the AMD GPU stack from native/python-stack.lock.linux-rocm.txt: torch and torchvision with Triton
-# and ROCm's runtime and libraries (rocm-sdk-core, rocm-sdk-libraries) from the PyTorch ROCm index, ROCm's meta package
-# rocm from the backend's bundled wheel (backend/src/dependencies/whls/rocm, made by build_rocm_meta_wheel.py: torch's
-# rocm[device-all] then requires no GPU kernel wheel) and ONNX Runtime with the MIGraphX provider in onnxruntime-gpu's
+# --rocm provisions the AMD GPU stack from native/python-stack.lock.linux-rocm.txt: AMD's build of torch and torchvision
+# with AMD's Triton, ROCm's runtime and libraries (rocm-sdk-core, rocm-sdk-libraries) and rocm-bootstrap from AMD's
+# index, ROCm's meta package rocm from the backend's bundled wheel (backend/src/dependencies/whls/rocm, made by
+# build_rocm_meta_wheel.py) and ONNX Runtime with the MIGraphX provider in onnxruntime-gpu's
 # place. Its --with-extras are VapourSynth without its CUDA plugins and the test tools (no TensorRT, no CUDA Python).
-# --device gfx<arch> (repeatable, with --rocm) also installs that architecture's GPU kernel wheel,
-# rocm-sdk-device-gfx<arch>, as the app's PyTorch package does for the GPUs it finds; the lock never holds them, so
+# --device gfx<arch> (repeatable, with --rocm) also installs that architecture's GPU kernels (torch[device-gfx<arch>],
+# torchvision[device-gfx<arch>] and rocm-sdk-device-gfx<arch>), as the app's PyTorch package does for the GPUs it finds;
+# the lock never holds them, so
 # the freeze is compared without them. Without --device the runtime imports torch and runs it on the CPU.
 # Usage: native/tools/provision_runtime.sh [--relock | --build-only] [--with-extras] [--version 3.14.8] [--tag 20261003]
 #                                          [--runtime-dir DIR] [--lock FILE] [--rocm [--device gfx1100]...]
@@ -46,9 +47,9 @@ runtime_dir="$root/native/runtime"
 lock_path=""
 jet_index="https://jaded-encoding-thaumaturgy.github.io/vs-wheels/simple"
 # ROCm's meta package, bundled (see --rocm); the ROCm version its kernel wheels have.
-rocm_pin="rocm==7.14.1+chainner"
-rocm_version="7.14.1"
-spandrel_pin="spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c14/spandrel-0.4.2%2Bc14-py3-none-any.whl#sha256=91a99eef3ab39ca1c3d4098a7d2e280d8e3b73873a79a96a3d86b323d52198f3"
+rocm_pin="rocm==10.0.0+chainner"
+rocm_version="10.0.0"
+spandrel_pin="spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c17/spandrel-0.4.2%2Bc17-py3-none-any.whl#sha256=d0a2ff6c32c2389afc291c5f217fe98ca9022a49d7666e02a547bf5ab6bc4297"
 
 die() {
     echo "error: $*" >&2
@@ -79,9 +80,9 @@ for device in "${devices[@]}"; do
 done
 if [ "$rocm" = 1 ]; then
     lock_path=${lock_path:-$root/native/python-stack.lock.linux-rocm.txt}
-    torch_index="https://download.pytorch.org/whl/rocm7.14"
-    # What comes from the PyTorch index: it serves ROCm's wheels and Triton for ROCm too, none of them on PyPI.
-    index_pins_re='^(torch|torchvision|triton-rocm|rocm-sdk-[a-z0-9-]+)=='
+    torch_index="https://stable.repo.amd.com/rocm/whl-next/"
+    # What comes from AMD's index: it serves ROCm's wheels, AMD's Triton and rocm-bootstrap too, none of them on PyPI.
+    index_pins_re='^(torch|torchvision|triton|rocm-bootstrap|rocm-sdk-[a-z0-9-]+)=='
 else
     lock_path=${lock_path:-$root/native/python-stack.lock.linux.txt}
     torch_index="https://download.pytorch.org/whl/cu132"
@@ -191,14 +192,14 @@ wheels="$root/backend/src/dependencies/whls/chainner-pip"
 rocm_wheels="$root/backend/src/dependencies/whls/rocm"
 onnxruntime_pin='onnxruntime-gpu @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-trt11/onnxruntime_gpu-1.30.0%2Btrt11.4-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=b67a9a5b03df5fd4687d33d41dc035542d4ec2c4da8da57741749ee21b783778'
 # The ONNX package's ORT_MIGRAPHX_URL: ONNX Runtime with the MIGraphX provider, MIGraphX inside it.
-[ "$rocm" = 0 ] || onnxruntime_pin='onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=233e4ac76e3eb7712d4b968e4bce4649c1f2ba5bf0e686fec354ab9afd5466f6'
+[ "$rocm" = 0 ] || onnxruntime_pin='onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.31.1-rocm10.0-hipgraph/onnxruntime_migraphx-1.31.1%2Brocm10.0.hipgraph-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=3856b2f06dc1fe30251b4649820555e00e39ea47fc219e0e41c81db8d54d8ece'
 if [ "$relock" = 1 ]; then
     "${pip[@]}" install --no-cache-dir --upgrade pip
     # The backend's dependencies at their latest versions, torch from the PyTorch index (which also serves the CUDA
-    # libraries or ROCm's and Triton it depends on). ROCm's meta package is the bundled one, which torch's
-    # rocm[device-all,libraries] requirement then takes.
+    # libraries it depends on) or AMD's (which also serves ROCm's and Triton). ROCm's meta package is the bundled one,
+    # which torch's rocm[libraries] requirement then takes.
     if [ "$rocm" = 1 ]; then
-        "${pip[@]}" install --no-cache-dir torch==2.14.1 torchvision==0.29.1 "$rocm_pin" --index-url "$torch_index" \
+        "${pip[@]}" install --no-cache-dir torch==2.13.0+rocm10.0.0 torchvision==0.28.0+rocm10.0.0 "$rocm_pin" --index-url "$torch_index" \
             --find-links "$rocm_wheels"
     else
         "${pip[@]}" install --no-cache-dir torch==2.14.1 torchvision==0.29.1 --index-url "$torch_index"
@@ -259,18 +260,26 @@ else
     "${pip[@]}" check
 fi
 if [ "${#devices[@]}" -gt 0 ]; then
-    # The kernel wheels overlay rocm-sdk-libraries' tree; each depends on nothing.
-    device_pins=()
+    # Each GPU's kernels as torch's and torchvision's device extras name them, resolved under the lock's pins (torch is
+    # installed), and ROCm's kernel wheel, which overlays rocm-sdk-libraries' tree.
+    device_constraints="$runtime_dir/device-constraints-$version.txt"
+    printf '%s\n' "${pins[@]}" | grep -E '^[A-Za-z0-9._-]+==' >"$device_constraints"
+    extras=$(printf 'device-%s,' "${devices[@]}")
+    extras=${extras%,}
+    device_pins=(
+        "$(printf '%s\n' "${pins[@]}" | grep -E '^torch==' | sed "s/^torch==/torch[$extras]==/")"
+        "$(printf '%s\n' "${pins[@]}" | grep -E '^torchvision==' | sed "s/^torchvision==/torchvision[$extras]==/")"
+    )
     for device in "${devices[@]}"; do
         device_pins+=("rocm-sdk-device-$device==$rocm_version")
     done
-    "${pip[@]}" install --no-cache-dir --no-deps --index-url "$torch_index" "${device_pins[@]}"
+    "${pip[@]}" install --no-cache-dir -c "$device_constraints" --index-url "$torch_index" "${device_pins[@]}"
 fi
 "$python" -s -m chainner_pip --version || die "chainner-pip does not run"
 pip_version=$("${pip[@]}" --version | cut -d ' ' -f 2)
 freeze_path="$runtime_dir/freeze-$version.txt"
 # The kernel wheels are the machine's, never the lock's.
-"${pip[@]}" freeze | grep -v '^rocm-sdk-device-' >"$freeze_path"
+"${pip[@]}" freeze | grep -vE '^(rocm-sdk-device-|amd-torch-device-|amd-torchvision-device-)' >"$freeze_path"
 if [ "$relock" = 1 ]; then
     # The lock: the freeze under a header package_port.py reads (python_stack); a pin's note follows it on its line.
     declare -A notes=(
@@ -287,13 +296,14 @@ if [ "$relock" = 1 ]; then
         echo "# Archive SHA-256: $archive_sha"
         echo "# pip: $pip_version (installed; pip freeze does not list it)"
         if [ "$rocm" = 1 ]; then
-            echo "# Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.sh --rocm (torch,"
-            echo "# torchvision, Triton and ROCm's rocm-sdk-core and rocm-sdk-libraries from $torch_index,"
+            echo "# Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.sh --rocm (AMD's torch,"
+            echo "# torchvision, Triton, rocm-bootstrap and ROCm's rocm-sdk-core and rocm-sdk-libraries from $torch_index,"
             echo "# chainner-pip and ROCm's meta package rocm from the bundled wheels in backend/src/dependencies/whls/,"
             echo "# spandrel and onnxruntime-migraphx from their forks' release wheels (github.com/Rift73/spandrel,"
             echo "# github.com/Rift73/onnxruntime), the rest from PyPI). It is the"
             echo "# Linux lock's set for AMD GPUs: ROCm in CUDA's place and ONNX Runtime with the MIGraphX provider. The"
-            echo "# GPU kernel wheels (rocm-sdk-device-gfx<arch>) are a machine's, never the lock's: --device adds them."
+            echo "# GPU kernel wheels (torch[device-gfx<arch>], rocm-sdk-device-gfx<arch>) are a machine's, never the lock's:"
+            echo "# --device adds them."
         else
             echo "# Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.sh (torch and"
             echo "# torchvision from $torch_index, chainner-pip from the bundled wheel in"

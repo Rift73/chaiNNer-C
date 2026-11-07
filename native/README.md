@@ -110,8 +110,8 @@ on one machine, never for releases, `CHAINNER_C_MARCH=<cpu>` adds `-march=<cpu>`
 and toolchain give the same three binaries whatever the checkout's path and line endings (`/Brepro`, the source-path
 map, `.gitattributes`). This source's binaries (portable builds; `chainner_native.dll` of 2026-11-06,
 `_chainner_graph.pyd`, `_chainner_trt.pyd` and `chainner_trt_vs.dll` of 2026-11-06, `drft_trt_plugins.dll` of 2026-10-20, `vosr2_qkv.dll` of 2026-10-18, with TensorRT 11.4.0.106 and
-CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2; the AMD GPU parts of 2026-11-06, built with `-RocmRoot` and
-`-MigraphxRoot` for ROCm 7.14.1 and MIGraphX 2.16.1), for reference:
+CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2; the AMD GPU parts of 2026-11-07, built with `-RocmRoot` and
+`-MigraphxRoot` for ROCm 10.0.0 and MIGraphX 2.17.0), for reference:
 
 | Binary | SHA-256 |
 | --- | --- |
@@ -122,10 +122,10 @@ CUDA 13.4.92; `chainner_ext.pyd` unchanged since v0.3.2; the AMD GPU parts of 20
 | `drft_trt_plugins.dll` | `2bc86cb6918a196d9a03b1f0bc3ab7e3a78c6440567eb6e191642f3f1bb89091` |
 | `_chainner_trt.pyd` | `6b9037300ddfc3f5422baef5e0ffbbc5320a086a71bcfcdfd00145088ca22bb0` |
 | `chainner_trt_vs.dll` | `9bcb0a1d3f1bc046b294c73cc7f10667810a2c334ecc479b20fdd3c4d0e39527` |
-| `_chainner_migraphx.pyd` | `34179c29e716957932178c234a9ddfb2146c1c71d020960dd0e67e03628f957a` |
-| `drft_migx_ops.dll` | `8a6f3e905b8cec8c65918cf255aa60b44c583c066a2d2181fb3df3ba3d95e07a` |
-| `vosr2_migx_ops.dll` | `67aae7b7517ebfdd572579122cb9aa2ab5aad88b1acce687b182dd5f603a0301` |
-| `dual_migx_ops.dll` | `cfadef23d0e5dfcf654a97bd1f02b6a841aa9cdb0519299c58227d6f52883164` |
+| `_chainner_migraphx.pyd` | `084ee4579b8a42784e0c55609f78782099c8cce690addc762b65079dfbcf7031` |
+| `drft_migx_ops.dll` | `cbd808611bfd49aac0936a02c34b4caac838cd7d2b60cc970f4e8083217d7657` |
+| `vosr2_migx_ops.dll` | `921c2ab8636dca21c90a94e8925db45751f794943e51c243521d470831e2acd5` |
+| `dual_migx_ops.dll` | `0308e6d9b9cc830752003176bbe5c8aae6aa24a32df4b80085093c46d6efecc4` |
 
 **VOSR's TensorRT plugin** `vosr2_qkv.dll` (`src/vosr2`, the VOSR TensorRT backends' Q/K/V packing) is an
 optional fourth target: `-Define CHAINNER_C_TENSORRT_ROOT=<TensorRT 11 SDK>,CHAINNER_C_CUDA_ROOT=<CUDA 13 toolkit>`

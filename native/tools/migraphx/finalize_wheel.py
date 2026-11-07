@@ -1,7 +1,7 @@
-"""Turn the auditwheel-repaired onnxruntime_migraphx 1.30.0 wheel into the shipped one.
+"""Turn the auditwheel-repaired onnxruntime_migraphx 1.31.1 wheel into the shipped one.
 
-1. Local version: 1.30.0 -> 1.30.0+rocm7.14.hipgraph, MIGraphX with migraphx-hip-graph.patch (METADATA and .dist-info
-   name; onnxruntime.__version__ stays 1.30.0).
+1. Local version: 1.31.1 -> 1.31.1+rocm10.0.hipgraph, MIGraphX with migraphx-hip-graph.patch (METADATA and .dist-info
+   name; onnxruntime.__version__ stays 1.31.1).
 2. MIGraphX is not part of AMD's ROCm pip packages, so its libraries are added to onnxruntime/capi/ under their
    sonames: everything the MIGraphX provider needs (transitively), the gpu and ref targets MIGraphX dlopens by
    versioned soname, and migraphx-hiprtc-driver (MIGraphX looks for it next to libmigraphx_gpu and compiles kernels
@@ -12,7 +12,7 @@
 4. onnxruntime/MIGraphX_ThirdPartyNotices.txt: the licenses of MIGraphX and of what is compiled into it (rocMLIR and
    its LLVM, composable_kernel, protobuf, abseil, msgpack, nlohmann/json, Eigen (MPL2-only parts), SQLite).
 5. Check every ELF file: each NEEDED library is in the wheel, a manylinux_2_28 system library, or a library of the
-   ROCm 7.14.1 pip packages; no GLIBC symbol version above 2.28.
+   ROCm 10.0.0 pip packages; no GLIBC symbol version above 2.28.
 
 Usage: python -I finalize_wheel.py <repaired wheel> <dist_out> <migraphx prefix> <rocm venv site-packages> <build root>
 """
@@ -25,7 +25,7 @@ import subprocess
 import sys
 import tempfile
 
-LOCAL = "+rocm7.14.hipgraph"
+LOCAL = "+rocm10.0.hipgraph"
 DIST = "onnxruntime_migraphx"
 RPATH = ":".join(
     [
@@ -47,7 +47,7 @@ SYSTEM = {
 }
 DLOPENED_TARGETS = ("gpu", "ref")
 NOTICES = [
-    ("AMD MIGraphX 2.16.1", "src/AMDMIGraphX/LICENSE"),
+    ("AMD MIGraphX 2.17.0", "src/AMDMIGraphX/LICENSE"),
     ("rocMLIR", "deps-src/rocmlir/rocMLIR-*/LICENSE"),
     (
         "LLVM (in rocMLIR)",
@@ -98,7 +98,7 @@ def rocm_sonames(site: str) -> set[str]:
 
 def main() -> None:
     repaired, dist_out, migx, site, build_root = sys.argv[1:6]
-    # MIGraphX 2.16 installs libmigraphx_c in lib/ and the other libraries in lib/migraphx/lib/.
+    # MIGraphX 2.17 installs libmigraphx_c in lib/ and the other libraries in lib/migraphx/lib/.
     migx_lib_dirs = [
         os.path.join(migx, "lib"),
         os.path.join(migx, "lib", "migraphx", "lib"),
@@ -141,7 +141,7 @@ def main() -> None:
         if soname is None:
             raise SystemExit(
                 f"{migx_lib_dirs[1]} holds no libmigraphx.so.<version>: "
-                "not a MIGraphX 2.16 install prefix"
+                "not a MIGraphX 2.17 install prefix"
             )
         so_major = soname.group(1)
         queue = [provider, os.path.join(migx, "bin", "migraphx-hiprtc-driver")]

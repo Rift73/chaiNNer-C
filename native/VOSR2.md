@@ -73,10 +73,10 @@ PyTorch (Linux and Windows).
   runner and VOSR's op library `vosr2_migx_ops.so` (Windows: `.dll`). DINO and the DiT run as MIGraphX programs
   built from the same graphs; the VAE runs in PyTorch (its shapes follow the image, and MIGraphX compiles fixed
   shapes). The first run builds four programs (the DiT twice, once per window width, each with its own weights);
-  every AMD GPU ROCm 7.14 supports, none tested yet.
+  every AMD GPU ROCm 10.0 supports, none tested yet.
 - **MIGraphX FP8** has MIGraphX quantize the same graphs where TensorRT FP8 is FP8 (the DiT's projections and
   feed-forward layers, DINOv2's products) on GPUs with FP8 math (Instinct MI300 and MI350, Radeon RX 9000 series),
-  calibrated on built-in synthetic images (the TensorRT FP8 set's format is one MIGraphX 2.16.1 cannot read). On
+  calibrated on built-in synthetic images (the TensorRT FP8 set's format is one MIGraphX 2.17.0 cannot read). On
   other GPUs it is MIGraphX, or FP16 where BF16 is slow (Radeon RX 5000 and 6000 series, Instinct MI100). Faster,
   lossy; nothing to download. Both MIGraphX options show only on Linux and Windows with an AMD GPU and no NVIDIA
   GPU.

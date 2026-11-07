@@ -1,5 +1,5 @@
 @echo off
-rem rocMLIR 518955ca (MIGraphX 2.16.1's requirements.txt pin) for Windows as the static fat rockCompiler library,
+rem rocMLIR 2e1e7abf (MIGraphX 2.17.0's requirements.txt pin) for Windows as the static fat rockCompiler library,
 rem built as AMDMIGraphX's Windows GPU CI builds it: clang-cl, /std:c++17, /MD, Ninja, Release,
 rem -DBUILD_FAT_LIBROCKCOMPILER=On -DLLVM_INCLUDE_TESTS=Off -DLLVM_DISABLE_ASSEMBLY_FILES=On -DLLVM_ENABLE_DIA_SDK=Off.
 rem LLVM's optional zlib/zstd/libxml2 links are off, as in the Linux build. The ROCm root is on the prefix path so
@@ -8,7 +8,7 @@ rem (build_deps.sh's rocmlir, same URL and SHA-256) is unpacked into ROOT\deps-s
 rem (settings_win.cmd). CMake uses the Python interpreter MIGX_PYTHON only to configure.
 setlocal
 call "%~dp0env_win.cmd" || exit /b 1
-set "SRC=%ROOT%\deps-src\rocmlir\rocMLIR-518955cab3ec2a53cbb03216cb55ac6ab47ee1da"
+set "SRC=%ROOT%\deps-src\rocmlir\rocMLIR-2e1e7abf4ec789e74e49e42018f852ea66e5ef85"
 set "B=%ROOT%\deps-build\rocmlir"
 set "CXXFLAGS=/std:c++17"
 set "PY=%MIGX_PYTHON%"

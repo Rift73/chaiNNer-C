@@ -15,10 +15,10 @@
 #   --work        the work directory (default ~/chainner-linux/build/release): src/ (the exported tree, where the
 #                 binaries and the zip land), build/ (CMake's) and cache/ (npm's and Electron's downloads, kept).
 #   --rocm        with --migraphx, also builds the AMD GPU parts (native/cmake/rocm.cmake): the MIGraphX runner and the
-#                 HIP custom-op libraries in nodes/impl/migraphx, with device code for every architecture ROCm 7.14
-#                 ships. --rocm is the ROCm 7.14 SDK root (include/hip, lib/libamdhip64.so, lib/llvm/bin/clang++), such
+#                 HIP custom-op libraries in nodes/impl/migraphx, with device code for every architecture ROCm 10.0
+#                 ships. --rocm is the ROCm 10.0 SDK root (include/hip, lib/libamdhip64.so, lib/llvm/bin/clang++), such
 #                 as the _rocm_sdk_devel directory that `rocm-sdk init` makes from AMD's rocm-sdk-core, -libraries and
-#                 -devel wheels; --migraphx is MIGraphX 2.16's install prefix. Both are mounted read-only, at /opt/rocm
+#                 -devel wheels; --migraphx is MIGraphX 2.17's install prefix. Both are mounted read-only, at /opt/rocm
 #                 and /opt/migraphx, and the zip carries neither: the modules load MIGraphX and HIP from the installed
 #                 onnxruntime-migraphx and rocm-sdk packages (nodes/impl/migraphx/runner.py). The AMD kit's example
 #                 custom-op library (native/AMD.md), which the zip does not carry either, stays in the build directory:

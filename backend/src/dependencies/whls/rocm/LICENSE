@@ -1,4 +1,4 @@
-The rocm_sdk module in this wheel is AMD's (ROCm's `rocm` package, version 7.14.1); its
+The rocm_sdk module in this wheel is AMD's (ROCm's `rocm` package, version 10.0.0); its
 source files carry "Copyright Advanced Micro Devices, Inc." and
 "SPDX-License-Identifier: MIT". The wheel's metadata is rebuilt by
 native/tools/build_rocm_meta_wheel.py.

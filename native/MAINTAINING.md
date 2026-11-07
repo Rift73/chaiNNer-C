@@ -149,7 +149,7 @@ packaging (section 4, item 6; README Build). VOSR's modules, engine caches, host
    `CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN=1` (exactly `1`) for that run. Legacy DRFT's plugin library
    `drft_trt_plugins.dll` builds from the same roots in the same configure (a failure of its target fails the
    build), so this check covers it; a package without it has no DRFT TensorRT route.
-6. A Windows release with the AMD GPU parts builds with `Build.ps1 -RocmRoot <ROCm 7.14 SDK> -MigraphxRoot <MIGraphX
+6. A Windows release with the AMD GPU parts builds with `Build.ps1 -RocmRoot <ROCm 10.0 SDK> -MigraphxRoot <MIGraphX
    2.16 install>` as well (`BUILDING.md`, AMD GPUs; the MIGraphX whose DLLs the published Windows `onnxruntime-migraphx`
    wheel bundles): `nodes\impl\migraphx\_chainner_migraphx.pyd`, `drft_migx_ops.dll`, `dual_migx_ops.dll` and
    `vosr2_migx_ops.dll` ship
@@ -245,7 +245,7 @@ package from upstream's Windows nightly (sections 5, 6 and 8) and have no Linux 
 6. **Release (section 8).** `native/tools/build_linux_release.sh --ref <commit>` builds that commit in the image,
    checks `backend/src` and the packaged app with `check_glibc.py`, makes the zip and prints the SHA-256 of the zip and
    of every module (`native/README.md`'s hash table lists the Windows binaries). A release with the AMD GPU parts adds
-   `--rocm <ROCm 7.14 SDK root> --migraphx <MIGraphX 2.16 prefix>` (`BUILDING.md`, Linux); the modules the build had
+   `--rocm <ROCm 10.0 SDK root> --migraphx <MIGraphX 2.17 prefix>` (`BUILDING.md`, Linux); the modules the build had
    without them keep their SHA-256, which a build of the same commit without the two options shows. DRFT's MIGraphX ops,
    `nodes/impl/migraphx/drft_migx_ops.so`, are built whenever the ROCm root is given and ship with them. Forge names the
    zip from `package.json`'s version (`chaiNNer-linux-x64-<version>.zip`): give it the release's name before attaching

@@ -1,7 +1,7 @@
 #!/bin/bash
-# In the cnm-build image (build.sh's ort step): the ONNX Runtime 1.30.0 Python wheel (CPU and MIGraphX execution
-# providers) from the v1.30.0 tag plus ort-migraphx-cache-name.patch and ort-migraphx-shape-programs.patch, in that
-# order and re-applied from the tag on every run, against MIGraphX 2.16.1 (/work/migraphx-7.14) and the ROCm 7.14.1 pip
+# In the cnm-build image (build.sh's ort step): the ONNX Runtime 1.31.1 Python wheel (CPU and MIGraphX execution
+# providers) from the v1.31.1 tag plus ort-migraphx-cache-name.patch and ort-migraphx-shape-programs.patch, in that
+# order and re-applied from the tag on every run, against MIGraphX 2.17.0 (/work/migraphx-10.0) and the ROCm 10.0.0 pip
 # SDK. Flags: those of the 1.30.0+trt11.4 Linux wheel with the CUDA/TensorRT options replaced by --use_migraphx
 # (--enable_lto --use_binskim_compliant_compile_flags, GCC Toolset 14, unit tests not built); a link pool of 1, so the
 # large links run one at a time. setup.py names the distribution onnxruntime-migraphx.
@@ -9,7 +9,7 @@
 # own flatbuffers 23 dependency; the MIGraphX provider's CMake finds HIP through $HIP_PATH instead.
 set -euo pipefail
 ROCM=$(cat /work/rocm-root.txt)
-I=/work/migraphx-7.14
+I=/work/migraphx-10.0
 S=/work/src/onnxruntime
 PY=/opt/python/cp314-cp314/bin/python3.14
 export ONNX_ML=1
@@ -18,7 +18,7 @@ export ROCM_PATH=$ROCM HIP_PATH=$ROCM
 export CC=/opt/rh/gcc-toolset-14/root/usr/bin/gcc CXX=/opt/rh/gcc-toolset-14/root/usr/bin/g++
 
 cd "$S"
-test "$(git rev-parse HEAD)" = "f2c39fe2f838cf35ce7da92824f5a5e3ee6e88a7"
+test "$(git rev-parse HEAD)" = "6af1a932e2286d5c58166085d24c68783033edee"
 git checkout HEAD -- onnxruntime/core/providers/migraphx
 git apply /recipe/ort-migraphx-cache-name.patch
 git apply /recipe/ort-migraphx-shape-programs.patch

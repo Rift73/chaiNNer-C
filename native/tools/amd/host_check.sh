@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The AMD kit's first step: what the machine is and whether it has an AMD GPU ROCm 7.14.1 can use. Writes the report's
+# The AMD kit's first step: what the machine is and whether it has an AMD GPU ROCm 10.0.0 can use. Writes the report's
 # host section and $WORK/out/gpus.txt (the usable GPUs' gfx targets), and stops with exit status 2 and the reason when
 # there is no usable GPU (a dry run notes it and goes on). Needs no ROCm: the GPUs come from the kernel driver's KFD
 # topology, as chaiNNer's own detection reads them.
@@ -69,7 +69,7 @@ else
     fact "/dev/dri" "$(printf '%s; ' "${render_nodes[@]}")"
 fi
 
-# The GPUs, and whether ROCm 7.14.1 has kernels for each
+# The GPUs, and whether ROCm 10.0.0 has kernels for each
 usable=()
 gpu_lines=()
 while read -r node gfx ids; do
@@ -78,7 +78,7 @@ while read -r node gfx ids; do
         usable+=("$gfx")
         gpu_lines+=("KFD node $node: $gfx ($ids), supported")
     else
-        gpu_lines+=("KFD node $node: $gfx ($ids), NOT among ROCm 7.14.1's targets")
+        gpu_lines+=("KFD node $node: $gfx ($ids), NOT among ROCm 10.0.0's targets")
     fi
 done < <(kfd_gpus)
 if [ "${#gpu_lines[@]}" = 0 ]; then
@@ -87,7 +87,7 @@ if [ "${#gpu_lines[@]}" = 0 ]; then
 else
     fact "GPUs" "$(printf '%s; ' "${gpu_lines[@]}")"
     if [ "${#usable[@]}" = 0 ]; then
-        problems+=("No GPU here is among ROCm 7.14.1's targets ($ROCM_TARGETS).")
+        problems+=("No GPU here is among ROCm 10.0.0's targets ($ROCM_TARGETS).")
     fi
 fi
 printf '%s\n' "${usable[@]}" | sort -u | grep . >"$OUT/gpus.txt"

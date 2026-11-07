@@ -1,14 +1,14 @@
 # The MIGraphX runner (cmake/rocm.cmake adds this directory when CHAINNER_C_MIGRAPHX_ROOT is set): _chainner_migraphx.so
-# beside nodes/impl/migraphx, on MIGraphX 2.16 (ROCm 7.14's, built from source: AMD ships no binary) and HIP. It reuses
+# beside nodes/impl/migraphx, on MIGraphX 2.17 (ROCm 10.0's, built from source: AMD ships no binary) and HIP. It reuses
 # the TensorRT runner's CPU parts (trt_runner's plan, frame, reference and convert.h, unchanged, compiled again here)
 # with their kernels in HIP (kernels.hip), and MIGraphX's C++ API, whose ONNX parser it extends with custom ops
 # (onnx_model.h). It needs MIGraphX's and HIP's libraries by their sonames, as the TensorRT parts need libnvinfer.so.11:
 # the Python side makes them loadable before importing it. chainner_example_migx_ops, a custom-op library for the
-# tests (tests/example_ops.hip), stays in the build directory. MIGraphX's install (ROCm 7.14's layout): the public and
+# tests (tests/example_ops.hip), stays in the build directory. MIGraphX's install (ROCm 10.0's layout): the public and
 # generated headers in include, the C++ API's in lib/migraphx/include, the libraries in lib/migraphx/lib; on Windows
 # every header in include and the import libraries in lib (_chainner_migraphx.pyd needs MIGraphX's DLLs by name).
 set(chainner_c_migraphx_major 2)
-set(chainner_c_migraphx_minor 16)
+set(chainner_c_migraphx_minor 17)
 set(chainner_c_migraphx_version_header "${CHAINNER_C_MIGRAPHX_ROOT}/include/migraphx/version.h")
 if(WIN32)
     set(chainner_c_migraphx_includes "${CHAINNER_C_MIGRAPHX_ROOT}/include")

@@ -16,7 +16,7 @@ note() {
 # PyTorch's packages and ROCm's, as pip lists them
 shared() {
     "$APP_PYTHON" -s -m pip list --format=freeze --disable-pip-version-check 2>/dev/null |
-        grep -E '^(torch|torchvision|triton-rocm|rocm|rocm-sdk-[a-z0-9-]+)==' | sort
+        grep -E '^(torch|torchvision|triton|rocm|rocm-bootstrap|rocm-sdk-[a-z0-9-]+|amd-torch-device-[a-z0-9-]+|amd-torchvision-device-[a-z0-9-]+)==' | sort
 }
 gpu_check() {
     "$APP_PYTHON" -s -c 'import torch; print(torch.version.hip, torch.cuda.is_available())' 2>&1 | tail -n 1

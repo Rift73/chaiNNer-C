@@ -17,9 +17,8 @@ Measured in FP32 on nine trained HAT and DAT files at 64 px, six of them at 128:
 second-to-last group's closing convolution reaches 93,000 and the last group's blocks 98,000,
 while what stays in FP16 peaks at 14,665 (HAT-L's layers.9 on a 1 px checker) and 9,509
 (2xEvangelion's layers.3), 4.5 times under 65504, and the attention and feed-forward branches
-under 5,100. spandrel keeps the last group's closing convolution and the final norm in FP32. The
-export adds the second-to-last group's closing convolution, and in the last group the sums
-and the norms that read them.
+under 5,100. spandrel 0.4.2+c15 keeps the closing convolutions of the last two groups, the last
+group's sums and the norms that read them, and the final norm in FP32, so the export has them too.
 
 On PyTorch for AMD GPUs (ROCm), the export lays the attention out for MIGraphX
 (attention_layout)."""
@@ -33,16 +32,11 @@ from typing import TypeVar
 import torch
 from spandrel import ModelDescriptor
 from spandrel.architectures.__arch_helpers.attention import migraphx_export
-from spandrel.architectures.__arch_helpers.fp32_last_group import (
-    FP32LayerNorm,
-    keep_last_group_in_fp32,
-)
 from spandrel.architectures.DAT.__arch.DAT import (
-    DATB,
     Adaptive_Spatial_Attention,
     Spatial_Attention,
 )
-from spandrel.architectures.HAT.__arch.HAT import HAB, OCAB, WindowAttention
+from spandrel.architectures.HAT.__arch.HAT import OCAB, WindowAttention
 from torch import nn
 
 # TensorRT's fused attention takes heads of a multiple of 8 channels without padding them
@@ -83,28 +77,14 @@ class _ConstantBiasSpatialAttention(Spatial_Attention):
         return self.get_buffer("constant_bias")
 
 
-def _keep_last_groups_in_fp32(net: nn.Module) -> None:
-    """The sums of an FP16 HAT's or DAT's last two groups in FP32 where they outgrow FP16
-    (the module's docstring): the closing convolutions, and the last group's norms, which
-    hand their branches FP16. PyTorch's promotion keeps a sum of FP32 and FP16 in FP32."""
-    for group in net.layers[-2:]:
-        group.conv = keep_last_group_in_fp32(group.conv)
-    for module in net.layers[-1].modules():
-        if isinstance(module, (HAB, OCAB, DATB)):
-            module.norm1 = FP32LayerNorm(module.norm1)
-            module.norm2 = FP32LayerNorm(module.norm2)
-
-
 def for_export(model: _Descriptor) -> _Descriptor:
-    """A copy of a HAT or DAT model with its attention rewritten for export, and in FP16
-    its last groups' sums in FP32; any other model as it is."""
+    """A copy of a HAT or DAT model with its attention rewritten for export; any other
+    model as it is."""
     arch = model.architecture.id
     if arch not in ("HAT", "DAT"):
         return model
     model = copy.deepcopy(model)
     net = model.model
-    if model.dtype == torch.float16:
-        _keep_last_groups_in_fp32(net)
     for name, module in list(net.named_modules()):
         with torch.no_grad():
             if isinstance(module, WindowAttention):
