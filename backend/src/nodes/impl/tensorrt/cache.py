@@ -44,6 +44,11 @@ class _PreviewLocal(local):
 _preview = _PreviewLocal()
 
 
+def in_preview() -> bool:
+    """Whether this thread runs the body of a node's preview."""
+    return _preview.current is not None
+
+
 class Preview:
     """Cache ownership of one preview body, including a body still running after Stop."""
 

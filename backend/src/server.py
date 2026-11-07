@@ -44,7 +44,7 @@ from events import EventConsumer, EventQueue, ExecutionErrorData, event_text
 from folder_videos import FolderVideosRun, run_executor
 from linux_libraries import log_missing_libraries
 from native_executor import NativeExecutor, ending_runs, executor_kind
-from nodes.impl import native, native_profile, numpy_pool
+from nodes.impl import background_work, native, native_profile, numpy_pool
 from nodes.impl.cors import add_cors
 from nodes.impl.tensorrt import cache as tensorrt_cache
 from process import ExecutionId, Executor, NodeExecutionError, NodeOutput
@@ -467,6 +467,13 @@ async def wait_for_nodes(
                 raise ValueError(error)
 
 
+async def wait_for_background_work(stopped: Callable[[], bool]) -> None:
+    """Waits for what previews left running, a model's GPU warm-up: the run would do that
+    work first. Returns early once `stopped()`."""
+    while background_work.pending() and not stopped():
+        await asyncio.sleep(0.01)
+
+
 access_logger.addFilter(SSEFilter())
 
 
@@ -569,6 +576,7 @@ async def run(request: Request):
             lambda: ctx.run_stopped_early,
         )
         await run_individual_counter.wait_zero()
+        await wait_for_background_work(lambda: ctx.run_stopped_early)
         if ctx.run_stopped_early:
             logger.info("The run was stopped before it started.")
             return json(success_response(), status=200)

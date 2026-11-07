@@ -4,6 +4,18 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- 2026-11-07, on the branch, in no release yet: **A Load Model preview readies the GPU in the background.** The driver readies each kernel the first time a process
+  uses it, from its cache on disk or, when the cache lacks it, in seconds; a new process can ask for other kernels, so an empty cache takes up to three launches
+  to fill (HAT 40 kernels, 230 MiB). `nodes/impl/pytorch/warm_up.py` upscales a 64x64 image after the preview and `/run` waits for it. Same session, RTX 5090, FP16,
+  first upscale before and after, Run 20 s after the preview: empty cache and the next two launches HAT 16.27, 17.08, 11.99 -> 1.18, 1.17, 1.18 s, DUAL 16.67, 17.05,
+  17.05 -> 0.99, 0.64, 0.59 s; empty cache ESRGAN 7.59 -> 0.33 s, DAT2 15.16 -> 0.79 s; everything cached HAT 2.24, 2.26 -> 1.14, 1.13 s. Same PNGs; GPU memory 25-50
+  MiB more. A new image size or other weights of an architecture need no new kernels. Ruled out: cuDNN without its runtime-compiled library fails with
+  `CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED`; deterministic mode, `TORCH_CUDNN_V8_API_DISABLED`, the heuristic modes and `TORCH_CUDNN_SDPA_DEPRIORITIZED` keep about 17 s;
+  `torch_cuda.dll` holds ready sm_120 binaries and no PTX, and `CUDA_DISABLE_PTX_JIT` changes nothing. Not run in the app window, on Linux or on AMD.
+- RELEASED 2026-11-07 as **v0.3.10 re-release 2** (tag `2f6a20ffe`, one commit over `bec124491`, tree = local `22fc0b6db`; win-x64 `9c1769de`,
+  linux-x64 `cc03e88a`; spandrel `v0.4.2-c17`, ONNX Runtime `v1.31.1-rocm10.0-hipgraph`): the entries below. Gates on `22fc0b6db`: Windows suite 144,138 passed,
+  818 skipped; Linux suite 141,052 passed, 2,916 skipped; ROCm tests 574 passed, 94 skipped; `test_convert_to_onnx.py` on Linux 393 passed; VapourSynth 618 passed; type
+  check and ESLint clean; none failed.
 - 2026-11-07 **Spandrel 0.4.2+c17: HAT, ESRGAN and DUAL faster in PyTorch; HAT faster on TensorRT.** Same session, RTX 5090, FP16, before and after. HAT-L: 512
   px 775 -> 507 ms, 256 px 194 -> 128 ms, taking DAT's path through `__arch_helpers/inference.py`. ESRGAN channels last on CUDA: 1200x864 621 -> 440 ms, peak 7.95 ->
   4.00 GiB, same output. 2x DUAL Light, one product per 16x16 cell for all four window grids: 1200x864 249 -> 222 ms, 256 px 39.6 -> 32.8 ms, peak 2.11 -> 2.41
