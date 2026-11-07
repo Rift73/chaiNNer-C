@@ -13,6 +13,7 @@ from spandrel_extra_arches import EXTRA_REGISTRY
 
 from api import NodeContext
 from nodes.impl.pytorch.skip_init import skip_random_init
+from nodes.impl.tensorrt.cache import in_preview
 from nodes.properties.inputs import PthFileInput
 from nodes.properties.outputs import DirectoryOutput, FileNameOutput, ModelOutput
 from nodes.utils.utils import file_identity, split_file_path
@@ -221,7 +222,13 @@ def load_model_node(
 ) -> tuple[ModelDescriptor, Path, str]:
     check_model_file(path)
 
-    model_descriptor = load_model(path, get_settings(context))
+    settings = get_settings(context)
+    model_descriptor = load_model(path, settings)
+    if in_preview():
+        # Not imported above: VapourSynth's child imports this module and has no previews.
+        from nodes.impl.pytorch.warm_up import warm_up_in_background
+
+        warm_up_in_background(model_descriptor, settings.device, settings.use_fp16)
 
     dirname, basename, _ = split_file_path(path)
     return model_descriptor, dirname, basename
