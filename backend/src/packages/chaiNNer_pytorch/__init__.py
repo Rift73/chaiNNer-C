@@ -6,26 +6,24 @@ from sanic.log import logger
 
 from api import GB, KB, MB, Dependency, add_package
 from dependencies.rocm import (
-    PYTORCH_ROCM_INDEX,
     TORCH_AMD_BUILDS,
     TORCHVISION_AMD_BUILDS,
     gpu_architectures,
     rocm_runtime,
+    rocm_wheel,
     triton_rocm,
-    windows_wheel,
 )
 from gpu import nvidia
 from system import is_arm_mac, is_linux, is_windows
 
 general = "PyTorch uses .pth models to upscale images."
 
-# AMD's Windows build of PyTorch on ROCm 7.14.1 (the newest it has; Linux runs 2.14.1), by
-# the pinned URLs of dependencies.rocm.WINDOWS_WHEELS. A GPU needs its architecture's PyTorch
-# kernels and, for RDNA 3, 3.5 and 4, its family's flash attention kernels: what torch's
-# device-gfx<arch> extra names, never its device-all.
-WINDOWS_ROCM_TORCH = "2.12.0+rocm7.14.1"
-WINDOWS_ROCM_TORCHVISION = "0.27.0+rocm7.14.1"
-WINDOWS_TORCH_FAMILIES = {
+# AMD's builds of PyTorch on ROCm 10.0.0, for Linux and Windows (dependencies.rocm.AMD_INDEX). A
+# GPU needs its architecture's PyTorch and TorchVision kernels and, for RDNA 3, 3.5 and 4, its
+# family's flash attention kernels: what the device-gfx<arch> extras name, never device-all.
+ROCM_TORCH = "2.13.0+rocm10.0.0"
+ROCM_TORCHVISION = "0.28.0+rocm10.0.0"
+ROCM_TORCH_FAMILIES = {
     "gfx1100": "gfx110x",
     "gfx1101": "gfx110x",
     "gfx1102": "gfx110x",
@@ -66,48 +64,32 @@ else:
 
 
 def get_pytorch_rocm(architectures: list[str]) -> list[Dependency]:
-    """PyTorch on ROCm with the GPU kernels of the architectures: PyTorch's build on
-    Linux, AMD's on Windows."""
-    if is_windows:
-        families = sorted(
-            {
-                WINDOWS_TORCH_FAMILIES[a]
-                for a in architectures
-                if a in WINDOWS_TORCH_FAMILIES
-            }
-        )
-        return [
-            windows_wheel("PyTorch", "torch", WINDOWS_ROCM_TORCH),
-            windows_wheel("TorchVision", "torchvision", WINDOWS_ROCM_TORCHVISION),
-            windows_wheel("ROCm bootstrap", "rocm-bootstrap", "0.1.0"),
-            *(
-                windows_wheel(
-                    f"PyTorch GPU kernels ({name})",
-                    f"amd-torch-device-{name}",
-                    WINDOWS_ROCM_TORCH,
-                )
-                for name in [*architectures, *families]
-            ),
-            *rocm_runtime(architectures),
-        ]
+    """AMD's PyTorch on ROCm with the GPU kernels of the architectures, and on Linux the
+    Triton it requires."""
+    families = sorted(
+        {ROCM_TORCH_FAMILIES[a] for a in architectures if a in ROCM_TORCH_FAMILIES}
+    )
     return [
-        Dependency(
-            display_name="PyTorch",
-            pypi_name="torch",
-            version="2.14.1+rocm7.14",
-            size_estimate=1329.2 * MB,
-            extra_index_url=PYTORCH_ROCM_INDEX,
-            auto_update=False,
+        rocm_wheel("PyTorch", "torch", ROCM_TORCH),
+        rocm_wheel("TorchVision", "torchvision", ROCM_TORCHVISION),
+        *([] if is_windows else [triton_rocm()]),
+        rocm_wheel("ROCm bootstrap", "rocm-bootstrap", "0.3.0"),
+        *(
+            rocm_wheel(
+                f"PyTorch GPU kernels ({name})",
+                f"amd-torch-device-{name}",
+                ROCM_TORCH,
+            )
+            for name in [*architectures, *families]
         ),
-        Dependency(
-            display_name="TorchVision",
-            pypi_name="torchvision",
-            version="0.29.1+rocm7.14",
-            size_estimate=3.3 * MB,
-            extra_index_url=PYTORCH_ROCM_INDEX,
-            auto_update=False,
+        *(
+            rocm_wheel(
+                f"TorchVision GPU kernels ({architecture})",
+                f"amd-torchvision-device-{architecture}",
+                ROCM_TORCHVISION,
+            )
+            for architecture in architectures
         ),
-        triton_rocm(),
         *rocm_runtime(architectures),
     ]
 
@@ -208,13 +190,15 @@ package = add_package(
             # layout MIGraphX fuses, on request; c12 runs depthwise 3x3 convolutions
             # and ESRGAN's dense blocks on HIP kernels under ROCm; c13 runs DUAL's
             # inference with fewer passes over memory; c14 makes DySample's ONNX grid
-            # follow the size, folds SPAN once and loads Flex Attention on first use.
-            version="0.4.2+c14",
+            # follow the size, folds SPAN once and loads Flex Attention on first use; c15
+            # keeps FP16 HAT's and DAT's last two groups' sums in FP32. c16 runs DAT with fewer passes
+            # over memory; c17 runs HAT, ESRGAN and DUAL with fewer too.
+            version="0.4.2+c17",
             size_estimate=600 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c14/"
-                "spandrel-0.4.2%2Bc14-py3-none-any.whl"
-                "#sha256=91a99eef3ab39ca1c3d4098a7d2e280d8e3b73873a79a96a3d86b323d52198f3"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c17/"
+                "spandrel-0.4.2%2Bc17-py3-none-any.whl"
+                "#sha256=d0a2ff6c32c2389afc291c5f217fe98ca9022a49d7666e02a547bf5ab6bc4297"
             ),
         ),
         Dependency(

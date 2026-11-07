@@ -18,7 +18,7 @@ builds out of AMD's sdist in its metadata alone:
 - the Dynamic fields are left out: a wheel's metadata is final.
 The rocm_sdk module and the console script are AMD's, byte for byte. The
 wheel is deterministic. SDIST is AMD's rocm-VERSION.tar.gz
-(https://repo.amd.com/rocm/whl-multi-arch/), checked against its SHA-256
+(https://stable.repo.amd.com/rocm/whl-next/), checked against its SHA-256
 below. DIR defaults to backend/src/dependencies/whls/rocm.
 """
 
@@ -32,8 +32,8 @@ import tarfile
 import zipfile
 from pathlib import Path
 
-VERSION = "7.14.1"
-SDIST_SHA256 = "ffea97f6a9da9987a9260f9e635995b27a44dd6985d1b2b1663431356aaf669b"
+VERSION = "10.0.0"
+SDIST_SHA256 = "65b5982249612a310135f5e061b9f28909e8ad718a1ddb3f1abba92298b7216b"
 LOCAL_LABEL = "chainner"
 # The architectures with a kernel wheel in VERSION: the device-all extra's lines.
 DEVICE_ALL_COUNT = 25

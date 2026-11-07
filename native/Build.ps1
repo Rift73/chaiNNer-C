@@ -21,14 +21,14 @@ chainner_trt_vs.dll.
 ninja.exe (default: the Visual Studio 2022 Build Tools' copy); it must exist.
 
 .PARAMETER RocmRoot
-AMD GPUs (optional): the ROCm 7.14 SDK root for Windows (the rocm-sdk-devel wheel's expanded _rocm_sdk_devel, with
+AMD GPUs (optional): the ROCm 10.0 SDK root for Windows (the rocm-sdk-devel wheel's expanded _rocm_sdk_devel, with
 include\hip, lib\amdhip64.lib and lib\llvm\bin\clang++.exe). It builds the HIP custom-op libraries beside
 nodes\impl\migraphx (drft_migx_ops.dll, dual_migx_ops.dll, vosr2_migx_ops.dll; cmake\rocm.cmake). Without it and
 -MigraphxRoot the configuration has no AMD
 parts at all; a build directory keeps the roots of its earlier configures.
 
 .PARAMETER MigraphxRoot
-AMD GPUs (optional, with -RocmRoot): the MIGraphX 2.16 install for Windows that chaiNNer-C's ONNX Runtime MIGraphX
+AMD GPUs (optional, with -RocmRoot): the MIGraphX 2.17 install for Windows that chaiNNer-C's ONNX Runtime MIGraphX
 wheel bundles. It also builds the MIGraphX runner nodes\impl\migraphx\_chainner_migraphx.pyd.
 #>
 param(

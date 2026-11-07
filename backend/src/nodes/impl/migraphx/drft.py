@@ -51,7 +51,7 @@ def op_library() -> Path:
         raise RuntimeError(
             f"The DRFT MIGraphX op library {OP_LIBRARY} is missing: this build was"
             " made without it. Use the PyTorch backend, or build it with the ROCm"
-            " 7.14 SDK (native/build_linux.sh -D CHAINNER_C_ROCM_ROOT=<SDK>, on Windows"
+            " 10.0 SDK (native/build_linux.sh -D CHAINNER_C_ROCM_ROOT=<SDK>, on Windows"
             " native/Build.ps1 -RocmRoot <SDK>)."
         )
     return OP_LIBRARY

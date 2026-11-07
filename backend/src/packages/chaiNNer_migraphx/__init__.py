@@ -26,10 +26,10 @@ package_description = (
 
 install_hint = (
     "MIGraphX compiles ONNX models for AMD GPUs. Requires Linux or Windows and an AMD GPU"
-    " that ROCm 7.14 supports."
+    " that ROCm 10.0 supports."
 )
 
-# The gfx targets of this computer's AMD GPUs that ROCm 7.14.1 has kernels for, and the
+# The gfx targets of this computer's AMD GPUs that ROCm 10.0.0 has kernels for, and the
 # others
 supported, unsupported = gpu_architectures()
 # The GPUs MIGraphX runs on: worth running models on and with ROCm's kernels
@@ -56,10 +56,10 @@ def disabled_reason() -> str | None:
     if not supported:
         # A GPU whose driver reports no gfx target is in neither list.
         found = f" (this computer's: {', '.join(unsupported)})" if unsupported else ""
-        return f"MIGraphX requires an AMD GPU that ROCm 7.14 supports{found}"
+        return f"MIGraphX requires an AMD GPU that ROCm 10.0 supports{found}"
     if not devices:
         return (
-            "MIGraphX requires an AMD GPU that ROCm 7.14 supports with at least 8 compute"
+            "MIGraphX requires an AMD GPU that ROCm 10.0 supports with at least 8 compute"
             " units; this computer's supported ones are smaller"
         )
     if not runner_built():

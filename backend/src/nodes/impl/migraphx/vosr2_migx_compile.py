@@ -57,7 +57,7 @@ def ops_path() -> Path:
     if not path.is_file():
         raise RuntimeError(
             f"VOSR's MIGraphX op library {path} is missing: this build was made "
-            "without it. Use the PyTorch backend, or build it with the ROCm 7.14 SDK"
+            "without it. Use the PyTorch backend, or build it with the ROCm 10.0 SDK"
             " (native/build_linux.sh -D CHAINNER_C_ROCM_ROOT=<SDK>, on Windows"
             " native/Build.ps1 -RocmRoot <SDK>; native/README.md, Build)."
         )

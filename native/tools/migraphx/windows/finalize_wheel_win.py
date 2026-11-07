@@ -1,7 +1,7 @@
-"""Turn the built Windows onnxruntime_migraphx 1.30.0 wheel (DirectML + MIGraphX + CPU) into the shipped one.
+"""Turn the built Windows onnxruntime_migraphx 1.31.1 wheel (DirectML + MIGraphX + CPU) into the shipped one.
 
-1. Local version: 1.30.0 -> 1.30.0+rocm7.14.hipgraph.dml, MIGraphX with migraphx-hip-graph.patch (METADATA and
-   .dist-info name; onnxruntime.__version__ stays 1.30.0).
+1. Local version: 1.31.1 -> 1.31.1+rocm10.0.hipgraph.dml, MIGraphX with migraphx-hip-graph.patch (METADATA and
+   .dist-info name; onnxruntime.__version__ stays 1.31.1).
 2. MIGraphX's DLLs in onnxruntime/capi: setup.py copies the ones ORT's Windows packaging names (migraphx, _c,
    _device, _gpu, _onnx, _tf, migraphx-hiprtc-driver.exe); migraphx_ref.dll (the CPU reference target MIGraphX
    loads by name, shipped on Linux too) is added from the MIGraphX install. ROCm is never copied in.
@@ -11,7 +11,7 @@
 4. onnxruntime/MIGraphX_ThirdPartyNotices.txt: the licenses of MIGraphX and of what is compiled into it (rocMLIR and
    its LLVM, protobuf, abseil, msgpack, nlohmann/json, Eigen (MPL2-only parts), SQLite).
 5. Check every DLL/EXE/PYD: each imported DLL is in the wheel, a Windows/DirectX system DLL, Python's own, or a DLL
-   of the ROCm 7.14.1 pip packages (rocm-sdk-core, rocm-sdk-libraries).
+   of the ROCm 10.0.0 pip packages (rocm-sdk-core, rocm-sdk-libraries).
 
 Usage: python -I finalize_wheel_win.py [--vs-root <VS 2022 Build Tools>] [--readobj <llvm-readobj.exe>]
            <dist_in> <dist_out> <migraphx install> <build root> <rocm site-packages>
@@ -29,7 +29,7 @@ import subprocess
 import sys
 import tempfile
 
-LOCAL = "+rocm7.14.hipgraph.dml"
+LOCAL = "+rocm10.0.hipgraph.dml"
 DIST = "onnxruntime_migraphx"
 DEFAULT_VS_ROOT = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
 # The toolset the wheel's binaries are built with: its redistributable folder holds the runtime DLLs they import.
@@ -49,14 +49,14 @@ VC_RUNTIME = re.compile(
 )
 SYSTEM = re.compile(
     r"^(api-ms-win-.*|ext-ms-.*|kernel32|user32|advapi32|shell32|ole32|oleaut32|ws2_32|setupapi|dbghelp|ntdll|"
-    r"bcrypt|crypt32|shlwapi|version|psapi|rpcrt4|secur32|winmm|gdi32|comdlg32|d3d12|dxgi|dxcore|"
+    r"bcrypt|crypt32|shlwapi|version|psapi|rpcrt4|secur32|winmm|gdi32|comdlg32|d3d12|dxgi|dxcore|iphlpapi|winhttp|"
     r"python3|python314)\.dll$",
     re.IGNORECASE,
 )
 IMPORT_NAME = re.compile(r"Name: (\S+\.dll)", re.IGNORECASE)
 WHEEL_INFO = re.compile(rf"{re.escape(DIST)}-(.+)\.dist-info")
 NOTICES = [
-    ("AMD MIGraphX 2.16.1", "src/AMDMIGraphX/LICENSE"),
+    ("AMD MIGraphX 2.17.0", "src/AMDMIGraphX/LICENSE"),
     ("rocMLIR", "deps-src/rocmlir/rocMLIR-*/LICENSE"),
     (
         "LLVM (in rocMLIR)",
@@ -106,7 +106,7 @@ def main() -> None:
     parser.add_argument("dist_out", help="folder for the shipped wheel")
     parser.add_argument("migraphx", help="MIGraphX install prefix")
     parser.add_argument("build_root", help="work directory holding src/ and deps-src/")
-    parser.add_argument("site", help="site-packages folder of the ROCm 7.14.1 SDK")
+    parser.add_argument("site", help="site-packages folder of the ROCm 10.0.0 SDK")
     args = parser.parse_args()
 
     readobj = args.readobj or os.path.join(

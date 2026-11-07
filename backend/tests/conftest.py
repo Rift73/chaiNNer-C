@@ -18,10 +18,9 @@ os.environ["VK_LOADER_DRIVERS_DISABLE"] = "*"
 
 def _triton_rocm_installed() -> bool:
     try:
-        metadata.version("triton-rocm")
+        return "rocm" in metadata.version("triton")
     except metadata.PackageNotFoundError:
         return False
-    return True
 
 
 # ROCm's Triton, which spandrel imports, and VapourSynth's akarin plugin each carry

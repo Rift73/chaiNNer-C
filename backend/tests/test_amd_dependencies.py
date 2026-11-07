@@ -76,11 +76,12 @@ RUNTIME_BUILDS = [
     "rocm-sdk-device-*",
     "rocm-bootstrap",
     "amd-torch-device-*",
+    "amd-torchvision-device-*",
 ]
 ROCM_RUNTIME = [
-    ("rocm", "7.14.1+chainner"),
-    ("rocm-sdk-core", "7.14.1"),
-    ("rocm-sdk-libraries", "7.14.1"),
+    ("rocm", "10.0.0+chainner"),
+    ("rocm-sdk-core", "10.0.0"),
+    ("rocm-sdk-libraries", "10.0.0"),
 ]
 
 
@@ -99,7 +100,7 @@ def test_pytorch_on_nvidia_is_unchanged(
             "autoUpdate": False,
             "findLink": "https://download.pytorch.org/whl/cu132",
             "url": None,
-            "replaces": ["torch+rocm", "triton-rocm", *RUNTIME_BUILDS],
+            "replaces": ["torch+rocm", "triton-rocm", "triton+git", *RUNTIME_BUILDS],
         },
         {
             "displayName": "TorchVision",
@@ -135,7 +136,7 @@ def test_pytorch_without_a_gpu_it_runs_on_is_the_cpu_build(
             "autoUpdate": False,
             "findLink": "https://download.pytorch.org/whl/cpu",
             "url": None,
-            "replaces": ["torch+rocm", "triton-rocm", *RUNTIME_BUILDS],
+            "replaces": ["torch+rocm", "triton-rocm", "triton+git", *RUNTIME_BUILDS],
         },
         {
             "displayName": "TorchVision",
@@ -163,23 +164,30 @@ def test_pytorch_on_amd_linux_is_rocm_with_the_gpus_kernels_only(
     )
     dependencies = pytorch_package.get_pytorch()
     assert pins(dependencies) == [
-        ("torch", "2.14.1+rocm7.14"),
-        ("torchvision", "0.29.1+rocm7.14"),
-        ("triton-rocm", "3.8.0"),
+        ("torch", "2.13.0+rocm10.0.0"),
+        ("torchvision", "0.28.0+rocm10.0.0"),
+        ("triton", "3.8.0+git4cff872c.rocm10.0.0"),
+        ("rocm-bootstrap", "0.3.0"),
+        ("amd-torch-device-gfx1100", "2.13.0+rocm10.0.0"),
+        ("amd-torch-device-gfx1201", "2.13.0+rocm10.0.0"),
+        ("amd-torch-device-gfx110x", "2.13.0+rocm10.0.0"),
+        ("amd-torch-device-gfx12-0", "2.13.0+rocm10.0.0"),
+        ("amd-torchvision-device-gfx1100", "0.28.0+rocm10.0.0"),
+        ("amd-torchvision-device-gfx1201", "0.28.0+rocm10.0.0"),
         *ROCM_RUNTIME,
-        ("rocm-sdk-device-gfx1100", "7.14.1"),
-        ("rocm-sdk-device-gfx1201", "7.14.1"),
+        ("rocm-sdk-device-gfx1100", "10.0.0"),
+        ("rocm-sdk-device-gfx1201", "10.0.0"),
     ]
     assert pytorch_package.amd_architectures() == (["gfx1100", "gfx1201"], ["gfx906"])
     for dependency in dependencies:
-        assert not dependency.auto_update or dependency.pypi_name == "triton-rocm"
+        assert not dependency.auto_update or dependency.pypi_name == "triton"
         if dependency.pypi_name == "rocm":
             assert dependency.extra_index_url is None
             assert dependency.url == rocm.META_WHEEL.as_uri()
         else:
-            assert dependency.extra_index_url == rocm.PYTORCH_ROCM_INDEX
+            assert dependency.extra_index_url == rocm.AMD_INDEX
     # Without device-all: a download of gigabytes, not of every architecture's kernels.
-    assert 2.1 * 1024**3 < sum(d.size_estimate for d in dependencies) < 2.8 * 1024**3
+    assert 1.9 * 1024**3 < sum(d.size_estimate for d in dependencies) < 2.6 * 1024**3
 
 
 def test_pytorch_on_amd_windows_is_amds_build_with_its_kernel_wheels(
@@ -194,18 +202,21 @@ def test_pytorch_on_amd_windows_is_amds_build_with_its_kernel_wheels(
     )
     dependencies = pytorch_package.get_pytorch()
     assert pins(dependencies) == [
-        ("torch", "2.12.0+rocm7.14.1"),
-        ("torchvision", "0.27.0+rocm7.14.1"),
-        ("rocm-bootstrap", "0.1.0"),
-        ("amd-torch-device-gfx1030", "2.12.0+rocm7.14.1"),
-        ("amd-torch-device-gfx1101", "2.12.0+rocm7.14.1"),
-        ("amd-torch-device-gfx1151", "2.12.0+rocm7.14.1"),
-        ("amd-torch-device-gfx110x", "2.12.0+rocm7.14.1"),
-        ("amd-torch-device-gfx115x", "2.12.0+rocm7.14.1"),
+        ("torch", "2.13.0+rocm10.0.0"),
+        ("torchvision", "0.28.0+rocm10.0.0"),
+        ("rocm-bootstrap", "0.3.0"),
+        ("amd-torch-device-gfx1030", "2.13.0+rocm10.0.0"),
+        ("amd-torch-device-gfx1101", "2.13.0+rocm10.0.0"),
+        ("amd-torch-device-gfx1151", "2.13.0+rocm10.0.0"),
+        ("amd-torch-device-gfx110x", "2.13.0+rocm10.0.0"),
+        ("amd-torch-device-gfx115x", "2.13.0+rocm10.0.0"),
+        ("amd-torchvision-device-gfx1030", "0.28.0+rocm10.0.0"),
+        ("amd-torchvision-device-gfx1101", "0.28.0+rocm10.0.0"),
+        ("amd-torchvision-device-gfx1151", "0.28.0+rocm10.0.0"),
         *ROCM_RUNTIME,
-        ("rocm-sdk-device-gfx1030", "7.14.1"),
-        ("rocm-sdk-device-gfx1101", "7.14.1"),
-        ("rocm-sdk-device-gfx1151", "7.14.1"),
+        ("rocm-sdk-device-gfx1030", "10.0.0"),
+        ("rocm-sdk-device-gfx1101", "10.0.0"),
+        ("rocm-sdk-device-gfx1151", "10.0.0"),
     ]
     # Each of AMD's wheels by its URL with the SHA-256 it was pinned at (AMD publishes
     # none); no index, and no Triton (AMD's Windows PyTorch does not need it).
@@ -215,14 +226,14 @@ def test_pytorch_on_amd_windows_is_amds_build_with_its_kernel_wheels(
             assert dependency.url == rocm.META_WHEEL.as_uri()
             continue
         file, sha256, size = rocm.WINDOWS_WHEELS[dependency.pypi_name]
-        assert dependency.url == f"{rocm.AMD_INDEX}{file}#sha256={sha256}"
+        assert dependency.url == f"{rocm.AMD_INDEX}{dependency.pypi_name}/{file}#sha256={sha256}"
         assert dependency.size_estimate == size
         assert file.endswith(("-win_amd64.whl", "-py3-none-any.whl"))
         assert len(sha256) == 64
     assert dependencies[0].url == (
-        "https://repo.amd.com/rocm/whl-multi-arch/"
-        "torch-2.12.0%2Brocm7.14.1-cp314-cp314-win_amd64.whl"
-        "#sha256=ba7dad6e7c8514fc55d642accfa52569a679472aecc58d9e4428eb76fab2e9bb"
+        "https://stable.repo.amd.com/rocm/whl-next/torch/"
+        "torch-2.13.0%2Brocm10.0.0-cp314-cp314-win_amd64.whl"
+        "#sha256=9a01e2a7f89ea89383f6cd5ae884ac4875edefa387c4d8c77f207ba6efd178b0"
     )
 
 
@@ -257,11 +268,7 @@ def test_amd_stack_only_for_gpus_with_eight_compute_units(
     assert [n.removeprefix("rocm-sdk-device-") for n in names if "sdk-device" in n] == (
         kernels
     )
-    expected_torch = (
-        ("2.12.0+rocm7.14.1" if system == "windows" else "2.14.1+rocm7.14")
-        if kernels
-        else "2.14.1"
-    )
+    expected_torch = "2.13.0+rocm10.0.0" if kernels else "2.14.1"
     assert torch[0].version == expected_torch
     onnx = onnx_package.get_onnx_runtime().pypi_name
     expected_onnx = "onnxruntime-directml" if system == "windows" else "onnxruntime"
@@ -338,7 +345,7 @@ def test_onnx_runtime_on_amd_linux_is_the_migraphx_build_on_rocm(
     dependency = onnx_package.get_onnx_runtime()
     assert (dependency.pypi_name, dependency.version, dependency.import_name) == (
         "onnxruntime-migraphx",
-        "1.30.0+rocm7.14.hipgraph",
+        "1.31.1+rocm10.0.hipgraph",
         "onnxruntime",
     )
     assert (
@@ -347,7 +354,7 @@ def test_onnx_runtime_on_amd_linux_is_the_migraphx_build_on_rocm(
     # The same ROCm wheels as PyTorch's, so the packages never ask for two versions.
     assert pins(onnx_package.get_rocm()) == [
         *ROCM_RUNTIME,
-        ("rocm-sdk-device-gfx942", "7.14.1"),
+        ("rocm-sdk-device-gfx942", "10.0.0"),
     ]
 
 
@@ -360,18 +367,18 @@ def test_onnx_runtime_on_amd_windows_is_the_directml_and_migraphx_build(
     dependency = onnx_package.get_onnx_runtime()
     assert (dependency.pypi_name, dependency.version, dependency.import_name) == (
         "onnxruntime-migraphx",
-        "1.30.0+rocm7.14.hipgraph.dml",
+        "1.31.1+rocm10.0.hipgraph.dml",
         "onnxruntime",
     )
     # The Linux wheel's release, its Windows asset
     assert dependency.url == (
-        "https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/"
-        "onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph.dml-cp314-cp314-win_amd64.whl"
+        "https://github.com/Rift73/onnxruntime/releases/download/v1.31.1-rocm10.0-hipgraph/"
+        "onnxruntime_migraphx-1.31.1%2Brocm10.0.hipgraph.dml-cp314-cp314-win_amd64.whl"
         f"#sha256={rocm.ORT_MIGRAPHX_WINDOWS_SHA256}"
     )
     # AMD's Windows ROCm wheels by their pinned URLs, as PyTorch's
     rocm_wheels = onnx_package.get_rocm()
-    assert pins(rocm_wheels) == [*ROCM_RUNTIME, ("rocm-sdk-device-gfx1201", "7.14.1")]
+    assert pins(rocm_wheels) == [*ROCM_RUNTIME, ("rocm-sdk-device-gfx1201", "10.0.0")]
     assert all(d.url and d.url.startswith(rocm.AMD_INDEX) for d in rocm_wheels[1:])
 
 
@@ -381,7 +388,7 @@ def test_onnx_runtime_on_amd_windows_is_the_directml_and_migraphx_build(
         ("linux", NVIDIA, (), ("triton", "3.8.0")),
         ("linux", NVIDIA, ("gfx1100",), ("triton", "3.8.0")),
         ("linux", NO_NVIDIA, (), ("triton", "3.8.0")),
-        ("linux", NO_NVIDIA, ("gfx1100",), ("triton-rocm", "3.8.0")),
+        ("linux", NO_NVIDIA, ("gfx1100",), ("triton", "3.8.0+git4cff872c.rocm10.0.0")),
         ("windows", NVIDIA, (), ("triton-windows", "3.5.1.post22")),
         ("windows", NVIDIA, ("gfx1100",), ("triton-windows", "3.5.1.post22")),
         ("windows", NO_NVIDIA, (), ("triton-windows", "3.5.1.post22")),
@@ -407,30 +414,34 @@ def test_tensorrt_triton(
 def test_kernel_wheels_are_each_systems_rocm_architectures(
     monkeypatch: pytest.MonkeyPatch, system: str
 ):
-    linux = set(rocm.LINUX_KERNEL_WHEEL_SIZES)
+    linux = set(rocm.LINUX_ARCHITECTURES)
     assert len(linux) == 25
     assert linux - rocm.WINDOWS_ARCHITECTURES == {"gfx942", "gfx950", "gfx1250"}
-    # Every Windows architecture has PyTorch's kernel wheel too.
+    # Every architecture has PyTorch's and TorchVision's kernel wheels too.
     for architecture in rocm.WINDOWS_ARCHITECTURES:
         assert f"amd-torch-device-{architecture}" in rocm.WINDOWS_WHEELS
+        assert f"amd-torchvision-device-{architecture}" in rocm.WINDOWS_WHEELS
+    for architecture in linux:
+        assert f"amd-torch-device-{architecture}" in rocm.LINUX_WHEEL_SIZES
+        assert f"amd-torchvision-device-{architecture}" in rocm.LINUX_WHEEL_SIZES
     monkeypatch.setattr(rocm, "amd", amd("gfx942", "gfx1100"))
     monkeypatch.setattr(rocm, "is_windows", system == "windows")
     supported, unsupported = rocm.gpu_architectures()
     kernels = rocm.rocm_runtime(supported)[3:]
     if system == "windows":
         assert (supported, unsupported) == (["gfx1100"], ["gfx942"])
-        assert kernels[0].size_estimate == 179_338_768
+        assert kernels[0].size_estimate == 189_830_160
         assert (kernels[0].url or "").startswith(rocm.AMD_INDEX)
     else:
         assert (supported, unsupported) == (["gfx1100", "gfx942"], [])
-        assert all(d.extra_index_url == rocm.PYTORCH_ROCM_INDEX for d in kernels)
-        assert kernels[0].size_estimate == 205.0 * 1024**2
+        assert all(d.extra_index_url == rocm.AMD_INDEX for d in kernels)
+        assert kernels[0].size_estimate == 227_892_228
 
 
 def test_the_bundled_meta_package_requires_no_kernel_wheel():
-    assert rocm.META_WHEEL.name == "rocm-7.14.1+chainner-py3-none-any.whl"
+    assert rocm.META_WHEEL.name == "rocm-10.0.0+chainner-py3-none-any.whl"
     with zipfile.ZipFile(rocm.META_WHEEL) as wheel:
-        dist_info = "rocm-7.14.1+chainner.dist-info"
+        dist_info = "rocm-10.0.0+chainner.dist-info"
         metadata = wheel.read(f"{dist_info}/METADATA").decode().splitlines()
         # RECORD is whole and right, as pip checks it on install.
         record = wheel.read(f"{dist_info}/RECORD").decode().splitlines()
@@ -444,18 +455,18 @@ def test_the_bundled_meta_package_requires_no_kernel_wheel():
             assert digest == "sha256=" + expected.rstrip(b"=").decode()
             assert int(size) == len(data)
         assert "rocm_sdk/__init__.py" in wheel.namelist()
-    assert "Version: 7.14.1+chainner" in metadata
+    assert "Version: 10.0.0+chainner" in metadata
     assert "Provides-Extra: device-all" in metadata
     assert "Provides-Extra: device" not in metadata
     requirements = [line for line in metadata if line.startswith("Requires-Dist: ")]
-    assert "Requires-Dist: rocm-sdk-core==7.14.1" in requirements
+    assert "Requires-Dist: rocm-sdk-core==10.0.0" in requirements
     assert (
-        'Requires-Dist: rocm-sdk-libraries==7.14.1; extra == "libraries"'
+        'Requires-Dist: rocm-sdk-libraries==10.0.0; extra == "libraries"'
         in requirements
     )
     assert not [r for r in requirements if r.endswith(('"device-all"', '"device"'))]
     assert (
-        'Requires-Dist: rocm-sdk-device-gfx1100==7.14.1; extra == "device-gfx1100"'
+        'Requires-Dist: rocm-sdk-device-gfx1100==10.0.0; extra == "device-gfx1100"'
         in requirements
     )
 
@@ -464,15 +475,15 @@ def amd_pkg_info(device_all: int) -> str:
     lines = [
         "Metadata-Version: 2.4",
         "Name: rocm",
-        "Version: 7.14.1",
-        "Requires-Dist: rocm-sdk-core==7.14.1",
+        "Version: 10.0.0",
+        "Requires-Dist: rocm-sdk-core==10.0.0",
         "Provides-Extra: device",
-        'Requires-Dist: rocm-sdk-device-gfx1010==7.14.1; extra == "device"',
+        'Requires-Dist: rocm-sdk-device-gfx1010==10.0.0; extra == "device"',
         "Provides-Extra: device-gfx1100",
-        'Requires-Dist: rocm-sdk-device-gfx1100==7.14.1; extra == "device-gfx1100"',
+        'Requires-Dist: rocm-sdk-device-gfx1100==10.0.0; extra == "device-gfx1100"',
         "Provides-Extra: device-all",
         *(
-            f'Requires-Dist: rocm-sdk-device-gfx{n}==7.14.1; extra == "device-all"'
+            f'Requires-Dist: rocm-sdk-device-gfx{n}==10.0.0; extra == "device-all"'
             for n in range(device_all)
         ),
         "Dynamic: requires-dist",
@@ -484,17 +495,17 @@ def test_the_builder_empties_device_all_and_refuses_another_layout():
     assert build_rocm_meta_wheel.wheel_metadata(amd_pkg_info(25)) == (
         "Metadata-Version: 2.4\n"
         "Name: rocm\n"
-        "Version: 7.14.1+chainner\n"
-        "Requires-Dist: rocm-sdk-core==7.14.1\n"
+        "Version: 10.0.0+chainner\n"
+        "Requires-Dist: rocm-sdk-core==10.0.0\n"
         "Provides-Extra: device-gfx1100\n"
-        'Requires-Dist: rocm-sdk-device-gfx1100==7.14.1; extra == "device-gfx1100"\n'
+        'Requires-Dist: rocm-sdk-device-gfx1100==10.0.0; extra == "device-gfx1100"\n'
         "Provides-Extra: device-all\n"
     )
     with pytest.raises(ValueError, match="24 device-all requirements"):
         build_rocm_meta_wheel.wheel_metadata(amd_pkg_info(24))
-    with pytest.raises(ValueError, match=r"not version 7.14.1"):
+    with pytest.raises(ValueError, match=r"not version 10.0.0"):
         build_rocm_meta_wheel.wheel_metadata(
-            amd_pkg_info(25).replace("7.14.1\n", "7.14.2\n", 1)
+            amd_pkg_info(25).replace("10.0.0\n", "10.0.1\n", 1)
         )
 
 
@@ -583,12 +594,12 @@ def test_nvidia_and_cpu_dependencies_replace_the_amd_builds_alone(
     )
     runtime = onnx_package.get_onnx_runtime().pypi_name
     expected: dict[str, tuple[str, ...]] = {
-        "torch": ("torch+rocm", "triton-rocm", *RUNTIME_BUILDS),
+        "torch": ("torch+rocm", "triton-rocm", "triton+git", *RUNTIME_BUILDS),
         "torchvision": ("torchvision+rocm",),
         runtime: ("onnxruntime-migraphx", *RUNTIME_BUILDS),
     }
     if system == "linux":
-        expected["triton"] = ("triton-rocm",)
+        expected["triton"] = ("triton-rocm", "triton+git")
     assert {d.pypi_name: d.replaces for d in dependencies if d.replaces} == expected
 
 
@@ -602,7 +613,7 @@ def test_on_amd_onnx_runtime_and_triton_replace_the_other_builds(
     builds = ("onnxruntime", "onnxruntime-gpu", "onnxruntime-directml")
     expected: dict[str, tuple[str, ...]] = {"onnxruntime-migraphx": builds}
     if system == "linux":
-        expected["triton-rocm"] = ("triton",)
+        expected["triton"] = ("triton-rocm",)
     assert {d.pypi_name: d.replaces for d in dependencies if d.replaces} == expected
 
 
@@ -665,9 +676,9 @@ def test_the_host_installs_with_what_the_workers_dependency_replaces(
 ):
     # The host reads the worker's packages from their dicts (Package.from_dict).
     received = Dependency.from_dict(rocm.triton_rocm().to_dict())
-    assert received.replaces == ("triton",)
+    assert received.replaces == ("triton-rocm",)
     (info,) = server_host.deps_to_dep_info([received])
-    assert info.replaces == ("triton",)
+    assert info.replaces == ("triton-rocm",)
     assert Dependency.from_dict(rocm.onnxruntime_migraphx().to_dict()).replaces == (
         rocm.ORT_BUILDS
     )

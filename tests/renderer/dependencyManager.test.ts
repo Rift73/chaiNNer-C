@@ -19,7 +19,7 @@ const dep = (pypiName: string, sizeEstimate: number, url?: string): PyPiPackage 
 });
 
 const rocmWindows = (): PyPiPackage[] => [
-    dep('rocm', 0.01 * MB, 'file:///rocm-7.14.1+chainner-py3-none-any.whl'),
+    dep('rocm', 0.01 * MB, 'file:///rocm-10.0.0+chainner-py3-none-any.whl'),
     dep('rocm-sdk-core', 400 * MB, 'https://example.test/rocm_sdk_core.whl#sha256=aa'),
     dep('rocm-sdk-libraries', 100 * MB, 'https://example.test/rocm_sdk_libraries.whl#sha256=bb'),
     dep('rocm-sdk-device-gfx1100', 50 * MB, 'https://example.test/rocm_sdk_device.whl#sha256=cc'),

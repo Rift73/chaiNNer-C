@@ -1,6 +1,6 @@
 #!/bin/bash
-# In the cnm-build image (build.sh's deps step): MIGraphX 2.16.1's third-party dependencies at the versions its
-# requirements.txt pins (the recipe AMD's rbuild/cget uses), built with ROCm 7.14.1's clang on GCC Toolset 14's
+# In the cnm-build image (build.sh's deps step): MIGraphX 2.17.0's third-party dependencies at the versions its
+# requirements.txt pins (the recipe AMD's rbuild/cget uses), built with ROCm 10.0.0's clang on GCC Toolset 14's
 # libstdc++ into /work/deps. Static and position-independent where a library is linked, so libmigraphx*.so needs no
 # extra .so. rocMLIR is built as the fat static rockCompiler library (BUILD_FAT_LIBROCKCOMPILER), as for AMD's own
 # packages; LLVM's optional zlib/zstd/terminfo/libxml2 links are off (not manylinux libraries, and MIGraphX does not
@@ -48,8 +48,8 @@ cmbuild() {  # cmbuild <name> <source dir> [cmake args...]
 }
 
 "$CXX" --version | head -1
-D=$(fetch rocm-cmake https://github.com/ROCm/rocm-cmake/archive/1d4652ae2ec0e44a67a7c415dd7e51c88a6aa68d.tar.gz \
-    77e583f4154e521be102798b77ee958fd04b2b07ab6fdbd545e3e364024be154)
+D=$(fetch rocm-cmake https://github.com/ROCm/rocm-cmake/archive/6a7c5b73b8882c74f8f7060e2633f230dabb7b63.tar.gz \
+    ddf850521e8342c36c9ed78bf8d4114d80522705ffcfd6c76a0cb94ae67a4952)
 cmbuild rocm-cmake "$D"
 D=$(fetch abseil https://github.com/abseil/abseil-cpp/archive/20250512.0.tar.gz \
     7262daa7c1711406248c10f41026d685e88223bc92817d16fb93c19adb57f669)
@@ -93,8 +93,8 @@ cmbuild ck "$D/codegen" -DBUILD_TESTING=Off -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
 # rocMLIR always configures its Python bindings on Linux (not part of librockCompiler, not shipped); they need a
 # CPython with libpython, the image's python-build-standalone 3.14.8.
-D=$(fetch rocmlir https://github.com/ROCm/rocMLIR/archive/518955cab3ec2a53cbb03216cb55ac6ab47ee1da.tar.gz \
-    e6a8e0d7499db384e0daa7225f5563bf09d6eabb6f2007c345ebd4e423b8dd57)
+D=$(fetch rocmlir https://github.com/ROCm/rocMLIR/archive/2e1e7abf4ec789e74e49e42018f852ea66e5ef85.tar.gz \
+    d9ee162707778958e485f5424a9ee0942135301d932bf8a5c5bf0190f80a2cea)
 cmbuild rocmlir "$D" -DBUILD_FAT_LIBROCKCOMPILER=On -DLLVM_INCLUDE_TESTS=Off -DROCMLIR_PARALLEL_LINK_JOBS=2 \
     -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_TERMINFO=OFF -DLLVM_ENABLE_LIBXML2=OFF \
     -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_LIBPFM=OFF \

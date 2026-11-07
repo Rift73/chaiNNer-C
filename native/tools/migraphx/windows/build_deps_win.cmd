@@ -1,5 +1,5 @@
 @echo off
-rem MIGraphX 2.16.1's third-party dependencies for Windows at the versions its requirements.txt pins, built the way
+rem MIGraphX 2.17.0's third-party dependencies for Windows at the versions its requirements.txt pins, built the way
 rem AMDMIGraphX's Windows GPU CI builds them (rbuild.ini [gh-win-gpu]): clang-cl, /std:c++17, the DLL C runtime
 rem (/MD), Ninja, Release. Composable kernel is not built (MIGraphX turns it off on Windows); pybind11 is not built
 rem (no Python module, as [gh-win-gpu]). Sources: the archives of build_deps.sh (same URLs, same SHA-256), each unpacked
@@ -18,7 +18,7 @@ set COMMON=-G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_INSTALL_PREFIX=%DEPS%" "
 "%LLVMBIN%\clang-cl.exe" --version | findstr /C:"clang version"
 
 set "X="
-call :cmbuild rocm-cmake "%SRC%\rocm-cmake\rocm-cmake-1d4652ae2ec0e44a67a7c415dd7e51c88a6aa68d" || exit /b 1
+call :cmbuild rocm-cmake "%SRC%\rocm-cmake\rocm-cmake-6a7c5b73b8882c74f8f7060e2633f230dabb7b63" || exit /b 1
 set X=-DABSL_ENABLE_INSTALL=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DABSL_MSVC_STATIC_RUNTIME=Off -DABSL_PROPAGATE_CXX_STD=ON
 call :cmbuild abseil "%SRC%\abseil\abseil-cpp-20250512.0" || exit /b 1
 set X=-DCMAKE_POSITION_INDEPENDENT_CODE=On -Dprotobuf_BUILD_TESTS=Off -Dprotobuf_BUILD_SHARED_LIBS=Off -Dprotobuf_MSVC_STATIC_RUNTIME=Off -Dprotobuf_BUILD_LIBPROTOC=On -Dprotobuf_BUILD_PROTOC_BINARIES=On -Dprotobuf_BUILD_PROTOBUF_BINARIES=On -Dprotobuf_ABSL_PROVIDER=package -Dprotobuf_WITH_ZLIB=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5

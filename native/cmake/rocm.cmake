@@ -2,7 +2,7 @@
 # (drft, dual, vosr2), from the ROCm SDK at CHAINNER_C_ROCM_ROOT, else skipped with one status line. Optional and
 # separate: CMakeLists.txt includes this file before its TensorRT part, and nothing here touches another target. HIP
 # sources are compiled by the SDK's clang++ through custom commands, as nvcc compiles the .cu files: device code for
-# every architecture of CHAINNER_C_HIP_ARCHITECTURES (every target ROCm 7.14 ships for the system), host code with the
+# every architecture of CHAINNER_C_HIP_ARCHITECTURES (every target ROCm 10.0 ships for the system), host code with the
 # parent directory's intent (no contraction unless a target asks, hidden visibility, the stack protector); the modules
 # link with the parent toolchain. Windows (Build.ps1 -RocmRoot, -MigraphxRoot): the same modules as .pyd and .dll;
 # the SDK's clang++ compiles
@@ -15,13 +15,13 @@ if(WIN32 AND NOT CHAINNER_C_ROCM_ROOT AND NOT CHAINNER_C_MIGRAPHX_ROOT)
     return()
 endif()
 set(chainner_c_hip_major 7)
-set(chainner_c_hip_minor 14)
+set(chainner_c_hip_minor 15)
 set(CHAINNER_C_ROCM_ROOT "" CACHE PATH
-    "ROCm ${chainner_c_hip_major}.${chainner_c_hip_minor} SDK root (include/hip, lib, lib/llvm/bin/clang++) for the MIGraphX runner and the HIP custom-op libraries; empty: not built")
+    "ROCm 10.0 SDK root (include/hip, lib, lib/llvm/bin/clang++) for the MIGraphX runner and the HIP custom-op libraries; empty: not built")
 set(CHAINNER_C_MIGRAPHX_ROOT "" CACHE PATH
     "MIGraphX root (include/migraphx, lib) for the MIGraphX runner (_chainner_migraphx); empty: not built")
 if(WIN32)
-    # ROCm 7.14's Windows targets: no gfx942, gfx950 or gfx1250 there.
+    # ROCm 10.0's Windows targets: no gfx942, gfx950 or gfx1250 there.
     set(chainner_c_hip_architectures
         "gfx908;gfx90a;gfx1010;gfx1011;gfx1012;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201")
 else()
@@ -29,7 +29,7 @@ else()
         "gfx908;gfx90a;gfx942;gfx950;gfx1010;gfx1011;gfx1012;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201;gfx1250")
 endif()
 set(CHAINNER_C_HIP_ARCHITECTURES "${chainner_c_hip_architectures}"
-    CACHE STRING "The AMD GPU architectures HIP device code is compiled for (default: every target of ROCm 7.14)")
+    CACHE STRING "The AMD GPU architectures HIP device code is compiled for (default: every target of ROCm 10.0)")
 if(NOT CHAINNER_C_ROCM_ROOT)
     if(CHAINNER_C_MIGRAPHX_ROOT)
         message(FATAL_ERROR "The MIGraphX runner needs CHAINNER_C_ROCM_ROOT too "
@@ -66,7 +66,7 @@ foreach(chainner_c_part MAJOR MINOR PATCH)
 endforeach()
 list(JOIN chainner_c_hip_version "." chainner_c_hip_version)
 if(NOT chainner_c_hip_version MATCHES "^${chainner_c_hip_major}\\.${chainner_c_hip_minor}\\.[0-9]+$")
-    message(FATAL_ERROR "The AMD GPU parts build with ROCm ${chainner_c_hip_major}.${chainner_c_hip_minor} only, "
+    message(FATAL_ERROR "The AMD GPU parts build with HIP ${chainner_c_hip_major}.${chainner_c_hip_minor} (ROCm 10.0) only, "
         "not HIP '${chainner_c_hip_version}' (${chainner_c_hip_version_header})")
 endif()
 message(STATUS "AMD GPU parts: HIP ${chainner_c_hip_version} for ${CHAINNER_C_HIP_ARCHITECTURES}")

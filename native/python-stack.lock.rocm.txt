@@ -7,7 +7,7 @@
 # pip: 26.2.1 (installed; pip freeze does not list it)
 # Packages: pip freeze of that runtime, provisioned by native/tools/provision_runtime.ps1 -Rocm (AMD's
 # torch and torchvision builds, ROCm's rocm-sdk-core and rocm-sdk-libraries and rocm-bootstrap from
-# https://repo.amd.com/rocm/whl-multi-arch/, chainner-pip and ROCm's meta package rocm from the bundled wheels in
+# https://stable.repo.amd.com/rocm/whl-next/, chainner-pip and ROCm's meta package rocm from the bundled wheels in
 # backend/src/dependencies/whls/, spandrel and onnxruntime-migraphx from their forks' release wheels
 # (github.com/Rift73/spandrel, github.com/Rift73/onnxruntime), the rest from PyPI). It is the Windows lock's
 # set for AMD GPUs: ROCm in CUDA's place and ONNX Runtime with DirectML and MIGraphX. The GPU kernel wheels
@@ -57,7 +57,7 @@ numpy==2.5.3
 nvidia-ml-py==13.615.71
 onnx==1.23.2
 onnxoptimizer==0.4.2
-onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph.dml-cp314-cp314-win_amd64.whl#sha256=940258f7c0f010d4250560b18cc95c359348f16ab7b060e65a32fd91cc5fc29f
+onnxruntime-migraphx @ https://github.com/Rift73/onnxruntime/releases/download/v1.31.1-rocm10.0-hipgraph/onnxruntime_migraphx-1.31.1%2Brocm10.0.hipgraph.dml-cp314-cp314-win_amd64.whl#sha256=64feb4c6fcf1c030f1a48844d83de0bf729c3b37df7637d0dd9ef0581eba9fa4
 opencv-python==5.0.0.93
 packaging==26.3
 pillow==12.3.0
@@ -77,10 +77,10 @@ pytest-asyncio==1.4.0
 pytest-cov==7.1.0
 python-dateutil==2.9.0.post0
 requests==2.34.2
-rocm==7.14.1+chainner
-rocm-bootstrap==0.1.0
-rocm-sdk-core==7.14.1
-rocm-sdk-libraries==7.14.1
+rocm==10.0.0+chainner
+rocm-bootstrap==0.3.0
+rocm-sdk-core==10.0.0
+rocm-sdk-libraries==10.0.0
 safetensors==0.8.0
 sanic==25.12.1
 Sanic-Cors==2.2.0  # oracle/reference only (upstream's server imports sanic_cors)
@@ -88,11 +88,11 @@ sanic-routing==23.12.0
 scipy==1.18.1
 setuptools==78.1.0
 six==1.17.0
-spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c14/spandrel-0.4.2%2Bc14-py3-none-any.whl#sha256=91a99eef3ab39ca1c3d4098a7d2e280d8e3b73873a79a96a3d86b323d52198f3
+spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c17/spandrel-0.4.2%2Bc17-py3-none-any.whl#sha256=d0a2ff6c32c2389afc291c5f217fe98ca9022a49d7666e02a547bf5ab6bc4297
 spandrel_extra_arches==0.2.0
 sympy==1.14.0
-torch==2.12.0+rocm7.14.1
-torchvision==0.27.0+rocm7.14.1
+torch==2.13.0+rocm10.0.0
+torchvision==0.28.0+rocm10.0.0
 tqdm==4.70.1
 tracerite==2.6.5
 triton-windows @ https://files.pythonhosted.org/packages/0c/3c/6be3de0febab8f0708b32377c59d6f963a492622ce79762ec08ddc7496a8/triton_windows-3.8.0.post29-cp314-cp314-win_amd64.whl#sha256=1d0fd6a6cf36ba5cced997177068e328d015e42cd4300f6995fff5a6f8707aff

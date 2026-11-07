@@ -16,9 +16,21 @@ smooth images above 66 dB. It takes the same lengths and the same FP32 product: 
 each of those sizes, at the same speed (Fixed 512 px: 65.25 -> 64.74 ms; FP32: 223.24 ms).
 
 DAT's channel attention takes that product too, after lengths it already takes in FP32. A
-trained DAT2, Dynamic FP16 engine against Dynamic FP32 engine on natural crops, read 65 to 70
-dB at 128 px, 56 to 65 dB at 256 px and 41 to 58 dB at 512 px; with the product in FP32, 66 to
-70 dB at each. Here it costs speed: at 512 px 234.82 -> 357.30 ms (FP32: 573.03 ms).
+trained DAT2, Dynamic FP16 engine against strict FP32 on natural crops, read 53 to 65 dB at 256
+px and 43 to 53 dB at 512 px, and scaling both sides so that no term is subnormal changes
+nothing: what loses the image is one FP16 sum of every pixel's small term. FP32 holds, 66 to 69
+dB, at a price: TensorRT's FP32 GEMM has no fast kernel, 32.6 of 79.7 ms at Fixed 256 px. So it
+takes one FP16 product per row of the tile, each a short sum of scaled terms, and adds the rows
+in FP32: the same 66 to 69 dB, Fixed 256 px 49.60 -> 47.60 ms and Dynamic 512 px 260.08 -> 249.04
+ms against the plain FP16 product (FP32 product: 79.69 and 366.72 ms).
+
+On a large image its lengths and its spatial attention's moves grow faster than the pixels: a
+trained 4x DAT2 at 1200x864 took 1166.0 ms, 277.6 of them in one FP32 sum per channel over every
+pixel. The lengths now sum along each row and then the rows, and the spatial attention takes each
+branch's own channels in one pass, its spatial map from the tokens as linear layers and its mix in
+tokens: 970.8 ms (Fixed: 1141.8 -> 921.8 ms), context 14.63 -> 13.68 GiB, crops the same to 0.1 dB.
+Keeping the channel attention's v and attention B, C, H, W as well removes more moves and is no
+faster: its GPU clock falls from about 2700 to about 1600 MHz, 1043.3 ms.
 
 Below opset 17 ONNX has no LayerNormalization: the exporter writes it out of plain operators
 and casts FP16 to float64 for them, so an FP16 graph holds float64 in every LayerNorm of HAT,
@@ -33,11 +45,15 @@ import copy
 from typing import TypeVar
 
 import torch
+import torch.nn.functional as F
 from einops import rearrange
 from spandrel import ModelDescriptor
 from spandrel.architectures.__arch_helpers.attention import in_migraphx_export
 from spandrel.architectures.__arch_helpers.fp32_last_group import FP32LayerNorm
-from spandrel.architectures.DAT.__arch.DAT import Adaptive_Channel_Attention
+from spandrel.architectures.DAT.__arch.DAT import (
+    Adaptive_Channel_Attention,
+    Adaptive_Spatial_Attention,
+)
 from spandrel.architectures.FDAT.__arch.fdat import FastChannelAttention
 from spandrel.architectures.RetinexFormer.__arch.retinexformer_arch import IG_MSA
 from torch import nn
@@ -45,6 +61,10 @@ from torch import nn
 from .omnisr_export import unit_length
 
 _Descriptor = TypeVar("_Descriptor", bound=ModelDescriptor)
+
+# Both sides of a row product are scaled by this: terms of 1024 / pixels stay normal FP16 numbers
+# to 2048x2048, and no row's sum, 1024 at most, comes near FP16's 65504.
+_ROW_PRODUCT_SCALE = 32.0
 
 
 class _UnitLengthAttention(IG_MSA):
@@ -90,20 +110,30 @@ class _UnitLengthChannelAttention(FastChannelAttention):
         )
 
 
-class _Fp32ProductChannelAttention(Adaptive_Channel_Attention):
+def _unit_rows(x: torch.Tensor) -> torch.Tensor:
+    """Each channel of B, heads, H, W, C at _ROW_PRODUCT_SCALE's length, in x's type: the
+    squares in FP32, summed along each row and then the rows."""
+    wide = x.float()
+    length = wide.square().sum(3, keepdim=True).sum(2, keepdim=True).sqrt()
+    return (wide / length.clamp_min(1e-12) * _ROW_PRODUCT_SCALE).to(x.dtype)
+
+
+class _RowProductChannelAttention(Adaptive_Channel_Attention):
     def __init__(self, source: Adaptive_Channel_Attention) -> None:
         nn.Module.__init__(self)
         self.__dict__.update(source.__dict__)
 
     def forward(self, x: torch.Tensor, height: int, width: int) -> torch.Tensor:
         b, n, c = x.shape
-        qkv = self.qkv(x).reshape(b, n, 3, self.num_heads, c // self.num_heads)
+        head = c // self.num_heads
+        qkv = self.qkv(x).reshape(b, n, 3, self.num_heads, head)
         q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)
-        q = torch.nn.functional.normalize(q.transpose(-2, -1).float(), dim=-1)
-        k = torch.nn.functional.normalize(k.transpose(-2, -1).float(), dim=-1)
+        rows = (b, self.num_heads, height, width, head)
+        q, k = _unit_rows(q.reshape(rows)), _unit_rows(k.reshape(rows))
         v = v.transpose(-2, -1)
         v_ = v.reshape(b, c, n).contiguous().view(b, c, height, width)
-        attn = (q @ k.transpose(-2, -1)).to(x.dtype) * self.temperature
+        attn = (q.transpose(-2, -1) @ k).float().sum(2) / _ROW_PRODUCT_SCALE**2
+        attn = attn.to(x.dtype) * self.temperature
         attn = self.attn_drop(attn.softmax(dim=-1))
         if in_migraphx_export():
             attened_x = v.transpose(-2, -1) @ attn.transpose(-2, -1)
@@ -123,16 +153,83 @@ class _Fp32ProductChannelAttention(Adaptive_Channel_Attention):
         return self.proj_drop(self.proj(attened_x + conv_x))
 
 
+class _TokenSpatialAttention(Adaptive_Spatial_Attention):
+    def __init__(self, source: Adaptive_Spatial_Attention) -> None:
+        nn.Module.__init__(self)
+        self.__dict__.update(source.__dict__)
+
+    def _spatial_map(self, tokens: torch.Tensor) -> torch.Tensor:
+        """spatial_interaction on B, L, C: its 1x1 convolutions as linear layers, with its
+        batch norm folded into the first."""
+        conv_0, norm, activation, conv_1 = self.spatial_interaction
+        scale = norm.weight.float() / (norm.running_var.float() + norm.eps).sqrt()
+        offset = norm.bias.float() - norm.running_mean.float() * scale
+        weight = (conv_0.weight[:, :, 0, 0].float() * scale[:, None]).to(tokens.dtype)
+        bias = (conv_0.bias.float() * scale + offset).to(tokens.dtype)
+        x = activation(F.linear(tokens, weight, bias))
+        return F.linear(x, conv_1.weight[:, :, 0, 0], conv_1.bias)
+
+    def forward(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
+        B, L, C = x.shape
+        d = C // self.num_heads
+        qkv = self.qkv(x).reshape(B, H, W, 3, self.num_heads, -1)
+        v = qkv[:, :, :, 2, :, :d].permute(0, 3, 4, 1, 2).reshape(B, C, H, W)
+        half = self.num_heads * qkv.shape[-1] // 2
+        qkv = qkv.reshape(B, H, W, 3, 2 * half).permute(3, 0, 1, 2, 4)
+        split = max(self.split_size)
+        pad_r = (split - W % split) % split
+        pad_b = (split - H % split) % split
+        qkv = F.pad(qkv, (0, 0, 0, pad_r, 0, pad_b))
+        full_h, full_w = H + pad_b, W + pad_r
+        first, second = qkv[..., :half], qkv[..., half:]
+        if (self.rg_idx % 2 == 0 and self.b_idx > 0 and (self.b_idx - 2) % 4 == 0) or (
+            self.rg_idx % 2 != 0 and self.b_idx % 4 == 0
+        ):
+            s_0, s_1 = self.shift_size
+            mask_0, mask_1 = self.calculate_mask(
+                full_h, full_w, dtype=x.dtype, device=x.device
+            )
+            first = torch.roll(first, (-s_0, -s_1), (2, 3))
+            second = torch.roll(second, (-s_1, -s_0), (2, 3))
+            x_0 = self.attns[0](first, full_h, full_w, mask=mask_0)
+            x_1 = self.attns[1](second, full_h, full_w, mask=mask_1)
+            x_0 = torch.roll(x_0, (s_0, s_1), (1, 2))
+            x_1 = torch.roll(x_1, (s_1, s_0), (1, 2))
+        else:
+            x_0 = self.attns[0](first, full_h, full_w)
+            x_1 = self.attns[1](second, full_h, full_w)
+        heads = self.num_heads // 2
+        attened = torch.cat(
+            [
+                part[:, :H, :W].reshape(B, H, W, heads, -1)[..., :d].reshape(B, L, C // 2)
+                for part in (x_0, x_1)
+            ],
+            dim=2,
+        )
+        conv_x = self.dwconv(v)
+        channel_map = self.channel_interaction(conv_x).reshape(B, 1, C)
+        spatial_map = self._spatial_map(attened)
+        conv_x = conv_x.flatten(2).transpose(1, 2)
+        return self.proj_drop(
+            self.proj(
+                attened * torch.sigmoid(channel_map)
+                + conv_x * torch.sigmoid(spatial_map)
+            )
+        )
+
+
 _ATTENTIONS: dict[type[nn.Module], type[nn.Module]] = {
-    Adaptive_Channel_Attention: _Fp32ProductChannelAttention,
+    Adaptive_Channel_Attention: _RowProductChannelAttention,
+    Adaptive_Spatial_Attention: _TokenSpatialAttention,
     FastChannelAttention: _UnitLengthChannelAttention,
     IG_MSA: _UnitLengthAttention,
 }
 
 
 def for_export(model: _Descriptor) -> _Descriptor:
-    """A copy of an FP16 RetinexFormer, FDAT or DAT with its vector lengths and attention
-    product in FP32; any other model as it is."""
+    """A copy of an FP16 RetinexFormer or FDAT with its vector lengths and attention product
+    in FP32, or an FP16 DAT with its lengths in FP32, its product by rows and fewer passes over
+    memory; any other model as it is."""
     names = ("RetinexFormer", "FDAT", "DAT")
     if model.dtype != torch.float16 or model.architecture.name not in names:
         return model

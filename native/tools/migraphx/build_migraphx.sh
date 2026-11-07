@@ -1,8 +1,8 @@
 #!/bin/bash
-# In the cnm-build image (build.sh's migraphx step): MIGraphX 2.16.1 (AMDMIGraphX release/rocm-rel-7.14 at 2487b688)
-# against the ROCm 7.14.1 pip SDK with ROCm's clang (GCC Toolset 14's libstdc++, glibc 2.28): the GPU target with
+# In the cnm-build image (build.sh's migraphx step): MIGraphX 2.17.0 (AMDMIGraphX release/rocm-rel-10.0 at becdb3da)
+# against the ROCm 10.0.0 pip SDK with ROCm's clang (GCC Toolset 14's libstdc++, glibc 2.28): the GPU target with
 # rocMLIR, MIOpen, rocBLAS, hipBLASLt and composable_kernel (AMD's Linux defaults), the Python module for CPython 3.14,
-# no tests, device code for every gfx target ROCm 7.14.1 ships on Linux. The image's python-build-standalone 3.14.8
+# no tests, device code for every gfx target ROCm 10.0.0 ships on Linux. The image's python-build-standalone 3.14.8
 # provides the headers and, for MIGraphX's separate embedding library libmigraphx_py_3.14.so (which only MIGraphX's
 # own driver opens), libpython; the extension module links no libpython.
 # With migraphx-hip-graph.patch (MIT, as MIGraphX), the GPU target's hipgraphify pass, off unless a compile asks for it:
@@ -10,13 +10,13 @@
 # plus the capture boundaries of #5184 and #5364 for what this commit has (a view placed by a host value, select_module)
 # and gpu::loop, whose iterations run on the host. The target's files are restored and the patch applied again on every
 # run; the pass reads compile_options::backend_options["hip_graph"], which upstream reads through its options struct.
-# Install prefix: /work/migraphx-7.14, the --migraphx of native/tools/build_linux_release.sh.
+# Install prefix: /work/migraphx-10.0, the --migraphx of native/tools/build_linux_release.sh.
 set -euo pipefail
 ROCM=$(cat /work/rocm-root.txt)
 P=/work/deps
 SRC=/work/src/AMDMIGraphX
 B=/work/migraphx-build
-I=/work/migraphx-7.14
+I=/work/migraphx-10.0
 JOBS=${JOBS:-12}
 TARGETS="gfx908;gfx90a;gfx942;gfx950;gfx1010;gfx1011;gfx1012;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;"
 TARGETS+="gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201;gfx1250"
@@ -27,7 +27,7 @@ GCCTC=--gcc-toolchain=/opt/rh/gcc-toolset-14/root/usr
 # copies. Data symbols stay shared between MIGraphX's own libraries (op/compiler registries), as in AMD's builds.
 LIBLINK="$GCCTC -Wl,-Bsymbolic-functions -Wl,--exclude-libs,ALL"
 export ROCM_PATH=$ROCM HIP_PATH=$ROCM
-test "$(git -C "$SRC" rev-parse HEAD)" = "2487b688c453b9007ac69ff1d79ad6cf9b509901"
+test "$(git -C "$SRC" rev-parse HEAD)" = "becdb3da862f2297041b746b90bc6130e2b1d1f7"
 git -C "$SRC" checkout HEAD -- src/targets/gpu
 git -C "$SRC" clean -fdq -- src/targets/gpu
 git -C "$SRC" apply /recipe/migraphx-hip-graph.patch

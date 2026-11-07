@@ -25,15 +25,15 @@ EXAMPLE_OPS=test-ops/chainner_example_migx_ops.so
 # matching the pattern), else from the URL (empty: the dependency manager installs its own pin). An installed wheel of
 # the version a package lists is one the dependency manager keeps.
 ORT_MIGRAPHX_WHEEL_PATTERN="onnxruntime_migraphx-*.whl"
-ORT_MIGRAPHX_WHEEL_URL="https://github.com/Rift73/onnxruntime/releases/download/v1.30.0-rocm7.14-hipgraph/onnxruntime_migraphx-1.30.0%2Brocm7.14.hipgraph-cp314-cp314-manylinux_2_28_x86_64.whl"
-ORT_MIGRAPHX_WHEEL_SHA256="233e4ac76e3eb7712d4b968e4bce4649c1f2ba5bf0e686fec354ab9afd5466f6"
+ORT_MIGRAPHX_WHEEL_URL="https://github.com/Rift73/onnxruntime/releases/download/v1.31.1-rocm10.0-hipgraph/onnxruntime_migraphx-1.31.1%2Brocm10.0.hipgraph-cp314-cp314-manylinux_2_28_x86_64.whl"
+ORT_MIGRAPHX_WHEEL_SHA256="3856b2f06dc1fe30251b4649820555e00e39ea47fc219e0e41c81db8d54d8ece"
 SPANDREL_WHEEL_PATTERN="spandrel-*.whl"
-SPANDREL_WHEEL_URL="https://github.com/Rift73/spandrel/releases/download/v0.4.2-c14/spandrel-0.4.2%2Bc14-py3-none-any.whl"
-SPANDREL_WHEEL_SHA256="91a99eef3ab39ca1c3d4098a7d2e280d8e3b73873a79a96a3d86b323d52198f3"
+SPANDREL_WHEEL_URL="https://github.com/Rift73/spandrel/releases/download/v0.4.2-c17/spandrel-0.4.2%2Bc17-py3-none-any.whl"
+SPANDREL_WHEEL_SHA256="d0a2ff6c32c2389afc291c5f217fe98ca9022a49d7666e02a547bf5ab6bc4297"
 # The ESRGAN the kit downloads when --models has none: Real-ESRGAN's 4x anime model (RRDB, 6 blocks, 17.9 MB).
 ESRGAN_URL="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth"
 ESRGAN_SHA256="f872d837d3c90ed2e05227bed711af5671a6fd1c9f7d7e91c911a61f155e99da"
-# The GPUs ROCm 7.14.1 has kernels for on Linux (AMD's whl-multi-arch index).
+# The GPUs ROCm 10.0.0 has kernels for on Linux (AMD's whl-next index).
 ROCM_TARGETS="gfx908 gfx90a gfx942 gfx950 gfx1010 gfx1011 gfx1012 gfx1030 gfx1031 gfx1032 gfx1033 gfx1034 gfx1035 gfx1036 gfx1100 gfx1101 gfx1102 gfx1103 gfx1150 gfx1151 gfx1152 gfx1153 gfx1200 gfx1201 gfx1250"
 # The packages the kit installs through the dependency manager (VapourSynth for its AI Upscale tests on AMD GPUs)
 KIT_PACKAGES=(chaiNNer_pytorch chaiNNer_onnx chaiNNer_ncnn chaiNNer_migraphx chaiNNer_vapoursynth)

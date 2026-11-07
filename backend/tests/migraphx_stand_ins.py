@@ -36,7 +36,7 @@ NODE_MODULES = (
     "utility.build_program",
     "utility.get_program_info",
 )
-# A few of ROCm 7.14.1's gfx targets
+# A few of ROCm 10.0.0's gfx targets
 ROCM_TARGETS = {"gfx942", "gfx1036", "gfx1100", "gfx1201"}
 INSTALLED = Dependency("pytest", "pytest", importlib.metadata.version("pytest"), 0)
 ABSENT = Dependency("Absent", "chainner-c-absent-test-dependency", "1.0", 0)

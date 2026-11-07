@@ -1,13 +1,13 @@
 @echo off
-rem ONNX Runtime 1.30.0 Python wheel (cp314, win_amd64) with the DirectML and MIGraphX execution providers (plus CPU).
-rem Source: the v1.30.0 tag (f2c39fe) with its submodules in ROOT\ort-src (fetch_sources.sh; ROOT is the work directory,
+rem ONNX Runtime 1.31.1 Python wheel (cp314, win_amd64) with the DirectML and MIGraphX execution providers (plus CPU).
+rem Source: the v1.31.1 tag (6af1a93) with its submodules in ROOT\ort-src (fetch_sources.sh; ROOT is the work directory,
 rem settings_win.cmd) plus the two MIGraphX provider fixes of the Linux wheel, in order: ort-migraphx-cache-name.patch,
 rem ort-migraphx-shape-programs.patch, then ort-migraphx-windows-build.patch (build system only: the provider as C++17
 rem on MSVC, as migraphx.hpp does not compile as C++20; no empty HIP SDK DLL copy). The files the patches touch are
 rem restored from the tag and the patches applied again on every run, as build_ort.sh does.
 rem Flags: those of the 1.30.0+trt11.4 Windows wheel (MSVC 14.44, Ninja, --enable_lto
 rem --use_binskim_compliant_compile_flags, warnings not fatal, link pool of 1) with the CUDA/TensorRT
-rem options replaced by --use_dml (DirectML 1.15.4 NuGet, as ORT pins it) and --use_migraphx against MIGraphX 2.16.1
+rem options replaced by --use_dml (DirectML 1.15.4 NuGet, as ORT pins it) and --use_migraphx against MIGraphX 2.17.0
 rem (ROOT\install); unit tests not built (as the Linux MIGraphX wheel). MIGX_JOBS parallel jobs.
 rem Only HIP_PATH points at the ROCm SDK: neither its bin folder (it has a flatc.exe of flatbuffers 25, ORT needs 23)
 rem nor its root goes on PATH or CMAKE_PREFIX_PATH; the MIGraphX provider's CMake finds HIP through HIP_PATH.
@@ -26,7 +26,7 @@ set "CMAKE_BIN=%VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
 set "NINJA_BIN=%VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
 set "PATH=%CMAKE_BIN%;%NINJA_BIN%;%PATH%"
 if not exist "%PY%" echo MIGX_PYTHON %PY% does not exist & exit /b 1
-git -C "%S%" rev-parse HEAD | findstr /B f2c39fe2f838cf35ce7da92824f5a5e3ee6e88a7 >nul || (
+git -C "%S%" rev-parse HEAD | findstr /B 6af1a932e2286d5c58166085d24c68783033edee >nul || (
   echo wrong ONNX Runtime commit
   exit /b 1
 )

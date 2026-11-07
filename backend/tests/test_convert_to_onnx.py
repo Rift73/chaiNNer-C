@@ -96,6 +96,7 @@ from nodes.impl.pytorch import (
     dysample_export,
     fourier_export,
     fp16_export,
+    hat_export,
     input_export,
     lda_export,
     plksr_export,
@@ -570,7 +571,6 @@ def model_with_a_product_over_every_pixel(arch: str) -> ImageModelDescriptor:
     [
         ("RetinexFormer", IG_MSA),
         ("FDAT", FastChannelAttention),
-        ("DAT", Adaptive_Channel_Attention),
     ],
 )
 def test_an_fp16_export_takes_a_product_over_every_pixel_in_fp32(
@@ -585,6 +585,22 @@ def test_an_fp16_export_takes_a_product_over_every_pixel_in_fp32(
     attentions = sum(isinstance(m, attention) for m in model.model.modules())
     assert products.count(onnx.TensorProto.FLOAT) == attentions
     assert onnx.TensorProto.FLOAT16 in products
+
+
+def test_an_fp16_dat_takes_its_product_by_rows_and_adds_them_in_fp32():
+    model = model_with_a_product_over_every_pixel("DAT")
+    model.supports_half = True
+    half = convert_to_onnx_impl(model, torch.device("cpu"), True, opset_version=20)
+    graph = onnx.shape_inference.infer_shapes(onnx.load_from_string(half)).graph
+    kinds = {v.name: v.type.tensor_type.elem_type for v in graph.value_info}
+    products = [kinds[n.output[0]] for n in graph.node if n.op_type == "MatMul"]
+    assert onnx.TensorProto.FLOAT not in products
+    sums = [kinds[n.output[0]] for n in graph.node if n.op_type == "ReduceSum"]
+    attentions = sum(
+        isinstance(m, Adaptive_Channel_Attention) for m in model.model.modules()
+    )
+    # q's and k's lengths in two sums each, and the rows
+    assert sums.count(onnx.TensorProto.FLOAT) == 5 * attentions
 
 
 @pytest.mark.parametrize("arch", ["RetinexFormer", "FDAT", "DAT"])
@@ -603,6 +619,34 @@ def test_the_fp16_rewrite_computes_the_same_lengths_on_a_copy(arch: str):
     image = torch.rand(1, 3, 32, 48)
     with torch.no_grad():
         torch.testing.assert_close(export(image), model(image), atol=1e-5, rtol=0)
+
+
+def test_an_fp16_hat_has_a_trunk_of_a_multiple_of_8_channels_on_a_copy():
+    model = tiny_model("HAT")
+    assert hat_export.for_export(model) is model
+    model.supports_half = True
+    model.half()
+    export = hat_export.for_export(model)
+    assert export.model is not model.model
+    assert model.model.conv_first.out_channels == 12
+    assert export.model.conv_first.out_channels == 16
+    assert export.model.conv_first.weight[12:].count_nonzero() == 0
+    assert export.model.conv_first.bias[12:].count_nonzero() == 0
+    model.float()
+    export.float()
+    image = torch.rand(1, 3, 16, 24)
+    with torch.no_grad():
+        torch.testing.assert_close(export(image), model(image), atol=1e-5, rtol=0)
+
+
+def test_an_fp16_hat_export_runs_as_the_model_at_another_size():
+    model = tiny_model("HAT")
+    image = images([(24, 40)])[0]
+    session = fp16_export_session(model)
+    (actual,) = session.run(None, {"input": image[None].astype(np.float16)})
+    np.testing.assert_allclose(
+        np.asarray(actual, np.float32)[0], torch_output(model, image), atol=0.02
+    )
 
 
 class _FixedRouter(torch.nn.Module):
@@ -995,17 +1039,14 @@ def test_an_fp16_export_holds_a_group_past_fp16_on_a_smooth_image(
     np.testing.assert_allclose(actual.astype(np.float32), expected, atol=0.05)
 
 
-def test_only_an_fp16_export_runs_the_last_groups_in_fp32():
+def test_an_fp16_export_runs_the_last_groups_in_fp32():
+    # The model's own since spandrel 0.4.2+c15; in FP32 they are plain convolutions and norms.
     model = outgrowing_fp16("DAT")
-    plain = attention_export.for_export(model).model
-    assert not isinstance(plain.layers[0].conv, FP32Conv2d)
     rewritten = attention_export.for_export(model.half()).model
     assert isinstance(rewritten.layers[0].conv, FP32Conv2d)
     assert isinstance(rewritten.layers[1].blocks[0].norm1, FP32LayerNorm)
-    # The groups before keep FP16's norms, and the loaded model is as it was.
+    # The groups before keep FP16's norms.
     assert not isinstance(rewritten.layers[0].blocks[0].norm1, FP32LayerNorm)
-    assert not isinstance(model.model.layers[0].conv, FP32Conv2d)
-    assert not isinstance(model.model.layers[1].blocks[0].norm1, FP32LayerNorm)
 
 
 # Each shifts its windows in a block of its only group, in a mask from calculate_mask

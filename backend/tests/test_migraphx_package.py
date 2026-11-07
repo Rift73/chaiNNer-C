@@ -100,7 +100,7 @@ def load(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Load]:
         ),
         (
             Here(devices=[amd_device(0, "Radeon VII", "gfx906")]),
-            "an AMD GPU that ROCm 7.14 supports (this computer's: gfx906)",
+            "an AMD GPU that ROCm 10.0 supports (this computer's: gfx906)",
         ),
         (Here(runner_built=False), "has no MIGraphX runner (_chainner_migraphx."),
         (

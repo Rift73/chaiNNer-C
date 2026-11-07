@@ -1,10 +1,10 @@
 @echo off
-rem MIGraphX 2.16.1 (AMDMIGraphX release/rocm-rel-7.14 at 2487b688, "MIGraphX 2.16.1 for ROCm 7.14.1") for Windows
-rem against the ROCm 7.14.1 Windows SDK, with the settings of AMDMIGraphX's Windows GPU CI (rbuild.ini [gh-win-gpu]:
+rem MIGraphX 2.17.0 (AMDMIGraphX release/rocm-rel-10.0 at becdb3da, the rocm-10.0 tag) for Windows
+rem against the ROCm 10.0.0 Windows SDK, with the settings of AMDMIGraphX's Windows GPU CI (rbuild.ini [gh-win-gpu]:
 rem GPU target with MIOpen, rocBLAS, hipBLASLt; composable kernel off, as MIGraphX has it on Windows; no Python module;
 rem DLL C runtime; ROCm's clang++) and rocMLIR (build_rocmlir_win.cmd), except BUILD_DEV off, as in a release build
 rem (and the Linux build): hipRTC compiles the JIT kernels at run time (BUILD_DEV would call a ROCm clang the user
-rem does not have) and the inline namespace carries the version. Device code for all 22 ROCm 7.14.1 Windows targets.
+rem does not have) and the inline namespace carries the version. Device code for all 22 ROCm 10.0.0 Windows targets.
 rem With migraphx-hip-graph.patch (MIT, as MIGraphX; its origin in build_migraphx.sh): the target's files are restored
 rem and the patch applied again on every run.
 rem Source: AMDMIGraphX at that commit in ROOT\src\AMDMIGraphX (fetch_sources.sh); ROOT is the work directory
@@ -22,7 +22,7 @@ set "SRC=%ROOT%\src\AMDMIGraphX"
 set "B=%ROOT%\build"
 set "I=%ROOT%\install"
 set "TARGETS=gfx908;gfx90a;gfx1010;gfx1011;gfx1012;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201"
-git -C "%SRC%" rev-parse HEAD | findstr /B 2487b688c453b9007ac69ff1d79ad6cf9b509901 >nul || (
+git -C "%SRC%" rev-parse HEAD | findstr /B becdb3da862f2297041b746b90bc6130e2b1d1f7 >nul || (
   echo wrong MIGraphX commit
   exit /b 1
 )

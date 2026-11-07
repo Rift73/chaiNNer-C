@@ -53,10 +53,10 @@ def get_provider_label(identifier: str) -> str:
 
 def _names_programs_by_shape() -> bool:
     """Whether the installed ONNX Runtime names each compiled MIGraphX program file by
-    its input shape. Up to 1.30.0, the MIGraphX provider hashes only the first bytes of
+    its input shape. Up to 1.31.1, the MIGraphX provider hashes only the first bytes of
     the shape, so a model run at a second shape loads the program of the first from
     the cache. chaiNNer-C's onnxruntime-migraphx build (local label rocmX.Y, as in
-    1.30.0+rocm7.14) hashes the whole shape."""
+    1.31.1+rocm10.0) hashes the whole shape."""
     try:
         version = metadata.version("onnxruntime-migraphx")
     except metadata.PackageNotFoundError:

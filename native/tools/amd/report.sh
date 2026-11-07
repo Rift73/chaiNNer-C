@@ -19,7 +19,7 @@ count() {
     echo "- Checkout: $(git -C "$REPO" log -1 --format='%h %s' 2>/dev/null) ($(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null))"
     gpus=""
     [ -f "$OUT/gpus.txt" ] && gpus=$(tr '\n' ' ' <"$OUT/gpus.txt")
-    echo "- GPUs ROCm 7.14.1 supports: ${gpus:-none}"
+    echo "- GPUs ROCm 10.0.0 supports: ${gpus:-none}"
     if [ -f "$(fragment 30-tests)" ]; then
         echo "- amd_gpu tests: $(sed -n '5p' "$(fragment 30-tests)")"
     fi

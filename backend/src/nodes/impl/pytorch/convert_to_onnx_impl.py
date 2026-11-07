@@ -36,6 +36,7 @@ from . import (
     esrgan_export,
     fourier_export,
     fp16_export,
+    hat_export,
     input_export,
     lda_export,
     omnisr_export,
@@ -123,6 +124,8 @@ def export_onnx(
 
     # HAT and DAT: a copy with their attention laid out for TensorRT (exact)
     model = attention_export.for_export(model)
+    # HAT's FP16 trunk a multiple of 8 channels wide
+    model = hat_export.for_export(model)
     # SwinIR, Swin2SR, RGT and DRCT in FP16: a copy with their masks in FP16 and the end of
     # their last group in FP32
     model = swin_export.for_export(model)

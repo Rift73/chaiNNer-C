@@ -763,12 +763,14 @@ CPU_TORCH = DependencyInfo(
     replaces=(
         "torch+rocm",
         "triton-rocm",
+        "triton+git",
         "rocm",
         "rocm-sdk-core",
         "rocm-sdk-libraries",
         "rocm-sdk-device-*",
         "rocm-bootstrap",
         "amd-torch-device-*",
+        "amd-torchvision-device-*",
     ),
 )
 
@@ -785,12 +787,15 @@ CPU_TORCH = DependencyInfo(
         ("triton-rocm", "3.8.0", True),
         ("triton-rocm", "3.8.0+git1", True),
         ("triton", "3.8.0", False),
+        # AMD's Triton, named as PyPI's, by its label.
+        ("triton", "3.8.0+git4cff872c.rocm10.0.0", True),
         ("torchvision", "0.29.1+rocm7.14", False),
         ("rocm", "7.14.1+chainner", True),
         # A name ending in * names every distribution it starts.
         ("rocm-sdk-device-gfx1100", "7.14.1", True),
         ("amd-torch-device-gfx12-0", "2.12.0+rocm7.14.1", True),
         ("rocm-sdk-devel", "7.14.1", False),
+        ("amd-torchvision-device-gfx1100", "0.28.0+rocm10.0.0", True),
         ("amd-torch", "2.12.0", False),
     ],
 )
