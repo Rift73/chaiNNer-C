@@ -4,7 +4,29 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
-- 2026-11-08, branch `vosr-speed` (local, not pushed, in no release): **VOSR faster on every backend, same output.** Same
+- 2026-11-08, branch `model-speed`, not pushed: **DAT, HAT, DUAL and FIGSR run whole images.** The GPU was never idle
+  (88-99 % busy); the waste was Auto's 512 px engine tiles, which also changed these models' output far from the seams
+  (they pool or transform over the whole tile: up to 51, 58, 48 and 118 levels off against strict FP32 on the whole
+  image). Use TensorRT Engine with Auto, Maximum or No Tiling now builds DAT, HAT and FIGSR up to 1408 px and DUAL up
+  to 1920 px (less on wider DUAL) on NVIDIA GPUs of 16 GB or more (`WHOLE_IMAGE_TILE`); PyTorch's Auto takes measured
+  memory per pixel for DAT, HAT and DUAL. Same session, RTX 5090, 50 runs, before -> after: TensorRT 1200x864 DAT2
+  1.34 -> 0.99 s, HAT-L 2.32 -> 1.61 s, FIGSR 160 -> 134 ms, DUAL Light 89 -> 70 ms; 4K output DAT2 0.89 -> 0.46 s,
+  HAT-L 1.55 -> 0.80 s, FIGSR 106 -> 59 ms, DUAL 1920x1080 224 -> 145 ms; 512 px images DAT/HAT +2 %, DUAL +2 ms.
+  Whole-image fidelity: DAT2 47.9 -> 68.3 dB, HAT-L 58.2 -> 67.2, DUAL 52.1 -> 61.4, FIGSR 47.3 -> 65.2 (1200x864);
+  crops unchanged. PyTorch HAT-L 1200x864 2.12 -> 2.00 s, 48.0 -> 70.6 dB. A local spandrel 0.4.2+c18 (not published,
+  in native/.venv and native/runtime only): DAT PyTorch -7 to -10 % (channel attention per image row), FIGSR FP16 no
+  longer NaN from about 1200x864. Costs: about +2 GB of GPU memory at any size for DAT/HAT engines, DUAL 7.4 GB (was
+  0.5); automatic engines build once again. Rejected, measured: 256/320 px tiles (DAT2 43.5 dB), three DAT channel
+  attention export forms, HAT's 184-channel copy on PyTorch, larger DAT (1536+) and FIGSR (1920+) engines. Records:
+  `native/local/model-speed-20261108/` (STATUS.md, decisions.md, report/REPORT.md). Windows suite 144,281 passed, 2
+  failed: the upstream-budget pin (updated for the measured branch, passes) and an executor timing test that passes
+  alone; Linux and AMD not run.
+- RELEASED 2026-11-08 as **v0.3.10 re-release 3**: tag and fork branch `b4a36bbbf` over `6f25186aa`, tree = local
+  `6ce5ad7ff` (the VOSR speed work below and the Load Model GPU warm-up); win-x64 `aed276ec` (177,026,384 B), linux-x64
+  `4bc39a96` (147,990,230 B). No version bump (UI unchanged), native binaries unchanged (no PGO retrain). D:\chaiNNer
+  updated from the zip (25 files, tuned binaries kept; its backup and the re-release 2 zips deleted); 189 nodes
+  load with no errors. Windows suite 144,251 passed; the Linux suite was not run for this re-release.
+- 2026-11-08, branch `vosr-speed`, released in re-release 3 above: **VOSR faster on every backend, same output.** Same
   session, RTX 5090, the baseline (`b93249346`) and the branch case by case, 8-bit output identical on four images, Low
   memory and two 30-frame clips. PyTorch: 640x360 at 4x 3.94 -> 2.35 s, 1920x1080 at 2x 8.42 -> 5.55 s, 2806x4000 at 1x
   10.97 -> 7.77 s, Low 28.6 -> 9.9 s, Three Frames 130.3 -> 75.3 s for 30 frames; TensorRT 1.38 -> 1.19, 3.05 -> 2.64,

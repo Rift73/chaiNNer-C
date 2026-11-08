@@ -64,6 +64,33 @@ CONVOLUTION_ARCHS = frozenset({"ESRGAN", "RealESRGAN Compact", "SPAN", "PLKSR"})
 # The largest size for a Tile Size with no number (Auto, Maximum, No Tiling): an engine
 # is built for a size, and a build per image would not end.
 DEFAULT_TILE = 512
+# The largest size of a TensorRT engine for a Tile Size with no number, for the
+# architectures measured whole: an image up to it runs as one tile, and one that does not
+# fit the GPU's memory goes on in smaller tiles (inference.py). DAT and HAT pool and
+# normalize over the whole tile, so a tiled image differs from the whole one far from
+# its seams: against strict FP32 on the whole image, a 4x DAT2 at 1200x864 read 47.9 dB
+# in 512 px tiles (51 codes off at worst) and 68.3 dB whole, a 4x HAT-L 58.2 and 67.3 dB.
+# A whole image also takes no overlap: on an RTX 5090, 1200x864 DAT2 1.33 -> 1.03 s and
+# HAT-L 2.26 -> 1.55 s, 960x540 0.89 -> 0.47 s and 1.53 -> 0.73 s. Their closing
+# convolutions stay FP32, for which TensorRT 11.4 finds no kernel over the whole range of
+# a larger engine: a 4x DAT2 builds at 1408 px and fails at 1536. Such an engine keeps the
+# optimum of its profile at DEFAULT_TILE (_build), and takes about 2 GiB more at any size
+# (the DAT2's 2.8 GiB at 128x128, against 0.8 GiB at 256x256 for the 512 px engine), with
+# 11.7 GiB for a whole 1200x864 image: a GPU with less memory than WHOLE_IMAGE_MEMORY (a
+# card sold as 16 GB reports a little under 16 GiB) keeps DEFAULT_TILE. A program (MIGraphX)
+# has one size, DEFAULT_TILE.
+# DUAL's tiles change its output too: a 2x DUAL Light read 52.1 dB at 1200x864 and 48.9 dB
+# at 1920x1080 in 512 px tiles (48 codes off at worst), and runs 0.093 -> 0.070 s and
+# 0.225 -> 0.144 s whole. At 128 channels it builds up to 1920 px; at 2048 px one of its
+# tactics asks more than the build's 8 GiB workspace and the build fails. A wider DUAL,
+# not measured, takes a size of as many pixels times channels (_whole_image_tile), which
+# keeps its kernels' 32-bit offsets (dual.check_profile). FIGSR's Fourier units transform
+# the whole tile: in 512 px tiles a 4x FIGSR read 47.3 dB at 1200x864 and 43.5 dB at
+# 960x540 (118 codes off at worst). Up to 1408 px every multiple of 64 runs; an engine up
+# to 1920 or 2048 px fails to run its DFTs at widths from 832 px (cuFFT: no workspace).
+WHOLE_IMAGE_TILE = {"DAT": 1408, "HAT": 1408, "DUAL": 1920, "FIGSR": 1408}
+WHOLE_IMAGE_MEMORY = 15 * 1024**3
+DUAL_WHOLE_IMAGE_CHANNELS = 128
 # The largest size an architecture's engine takes, whatever the Tile Size. RGT's attention
 # holds every token against its reduced keys: a Dynamic engine at 512 px nearly filled a
 # 32 GB card, and its process could not be ended while it lasted. 256 px holds.
@@ -184,10 +211,45 @@ def _recipe_identity(route_sources: tuple[Path, ...] = ()) -> str:
     return digest.hexdigest()
 
 
-def _engine_tile(model: ImageModelDescriptor, tile_size: TileSize) -> int:
-    """The largest size of the model's engine for the node's Tile Size."""
-    tile = max(int(tile_size), MIN_SIZE) if tile_size > 0 else DEFAULT_TILE
-    return min(tile, LARGEST_TILE.get(model.architecture.name, tile))
+def _whole_image_tile(model: ImageModelDescriptor) -> int:
+    """The size of the TensorRT engine for whole images of a model whose architecture
+    WHOLE_IMAGE_TILE lists."""
+    tile = WHOLE_IMAGE_TILE[model.architecture.name]
+    if model.architecture.name == "DUAL":
+        pixels = tile * tile * DUAL_WHOLE_IMAGE_CHANNELS // model.model.embed_dim
+        tile = min(tile, math.isqrt(pixels) // 64 * 64)
+    return tile
+
+
+def _whole_images(
+    model: ImageModelDescriptor, tile_size: TileSize, gpu_index: int
+) -> bool:
+    """Whether the model's engine for the node's Tile Size takes whole images: a Tile Size
+    with no number, an architecture WHOLE_IMAGE_TILE lists, TensorRT, and a CUDA GPU of
+    WHOLE_IMAGE_MEMORY or more."""
+    return (
+        tile_size <= 0
+        and model.architecture.name in WHOLE_IMAGE_TILE
+        and _route() is _TensorRT
+        and torch.cuda.is_available()
+        and torch.cuda.get_device_properties(gpu_index).total_memory
+        >= WHOLE_IMAGE_MEMORY
+    )
+
+
+def _engine_tile(
+    model: ImageModelDescriptor, tile_size: TileSize, gpu_index: int
+) -> int:
+    """The largest size of the model's engine or program for the node's Tile Size on the
+    GPU of `gpu_index`."""
+    arch = model.architecture.name
+    if tile_size > 0:
+        tile = max(int(tile_size), MIN_SIZE)
+    elif _whole_images(model, tile_size, gpu_index):
+        tile = _whole_image_tile(model)
+    else:
+        tile = DEFAULT_TILE
+    return min(tile, LARGEST_TILE.get(arch, tile))
 
 
 def _program_size(model: ImageModelDescriptor, recipe: str, tile: int) -> int:
@@ -243,10 +305,15 @@ def _program_key(
 
 
 def _engine_key(
-    model: ImageModelDescriptor, recipe: str, gpu_index: int, tile: int
+    model: ImageModelDescriptor,
+    recipe: str,
+    gpu_index: int,
+    tile: int,
+    whole: bool = False,
 ) -> str:
     """As build_cache.engine_key, with the weights in place of the ONNX, which a later
-    run does not export: everything the engine depends on."""
+    run does not export: everything the engine depends on. An engine for whole images has
+    its own optimum, so its own key."""
     import tensorrt as trt
 
     from ..tensorrt import build_cache
@@ -265,7 +332,7 @@ def _engine_key(
                     recipe,
                     model.architecture.name,
                     model.scale,
-                    tile,
+                    (DEFAULT_TILE, tile) if whole else tile,
                     _recipe_identity(),
                 ),
                 get_cuda_device_name(gpu_index),
@@ -299,7 +366,7 @@ def _with_aligned_input(onnx_bytes: bytes, multiple_of: int) -> bytes:
 
 
 def _build(
-    context: NodeContext, model: ImageModelDescriptor, tile: int
+    context: NodeContext, model: ImageModelDescriptor, tile: int, whole: bool = False
 ) -> TensorRTEngine:
     """Convert To ONNX's and Build Engine's own paths. Both nodes read their settings from
     `context`, PyTorch's here: the GPU's key is the same in both packages, and the TensorRT
@@ -332,8 +399,15 @@ def _build(
         tile,
     )[0]
     context.check_aborted()
-    low = MIN_SIZE
     recipe = _recipe(model)
+    # A DAT or HAT engine for whole images keeps the optimum of its profile at
+    # DEFAULT_TILE, where tiles and most images are: its kernels for that size are as fast
+    # at its largest, not the other way round (a 4x DAT2, Dynamic up to 1280 px, at
+    # 1216x896 1035 ms either way, at 256x256 41.3 ms against 44.7 with the optimum at
+    # 1216). DUAL's keeps it at its largest: with the optimum at 512 px, a DUAL Light up
+    # to 1920 px has a tactic that asks more than the build's 8 GiB workspace, and fails.
+    opt = DEFAULT_TILE if whole and recipe == "fp16" else tile
+    low = MIN_SIZE
     if recipe == "drft":
         low = drft_export.min_size(model.model.window_size)
     elif recipe == "fp16":
@@ -345,7 +419,9 @@ def _build(
             low = CONVOLUTION_MIN_SIZE
         low = -(-max(low, req.minimum) // req.multiple_of) * req.multiple_of
         tile = -(-tile // req.multiple_of) * req.multiple_of
+        opt = -(-opt // req.multiple_of) * req.multiple_of
     tile = max(tile, low)
+    opt = min(max(opt, low), tile)
     engine = build_engine_node(
         context,
         onnx_model,
@@ -353,8 +429,8 @@ def _build(
         ShapeMode.DYNAMIC,
         low,
         low,
-        tile,
-        tile,
+        opt,
+        opt,
         tile,
         tile,
         tile,
@@ -468,8 +544,9 @@ class _TensorRT:
         recipe: str,
         gpu_index: int,
         tile: int,
+        whole: bool,
     ) -> str:
-        return _engine_key(model, recipe, gpu_index, tile)
+        return _engine_key(model, recipe, gpu_index, tile, whole)
 
     @staticmethod
     def folder(context: NodeContext) -> Path:
@@ -495,9 +572,9 @@ class _TensorRT:
 
     @staticmethod
     def build(
-        context: NodeContext, model: ImageModelDescriptor, tile: int
+        context: NodeContext, model: ImageModelDescriptor, tile: int, whole: bool
     ) -> TensorRTEngine:
-        return _build(context, model, tile)
+        return _build(context, model, tile, whole)
 
     @staticmethod
     def op(
@@ -530,6 +607,7 @@ class _MIGraphX:
         recipe: str,
         _gpu_index: int,
         tile: int,
+        _whole: bool,
     ) -> str:
         return _program_key(context, model, recipe, tile)
 
@@ -557,7 +635,7 @@ class _MIGraphX:
 
     @staticmethod
     def build(
-        context: NodeContext, model: ImageModelDescriptor, tile: int
+        context: NodeContext, model: ImageModelDescriptor, tile: int, _whole: bool
     ) -> MIGraphXProgram:
         return _build_program(context, model, tile)
 
@@ -589,8 +667,9 @@ def _engine_of(
 ) -> TensorRTEngine | MIGraphXProgram | str:
     """The model's engine or program for this Tile Size, or why it has none. Stop raises
     Aborted."""
-    tile = _engine_tile(model, tile_size)
-    where = (device, gpu_index, tile)
+    tile = _engine_tile(model, tile_size, gpu_index)
+    whole = _whole_images(model, tile_size, gpu_index)
+    where = (device, gpu_index, tile, whole)
     with _lock:
         kept = _outcomes.get(model)
     if kept is not None and kept[0] == where:
@@ -621,19 +700,40 @@ def _engine_of(
         reason = _no_engine_here(device)
         if reason is not None:
             return _no_engine(context, model, where, reason)
-        key = route.key(context, model, recipe, gpu_index, tile)
         folder = route.folder(context)
         folder.mkdir(parents=True, exist_ok=True)
         # What PyTorch keeps cached on the GPU is the build's and the session's now.
         safe_cuda_cache_empty()
         built = False
 
-        def build() -> TensorRTEngine | MIGraphXProgram:
-            nonlocal built
-            built = True
-            return route.build(context, model, tile)
+        def engine_of_size(
+            size: int, whole_image: bool
+        ) -> tuple[str, TensorRTEngine | MIGraphXProgram]:
+            def build() -> TensorRTEngine | MIGraphXProgram:
+                nonlocal built
+                built = True
+                return route.build(context, model, size, whole_image)
 
-        engine = route.cached(key, build, str(folder))
+            key = route.key(context, model, recipe, gpu_index, size, whole_image)
+            return key, route.cached(key, build, str(folder))
+
+        try:
+            key, engine = engine_of_size(tile, whole)
+        except Aborted:
+            raise
+        except Exception:
+            if not whole:
+                raise
+            # An engine for whole images that does not build (a variant not measured,
+            # or the GPU short of memory at the time) leaves this process's images to
+            # DEFAULT_TILE's engine; the next process tries again.
+            logger.exception(
+                "%s: no %s px engine for whole images; using one of %s px",
+                route.input,
+                tile,
+                DEFAULT_TILE,
+            )
+            key, engine = engine_of_size(DEFAULT_TILE, False)
     except Aborted:
         raise
     except Exception as e:
@@ -789,6 +889,7 @@ def upscale_through_engine(
             f" for the next image. {_described(error)}"
         )
     else:
-        where = (device, gpu_index, _engine_tile(model, tile_size))
+        tile = _engine_tile(model, tile_size, gpu_index)
+        where = (device, gpu_index, tile, _whole_images(model, tile_size, gpu_index))
         _no_engine(context, model, where, _described(error))
     return output
