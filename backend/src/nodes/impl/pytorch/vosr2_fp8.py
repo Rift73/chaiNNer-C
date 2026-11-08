@@ -32,7 +32,7 @@ from .vosr2_engine_cache import (
     remove_tree,
     remove_unused_sets,
 )
-from .vosr2_trt_models import STAGES
+from .vosr2_trt_models import DERIVED_STAGES, STAGES
 from .vosr2_trt_plugin import load_plugin, plugin_path
 
 # The public folder is named after its manifest; this pin makes the set immutable.
@@ -57,7 +57,9 @@ def fp8_identity(device: torch.device) -> dict:
 
     properties = torch.cuda.get_device_properties(device)
     return {
-        "format": 2,
+        # 3: plans in frames (vosr2_plan_file). 4: attention's keys transposed outside its
+        # engine (vosr2_trt_rewrite). 5: attention_grouped
+        "format": 5,
         "graphs": GRAPHS_SHA256,
         "tensorrt": trt.__version__,
         "gpu": properties.name,
@@ -91,7 +93,7 @@ def fetch_manifest(folder: Path) -> dict:
     stages, files = manifest["stages"], manifest["files"]
     if (
         manifest["format"] != 2
-        or set(stages) != set(STAGES)
+        or set(stages) != set(STAGES) - set(DERIVED_STAGES)
         or any(
             entry["graph"] != f"{name}.onnx"
             or entry.get("data", f"{name}.onnx.data") != f"{name}.onnx.data"

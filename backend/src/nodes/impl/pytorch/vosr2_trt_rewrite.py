@@ -271,6 +271,67 @@ def dino_attention(model: onnx.ModelProto) -> None:
             model.graph.node.append(n)
 
 
+def attention_keys_transposed(
+    source: Path, target: Path, grouped: bool = False
+) -> None:
+    """The hosted FP8 set's attention graph, which transposes its keys itself, as
+    vosr2_trt_models.AttentionCore takes them; `grouped`, as GroupedAttention takes
+    them, keys and values in groups of 8."""
+    model = onnx.load(source, load_external_data=False)
+    transpose = next(
+        node
+        for node in model.graph.node
+        if node.op_type == "Transpose" and node.input[0] == "k"
+    )
+    for node in model.graph.node:
+        for index, value in enumerate(node.input):
+            if value == transpose.output[0]:
+                node.input[index] = "k"
+    model.graph.node.remove(transpose)
+    shape = next(i for i in model.graph.input if i.name == "k").type.tensor_type.shape
+    tokens, channels = copy.deepcopy(shape.dim[2]), copy.deepcopy(shape.dim[3])
+    shape.dim[2].CopyFrom(channels)
+    shape.dim[3].CopyFrom(tokens)
+    if grouped:
+        _group_tokens(model, "k", 3, [0, 0, 0, -1])
+        _group_tokens(model, "v", 2, [0, 0, -1, channels.dim_value])
+    onnx.save(model, target)
+
+
+def _group_tokens(
+    model: onnx.ModelProto, name: str, axis: int, flat: list[int]
+) -> None:
+    """Graph input `name` with its token axis split into groups of 8, joined again
+    inside."""
+    joined = name + "_tokens"
+    for node in model.graph.node:
+        for index, value in enumerate(node.input):
+            if value == name:
+                node.input[index] = joined
+    model.graph.node.insert(
+        0,
+        helper.make_node(
+            "Reshape",
+            [name, name + "_flat_shape"],
+            [joined],
+            name=f"/{name}/join_groups",
+        ),
+    )
+    model.graph.initializer.append(
+        helper.make_tensor(name + "_flat_shape", TensorProto.INT64, [len(flat)], flat)
+    )
+    dims = next(i for i in model.graph.input if i.name == name).type.tensor_type.shape
+    groups = copy.deepcopy(dims.dim[axis])
+    groups.ClearField("dim_value")
+    groups.dim_param = f"{name}_groups"
+    eight = copy.deepcopy(dims.dim[axis])
+    eight.ClearField("dim_param")
+    eight.dim_value = 8
+    rest = [copy.deepcopy(d) for d in dims.dim[axis + 1 :]]
+    del dims.dim[axis:]
+    dims.dim.extend([groups, eight, *rest])
+
+
 def rewrite(path: Path, name: str) -> None:
     model = onnx.load(path, load_external_data=False)
     if name == "dit_cached":

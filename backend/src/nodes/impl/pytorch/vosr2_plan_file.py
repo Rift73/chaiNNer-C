@@ -1,14 +1,16 @@
 """VOSR's TensorRT plans as its engine caches keep them: Zstandard-compressed (about a
-quarter smaller), streamed into TensorRT as they decompress at about 1 GB/s. A build
-writes plain plans; the cache compresses them, and a set cached plain (before
-2026-10-17) on its next use."""
+quarter smaller) in independent frames, which threads decompress at about 3 GB/s (one
+thread: 1 GB/s). A build writes plain plans; the cache compresses them, and a set cached
+plain (before 2026-10-17) on its next use."""
 
 from __future__ import annotations
 
+import mmap
 import os
-import shutil
 import time
-from io import BufferedReader
+from concurrent.futures import ThreadPoolExecutor
+from io import BufferedReader, BytesIO
+from itertools import islice
 from pathlib import Path
 
 from compression import zstd
@@ -18,6 +20,9 @@ from sanic.log import logger
 # (74-82 %), at about 1 GB/s instead of a few MB/s.
 LEVEL = 3
 SUFFIX = ".plan.zst"
+# Frames of this much plan keep the ratio of one long frame (0.994 GB of 1.207 either way).
+FRAME = 64 << 20
+THREADS = 8
 
 
 def compressed(directory: Path, name: str) -> Path:
@@ -53,13 +58,33 @@ def set_aside(directory: Path, label: str) -> None:
 def compress(source: Path, target: Path) -> None:
     """Compress the plan at source into target, which appears only when complete."""
     part = target.with_name(f"{target.name}.part")
-    with source.open("rb") as reader, zstd.open(part, "wb", level=LEVEL) as writer:
-        shutil.copyfileobj(reader, writer, 16 << 20)
+    with source.open("rb") as reader, part.open("wb") as writer:
+        with ThreadPoolExecutor(THREADS) as pool:
+            blocks = iter(lambda: reader.read(FRAME), b"")
+            while batch := list(islice(blocks, THREADS)):
+                writer.writelines(
+                    pool.map(lambda block: zstd.compress(block, level=LEVEL), batch)
+                )
     os.replace(part, target)
 
 
-def open_plan(path: Path) -> zstd.ZstdFile | BufferedReader:
-    """A plan to read, decompressing it if it is compressed. TensorRT reads a plan in
-    order and seeks only to where it is or a little ahead, which a Zstandard stream does
-    without decompressing anything twice."""
-    return zstd.open(path) if path.name.endswith(".zst") else path.open("rb")
+def open_plan(path: Path) -> BytesIO | BufferedReader:
+    """A plan to read, whole in memory if it is compressed (a set compressed before
+    2026-11-08 is one frame, which takes one thread)."""
+    if not path.name.endswith(".zst"):
+        return path.open("rb")
+    with path.open("rb") as file, mmap.mmap(
+        file.fileno(), 0, access=mmap.ACCESS_READ
+    ) as data:
+        with memoryview(data) as view:
+            frames = []
+            start = 0
+            while start < len(view):
+                size = zstd.get_frame_size(view[start:])
+                frames.append(view[start : start + size])
+                start += size
+            with ThreadPoolExecutor(THREADS) as pool:
+                plan = b"".join(pool.map(zstd.decompress, frames))
+            for frame in frames:
+                frame.release()
+    return BytesIO(plan)

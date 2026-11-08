@@ -4,6 +4,21 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- 2026-11-08, branch `vosr-speed` (local, not pushed, in no release): **VOSR faster on every backend, same output.** Same
+  session, RTX 5090, the baseline (`b93249346`) and the branch case by case, 8-bit output identical on four images, Low
+  memory and two 30-frame clips. PyTorch: 640x360 at 4x 3.94 -> 2.35 s, 1920x1080 at 2x 8.42 -> 5.55 s, 2806x4000 at 1x
+  10.97 -> 7.77 s, Low 28.6 -> 9.9 s, Three Frames 130.3 -> 75.3 s for 30 frames; TensorRT 1.38 -> 1.19, 3.05 -> 2.64,
+  3.97 -> 3.71 s, Low 2.05 -> 1.74 s, 50.2 -> 39.0 s; FP8 1.03 -> 0.90, 2.34 -> 2.04, 3.08 -> 2.85 s, Low 1.26 ->
+  1.13 s, 36.9 -> 29.5 s; first image after launch PyTorch 6.6 -> 4.3, TensorRT 8.2 -> 4.4, FP8 5.2 -> 2.8 s. How:
+  PyTorch DiT and DINO calls replay as CUDA graphs (issuing 3,400 small operations took 58 of 60 ms a prediction),
+  models stay on the device between stages and runs, Low keeps the DiT blocks that fit; TensorRT windows run on
+  lanes (a window's second prediction beside its first, two windows side by side from a size's eighth image), the
+  VAE attention reads keys and values in place (`attention_grouped`), plans load from frames on threads and contexts
+  are made together. Low memory beside other programs (3.3 GB in use): PyTorch 28.8 -> 17.8 s, TensorRT 14.3 -> 2.6
+  s, FP8 12.1 -> 1.6 s (1.0 GB in use). Costs: GPU memory +1 to +2.5 GB in Default (models kept, lanes); engines
+  rebuild once (FP8 sets format 5). Rejected, measured: fused RMSNorm, FP8 attention, native Q/K/V layers, fused VAE
+  attention, 2x2 upsampling convolutions, cuBLASLt, larger VAE bands, channels-last. Records and every number:
+  `native/local/vosr-speed-20261108/` (STATUS.md, decisions.md, report/).
 - 2026-11-07, on the branch, in no release yet: **A Load Model preview readies the GPU in the background.** The driver readies each kernel the first time a process
   uses it, from its cache on disk or, when the cache lacks it, in seconds; a new process can ask for other kernels, so an empty cache takes up to three launches
   to fill (HAT 40 kernels, 230 MiB). `nodes/impl/pytorch/warm_up.py` upscales a 64x64 image after the preview and `/run` waits for it. Same session, RTX 5090, FP16,
@@ -1507,9 +1522,7 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 | SP0 deferred follow-ups | `docs/superpowers/plans/2026-10-01-sp0-foundation.md`, "Deferred follow-ups" |
 | Upstream-parity items still listed (decision 4, 2026-10-04): the C1-class pins not yet checked against chaiNNer; lens power's input `maxss(+0, x)`, output-invisible and VERIFIED equal to chaiNNer's chain; compose's NaN selection, positions-level by rule (spec 4.4); suite-wide ±0-aware bitwise comparators (the suite's `assert_array_equal` treats ±0 as equal). Closed: the normalize/enforce clamp follows `np.clip` on the tested stack, −0 kept (ARCHITECTURE section 7, Consult 11 R-p) | SP5a, or the next task that touches them |
 | Upstream-bug follow-ups (2026-10-09): SCUNet ONNX export unblocking (needs a real-model test); the real first-start check needs a fixed, firewall-allowed folder | `the decision log` (D1-D15) |
-| VOSR speed, PyTorch path: each window's DINO features go to the CPU and back, and every DiT prediction is synchronized and copied to the CPU (`vosr2_context.py`) | Keep them on the GPU when Default has room; paired A/B |
-| VOSR temporal on PyTorch: the next restoration does not overlap the CPU stabilization (about 1.1 s of 4.6 s per 2560×1440 frame); `stabilize` runs on one thread (1.0 s); the next `motion_pair` could run alongside | Paired A/B and a memory check for each |
-| VOSR temporal: each item settles its background restoration, so the GPU idles while downstream nodes (Save Video's encode) run | Decision: letting it cross the item boundary relaxes "no GPU work escapes an item" |
+| VOSR TensorRT and FP8 Low cannot admit their stages when other programs hold about 3.7 GB of the GPU (Low's 7 GB less 800 MB headroom leaves 2.5 GB); PyTorch Low runs there (2026-11-08, also so before) | Admit with a smaller resident share, or point the message at PyTorch Low |
 | VOSR engine identities are broader than the engines: all of `vosr2.py` (a message edit rebuilds) and the whole plugin DLL (a metadata-only rebuild rebuilds) | Hash only engine-relevant code and the DLL's SASS/PTX |
 | VOSR engine builds: one stage at a time, about 3 minutes (each stage's start and end and the total are logged; the per-GPU timing cache exists) | Small stages in parallel (a GPU check) |
 | VOSR FP8 and model downloads: one host each and no mirror | A mirror list beside the pins |
@@ -1586,6 +1599,10 @@ Image cases, port against installed app, confirmation-run speedup at 32 / 8 CPUs
 
 ## Decision log
 
+- 2026-11-08 (VOSR speed, stand-in ruling): temporal work stays inside its item ("no GPU work escapes an item"): in the
+  real chain the GPU idled in no sample after the first frame. A fused RMSNorm kernel for PyTorch (about 5 %) is
+  rejected: its byte identity would rest on torch.mean's internal reduction order. Records:
+  `native/local/vosr-speed-20261108/decisions.md`.
 - 2026-10-29 (DDS on Linux, stand-in ruling): a texconv lookalike on DirectXTex (native/texconv) instead of the
   error; texconv.exe's output is the reference, and what Windows decides in WIC or MSVC's arithmetic is rebuilt where
   measured exactly, otherwise listed (`linux_differences.json`, `texconv-wic-*`). Records:

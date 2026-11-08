@@ -16,6 +16,7 @@ from nodes.impl.tensorrt.tiling import ShapeBounds, tile_starts, tiled_upscale
 
 from .vosr2 import (
     BundlePaths,
+    FiniteChecks,
     VosrColorCorrection,
     color_correct,
     gaussian_weights,
@@ -40,8 +41,10 @@ class LowMemory:
 # RTX 5090, 2x: FP8 peaks 2.66 GB above idle and BF16 2.84 GB, at a 1536x1536 and a 3072x3072
 # output alike (1.1 and 1.7 s at 1536x1536; Default 0.6 and 0.8 s). 1024-pixel tiles were
 # slower (2.5 s FP8) and no closer to Default; a 1 GiB reserve left BF16 too little room for
-# the buffers a warm session keeps between images.
-LOW_MEMORY = LowMemory(tile=512, reserve=2 * 1024**3)
+# the buffers a warm session keeps between images, and 1.25 GiB is enough: more weights stay
+# resident than with 2 GiB (640x360 at 4x with others using 3.3 GiB: FP8 1.45 -> 1.28 s,
+# BF16 2.50 -> 2.06 s; same output).
+LOW_MEMORY = LowMemory(tile=512, reserve=5 * 1024**3 // 4)
 
 
 @dataclass(frozen=True)
@@ -102,23 +105,6 @@ def gpu_colour(
 
     rgb = (rgb - blur(rgb) + blur(ref)).clamp_(0, 1)
     return rgb[0].flip(0).permute(1, 2, 0).contiguous().cpu().numpy()
-
-
-class FiniteChecks:
-    """Retain each stage's finite flag without a host synchronization per window."""
-
-    def __init__(self) -> None:
-        self.values: list[tuple[str, torch.Tensor]] = []
-
-    def add(self, tensor: torch.Tensor, stage: str) -> torch.Tensor:
-        self.values.append((stage, torch.isfinite(tensor).all()))
-        return tensor
-
-    def validate(self) -> None:
-        flags = torch.stack([value for _, value in self.values]).cpu().tolist()
-        for (stage, _), valid in zip(self.values, flags, strict=True):
-            if not valid:
-                raise ValueError(f"VOSR 2.0 produced non-finite {stage}.")
 
 
 @torch.inference_mode()
@@ -258,41 +244,57 @@ def _restore_tile(
         if not covered.all():
             raise RuntimeError("VOSR window grid did not cover every output pixel.")
 
-        def predict(value: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-            return checks.add(
-                session.predict(value, condition).float(), "DiT prediction"
-            )[:, :, :, :64]
-
         queue = BoundedQueue()
         faces = []
-        for index, (y, x) in enumerate(placed):
-            check()
-            session.begin_window()
-            source = dino_image[:, :, y * 8 : y * 8 + 512, x * 8 : x * 8 + 512]
-            conditioning = functional.interpolate(
-                source * 0.5 + 0.5, size=(448, 448), mode="bicubic", align_corners=False
-            ).clamp_(0, 1)
-            normalized = ((conditioning - dino_mean) / dino_std).float()
-            condition = checks.add(session.condition(normalized), "DINO conditioning")
-            crop = inputs[:, :, y : y + 64, x : x + 64]
-            strength = strengths[index]
-            if strength == 0:
-                value = predict(crop, condition)
-            elif strength == 1:
-                value = predict(torch.cat((crop, extra), dim=3), condition)
-            else:
-                local = predict(crop, condition)
+        # Windows in groups the session runs side by side; each window's blend follows
+        # in window order, so the sums keep their order.
+        step = session.lanes()
+        for start in range(0, len(placed), step):
+            group = range(start, min(start + step, len(placed)))
+            work = []
+            for index in group:
                 check()
-                value = local.lerp(
-                    predict(torch.cat((crop, extra), dim=3), condition), strength
+                y, x = placed[index]
+                source = dino_image[:, :, y * 8 : y * 8 + 512, x * 8 : x * 8 + 512]
+                conditioning = functional.interpolate(
+                    source * 0.5 + 0.5,
+                    size=(448, 448),
+                    mode="bicubic",
+                    align_corners=False,
+                ).clamp_(0, 1)
+                normalized = ((conditioning - dino_mean) / dino_std).float()
+                crop = inputs[:, :, y : y + 64, x : x + 64]
+                wide = torch.cat((crop, extra), dim=3)
+                strength = strengths[index]
+                latents = (
+                    [crop]
+                    if strength == 0
+                    else [wide]
+                    if strength == 1
+                    else [crop, wide]
                 )
-            if index < len(layout.grid):
-                velocity[:, :, y : y + 64, x : x + 64] += value * weights
-            else:
-                # Stage outputs are borrowed until the stage runs again.
-                faces.append(value.clone())
-            progress.set_progress(0.2 + 0.55 * (index + 1) / len(placed))
-            queue.advance(check)
+                work.append((normalized, latents))
+            for index, (condition, predictions) in zip(
+                group, session.windows(work), strict=True
+            ):
+                y, x = placed[index]
+                checks.add(condition, "DINO conditioning")
+                values = [
+                    checks.add(value.float(), "DiT prediction")[:, :, :, :64]
+                    for value in predictions
+                ]
+                value = (
+                    values[0]
+                    if len(values) == 1
+                    else values[0].lerp(values[1], strengths[index])
+                )
+                if index < len(layout.grid):
+                    velocity[:, :, y : y + 64, x : x + 64] += value * weights
+                else:
+                    # Stage outputs are borrowed until the stage runs again.
+                    faces.append(value.clone())
+                progress.set_progress(0.2 + 0.55 * (index + 1) / len(placed))
+                queue.advance(check)
         velocity /= denominator
         for (y, x), value in zip(layout.faces, faces, strict=True):
             # Over the grid's blend, a face window takes the middle of its face.

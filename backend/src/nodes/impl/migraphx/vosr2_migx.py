@@ -51,6 +51,7 @@ from ..pytorch.vosr2_trt_models import (
     DecoderPre,
     EncoderPost,
     EncoderPre,
+    GroupedAttention,
     mixed,
 )
 from ..pytorch.vosr2_trt_pipeline import FullSession, lease_session
@@ -164,6 +165,7 @@ def vae_stages(paths: BundlePaths) -> dict[str, nn.Module]:
         ),
         "decoder_post": DecoderPost(vae),
         "attention": AttentionCore(),
+        "attention_grouped": GroupedAttention(),
     }
     return {name: module.eval() for name, module in stages.items()}
 
@@ -246,6 +248,9 @@ class MigraphxSession(FullSession):
             current.wait_stream(self.stream)
             result.record_stream(current)
         return result
+
+    def concurrent(self) -> bool:
+        return False
 
     def offload(self) -> None:
         self.execution.clear()

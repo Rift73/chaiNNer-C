@@ -134,22 +134,23 @@ class DinoVisionTransformer(nn.Module):
         patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
         return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(previous_dtype)
 
-    def prepare_tokens(self, x):
+    def prepare_tokens(self, x, position=None):
         B, _, w, h = x.shape
         x = self.patch_embed(x)
         cls_tokens = self.cls_token.expand(B, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
-        x = x + self.interpolate_pos_encoding(x, w, h)
+        x = x + (self.interpolate_pos_encoding(x, w, h) if position is None else position)
         return x
 
-    def forward_intermediate_layer(self, x, layer_idx: int) -> torch.Tensor:
+    def forward_intermediate_layer(self, x, layer_idx: int, position=None) -> torch.Tensor:
         """Run through `layer_idx + 1` blocks and return patch tokens (cls token dropped).
+        `position`: interpolate_pos_encoding's result for this size, when already made.
 
         VOSR2 only ever needs one fixed intermediate layer's patch tokens
         (`layer_dinov2b_list == [17]`, validated by the loader), so the remaining
         `depth - layer_idx - 1` blocks are skipped rather than computed and discarded.
         """
-        x = self.prepare_tokens(x)
+        x = self.prepare_tokens(x, position)
         for block in self.blocks[: layer_idx + 1]:
             x = block(x)
         return x[:, 1:]

@@ -25,6 +25,8 @@ from torch.nn import functional
 
 from nodes.impl import numpy_pool
 
+from .vosr2_memory import available_memory
+
 # The grain's luma RMS relative to the input's local grain RMS. Chosen by eye on the
 # a 2x sample (2026-10-13): 1.4 times the strength of the input grain enlarged
 # with bicubic, which measured 1.13 to 1.16 times the input grain at 2x and 4x.
@@ -33,6 +35,12 @@ GRAIN_GAIN = 1.16
 GRAIN_KERNEL = cv2.getGaussianKernel(5, 0.6).astype(np.float32)[:, 0]
 # BGR weights of cv2.COLOR_BGR2GRAY.
 LUMA = np.array([0.114, 0.587, 0.299])
+
+# A strip's rows on the CPU, and the least on a GPU.
+STRIP = 128
+# What the grain's GPU work holds at once per output pixel: its int64 hashes and float32
+# fields, three channels each.
+GPU_BYTES_PER_PIXEL = 144
 
 # Unsigned 32-bit values, in int64 tensors or Python ints.
 Word = TypeVar("Word", torch.Tensor, int)
@@ -211,14 +219,17 @@ def _noise(
     return torch.einsum("ij,jhw->ihw", mix, normal)[None]
 
 
-def _gpu_adjustment(
+def _gpu_adjusted(
     restored: np.ndarray,
     rms: np.ndarray,
     confidence: np.ndarray,
     grain: torch.Tensor,
     radius: int,
     device: torch.device,
+    crop: tuple[slice, slice],
 ) -> np.ndarray:
+    """`crop` of `restored` with its grain."""
+
     def tensor(value: np.ndarray) -> torch.Tensor:
         return torch.from_numpy(np.ascontiguousarray(value)).to(device)
 
@@ -228,7 +239,7 @@ def _gpu_adjustment(
     def box(value: torch.Tensor) -> torch.Tensor:
         return functional.avg_pool2d(_reflect(value, radius), 2 * radius + 1, 1)
 
-    image = tensor(restored.transpose(2, 0, 1))[None]
+    image = tensor(restored).permute(2, 0, 1).contiguous()[None]
     mean = box(image)
     variance = (box(image * image) - mean * mean).clamp_min_(0)
     coefficient = variance / (variance + epsilon)
@@ -236,7 +247,9 @@ def _gpu_adjustment(
     correction = tensor(confidence)[None, None] * (
         GRAIN_GAIN * strength * grain - detail
     )
-    return correction[0].permute(1, 2, 0).contiguous().cpu().numpy()
+    rows, columns = crop
+    adjusted = (image + correction)[0, :, rows, columns].clamp_(0, 1)
+    return adjusted.permute(1, 2, 0).contiguous().cpu().numpy()
 
 
 def restore_with_texture(
@@ -267,11 +280,30 @@ def restore_with_texture(
         thread_name_prefix="vosr-texture",
         initializer=numpy_pool.install,
     ) as pool:
-        pending = pool.submit(texture_guide, source, grain.previous)
+        pending = pool.submit(_output_guide, source, grain.previous, scale)
         restored = restore()
         check()
         guide = pending.result()
     return _add_grain(restored, scale, guide, grain, check, device)
+
+
+def _output_guide(
+    source: np.ndarray, previous: np.ndarray | None, scale: int
+) -> TextureGuide | None:
+    """The guide of `source`, its fields at the output's size."""
+    guide = texture_guide(source, previous)
+    if guide is None:
+        return None
+    size = (source.shape[1] * scale, source.shape[0] * scale)
+
+    def output(field: np.ndarray) -> np.ndarray:
+        return cv2.resize(field, size, interpolation=cv2.INTER_LINEAR)
+
+    return guide._replace(
+        confidence=output(guide.confidence),
+        rms=output(guide.rms),
+        change=None if guide.change is None else output(guide.change),
+    )
 
 
 def _add_grain(
@@ -282,26 +314,26 @@ def _add_grain(
     check: Callable[[], None],
     device: torch.device,
 ) -> np.ndarray:
+    """`guide`: _output_guide's."""
     if guide is None:
         return restored
     height, width = restored.shape[:2]
-    confidence = cv2.resize(
-        guide.confidence, (width, height), interpolation=cv2.INTER_LINEAR
-    )
-    rms = cv2.resize(guide.rms, (width, height), interpolation=cv2.INTER_LINEAR)
-    change = guide.change
-    if change is not None:
-        change = cv2.resize(change, (width, height), interpolation=cv2.INTER_LINEAR)
+    confidence, rms, change = guide.confidence, guide.rms, guide.change
     # Other nodes (CPU, and MPS or DirectML, whose tensors NumPy cannot read) filter
     # with OpenCV and make the grain on the CPU.
     noise_device = device if device.type == "cuda" else torch.device("cpu")
     radius = max(1, round(1.5 * scale))
     # Also wider than the grain's blur.
     halo = 2 * radius
-    result = restored.copy()
-    for top in range(0, height, 128):
+    rows = STRIP
+    if device.type == "cuda":
+        # Half of the room: a strip per what fits, the whole image where it does.
+        fits = available_memory(device) / 2 / (width * GPU_BYTES_PER_PIXEL)
+        rows = max(STRIP, int(fits))
+    result = None
+    for top in range(0, height, rows):
         check()
-        bottom = min(top + 128, height)
+        bottom = min(top + rows, height)
         columns = np.flatnonzero(np.any(confidence[top:bottom] > 0, axis=0))
         if not len(columns):
             continue
@@ -321,14 +353,15 @@ def _add_grain(
             )
             noise = (1 - new.square()).sqrt() * noise + new * frame
         if device.type == "cuda":
-            adjustment = _gpu_adjustment(
+            adjusted = _gpu_adjusted(
                 restored[region],
                 rms[region],
                 confidence[region],
                 noise,
                 radius,
                 device,
-            )[crop]
+                crop,
+            )
         else:
             epsilon = (3 * rms[region]) ** 2 + 0.004**2
             donor = (
@@ -336,5 +369,10 @@ def _add_grain(
             )
             output_detail = _detail(restored[region], epsilon, radius)
             adjustment = confidence[target][:, :, None] * (donor - output_detail)[crop]
-        result[target] = np.clip(restored[target] + adjustment, 0, 1)
-    return result
+            adjusted = np.clip(restored[target] + adjustment, 0, 1)
+        if adjusted.shape == restored.shape:
+            return adjusted
+        if result is None:
+            result = restored.copy()
+        result[target] = adjusted
+    return restored if result is None else result

@@ -49,6 +49,8 @@ class Stage:
         if engine.streamable_weights_size:
             engine.weight_streaming_budget_v2 = 0
         self.context: trt.IExecutionContext | None = None
+        # Whether a captured graph has `context`; another shape makes its own.
+        self.context_taken = False
         self.device = device
         self.inputs = tuple(profiles(self.name))
         names = [engine.get_tensor_name(i) for i in range(engine.num_io_tensors)]
@@ -65,6 +67,7 @@ class Stage:
 
     def offload(self) -> None:
         self.context = None
+        self.context_taken = False
         if self.engine is not None and self.engine.streamable_weights_size:
             self.engine.weight_streaming_budget_v2 = 0
 
@@ -92,6 +95,7 @@ _RESIDENT_INPUTS = {
 
 @dataclass
 class CapturedStage:
+    stage: Stage
     context: trt.IExecutionContext
     values: dict[str, torch.Tensor]
     graph: torch.cuda.CUDAGraph
@@ -119,15 +123,19 @@ class StageExecution:
     """Outputs are borrowed until the next call of the same stage and geometry.
 
     A session lease serializes callers. Every graph uses its own immutable context
-    and the session's single stream. Scratch can therefore be shared; growing it
-    invalidates every graph before its old address is freed. The image entry point
-    clears this collection on geometry changes, bounding the number of shapes.
+    and the session's stream. Scratch can therefore be shared; growing it invalidates
+    every graph before its old address is freed. Lanes after the first (launch's
+    `lane`) have a stream, scratch and graphs of their own. The image entry point clears this
+    collection on geometry changes, bounding the number of shapes.
     """
 
     def __init__(self, device: torch.device, stream: torch.cuda.Stream):
         self.device = device
         self.stream = stream
         self.memory: torch.Tensor | None = None
+        # Lanes after the first
+        self.lane_streams: dict[int, torch.cuda.Stream] = {}
+        self.lane_memory: dict[int, torch.Tensor] = {}
         self.graphs: dict[ShapeKey, CapturedStage] = {}
         self.buffers: dict[
             tuple[object, tuple[int, ...], torch.dtype], torch.Tensor
@@ -145,12 +153,19 @@ class StageExecution:
             self.buffers[identity] = value
         return value
 
+    def _drop_graphs(self) -> None:
+        """Destroy the captures; their stages' contexts are free again."""
+        for entry in self.graphs.values():
+            entry.stage.context_taken = False
+        self.graphs.clear()
+
     def clear(self) -> None:
         self.stream.synchronize()
-        self.graphs.clear()
+        self._drop_graphs()
         self.buffers.clear()
         self.copied.clear()
         self.memory = None
+        self.lane_memory.clear()
 
     def _copy(
         self, name: str, binding: str, target: torch.Tensor, source: torch.Tensor
@@ -161,7 +176,7 @@ class StageExecution:
                     f"VOSR resident {name}/{binding} binding changed within a geometry."
                 )
             return
-        if name == "attention" and binding in ("k", "v"):
+        if name.startswith("attention") and binding in ("k", "v"):
             key = (binding, target.data_ptr())
             if self.copied.get(key) == self.attention_epoch:
                 return
@@ -169,6 +184,32 @@ class StageExecution:
         target.copy_(source)
 
     def run(self, stage: Stage, arguments: tuple[torch.Tensor, ...]) -> torch.Tensor:
+        current = torch.cuda.current_stream(self.device)
+        if current != self.stream:
+            self.stream.wait_stream(current)
+        with torch.cuda.stream(self.stream):
+            result = self.launch(stage, arguments, self.stream, 0)
+        if current != self.stream:
+            current.wait_stream(self.stream)
+            result.record_stream(current)
+        return result
+
+    def lane_stream(self, lane: int) -> torch.cuda.Stream:
+        if lane == 0:
+            return self.stream
+        if lane not in self.lane_streams:
+            self.lane_streams[lane] = torch.cuda.Stream(device=self.device)
+        return self.lane_streams[lane]
+
+    def launch(
+        self,
+        stage: Stage,
+        arguments: tuple[torch.Tensor, ...],
+        stream: torch.cuda.Stream,
+        lane: int,
+    ) -> torch.Tensor:
+        """The call on `stream` (current), with `lane`'s scratch and graphs; the caller
+        orders it with other streams."""
         import tensorrt as trt
 
         name = stage.name
@@ -177,88 +218,103 @@ class StageExecution:
             raise RuntimeError("VOSR BF16 session is not activated.")
         if len(arguments) != len(stage.inputs):
             raise ValueError(f"Wrong input count for VOSR {name}.")
-        key = (name, tuple(tuple(value.shape) for value in arguments))
-        current = torch.cuda.current_stream(self.device)
-        if current != self.stream:
-            self.stream.wait_stream(current)
-        with torch.cuda.stream(self.stream):
-            entry = self.graphs.get(key)
-            if entry is None:
-                from nodes.impl.tensorrt.memory import gpu_setup_lock
+        key = (
+            f"{name}/lane{lane}" if lane else name,
+            tuple(tuple(value.shape) for value in arguments),
+        )
+        fresh = False
+        entry = self.graphs.get(key)
+        if entry is None:
+            from nodes.impl.tensorrt.memory import gpu_setup_lock
 
+            if stage.context_taken:
                 with gpu_setup_lock:
                     context = engine.create_execution_context(
                         trt.ExecutionContextAllocationStrategy.USER_MANAGED
                     )
                 if context is None:
                     raise RuntimeError(f"VOSR cannot allocate {name} graph context.")
-                values = {}
-                for binding, tensor in zip(stage.inputs, arguments, strict=True):
-                    dtype = stage.types[engine.get_tensor_dtype(binding)]
-                    if (name, binding) in _RESIDENT_INPUTS:
-                        if (
-                            tensor.device != self.device
-                            or tensor.dtype != dtype
-                            or not tensor.is_contiguous()
-                        ):
-                            raise ValueError(
-                                f"VOSR {name}/{binding} must be a resident buffer with the engine's dtype and layout."
-                            )
-                        value = tensor
-                    else:
-                        identity = (
-                            ("attention_kv", binding)
-                            if name == "attention" and binding in ("k", "v")
-                            else (key, binding)
-                        )
-                        value = self.buffer(identity, tuple(tensor.shape), dtype)
-                    if not context.set_input_shape(binding, tuple(value.shape)):
+            else:
+                context = stage.context
+                stage.context_taken = True
+            values = {}
+            for binding, tensor in zip(stage.inputs, arguments, strict=True):
+                dtype = stage.types[engine.get_tensor_dtype(binding)]
+                if (name, binding) in _RESIDENT_INPUTS:
+                    if (
+                        tensor.device != self.device
+                        or tensor.dtype != dtype
+                        or not tensor.is_contiguous()
+                    ):
                         raise ValueError(
-                            f"VOSR {name} does not support shape {tuple(value.shape)}."
+                            f"VOSR {name}/{binding} must be a resident buffer with the engine's dtype and layout."
                         )
-                    self._copy(name, binding, value, tensor)
-                    values[binding] = value
-                size = context.update_device_memory_size_for_shapes()
-                if size < 0:
-                    raise RuntimeError(f"Invalid VOSR {name} activation size.")
-                if self.memory is None or self.memory.numel() < size:
-                    self.stream.synchronize()
-                    # Destroy captures before freeing their shared scratch address.
-                    self.graphs.clear()
-                    self.memory = None
-                    torch.cuda.empty_cache()
-                    self.memory = torch.empty(
-                        max(1, size), device=self.device, dtype=torch.uint8
+                    value = tensor
+                else:
+                    identity = (
+                        (name, binding)
+                        if name.startswith("attention") and binding in ("k", "v")
+                        else (key, binding)
                     )
-                context.set_device_memory(self.memory.data_ptr(), self.memory.numel())
-                shape = tuple(context.get_tensor_shape("result"))
-                if any(value <= 0 for value in shape):
-                    raise RuntimeError(f"Unresolved VOSR {name} output shape.")
-                values["result"] = self.buffer(
-                    (key, "result"),
-                    shape,
-                    stage.types[engine.get_tensor_dtype("result")],
+                    value = self.buffer(identity, tuple(tensor.shape), dtype)
+                if not context.set_input_shape(binding, tuple(value.shape)):
+                    raise ValueError(
+                        f"VOSR {name} does not support shape {tuple(value.shape)}."
+                    )
+                self._copy(name, binding, value, tensor)
+                values[binding] = value
+            size = context.update_device_memory_size_for_shapes()
+            if size < 0:
+                raise RuntimeError(f"Invalid VOSR {name} activation size.")
+            memory = self.lane_memory.get(lane) if lane else self.memory
+            if memory is None or memory.numel() < size:
+                torch.cuda.synchronize(self.device)
+                # Destroy captures before freeing their shared scratch address.
+                self._drop_graphs()
+                memory = None
+                if lane:
+                    self.lane_memory.pop(lane, None)
+                else:
+                    self.memory = None
+                torch.cuda.empty_cache()
+                memory = torch.empty(
+                    max(1, size), device=self.device, dtype=torch.uint8
                 )
-                for binding, value in values.items():
-                    if not context.set_tensor_address(binding, value.data_ptr()):
-                        raise RuntimeError(
-                            f"TensorRT rejected {name}/{binding} address."
-                        )
-                # Flush shape-dependent initialization outside stream capture.
-                if not context.execute_async_v3(self.stream.cuda_stream):
-                    raise RuntimeError(f"VOSR {name} graph initialization failed.")
-                self.stream.synchronize()
-                graph = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(graph, stream=self.stream):
-                    if not context.execute_async_v3(self.stream.cuda_stream):
-                        raise RuntimeError(f"VOSR {name} capture failed.")
-                entry = CapturedStage(context, values, graph)
-                self.graphs[key] = entry
+                if lane:
+                    self.lane_memory[lane] = memory
+                else:
+                    self.memory = memory
+            context.set_device_memory(memory.data_ptr(), memory.numel())
+            shape = tuple(context.get_tensor_shape("result"))
+            if any(value <= 0 for value in shape):
+                raise RuntimeError(f"Unresolved VOSR {name} output shape.")
+            values["result"] = self.buffer(
+                (key, "result"),
+                shape,
+                stage.types[engine.get_tensor_dtype("result")],
+            )
+            for binding, value in values.items():
+                if not context.set_tensor_address(binding, value.data_ptr()):
+                    raise RuntimeError(f"TensorRT rejected {name}/{binding} address.")
+            # Flush shape-dependent initialization outside stream capture. This
+            # run has the call's inputs, so it also gives the call's result.
+            if not context.execute_async_v3(stream.cuda_stream):
+                raise RuntimeError(f"VOSR {name} graph initialization failed.")
+            stream.synchronize()
+            # What torch.cuda.graph does, without its garbage collection and empty
+            # cache; only this thread's calls can spoil the capture.
+            graph = torch.cuda.CUDAGraph()
+            graph.capture_begin(capture_error_mode="thread_local")
+            try:
+                if not context.execute_async_v3(stream.cuda_stream):
+                    raise RuntimeError(f"VOSR {name} capture failed.")
+            finally:
+                graph.capture_end()
+            entry = CapturedStage(stage, context, values, graph)
+            self.graphs[key] = entry
+            fresh = True
+        if not fresh:
             for binding, tensor in zip(stage.inputs, arguments, strict=True):
                 self._copy(name, binding, entry.values[binding], tensor)
             entry.graph.replay()
-            result = entry.values["result"]
-        if current != self.stream:
-            current.wait_stream(self.stream)
-            result.record_stream(current)
-        return result
+        return entry.values["result"]

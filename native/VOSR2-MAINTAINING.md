@@ -11,26 +11,42 @@ official upload: `vosr2_official.py` pins its revision, files, sizes and SHA-256
 into `<storage>/vosr2-model/<revision>/`, hashes remembered by `stored_hash`; the resumable, hashed `download` shared
 with FP8). In `backend/src/nodes/impl/pytorch/`:
 
-- `vosr2.py`: bundle paths, pinned configuration (`read_configs`), weights, enums, `MemoryPlan`, input preparation,
-  colour correction. `vosr2_cache.py`: weights kept between runs. `vosr2_memory.py`: `vram_budget`.
-- `vosr2_context.py` (PyTorch scene focus), `vosr2_scene.py` (input-only routing and window layout, both backends:
+- `vosr2.py`: bundle paths, pinned configuration (`read_configs`), weights, enums, `MemoryPlan`, input preparation
+  (`by_rows`: threads; Pillow's box of rows gives those rows' bytes of the whole resize), colour correction.
+  `vosr2_cache.py`: weights kept between runs. `vosr2_memory.py`: `vram_budget`, `available_memory`.
+- `vosr2_replay.py` (`Replays`): a PyTorch model call of fixed shapes as a CUDA graph, the same kernels and so the
+  same bits. A shape's first call runs plainly, its second is captured, later ones replay; outputs are borrowed until
+  the next call of that shape. A capture that runs out of memory leaves its shape plain; one CUDA rejects leaves the process's GPU libraries unusable, so the file
+  `vosr2-no-cuda-graphs` in the storage folder keeps later launches from trying, and the node asks for a restart. ROCm's
+  PyTorch always runs plainly. `vosr2_warm_up.py`: at a device's first use, a thread readies the GPU kernels of the
+  small steps (grain, colour, bicubic).
+- `vosr2_context.py` (PyTorch scene focus: `DitPredictor` makes what follows from the time and a window's keys once;
+  `Residents` keeps models on the device between stages and runs while they have room, others giving way; Low has one
+  model on the device at a time and keeps as many DiT blocks as leave room for two streamed ones), `vosr2_scene.py` (input-only routing and window layout, both backends:
   `window_positions` places each axis by dynamic programming, same count as the regular grid, steps 40-56 latents;
   `face_windows` adds a window on each face (YuNet, `find_faces`) whose middle (central half of the box) the layout
   splits, centred on the box, only where it can hold that middle alone; both backends lay it over the grid's
   normalized blend with `face_feather` (1 out to 25 latents from its centre, a raised cosine to 0 by 31), so its edge
   hands over more gently than two grid windows do; `WindowPlan` keeps a video's layout per shot,
   re-planned at a cut; 2026-10-14, after detail-, difference- and amount-based seam triggers failed), `vosr2_streaming.py`
-  (Low's whole-image VAE in bounded bands), `vosr2_texture.py` (grain pass, both backends: synthesized grain hashed
+  (whole-image VAE in bounded bands; never change a band's size or pad inside the convolution, both change rounding
+  that the DiT amplifies; given `room`, a stage's maps, its input included, go to the device when a new block that
+  large fits under the budget: `unreserved_memory`), `vosr2_texture.py` (grain pass, both backends: synthesized grain hashed
   from seed, frame and pixel position; `GRAIN_GAIN` 1.16 is the choice of 2026-10-13, 1.4 times the bicubic
   source grain on Castorice 2x; in a video the node keeps the last input, and areas whose fine texture changed get
   that frame's grain while still areas keep the seed's, 2026-10-14; stateless, so a changed area returns to the
   seed's grain one still frame later; temporal restorations get no grain, the stabilized output does).
-- `vosr2_trt_models.py` (the ten `STAGES`, profiles), `vosr2_trt_rewrite.py`, `vosr2_export.py`,
+- `vosr2_trt_models.py` (the eleven `STAGES`, profiles; `attention_grouped` takes keys and values in groups of 8
+  for key counts that are multiples of 8, which TensorRT then reads in place where it copies them for any count;
+  `DERIVED_STAGES` are made from the hosted graphs, not hosted), `vosr2_trt_rewrite.py`, `vosr2_export.py`,
   `vosr2_trt_compile.py` (builder settings), `vosr2_trt_build.py`, `vosr2_fp8_build.py` (compile workers in an owned
   job, `../owned_job.py` and `vosr2_process.py`, 20-minute limit).
 - `vosr2_engine_cache.py`, `vosr2_stage_cache.py`, `vosr2_fp8.py` (engine caches, FP8 download);
-  `vosr2_trt_pipeline.py` (`FullSession`), `vosr2_trt_execution.py` (CUDA graphs; outputs are borrowed: copy one before
-  calling that stage again), `vosr2_trt_restore.py` (outer tiles above 3840 × 2176), `vosr2_trt_plugin.py`.
+  `vosr2_trt_pipeline.py` (`FullSession`; `windows`: a window's second prediction runs beside its first on its lane's
+  pair lane, which reads the lane's keys, and from a geometry's eighth image two windows run side by side, each on a
+  lane, as the free memory allows: one prediction leaves much of the GPU idle, and a lane's setup costs about 0.5 s
+  once per geometry; `concurrent` is false in Low memory and on AMD), `vosr2_trt_execution.py` (CUDA graphs; outputs are borrowed: copy one before calling that stage again; lanes
+  after the first have a stream, scratch and graphs of their own, so a lane's engines read fixed addresses), `vosr2_trt_restore.py` (outer tiles above 3840 × 2176), `vosr2_trt_plugin.py`.
 - `vosr2_temporal.py` (flow, Three Frames), `vosr2_temporal_state.py` (Persistent Detail), `vosr2_temporal_step.py`.
 - AMD, in `backend/src/nodes/impl/migraphx/`: `vosr2_migx_compile.py` (the four programs and their fixed shapes, the
   plugin node turned into the op, `load_ops`), `vosr2_migx_build.py` (compile worker, one hour: export, FP8 calibration
@@ -49,7 +65,8 @@ as they are.
 ## Engine caches
 
 In the backend storage folder a set is `<root>/<key>/` (key: SHA-256 of the identity JSON), published by writing
-`manifest.json` after every stage passed its check; a corrupt set moves to `quarantine-*`, `compile.lock` serializes
+`manifest.json` after every stage passed its check; plans are Zstandard in independent 64 MiB frames that threads read
+(`vosr2_plan_file.py`; a set compressed in one frame still reads), and stages load on threads; a corrupt set moves to `quarantine-*`, `compile.lock` serializes
 builds across processes, and a build needs 5.5 GB of free GPU memory. Once the current set is valid, still under the
 lock, `remove_unused_sets` touches the set's `last-used` file (never the manifest or plans, whose file identities key
 the sessions) and deletes what the cache made and no longer needs: sets whose manifest identity (keying their folder)
@@ -64,8 +81,10 @@ move) and a deletion stopped halfway is finished by a later check; a folder it c
   `vosr2_trt_{models,build,compile,rewrite,plugin}.py` and the plugin DLL; torch, TensorRT, CUDA, driver, GPU,
   profiles, `runtime_contract`. Check: each stage within relative L2 0.03 of PyTorch BF16 (DINO 0.05 of FP32), repeats
   bit-identical.
-- **FP8**, `vosr2-tensorrt-fp8` (graphs in `vosr2-fp8-graphs/<folder>`): manifest SHA-256, TensorRT, GPU and capability,
-  plugin DLL SHA-256, `vosr2_trt_compile.py`. Check: finite and repeatable on seeded inputs.
+- **FP8**, `vosr2-tensorrt-fp8` (graphs in `vosr2-fp8-graphs/<folder>`): `format`, manifest SHA-256, TensorRT, GPU and
+  capability, plugin DLL SHA-256, `vosr2_trt_compile.py`. Bump `format` when the runtime's stage inputs or the build's
+  graphs change, since `vosr2_fp8_build.py` is outside the identity: the build takes attention's keys transposed
+  (`attention_keys_transposed`). Check: finite and repeatable on seeded inputs.
 
 - **MIGraphX**, `vosr2-migraphx-bf16`, `-fp8` and `-fp16`: as BF16 with MIGraphX's version, GPU name and gfx, the
   op library's SHA-256 and the program shapes instead of TensorRT's; plain programs (MIGraphX loads a file). Checks:
@@ -119,8 +138,9 @@ A `TemporalStep` lives in `context.iteration.state` for one Load Video loop run 
 The plain path runs for strength 0, outside a loop, or when `iteration.iterated_by(0)` is not Load Video. At the first
 item `lookahead(0)` decides once: at least 1 (Three Frames) or 5 (Persistent Detail's fifth bootstrap observation needs
 frame i + 5) selects peek mode, else past frames only. `peek(0, k)` waits for item i + k; None (no such frame, or it
-failed) ends the sequence, and a gap in item indices starts a new one. Each frame is restored once; TensorRT restores
-the next frame on a one-thread pool, settled before the item returns. Peek-mode outputs equal the removed Temporal
+failed) ends the sequence, and a gap in item indices starts a new one. Each frame is restored once; TensorRT and
+PyTorch Default restore the next frame on a one-thread pool, settled after the output's grain and before the item
+returns (`settle`). Peek-mode outputs equal the removed Temporal
 Sequence node's (oracle: that generator, kept in `test_vosr2_temporal_step.py`; 30 GPU frames bit-identical on PyTorch).
 Executor side: ARCHITECTURE section 4.
 
@@ -129,7 +149,7 @@ Executor side: ARCHITECTURE section 4.
 `backend/src/vendor/vosr2/`: from ComfyUI-VOSR2 `6a21810b` and VOSR `516f292b` (Apache-2.0), `pos_embed.py` from EVA-02
 (MIT); licences and changes in its `NOTICE.md`. Edits rebuild BF16 engines. CPU tests, `native/tests/test_vosr2*`:
 `.py`, `_fp8` (nodes); `_fp8_fetch` (model and FP8 downloads); `_context`, `_streaming`, `_texture`, `_outer_tiling`; `_trt_rewrite`, `_bf16_pipeline`,
-`_acceleration`, `_stage_cache` (engines); `_trt_plugin` with `test_package_recovery_integration.py`;
+`_acceleration`, `_replay`, `_stage_cache` (engines); `_trt_plugin` with `test_package_recovery_integration.py`;
 `_temporal`, `_temporal_state`, `_temporal_step`; plus `test_iteration_view.py`, `test_item_window.py`,
 `tests/common/condition.test.ts`; `_migraphx` (the AMD route on the CPU). GPU checks are manual on NVIDIA;
 `_migraphx_gpu` (amd_gpu) is the AMD kit's (`CHAINNER_VOSR2_MODEL`, `CHAINNER_VOSR2_FP8=1`).

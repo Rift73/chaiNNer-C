@@ -19,7 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-from .pos_embed import VisionRotaryEmbeddingFast
+from .pos_embed import RopeTable, VisionRotaryEmbeddingFast
 from .rmsnorm import RMSNorm
 from .swiglu_ffn import SwiGLUFFN
 
@@ -77,32 +77,22 @@ class MultiHeadCrossAttention(nn.Module):
             self.q_norm = nn.Identity()
             self.k_norm = nn.Identity()
 
-    def forward(self, x, cond):
-        B, N, C = x.shape
+    def keys(self, cond):
+        """The normalized keys and the values of `cond`, for `keyed`."""
         B_cond, N_cond, _ = cond.shape
-
-        q = self.q_linear(x).view(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         k = self.k_linear(cond).view(B_cond, N_cond, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         v = self.v_linear(cond).view(B_cond, N_cond, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        return self.k_norm(k), v
 
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-
-        x = F.scaled_dot_product_attention(q, k, v)
+    def keyed(self, x, k, v):
+        B, N, C = x.shape
+        q = self.q_linear(x).view(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        x = F.scaled_dot_product_attention(self.q_norm(q), k, v)
         x = x.permute(0, 2, 1, 3).contiguous().view(B, N, C)
         return self.proj(x)
 
-
-def modulate_adasin(x, shift, scale):
-    if shift is None:
-        return x * (1 + scale.unsqueeze(1))
-    return x * (1 + scale) + shift
-
-
-def modulate(x, shift, scale):
-    if shift is None:
-        return x * (1 + scale.unsqueeze(1))
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    def forward(self, x, cond):
+        return self.keyed(x, *self.keys(cond))
 
 
 class Attention(nn.Module):
@@ -205,14 +195,19 @@ class LightningDiTBlock(nn.Module):
         if self.z_dims is not None:
             self.cross_attn = MultiHeadCrossAttention(d_model=hidden_size, num_heads=num_heads, qk_norm=use_qknorm)
 
-    def forward(self, x, c, z=None, feat_rope=None, token_chunk=None, query_chunk=None, check_cancel=None):
-        B, N, C = x.shape
+    def modulation(self, c):
+        """The block's shifts, gains (1 + scale) and gates: they follow from the time alone."""
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-            self.scale_shift_table[None] + c.reshape(B, 6, -1)
+            self.scale_shift_table[None] + c.reshape(c.shape[0], 6, -1)
         ).chunk(6, dim=1)
+        return shift_msa, 1 + scale_msa, gate_msa, shift_mlp, 1 + scale_mlp, gate_mlp
+
+    def forward(self, x, modulation, keys=None, feat_rope=None, token_chunk=None, query_chunk=None, check_cancel=None):
+        N = x.shape[1]
+        shift_msa, gain_msa, gate_msa, shift_mlp, gain_mlp, gate_mlp = modulation
 
         x = x + gate_msa * self.attn(
-            modulate_adasin(self.norm1(x), shift_msa, scale_msa), rope=feat_rope,
+            self.norm1(x) * gain_msa + shift_msa, rope=feat_rope,
             query_chunk=query_chunk, check_cancel=check_cancel,
         )
         if token_chunk is not None:
@@ -224,14 +219,14 @@ class LightningDiTBlock(nn.Module):
                     check_cancel()
                 part = x[:, start:start + token_chunk]
                 if self.z_dims is not None:
-                    part = part + self.cross_attn(part, z)
+                    part = part + self.cross_attn.keyed(part, *keys)
                 result[:, start:start + token_chunk] = part + gate_mlp * self.mlp(
-                    modulate_adasin(self.norm2(part), shift_mlp, scale_mlp)
+                    self.norm2(part) * gain_mlp + shift_mlp
                 )
             return result
         if self.z_dims is not None:
-            x = x + self.cross_attn(x, z)
-        x = x + gate_mlp * self.mlp(modulate_adasin(self.norm2(x), shift_mlp, scale_mlp))
+            x = x + self.cross_attn.keyed(x, *keys)
+        x = x + gate_mlp * self.mlp(self.norm2(x) * gain_mlp + shift_mlp)
         return x
 
 
@@ -242,10 +237,14 @@ class FinalLayer(nn.Module):
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
         self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True))
 
-    def forward(self, x, c):
+    def modulation(self, c):
+        """The final shift and gain (1 + scale): they follow from the time alone."""
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
-        x = modulate(self.norm_final(x), shift, scale)
-        return self.linear(x)
+        return shift.unsqueeze(1), 1 + scale.unsqueeze(1)
+
+    def forward(self, x, modulation):
+        shift, gain = modulation
+        return self.linear(self.norm_final(x) * gain + shift)
 
 
 class LightningDiT(nn.Module):
@@ -325,7 +324,7 @@ class LightningDiT(nn.Module):
 
         from einops import repeat
 
-        from .pos_embed import broadcat, rotate_half
+        from .pos_embed import broadcat
 
         theta = 10000
         freqs = 1.0 / (theta ** (torch.arange(0, half_head_dim, 2, device=device)[: (half_head_dim // 2)].float() / half_head_dim))
@@ -337,17 +336,52 @@ class LightningDiT(nn.Module):
         fy = repeat(torch.einsum("..., f -> ... f", y, freqs), "... n -> ... (n r)", r=2)
         fx = repeat(torch.einsum("..., f -> ... f", x, freqs), "... n -> ... (n r)", r=2)
         freqs = broadcat((fy[:, None, :], fx[None, :, :]), dim=-1)
-        freqs_cos = freqs.cos().view(-1, freqs.shape[-1]).to(dtype)
-        freqs_sin = freqs.sin().view(-1, freqs.shape[-1]).to(dtype)
+        return RopeTable(
+            freqs.cos().view(-1, freqs.shape[-1]).to(dtype),
+            freqs.sin().view(-1, freqs.shape[-1]).to(dtype),
+        )
 
-        def dynamic_rope_fn(t_input):
-            return t_input * freqs_cos + rotate_half(t_input) * freqs_sin
+    def rope(self, grid, device, dtype):
+        """The RoPE of a token grid; None without RoPE."""
+        if not self.use_rope:
+            return None
+        train_hw_seq_len = self.x_embedder.img_size[0] // self.patch_size
+        if grid != (train_hw_seq_len, train_hw_seq_len):
+            return self._get_dynamic_rope(grid, device, dtype)
+        return RopeTable(self.feat_rope.freqs_cos.to(dtype), self.feat_rope.freqs_sin.to(dtype))
 
-        return dynamic_rope_fn
+    def time_condition(self, t, r=None):
+        """What the blocks and the final layer take from the time: (c, c0)."""
+        t_raw = t
+        t = self.t_embedder(t)
+        r = self.r_embedder(r) * (t_raw - r).unsqueeze(-1) if self.r_embedder is not None else 0
+        c = t + r
+        return c, self.t_block(c)
+
+    def condition_keys(self, z):
+        """Each block's cross-attention keys and values for the conditioning `z`."""
+        z = self.mlp_ca(self.layer_norm(z))
+        return [block.cross_attn.keys(z) for block in self.blocks]
+
+    def forward_prepared(self, x, keys, feat_rope, modulations, final, token_chunk=None, query_chunk=None):
+        """One whole prediction from a prepared time (`modulations`, `final`), conditioning
+        (`keys`) and RoPE: a fixed sequence of operations with the bits of forward_flexible
+        with these chunks, fit to capture as a CUDA graph."""
+        grid = (x.shape[-2] // self.patch_size, x.shape[-1] // self.patch_size)
+        x = self.x_embedder(x)
+        for block, modulation, pair in zip(self.blocks, modulations, keys):
+            x = block(x, modulation, pair, feat_rope, token_chunk, query_chunk)
+        return self.unpatchify(self._final(x, final, token_chunk), grid)
+
+    def _final(self, x, final, token_chunk):
+        if token_chunk is None:
+            return self.final_layer(x, final)
+        return torch.cat([self.final_layer(part, final) for part in x.split(token_chunk, dim=1)], dim=1)
 
     def forward_flexible(self, x, t, r=None, z=None, check_cancel=None,
-                         token_chunk=None, query_chunk=None, stream_blocks=False):
-        """Full-image inference, optionally streaming weights and intermediates."""
+                         token_chunk=None, query_chunk=None, stream_blocks=False, release_block=None):
+        """Full-image inference, optionally streaming weights and intermediates.
+        `release_block` takes a streamed block off the device (default: copied back)."""
         N, C, H, W = x.shape
         if H % self.patch_size or W % self.patch_size:
             raise ValueError("DiT dimensions must be divisible by its patch size.")
@@ -357,25 +391,12 @@ class LightningDiT(nn.Module):
         grid = (H // self.patch_size, W // self.patch_size)
 
         x = self.x_embedder(x)
-        t_raw = t
-        t = self.t_embedder(t)
-        r = self.r_embedder(r) * (t_raw - r).unsqueeze(-1) if self.r_embedder is not None else 0
-        c = t + r
-        c0 = self.t_block(c)
+        c, c0 = self.time_condition(t, r)
 
         if self.z_dims is not None and z is not None:
-            z = z[0]
-            z = self.layer_norm(z)
-            z = self.mlp_ca(z)
+            z = self.mlp_ca(self.layer_norm(z[0]))
 
-        if self.use_rope:
-            train_hw_seq_len = self.x_embedder.img_size[0] // self.patch_size
-            if grid != (train_hw_seq_len, train_hw_seq_len):
-                feat_rope = self._get_dynamic_rope(grid, x.device, x.dtype)
-            else:
-                feat_rope = self.feat_rope
-        else:
-            feat_rope = None
+        feat_rope = self.rope(grid, x.device, x.dtype)
 
         for block in self.blocks:
             if check_cancel is not None:
@@ -383,13 +404,13 @@ class LightningDiT(nn.Module):
             try:
                 if stream_blocks:
                     block.to(x.device)
-                x = block(x, c0, z, feat_rope, token_chunk, query_chunk, check_cancel)
+                keys = block.cross_attn.keys(z) if self.z_dims is not None else None
+                x = block(x, block.modulation(c0), keys, feat_rope, token_chunk, query_chunk, check_cancel)
             finally:
                 if stream_blocks:
-                    block.cpu()
+                    if release_block is None:
+                        block.cpu()
+                    else:
+                        release_block(block)
 
-        if token_chunk is None:
-            x = self.final_layer(x, c)
-        else:
-            x = torch.cat([self.final_layer(part, c) for part in x.split(token_chunk, dim=1)], dim=1)
-        return self.unpatchify(x, grid)
+        return self.unpatchify(self._final(x, self.final_layer.modulation(c), token_chunk), grid)

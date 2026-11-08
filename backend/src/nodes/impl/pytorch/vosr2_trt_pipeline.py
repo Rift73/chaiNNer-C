@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 from collections.abc import Callable, Hashable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from weakref import WeakSet
@@ -15,10 +16,15 @@ from gpu import get_vram_usage
 from nodes.impl.tensorrt.cache import SharedCache
 
 from .vosr2_export import rotary_tables
+from .vosr2_memory import available_memory
 from .vosr2_plan_file import compressed, plain
 from .vosr2_trt_execution import BoundedQueue, Stage, StageExecution
 from .vosr2_trt_models import STAGES
 from .vosr2_trt_plugin import load_plugin
+
+LANE_BYTES = 512 * 1024**2
+# A lane's pair lane: its windows' second predictions, which read its keys
+PAIRED = 8
 
 _LIVE: WeakSet[FullSession] = WeakSet()
 
@@ -51,12 +57,19 @@ class FullSession:
         self.geometry: tuple[int, int, int] | None = None
         self.constants: dict[object, torch.Tensor] = {}
         self.kv_tensor: torch.Tensor | None = None
-        try:
+        # What lanes() allows for the current geometry, and its images before this one
+        self.lane_count: int | None = None
+        self.images = 0
+
+        def load(name: str) -> Stage:
             with torch.cuda.device(self.device):
-                for name in STAGES:
-                    self.stages[name] = Stage(
-                        plan(directory, name), self.logger, self.device
-                    )
+                return Stage(plan(directory, name), self.logger, self.device)
+
+        try:
+            with ThreadPoolExecutor(max_workers=len(STAGES)) as pool:
+                loads = [pool.submit(load, name) for name in STAGES]
+                for name, stage in zip(STAGES, loads, strict=True):
+                    self.stages[name] = stage.result()
         except BaseException:
             self.close()
             raise
@@ -108,6 +121,7 @@ class FullSession:
         # already measured as external allocations on its next admission.
         torch.cuda.set_per_process_memory_fraction(cap / total, self.device)
         try:
+            admitted = []
             for stage in self.stages.values():
                 engine = stage.engine
                 if engine is None:
@@ -123,13 +137,21 @@ class FullSession:
                         raise RuntimeError(
                             f"TensorRT rejected VOSR {stage.name} weight residency."
                         )
-                with gpu_setup_lock:
+                admitted.append((stage, engine))
+            check()
+
+            def make_context(stage: Stage, engine: trt.ICudaEngine) -> None:
+                with torch.cuda.device(self.device):
                     stage.context = engine.create_execution_context(
                         trt.ExecutionContextAllocationStrategy.USER_MANAGED
                     )
+
+            # Each context copies its stage's weights to the device: they go together.
+            with gpu_setup_lock, ThreadPoolExecutor(len(admitted)) as pool:
+                list(pool.map(lambda pair: make_context(*pair), admitted))
+            for stage in self.stages.values():
                 if stage.context is None:
                     raise RuntimeError(f"VOSR could not allocate {stage.name} context.")
-                check()
             self.budget = budget
             self.reserve = reserve
         except BaseException:
@@ -147,7 +169,11 @@ class FullSession:
             self.constants.clear()
             self.ropes.clear()
             self.kv_tensor = None
-        elif self.geometry[2] != seed:
+            self.lane_count = None
+            self.images = 0
+        else:
+            self.images += 1
+        if self.geometry is not None and self.geometry[2] != seed:
             # Seed changes affect noise, not engine shapes, addresses or graphs.
             self.constants.pop("noise", None)
         self.geometry = geometry
@@ -170,13 +196,117 @@ class FullSession:
         return self.stage("dino", image)
 
     def predict(self, latent: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        width = latent.shape[-1]
-        if width not in self.ropes:
-            self.ropes[width] = rotary_tables(width, self.device, torch.bfloat16)
-        cos, sin = self.ropes[width]
+        cos, sin = self.rope(latent.shape[-1])
         if self.kv_tensor is None:
             self.kv_tensor = self.stage("dit_kv", condition)
         return self.stage("dit_cached", latent, self.kv_tensor, cos, sin)
+
+    def concurrent(self) -> bool:
+        """Whether streams may run side by side: every weight is resident (Default
+        memory)."""
+        return self.reserve is None
+
+    def lanes(self) -> int:
+        """How many windows run side by side: two from a geometry's eighth image when
+        streams may and the free memory allows, else one. A second lane costs a geometry
+        about 0.5 s once (its contexts and graphs) and saves about 0.06 s an image beside
+        the pair lanes; a third saved nothing (RTX 5090, FP8, 640x360 at 4x)."""
+        if not self.concurrent() or self.images < 7:
+            return 1
+        if self.lane_count is None:
+            # A lane's keys, scratch, conditioning and inputs: about 470 MiB, and one
+            # lane's worth stays free.
+            self.lane_count = int(available_memory(self.device) // LANE_BYTES - 1)
+        return max(1, min(2, self.lane_count))
+
+    def windows(
+        self, work: list[tuple[torch.Tensor, list[torch.Tensor]]]
+    ) -> list[tuple[torch.Tensor, list[torch.Tensor]]]:
+        """Each window's DINO conditioning and DiT predictions, given its normalized DINO
+        input and latents, for up to lanes() windows. They run side by side, each on a
+        lane of its own (stream, scratch, graphs), and a window's second prediction
+        beside its first, on its lane's pair lane, which reads the lane's keys: one
+        prediction leaves much of the GPU idle (RTX 5090, a window's two: FP8 26.8 ->
+        20.6 ms, BF16 39.8 -> 30.6 ms). The same kernels, so the same bits. Streamed
+        weights (Low) take everything in turn. Outputs are borrowed until the next
+        call."""
+        if not self.concurrent():
+            ((normalized, latents),) = work
+            self.begin_window()
+            condition = self.condition(normalized)
+            return [
+                (condition, [self.predict(latent, condition) for latent in latents])
+            ]
+        lanes = {}
+        for lane, (_, latents) in enumerate(work):
+            lanes[lane] = self.execution.lane_stream(lane)
+            if len(latents) == 2:
+                lanes[PAIRED + lane] = self.execution.lane_stream(PAIRED + lane)
+        # The rotary tables are made here, on the caller's stream, before the lanes read
+        # them.
+        for _, latents in work:
+            for latent in latents:
+                self.rope(latent.shape[-1])
+        current = torch.cuda.current_stream(self.device)
+        for stream in lanes.values():
+            if stream != current:
+                stream.wait_stream(current)
+        try:
+            results = self._run_lanes(work, lanes)
+        finally:
+            # Also when a launch failed: the caller's stream follows every lane.
+            for stream in lanes.values():
+                if stream != current:
+                    current.wait_stream(stream)
+        for condition, predictions in results:
+            for value in (condition, *predictions):
+                value.record_stream(current)
+        return results
+
+    def _run_lanes(
+        self,
+        work: list[tuple[torch.Tensor, list[torch.Tensor]]],
+        lanes: dict[int, torch.cuda.Stream],
+    ) -> list[tuple[torch.Tensor, list[torch.Tensor]]]:
+        results = []
+        for lane, (normalized, latents) in enumerate(work):
+            stream = lanes[lane]
+            with torch.cuda.stream(stream):
+                condition = self.execution.launch(
+                    self.stages["dino"], (normalized,), stream, lane
+                )
+                kv = self.execution.launch(
+                    self.stages["dit_kv"], (condition,), stream, lane
+                )
+                keys = torch.cuda.Event()
+                keys.record(stream)
+                predictions = [self._predict_on(latents[0], kv, stream, lane)]
+            if len(latents) == 2:
+                pair = lanes[PAIRED + lane]
+                pair.wait_event(keys)
+                with torch.cuda.stream(pair):
+                    predictions.append(
+                        self._predict_on(latents[1], kv, pair, PAIRED + lane)
+                    )
+            results.append((condition, predictions))
+        return results
+
+    def _predict_on(
+        self,
+        latent: torch.Tensor,
+        kv: torch.Tensor,
+        stream: torch.cuda.Stream,
+        lane: int,
+    ) -> torch.Tensor:
+        cos, sin = self.rope(latent.shape[-1])
+        return self.execution.launch(
+            self.stages["dit_cached"], (latent, kv, cos, sin), stream, lane
+        )
+
+    def rope(self, width: int) -> tuple[torch.Tensor, torch.Tensor]:
+        if width not in self.ropes:
+            self.ropes[width] = rotary_tables(width, self.device, torch.bfloat16)
+        return self.ropes[width]
 
     def vae(
         self, name: str, image: torch.Tensor, check: Callable[[], None]
@@ -186,6 +316,11 @@ class FullSession:
         feature = self.stage(name + "_pre", image)
         qkv = self.stage(name + "_qkv", feature)
         q, k, v = (part.unsqueeze(1).contiguous() for part in qkv.unbind(1))
+        k = k.transpose(-1, -2).contiguous()
+        # A key count that is a multiple of 8 has an engine that reads K and V in place.
+        attention = "attention_grouped" if k.shape[-1] % 8 == 0 else "attention"
+        if attention == "attention_grouped":
+            k, v = k.unflatten(-1, (-1, 8)), v.unflatten(2, (-1, 8))
         result = self.execution.buffer(
             (name, "attention_result"), tuple(q.shape), q.dtype
         )
@@ -193,7 +328,7 @@ class FullSession:
         for start in range(0, q.shape[2], 1024):
             check()
             end = min(start + 1024, q.shape[2])
-            result[:, :, start:end] = self.stage("attention", q[:, :, start:end], k, v)
+            result[:, :, start:end] = self.stage(attention, q[:, :, start:end], k, v)
             queue.advance(check)
         attention = result.squeeze(1).transpose(1, 2).reshape_as(feature).contiguous()
         del qkv, q, k, v, result
@@ -208,6 +343,8 @@ class FullSession:
         for stage in self.stages.values():
             stage.offload()
         self.ropes.clear()
+        self.lane_count = None
+        self.images = 0
         torch.cuda.synchronize(self.device)
         self.budget = 0
 

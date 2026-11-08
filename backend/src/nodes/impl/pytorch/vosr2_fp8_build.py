@@ -40,6 +40,7 @@ def main() -> None:
     from nodes.impl.pytorch.vosr2_trt_models import STAGES
     from nodes.impl.pytorch.vosr2_trt_pipeline import build_session
     from nodes.impl.pytorch.vosr2_trt_plugin import load_plugin
+    from nodes.impl.pytorch.vosr2_trt_rewrite import attention_keys_transposed
 
     load_plugin()
     device = torch.device(f"cuda:{args.gpu}")
@@ -47,16 +48,27 @@ def main() -> None:
     timing = timing_cache(args.cache, device)
     logger = trt.Logger(trt.Logger.WARNING)
     total = len(STAGES) + 1
+    attention_keys_transposed(
+        args.graphs / "attention.onnx", args.directory / "attention.onnx"
+    )
+    attention_keys_transposed(
+        args.graphs / "attention.onnx",
+        args.directory / "attention_grouped.onnx",
+        grouped=True,
+    )
     for index, name in enumerate(STAGES, 1):
         report_stage(index, total, f"Compiling FP8 set {name}")
+        graph = args.directory if name.startswith("attention") else args.graphs
         compile_stage(
             name,
-            args.graphs / f"{name}.onnx",
+            graph / f"{name}.onnx",
             plain(args.directory, name),
             logger,
             timing,
         )
         torch.cuda.empty_cache()
+    (args.directory / "attention.onnx").unlink()
+    (args.directory / "attention_grouped.onnx").unlink()
 
     # The graphs are hash-verified and their quantization is lossy by design, so
     # there is no PyTorch reference here: check that every engine runs on this GPU.

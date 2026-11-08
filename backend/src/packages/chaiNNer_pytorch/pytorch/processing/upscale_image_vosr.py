@@ -37,6 +37,7 @@ from nodes.impl.pytorch.vosr2_trt_pipeline import (
     release_full_session,
 )
 from nodes.impl.pytorch.vosr2_trt_restore import LOW_MEMORY, LatentStatistics, restore
+from nodes.impl.pytorch.vosr2_warm_up import ready_small_steps
 from nodes.properties.inputs import (
     BoolInput,
     EnumInput,
@@ -250,7 +251,12 @@ def upscale_image_vosr_node(
     if step is None:
         lookahead = view.lookahead(0)
         step = TemporalStep(
-            method, strength / 100, lookahead, _session(backend, memory), inputs
+            method,
+            strength / 100,
+            lookahead,
+            _session(backend, memory)
+            or (memory == VosrMemoryMode.DEFAULT and device.type == "cuda"),
+            inputs,
         )
         state.step = step
         if not step.ahead:
@@ -261,22 +267,29 @@ def upscale_image_vosr_node(
                 lookahead,
             )
     # The grain comes last: stabilization would blend each frame's grain with its
-    # neighbours'.
-    return restore_with_texture(
-        lambda: step.frame(
-            context,
-            view.index,
+    # neighbours'. The next frame's restoration goes on meanwhile.
+    try:
+        output = restore_with_texture(
+            lambda: step.frame(
+                context,
+                view.index,
+                img,
+                lambda offset: view.peek(0, offset),
+                upscale,
+                inputs,
+                settle=False,
+            ),
             img,
-            lambda offset: view.peek(0, offset),
-            upscale,
-            inputs,
-        ),
-        img,
-        scale,
-        grain,
-        context.suspend,
-        device,
-    )
+            scale,
+            grain,
+            context.suspend,
+            device,
+        )
+    except BaseException:
+        step.settle(failed=True)
+        raise
+    step.settle()
+    return output
 
 
 def _session(backend: VosrBackend, memory: VosrMemoryMode) -> bool:
@@ -330,6 +343,7 @@ def _upscale(
                 "VOSR MIGraphX cannot stream weights: GPU Memory Low runs on PyTorch"
             )
         release_full_session(context.node_id)
+    ready_small_steps(device, engine is not None)
     # After a possible engine build (minutes): the resized image is not held meanwhile.
     image, reference = prepare_image(img, scale)
     context.add_cleanup(
@@ -372,7 +386,13 @@ def _upscale(
                     device,
                 )
     with lease_bundle(context, model, dtype, reuse=reuse) as bundle:
-        with vram_budget(device, memory, context, settings.budget_limit) as check:
+        with vram_budget(
+            device,
+            memory,
+            context,
+            settings.budget_limit,
+            prepare=lambda: bundle.prepare(device, memory),
+        ) as check:
             return restore_with_texture(
                 lambda: upscale_scene_focus(
                     bundle,
@@ -386,6 +406,8 @@ def _upscale(
                     check,
                     optimized=device.type == "cuda",
                     windows=windows,
+                    retain=reuse,
+                    no_graphs=context.storage_dir / "vosr2-no-cuda-graphs",
                 ),
                 img,
                 scale,

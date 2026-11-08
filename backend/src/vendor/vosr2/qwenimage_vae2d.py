@@ -56,10 +56,11 @@ class RMSNorm2D(nn.Module):
         super().__init__()
         self.scale = dim**0.5
         self.gamma = nn.Parameter(torch.ones(dim, 1, 1))
-        self.bias = nn.Parameter(torch.zeros(dim, 1, 1)) if bias else 0.0
+        self.bias = nn.Parameter(torch.zeros(dim, 1, 1)) if bias else None
 
     def forward(self, x):
-        return F.normalize(x, dim=1) * self.scale * self.gamma + self.bias
+        x = F.normalize(x, dim=1) * self.scale * self.gamma
+        return x if self.bias is None else x + self.bias
 
 
 class ResidualBlock2D(nn.Module):

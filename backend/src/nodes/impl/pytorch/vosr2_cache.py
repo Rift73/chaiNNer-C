@@ -28,6 +28,8 @@ def lease_bundle(
     *,
     reuse: bool,
 ) -> Iterator[VosrBundle]:
+    """With `reuse`, the bundle stays between runs, and what the run left on the device
+    stays there until the node's cache is cleared or the next run sends it off."""
     key = (paths.identity(), str(dtype))
 
     def create() -> VosrBundle:
@@ -48,7 +50,4 @@ def lease_bundle(
         return
 
     with _BUNDLES.use(key, context.node_id, create) as bundle:
-        try:
-            yield bundle
-        finally:
-            bundle.offload()
+        yield bundle
