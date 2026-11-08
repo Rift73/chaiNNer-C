@@ -95,11 +95,14 @@ if [ -n "$rocm" ] || [ -n "$migraphx" ]; then
     mounts=(-v "$(readlink -f "$rocm"):/opt/rocm:ro" -v "$(readlink -f "$migraphx"):/opt/migraphx:ro")
 fi
 commit=$(git -C "$repo" rev-parse --verify "$ref^{commit}")
+# the exported source has no repository: the app's build fingerprint (vite/base.config.ts) is this commit's
+tree=$(git -C "$repo" rev-parse --verify "$commit^{tree}")
+date=$(git -C "$repo" log -1 --format=%cI "$commit")
 echo "building $commit ($ref of $repo) in $work"
 rm -rf "$work/src" "$work/build"
 mkdir -p "$work/src" "$work/build" "$work/cache/home"
 git -C "$repo" archive --format=tar "$commit" | tar -x -C "$work/src"
 docker build -t cnl-build "$work/src/native/linux"
 docker run --rm --name "cnl-build-release-$$" --memory=16g --user "$(id -u):$(id -g)" -v "$work:/work" "${mounts[@]}" \
-    -w /work/src -e HOME=/work/cache/home -e CI=1 cnl-build \
+    -w /work/src -e HOME=/work/cache/home -e CI=1 -e "CHAINNER_BUILD_TREE=$tree" -e "CHAINNER_BUILD_DATE=$date" cnl-build \
     bash native/tools/build_linux_release.sh --in-container "$package" "$amd"

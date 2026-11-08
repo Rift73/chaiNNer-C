@@ -4,6 +4,7 @@ import { ChainnerSettings } from './settings/settings';
 import { Progress } from './ui/progress';
 import type { ClipboardPaste } from '../main/clipboard';
 import type { ParsedSaveData, SaveData } from '../main/SaveFile';
+import type { UpdateResult } from '../main/updater';
 // eslint-disable-next-line import/no-nodejs-modules
 import type { FileFilter, OpenDialogReturnValue } from 'electron/common';
 // eslint-disable-next-line import/no-nodejs-modules
@@ -38,6 +39,9 @@ export interface InvokeChannels {
     'relaunch-application': ChannelInfo<void>;
     'quit-application': ChannelInfo<void>;
     'open-url': ChannelInfo<void, [url: string]>;
+    'download-update': ChannelInfo<string>;
+    'install-update': ChannelInfo<boolean>;
+    'take-update-result': ChannelInfo<UpdateResult | undefined>;
     /**
      * Opens a save file and pushes the result to the main window over `file-open`, as for files
      * opened by the OS or the menu.
@@ -121,6 +125,7 @@ export interface SendChannels {
     'window-blur': SendChannelInfo;
     'show-collected-information': SendChannelInfo<[info: Record<string, unknown>]>;
     'check-for-updates': SendChannelInfo;
+    'update-download-progress': SendChannelInfo<[percentage: number]>;
     'disable-menu': SendChannelInfo;
     'enable-menu': SendChannelInfo;
     'save-before-exit': SendChannelInfo;

@@ -61,7 +61,9 @@ export const getBuildDefine = (env: ConfigEnv<'build'>) => {
 // The fingerprint of the commit the build is made from (BuildInfo in src/common/version.ts): its
 // tree, its commit date and whether tracked files have uncommitted changes (untracked files, such
 // as local build folders, are not part of the build's commit). The build prints it once, so a
-// release build made from a dirty checkout shows in the make log.
+// release build made from a dirty checkout shows in the make log. A build from an exported commit
+// (the Linux release reads one with git archive, so it has no repository) is given that commit's
+// tree and date in CHAINNER_BUILD_TREE and CHAINNER_BUILD_DATE.
 export const getBuildInfoDefine = (root: string) => {
     const git = (...args: string[]) =>
         execFileSync('git', args, {
@@ -81,6 +83,11 @@ export const getBuildInfoDefine = (root: string) => {
             BUILD_DIRTY: JSON.stringify(dirty),
         };
     };
+
+    const { CHAINNER_BUILD_TREE: exportedTree, CHAINNER_BUILD_DATE: exportedDate } = process.env;
+    if (exportedTree && exportedDate) {
+        return define(exportedTree, exportedDate, false);
+    }
 
     try {
         return define(

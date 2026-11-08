@@ -47,7 +47,7 @@ const getProxyEnv = (name: string): string | undefined =>
  * settings (on Windows the Internet settings, PAC scripts included). A proxy in https_proxy or
  * else all_proxy, with its credentials, and no_proxy, if set, take precedence, as they do for pip.
  */
-const download = async (
+export const download = async (
     url: string,
     filePath: string,
     onProgress: (percentage: number) => void

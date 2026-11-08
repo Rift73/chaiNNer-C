@@ -32,6 +32,13 @@ import { BrowserWindowWithSafeIpc, ipcMain } from '../safeIpc';
 import { SaveData, SaveFile, openSaveFile } from '../SaveFile';
 import { SettingsWriter } from '../setting-storage';
 import { UiCache, getUiCacheFile } from '../uiCache';
+import {
+    StagedUpdate,
+    discardUpdate,
+    stageUpdate,
+    startInstaller,
+    takeUpdateResult,
+} from '../updater';
 import { exitOnBackendFailure } from './backendFailure';
 import { showOpenDialog } from './dialogs';
 import { MenuData, setMainMenu } from './menu';
@@ -339,14 +346,29 @@ const registerEventHandlerPostSetup = (
         mainWindow.close();
     });
 
+    // A downloaded update installs on the next restart: its installer starts the app again.
+    let stagedUpdate: StagedUpdate | undefined;
+    const relaunch = async () => {
+        if (stagedUpdate) {
+            try {
+                await startInstaller(stagedUpdate);
+                return;
+            } catch (error) {
+                log.error(`Could not start the update's installer: ${String(error)}`);
+            }
+        }
+        app.relaunch();
+    };
+
     const restartChainner = (): void => {
         if (backend.owned) {
             backend
                 .tryKill()
                 .then(() => settingsWriter.flush())
                 .finally(() => {
-                    app.relaunch();
-                    app.exit();
+                    relaunch()
+                        .catch(log.error)
+                        .finally(() => app.exit());
                 })
                 .catch(log.error);
         }
@@ -356,11 +378,12 @@ const registerEventHandlerPostSetup = (
         restartChainner();
     });
 
+    /** Asks about the chain's unsaved changes; whether the user canceled. */
     const handleUnsavedChanges = (
         event: Electron.Event,
         onSave: () => void,
         onDontSave?: () => void
-    ) => {
+    ): boolean => {
         const choice = dialog.showMessageBoxSync(mainWindow, {
             type: 'question',
             title: 'Unsaved changes',
@@ -379,11 +402,13 @@ const registerEventHandlerPostSetup = (
         } else if (choice === 2) {
             // Cancel
             event.preventDefault();
+            return true;
         } else {
             // Save
             event.preventDefault();
             onSave();
         }
+        return false;
     };
 
     ipcMain.handle('relaunch-application', (event) => {
@@ -401,6 +426,44 @@ const registerEventHandlerPostSetup = (
             restartChainner();
         }
     });
+
+    // update: download, check and unpack the latest release, then install it on a restart
+    ipcMain.handle('download-update', async () => {
+        if (stagedUpdate) {
+            await discardUpdate(stagedUpdate);
+            stagedUpdate = undefined;
+        }
+        stagedUpdate = await stageUpdate((percentage) => {
+            if (!mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('update-download-progress', percentage);
+            }
+        });
+        return stagedUpdate.release;
+    });
+    ipcMain.handle('install-update', async (event) => {
+        if (!stagedUpdate) {
+            throw new Error('No update has been downloaded.');
+        }
+        if (!backend.owned) {
+            throw new Error('chaiNNer-C runs on a backend it did not start, so it cannot restart.');
+        }
+        const canceled =
+            hasUnsavedChanges &&
+            handleUnsavedChanges(
+                event,
+                () => mainWindow.webContents.send('save-before-reboot'),
+                restartChainner
+            );
+        if (!hasUnsavedChanges) {
+            restartChainner();
+        }
+        if (canceled) {
+            await discardUpdate(stagedUpdate);
+            stagedUpdate = undefined;
+        }
+        return !canceled;
+    });
+    ipcMain.handle('take-update-result', () => takeUpdateResult());
 
     mainWindow.on('close', (event) => {
         if (forceExit) {

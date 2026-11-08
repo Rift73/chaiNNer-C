@@ -49,7 +49,15 @@
         "couldNotCheckForUpdates": "Could not check for updates: {{error}}",
         "updateAvailableOpenRelease": "There is an update available: {{version}}. Would you like to open its release page?",
         "ignoreRelease": "Don't show again for this release",
-        "openReleasePage": "Open release page"
+        "openReleasePage": "Open release page",
+        "updateAvailableInstall": "There is an update available: {{version}}. Update now downloads and installs it, and chaiNNer-C starts again; your settings and installed packages stay.",
+        "updateDownloading": "Downloading {{version}}: {{percentage}} %. chaiNNer-C then closes, installs it and starts again.",
+        "updateNow": "Update now",
+        "updateFailedTitle": "Update not installed",
+        "updateFailed": "Could not update: {{error}}",
+        "updateInstalledTitle": "Updated",
+        "updateInstalled": "chaiNNer-C was updated to {{release}}.",
+        "updateInstallFailed": "The update to {{release}} could not be installed: {{message}} Its zip is kept at {{zip}}."
     },
     "inputs": {
         "copyInputOverrideId": "Copy Input Override Id",

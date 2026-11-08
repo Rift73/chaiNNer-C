@@ -4,7 +4,11 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
-- 2026-11-08, branch `model-speed`, not pushed: **DAT, HAT, DUAL and FIGSR run whole images.** The GPU was never idle
+- RELEASED 2026-11-08 as **v0.3.10 re-release 4** (owner yes): tag and fork branch `f7a4a1e25` over `b4a36bbbf`, tree =
+  local `bec81d292` (the work below and spandrel 0.4.2+c18, published as `v0.4.2-c18`, release commit `6632fc5`, wheel
+  `21b56e9b`, 622,606 B); win-x64 `b5543adb` (177,028,816 B), linux-x64 `b5767151` (147,992,586 B). No version bump
+  (UI unchanged), native binaries unchanged. D:\chaiNNer not updated.
+- 2026-11-08, released in re-release 4 above: **DAT, HAT, DUAL and FIGSR run whole images.** The GPU was never idle
   (88-99 % busy); the waste was Auto's 512 px engine tiles, which also changed these models' output far from the seams
   (they pool or transform over the whole tile: up to 51, 58, 48 and 118 levels off against strict FP32 on the whole
   image). Use TensorRT Engine with Auto, Maximum or No Tiling now builds DAT, HAT and FIGSR up to 1408 px and DUAL up
