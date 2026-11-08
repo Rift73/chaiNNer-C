@@ -429,5 +429,11 @@ def test_auto_tiling_budget_is_upstreams():
         "upscale",
         "estimate",
     )
-    assert here == upstream
+    # chaiNNer-C: an architecture with measured memory per pixel takes it within the
+    # same budget (whole_image_tiler); every other one keeps upstream's estimate.
+    measured = (
+        "\n        if model.architecture.name in WHOLE_IMAGE_KIB_PER_PIXEL:"
+        "\n            return whole_image_tiler(model, img, budget, use_fp16)"
+    )
+    assert replace_once(here, measured, "") == upstream
     assert "budget = int(total * 0.8)" in here

@@ -135,7 +135,7 @@ def fakes(monkeypatch):
     """Everything TensorRT behind a fake GPU, with the real memory and disk caches."""
     fake = Fakes()
 
-    def build(_context, _model, _tile):
+    def build(_context, _model, _tile, _whole=False):
         fake.tiles.append(_tile)
         fake.builds += 1
         if fake.build_error is not None:
@@ -339,7 +339,64 @@ def test_a_recipe_goes_by_the_list_build_engine_follows(arch, tags, recipe):
     ],
 )
 def test_the_engine_goes_up_to_the_tile_size(tile, size):
-    assert auto._engine_tile(Model(), tile) == size
+    assert auto._engine_tile(Model(), tile, 0) == size
+
+
+@pytest.mark.parametrize("arch", ["DAT", "HAT", "FIGSR"])
+@pytest.mark.parametrize(
+    ("tile", "size"),
+    [
+        (ESTIMATE, 1408),
+        (MAX_TILE_SIZE, 1408),
+        (NO_TILING, 1408),
+        (TileSize(256), 256),
+        (TileSize(4096), 4096),
+    ],
+)
+def test_dat_and_hat_engines_take_whole_images(arch, tile, size, monkeypatch):
+    monkeypatch.setattr(auto, "migraphx_here", lambda: False)
+    monkeypatch.setattr(auto.torch.cuda, "is_available", lambda: True)
+    memory = {1: SimpleNamespace(total_memory=auto.WHOLE_IMAGE_MEMORY)}
+    monkeypatch.setattr(auto.torch.cuda, "get_device_properties", memory.__getitem__)
+    assert auto._engine_tile(Model(arch=arch), tile, 1) == size
+
+
+@pytest.mark.parametrize("tile", [ESTIMATE, MAX_TILE_SIZE, NO_TILING])
+def test_a_pytorch_without_cuda_keeps_the_default_quietly(tile, monkeypatch):
+    # A chain saved with the engine on, opened where PyTorch has no CUDA, runs on PyTorch.
+    monkeypatch.setattr(auto, "migraphx_here", lambda: False)
+    monkeypatch.setattr(auto.torch.cuda, "is_available", lambda: False)
+    assert auto._engine_tile(Model(arch="HAT"), tile, 0) == 512
+
+
+@pytest.mark.parametrize(
+    ("channels", "size"), [(64, 1920), (128, 1920), (192, 1536), (256, 1344)]
+)
+def test_a_wider_dual_takes_a_smaller_whole_image(channels, size, monkeypatch):
+    # Its build's 8 GiB workspace held 1920 px at 128 channels, not 2048 px.
+    monkeypatch.setattr(auto, "migraphx_here", lambda: False)
+    monkeypatch.setattr(auto.torch.cuda, "is_available", lambda: True)
+    memory = SimpleNamespace(total_memory=auto.WHOLE_IMAGE_MEMORY)
+    monkeypatch.setattr(auto.torch.cuda, "get_device_properties", lambda _: memory)
+    model = Model(arch="DUAL")
+    model.model.embed_dim = channels
+    assert auto._engine_tile(model, ESTIMATE, 0) == size
+    assert auto._engine_tile(model, TileSize(2048), 0) == 2048
+
+
+@pytest.mark.parametrize("tile", [ESTIMATE, MAX_TILE_SIZE, NO_TILING])
+def test_a_gpu_with_less_memory_keeps_the_default_for_dat(tile, monkeypatch):
+    monkeypatch.setattr(auto, "migraphx_here", lambda: False)
+    monkeypatch.setattr(auto.torch.cuda, "is_available", lambda: True)
+    memory = SimpleNamespace(total_memory=auto.WHOLE_IMAGE_MEMORY - 1)
+    monkeypatch.setattr(auto.torch.cuda, "get_device_properties", lambda _: memory)
+    assert auto._engine_tile(Model(arch="DAT"), tile, 0) == 512
+
+
+@pytest.mark.parametrize("tile", [ESTIMATE, MAX_TILE_SIZE, NO_TILING])
+def test_a_program_of_one_size_keeps_the_default_for_dat(tile, monkeypatch):
+    monkeypatch.setattr(auto, "migraphx_here", lambda: True)
+    assert auto._engine_tile(Model(arch="DAT"), tile, 0) == 512
 
 
 @pytest.mark.parametrize(
@@ -348,7 +405,7 @@ def test_the_engine_goes_up_to_the_tile_size(tile, size):
 )
 def test_rgt_stops_where_its_memory_holds(tile, size):
     # Its Dynamic engine at 512 px nearly filled a 32 GB card.
-    assert auto._engine_tile(Model(arch="RGT"), tile) == size
+    assert auto._engine_tile(Model(arch="RGT"), tile, 0) == size
 
 
 def test_rgt_has_a_recipe_and_the_setting():
@@ -485,6 +542,61 @@ def test_a_failed_build_falls_back_says_why_and_is_not_retried_in_the_chain(
     assert fakes.builds == 2
 
 
+def test_a_whole_image_engine_that_does_not_build_leaves_images_to_512_px(
+    fakes, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(auto, "migraphx_here", lambda: False)
+    monkeypatch.setattr(auto.torch.cuda, "is_available", lambda: True)
+    memory = SimpleNamespace(total_memory=auto.WHOLE_IMAGE_MEMORY)
+    monkeypatch.setattr(auto.torch.cuda, "get_device_properties", lambda _: memory)
+    fake_build = auto._build
+    wholes = []
+
+    def build(context, model, tile, whole=False):
+        wholes.append(whole)
+        if tile == auto.WHOLE_IMAGE_TILE["HAT"]:
+            fakes.tiles.append(tile)
+            raise RuntimeError("Failed to build TensorRT engine.")
+        return fake_build(context, model, tile, whole)
+
+    monkeypatch.setattr(auto, "_build", build)
+    context, model = Context(tmp_path), Model(arch="HAT")
+    for _ in range(2):
+        np.testing.assert_array_equal(run(context, model), IMAGE * 2)
+    assert fakes.tiles == [1408, 512]
+    assert wholes == [True, False]
+    assert context.warnings == []
+    assert len(kept_files(tmp_path)) == 1
+    # A later process tries the whole-image engine again (the failure may have been the
+    # GPU's memory at the time), then reads the 512 px engine without building it.
+    auto._outcomes.clear()
+    build_cache._memory.clear()
+    np.testing.assert_array_equal(run(Context(tmp_path), model), IMAGE * 2)
+    assert fakes.tiles == [1408, 512, 1408]
+
+
+def test_a_tile_size_of_the_whole_image_size_is_not_a_whole_image_engine(
+    fakes, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(auto, "migraphx_here", lambda: False)
+    monkeypatch.setattr(auto.torch.cuda, "is_available", lambda: True)
+    memory = SimpleNamespace(total_memory=auto.WHOLE_IMAGE_MEMORY)
+    monkeypatch.setattr(auto.torch.cuda, "get_device_properties", lambda _: memory)
+    wholes = []
+    fake_build = auto._build
+
+    def build(context, model, tile, whole=False):
+        wholes.append(whole)
+        return fake_build(context, model, tile, whole)
+
+    monkeypatch.setattr(auto, "_build", build)
+    context, model = Context(tmp_path), Model(arch="HAT")
+    run(context, model, tile=TileSize(1408))
+    run(context, model)
+    assert fakes.tiles == [1408, 1408]
+    assert wholes == [False, True]
+
+
 def test_a_missing_tensorrt_falls_back(fakes, tmp_path, monkeypatch):
     context = Context(tmp_path)
     monkeypatch.setitem(sys.modules, "tensorrt", None)
@@ -553,7 +665,9 @@ def test_the_whole_image_starts_over_when_the_second_pass_fails(
         return img
 
     monkeypatch.setattr(auto, "_engine_op", engine_op)
-    auto.upscale_through_engine(context, model, GPU, 0, ESTIMATE, two_passes, on_pytorch)
+    auto.upscale_through_engine(
+        context, model, GPU, 0, ESTIMATE, two_passes, on_pytorch
+    )
     assert used == ["engine", "pytorch", "pytorch"]
 
 
@@ -570,7 +684,14 @@ def test_the_engine_path_hands_the_nodes_report_to_the_engine(
     monkeypatch.setattr(auto, "_engine_op", engine_op)
     report = TileReport()
     auto.upscale_through_engine(
-        Context(tmp_path), Model(), GPU, 0, ESTIMATE, lambda op: op(IMAGE), pytorch, report
+        Context(tmp_path),
+        Model(),
+        GPU,
+        0,
+        ESTIMATE,
+        lambda op: op(IMAGE),
+        pytorch,
+        report,
     )
     assert reports == [report]
 
@@ -647,7 +768,7 @@ def test_a_different_gpu_asks_again(fakes, tmp_path):
     run(context, model, gpu=1)
     # The fake GPU's name and capability are the same, so the second GPU finds the engine.
     assert fakes.builds == 1
-    assert auto._outcomes[model][0] == (GPU, 1, 512)
+    assert auto._outcomes[model][0] == (GPU, 1, 512, False)
 
 
 def test_release_only_touches_a_node_that_used_an_engine(fakes, tmp_path):
@@ -736,7 +857,10 @@ def test_build_wires_convert_to_onnx_and_build_engine(monkeypatch):
     assert (build["opt_height"], build["opt_width"]) == (512, 512)
     assert (build["max_height"], build["max_width"]) == (512, 512)
     auto._build(context, Model(arch="SPAN"), 1024)
-    assert (seen["build"].arguments["opt_height"], seen["build"].arguments["max_width"]) == (1024, 1024)
+    assert (
+        seen["build"].arguments["opt_height"],
+        seen["build"].arguments["max_width"],
+    ) == (1024, 1024)
     # The largest size keeps to the model's multiple, and is at least the smallest.
     aligned = Model(arch="ESRGAN")
     aligned.size_requirements = SimpleNamespace(minimum=128, multiple_of=64)
@@ -755,6 +879,15 @@ def test_build_wires_convert_to_onnx_and_build_engine(monkeypatch):
     for arch in ("HAT", "DAT", "OmniSR"):
         auto._build(context, Model(arch=arch), 512)
         assert seen["build"].arguments["min_height"] == 64, arch
+    # An engine for whole images keeps its optimum at the default size; a Tile Size of
+    # another size keeps it at its own.
+    for arch in ("HAT", "DAT"):
+        auto._build(context, Model(arch=arch), auto.WHOLE_IMAGE_TILE[arch], True)
+        whole = seen["build"].arguments
+        assert (whole["opt_height"], whole["opt_width"]) == (512, 512), arch
+        assert (whole["max_height"], whole["max_width"]) == (1408, 1408), arch
+        auto._build(context, Model(arch=arch), 1408)
+        assert seen["build"].arguments["opt_height"] == 1408, arch
     required = Model(arch="ESRGAN")
     required.size_requirements = SimpleNamespace(minimum=20, multiple_of=8)
     auto._build(context, required, 512)

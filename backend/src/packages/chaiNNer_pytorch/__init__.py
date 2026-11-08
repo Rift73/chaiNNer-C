@@ -192,13 +192,15 @@ package = add_package(
             # inference with fewer passes over memory; c14 makes DySample's ONNX grid
             # follow the size, folds SPAN once and loads Flex Attention on first use; c15
             # keeps FP16 HAT's and DAT's last two groups' sums in FP32. c16 runs DAT with fewer passes
-            # over memory; c17 runs HAT, ESRGAN and DUAL with fewer too.
-            version="0.4.2+c17",
+            # over memory; c17 runs HAT, ESRGAN and DUAL with fewer too. c18 runs DAT's
+            # channel attention a row of the image at a time and keeps FP16 FIGSR's Fourier
+            # norms in FP32.
+            version="0.4.2+c18",
             size_estimate=600 * KB,
             url=(
-                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c17/"
-                "spandrel-0.4.2%2Bc17-py3-none-any.whl"
-                "#sha256=d0a2ff6c32c2389afc291c5f217fe98ca9022a49d7666e02a547bf5ab6bc4297"
+                "https://github.com/Rift73/spandrel/releases/download/v0.4.2-c18/"
+                "spandrel-0.4.2%2Bc18-py3-none-any.whl"
+                "#sha256=21b56e9b3a1b5fce4bc8f0d2063bbc8c2cea29fec3df8e862b012d7cc87ee585"
             ),
         ),
         Dependency(

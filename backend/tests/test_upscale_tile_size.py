@@ -4,6 +4,7 @@ the TensorRT node's retry are in test_tensorrt_session.py."""
 
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -299,3 +300,34 @@ def test_a_tile_the_size_of_its_image_is_the_whole_image():
     img = image(16, 16)
     report.recording(img, lambda tile, _region: tile)(img[:, :], None)
     assert report.text == "Whole image"
+
+
+def measured(arch: str, width: int) -> Any:
+    return SimpleNamespace(
+        architecture=SimpleNamespace(name=arch), model=SimpleNamespace(embed_dim=width)
+    )
+
+
+def test_auto_runs_a_measured_architecture_whole_when_it_fits():
+    # A 4x HAT-L's 1200x864 image takes 10.9 GiB, upstream's estimate split it in two.
+    image = np.zeros((864, 1200, 3), np.float32)
+    budget = int(19.1 * 1024**3)
+    tiler = torch_node.whole_image_tiler(measured("HAT", 180), image, budget, True)
+    assert tiler.starting_tile_size(1200, 864, 3) == (1200, 1200)
+    # In FP32 it does not fit: the largest square that does.
+    side = math.isqrt(int(budget / (1024 * 11.0 * 2)))
+    tiler = torch_node.whole_image_tiler(measured("HAT", 180), image, budget, False)
+    assert tiler.starting_tile_size(1200, 864, 3) == (side, side)
+
+
+def test_a_narrower_model_takes_its_memory_in_proportion():
+    image = np.zeros((1080, 1920, 3), np.float32)
+    budget = 1080 * 1920 * 1024 * 2  # 2 KiB a pixel
+    for arch, width, whole in (
+        ("DUAL", 64, True),
+        ("DUAL", 128, False),
+        ("DAT", 60, True),
+    ):
+        tiler = torch_node.whole_image_tiler(measured(arch, width), image, budget, True)
+        size = tiler.starting_tile_size(1920, 1080, 3)
+        assert (size == (1920, 1920)) is whole, (arch, width)

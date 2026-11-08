@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import weakref
 
 import numpy as np
@@ -45,9 +46,31 @@ from ...settings import PyTorchSettings, get_settings
 from .. import processing_group
 
 MODEL_BYTES_CACHE = weakref.WeakKeyDictionary()
+# Auto's GPU memory per pixel of the image, in FP16, for the architectures measured whole,
+# with the width it was measured at: a model of another width takes it in proportion, FP32
+# twice. Upstream's estimate goes by the parameters alone, and split a 4x HAT-L's 1200x864
+# image in two of a 19.1 GiB budget, though the whole image takes 10.9 GiB; DAT, HAT and
+# DUAL pool and normalize over the whole tile, so the split read 48.0 dB against strict
+# FP32 (142 codes off at the image's edge) where the whole image reads 70.6 dB, in 2.01 s
+# instead of 2.12 s on an RTX 5090. Measured peaks: HAT-L 11.0 KiB, DAT2 5.3 KiB (4x, 180
+# channels), DUAL Light 2.4 KiB (2x, 128 channels).
+WHOLE_IMAGE_KIB_PER_PIXEL = {"HAT": (11.0, 180), "DAT": (5.3, 180), "DUAL": (2.4, 128)}
 # The same input (id 8) on a PC where MIGraphX runs, so a saved chain keeps its value on
 # either kind of PC; only a PC with neither has none.
 ON_MIGRAPHX = migraphx_here()
+
+
+def whole_image_tiler(
+    model: ImageModelDescriptor, img: np.ndarray, budget: int, use_fp16: bool
+) -> MaxTileSize:
+    """Auto's tiles for a model WHOLE_IMAGE_KIB_PER_PIXEL lists, on a GPU with `budget`
+    bytes: the whole image if it fits, else the largest square that does."""
+    kib, width = WHOLE_IMAGE_KIB_PER_PIXEL[model.architecture.name]
+    per_pixel = 1024 * kib * model.model.embed_dim / width * (1 if use_fp16 else 2)
+    h, w = img.shape[:2]
+    if h * w * per_pixel <= budget:
+        return MaxTileSize(max(h, w))
+    return MaxTileSize(max(1, math.isqrt(int(budget / per_pixel))))
 
 
 def upscale(
@@ -87,6 +110,9 @@ def upscale(
                     total = min(options.budget_limit * 1024**3, total)
                 # Estimate using 80% of the value to be more conservative
                 budget = int(total * 0.8)
+
+                if model.architecture.name in WHOLE_IMAGE_KIB_PER_PIXEL:
+                    return whole_image_tiler(model, img, budget, use_fp16)
 
                 return MaxTileSize(
                     estimate_tile_size(
@@ -269,8 +295,11 @@ def upscale(
                 " is off, this node keeps nothing on disk.",
                 "The output differs slightly from PyTorch's: the engine runs in the model's"
                 " automatic precision, in overlapping tiles up to the Tile Size. Auto, Maximum"
-                " and No Tiling take 512 px, and RGT stops at 256 px. The node's Clear frees its"
-                " GPU memory.",
+                " and No Tiling take 512 px; on DAT, HAT, DUAL and FIGSR, whose results change"
+                " with what a tile sees, they take 1408 px (DUAL up to 1920 px, less on wider"
+                " models) on a GPU of 16 GB or more, so that an image up to that size runs whole,"
+                " and one that does not fit the GPU's memory runs in smaller tiles. RGT stops at"
+                " 256 px. The node's Clear frees its GPU memory.",
                 "When the engine cannot be built or fails, the image runs on PyTorch and a warning"
                 " says why.",
                 hint=True,
