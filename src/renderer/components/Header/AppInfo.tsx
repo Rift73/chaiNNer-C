@@ -36,14 +36,90 @@ import { ipcRenderer } from '../../safeIpc';
 
 // One automatic check per start, also when the header is shown again after a backend restart.
 let automaticCheckStarted = false;
+// The last update's result is reported once per start.
+let updateResultTaken = false;
 
-// The update check only announces a release: nothing is downloaded or installed.
+// The update check announces a release; Update now downloads, checks and installs it, and
+// chaiNNer-C starts again.
 export const AppInfo = memo(() => {
     const { t } = useTranslation();
     const { checkForUpdatesOnStartup } = useSettings();
     const { sendAlert } = useContext(AlertBoxContext);
 
     const [updateVersion, setUpdateVersion] = useState<GitHubRelease>();
+    // the download's percentage while Update now runs
+    const [updateProgress, setUpdateProgress] = useState<number>();
+
+    useEffect(() => {
+        if (updateResultTaken) {
+            return;
+        }
+        updateResultTaken = true;
+        ipcRenderer
+            .invoke('take-update-result')
+            .then((result) => {
+                if (!result) {
+                    return;
+                }
+                sendAlert(
+                    result.ok
+                        ? {
+                              type: AlertType.INFO,
+                              title: t('header.updateInstalledTitle', 'Updated'),
+                              message: t(
+                                  'header.updateInstalled',
+                                  'chaiNNer-C was updated to {{release}}.',
+                                  { release: result.release }
+                              ),
+                          }
+                        : {
+                              type: AlertType.WARN,
+                              title: t('header.updateFailedTitle', 'Update not installed'),
+                              message: t(
+                                  'header.updateInstallFailed',
+                                  'The update to {{release}} could not be installed: {{message}} Its zip is kept at {{zip}}.',
+                                  {
+                                      release: result.release,
+                                      message: result.message,
+                                      zip: result.zip,
+                                  }
+                              ),
+                          }
+                );
+            })
+            .catch((error) => {
+                log.warn(`Could not read the last update's result: ${String(error)}`);
+            });
+    }, [sendAlert, t]);
+
+    useIpcRendererListener(
+        'update-download-progress',
+        useCallback((_, percentage: number) => setUpdateProgress(percentage), [])
+    );
+
+    const updateNow = useCallback(() => {
+        setUpdateProgress(0);
+        ipcRenderer
+            .invoke('download-update')
+            .then(() => ipcRenderer.invoke('install-update'))
+            .then((installing) => {
+                if (!installing) {
+                    setUpdateProgress(undefined);
+                }
+            })
+            .catch((error) => {
+                setUpdateProgress(undefined);
+                log.error(`Could not update: ${String(error)}`);
+                sendAlert({
+                    type: AlertType.ERROR,
+                    title: t('header.updateFailedTitle', 'Update not installed'),
+                    message: t('header.updateFailed', 'Could not update: {{error}}', {
+                        error: String(error),
+                    }),
+                });
+            });
+    }, [sendAlert, t]);
+    const updating = updateProgress !== undefined;
 
     // about 10 s after the window is ready; a failure is logged, not shown or retried
     useEffect(() => {
@@ -179,16 +255,26 @@ export const AppInfo = memo(() => {
                         </AlertDialogHeader>
 
                         <AlertDialogBody>
-                            {t(
-                                'header.updateAvailableOpenRelease',
-                                'There is an update available: {{version}}. Would you like to open its release page?',
-                                { version: updateTitle }
-                            )}
+                            {updating
+                                ? t(
+                                      'header.updateDownloading',
+                                      'Downloading {{version}}: {{percentage}} %. chaiNNer-C then closes, installs it and starts again.',
+                                      {
+                                          version: updateTitle,
+                                          percentage: Math.floor(updateProgress),
+                                      }
+                                  )
+                                : t(
+                                      'header.updateAvailableInstall',
+                                      'There is an update available: {{version}}. Update now downloads and installs it, and chaiNNer-C starts again; your settings and installed packages stay.',
+                                      { version: updateTitle }
+                                  )}
                         </AlertDialogBody>
 
                         <AlertDialogFooter>
                             <HStack>
                                 <Button
+                                    isDisabled={updating}
                                     ref={leastDestructiveRef}
                                     variant="ghost"
                                     onClick={onAlertClose}
@@ -196,6 +282,7 @@ export const AppInfo = memo(() => {
                                     {t('common.close', 'Close')}
                                 </Button>
                                 <Button
+                                    isDisabled={updating}
                                     onClick={() => {
                                         if (updateVersion) {
                                             setLastIgnoredUpdate(getUpdateKey(updateVersion));
@@ -206,7 +293,7 @@ export const AppInfo = memo(() => {
                                     {t('header.ignoreRelease', "Don't show again for this release")}
                                 </Button>
                                 <Button
-                                    colorScheme="green"
+                                    isDisabled={updating}
                                     onClick={() => {
                                         if (updateVersion) {
                                             ipcRenderer
@@ -219,6 +306,13 @@ export const AppInfo = memo(() => {
                                     }}
                                 >
                                     {t('header.openReleasePage', 'Open release page')}
+                                </Button>
+                                <Button
+                                    colorScheme="green"
+                                    isLoading={updating}
+                                    onClick={updateNow}
+                                >
+                                    {t('header.updateNow', 'Update now')}
                                 </Button>
                             </HStack>
                         </AlertDialogFooter>
