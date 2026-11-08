@@ -50,8 +50,10 @@ def test_vosr_bundle_survives_chain_context_and_clear_releases_it(
         ) as value:
             assert value is created[0]
     assert len(created) == 1
-    assert created[0].offloads == 2
+    # What a run left on the device stays there until the node's cache is cleared.
+    assert created[0].offloads == 0
     cache.release_node("vosr")
+    assert created[0].offloads == 1
     assert len(cache) == 0
     with vosr2_cache.lease_bundle(context, paths, torch.float32, reuse=True):
         pass
@@ -95,6 +97,7 @@ def test_cpu_master_storage_survives_module_device_replacement():
     expected = {name: tensor.clone() for name, tensor in model.state_dict().items()}
     bundle = VosrBundle.__new__(VosrBundle)
     bundle._cpu_weights = {}
+    bundle.replays = {}
     bundle._cpu_weights[model] = {
         name: tensor.detach() for name, tensor in model.state_dict().items()
     }

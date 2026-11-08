@@ -1174,6 +1174,13 @@ def test_every_worker_executor_installs_the_handler():
         "nodes/impl/owned_job.py": ([[]], None),
         # Load Models' reader of the next model
         "nodes/impl/read_ahead.py": expected,
+        # VOSR's input preparation by rows, and its window work beside the VAE
+        "nodes/impl/pytorch/vosr2.py": expected,
+        "nodes/impl/pytorch/vosr2_context.py": expected,
+        # Zstandard frames of TensorRT plans, and TensorRT stage loads and contexts:
+        # no NumPy
+        "nodes/impl/pytorch/vosr2_plan_file.py": ([[], []], None),
+        "nodes/impl/pytorch/vosr2_trt_pipeline.py": ([[], []], None),
         "packages/chaiNNer_external/web_ui.py": expected,
         "server.py": expected,
     }

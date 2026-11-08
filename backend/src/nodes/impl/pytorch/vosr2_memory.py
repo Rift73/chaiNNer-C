@@ -18,6 +18,25 @@ _BUDGET_LOCK = RLock()
 _HEADROOM = 800_000_000
 
 
+def available_memory(device: torch.device) -> float:
+    """What the allocator may still hand out on `device` under the current budget."""
+    total = torch.cuda.get_device_properties(device).total_memory
+    return total * torch.cuda.get_per_process_memory_fraction(
+        device
+    ) - torch.cuda.memory_allocated(device)
+
+
+def unreserved_memory(device: torch.device) -> float:
+    """What the allocator may still reserve on `device` under the current budget, after
+    giving back its unused blocks: a new block this large fits, whatever the free space
+    inside the reserved ones."""
+    torch.cuda.empty_cache()
+    total = torch.cuda.get_device_properties(device).total_memory
+    return total * torch.cuda.get_per_process_memory_fraction(
+        device
+    ) - torch.cuda.memory_reserved(device)
+
+
 @contextmanager
 def vram_budget(
     device: torch.device,

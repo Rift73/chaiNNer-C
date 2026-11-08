@@ -120,6 +120,16 @@ class _Sequence:
     detail: DetailState | None = None
 
 
+@dataclass(frozen=True)
+class _Unsettled:
+    """An item's background work until it ends."""
+
+    index: int
+    stopped: Event
+    pool: ThreadPoolExecutor | None
+    cpu: ThreadPoolExecutor
+
+
 def _is_cut(observation: TemporalObservation) -> bool:
     match = observation.previous_match
     return match is not None and not np.any(match.confidence)
@@ -136,7 +146,8 @@ class TemporalStep:
     alone, and Persistent Detail starts each scene from its first frame alone.
 
     With `overlap`, one later frame's restoration runs on a worker thread while the current
-    output is computed on the CPU; it always finishes before the item's output is returned.
+    output is computed on the CPU; it always finishes before the item's output is returned
+    (settle, which the caller may leave for after the output's grain).
     The CPU work itself uses CPU_THREADS more threads per item, also joined before the
     output is returned: each motion pair starts once both frames' inputs are taken, and
     stabilize runs its independent parts in parallel; the outputs are the same bit for bit.
@@ -159,6 +170,7 @@ class TemporalStep:
         self.inputs = inputs
         self.index: int | None = None
         self.sequence = _Sequence()
+        self.unsettled: _Unsettled | None = None
 
     def frame(
         self,
@@ -168,9 +180,11 @@ class TemporalStep:
         peek: Peek,
         restore: Restore,
         inputs: tuple[object, ...],
+        settle: bool = True,
     ) -> np.ndarray:
         """Item `index`'s output. `peek(offset)` is the image of item index + offset, or
-        None when it does not reach the node; `restore` is the node's own restoration."""
+        None when it does not reach the node; `restore` is the node's own restoration.
+        Without `settle`, the item's background work goes on until the caller's settle."""
         if inputs != self.inputs:
             raise ValueError(
                 "Temporal VOSR needs the same model and settings for every frame of a video."
@@ -204,22 +218,38 @@ class TemporalStep:
             cpu,
             _RestoreContext(context, stopped),
         )
+        self.unsettled = _Unsettled(index, stopped, pool, cpu)
         try:
             if self.method == TemporalMode.PERSISTENT_DETAIL:
                 output = self._persistent(item)
             else:
                 output = self._observation(item, index).image
-            # No restoration may still run when downstream nodes receive the frame,
-            # and no CPU work: the later items take the finished motion pairs.
-            wait([f for f in self.sequence.frames.values() if isinstance(f, Future)])
-            wait([f for f in self.sequence.pairs.values() if isinstance(f, Future)])
-            self.sequence.observations.pop(index, None)
-            return output
+        except BaseException:
+            self.settle(failed=True)
+            raise
+        if settle:
+            self.settle()
+        return output
+
+    def settle(self, failed: bool = False) -> None:
+        """End the item's background work: after a failure, it stops."""
+        unsettled, self.unsettled = self.unsettled, None
+        if unsettled is None:
+            return
+        try:
+            if not failed:
+                # No restoration may still run when downstream nodes receive the frame,
+                # and no CPU work: the later items take the finished motion pairs.
+                wait(
+                    [f for f in self.sequence.frames.values() if isinstance(f, Future)]
+                )
+                wait([f for f in self.sequence.pairs.values() if isinstance(f, Future)])
+                self.sequence.observations.pop(unsettled.index, None)
         finally:
-            stopped.set()
-            cpu.shutdown(wait=True, cancel_futures=True)
-            if pool is not None:
-                pool.shutdown(wait=True, cancel_futures=True)
+            unsettled.stopped.set()
+            unsettled.cpu.shutdown(wait=True, cancel_futures=True)
+            if unsettled.pool is not None:
+                unsettled.pool.shutdown(wait=True, cancel_futures=True)
             # A restoration or pair that never started or that the item's stop ended (the
             # item failed) is made again if needed: its Aborted is not a later item's.
             for jobs in (self.sequence.frames, self.sequence.pairs):

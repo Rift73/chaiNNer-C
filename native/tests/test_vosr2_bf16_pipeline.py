@@ -76,11 +76,12 @@ def test_bounded_vae_queries_retain_all_keys_and_values():
     expected = torch.nn.functional.scaled_dot_product_attention(
         q.float(), k.float(), v.float()
     ).bfloat16()
+    keys = k.transpose(-1, -2)
     chunked = torch.cat(
-        [graph(q[:, :, start : start + 5], k, v) for start in range(0, 19, 5)], dim=2
+        [graph(q[:, :, start : start + 5], keys, v) for start in range(0, 19, 5)], dim=2
     )
     torch.testing.assert_close(chunked, expected, rtol=0.008, atol=0.004)
-    local_only = graph(q[:, :, :5], k[:, :, :5], v[:, :, :5])
+    local_only = graph(q[:, :, :5], keys[:, :, :, :5], v[:, :, :5])
     assert not torch.allclose(local_only, chunked[:, :, :5], rtol=0.05, atol=0.05)
 
 
@@ -703,6 +704,8 @@ def test_resident_external_weights_are_subtracted_only_when_newly_admitted(monke
     )
     monkeypatch.setattr(torch.cuda, "get_per_process_memory_fraction", lambda _: 0.5)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda _: 0)
+    # Contexts are made on threads, each on the session's device.
+    monkeypatch.setattr(torch.cuda, "device", lambda _: contextlib.nullcontext())
     fractions = []
     monkeypatch.setattr(
         torch.cuda,
@@ -767,7 +770,7 @@ def test_a_build_checks_its_plain_plans_and_a_cached_set_its_compressed_ones(
         session = FullSession(tmp_path, device)
     vosr2_trt_pipeline._LIVE.discard(session)
     place = vosr2_plan_file.plain if build else compressed
-    assert opened == [place(tmp_path, name) for name in STAGES]
+    assert sorted(opened) == sorted(place(tmp_path, name) for name in STAGES)
 
 
 def test_low_memory_streams_every_stage_the_same_share_of_its_weights(monkeypatch):
@@ -797,6 +800,8 @@ def test_low_memory_streams_every_stage_the_same_share_of_its_weights(monkeypatc
     )
     monkeypatch.setattr(torch.cuda, "get_per_process_memory_fraction", lambda _: 1.0)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda _: 0)
+    # Contexts are made on threads, each on the session's device.
+    monkeypatch.setattr(torch.cuda, "device", lambda _: contextlib.nullcontext())
     monkeypatch.setattr(torch.cuda, "set_per_process_memory_fraction", lambda *_: None)
     # 8 GiB, 6 GiB kept for activations: 2 of the 4 GiB of weights stay resident
     session.activate(lambda: None, 6 * 1024**3)

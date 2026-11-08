@@ -861,3 +861,70 @@ def test_a_failing_restoration_ends_the_loop_and_drops_the_step(monkeypatch, tmp
     # The loop's end dropped the step and detached the view.
     assert isinstance(views[0].state, type(None)) and len(set(views)) == 1
     assert {context.iteration for context in contexts} == {None}
+
+
+def test_without_settling_the_next_restoration_runs_on_until_the_callers_settle():
+    # The node's grain pass overlaps frame 2's restoration, begun during item 0.
+    frames = video(5)
+    restorer = Restorer(frames)
+    started, release = threading.Event(), threading.Event()
+
+    def restore(image, context):
+        if restorer.index(image) == 2:
+            started.set()
+            assert release.wait(30)
+        return restorer(image, context)
+
+    step = TemporalStep(TemporalMode.THREE_FRAMES, STRENGTH, 3, True, INPUTS)
+    step.frame(
+        Context(),
+        0,
+        frames[0],
+        lambda offset: frames[offset],
+        restore,
+        INPUTS,
+        settle=False,
+    )
+    assert started.wait(30) and restoring_threads()
+    release.set()
+    step.settle()
+    assert restoring_threads() == [] and 2 in restorer.calls
+    step.settle()
+
+
+def test_a_failure_after_the_output_stops_the_background_restoration():
+    frames = video(5)
+    restorer = Restorer(frames)
+    started = threading.Event()
+    stopped = []
+
+    def restore(image, context):
+        if restorer.index(image) == 2:
+            started.set()
+            try:
+                while True:
+                    context.suspend()
+                    time.sleep(0.005)
+            except Aborted:
+                stopped.append(True)
+                raise
+        return restorer(image, context)
+
+    step = TemporalStep(TemporalMode.THREE_FRAMES, STRENGTH, 3, True, INPUTS)
+    step.frame(
+        Context(),
+        0,
+        frames[0],
+        lambda offset: frames[offset],
+        restore,
+        INPUTS,
+        settle=False,
+    )
+    assert started.wait(30)
+    step.settle(failed=True)
+    assert stopped == [True] and restoring_threads() == []
+    # What the stop ended is restored again when an output needs it.
+    output = step.frame(
+        Context(), 1, frames[1], lambda offset: frames[1 + offset], restorer, INPUTS
+    )
+    assert output.shape[0] == frames[1].shape[0] * 2

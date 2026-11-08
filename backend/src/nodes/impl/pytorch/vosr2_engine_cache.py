@@ -394,7 +394,7 @@ def ensure_engine_set(
                 and set(manifest["engines"]) == set(stages)
                 and all(
                     manifest["engines"][name]
-                    == file_hash(stored(destination, manifest, name))
+                    == stored_hash(stored(destination, manifest, name), root)
                     for name in stages
                 )
             )

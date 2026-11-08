@@ -25,7 +25,9 @@ from vendor.vosr2.qwenimage_vae2d import (
 
 
 class VaeStreamer:
-    """Keep full feature maps in host RAM, including residual connections."""
+    """Keep full feature maps in host RAM, including residual connections. Given `room`,
+    the bytes the device can still hold, each stage's maps go to the device when they fit:
+    deeper stages have fewer bytes than the outermost, whose copies cost the most."""
 
     def __init__(
         self,
@@ -33,6 +35,7 @@ class VaeStreamer:
         activation_bytes: int,
         check: Callable[[], None],
         map_device: torch.device | None = None,
+        room: Callable[[], float] | None = None,
     ):
         if activation_bytes < 1:
             raise ValueError("VAE activation budget must be positive.")
@@ -40,6 +43,18 @@ class VaeStreamer:
         self.activation_bytes = activation_bytes
         self.check = check
         self.map_device = map_device or torch.device("cpu")
+        self.room = room
+
+    def _settle(self, x: torch.Tensor, maps: float) -> torch.Tensor:
+        """`x`, on the device where its stage's `maps` maps of its size (`x` included)
+        have room."""
+        if self.room is None:
+            return x
+        size = x.numel() * x.element_size()
+        held = size if x.device == self.device else 0
+        fits = size * maps - held <= self.room()
+        self.map_device = self.device if fits else torch.device("cpu")
+        return x.to(self.map_device)
 
     def conv(
         self,
@@ -73,6 +88,9 @@ class VaeStreamer:
             b * max(channels, layer.out_channels) * max(vw, ow) * x.element_size()
         )
         rows = max(1, self.activation_bytes // max(1, bytes_per_row * 8 * sy))
+        # Bands between the first and the last are padded into one tensor: one of its own
+        # per band cost 8 GiB of allocator blocks in a 3840x2176 decode.
+        padded = None
         for start in range(0, oh, rows):
             self.check()
             end = min(start + rows, oh)
@@ -85,20 +103,40 @@ class VaeStreamer:
             band = band[:, :, valid_lo - input_lo * up : valid_hi - input_lo * up]
             if transform is not None:
                 band = transform(band)
-            band = functional.pad(
-                band, (px, px + pad_end, valid_lo - lo, hi - valid_hi)
-            )
+            # Padded here, not by the convolution: at some band sizes (a 512x512 image's, or
+            # 128 MiB bands) cuDNN's own padding rounds differently, which a DiT amplifies.
+            amounts = (px, px + pad_end, valid_lo - lo, hi - valid_hi)
+            if amounts[2:] != (0, 0):
+                band = functional.pad(band, amounts)
+            elif padded is None or padded.shape[-2] != band.shape[-2]:
+                padded = band = functional.pad(band, amounts)
+            else:
+                padded[:, :, :, px : px + band.shape[-1]] = band
+                band = padded
             value = functional.conv2d(
                 band, layer.weight, layer.bias, layer.stride, groups=layer.groups
             )
             value = value.to(self.map_device)
-            if residual is not None:
-                value.add_(residual[:, :, start:end])
-            result[:, :, start:end] = value
-            del band, value
+            target = result[:, :, start:end]
+            if residual is None:
+                target.copy_(value)
+            else:
+                torch.add(value, residual[:, :, start:end], out=target)
+            del band, value, target
+        del padded
         return result
 
     def residual(self, x: torch.Tensor, layer: ResidualBlock2D) -> torch.Tensor:
+        # The input, its shortcut (unless the input is), its first convolution's map and
+        # its output
+        separate = not isinstance(layer.conv_shortcut, nn.Identity)
+        x = self._settle(
+            x,
+            1
+            + (3 if separate else 2)
+            * layer.conv1.out_channels
+            / layer.conv1.in_channels,
+        )
         shortcut = (
             x
             if isinstance(layer.conv_shortcut, nn.Identity)
@@ -115,6 +153,8 @@ class VaeStreamer:
         )
 
     def attention(self, x: torch.Tensor, layer: AttentionBlock2D) -> torch.Tensor:
+        # The input, Q, K and V, copies of K and V, the result and the output
+        x = self._settle(x, 8)
         b, c, h, w = x.shape
         qkv = self.conv(x, layer.to_qkv, layer.norm).reshape(b, 3, c, h * w)
         q, k, v = qkv.unbind(1)
@@ -154,9 +194,11 @@ class VaeStreamer:
         first = layer.resample[0]
         convolution = cast(nn.Conv2d, layer.resample[1])
         if isinstance(first, nn.Upsample):
-            return self.conv(x, convolution, up=2)
+            # The input and an output of four times the pixels, half the channels
+            return self.conv(self._settle(x, 3), convolution, up=2)
         if isinstance(first, nn.ZeroPad2d):
-            return self.conv(x, convolution, pad_end=1)
+            # The input and an output of a quarter of the pixels
+            return self.conv(self._settle(x, 1.25), convolution, pad_end=1)
         raise ValueError("Unsupported VOSR VAE resampling layer.")
 
     def encode(self, x: torch.Tensor, vae: AutoencoderKLQwenImage2D) -> torch.Tensor:

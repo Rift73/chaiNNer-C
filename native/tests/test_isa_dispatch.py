@@ -341,7 +341,7 @@ def test_setup_logs_the_isa_line_after_loading_nodes():
         isinstance(node, ast.ImportFrom)
         and node.module == "nodes.impl"
         and [alias.name for alias in node.names]
-        == ["native", "native_profile", "numpy_pool"]
+        == ["background_work", "native", "native_profile", "numpy_pool"]
         for node in tree.body
     )
     (setup,) = (

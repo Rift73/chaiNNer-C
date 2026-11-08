@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+from torch import nn
 
 from nodes.impl.pytorch.vosr2_streaming import VaeStreamer
 from vendor.vosr2.lightningdit import LightningDiT
@@ -111,3 +112,35 @@ def test_rectangular_unpatchify_preserves_pixel_positions():
         dim=1,
     )
     torch.testing.assert_close(model.unpatchify(patches, (3, 5)), image, rtol=0, atol=0)
+
+
+def test_stage_maps_go_where_they_fit():
+    # "meta" stands in for the GPU.
+    device = torch.device("meta")
+    stream = VaeStreamer(device, 100, lambda: None, room=lambda: 1000.0)
+    x = torch.zeros(1, 1, 5, 5)  # 100 bytes
+    assert stream._settle(x, 11) is x and stream.map_device.type == "cpu"
+    held = stream._settle(x, 10)
+    assert held.device == device and stream.map_device == device
+    # On the device, one of the maps is already held.
+    assert stream._settle(held, 11) is held and stream.map_device == device
+
+
+def test_without_room_given_maps_stay_where_they_are():
+    stream = VaeStreamer(torch.device("cpu"), 100, lambda: None)
+    x = torch.zeros(1, 1, 5, 5)
+    assert stream._settle(x, 1000) is x
+
+
+@pytest.mark.parametrize("height", [13, 40])
+@pytest.mark.parametrize("kernel", [1, 3])
+@torch.inference_mode()
+def test_later_bands_share_one_padded_tensor_with_the_same_result(height, kernel):
+    x = torch.randn(1, 4, height, 17)
+    source = x.clone()
+    layer = nn.Conv2d(4, 8, kernel, padding=kernel // 2).eval()
+    budget = 8 * 17 * 4 * 8  # one output row a band
+    expected = VaeStreamer(torch.device("cpu"), 10**9, lambda: None).conv(x, layer)
+    actual = VaeStreamer(torch.device("cpu"), budget, lambda: None).conv(x, layer)
+    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
+    assert torch.equal(x, source)

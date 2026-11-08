@@ -323,16 +323,17 @@ def test_tensor_filter_matches_opencv_including_tiny_axes(shape, radius):
     epsilon = (3 * rms) ** 2 + 0.004**2
     colour = np.eye(3, dtype=np.float32)
     donor = texture.GRAIN_GAIN * rms[:, :, None] * noise(42, None, colour, *shape)
-    expected = confidence[:, :, None] * (
+    expected = restored + confidence[:, :, None] * (
         donor - texture._detail(restored, epsilon, radius)
     )
     region = np.s_[0 : shape[0], 0 : shape[1]]
-    actual = texture._gpu_adjustment(
+    actual = texture._gpu_adjusted(
         restored,
         rms,
         confidence,
         texture._noise(42, None, colour, region, shape[1], CPU),
         radius,
         CPU,
+        region,
     )
-    np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-4)
+    np.testing.assert_allclose(actual, np.clip(expected, 0, 1), rtol=0, atol=1e-4)

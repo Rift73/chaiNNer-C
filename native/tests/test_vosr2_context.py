@@ -584,6 +584,17 @@ def test_tensorrt_blends_a_face_window_the_same_way(monkeypatch):
         def predict(self, latent, condition):
             return self.output.fill_(float(self.window))
 
+        def lanes(self):
+            return 1
+
+        def windows(self, work):
+            ((normalized, latents),) = work
+            self.begin_window()
+            condition = self.condition(normalized)
+            return [
+                (condition, [self.predict(latent, condition) for latent in latents])
+            ]
+
     monkeypatch.setattr(
         vosr2_trt_restore,
         "scene_routing",

@@ -26,7 +26,10 @@ import torch
 from api import Aborted, NodeContext
 from nodes.impl.pytorch import vosr2_download, vosr2_engine_cache, vosr2_fp8
 from nodes.impl.pytorch.vosr2 import BundlePaths
-from nodes.impl.pytorch.vosr2_trt_models import STAGES
+from nodes.impl.pytorch.vosr2_trt_models import DERIVED_STAGES, STAGES
+
+# The hosted set's graphs: the build derives the others from them
+HOSTED = tuple(name for name in STAGES if name not in DERIVED_STAGES)
 
 CHUNK = 1024
 
@@ -107,7 +110,7 @@ def make_set(bundle: Bundle) -> tuple[bytes, dict[str, bytes], dict[str, bytes]]
     """The manifest, the files as hosted (graphs and data as .zst), and as unpacked."""
     files = {"LICENSE": b"Apache License", "NOTICE": b"VOSR authors"}
     stages = {}
-    for index, name in enumerate(STAGES):
+    for index, name in enumerate(HOSTED):
         files[f"{name}.onnx"] = f"graph {name}".encode()
         stages[name] = {"precision": "test", "graph": f"{name}.onnx"}
         if index < 3:

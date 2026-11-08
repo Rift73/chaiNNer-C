@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Protocol
 
 import cv2
 import numpy as np
@@ -15,11 +18,17 @@ from safetensors.torch import load_file
 from torch import nn
 
 from api import Progress
+from gpu import get_vram_usage
+from nodes.impl import numpy_pool
 from vendor.vosr2.dinov2 import build_dinov2_vitl14
 from vendor.vosr2.lightningdit import LightningDiT
 from vendor.vosr2.qwenimage_vae2d import AutoencoderKLQwenImage2D
 
 from ...utils.utils import file_identity
+
+
+class Closable(Protocol):
+    def close(self) -> None: ...
 
 
 class VosrColorCorrection(Enum):
@@ -234,14 +243,49 @@ class VosrBundle:
             if keep_cpu_weights
             else {}
         )
+        self._block_states = (
+            {
+                block: {
+                    name.removeprefix(f"blocks.{index}."): tensor
+                    for name, tensor in self._cpu_weights[self.dit].items()
+                    if name.startswith(f"blocks.{index}.")
+                }
+                for index, block in enumerate(self.dit.blocks)
+            }
+            if keep_cpu_weights
+            else {}
+        )
+        # Each model's CUDA graphs (vosr2_context), which hold its weights' addresses
+        self.replays: dict[nn.Module, Closable] = {}
+
+    def prepare(self, device: torch.device, mode: VosrMemoryMode) -> None:
+        """Before a run's memory admission: weights an earlier run left on the device
+        leave for Low memory (its budget would count them) or a device nearly full."""
+        if mode == VosrMemoryMode.DEFAULT:
+            usage = get_vram_usage(device.index or 0)
+            if usage is not None and usage.used < usage.total - 1_200_000_000:
+                return
+        self.offload()
 
     def offload_model(self, model: nn.Module) -> None:
         """Restore unchanged CPU masters instead of copying weights back from CUDA."""
+        replays = self.replays.pop(model, None)
+        if replays is not None:
+            torch.cuda.synchronize()
+            replays.close()
         state = self._cpu_weights.get(model)
         if state is None:
             model.cpu()
         elif any(tensor.device.type != "cpu" for tensor in model.parameters()):
             model.load_state_dict(state, strict=True, assign=True)
+
+    def release_block(self, block: nn.Module) -> None:
+        """The CPU master of a streamed DiT block, instead of a copy back from CUDA."""
+        state = self._block_states.get(block)
+        if state is None:
+            block.cpu()
+        else:
+            block.load_state_dict(state, strict=True, assign=True)
 
     def offload(self) -> None:
         self.offload_model(self.vae)
@@ -264,6 +308,16 @@ def gaussian_weights(size: int) -> torch.Tensor:
     return (weights[:, None] * weights[None, :])[None, None]
 
 
+def by_rows(rows: int, part: Callable[[int, int], np.ndarray]) -> np.ndarray:
+    """`part(top, bottom)` of up to 8 row ranges on threads, joined along the rows."""
+    edges = np.linspace(0, rows, min(rows, 8) + 1).astype(int).tolist()
+    with ThreadPoolExecutor(
+        max_workers=len(edges) - 1, initializer=numpy_pool.install
+    ) as pool:
+        parts = pool.map(part, edges[:-1], edges[1:])
+        return np.concatenate(list(parts))
+
+
 def prepare_image(image: np.ndarray, scale: int) -> tuple[torch.Tensor, np.ndarray]:
     if image.ndim != 3 or image.shape[2] != 3 or min(image.shape[:2]) < 1:
         raise ValueError("VOSR 2.0 requires a non-empty RGB image.")
@@ -273,16 +327,35 @@ def prepare_image(image: np.ndarray, scale: int) -> tuple[torch.Tensor, np.ndarr
         raise ValueError("VOSR 2.0 scale must be an integer from 1 to 8.")
     height, width = image.shape[:2]
     # chaiNNer is BGR; match the official CLI's PIL RGB bicubic 8-bit conditioning.
-    rgb = np.rint(np.clip(image[:, :, ::-1], 0, 1) * 255).astype(np.uint8)
-    resized = Image.fromarray(rgb).resize(
-        (width * scale, height * scale), Image.Resampling.BICUBIC
+    source = Image.fromarray(
+        by_rows(
+            height,
+            lambda top, bottom: np.rint(
+                np.clip(image[top:bottom, :, ::-1], 0, 1) * 255
+            ).astype(np.uint8),
+        )
     )
-    rgb = np.asarray(resized).astype(np.float32) / 255
+    # Pillow's filter positions follow the whole image's: a box of rows gives those rows'
+    # bytes of the whole resize.
+    resized = by_rows(
+        height,
+        lambda top, bottom: np.asarray(
+            source.resize(
+                (width * scale, (bottom - top) * scale),
+                Image.Resampling.BICUBIC,
+                box=(0, top, width, bottom),
+            )
+        ),
+    )
+    rgb = by_rows(
+        height * scale,
+        lambda top, bottom: resized[top:bottom].astype(np.float32) / 255,
+    )
     # numpy reflect handles pads larger than tiny inputs (including length 1).
     padded = np.pad(
         rgb, ((0, -rgb.shape[0] % 16), (0, -rgb.shape[1] % 16), (0, 0)), mode="reflect"
     )
-    tensor = torch.from_numpy(np.ascontiguousarray(padded.transpose(2, 0, 1)))[None]
+    tensor = torch.from_numpy(padded).permute(2, 0, 1).contiguous()[None]
     return tensor * 2 - 1, rgb
 
 
@@ -290,6 +363,23 @@ def finite(tensor: torch.Tensor, stage: str) -> torch.Tensor:
     if not torch.isfinite(tensor).all():
         raise ValueError(f"VOSR 2.0 produced non-finite {stage}.")
     return tensor
+
+
+class FiniteChecks:
+    """Retain each stage's finite flag without a host synchronization per window."""
+
+    def __init__(self) -> None:
+        self.values: list[tuple[str, torch.Tensor]] = []
+
+    def add(self, tensor: torch.Tensor, stage: str) -> torch.Tensor:
+        self.values.append((stage, torch.isfinite(tensor).all()))
+        return tensor
+
+    def validate(self) -> None:
+        flags = torch.stack([value for _, value in self.values]).cpu().tolist()
+        for (stage, _), valid in zip(self.values, flags, strict=True):
+            if not valid:
+                raise ValueError(f"VOSR 2.0 produced non-finite {stage}.")
 
 
 def color_correct(

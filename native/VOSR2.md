@@ -62,7 +62,7 @@ PyTorch (Linux and Windows).
 
 - **TensorRT** needs an NVIDIA GPU, the TensorRT package (dependency manager) and VOSR's plugin `vosr2_qkv.dll`
   (included when the build made it; otherwise the node says so). The plugin has code for RTX 30, 40 and 50 GPUs; only
-  an RTX 5090 is tested. The first run builds ten engines: about 3 minutes, 5.5 GB of free GPU memory, 3.5 GB on disk.
+  an RTX 5090 is tested. The first run builds eleven engines: about 3 minutes, 5.5 GB of free GPU memory, 3.5 GB on disk.
   A TensorRT, driver, GPU or chaiNNer-C update can rebuild them once; the replaced engines are deleted once unused for
   two weeks (another GPU's are kept).
 - **TensorRT FP8** needs an RTX 40 series or newer and the official, unchanged model files. FP8 (8-bit floating point)
@@ -88,18 +88,22 @@ is deleted, unless Force CUDA Cache Wipe or a Memory Budget Limit is set (PyTorc
 
 ## Measured speed
 
-RTX 5090, Ryzen 9 9950X3D, 640×360 → 2560×1440 (4×), GPU Memory Default, a 30-frame clip through Load Video
-(2026-10-13). GPU memory is the peak above the desktop's own use.
+RTX 5090, Ryzen 9 9950X3D, GPU Memory Default, Texture Fix on (2026-11-08). Seconds for an image already loaded and the
+first image after launch; a 30-frame 2560×1440 clip through Load Video, seconds per frame after the first. GPU memory
+is the peak above the desktop's own use.
 
-| Case | Each later frame | First output | GPU memory |
+| Case | PyTorch | TensorRT | TensorRT FP8 |
 | --- | ---: | ---: | ---: |
-| PyTorch, Three Frames | 4.60 s | 11.2 s | +10.1 GB |
-| PyTorch, Persistent Detail | 4.95 s | 30.9 s | +10.6 GB |
-| TensorRT, Three Frames | 1.40 s | 12.2 s (198 s with the engine build) | +13.7 GB |
+| 640×360 at 4× | 2.35 s (first 4.3 s) | 1.19 s (first 4.4 s) | 0.90 s (first 2.8 s) |
+| 1920×1080 at 2× | 5.5 s | 2.6 s | 2.0 s |
+| Video, Three Frames | 2.41 s | 1.13 s | 0.86 s |
+| Video, Persistent Detail | 2.41 s | 1.13 s | 0.98 s |
+| 640×360 at 4×, GPU Memory Low | 9.9 s | 1.7 s | 1.1 s |
+| GPU memory, 640×360 at 4× | +12.6 GB | +10.2 GB | +8.8 GB |
 
-About 1.1 s per frame is CPU stabilization, overlapped on TensorRT. One image in a new backend, with loading:
-6.3 s (PyTorch), 9.4 s (TensorRT). FP8's first use: 191 s (build 177 s; download about 28 s at 1 Gbit/s). FP8 earlier
-that day, same graphs: 50 warm frames 1920×1080 → 3840×2160 in 122.6 s, TensorRT 154.1 s, no file I/O or stabilization.
+With the same image size again and again (a video, a folder of equal images), TensorRT runs two windows side by side
+from the eighth image, about 7 % faster. The first TensorRT use builds the engines (about 3 minutes); FP8's first use
+also downloads its graphs (3.45 GB).
 
 ## Limits
 

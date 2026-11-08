@@ -32,6 +32,19 @@ def rotate_half(x):
     return rearrange(x, "... d r -> ... (d r)")
 
 
+class RopeTable:
+    """t * cos + rotate_half(t) * sin, with rotate_half's sign in the table: x * -s equals
+    -x * s bit for bit, so a swap and two products give the same values."""
+
+    def __init__(self, cos, sin):
+        self.cos = cos
+        self.sin = sin * torch.tensor([-1, 1], device=sin.device, dtype=sin.dtype).repeat(sin.shape[-1] // 2)
+        self.swap = torch.arange(sin.shape[-1], device=sin.device) ^ 1
+
+    def __call__(self, t):
+        return t * self.cos + t.index_select(-1, self.swap) * self.sin
+
+
 class VisionRotaryEmbeddingFast(nn.Module):
     def __init__(self, dim, pt_seq_len=16, theta=10000):
         super().__init__()
