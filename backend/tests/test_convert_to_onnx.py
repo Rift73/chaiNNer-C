@@ -2849,26 +2849,32 @@ def test_verify_of_fp32_catches_a_size_frozen_in_the_export(
 
 
 @pytest.mark.parametrize(
-    "precision,gap,holds",
+    "precision,gap,one_sample,holds",
     [
-        ("fp16", 0.0, True),
-        # One 8-bit step over the image: FP16's rounding, within the limits
-        ("fp16", 0.004, True),
-        # Past the largest difference allowed, though 0.03 is a small root mean square
-        ("fp16", 0.03, False),
-        ("fp16", 0.2, False),
-        ("fp32", 0.0, True),
-        ("fp32", 0.015, False),
+        ("fp16", 0.0, False, True),
+        # One 8-bit step over the image: FP16's rounding, within the limit
+        ("fp16", 0.004, False, True),
+        # Past the root mean square allowed
+        ("fp16", 0.03, False, False),
+        ("fp16", 0.2, False, False),
+        # One sample as far off as a trained ESRGAN's: a deep model's rounding, which holds
+        ("fp16", 0.0295, True, True),
+        ("fp32", 0.0, False, True),
+        ("fp32", 0.015, False, False),
     ],
 )
 def test_verify_takes_the_rounding_of_the_export_s_precision(
-    precision: str, gap: float, holds: bool, monkeypatch: pytest.MonkeyPatch
+    precision: str,
+    gap: float,
+    one_sample: bool,
+    holds: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     def everywhere(output: np.ndarray) -> np.ndarray:
         signs = np.where(np.indices(output.shape).sum(axis=0) % 2, 1, -1)
         return output + gap * signs
 
-    change_onnx_output(monkeypatch, everywhere)
+    change_onnx_output(monkeypatch, one_sample_off(gap) if one_sample else everywhere)
     half = precision == "fp16"
     model = tiny_model("ESRGAN")
     data = convert_to_onnx.export_onnx(
