@@ -437,16 +437,18 @@ def export_verified(
     return onnx_model_bytes
 
 
-# The check's limits for an FP16 export, against the FP32 model on a smooth image. FP16
+# The check's limit for an FP16 export, against the FP32 model on a smooth image. FP16
 # PyTorch is no reference: it and ONNX Runtime round at different places, some models
 # amplify the rounding (trained SPANs differ by 0.2 on noise at full amplitude), and
 # OmniSR's FP16 PyTorch gives NaN where its export does not. Against FP32 a correct
 # export stays within 0.004 on five trained SPANs and, on five trained OmniSRs over 40
 # seeds, within a root mean square of 0.001 with single samples up to 0.017, on a smooth
-# image; a wrong one (a size frozen in the trace, a sum that overflows FP16, one tensor
-# halved) has a root mean square of 0.016 or more. One 8-bit step is 0.0039.
+# image; a trained ESRGAN reads 0.0011 with one sample at 0.0295. A wrong one (a size
+# frozen in the trace, a sum that overflows FP16, one tensor halved) has a root mean
+# square of 0.016 or more, so the check limits the root mean square only: a deep model
+# carries a rounding into a few samples, and the largest difference tells nothing apart.
+# One 8-bit step is 0.0039.
 FP16_VERIFY_RMS = 0.005
-FP16_VERIFY_MAX = 0.02
 # The check's limit on the images with detail (detail_inputs), where FP16 parts from FP32
 # as it does on real images. A model the smooth images pass can fail here: drawn images
 # push some architectures past FP16's range. On these images on the CPU, trained weights of
@@ -683,10 +685,11 @@ def compare_on_images(
         rms = float(np.sqrt(np.mean(difference * difference)))
         largest = float(difference.max())
         if rms > rms_limit or largest > largest_limit:
+            limit = "" if math.isinf(largest_limit) else f" (limit {largest_limit})"
             raise ExportMismatch(
                 "The ONNX model's output differs from the FP32 model's on a generated"
                 f" {image.shape[-1]} px image: root mean square {rms:.4f} (limit"
-                f" {rms_limit}), largest {largest:.4f}."
+                f" {rms_limit}), largest {largest:.4f}{limit}."
             )
 
 
@@ -720,8 +723,8 @@ def verify_models(
     check_aborted: Callable[[], None] = no_stop,
 ) -> None:
     """Runs the ONNX on the CPU against `model` in FP32 on `device`: an FP16 export, kept in
-    FP16 between its nodes, on verify_inputs within FP16_VERIFY_RMS and FP16_VERIFY_MAX and
-    on detail_inputs within FP16_DETAIL_RMS; any other export on verify_inputs within
+    FP16 between its nodes, on verify_inputs within FP16_VERIFY_RMS and on detail_inputs
+    within FP16_DETAIL_RMS; any other export on verify_inputs within
     VERIFY_RMS and VERIFY_MAX, and on fp32_match_checks; each without NaN or Inf.
 
     This is a cheap guard on the CPU, not a proof for a GPU: a GPU's FP16 kernels round in
@@ -747,7 +750,7 @@ def verify_models(
         reference,
         [
             *(
-                (image, FP16_VERIFY_RMS, FP16_VERIFY_MAX)
+                (image, FP16_VERIFY_RMS, math.inf)
                 for image in verify_inputs(reference, True)
             ),
             *((image, FP16_DETAIL_RMS, math.inf) for image in detail_inputs(reference)),

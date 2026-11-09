@@ -4,6 +4,19 @@ Current state, pending work and the decision log. Commands: `README.md`. Design:
 
 ## State
 
+- RELEASED 2026-11-08 as **v0.3.11** (owner yes): tag and fork branch `d723b2d00` over `f7a4a1e25`, tree = local
+  `13e5e4d7c` (`4027f48b`); win-x64 `15e72e32` (177,032,458 B), linux-x64 `71d68c61` (147,996,262 B). **Update now**
+  (`src/main/updater.ts`): the update notice downloads the latest release's zip for the platform into Downloads,
+  checks it against the asset's GitHub `digest` (SHA-256), unpacks it to a temp folder, and after the unsaved-changes
+  prompt (Cancel discards the download) starts a detached installer (PowerShell and robocopy on Windows, sh on Linux)
+  that waits for the processes running the install, copies the release over it, mirrors `resources/app`, removes the
+  zip and the unpacked copy, writes `userData/update-result.json` and starts the app again; the next start reports the
+  result, and a failed copy keeps the zip. **Linux release builds carry their commit's tree and date**
+  (`build_linux_release.sh` passes `CHAINNER_BUILD_TREE`/`CHAINNER_BUILD_DATE`; a git archive has no repository): they
+  were development builds, with no update check at start and no re-release counted as an update, as v0.3.10's Linux
+  zips still are. Windows suite 144,275 passed, 0 failed; JS suite 554 passed. Updater checked by unit tests, both
+  installers on scratch folders and a real-data dry run (re-release 3 install, re-release 4 zip: 780 files equal); not
+  run inside the app: the first real Update now is from v0.3.11 to the next release. D:\chaiNNer not updated.
 - RELEASED 2026-11-08 as **v0.3.10 re-release 4** (owner yes): tag and fork branch `f7a4a1e25` over `b4a36bbbf`, tree =
   local `bec81d292` (the work below and spandrel 0.4.2+c18, published as `v0.4.2-c18`, release commit `6632fc5`, wheel
   `21b56e9b`, 622,606 B); win-x64 `b5543adb` (177,028,816 B), linux-x64 `b5767151` (147,992,586 B). No version bump
