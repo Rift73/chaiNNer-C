@@ -31,23 +31,12 @@ configure_torch()
 MAIN_REGISTRY.add(*EXTRA_REGISTRY, ignore_duplicates=True)
 
 
-def parse_ckpt_state_dict(checkpoint: dict):
-    state_dict = {}
-    for i, j in checkpoint.items():
-        if "netG." in i:
-            key = i.replace("netG.", "")
-            state_dict[key] = j
-        elif "module." in i:
-            key = i.replace("module.", "")
-            state_dict[key] = j
-    return state_dict
-
-
 # The file and its identity at load of each model loaded in half precision, which
-# Convert To ONNX reads again for an export in full precision.
-_half_sources: WeakKeyDictionary[ModelDescriptor, tuple[Path, Hashable]] = (
-    WeakKeyDictionary()
-)
+# Convert To ONNX reads again for an export in full precision, and the weights that
+# evaluation mode derived from the others there rather than read from the file.
+_half_sources: WeakKeyDictionary[
+    ModelDescriptor, tuple[Path, Hashable, frozenset[str]]
+] = WeakKeyDictionary()
 
 
 @dataclass(frozen=True)
@@ -68,7 +57,10 @@ def read_model(path: Path, device: torch.device) -> ReadModel:
         with skip_random_init():
             return ReadModel(path, ModelLoader(device).load_from_file(path), identity)
     except Exception as e:
-        raise _unsupported(path) from e
+        raise ValueError(
+            f"Model {path.name} is unsupported by chaiNNer ({_described(e)})."
+            " Please try another."
+        ) from e
 
 
 def finish_model(read: ReadModel, exec_options: PyTorchSettings) -> ModelDescriptor:
@@ -77,24 +69,24 @@ def finish_model(read: ReadModel, exec_options: PyTorchSettings) -> ModelDescrip
         model_descriptor = read.model
         for _, v in model_descriptor.model.named_parameters():
             v.requires_grad = False
-        model_descriptor.model.eval()
+        derived = _derived_in_eval(model_descriptor.model)
         model_descriptor = model_descriptor.to(exec_options.device)
         should_use_fp16 = exec_options.use_fp16 and model_descriptor.supports_half
         if should_use_fp16:
             model_descriptor.model.half()
-            _half_sources[model_descriptor] = (read.path, read.identity)
+            _half_sources[model_descriptor] = (read.path, read.identity, derived)
         else:
             model_descriptor.model.float()
     except Exception as e:
-        raise _unsupported(read.path) from e
+        raise ValueError(
+            f"Model {read.path.name} could not be readied on {exec_options.device}"
+            f" ({_described(e)})."
+        ) from e
     return model_descriptor
 
 
-def _unsupported(path: Path) -> ValueError:
-    return ValueError(
-        f"Model {os.path.basename(path)} is unsupported by chaiNNer. Please try"
-        " another."
-    )
+def _described(error: Exception) -> str:
+    return f"{type(error).__name__}: {error}"
 
 
 def load_model(path: Path, exec_options: PyTorchSettings) -> ModelDescriptor:
@@ -120,7 +112,7 @@ def full_precision(model: ModelDescriptor) -> ModelDescriptor | str | None:
         return (
             "it does not come from Load Model" if model.dtype == torch.float16 else None
         )
-    path, identity = source
+    path, identity, derived = source
     try:
         if file_identity(path) != identity:
             return f"{path.name} changed after Load Model loaded it"
@@ -132,8 +124,10 @@ def full_precision(model: ModelDescriptor) -> ModelDescriptor | str | None:
         )
         return f"{path.name} could not be read again ({e})"
     reread.model.float()
-    if not _rounds_to(reread.model.state_dict(), model.model.state_dict()):
+    if not _rounds_to(reread.model.state_dict(), model.model.state_dict(), derived):
         return f"{path.name} no longer holds the weights Load Model loaded"
+    # Evaluation mode derives those weights again, from the file's FP32 ones.
+    reread.model.eval()
     return reread
 
 
@@ -160,13 +154,34 @@ def full_precision_source(
     return full
 
 
-def _rounds_to(full: dict[str, torch.Tensor], loaded: dict[str, torch.Tensor]) -> bool:
+def _derived_in_eval(model: torch.nn.Module) -> frozenset[str]:
+    """`model` in evaluation mode, and the state's tensors that this replaced: weights
+    a module derives from others there (SPAN's and GaterV3's Conv3XC fuse their
+    branches into eval_conv), which a file may hold from before its last training
+    steps. Pointers only: nothing is copied."""
+    before = {key: value.data_ptr() for key, value in model.state_dict().items()}
+    model.eval()
+    return frozenset(
+        key
+        for key, value in model.state_dict().items()
+        if before.get(key) != value.data_ptr()
+    )
+
+
+def _rounds_to(
+    full: dict[str, torch.Tensor],
+    loaded: dict[str, torch.Tensor],
+    derived: frozenset[str] = frozenset(),
+) -> bool:
     """Whether `full`'s floating-point tensors rounded as model.half() rounds them are
     bitwise the loaded ones (still in half precision, or converted back since by
-    Upscale Image), and its other tensors are the loaded ones."""
+    Upscale Image), and its other tensors are the loaded ones; the `derived` ones are
+    not compared, since Load Model computed them from the others."""
     if full.keys() != loaded.keys():
         return False
     for key, value in full.items():
+        if key in derived:
+            continue
         actual = loaded[key].detach().cpu()
         expected = value
         if value.is_floating_point() and actual.is_floating_point():

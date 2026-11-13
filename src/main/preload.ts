@@ -4,14 +4,12 @@ import { IpcRendererEvent, contextBridge, ipcRenderer, webUtils } from 'electron
 import type { Version } from '../common/common-types';
 import type { BuildInfo } from '../common/version';
 
-// Pre-load constants from the main process
 const appVersion = ipcRenderer.sendSync('get-app-version-sync') as Version;
 const isMac = ipcRenderer.sendSync('get-is-mac-sync') as boolean;
 const isArmMac = ipcRenderer.sendSync('get-is-arm-mac-sync') as boolean;
 const appDataPath = ipcRenderer.sendSync('get-appdata-sync') as string;
 const buildInfo = ipcRenderer.sendSync('get-build-info-sync') as BuildInfo;
 
-// Expose constants directly to the renderer
 contextBridge.exposeInMainWorld('appConstants', {
     appVersion,
     isMac,

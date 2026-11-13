@@ -135,7 +135,7 @@ add_library(chainner_native SHARED
     src/version.c src/crt_math.c src/parallel.c src/isa.c src/adjustments.c src/blend.c src/gradients.c src/normals.c
     src/generation.c src/channels.c src/color_ops.c src/analysis_ops.c
     src/buffers.c src/transparency_color.c src/filter_ops.c src/layout_ops.c src/palette_ops.c
-    src/tensor_ops.c src/resample_ops.c src/neighborhood_ops.c src/transfer_ops.c
+    src/resample_ops.c src/neighborhood_ops.c src/transfer_ops.c
     src/wavelet_ops.c src/alpha_gamma_ops.c src/convolution_ops.c src/kmeans_ops.c
     src/resample_filters.c src/alpha_complete_ops.c src/rotate_ops.c src/morphology_ops.c
     src/box_complete_ops.c src/distance_complete_ops.c src/pocketfft_kernel.c src/fft_ops.c

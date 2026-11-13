@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import dataclasses
+import tempfile
 from enum import Enum
+from pathlib import Path
 
 import tensorrt as trt
 from sanic.log import logger
 
 from api import NodeContext
 from nodes.groups import Condition, if_enum_group, if_group
+from nodes.impl.onnx import rdual_bundle
 from nodes.impl.onnx.load import model_facts, warn_if_grid_frozen
 from nodes.impl.onnx.model import NO_RECORD_ARCH, OnnxModel
 from nodes.impl.tensorrt import drft, dual
@@ -30,6 +33,7 @@ from nodes.impl.tensorrt.memory import (
     get_cuda_device_name,
 )
 from nodes.impl.tensorrt.model import TensorRTEngine, TensorRTEngineInfo
+from nodes.impl.tensorrt.rdual_engine_set import pack
 from nodes.impl.tensorrt.tiling import TILE_OVERLAP
 from nodes.properties.inputs import (
     BoolInput,
@@ -95,11 +99,15 @@ TILE_SIZE_DOC = (
 DUAL_WORKSPACE_GIB = 8.0
 
 # Shown until the ONNX is known to have one automatic precision: DUAL's keeps its own,
-# and one with a record builds in its recorded precision
+# and one with a record (RDUAL's too) builds in its recorded precision
 PRECISION_APPLIES = Condition.type(
     0,
     f'OnnxModel {{ arch: "{NO_RECORD_ARCH}" }}',
     if_not_connected=True,
+)
+# Shown until the ONNX is known to be RDUAL's, whose bundle fixes its one size
+SHAPE_APPLIES = Condition.type(
+    0, 'OnnxModel { arch: invStrSet("RDUAL") }', if_not_connected=True
 )
 
 
@@ -115,6 +123,7 @@ if utility_group is not None:
             "It is recommended to save the built engine for reuse, as building is slow.",
             "A DUAL ONNX from Convert To ONNX builds in its own mixed precision (BF16 body, FP32 input and output) with its TensorRT plugins (Triton kernels compiled for your GPU; no C++ compiler or CUDA Toolkit is needed). A dynamic DUAL ONNX takes this node's shape inputs, multiples of 4 px (e.g. Dynamic, 64x64 to 1920x1088 for whole 1080p frames); a fixed one keeps its own size. Precision does not apply and is hidden; Workspace, Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do. Upscale Image replays DUAL engines from a CUDA graph per input size.",
             "An ONNX from Convert To ONNX builds in the precision it records (FP16 for the architectures that hold in it, else FP32), also after it is saved and loaded again, so Precision does not apply and is hidden. An ONNX with no record, from another program or an earlier version's conversion, works as before, with Precision shown; an earlier ESRGAN ONNX in FP16 also builds with the faster layout a new conversion has.",
+            "An RDUAL ONNX from Convert To ONNX (a video model's four parts for one frame size) builds into one engine set: four engines with their TensorRT plugins (Triton kernels compiled for your GPU), carried as one engine by Save Engine and Load Engine. Its frame size and mixed precision are its own, so Precision and the shape inputs do not apply and are hidden; Workspace (0: 8 GiB), Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do.",
             "A legacy DRFT ONNX from Convert To ONNX also builds in its own mixed precision, with chaiNNer-C's DRFT TensorRT plugins (chaiNNer-C loads them with the engine; another program needs the plugin library too). Its sizes, Fixed or Dynamic, must be multiples of the ONNX's alignment and at least its minimum size on each side (Build Engine says which if not). Precision does not apply; Workspace (0: TensorRT's default), Allow TF32, Sparse Weights, Optimization Level and Tiling Optimization do.",
         ],
         icon="BsNvidia",
@@ -133,87 +142,89 @@ if utility_group is not None:
                     "A mixed-precision ONNX (Mixed FP16 or Mixed BF16 from an earlier version's Convert To ONNX) keeps its own precision, and this setting does not apply.",
                 ),
             ),
-            EnumInput(
-                ShapeMode,
-                label="Shape Mode",
-                default=ShapeMode.FIXED,
-                option_labels=SHAPE_MODE_LABELS,
-            ).with_docs(
-                "Fixed: Build engine for a single input size. Fastest inference.",
-                "Dynamic: Build engine for variable input sizes. More flexible but slightly slower."
-                " It takes GPU memory by the size of each input, so Upscale Image can go on with"
-                " smaller tiles when the memory runs out.",
-            ),
-            if_enum_group(2, ShapeMode.DYNAMIC)(
-                NumberInput(
-                    "Min Height",
-                    default=64,
-                    min=16,
-                    max=4096,
-                    unit="px",
-                ).with_docs("Minimum input height for dynamic shapes."),
-                NumberInput(
-                    "Min Width",
-                    default=64,
-                    min=16,
-                    max=4096,
-                    unit="px",
-                ).with_docs("Minimum input width for dynamic shapes."),
-                NumberInput(
-                    "Optimal Height",
-                    default=512,
-                    min=16,
-                    max=4096,
-                    unit="px",
-                ).with_docs("Optimal input height (used for optimization)."),
-                NumberInput(
-                    "Optimal Width",
-                    default=512,
-                    min=16,
-                    max=4096,
-                    unit="px",
-                ).with_docs("Optimal input width (used for optimization)."),
-                NumberInput(
-                    "Max Height",
-                    default=2048,
-                    min=MIN_TILE_SIZE,
-                    max=8192,
-                    unit="px",
+            if_group(SHAPE_APPLIES)(
+                EnumInput(
+                    ShapeMode,
+                    label="Shape Mode",
+                    default=ShapeMode.FIXED,
+                    option_labels=SHAPE_MODE_LABELS,
                 ).with_docs(
-                    "Maximum input height for dynamic shapes.",
-                    TILE_SIZE_DOC,
+                    "Fixed: Build engine for a single input size. Fastest inference.",
+                    "Dynamic: Build engine for variable input sizes. More flexible but slightly slower."
+                    " It takes GPU memory by the size of each input, so Upscale Image can go on with"
+                    " smaller tiles when the memory runs out.",
                 ),
-                NumberInput(
-                    "Max Width",
-                    default=2048,
-                    min=MIN_TILE_SIZE,
-                    max=8192,
-                    unit="px",
-                ).with_docs(
-                    "Maximum input width for dynamic shapes.",
-                    TILE_SIZE_DOC,
+                if_enum_group(2, ShapeMode.DYNAMIC)(
+                    NumberInput(
+                        "Min Height",
+                        default=64,
+                        min=16,
+                        max=4096,
+                        unit="px",
+                    ).with_docs("Minimum input height for dynamic shapes."),
+                    NumberInput(
+                        "Min Width",
+                        default=64,
+                        min=16,
+                        max=4096,
+                        unit="px",
+                    ).with_docs("Minimum input width for dynamic shapes."),
+                    NumberInput(
+                        "Optimal Height",
+                        default=512,
+                        min=16,
+                        max=4096,
+                        unit="px",
+                    ).with_docs("Optimal input height (used for optimization)."),
+                    NumberInput(
+                        "Optimal Width",
+                        default=512,
+                        min=16,
+                        max=4096,
+                        unit="px",
+                    ).with_docs("Optimal input width (used for optimization)."),
+                    NumberInput(
+                        "Max Height",
+                        default=2048,
+                        min=MIN_TILE_SIZE,
+                        max=8192,
+                        unit="px",
+                    ).with_docs(
+                        "Maximum input height for dynamic shapes.",
+                        TILE_SIZE_DOC,
+                    ),
+                    NumberInput(
+                        "Max Width",
+                        default=2048,
+                        min=MIN_TILE_SIZE,
+                        max=8192,
+                        unit="px",
+                    ).with_docs(
+                        "Maximum input width for dynamic shapes.",
+                        TILE_SIZE_DOC,
+                    ),
                 ),
-            ),
-            if_enum_group(2, ShapeMode.FIXED)(
-                NumberInput(
-                    "Height",
-                    default=256,
-                    min=MIN_TILE_SIZE,
-                    max=8192,
-                    unit="px",
-                ).with_docs(
-                    "Fixed input height.",
-                    TILE_SIZE_DOC,
-                ),
-                NumberInput(
-                    "Width",
-                    default=256,
-                    min=MIN_TILE_SIZE,
-                    max=8192,
-                    unit="px",
-                ).with_docs(
-                    "Fixed input width.",
-                    TILE_SIZE_DOC,
+                if_enum_group(2, ShapeMode.FIXED)(
+                    NumberInput(
+                        "Height",
+                        default=256,
+                        min=MIN_TILE_SIZE,
+                        max=8192,
+                        unit="px",
+                    ).with_docs(
+                        "Fixed input height.",
+                        TILE_SIZE_DOC,
+                    ),
+                    NumberInput(
+                        "Width",
+                        default=256,
+                        min=MIN_TILE_SIZE,
+                        max=8192,
+                        unit="px",
+                    ).with_docs(
+                        "Fixed input width.",
+                        TILE_SIZE_DOC,
+                    ),
                 ),
             ),
             NumberInput(
@@ -227,7 +238,7 @@ if utility_group is not None:
                 "Maximum GPU memory TensorRT may use while building. Larger values may allow"
                 " better optimizations; any amount can be typed.",
                 "0 is automatic: TensorRT's default, up to all of the GPU's memory, or"
-                f" {DUAL_WORKSPACE_GIB:g} GiB for a DUAL ONNX.",
+                f" {DUAL_WORKSPACE_GIB:g} GiB for a DUAL or RDUAL ONNX.",
                 hint=True,
             ),
             BoolInput("Allow TF32", default=False).with_docs(
@@ -299,6 +310,17 @@ if utility_group is not None:
             min_height = opt_height = max_height = static_height
             min_width = opt_width = max_width = static_width
 
+        if rdual_bundle.is_bundle(onnx_model.bytes):
+            return build_rdual_engine(
+                context,
+                onnx_model,
+                settings,
+                workspace_gib=workspace if workspace > 0 else DUAL_WORKSPACE_GIB,
+                optimization_level=optimization_level,
+                tf32=allow_tf32,
+                sparse_weights=sparse_weights,
+                tiling_optimization=tiling_optimization.value,
+            )
         warn_if_grid_frozen(
             context, onnx_model, "This ONNX model, and so the engine built from it,"
         )
@@ -583,5 +605,72 @@ def build_drft_engine(
         (major, minor),
         trt.__version__,
         drft_plugin_identity(),
+    )
+    return cached_engine(key, build, settings.engine_cache_path)
+
+
+def build_rdual_engine(
+    context: NodeContext,
+    onnx_model: OnnxModel,
+    settings: TensorRTSettings,
+    *,
+    workspace_gib: float,
+    optimization_level: int,
+    tf32: bool,
+    sparse_weights: bool,
+    tiling_optimization: str,
+) -> TensorRTEngine:
+    """RDUAL's engine set (rdual_engine_set.py) of an ONNX bundle (rdual_bundle.py): the
+    bundle's parts written out and built in rdual_engine_worker.py, then packed. The
+    bundle fixes the frame size and precision; the node's workspace, TF32, sparsity,
+    optimization level and tiling optimization apply."""
+    # rdual imports PyTorch, which the TensorRT package loads only for this.
+    from nodes.impl.tensorrt import rdual
+
+    gpu_index = settings.gpu_index
+    build_settings = (
+        str(workspace_gib),
+        str(optimization_level),
+        "1" if tf32 else "0",
+        "1" if sparse_weights else "0",
+        tiling_optimization,
+    )
+
+    def build() -> TensorRTEngine:
+        with tempfile.TemporaryDirectory(prefix="chaiNNer-rdual-engines-") as temporary:
+            root = Path(temporary)
+            manifest = rdual_bundle.write(onnx_model.bytes, root / "export")
+            info = rdual.set_info(manifest, gpu_index)
+            assert info.temporal is not None
+            logger.info(
+                "Building an RDUAL engine set (x%d, %dx%d, plugins %s, %s):"
+                " workspace=%gGiB, level=%d, tf32=%s, sparse=%s, tiling=%s",
+                info.scale,
+                info.temporal.width,
+                info.temporal.height,
+                info.temporal.plugin_key,
+                info.gpu_architecture,
+                workspace_gib,
+                optimization_level,
+                tf32,
+                sparse_weights,
+                tiling_optimization,
+            )
+            rdual.build(
+                root / "export", root / "engines", gpu_index, context, build_settings
+            )
+            parts = {
+                name: (root / "engines" / f"{name}.engine").read_bytes()
+                for name in info.temporal.parts
+            }
+        return pack(parts, info)
+
+    key = engine_key(
+        onnx_model,
+        ("rdual", *build_settings),
+        get_cuda_device_name(gpu_index),
+        get_cuda_compute_capability(gpu_index),
+        trt.__version__,
+        rdual.recipe_identity(),
     )
     return cached_engine(key, build, settings.engine_cache_path)

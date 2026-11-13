@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "palette_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* Median cut's AVX2 unit (/arch:AVX2, spec 4.3; SP4b D12, Task 5b): no export, reached
+/* Median cut's AVX2 unit (/arch:AVX2): no export, reached
  * only through cn_palette_median_cut's dispatch on the ISA level it read once for the
  * call: describe's extrema, the NaN scan of the selected channel's copy, the median's
  * radix select passes and the count above the median. The resolution and the tails run

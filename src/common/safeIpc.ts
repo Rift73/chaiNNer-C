@@ -9,7 +9,6 @@ import type { UpdateResult } from '../main/updater';
 import type { FileFilter, OpenDialogReturnValue } from 'electron/common';
 // eslint-disable-next-line import/no-nodejs-modules
 import type { MakeDirectoryOptions, RmOptions } from 'fs';
-import type { Mode, ObjectEncodingOptions, OpenMode, PathLike } from 'original-fs';
 
 interface ChannelInfo<ReturnType, Args extends unknown[] = []> {
     returnType: ReturnType;
@@ -37,7 +36,6 @@ export interface InvokeChannels {
     'owns-backend': ChannelInfo<boolean>;
     'restart-backend': ChannelInfo<void>;
     'relaunch-application': ChannelInfo<void>;
-    'quit-application': ChannelInfo<void>;
     'open-url': ChannelInfo<void, [url: string]>;
     'download-update': ChannelInfo<string>;
     'install-update': ChannelInfo<boolean>;
@@ -53,38 +51,6 @@ export interface InvokeChannels {
     'set-settings': ChannelInfo<void, [settings: ChainnerSettings]>;
 
     // fs
-    'fs-read-file': ChannelInfo<
-        string,
-        // Mostly copied this from the original fs.readFile, but had to remove some bits due to being unable to import the types
-        [
-            path: PathLike,
-            options:
-                | {
-                      encoding: BufferEncoding;
-                      flag?: OpenMode | undefined;
-                  }
-                | BufferEncoding
-        ]
-    >;
-    'fs-write-file': ChannelInfo<
-        void,
-        // Mostly copied this from the original fs.writeFile, but had to remove some bits due to being unable to import the types
-        [
-            file: PathLike,
-            data:
-                | string
-                | NodeJS.ArrayBufferView
-                | Iterable<string | NodeJS.ArrayBufferView>
-                | AsyncIterable<string | NodeJS.ArrayBufferView>,
-            options?:
-                | (ObjectEncodingOptions & {
-                      mode?: Mode | undefined;
-                      flag?: OpenMode | undefined;
-                  })
-                | BufferEncoding
-                | null
-        ]
-    >;
     'fs-exists': ChannelInfo<boolean, [path: string]>;
     'fs-mkdir': ChannelInfo<string | undefined, [path: string, options: MakeDirectoryOptions]>;
     'fs-readdir': ChannelInfo<string[], [path: string]>;
@@ -100,15 +66,12 @@ export interface InvokeChannels {
     'clipboard-writeImageFromURL': ChannelInfo<void, [url: string]>;
 
     // File watching
-    'watch-file': ChannelInfo<void, [path: string]>;
     'watch-files': ChannelInfo<void, [paths: readonly string[]]>;
-    'unwatch-file': ChannelInfo<void, [path: string]>;
     'unwatch-files': ChannelInfo<void, [paths: readonly string[]]>;
 }
 
 export interface SendChannels {
     'setup-progress': SendChannelInfo<[progress: Progress]>;
-    'backend-started': SendChannelInfo;
     'backend-ready': SendChannelInfo;
     'update-ui-cache': SendChannelInfo<[data: BackendData]>;
     'file-new': SendChannelInfo;

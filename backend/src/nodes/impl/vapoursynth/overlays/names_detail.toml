@@ -1,0 +1,157 @@
+# Names, order and start values: Sharpen and Blur, Deband and Grain.
+
+# Sharpen and Blur
+
+[method."cas.CAS"]
+rank = 1
+label = "Sharpen, gentle (CAS)"
+simple = ["sharpness", "planes"]
+labels = { sharpness = "Strength (0 to 1)", opt = "CPU instructions" }
+
+[method."vsrgtools.unsharpen"]
+rank = 2
+label = "Sharpen: unsharp mask (unsharpen)"
+simple = ["strength", "blur", "planes"]
+
+[method."vsrgtools.gauss_blur"]
+rank = 3
+label = "Blur, Gaussian (gauss_blur)"
+simple = ["sigma", "radius", "planes"]
+labels = { mode = "Direction" }
+
+[method."vsrgtools.box_blur"]
+rank = 4
+label = "Blur, box (box_blur)"
+simple = ["radius", "passes", "planes"]
+labels = { mode = "Direction" }
+
+[method."vsrgtools.median_blur"]
+rank = 5
+label = "Median (median_blur)"
+labels = { smart = "Skip textured areas", scalep = "Threshold on 0-255 scale", scenechange = "Stop at scene cuts" }
+
+[method."vsrgtools.bilateral"]
+rank = 6
+label = "Blur that keeps edges (bilateral)"
+labels = { sigmaS = "Size (sigmaS)", sigmaR = "Brightness tolerance (sigmaR)", ref = "Edges from clip" }
+
+[method."vsrgtools.remove_grain"]
+rank = 7
+label = "Small 3x3 filters (remove_grain)"
+defaults = { mode = "vsrgtools.remove_grain.Mode.MINMAX_AROUND1" }
+
+[method."vsrgtools.awarpsharp"]
+label = "Sharpen lines by warping (awarpsharp)"
+simple = ["thresh", "depth_h", "depth_v", "planes"]
+labels = { thresh = "Mask cap", blur = "Mask blur", depth_h = "Warp depth, horizontal", depth_v = "Warp depth, vertical", mask_first_plane = "Colour follows luma edges", mask = "Edge mask" }
+
+[method."std.BoxBlur"]
+label = "Blur, box, per direction (BoxBlur)"
+labels = { hradius = "Horizontal radius", hpasses = "Horizontal passes", vradius = "Vertical radius", vpasses = "Vertical passes" }
+
+[method."vsrgtools.clense"]
+label = "Remove one-frame specks (clense)"
+defaults = { mode = "vsrgtools.clense.Mode.BOTH" }
+labels = { previous_clip = "Previous frames from", next_clip = "Next frames from" }
+
+[method."vsrgtools.contrasharpening"]
+label = "Resharpen after denoise (contrasharpening)"
+labels = { src = "Clip before filtering", mode = "Limit mode", sharp = "Sharpener" }
+
+[method."vsrgtools.contrasharpening_dehalo"]
+label = "Resharpen, dehalo (contrasharpening_dehalo)"
+labels = { src = "Clip before dehalo", level = "Strength" }
+
+[method."vsrgtools.contrasharpening_median"]
+label = "Resharpen, simple (contrasharpening_median)"
+labels = { src = "Clip before filtering", mode = "Blur" }
+
+[method."std.Convolution"]
+label = "Custom matrix (Convolution)"
+defaults = { matrix = "1, 2, 1, 2, 4, 2, 1, 2, 1" }
+labels = { saturate = "Clamp negatives to 0", mode = "Kernel shape" }
+
+[method."vsrgtools.fast_line_darken"]
+label = "Darken lines (fast_line_darken)"
+labels = { luma_cap = "Brightness cap", threshold = "Skip changes below" }
+
+[method."vsrgtools.fine_sharp"]
+label = "Sharpen fine detail (fine_sharp)"
+labels = { sstr = "Strength", cstr = "Equalisation", xstr = "Edge crisping", lstr = "Curve shape", pstr = "Curve exponent", ldmp = "Low damping", hdmp = "High damping" }
+
+[method."vsrgtools.flux_smooth"]
+label = "Smooth over time (flux_smooth)"
+labels = { scalep = "Thresholds on 0-255 scale" }
+
+[method."vsrgtools.guided_filter"]
+label = "Smooth, keep edges (guided_filter)"
+labels = { thr = "Strength", use_gauss = "Gaussian window", down_ratio = "Work at 1/n size" }
+
+[method."std.Median"]
+label = "Median 3x3 (Median)"
+
+[method."vsrgtools.min_blur"]
+label = "Light denoise, keeps edges (min_blur)"
+simple = ["radius", "planes"]
+labels = { mode = "Blur and median shapes" }
+
+[method."vsrgtools.repair"]
+label = "Limit to a reference (repair)"
+defaults = { mode = "vsrgtools.repair.Mode.MINMAX_SQUARE1" }
+labels = { repairclip = "Reference clip" }
+
+[method."vsrgtools.sbr"]
+label = "Remove finest detail (sbr)"
+labels = { blur_diff = "Blur of removed detail" }
+
+[method."vsrgtools.side_box_blur"]
+label = "Blur, box, keeps edges (side_box_blur)"
+
+[method."vsrgtools.soothe"]
+label = "Steady a sharpened clip (soothe)"
+labels = { src = "Clip before sharpening", scenechange = "Stop at scene cuts" }
+
+[method."vsrgtools.vertical_cleaner"]
+label = "Vertical median (vertical_cleaner)"
+defaults = { mode = "vsrgtools.vertical_cleaner.Mode.MEDIAN" }
+
+# Deband and Grain
+
+[method."vsdeband.f3k_deband"]
+rank = 1
+label = "Deband (f3k_deband)"
+simple = ["thr", "radius", "grain", "dynamic_grain"]
+labels = { thr = "Strength (256 = one level)", radius = "Search radius", grain = "Grain (luma, chroma)", dynamic_grain = "Grain changes every frame", blur_first = "Compare with the average", sample_mode = "Sample pattern", random = "Random distribution" }
+
+[method."vsdeband.pfdeband"]
+rank = 2
+label = "Deband with a prefilter (pfdeband)"
+labels = { thr = "Strength (256 = one level)", radius = "Search radius", ref = "Limit against clip", dark_thr = "Darkening limit", bright_thr = "Brightening limit", elast = "Fade width" }
+
+[method."vsdeband.Grainer"]
+rank = 3
+label = "Add grain (Grainer)"
+defaults = { strength = "1.65, 0.65" }
+labels = { class = "Grain type", strength = "Strength (luma, chroma)", static = "Same grain every frame", scale = "Grain size", temporal = "Slow change (weight, frames)", protect_edges = "No grain past black or white", protect_neutral_chroma = "No colour grain on greys", luma_scaling = "Less grain when bright" }
+
+[method."vsdeband.deband_detail_mask"]
+rank = 4
+label = "Detail mask for deband (deband_detail_mask)"
+labels = { sigma = "Texture blur size", rxsigma = "Retinex sizes", pf_sigma = "Prefilter blur", brz = "Cut-offs (texture, edges)", rg_mode = "Mask cleanup mode" }
+
+[method."vsdeband.placebo_deband"]
+label = "Deband, Vulkan GPU only (placebo_deband)"
+labels = { thr = "Strength" }
+
+[method."vsdeband.mdb_bilateral"]
+label = "Deband, heavy banding (mdb_bilateral)"
+simple = ["radius", "thr", "planes"]
+labels = { thr = "Strength (256 = one level)", dark_thr = "Darkening limit", bright_thr = "Brightening limit", elast = "Fade width" }
+
+# Moved and hidden (wave 3)
+
+[method."vsdeband.ScalerTwoPasses.scale"]
+hide = true
+
+[method."vsdeband.ScalerTwoPasses.supersample"]
+hide = true

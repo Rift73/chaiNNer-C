@@ -13,6 +13,7 @@ from nodes.impl.migraphx.model import MIGraphXProgram
 from nodes.impl.migraphx.program import compile_in_child
 from nodes.impl.migraphx.program_info import read_program_info
 from nodes.impl.migraphx.runner import runner_identity
+from nodes.impl.onnx import rdual_bundle
 from nodes.impl.onnx.load import model_facts
 from nodes.impl.onnx.model import NO_RECORD_ARCH, OnnxModel
 from nodes.properties.inputs import (
@@ -60,6 +61,7 @@ if utility_group is not None:
             "Compiling can take several minutes depending on the model size and settings; it runs in a process of its own, which Stop ends.",
             "A program takes one input size, Height x Width; Upscale Image splits images of any size into overlapping tiles of that size. It is compiled for your GPU's target (gfx) and MIGraphX version: save it for reuse, as compiling is slow.",
             "A DUAL ONNX from Convert To ONNX compiles in its own mixed precision with chaiNNer-C's DUAL operators; a dynamic one takes this node's size (multiples of 4 px), a fixed one keeps its own. Precision does not apply and is hidden.",
+            "A DUAL ONNX with local and retrieval neighborhood attention, as Convert To ONNX makes now, runs only on TensorRT: Build Program refuses it, and PyTorch's Upscale Image runs the model. One converted before then compiles with its old local windows and retrieval blocks, and the log says so.",
             "An ONNX from Convert To ONNX compiles in the precision it records (FP16 for the architectures that hold in it, else FP32), also after it is saved and loaded again, so Precision does not apply and is hidden. An ONNX with no record, from another program or an earlier version's conversion, works as before, with Precision shown.",
             "A legacy DRFT ONNX from Convert To ONNX also compiles in its own mixed precision, with chaiNNer-C's DRFT operators. Its size must be a multiple of the ONNX's alignment and at least its minimum size on each side (Build Program says which if not). Precision does not apply.",
         ],
@@ -138,6 +140,7 @@ if utility_group is not None:
         settings = get_settings(context)
         size = (height, width)
 
+        rdual_bundle.refuse(onnx_model, "Build Program")
         facts = model_facts(onnx_model)
         if facts.drft_manifest is not None:
             return build_drft_program(

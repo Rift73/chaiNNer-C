@@ -14,12 +14,12 @@ Linux source path:
 <traiNNer-redux>/traiNNer/archs/dual_arch.py
 ```
 
-Reviewed source SHA-256 (chaiNNer-C, 2026-10-25: the neighborhood-attention source; the
-rest of this guide was written for the earlier `a7c579c5…0abf`, which differs only in
-the context sites' operator, see "chaiNNer-C additions"):
+Reviewed source SHA-256 (chaiNNer-C, 2026-11-14: local and retrieval neighborhood
+attention; the rest of this guide was written for the earlier `a7c579c5…0abf`, which
+differs in the attention sites' operators, see "chaiNNer-C additions"):
 
 ```text
-b73554e5c15a4520fe085b875c5a584107b596ba1e011f6368a94f449fe9fac3
+4d1e082ee80296520b7e12779a3284b4d13eaeb75a84d0f8a0acb59f4b7a3881
 ```
 
 This is the final **DUAL3X-derived standalone DUAL**: pre-mixed dynamic group convolutions, ordinary FFN/attention pointwise projections, static EDBB reparameterization, RFB spatial attention, regional channel attention (RCA), and XR/XG cross-scale retrieval. It is **not** the earlier DUAL4 consolidation, deleted DUAL5, or the rolled-back training-speed optimization.
@@ -409,6 +409,9 @@ These sources explain API behavior and portability; they do not substitute for l
   nodes keyed by width only, `DualCore_c128_TRT`). It overrides only graph.py's size-dependent parts; see its
   docstring and chaiNNer-C's `nodes/impl/tensorrt/dual_aot.py` (`register_dynamic`) for the plugins.
 - `graph.py`: only the RGB readout moves ahead of its pixel shuffle (`c0de1572`).
+- `kernels.py`: `cell_stats` chains the Gram product through `tl.dot`'s accumulator, so the
+  TensorRT plugin can take a cell's 256 pixels in 64-pixel steps (`BT=64`), which keeps the two
+  convolution tiles in registers; `build.py`'s `kernels_sha256` changes with it.
 - Neighborhood attention (source `b73554e5…fac3`, every factory, `context_na=True`): a
   context site (M32/M64) whose trunk exceeds its window on either axis is the source's
   `_na_core`: QKV projected once over the trunk, then the plugin node
@@ -420,5 +423,19 @@ These sources explain API behavior and portability; they do not substitute for l
   earlier exports) and lists `DualNA_<key>_TRT` among `plugin_names` when the graph
   has the node. The node has no C++ plugin: chaiNNer-C's AOT plugin (`dual_aot.py`,
   kernel `dual_na_kernel.py`) builds it, and `build.py engine` refuses such an export.
+- Local and retrieval neighborhood attention (source `4d1e082e…7a3881`, `local_na` and
+  `retrieval_na`): a local site (G16, dense relative bias, dot attention) whose map
+  exceeds 16 on either axis is `DualLocalNA_<key>_TRT(qkv, table)`, `table` the layer's
+  bias FP32 `[C/32, 31^2]`; a retrieval (XR, XG) whose coarse grid exceeds 48 on an axis
+  is `DualXR_<key>_TRT(q, k, v; neighbourhood=48)`, `q` already scaled by tau and
+  `log(Ky*Kx)/(log(1024)*sqrt(32))` in BF16, K = min(48, coarse length) per axis.
+  Smaller maps keep the window and block ops; `dynamic.py` emits both nodes everywhere.
+  Every graph with these options takes each NHWC router mean as `DualRowSum_<key>_TRT(x)`,
+  FP32 row sums `[1,H,C]` divided by H*W. A DualXR site has no attention barrier (the
+  barrier only separates the retrieval's native MHA); `plugin_names` lists exactly the
+  plugin ops the graph holds. `Graph` takes these as options (`local_na`, `retrieval_na`,
+  `row_sums`), off by default; `export.py` turns them on from the model's flags. The
+  manifest records `"local": "na-v1"` and `"retrieval": "na-v1"`. Only chaiNNer-C's AOT
+  plugins build these nodes.
   `cpu_graph_oracle.py` evaluates the node as a dense per-query FP32 reference.
 - This guide: the author's local paths are placeholders (`<traiNNer-redux>`, `<workspace>`, `<research>`).

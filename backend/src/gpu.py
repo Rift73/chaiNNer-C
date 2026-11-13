@@ -161,7 +161,7 @@ def _try_nvml_shutdown():
     try:
         nv.nvmlShutdown()
     except Exception:
-        logger.warn("Failed to shut down Nvidia GPU.", exc_info=True)
+        logger.warning("Failed to shut down Nvidia GPU.", exc_info=True)
 
 
 def cuda_pci_addresses() -> list[tuple[int, int, int]]:

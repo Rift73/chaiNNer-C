@@ -6,15 +6,19 @@ with aot.py's options); Norm and the attention barrier get Triton versions of th
 code. An AOT plugin launches one kernel, so Core's three become three plugins whose
 statistics and attention matrices are tensors. Neighborhood attention (DualNA, which has
 no C++ plugin) launches dual_na_kernel.py's kernel, compiled with its own options.
+In a static 128-channel model, four pointwise chains around the Norms (attention output
+projection or DualProject to FFN expand, FFN contraction to the next Norm, attention gate
+to the next core's qkv) become one plugin each (dual_chain_kernels.py, fuse_chains).
 
 The exported ONNX keeps the guide's C++ plugin nodes. TensorRT 11.2's ONNX parser mixes
 up Python plugin instances (a layer calls another plugin's functions), so `lower`
 replaces each plugin node with stand-in operators of the same output shapes and types,
 the parser reads that graph, and `attach` adds the plugins through the network API and
 moves the stand-ins' consumers onto them; the builder drops the unused stand-ins. Used
-only by dual_engine_worker.py (needs Triton).
+only by the engine builds' child processes, dual_engine_worker.py and, through
+rdual_aot.py, rdual_engine_worker.py (needs Triton).
 
-tensorrt.plugin reads the registered functions' annotations as objects: `_resolved`
+tensorrt.plugin reads the registered functions' annotations as objects: `resolved`
 evaluates the postponed ones first."""
 
 from __future__ import annotations
@@ -37,7 +41,14 @@ from onnx import TensorProto, helper, numpy_helper
 from triton.backends.compiler import GPUTarget
 from triton.compiler import ASTSource
 
-from . import dual_dynamic_kernels, dual_na_kernel
+from . import (
+    dual_chain_kernels,
+    dual_dynamic_kernels,
+    dual_local_na_kernel,
+    dual_na_kernel,
+    dual_retrieval_na_kernel,
+    dual_row_sum_kernel,
+)
 
 KERNELS = (
     Path(__file__).resolve().parents[3]
@@ -54,6 +65,9 @@ OPTIONS = {"num_warps": 4, "num_stages": 1, "enable_fp_fusion": False}
 # same four-region accumulation order. Shared by fixed and dynamic engines.
 APPLY_BT = 64
 PROJECT_BM = 64
+# The cell statistics' pixels per step: a cell's 256 in four chunks keeps the two
+# convolution tiles in registers (one 256-pixel tile spilled).
+CELL_BT = 64
 NORM_PIXELS = 16
 COPY_BLOCK = 1024
 # The shared memory TensorRT's AOT plugin path launches with (a 57344-byte NA candidate
@@ -121,12 +135,12 @@ def router_add_kernel(
 @cache
 def _register_router_add(sm: int) -> None:
     @trtp.register(f"{NAMESPACE}::router_add")
-    @_resolved
+    @resolved
     def router_add_shape(a: trtp.TensorDesc, b: trtp.TensorDesc) -> trtp.TensorDesc:
         return a.like()
 
     @trtp.aot_impl(f"{NAMESPACE}::router_add")
-    @_resolved
+    @resolved
     def router_add_launch(
         a: trtp.TensorDesc,
         b: trtp.TensorDesc,
@@ -140,7 +154,7 @@ def _register_router_add(sm: int) -> None:
             {"block": COPY_BLOCK},
             sm,
         )
-        return _launch(
+        return kernel_launch(
             kernel, (trtp.max(trtp.cdiv(count, COPY_BLOCK), 1), 1, 1), [count]
         )
 
@@ -159,7 +173,7 @@ def vendored_kernels() -> ModuleType:
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-def _resolved(function: F) -> F:
+def resolved(function: F) -> F:
     """The function with its postponed annotations evaluated (tensorrt.plugin reads
     them as objects)."""
     function.__annotations__ = typing.get_type_hints(function)
@@ -198,7 +212,7 @@ def na_kernel(channels: int, window: int, sm: int) -> Any:
     and dynamic engines launch the same kernel (the trunk's height and width are
     run-time arguments)."""
     kernel = compile_kernel(
-        dual_na_kernel.na_attention,
+        dual_na_kernel.na_attention_blocks,
         {
             "qkv_ptr": "*bf16",
             "bq_ptr": "*bf16",
@@ -207,9 +221,9 @@ def na_kernel(channels: int, window: int, sm: int) -> Any:
             "width": "i32",
             "out_ptr": "*bf16",
         },
-        {"channels": channels, "window": window, **dual_na_kernel.LAUNCH},
+        {"channels": channels, "window": window, **dual_na_kernel.BLOCKS_LAUNCH},
         sm,
-        dual_na_kernel.OPTIONS,
+        dual_na_kernel.BLOCKS_OPTIONS,
     )
     if kernel.metadata.shared > MAX_SHARED:
         raise RuntimeError(
@@ -219,10 +233,81 @@ def na_kernel(channels: int, window: int, sm: int) -> Any:
     return kernel
 
 
+def _checked_shared(kernel: Any, label: str) -> Any:
+    if kernel.metadata.shared > MAX_SHARED:
+        raise RuntimeError(
+            f"The {label} kernel needs {kernel.metadata.shared} bytes of shared memory;"
+            f" TensorRT's AOT plugins launch with at most {MAX_SHARED}"
+        )
+    return kernel
+
+
+@cache
+def local_na_kernel(channels: int, sm: int) -> Any:
+    """The local layers' neighborhood-attention kernel (dual_local_na_kernel), compiled
+    once per width: the trunk's height and width are run-time arguments."""
+    return _checked_shared(
+        compile_kernel(
+            dual_local_na_kernel.local_na,
+            {
+                "qkv_ptr": "*bf16",
+                "table_ptr": "*fp32",
+                "height": "i32",
+                "width": "i32",
+                "out_ptr": "*bf16",
+            },
+            {"channels": channels, **dual_local_na_kernel.LAUNCH},
+            sm,
+            dual_local_na_kernel.OPTIONS,
+        ),
+        "local neighborhood-attention",
+    )
+
+
+@cache
+def retrieval_na_kernel(channels: int, sm: int) -> Any:
+    """The retrieval's neighborhood-attention kernel (dual_retrieval_na_kernel), once
+    per width: fine and coarse sizes are run-time arguments."""
+    return _checked_shared(
+        compile_kernel(
+            dual_retrieval_na_kernel.xr_attention,
+            {
+                "q_ptr": "*bf16",
+                "k_ptr": "*bf16",
+                "v_ptr": "*bf16",
+                "height": "i32",
+                "width": "i32",
+                "kheight": "i32",
+                "kwidth": "i32",
+                "out_ptr": "*bf16",
+            },
+            {"channels": channels, **dual_retrieval_na_kernel.LAUNCH},
+            sm,
+            dual_retrieval_na_kernel.OPTIONS,
+        ),
+        "retrieval neighborhood-attention",
+    )
+
+
+@cache
+def row_sum_kernel(channels: int, sm: int) -> Any:
+    """The router mean's FP32 row sums (dual_row_sum_kernel), once per width."""
+    return _checked_shared(
+        compile_kernel(
+            dual_row_sum_kernel.row_sum,
+            {"x_ptr": "*bf16", "width": "i32", "out_ptr": "*fp32"},
+            {"channels": channels, **dual_row_sum_kernel.LAUNCH},
+            sm,
+            dual_row_sum_kernel.OPTIONS,
+        ),
+        "row-sum",
+    )
+
+
 Size = Union[int, trtp.ShapeExpr]
 
 
-def _launch(
+def kernel_launch(
     kernel: Any, grid: tuple[Size, Size, Size], extra: list[Size] | None = None
 ) -> Launch:
     params = trtp.KernelLaunchParams()
@@ -243,7 +328,7 @@ def _elements(desc: trtp.TensorDesc) -> int:
     return count.constant_value()
 
 
-def _sm() -> int:
+def device_sm() -> int:
     from cuda.bindings import runtime as cudart
 
     error, device = cudart.cudaGetDevice()
@@ -303,7 +388,7 @@ def register(key: str) -> None:
         **dict(zip(("N0", "N1", "N2"), g.region_counts[:3], strict=True)),
     }
     pixels = h * w
-    sm = _sm()
+    sm = device_sm()
     kernels = vendored_kernels()
     _register_router_add(sm)
 
@@ -311,7 +396,7 @@ def register(key: str) -> None:
         return f"{NAMESPACE}::{name}_{key}"
 
     @trtp.register(plugin("norm"))
-    @_resolved
+    @resolved
     def norm_shape(
         x: trtp.TensorDesc,
         gamma: trtp.TensorDesc,
@@ -322,7 +407,7 @@ def register(key: str) -> None:
         return x.like(), trtp.from_shape_expr((s[0], s[1], s[2], 1), trt.float32)
 
     @trtp.aot_impl(plugin("norm"))
-    @_resolved
+    @resolved
     def norm_launch(
         x: trtp.TensorDesc,
         gamma: trtp.TensorDesc,
@@ -350,15 +435,15 @@ def register(key: str) -> None:
             },
             sm,
         )
-        return _launch(kernel, ((count + NORM_PIXELS - 1) // NORM_PIXELS, 1, 1))
+        return kernel_launch(kernel, ((count + NORM_PIXELS - 1) // NORM_PIXELS, 1, 1))
 
     @trtp.register(plugin("cell"))
-    @_resolved
+    @resolved
     def cell_shape(qkv: trtp.TensorDesc, weight: trtp.TensorDesc) -> trtp.TensorDesc:
         return trtp.from_shape_expr((g.stats_size,), trt.float32)
 
     @trtp.aot_impl(plugin("cell"))
-    @_resolved
+    @resolved
     def cell_launch(
         qkv: trtp.TensorDesc,
         weight: trtp.TensorDesc,
@@ -368,18 +453,18 @@ def register(key: str) -> None:
         kernel = compile_kernel(
             kernels.cell_stats,
             {"X": "*bf16", "WEIGHT": "*bf16", "STATS": "*fp32"},
-            {**common, "BT": 256},
+            {**common, "BT": CELL_BT},
             sm,
         )
-        return _launch(kernel, (g.cells, g.heads, 1))
+        return kernel_launch(kernel, (g.cells, g.heads, 1))
 
     @trtp.register(plugin("region"))
-    @_resolved
+    @resolved
     def region_shape(stats: trtp.TensorDesc, tau: trtp.TensorDesc) -> trtp.TensorDesc:
         return trtp.from_shape_expr((g.matrices_size,), trt.bfloat16)
 
     @trtp.aot_impl(plugin("region"))
-    @_resolved
+    @resolved
     def region_launch(
         stats: trtp.TensorDesc,
         tau: trtp.TensorDesc,
@@ -392,10 +477,10 @@ def register(key: str) -> None:
             split,
             sm,
         )
-        return _launch(kernel, (sum(g.region_counts), g.heads, 1))
+        return kernel_launch(kernel, (sum(g.region_counts), g.heads, 1))
 
     @trtp.register(plugin("apply"))
-    @_resolved
+    @resolved
     def apply_shape(
         qkv: trtp.TensorDesc, weight: trtp.TensorDesc, matrices: trtp.TensorDesc
     ) -> trtp.TensorDesc:
@@ -403,7 +488,7 @@ def register(key: str) -> None:
         return trtp.from_shape_expr((s[0], s[1], s[2], c), trt.bfloat16)
 
     @trtp.aot_impl(plugin("apply"))
-    @_resolved
+    @resolved
     def apply_launch(
         qkv: trtp.TensorDesc,
         weight: trtp.TensorDesc,
@@ -417,17 +502,17 @@ def register(key: str) -> None:
             {**split, "BT": APPLY_BT},
             sm,
         )
-        return _launch(kernel, (g.cells, g.heads, 256 // APPLY_BT))
+        return kernel_launch(kernel, (g.cells, g.heads, 256 // APPLY_BT))
 
     @trtp.register(plugin("project"))
-    @_resolved
+    @resolved
     def project_shape(
         x: trtp.TensorDesc, weight: trtp.TensorDesc, residual: trtp.TensorDesc
     ) -> trtp.TensorDesc:
         return residual.like()
 
     @trtp.aot_impl(plugin("project"))
-    @_resolved
+    @resolved
     def project_launch(
         x: trtp.TensorDesc,
         weight: trtp.TensorDesc,
@@ -446,10 +531,10 @@ def register(key: str) -> None:
             },
             sm,
         )
-        return _launch(kernel, ((pixels + PROJECT_BM - 1) // PROJECT_BM, 1, 1))
+        return kernel_launch(kernel, ((pixels + PROJECT_BM - 1) // PROJECT_BM, 1, 1))
 
     @trtp.register(plugin("na"))
-    @_resolved
+    @resolved
     def na_shape(
         qkv: trtp.TensorDesc, bq: trtp.TensorDesc, bk: trtp.TensorDesc, window: int
     ) -> trtp.TensorDesc:
@@ -457,7 +542,7 @@ def register(key: str) -> None:
         return trtp.from_shape_expr((s[0], s[1], s[2], c), trt.bfloat16)
 
     @trtp.aot_impl(plugin("na"))
-    @_resolved
+    @resolved
     def na_launch(
         qkv: trtp.TensorDesc,
         bq: trtp.TensorDesc,
@@ -466,24 +551,275 @@ def register(key: str) -> None:
         outputs: tuple[trtp.TensorDesc],
         tactic: int,
     ) -> Launch:
-        return _launch(
+        return kernel_launch(
             na_kernel(c, window, sm),
-            dual_na_kernel.grid(h, w, c, triton.cdiv),
+            dual_na_kernel.blocks_grid(h, w, c, triton.cdiv),
             [h, w],
         )
 
+    @trtp.register(plugin("lna"))
+    @resolved
+    def lna_shape(qkv: trtp.TensorDesc, table: trtp.TensorDesc) -> trtp.TensorDesc:
+        s = qkv.shape_expr
+        return trtp.from_shape_expr((s[0], s[1], s[2], c), trt.bfloat16)
+
+    @trtp.aot_impl(plugin("lna"))
+    @resolved
+    def lna_launch(
+        qkv: trtp.TensorDesc,
+        table: trtp.TensorDesc,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        # Local layers run at the trunk's size and at the coarse branch's: the site's own.
+        height, width = qkv.shape_expr[1], qkv.shape_expr[2]
+        return kernel_launch(
+            local_na_kernel(c, sm),
+            dual_local_na_kernel.grid(height, width, c, trtp.cdiv),
+            [height, width],
+        )
+
+    @trtp.register(plugin("xr"))
+    @resolved
+    def xr_shape(
+        q: trtp.TensorDesc, k: trtp.TensorDesc, v: trtp.TensorDesc
+    ) -> trtp.TensorDesc:
+        return q.like()
+
+    @trtp.aot_impl(plugin("xr"))
+    @resolved
+    def xr_launch(
+        q: trtp.TensorDesc,
+        k: trtp.TensorDesc,
+        v: trtp.TensorDesc,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        return kernel_launch(
+            retrieval_na_kernel(c, sm),
+            dual_retrieval_na_kernel.grid(h, w, c, triton.cdiv),
+            [h, w, h // 2, w // 2],
+        )
+
+    @trtp.register(plugin("rowsum"))
+    @resolved
+    def rowsum_shape(x: trtp.TensorDesc) -> trtp.TensorDesc:
+        s = x.shape_expr
+        return trtp.from_shape_expr((s[0], s[1], s[3]), trt.float32)
+
+    @trtp.aot_impl(plugin("rowsum"))
+    @resolved
+    def rowsum_launch(
+        x: trtp.TensorDesc, outputs: tuple[trtp.TensorDesc], tactic: int
+    ) -> Launch:
+        return kernel_launch(row_sum_kernel(c, sm), (h, 1, 1), [w])
+
     _register_barrier(sm)
+    if c == dual_chain_kernels.CHANNELS:
+        _register_chains(key, sm)
+
+
+@cache
+def _register_chains(key: str, sm: int) -> None:
+    """Chains A's, B's, C's and D's plugins (dual_chain_kernels.py) of a static key."""
+
+    def plugin(name: str) -> str:
+        return f"{NAMESPACE}::{name}_{key}"
+
+    def checked(kernel: Any) -> Any:
+        if kernel.metadata.shared > MAX_SHARED:
+            raise RuntimeError(
+                f"{kernel.metadata.name} needs {kernel.metadata.shared} bytes of shared"
+                f" memory; TensorRT's AOT plugins launch with at most {MAX_SHARED}"
+            )
+        return kernel
+
+    def chain_a_plugin(symbol: str, project: bool) -> None:
+        """Chain A's plugin, or with `project` chain C's (dual_chain_kernels.chain_a)."""
+
+        @trtp.register(symbol)
+        @resolved
+        def chain_a_shape(
+            g: trtp.TensorDesc,
+            r: trtp.TensorDesc,
+            w1: trtp.TensorDesc,
+            b1: trtp.TensorDesc,
+            gamma: trtp.TensorDesc,
+            beta: trtp.TensorDesc,
+            w2: trtp.TensorDesc,
+            b2: trtp.TensorDesc,
+            eps: float,
+            c_div: float,
+            c_add: float,
+            c_mul: float,
+        ) -> tuple[trtp.TensorDesc, trtp.TensorDesc]:
+            s = r.shape_expr
+            return r.like(), trtp.from_shape_expr((s[0], s[1], s[2], 256), trt.bfloat16)
+
+        @trtp.aot_impl(symbol)
+        @resolved
+        def chain_a_launch(
+            g: trtp.TensorDesc,
+            r: trtp.TensorDesc,
+            w1: trtp.TensorDesc,
+            b1: trtp.TensorDesc,
+            gamma: trtp.TensorDesc,
+            beta: trtp.TensorDesc,
+            w2: trtp.TensorDesc,
+            b2: trtp.TensorDesc,
+            eps: float,
+            c_div: float,
+            c_add: float,
+            c_mul: float,
+            outputs: tuple[trtp.TensorDesc],
+            tactic: int,
+        ) -> Launch:
+            # The site's own pixels: the coarse branch runs at a quarter of the trunk's.
+            pixels = _elements(r) // dual_chain_kernels.CHANNELS
+            launch = dual_chain_kernels.CHAIN_A_LAUNCH
+            kernel = compile_kernel(
+                dual_chain_kernels.chain_a,
+                {
+                    **dict.fromkeys(("g_ptr", "r_ptr", "w1_ptr", "b1_ptr"), "*bf16"),
+                    **dict.fromkeys(("gamma_ptr", "beta_ptr"), "*fp32"),
+                    **dict.fromkeys(
+                        ("w2_ptr", "b2_ptr", "res_ptr", "out_ptr"), "*bf16"
+                    ),
+                },
+                {
+                    "pixels": pixels,
+                    "eps": eps,
+                    "c_div": c_div,
+                    "c_add": c_add,
+                    "c_mul": c_mul,
+                    **launch,
+                    "project": project,
+                },
+                sm,
+                dual_chain_kernels.OPTIONS,
+            )
+            blocks = (pixels + launch["bm"] - 1) // launch["bm"]
+            return kernel_launch(checked(kernel), (blocks, 1, 1))
+
+    chain_a_plugin(plugin("chaina"), False)
+    chain_a_plugin(plugin("chainc"), True)
+
+    @trtp.register(plugin("chainb"))
+    @resolved
+    def chain_b_shape(
+        g: trtp.TensorDesc,
+        r: trtp.TensorDesc,
+        w: trtp.TensorDesc,
+        b: trtp.TensorDesc,
+        gamma: trtp.TensorDesc,
+        beta: trtp.TensorDesc,
+        eps: float,
+    ) -> tuple[trtp.TensorDesc, trtp.TensorDesc]:
+        return r.like(), r.like()
+
+    @trtp.aot_impl(plugin("chainb"))
+    @resolved
+    def chain_b_launch(
+        g: trtp.TensorDesc,
+        r: trtp.TensorDesc,
+        w: trtp.TensorDesc,
+        b: trtp.TensorDesc,
+        gamma: trtp.TensorDesc,
+        beta: trtp.TensorDesc,
+        eps: float,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        pixels = _elements(r) // dual_chain_kernels.CHANNELS
+        launch = dual_chain_kernels.CHAIN_B_LAUNCH
+        kernel = compile_kernel(
+            dual_chain_kernels.chain_b,
+            {
+                **dict.fromkeys(("g_ptr", "r_ptr", "w_ptr", "b_ptr"), "*bf16"),
+                **dict.fromkeys(("gamma_ptr", "beta_ptr"), "*fp32"),
+                **dict.fromkeys(("res_ptr", "y_ptr"), "*bf16"),
+            },
+            {"pixels": pixels, "eps": eps, **launch},
+            sm,
+            dual_chain_kernels.OPTIONS,
+        )
+        blocks = (pixels + launch["bm"] - 1) // launch["bm"]
+        return kernel_launch(checked(kernel), (blocks, 1, 1))
+
+    @trtp.register(plugin("chaind"))
+    @resolved
+    def chain_d_shape(
+        a: trtp.TensorDesc,
+        wg: trtp.TensorDesc,
+        bg: trtp.TensorDesc,
+        na: trtp.TensorDesc,
+        wp: trtp.TensorDesc,
+        bp: trtp.TensorDesc,
+        r: trtp.TensorDesc,
+        gamma: trtp.TensorDesc,
+        beta: trtp.TensorDesc,
+        wq: trtp.TensorDesc,
+        eps: float,
+    ) -> tuple[trtp.TensorDesc, trtp.TensorDesc]:
+        s = r.shape_expr
+        return r.like(), trtp.from_shape_expr((s[0], s[1], s[2], 384), trt.bfloat16)
+
+    @trtp.aot_impl(plugin("chaind"))
+    @resolved
+    def chain_d_launch(
+        a: trtp.TensorDesc,
+        wg: trtp.TensorDesc,
+        bg: trtp.TensorDesc,
+        na: trtp.TensorDesc,
+        wp: trtp.TensorDesc,
+        bp: trtp.TensorDesc,
+        r: trtp.TensorDesc,
+        gamma: trtp.TensorDesc,
+        beta: trtp.TensorDesc,
+        wq: trtp.TensorDesc,
+        eps: float,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        pixels = _elements(r) // dual_chain_kernels.CHANNELS
+        launch = dual_chain_kernels.CHAIN_D_LAUNCH
+        names = (
+            "a",
+            "wg",
+            "bg",
+            "na",
+            "wp",
+            "bp",
+            "r",
+            "gamma",
+            "beta",
+            "wq",
+            "res",
+            "qkv",
+        )
+        kernel = compile_kernel(
+            dual_chain_kernels.chain_d,
+            {
+                f"{name}_ptr": "*fp32" if name in ("gamma", "beta") else "*bf16"
+                for name in names
+            },
+            {"pixels": pixels, "eps": eps, **launch},
+            sm,
+            dual_chain_kernels.OPTIONS,
+        )
+        blocks = (pixels + launch["bm"] - 1) // launch["bm"]
+        return kernel_launch(checked(kernel), (blocks, 1, 1))
 
 
 @cache
 def _register_barrier(sm: int) -> None:
     @trtp.register(f"{NAMESPACE}::barrier")
-    @_resolved
+    @resolved
     def barrier_shape(x: trtp.TensorDesc) -> trtp.TensorDesc:
         return x.like()
 
     @trtp.aot_impl(f"{NAMESPACE}::barrier")
-    @_resolved
+    @resolved
     def barrier_launch(
         x: trtp.TensorDesc, outputs: tuple[trtp.TensorDesc], tactic: int
     ) -> Launch:
@@ -494,7 +830,9 @@ def _register_barrier(sm: int) -> None:
             {"block": COPY_BLOCK},
             sm,
         )
-        return _launch(kernel, ((count + COPY_BLOCK - 1) // COPY_BLOCK, 1, 1), [count])
+        return kernel_launch(
+            kernel, ((count + COPY_BLOCK - 1) // COPY_BLOCK, 1, 1), [count]
+        )
 
 
 def _trunk(
@@ -516,14 +854,14 @@ def register_dynamic(channels: int) -> None:
     """Register one width's dynamic-shape plugins (and the shared dynamic barrier)
     once: sizes, grids and scalar arguments are shape expressions of the inputs."""
     heads = channels // 32
-    sm = _sm()
+    sm = device_sm()
     _register_router_add(sm)
 
     def plugin(name: str) -> str:
         return f"{NAMESPACE}::{name}_c{channels}"
 
     @trtp.register(plugin("norm"))
-    @_resolved
+    @resolved
     def dynamic_norm_shape(
         x: trtp.TensorDesc,
         gamma: trtp.TensorDesc,
@@ -534,7 +872,7 @@ def register_dynamic(channels: int) -> None:
         return x.like(), trtp.from_shape_expr((s[0], s[1], s[2], 1), trt.float32)
 
     @trtp.aot_impl(plugin("norm"))
-    @_resolved
+    @resolved
     def dynamic_norm_launch(
         x: trtp.TensorDesc,
         gamma: trtp.TensorDesc,
@@ -563,10 +901,10 @@ def register_dynamic(channels: int) -> None:
             },
             sm,
         )
-        return _launch(kernel, (trtp.cdiv(pixels, NORM_PIXELS), 1, 1), [pixels])
+        return kernel_launch(kernel, (trtp.cdiv(pixels, NORM_PIXELS), 1, 1), [pixels])
 
     @trtp.register(plugin("cell"))
-    @_resolved
+    @resolved
     def dynamic_cell_shape(
         qkv: trtp.TensorDesc, weight: trtp.TensorDesc
     ) -> trtp.TensorDesc:
@@ -574,7 +912,7 @@ def register_dynamic(channels: int) -> None:
         return trtp.from_shape_expr((cells * (heads * 1088),), trt.float32)
 
     @trtp.aot_impl(plugin("cell"))
-    @_resolved
+    @resolved
     def dynamic_cell_launch(
         qkv: trtp.TensorDesc,
         weight: trtp.TensorDesc,
@@ -594,10 +932,10 @@ def register_dynamic(channels: int) -> None:
             {"channels": channels, "block": 256},
             sm,
         )
-        return _launch(kernel, (cells, heads, 1), [height, width])
+        return kernel_launch(kernel, (cells, heads, 1), [height, width])
 
     @trtp.register(plugin("region"))
-    @_resolved
+    @resolved
     def dynamic_region_shape(
         stats: trtp.TensorDesc, tau: trtp.TensorDesc, qkv: trtp.TensorDesc
     ) -> trtp.TensorDesc:
@@ -606,7 +944,7 @@ def register_dynamic(channels: int) -> None:
         return trtp.from_shape_expr((regions * (heads * 1024),), trt.bfloat16)
 
     @trtp.aot_impl(plugin("region"))
-    @_resolved
+    @resolved
     def dynamic_region_launch(
         stats: trtp.TensorDesc,
         tau: trtp.TensorDesc,
@@ -632,10 +970,10 @@ def register_dynamic(channels: int) -> None:
             sm,
         )
         regions = counts[0] + counts[1] + counts[2] + counts[3]
-        return _launch(kernel, (regions, heads, 1), [height, width, *counts[:3]])
+        return kernel_launch(kernel, (regions, heads, 1), [height, width, *counts[:3]])
 
     @trtp.register(plugin("apply"))
-    @_resolved
+    @resolved
     def dynamic_apply_shape(
         qkv: trtp.TensorDesc, weight: trtp.TensorDesc, matrices: trtp.TensorDesc
     ) -> trtp.TensorDesc:
@@ -643,7 +981,7 @@ def register_dynamic(channels: int) -> None:
         return trtp.from_shape_expr((s[0], s[1], s[2], channels), trt.bfloat16)
 
     @trtp.aot_impl(plugin("apply"))
-    @_resolved
+    @resolved
     def dynamic_apply_launch(
         qkv: trtp.TensorDesc,
         weight: trtp.TensorDesc,
@@ -668,21 +1006,21 @@ def register_dynamic(channels: int) -> None:
             {"channels": channels, "block": APPLY_BT},
             sm,
         )
-        return _launch(
+        return kernel_launch(
             kernel,
             (cells, heads, 256 // APPLY_BT),
             [height, width, *counts[:3]],
         )
 
     @trtp.register(plugin("project"))
-    @_resolved
+    @resolved
     def dynamic_project_shape(
         x: trtp.TensorDesc, weight: trtp.TensorDesc, residual: trtp.TensorDesc
     ) -> trtp.TensorDesc:
         return residual.like()
 
     @trtp.aot_impl(plugin("project"))
-    @_resolved
+    @resolved
     def dynamic_project_launch(
         x: trtp.TensorDesc,
         weight: trtp.TensorDesc,
@@ -708,10 +1046,10 @@ def register_dynamic(channels: int) -> None:
             },
             sm,
         )
-        return _launch(kernel, (trtp.cdiv(pixels, PROJECT_BM), 1, 1), [pixels])
+        return kernel_launch(kernel, (trtp.cdiv(pixels, PROJECT_BM), 1, 1), [pixels])
 
     @trtp.register(plugin("na"))
-    @_resolved
+    @resolved
     def dynamic_na_shape(
         qkv: trtp.TensorDesc, bq: trtp.TensorDesc, bk: trtp.TensorDesc, window: int
     ) -> trtp.TensorDesc:
@@ -719,7 +1057,7 @@ def register_dynamic(channels: int) -> None:
         return trtp.from_shape_expr((s[0], s[1], s[2], channels), trt.bfloat16)
 
     @trtp.aot_impl(plugin("na"))
-    @_resolved
+    @resolved
     def dynamic_na_launch(
         qkv: trtp.TensorDesc,
         bq: trtp.TensorDesc,
@@ -729,11 +1067,71 @@ def register_dynamic(channels: int) -> None:
         tactic: int,
     ) -> Launch:
         height, width, _, _ = _trunk(qkv)
-        return _launch(
+        return kernel_launch(
             na_kernel(channels, window, sm),
-            dual_na_kernel.grid(height, width, channels, trtp.cdiv),
+            dual_na_kernel.blocks_grid(height, width, channels, trtp.cdiv),
             [height, width],
         )
+
+    @trtp.register(plugin("lna"))
+    @resolved
+    def dynamic_lna_shape(
+        qkv: trtp.TensorDesc, table: trtp.TensorDesc
+    ) -> trtp.TensorDesc:
+        s = qkv.shape_expr
+        return trtp.from_shape_expr((s[0], s[1], s[2], channels), trt.bfloat16)
+
+    @trtp.aot_impl(plugin("lna"))
+    @resolved
+    def dynamic_lna_launch(
+        qkv: trtp.TensorDesc,
+        table: trtp.TensorDesc,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        height, width, _, _ = _trunk(qkv)
+        return kernel_launch(
+            local_na_kernel(channels, sm),
+            dual_local_na_kernel.grid(height, width, channels, trtp.cdiv),
+            [height, width],
+        )
+
+    @trtp.register(plugin("xr"))
+    @resolved
+    def dynamic_xr_shape(
+        q: trtp.TensorDesc, k: trtp.TensorDesc, v: trtp.TensorDesc
+    ) -> trtp.TensorDesc:
+        return q.like()
+
+    @trtp.aot_impl(plugin("xr"))
+    @resolved
+    def dynamic_xr_launch(
+        q: trtp.TensorDesc,
+        k: trtp.TensorDesc,
+        v: trtp.TensorDesc,
+        outputs: tuple[trtp.TensorDesc],
+        tactic: int,
+    ) -> Launch:
+        height, width = q.shape_expr[1], q.shape_expr[2]
+        return kernel_launch(
+            retrieval_na_kernel(channels, sm),
+            dual_retrieval_na_kernel.grid(height, width, channels, trtp.cdiv),
+            [height, width, k.shape_expr[1], k.shape_expr[2]],
+        )
+
+    @trtp.register(plugin("rowsum"))
+    @resolved
+    def dynamic_rowsum_shape(x: trtp.TensorDesc) -> trtp.TensorDesc:
+        s = x.shape_expr
+        return trtp.from_shape_expr((s[0], s[1], s[3]), trt.float32)
+
+    @trtp.aot_impl(plugin("rowsum"))
+    @resolved
+    def dynamic_rowsum_launch(
+        x: trtp.TensorDesc, outputs: tuple[trtp.TensorDesc], tactic: int
+    ) -> Launch:
+        height, width = x.shape_expr[1], x.shape_expr[2]
+        return kernel_launch(row_sum_kernel(channels, sm), (height, 1, 1), [width])
 
     _register_dynamic_barrier(sm)
 
@@ -741,12 +1139,12 @@ def register_dynamic(channels: int) -> None:
 @cache
 def _register_dynamic_barrier(sm: int) -> None:
     @trtp.register(f"{NAMESPACE}::barrier_dynamic")
-    @_resolved
+    @resolved
     def dynamic_barrier_shape(x: trtp.TensorDesc) -> trtp.TensorDesc:
         return x.like()
 
     @trtp.aot_impl(f"{NAMESPACE}::barrier_dynamic")
-    @_resolved
+    @resolved
     def dynamic_barrier_launch(
         x: trtp.TensorDesc, outputs: tuple[trtp.TensorDesc], tactic: int
     ) -> Launch:
@@ -760,7 +1158,7 @@ def _register_dynamic_barrier(sm: int) -> None:
         # An absent retrieval class is empty: launch one block, which copies nothing
         # (a launch of zero blocks is an error).
         blocks = trtp.max(trtp.cdiv(count, COPY_BLOCK), 1)
-        return _launch(kernel, (blocks, 1, 1), [count])
+        return kernel_launch(kernel, (blocks, 1, 1), [count])
 
 
 @dataclass
@@ -855,10 +1253,382 @@ def _lower_router_additions(lowered: Lowered, channels: int) -> None:
         seen.add(output)
 
 
-def lower(model: onnx.ModelProto, key: str) -> Lowered:
+def _scalar(tensor: onnx.TensorProto) -> float:
+    """A one-element constant's value (BF16 ones included, which numpy cannot read)."""
+    if tensor.data_type == TensorProto.BFLOAT16:
+        if tensor.raw_data:
+            raw = np.frombuffer(tensor.raw_data, np.uint16).copy()
+        else:
+            raw = np.array(tensor.int32_data, np.uint16)
+        return float((raw.astype(np.uint32) << 16).view(np.float32).reshape(-1)[0])
+    return float(numpy_helper.to_array(tensor).reshape(-1)[0])
+
+
+class _Sites:
+    """What the chain fusions read of a lowered model: its constants, each tensor's
+    producer and node readers, and the plugins that read each tensor."""
+
+    def __init__(self, lowered: Lowered) -> None:
+        graph = lowered.model.graph
+        self.consts: dict[str, onnx.TensorProto] = {
+            t.name: t for t in graph.initializer
+        }
+        self.consts.update(
+            {
+                n.output[0]: n.attribute[0].t
+                for n in graph.node
+                if n.op_type == "Constant"
+            }
+        )
+        self.producer = {o: n for n in graph.node for o in n.output}
+        self.outputs = {output.name for output in graph.output}
+        self.users: dict[str, list[onnx.NodeProto]] = {}
+        for node in graph.node:
+            for name in node.input:
+                self.users.setdefault(name, []).append(node)
+        self.plugin_users: dict[str, list[Plugin]] = {}
+        for plugin in lowered.plugins:
+            for name in plugin.inputs:
+                self.plugin_users.setdefault(name, []).append(plugin)
+
+    def dims(self, name: str) -> list[int] | None:
+        return list(self.consts[name].dims) if name in self.consts else None
+
+    def only_user(self, tensor: str, op: str) -> onnx.NodeProto | None:
+        users = self.users.get(tensor, [])
+        if (
+            len(users) == 1
+            and users[0].op_type == op
+            and not self.plugin_users.get(tensor)
+        ):
+            return users[0]
+        return None
+
+    def unused(self, tensor: str) -> bool:
+        return not (
+            self.users.get(tensor)
+            or self.plugin_users.get(tensor)
+            or tensor in self.outputs
+        )
+
+    def bias_matmul(
+        self, tensor: str, weight: list[int], bias: list[int]
+    ) -> tuple[onnx.NodeProto, onnx.NodeProto] | None:
+        """Add(MatMul(x, W of `weight`'s shape), b of `bias`'s) producing `tensor`, the
+        sum and the product each read once."""
+        add = self.producer.get(tensor)
+        if (
+            add is None
+            or add.op_type != "Add"
+            or self.dims(add.input[1]) != bias
+            or len(self.users.get(tensor, [])) != 1
+        ):
+            return None
+        matmul = self.producer.get(add.input[0])
+        if (
+            matmul is None
+            or matmul.op_type != "MatMul"
+            or self.dims(matmul.input[1]) != weight
+            or len(self.users.get(matmul.output[0], [])) != 1
+        ):
+            return None
+        return add, matmul
+
+    def projection(
+        self, residual: onnx.NodeProto | None, weight: list[int], bias: list[int]
+    ) -> tuple[str, onnx.NodeProto, onnx.NodeProto] | None:
+        """The residual addition's operand that is a bias_matmul, its bias addition and
+        product, when exactly one is; its other operand is the residual."""
+        if residual is None or residual.op_type != "Add":
+            return None
+        found = []
+        for name in residual.input:
+            site = self.bias_matmul(name, weight, bias)
+            if site is not None:
+                found.append((name, *site))
+        return found[0] if len(found) == 1 else None
+
+    def gelu(
+        self, h: str
+    ) -> tuple[onnx.NodeProto, onnx.NodeProto, onnx.NodeProto, onnx.NodeProto] | None:
+        """(h * c_mul) * (erf(h / c_div) + c_add) of the exported GELU: its Div, Add, Mul
+        by c_mul, and the output Mul."""
+        readers = self.users.get(h, [])
+        div = next((n for n in readers if n.op_type == "Div"), None)
+        scale = next((n for n in readers if n.op_type == "Mul"), None)
+        if (
+            len(readers) != 2
+            or div is None
+            or scale is None
+            or self.plugin_users.get(h)
+        ):
+            return None
+        erf = self.only_user(div.output[0], "Erf")
+        add = None if erf is None else self.only_user(erf.output[0], "Add")
+        out = None if add is None else self.only_user(add.output[0], "Mul")
+        if (
+            out is None
+            or add is None
+            or self.only_user(scale.output[0], "Mul") is not out
+        ):
+            return None
+        return div, add, scale, out
+
+
+def _add_readers(lowered: Lowered, label: str, tensors: list[str]) -> None:
+    for index, tensor in enumerate(tensors):
+        reader = f"{NAMESPACE}/{label}_reader_{index}"
+        lowered.model.graph.node.append(
+            helper.make_node("Identity", [tensor], [reader], name=reader)
+        )
+        lowered.readers[reader] = tensor
+
+
+def _fuse_chain_a(lowered: Lowered, key: str) -> int:
+    """Chain A sites (dual_chain_kernels.chain_a) as one plugin each:
+    g -> MatMul(W1 [C, C]) -> Add(b1) -> Add(r, .) = s -> Norm (sigma unused) ->
+    MatMul(W2 [C, 2C]) -> Add(b2) = h -> GELU. The plugin takes (g, r, W1, b1, gamma,
+    beta, W2, b2) and gives (s, the GELU output); the replaced nodes stay as stand-ins,
+    dead once `attach` moves their readers to the plugin. Chain C sites, where s is a
+    DualProject plugin's output (x, W1, r), become one plugin with that one's place
+    (x, r, W1, W1 for the unread bias, gamma, beta, W2, b2)."""
+    sites = _Sites(lowered)
+    c = dual_chain_kernels.CHANNELS
+    projects = {p.outputs[0]: p for p in lowered.plugins if p.op.startswith("project_")}
+    fused_projects: set[int] = set()
+    kept: list[Plugin] = []
+    count = 0
+    for plugin in lowered.plugins:
+        if not plugin.op.startswith("norm_"):
+            kept.append(plugin)
+            continue
+        s, y, sigma = plugin.inputs[0], plugin.outputs[0], plugin.outputs[1]
+        found = sites.projection(sites.producer.get(s), [c, c], [c])
+        expand = sites.only_user(y, "MatMul")
+        bias = None
+        if expand is not None and sites.dims(expand.input[1]) == [c, 2 * c]:
+            bias = sites.only_user(expand.output[0], "Add")
+        if bias is not None and sites.dims(bias.input[1]) != [2 * c]:
+            bias = None
+        gelu = None if bias is None else sites.gelu(bias.output[0])
+        project = projects.get(s)
+        if sites.unused(sigma) and project is not None and gelu is not None:
+            assert expand is not None and bias is not None
+            div, add, scale, out = gelu
+            x, w1, r = project.inputs
+            weights = [expand.input[1], bias.input[1]]
+            kept.append(
+                Plugin(
+                    f"chainc_{key}",
+                    [x, r, w1, w1, plugin.inputs[1], plugin.inputs[2], *weights],
+                    [s, out.output[0]],
+                    {
+                        "eps": float(plugin.attributes["epsilon"]),
+                        "c_div": _scalar(sites.consts[div.input[1]]),
+                        "c_add": _scalar(sites.consts[add.input[1]]),
+                        "c_mul": _scalar(sites.consts[scale.input[1]]),
+                    },
+                )
+            )
+            fused_projects.add(id(project))
+            _add_readers(lowered, f"chainc_{count}", weights)
+            count += 1
+            continue
+        if not sites.unused(sigma) or found is None or gelu is None:
+            kept.append(plugin)
+            continue
+        assert expand is not None and bias is not None
+        source, bias_add, matmul = found
+        residual = sites.producer[s]
+        r = next(name for name in residual.input if name != source)
+        div, add, scale, out = gelu
+        c_div, c_add, c_mul = (
+            _scalar(sites.consts[n.input[1]]) for n in (div, add, scale)
+        )
+        weights = [matmul.input[1], bias_add.input[1], expand.input[1], bias.input[1]]
+        kept.append(
+            Plugin(
+                f"chaina_{key}",
+                [
+                    matmul.input[0],
+                    r,
+                    weights[0],
+                    weights[1],
+                    plugin.inputs[1],
+                    plugin.inputs[2],
+                    weights[2],
+                    weights[3],
+                ],
+                [s, out.output[0]],
+                {
+                    "eps": float(plugin.attributes["epsilon"]),
+                    "c_div": c_div,
+                    "c_add": c_add,
+                    "c_mul": c_mul,
+                },
+            )
+        )
+        _add_readers(lowered, f"chaina_{count}", weights)
+        count += 1
+    lowered.plugins[:] = [p for p in kept if id(p) not in fused_projects]
+    return count
+
+
+def _fuse_chain_b(lowered: Lowered, key: str) -> int:
+    """Chain B sites (dual_chain_kernels.chain_b) as one plugin each, after chain A,
+    whose Norms are no longer Norm plugins: g [.., 2C] -> MatMul(W [2C, C]) -> Add(b)
+    -> Add(r, .) = s -> Norm (sigma unused) = y; (g, r, W, b, gamma, beta) -> (s, y)."""
+    sites = _Sites(lowered)
+    c = dual_chain_kernels.CHANNELS
+    kept: list[Plugin] = []
+    count = 0
+    for plugin in lowered.plugins:
+        if not plugin.op.startswith("norm_"):
+            kept.append(plugin)
+            continue
+        s, sigma = plugin.inputs[0], plugin.outputs[1]
+        found = sites.projection(sites.producer.get(s), [2 * c, c], [c])
+        if not sites.unused(sigma) or found is None:
+            kept.append(plugin)
+            continue
+        source, bias_add, matmul = found
+        r = next(name for name in sites.producer[s].input if name != source)
+        weights = [matmul.input[1], bias_add.input[1]]
+        kept.append(
+            Plugin(
+                f"chainb_{key}",
+                [matmul.input[0], r, *weights, plugin.inputs[1], plugin.inputs[2]],
+                [s, plugin.outputs[0]],
+                {"eps": float(plugin.attributes["epsilon"])},
+            )
+        )
+        _add_readers(lowered, f"chainb_{count}", weights)
+        count += 1
+    lowered.plugins[:] = kept
+    return count
+
+
+def _fuse_chain_d(lowered: Lowered, key: str) -> int:
+    """Chain D sites (dual_chain_kernels.chain_d) as one plugin each, after chain A:
+    a -> MatMul(Wg [C, C]) -> Add(bg) -> Sigmoid -> Mul(na, .) -> MatMul(Wp [C, C]) ->
+    Add(bp) -> Add(r, .) = s -> Norm (sigma unused) = y -> MatMul(Wq [C, 3C]) = qkv;
+    (a, Wg, bg, na, Wp, bp, r, gamma, beta, Wq) -> (s, qkv). Every intermediate is read
+    once, by the next layer only."""
+    sites = _Sites(lowered)
+    c = dual_chain_kernels.CHANNELS
+
+    def single(tensor: str) -> bool:
+        return len(sites.users.get(tensor, [])) == 1 and not sites.plugin_users.get(
+            tensor
+        )
+
+    def linear(tensor: str) -> tuple[str, str, str] | None:
+        """(x, W, b) of tensor = Add(MatMul(x, W [C, C]), b [C])."""
+        add = sites.producer.get(tensor)
+        if (
+            add is None
+            or add.op_type != "Add"
+            or sites.dims(add.input[1]) != [c]
+            or not single(tensor)
+        ):
+            return None
+        matmul = sites.producer.get(add.input[0])
+        if (
+            matmul is None
+            or matmul.op_type != "MatMul"
+            or sites.dims(matmul.input[1]) != [c, c]
+            or not single(matmul.output[0])
+        ):
+            return None
+        return matmul.input[0], matmul.input[1], add.input[1]
+
+    kept: list[Plugin] = []
+    count = 0
+    for plugin in lowered.plugins:
+        if not plugin.op.startswith("norm_"):
+            kept.append(plugin)
+            continue
+        s, y, sigma = plugin.inputs[0], plugin.outputs[0], plugin.outputs[1]
+        residual = sites.producer.get(s)
+        hit = None
+        if sites.unused(sigma) and residual is not None and residual.op_type == "Add":
+            for name in residual.input:
+                projection = linear(name)
+                if projection is None:
+                    continue
+                mul = sites.producer.get(projection[0])
+                if mul is None or mul.op_type != "Mul" or not single(projection[0]):
+                    continue
+                for attended, gated in (
+                    (mul.input[0], mul.input[1]),
+                    (mul.input[1], mul.input[0]),
+                ):
+                    sigmoid = sites.producer.get(gated)
+                    if (
+                        sigmoid is None
+                        or sigmoid.op_type != "Sigmoid"
+                        or not single(gated)
+                    ):
+                        continue
+                    gate = linear(sigmoid.input[0])
+                    if gate is None:
+                        continue
+                    readers = sites.users.get(y, [])
+                    if (
+                        len(readers) == 1
+                        and readers[0].op_type == "MatMul"
+                        and sites.dims(readers[0].input[1]) == [c, 3 * c]
+                        and not sites.plugin_users.get(y)
+                    ):
+                        hit = (name, projection, attended, gate, readers[0])
+                    break
+        if hit is None or residual is None:
+            kept.append(plugin)
+            continue
+        source, projection, attended, gate, qkv = hit
+        r = next(name for name in residual.input if name != source)
+        weights = [gate[1], gate[2], projection[1], projection[2], qkv.input[1]]
+        kept.append(
+            Plugin(
+                f"chaind_{key}",
+                [
+                    gate[0],
+                    gate[1],
+                    gate[2],
+                    attended,
+                    projection[1],
+                    projection[2],
+                    r,
+                    plugin.inputs[1],
+                    plugin.inputs[2],
+                    qkv.input[1],
+                ],
+                [s, qkv.output[0]],
+                {"eps": float(plugin.attributes["epsilon"])},
+            )
+        )
+        _add_readers(lowered, f"chaind_{count}", weights)
+        count += 1
+    lowered.plugins[:] = kept
+    return count
+
+
+def fuse_chains(lowered: Lowered, key: str) -> tuple[int, int, int]:
+    """Chain A's, chain D's, then chain B's sites as plugins (the order the kernels were
+    measured in), for a static key of the kernels' width (a dynamic or other-width model
+    is left as it is); the sites fused of each."""
+    if "_h" not in key or Geometry.of(key).channels != dual_chain_kernels.CHANNELS:
+        return 0, 0, 0
+    a = _fuse_chain_a(lowered, key)
+    d = _fuse_chain_d(lowered, key)
+    return a, _fuse_chain_b(lowered, key), d
+
+
+def lower(model: onnx.ModelProto, key: str, chains: bool = True) -> Lowered:
     """The model with each of the exporter's plugin nodes (the guide's and DualNA)
     replaced by stand-in operators of the same output shapes and types, and the
-    plugins to attach in their place.
+    plugins to attach in their place; with `chains`, also the chain sites
+    (fuse_chains), which a caller adding plugins of its own fuses after them.
     A width-only key (c<C>) is a dynamic-shape model: only plugins read the core's
     statistics and matrices, so their stand-ins are single elements."""
     dynamic = "_h" not in key
@@ -946,6 +1716,40 @@ def lower(model: onnx.ModelProto, key: str) -> Lowered:
                     f"na_{key}", inputs, outputs, {"window": int(attributes["window"])}
                 )
             )
+        elif op == f"DualLocalNA_{key}_TRT":
+            # Inputs qkv, table; the output has qkv's first C channels' shape.
+            starts = constant(f"{name}/starts", np.array([0], np.int64))
+            ends = constant(f"{name}/ends", np.array([channels], np.int64))
+            axes = constant(f"{name}/axes", np.array([3], np.int64))
+            nodes.append(
+                helper.make_node("Slice", [inputs[0], starts, ends, axes], outputs)
+            )
+            plugins.append(Plugin(f"lna_{key}", inputs, outputs))
+        elif op == f"DualXR_{key}_TRT":
+            # Inputs q, k, v; the output has q's shape.
+            attributes = {a.name: helper.get_attribute_value(a) for a in node.attribute}
+            neighbourhood = dual_retrieval_na_kernel.LAUNCH["neighbourhood"]
+            if int(attributes["neighbourhood"]) != neighbourhood:
+                raise ValueError(
+                    "DUAL's retrieval plugin takes a neighborhood of"
+                    f" {neighbourhood}, not {attributes['neighbourhood']}"
+                )
+            identity(inputs[0], outputs[0])
+            plugins.append(Plugin(f"xr_{key}", inputs, outputs))
+        elif op == f"DualRowSum_{key}_TRT":
+            # Input x [1, H, W, C] BF16; the output, its FP32 sums over W [1, H, C].
+            axes = constant(f"{name}/axes", np.array([2], np.int64))
+            nodes.append(
+                helper.make_node(
+                    "Cast", [inputs[0]], [outputs[0] + "/f32"], to=TensorProto.FLOAT
+                )
+            )
+            nodes.append(
+                helper.make_node(
+                    "ReduceSum", [outputs[0] + "/f32", axes], outputs, keepdims=0
+                )
+            )
+            plugins.append(Plugin(f"rowsum_{key}", inputs, outputs))
         elif op == "DualAttentionBarrier_TRT":
             identity(inputs[0], outputs[0])
             barrier = "barrier_dynamic" if dynamic else "barrier"
@@ -971,6 +1775,8 @@ def lower(model: onnx.ModelProto, key: str) -> Lowered:
     lowered.graph.initializer.extend(initializers)
     result = Lowered(lowered, plugins, readers)
     _lower_router_additions(result, channels)
+    if chains:
+        fuse_chains(result, key)
     return result
 
 
@@ -1019,15 +1825,24 @@ def attach(network: trt.INetworkDefinition, lowered: Lowered) -> None:
 
 
 __all__ = [
+    "MAX_SHARED",
     "NAMESPACE",
     "Geometry",
+    "Launch",
     "Lowered",
     "Plugin",
     "attach",
     "compile_kernel",
+    "device_sm",
+    "fuse_chains",
+    "kernel_launch",
+    "local_na_kernel",
     "lower",
     "na_kernel",
     "register",
     "register_dynamic",
+    "resolved",
+    "retrieval_na_kernel",
+    "row_sum_kernel",
     "vendored_kernels",
 ]

@@ -1,6 +1,6 @@
 import { Type } from '@chainner/navi';
 import { QuestionIcon } from '@chakra-ui/icons';
-import { Box, Center, HStack, Text, Tooltip } from '@chakra-ui/react';
+import { Box, Center, HStack, Text } from '@chakra-ui/react';
 import React, { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Connection } from 'reactflow';
@@ -13,7 +13,7 @@ import { InputContext } from '../../contexts/InputContext';
 import { useSourceTypeColors } from '../../hooks/useSourceTypeColor';
 import { useTypeColor } from '../../hooks/useTypeColor';
 import { Handle } from '../Handle';
-import { Markdown } from '../Markdown';
+import { HintTooltip } from '../HintTooltip';
 import { TypeTag } from '../TypeTag';
 
 export interface InputHandleProps {
@@ -149,21 +149,12 @@ export const WithLabel = memo(({ input, children }: React.PropsWithChildren<With
             className="with-label"
             w="full"
         >
-            <Center
-                h="1.25rem"
-                px={1}
-                py={0.5}
-                verticalAlign="middle"
-            >
-                <Tooltip
-                    hasArrow
-                    borderRadius={8}
-                    label={
-                        hint ? <Markdown nonInteractive>{description ?? ''}</Markdown> : undefined
-                    }
-                    openDelay={500}
-                    px={2}
-                    py={1}
+            <HintTooltip description={hint ? description : undefined}>
+                <Center
+                    h="1.25rem"
+                    px={1}
+                    py={0.5}
+                    verticalAlign="middle"
                 >
                     <HStack
                         m={0}
@@ -200,8 +191,8 @@ export const WithLabel = memo(({ input, children }: React.PropsWithChildren<With
                             </Center>
                         )}
                     </HStack>
-                </Tooltip>
-            </Center>
+                </Center>
+            </HintTooltip>
             <Box pb={1}>{children}</Box>
         </Box>
     );
@@ -228,31 +219,24 @@ export const InlineLabel = memo(({ input, children }: React.PropsWithChildren<Wi
 
     return (
         <WithoutLabel>
-            <HStack
-                pl={hasHandle ? 0 : 2}
-                spacing={0}
-            >
-                <Box
-                    display="flex"
-                    flexDirection="row"
-                    flexShrink={0}
-                    w="5.4em"
+            <HintTooltip description={hint ? description : undefined}>
+                <HStack
+                    pl={hasHandle ? 0 : 2}
+                    spacing={0}
                 >
-                    <Text
-                        opacity={conditionallyInactive ? 0.7 : undefined}
-                        textDecoration={conditionallyInactive ? 'line-through' : undefined}
+                    <Box
+                        display="flex"
+                        flexDirection="row"
+                        flexShrink={0}
+                        w="5.4em"
                     >
-                        {input.label}
-                    </Text>
-                    {hint && description && (
-                        <Tooltip
-                            hasArrow
-                            borderRadius={8}
-                            label={<Markdown nonInteractive>{description}</Markdown>}
-                            openDelay={500}
-                            px={2}
-                            py={1}
+                        <Text
+                            opacity={conditionallyInactive ? 0.7 : undefined}
+                            textDecoration={conditionallyInactive ? 'line-through' : undefined}
                         >
+                            {input.label}
+                        </Text>
+                        {hint && description && (
                             <Center
                                 h="auto"
                                 m={0}
@@ -263,12 +247,12 @@ export const InlineLabel = memo(({ input, children }: React.PropsWithChildren<Wi
                                     ml={1}
                                 />
                             </Center>
-                        </Tooltip>
-                    )}
-                </Box>
+                        )}
+                    </Box>
 
-                <Box flexGrow={1}>{children}</Box>
-            </HStack>
+                    <Box flexGrow={1}>{children}</Box>
+                </HStack>
+            </HintTooltip>
         </WithoutLabel>
     );
 });

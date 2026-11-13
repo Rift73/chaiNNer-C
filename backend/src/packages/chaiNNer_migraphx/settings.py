@@ -61,7 +61,7 @@ def get_settings(context: NodeContext) -> MIGraphXSettings:
 
     program_cache_path = settings.get_cache_location("program_cache")
     if program_cache_path and not os.path.exists(program_cache_path):
-        os.makedirs(program_cache_path)
+        os.makedirs(program_cache_path, exist_ok=True)
         logger.info("Created MIGraphX program cache at: %s", program_cache_path)
 
     gpu_index = settings.get_int("gpu_index", 0, parse_str=True)

@@ -12,7 +12,7 @@
 #endif
 
 /* A deque entry of the ellipse's row extrema: the src value beside its index, so the
- * compares read no src (D11); defined in morph_entry.h, which morphology_ops.c includes
+ * compares read no src; defined in morph_entry.h, which morphology_ops.c includes
  * (morphology_avx2.c never touches an entry). */
 struct morph_entry;
 
@@ -32,7 +32,7 @@ typedef struct morphology_context {
 } morphology_context;
 
 /* OpenCV's MaxOp/MinOp as B3 executes them, maxss/minss everywhere (VERIFIED(dumpbin)
- * on B3, D11), written with the intrinsics so that every includer emits the same
+ * on B3), written with the intrinsics so that every includer emits the same
  * instruction. The vector form (OpenCV's v_max/v_min) is maxss/minss(a, b), a > b or
  * a < b ? a : b; the scalar form (std::max/std::min) is maxss/minss(b, a), b > a or
  * b < a ? b : a. On equal or unordered operands each returns its second operand, and
@@ -62,7 +62,7 @@ static size_t combine_segment(const morphology_context *ctx, size_t i, size_t en
 
 /* Output i (row y) of the combine over dy in [offset, offset_end): B3's
  * ellipse_combine sequence, one of its passes per dy, in ascending dy. It starts from
- * the border at dy = 0 (the fill, folded in: D11), else from out[i], and updates
+ * the border at dy = 0 (the fill, folded in), else from out[i], and updates
  * (vector form) with the source i dy rows above when y >= dy, then dy rows below when
  * 0 < dy < height - y, the tests of B3's ellipse_combine. */
 static float combine_one(const morphology_context *ctx, size_t i, size_t y)

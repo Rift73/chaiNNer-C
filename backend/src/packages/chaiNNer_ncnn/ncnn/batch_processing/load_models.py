@@ -55,20 +55,23 @@ def load_models_node(
         return (model, rel_path, basename, index)
 
     files = list_all_files_sorted(directory, [".param", ".bin"])
-    param_files = [path for path in files if path.suffix.lower() == ".param"]
-    bin_files = [path for path in files if path.suffix.lower() == ".bin"]
-    if len(param_files) != len(bin_files):
-        raise ValueError(
-            "The number of param files and bin files are not the same. Please check your directory."
-        )
-    for param_file, bin_file in zip(param_files, bin_files, strict=False):
-        param_file_name, _ = os.path.splitext(param_file)
-        bin_file_name, _ = os.path.splitext(bin_file)
-        if param_file_name != bin_file_name:
+    bin_files = {
+        path.with_suffix(""): path for path in files if path.suffix.lower() == ".bin"
+    }
+    model_files: list[tuple[Path, Path]] = []
+    for param_file in files:
+        if param_file.suffix.lower() != ".param":
+            continue
+        bin_file = bin_files.pop(param_file.with_suffix(""), None)
+        if bin_file is None:
             raise ValueError(
-                f"Param file {param_file_name} does not match bin file {bin_file_name}. Please check your files."
+                f"Param file {param_file} has no bin file of the same name. Please check your files."
             )
-    model_files = list(zip(param_files, bin_files, strict=False))
+        model_files.append((param_file, bin_file))
+    if bin_files:
+        raise ValueError(
+            f"Bin file {next(iter(bin_files.values()))} has no param file of the same name. Please check your files."
+        )
     return (
         Generator.from_list(model_files, load_model).with_fail_fast(fail_fast),
         directory,

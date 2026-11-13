@@ -24,8 +24,9 @@ export const getMatchingNodes = (
     schemata: readonly NodeSchema[],
     categories: CategoryMap
 ) => {
-    const matchesSearchQuery = createSearchPredicate(searchQuery);
-    const matchingNodes = !searchQuery
+    const query = searchQuery.trim();
+    const matchesSearchQuery = createSearchPredicate(query);
+    const matchingNodes = !query
         ? schemata
         : schemata.filter((n) => {
               const category = categories.get(n.category)?.name ?? n.category;
@@ -59,7 +60,6 @@ const getMax = <T extends NonNullable<unknown>>(
 export const getBestMatch = (
     searchQuery: string,
     matchingSchemata: readonly NodeSchema[],
-    _categories: CategoryMap,
     scoreMultiplier: (schema: NodeSchema) => number = () => 1
 ): NodeSchema | undefined => {
     // eslint-disable-next-line no-param-reassign

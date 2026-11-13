@@ -1,7 +1,7 @@
 /* Port of regex 1.8.4 (src/prog.rs, with the engine-internal declarations of src/compile.rs, src/input.rs, src/utf8.rs, src/sparse.rs, src/pikevm.rs, src/backtrack.rs, src/dfa.rs, src/literal/imp.rs and src/exec.rs), MIT OR Apache-2.0. */
-/* X2's private engine header: the compiled program (prog.rs), the inputs (input.rs), the
+/* The engine's private header: the compiled program (prog.rs), the inputs (input.rs), the
  * literal searcher (literal/imp.rs, in prefilter.c), the engines' caches and the compiled
- * regex itself. It is shared by X2's files only (compile, prog, input, pikevm, backtrack,
+ * regex itself. It is shared by the engine's files only (compile, prog, input, pikevm, backtrack,
  * dfa, prefilter, exec, iter); nothing outside chainner_regex.lib includes it. */
 #ifndef CHAINNER_REGEX_PROG_H
 #define CHAINNER_REGEX_PROG_H

@@ -109,7 +109,7 @@ export const DisableSwitch = memo(({ disable, passthrough }: DisableSwitchProps)
         [DisableMode.Enabled]: 'This node is enabled and will be executed.',
         [DisableMode.Disabled]:
             'This node is disabled. It and all of its downstream nodes will not be executed.',
-        [DisableMode.Skipped]: 'This node is skip and will not be executed.',
+        [DisableMode.Skipped]: 'This node is skipped and will not be executed.',
     }[mode];
 
     let tooltipActions: string;

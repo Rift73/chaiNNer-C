@@ -22,6 +22,7 @@ from collections.abc import Buffer, Callable
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from sanic.log import logger
@@ -47,8 +48,12 @@ from .video import (
     _pyav,
     _seek,
     _UseCliReader,
+    _video_track,
     frame_index,
 )
+
+if TYPE_CHECKING:
+    from av.rational import AVRational
 
 # Vernier's native planar formats: the Y plane's code values over the maximum code.
 _PLANAR = re.compile(
@@ -193,18 +198,24 @@ def sampling_report(
 
 @dataclass(frozen=True)
 class VideoInfo:
-    """The first video track as Vernier probes it: size, native pixel format, the format's start
-    time and the track's duration (media.cpp's videoDuration), all in seconds."""
+    """The video track Load Video reads (not a cover picture) as Vernier probes it: size,
+    native pixel format, the format's start time and the track's duration (media.cpp's
+    videoDuration), all in seconds."""
 
     width: int
     height: int
     pix_fmt: str
     start: float
     duration: float
+    # The track's index among the file's streams, for the FFmpeg CLI (-map 0:N).
+    stream: int = 0
 
 
 def _indexed_duration(
-    path: Path, time_base: Fraction, start: float, check: Callable[[], None] | None
+    path: Path,
+    time_base: Fraction | AVRational,
+    start: float,
+    check: Callable[[], None] | None,
 ) -> float:
     """The first video track's duration by its frame index, for a container that records
     none per track (Matroska, whose duration ends with its longest track): from the
@@ -227,13 +238,13 @@ def probe(path: Path, check: Callable[[], None] | None = None) -> VideoInfo:
     with av.open(str(path)) as container:
         if not container.streams.video:
             raise ValueError("No video stream found")
-        stream = container.streams.video[0]
+        stream = _video_track(container)
         start = (container.start_time or 0) / 1_000_000
         duration = 0.0
-        if stream.duration is not None and stream.time_base is not None:
+        if stream.duration is not None and stream.time_base:
             duration = float(stream.duration * stream.time_base)
         if not (math.isfinite(duration) and duration > 0) and stream.time_base:
-            duration = _indexed_duration(path, Fraction(stream.time_base), start, check)
+            duration = _indexed_duration(path, stream.time_base, start, check)
         if not (math.isfinite(duration) and duration > 0):
             duration = (container.duration or 0) / 1_000_000
             # Matroska's segment duration is an end timestamp, including any initial gap.
@@ -246,6 +257,7 @@ def probe(path: Path, check: Callable[[], None] | None = None) -> VideoInfo:
             context.format.name if context.format else "",
             start,
             duration if math.isfinite(duration) and duration > 0 else 0.0,
+            stream.index,
         )
     if not (48 <= info.width <= 8192 and 48 <= info.height <= 8192):
         raise ValueError("Unsupported video dimensions")
@@ -347,7 +359,7 @@ def discover(
                 "-i",
                 str(path),
                 "-map",
-                "0:v:0",
+                f"0:{info.stream}",
                 "-an",
                 "-sn",
                 "-dn",
@@ -407,7 +419,10 @@ def discover(
 
 
 def _frame_number(
-    index: FrameIndex, point: SamplePoint, info: VideoInfo, time_base: Fraction
+    index: FrameIndex,
+    point: SamplePoint,
+    info: VideoInfo,
+    time_base: Fraction | AVRational,
 ) -> int:
     """The number of the frame `point` reads: a codec keyframe's own, else the first frame
     at or after the requested time, as FFmpeg's input seek gives it; past the last frame's
@@ -437,7 +452,7 @@ def _distinct_frames(
     try:
         index = frame_index(path, check)
         with av.open(str(path)) as container:
-            time_base = container.streams.video[0].time_base
+            time_base = _video_track(container).time_base
     except (_UseCliReader, av.error.FFmpegError) as reason:
         logger.warning("Reading frames of %s by time alone: %s", path, reason)
         return points
@@ -458,7 +473,7 @@ def _indexed_keyframes(
     try:
         index = frame_index(path, check)
         with av.open(str(path)) as container:
-            time_base = container.streams.video[0].time_base
+            time_base = _video_track(container).time_base
     except (_UseCliReader, av.error.FFmpegError) as reason:
         logger.warning("Listing the keyframes of %s with ffprobe: %s", path, reason)
         return []
@@ -490,7 +505,7 @@ def _listed_keyframes(
             "-skip_frame",
             "nokey",
             "-select_streams",
-            "v:0",
+            str(info.stream),
             "-show_frames",
             "-show_entries",
             "frame=key_frame,best_effort_timestamp_time",
@@ -554,7 +569,7 @@ def colour_model(
             "-v",
             "error",
             "-select_streams",
-            "v:0",
+            str(info.stream),
             "-show_streams",
             "-of",
             "json",
@@ -634,7 +649,7 @@ def decode_frame(
             ) from reason
         return (*_cli_plane(path, info, point, tools().ffmpeg, check), None)
     with av.open(str(path)) as container:
-        stream = container.streams.video[0]
+        stream = _video_track(container)
         stream.thread_type = "AUTO"
         n = _frame_number(index, point, info, stream.time_base)
         frames = _seek(container, stream, path, av, n)
@@ -701,7 +716,7 @@ def _cli_plane(
         "-i",
         str(path),
         "-map",
-        "0:v:0",
+        f"0:{info.stream}",
         "-frames:v",
         "1",
         "-fps_mode",

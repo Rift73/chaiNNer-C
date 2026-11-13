@@ -16,7 +16,7 @@ constexpr int64_t morph_rect = 0, morph_cross = 1, morph_ellipse = 2;
 
 Image morphology(const Image &image, int64_t shape, int64_t radius, int64_t iterations, bool maximum)
 {
-    if (image.height == 0 || image.width == 0) throw NodeError("ValueError", "Invalid image shape " + shape_text(image));
+    shaped(image);
     if (radius < 0 || iterations < 0)
         throw NodeError("ValueError", "Morphology radius and iterations must be nonnegative");
     if (radius == 0 || iterations == 0) return image;

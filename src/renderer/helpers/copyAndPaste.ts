@@ -6,7 +6,7 @@ import { formatReplacedInputs, toEditorChain } from '../../common/nodes/editorCh
 import { SchemaMap } from '../../common/SchemaMap';
 import { createUniqueId, deriveUniqueId } from '../../common/util';
 import { ipcRenderer } from '../safeIpc';
-import { NodeProto, copyEdges, copyNodes, setSelected } from './reactFlowUtil';
+import { NodeProto, copyEdges, copyNodes, getCenter, setSelected } from './reactFlowUtil';
 import { SetState } from './types';
 
 interface ClipboardChain {
@@ -93,15 +93,7 @@ export const pasteFromClipboard = async (
             const deriveId = (oldId: string) => deriveUniqueId(duplicationId + oldId);
 
             setNodes((nodes) => {
-                const currentIds = new Set(nodes.map((n) => n.id));
-                const newIds = new Set(chain.nodes.map((n) => n.id));
-
-                const newNodes = copyNodes(chain.nodes, (oldId) => {
-                    if (newIds.has(oldId)) return deriveId(oldId);
-                    if (currentIds.has(oldId)) return oldId;
-                    return oldId;
-                });
-
+                const newNodes = copyNodes(chain.nodes, deriveId);
                 return [...setSelected(nodes, false), ...setSelected(newNodes, true)];
             });
             setEdges((edges) => {
@@ -113,18 +105,11 @@ export const pasteFromClipboard = async (
         }
     } else if (paste.kind === 'image') {
         log.debug('Clipboard image', paste.path);
-        let positionX = 0;
-        let positionY = 0;
-        if (reactFlowWrapper.current) {
-            const { height, width, x, y } = reactFlowWrapper.current.getBoundingClientRect();
-            positionX = (width + x) / 2;
-            positionY = (height + y) / 2;
-        }
+        const center = reactFlowWrapper.current
+            ? getCenter(reactFlowWrapper.current.getBoundingClientRect())
+            : { x: 0, y: 0 };
         createNode({
-            position: screenToFlowPosition({
-                x: positionX,
-                y: positionY,
-            }),
+            position: screenToFlowPosition(center),
             data: {
                 schemaId: 'chainner:image:load' as SchemaId,
                 inputData: {

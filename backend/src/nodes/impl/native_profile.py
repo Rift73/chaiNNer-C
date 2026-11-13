@@ -19,7 +19,7 @@ native_buffers times its conversion bridge as "converted_pixels" and its freeze
 of a node's fresh output as "freeze_normalized": the exclusive time of each is
 the bridge's Python around cn_pixels_convert_checked.
 
-The item window's commit path (SP3b) adds three names. "window.take_advance" is
+The item window's commit path adds three names. "window.take_advance" is
 the commit path's await of take_advance, once per generator per slot (once per
 slot on a two-phase window, which has one generator): the wait for the
 producer's outcome, including take_advance's own synchronous work (setting
@@ -58,7 +58,7 @@ PYD_FUNCTIONS = (
 )
 # Iterator classes whose __next__ is timed as "<class>.__next__".
 PYD_ITERATORS = ("_FileSequenceIterator", "_VideoFrames")
-# Of those, the ones whose items the item window also produces in two phases (SP3b),
+# Of those, the ones whose items the item window also produces in two phases,
 # timed as "<class>.describe" and "<class>.materialize".
 PYD_SPLIT_ITERATORS = ("_FileSequenceIterator",)
 # The pool's counters (parallel.h), logged as the line's "pool" deltas.

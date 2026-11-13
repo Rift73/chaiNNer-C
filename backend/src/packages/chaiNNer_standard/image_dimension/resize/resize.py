@@ -17,7 +17,7 @@ from nodes.properties.inputs import (
     ResizeFilterInput,
 )
 from nodes.properties.outputs import ImageOutput
-from nodes.utils.utils import get_h_w_c, round_half_up
+from nodes.utils.utils import fix_rounding_error, get_h_w_c, round_half_up
 
 from .. import resize_group
 
@@ -25,6 +25,12 @@ from .. import resize_group
 class ImageResizeMode(Enum):
     PERCENTAGE = 0
     ABSOLUTE = 1
+
+
+def percent_of(side: int, scale: float) -> float:
+    """side * scale / 100 as the type system computes it: side * scale, then that times 1 / 100, each product
+    through fix_rounding_error."""
+    return fix_rounding_error(fix_rounding_error(side * scale) * (1 / 100))
 
 
 @resize_group.register(
@@ -148,8 +154,8 @@ def resize_node(
     out_dims: tuple[int, int]
     if mode == ImageResizeMode.PERCENTAGE:
         out_dims = (
-            max(round_half_up(w * (scale / 100)), 1),
-            max(round_half_up(h * (scale / 100)), 1),
+            max(round_half_up(percent_of(w, scale)), 1),
+            max(round_half_up(percent_of(h, scale)), 1),
         )
     else:
         out_dims = (width, height)

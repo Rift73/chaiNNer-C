@@ -13,8 +13,7 @@ export interface CancellationToken {
      */
     readonly isCanceled: boolean;
     /**
-     * A simply utility function that will throw a {@link CancellationError} if the operation has
-     * been canceled.
+     * Throws a {@link CancellationError} if the operation has been canceled.
      *
      * @throws {CancellationError}
      */
@@ -40,7 +39,7 @@ export interface CancellationToken {
 export class CancellationError extends Error {}
 
 /**
- * An object that controls and holds whether an operation has been changed.
+ * An object that controls and holds whether an operation has been canceled.
  *
  * The controller also implements the {@link CancellationToken} interface. You can pass the controller directly into
  * function that need a token. TypeScript will ensure that the token is used correctly.
@@ -60,7 +59,7 @@ export class CancellationController implements CancellationToken {
     };
 
     /**
-     * A simple utility function that will set `isCanceled` to `true`.
+     * Sets `isCanceled` to `true`.
      */
     readonly cancel = (): void => {
         this.isCanceled = true;
@@ -83,7 +82,7 @@ const noopPromise = async (): Promise<void> => {};
 /**
  * This is an async replacement for `useEffect`.
  *
- * The supplier must not cause effects, except as a callback in `token.effect`.
+ * The supplier must not cause effects, except as a callback in `token.causeEffect`.
  * The `successEffect`, `catchEffect`, and `finallyEffect` functions are allowed to cause effects
  * and must be executing synchronously.
  *

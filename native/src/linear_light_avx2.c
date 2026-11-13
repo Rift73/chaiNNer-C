@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "linear_light_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* Linear Light, AVX2 unit (/arch:AVX2, spec 4.3): no export, reached only through cn_linear_light's dispatch on the
+/* Linear Light, AVX2 unit (/arch:AVX2): no export, reached only through cn_linear_light's dispatch on the
  * call's ISA level (linear_light_ops.c). Four values at a time, widened to double, run light_pow's and
  * linear_light.h's operations in their order, one instruction for each scalar operation: vmulpd, vdivpd, vaddpd and
  * vsubpd (no fused multiply-add), compare masks and blends for the ?: choices, and integer shifts, adds and masks for

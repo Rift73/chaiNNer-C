@@ -11,9 +11,15 @@ from nodes.impl.native_cv_resize import resize as cv_resize
 from nodes.impl.resize import ResizeFilter, resize
 from nodes.properties.inputs import ImageInput, NumberInput
 from nodes.properties.outputs import ImageOutput
-from nodes.utils.utils import get_h_w_c
+from nodes.utils.utils import fix_rounding_error, get_h_w_c
 
 from .. import correction_group
+
+
+def reference_side(side: int, scale_factor: float) -> float:
+    """side * (scale_factor / 100) as the type system computes it: scale_factor times 1 / 100, then side times that,
+    each product through fix_rounding_error."""
+    return fix_rounding_error(side * fix_rounding_error(scale_factor * (1 / 100)))
 
 
 @correction_group.register(
@@ -59,8 +65,8 @@ def average_color_fix_node(
         # Make sure reference image dims are not resized to 0
         h, w, _ = get_h_w_c(ref_img)
         out_dims = (
-            max(ceil(w * (scale_factor / 100)), 1),
-            max(ceil(h * (scale_factor / 100)), 1),
+            max(ceil(reference_side(w, scale_factor)), 1),
+            max(ceil(reference_side(h, scale_factor)), 1),
         )
 
         ref_img = resize(ref_img, out_dims, filter=ResizeFilter.BOX)
@@ -72,9 +78,6 @@ def average_color_fix_node(
         "Image must be larger than Reference Image"
     )
 
-    # Find the diff of both images
-
-    # Downscale the input image
     downscaled_input = resize(input_img, (ref_w, ref_h), filter=ResizeFilter.BOX)
 
     # adjust channels
@@ -95,7 +98,6 @@ def average_color_fix_node(
         downscaled_input, ref_img, downscaled_alpha, ref_alpha, add=False
     )
 
-    # Upsample the difference
     diff = cv_resize(
         downscaled_diff,
         (input_w, input_h),
@@ -115,7 +117,6 @@ def average_color_fix_node(
     if corrected_alpha is not None:
         alpha = corrected_alpha
 
-    # add alpha back in
     if alpha is not None:
         result = combine_rgb_alpha(result, alpha)
 

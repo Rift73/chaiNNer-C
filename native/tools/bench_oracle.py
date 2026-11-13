@@ -20,6 +20,7 @@ from typing import cast
 
 import cv2
 import numpy as np
+from package_files import hash_file
 from verify_runtime import final_broadcasts, run_owned
 
 FFMPEG = Path(r"C:\Executables\ffmpeg-8.1-full_build-shared\bin\ffmpeg.exe")
@@ -64,15 +65,10 @@ COLOUR_CHUNKS = frozenset(
 )
 
 
-def sha256_file(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
 def require_pinned_tools() -> None:
     """The decoded-video oracle is only exact for the recorded FFmpeg build."""
     for tool, expected in TOOL_SHA256.items():
-        if sha256_file(tool) != expected:
+        if hash_file(tool) != expected:
             raise RuntimeError(f"Unexpected tool build: {tool}")
 
 
@@ -86,7 +82,7 @@ def png_outputs(directory: Path, mode: str = "sha256") -> dict[str, str | dict]:
     """
     paths = sorted(directory.glob("*.png"))
     if mode == "sha256":
-        return {path.name: sha256_file(path) for path in paths}
+        return {path.name: hash_file(path) for path in paths}
     if mode == "decoded":
         return {path.name: decoded_png(path) for path in paths}
     raise ValueError(f"unknown PNG mode {mode!r}; one of {', '.join(PNG_MODES)}")
@@ -194,7 +190,7 @@ def video_snapshot(path: Path, ffmpeg: Path, ffprobe: Path) -> dict:
     if not decoded.startswith("SHA256="):
         raise AssertionError(f"Unexpected FFmpeg hash output: {decoded}")
     return {
-        "sha256": sha256_file(path),
+        "sha256": hash_file(path),
         "semantic": {
             "streams": streams,
             "format": {k: v for k, v in probe["format"].items() if k in FORMAT_KEYS},

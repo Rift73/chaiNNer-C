@@ -546,7 +546,7 @@ def main() -> int:
             and report["fixture_assets_unchanged"]
             and report["all_owned_processes_stopped"]
         )
-        # Flagged, not failed (Consult D-35): the oracle's own attempts ended on
+        # Flagged, not failed: the oracle's own attempts ended on
         # different final values of an iterated field.
         report["oracle_repeat_final_values_differ"] = (
             oracle_repeat_flags(report["runs"][0]) if report["runs"] else {}

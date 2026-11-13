@@ -1,8 +1,8 @@
 /* Blend Images canvas construction around the existing exact C blend modes.
- * SP4b D13: a full overlap blends the layers straight into out (full_overlap); any
+ * A full overlap blends the layers straight into out (full_overlap); any
  * other geometry fills the canvas, gathers the base and overlay regions, blends them
  * and pastes the result, its three region buffers carved from one lease of the shared
- * scratch pool (D10). The fill and the gather walk row spans (layer_run). Every output
+ * scratch pool. The fill and the gather walk row spans (layer_run). Every output
  * keeps B3's bits: every value is copied from a layer, or is 0.0f, 1.0f or a blend. */
 #include "chainner.h"
 #include "parallel.h"
@@ -99,7 +99,7 @@ static void canvas_paste(void *opaque, size_t begin, size_t end) {
             job->blended + y * g->region_width * g->channels,
             g->region_width * g->channels * sizeof(float));
 }
-/* D13: the paste covers the whole canvas from (0, 0); the base fills the canvas from
+/* full_overlap: the paste covers the whole canvas from (0, 0); the base fills the canvas from
    (0, 0), is not constant and has the canvas's channels; the overlay is not constant and
    its region is all of it, from (0, 0). Then the gathered base region is base->data and
    the overlay region is overlay->data value for value, and the paste copies the blend's

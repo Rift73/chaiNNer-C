@@ -533,7 +533,7 @@ CN_EXPORT cn_status cn_analysis_channel_stats(const float *image, size_t pixels,
     if (!squared) return CN_ALLOCATION_FAILED;
     for (size_t c = 0; c < 3; ++c) {
         /* A channel without spread is its own value with deviation 0, which float32 accumulation can miss (the mean
-           of n copies of 0.2 rounds); Color Transfer then keeps a solid channel solid (ruling of 2026-10-23). */
+           of n copies of 0.2 rounds); Color Transfer then keeps a solid channel solid. */
         float first = image[c];
         int constant = 1;
         for (size_t p = 1; p < pixels && constant; ++p) constant = image[p * 3 + c] == first;
@@ -611,7 +611,7 @@ CN_EXPORT cn_status cn_analysis_transfer(const float *image, float *out,
         float numerator = reciprocal ? reference_stats[c * 2 + 1] : stats[c * 2 + 1];
         float denominator = reciprocal ? stats[c * 2 + 1] : reference_stats[c * 2 + 1];
         /* A channel without spread scales by 0, onto the reference's mean, where upstream divides by 0 (a solid
-           image gave NaN or white; ruling of 2026-10-23). */
+           image gave NaN or white). */
         job.ratio[c] = denominator == 0.0f ? 0.0f : numerator / denominator;
         job.low[c] = limits[c * 2]; job.high[c] = limits[c * 2 + 1];
     }

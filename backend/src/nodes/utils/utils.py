@@ -7,6 +7,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from decimal import Decimal
 from functools import cache
 from pathlib import Path
 from typing import Tuple
@@ -34,6 +35,21 @@ def round_half_up(number: float | int) -> int:
     https://en.wikipedia.org/wiki/Rounding#Rounding_to_the_nearest_integer
     """
     return math.floor(number + 0.5)
+
+
+def fix_rounding_error(n: float) -> float:
+    """The clean-up the type system (Navi's fixRoundingError) gives every product: a number whose 16 significant
+    digits end in 000000, a digit 0-3 and one more keeps 13 of them; a fraction whose shortest digits (JavaScript's
+    String, plain digits from 1e-6 up) end in 999999 and 6-9, or 000000 and 0-3, and one more digit keeps 12."""
+    if not math.isfinite(n):
+        return n
+    if re.search(r"0{6}[0-3]\d[eE][+-]\d+$", f"{n:.15e}"):
+        return float(f"{n:.12e}")
+    if n.is_integer() or abs(n) < 1e-6:
+        return n
+    if re.search(r"(?:9{6}[6-9]|0{6}[0-3])\d$", format(Decimal(repr(n)), "f")):
+        return float(f"{n:.12g}")
+    return n
 
 
 def check_image_memory(name: str, h: int, w: int, c: int) -> None:
@@ -77,7 +93,7 @@ def split_snake_case(s: str) -> list[str]:
 
 
 def split_pascal_case(s: str) -> list[str]:
-    """Splits a snake case identifier into its parts. E.g. `SNAKE_CASE` -> [`snake`, `case`]"""
+    """Splits a Pascal case identifier into its parts. E.g. `PascalCase` -> [`pascal`, `case`]"""
     return [
         x.lower() for x in __SPLIT_PASCAL_CASE.split(s) if x and not x.startswith("_")
     ]

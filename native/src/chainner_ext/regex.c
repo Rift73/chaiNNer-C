@@ -34,8 +34,6 @@ static PyObject *raise_status(chn_regex_status status, chn_regex_string *message
         if (text) { PyErr_SetObject(chn_panic_type, text); Py_DECREF(text); }
     } else if (status == CHN_REGEX_ERROR_NOMEM) {
         PyErr_NoMemory();
-    } else if (status == CHN_REGEX_UNIMPLEMENTED) {
-        PyErr_SetString(PyExc_NotImplementedError, "the C regex engine (chainner_regex) is not built yet");
     } else {
         PyErr_Format(PyExc_RuntimeError, "unexpected regex engine status %d", (int)status);
     }

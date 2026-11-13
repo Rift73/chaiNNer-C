@@ -26,7 +26,7 @@ import {
 } from '@chainner/navi';
 import path from 'path';
 import { ColorJson } from '../common-types';
-import { RRegex } from '../rust-regex';
+import { RRegex, isRegexLoaded } from '../rust-regex';
 import { isNotNullish } from '../util';
 
 type ReplacementToken =
@@ -47,7 +47,8 @@ class ReplacementString {
         const tokens: ReplacementToken[] = [];
         const names = new Set<string>();
 
-        const contentPattern = /^\w+$/;
+        // as the backend reads a name: letters and digits of any script, and _
+        const contentPattern = /^[\p{L}\p{N}_]+$/u;
 
         const tokenPattern = /\{([^{}]*)\}|\{\{/g;
         let lastIndex = 0;
@@ -247,6 +248,10 @@ export const regexReplace = wrapScopedQuaternary<
     StringPrimitive | StructInstanceType
 >((scope, text, regexPattern, replacementPattern, count) => {
     const newError = createError(scope);
+    if (!isRegexLoaded()) {
+        // not known yet: the engine still loads, and the types are evaluated again once it has
+        return union(StringType.instance, newError.default);
+    }
 
     let regex;
     if (regexPattern.type === 'literal') {
@@ -306,6 +311,10 @@ export const regexFind = wrapScopedTernary<
     StringPrimitive | StructInstanceType
 >((scope, text, regexPattern, replacementPattern) => {
     const newError = createError(scope);
+    if (!isRegexLoaded()) {
+        // not known yet: the engine still loads, and the types are evaluated again once it has
+        return union(StringType.instance, newError.default);
+    }
 
     let regex;
     if (regexPattern.type === 'literal') {
@@ -461,13 +470,25 @@ export const splitFilePath = wrapScopedUnary(
         const directoryDesc = getStructDescriptor(scope, 'Directory');
 
         if (filePath.type === 'literal') {
-            const base = path.basename(filePath.value);
+            // As the backend splits it (os.path.splitext, then os.path.split): a path that ends in
+            // a separator names no file, and its folder is the path without the separators.
+            const { value } = filePath;
+            const separators = path.sep === '\\' ? /[\\/]+$/ : /\/+$/;
+            let dir = path.dirname(value);
+            let base = path.basename(value);
+            if (separators.test(value)) {
+                // a root keeps its separator, as in "C:\"
+                const { root } = path.parse(value);
+                const folder = value.replace(separators, '');
+                dir = folder.length < root.length ? root : folder;
+                base = '';
+            }
             const ext = path.extname(base);
             const basename = ext ? base.slice(0, -ext.length) : base;
 
             return createInstance(splitFilePathDesc, {
                 dir: createInstance(directoryDesc, {
-                    path: literal(path.dirname(filePath.value)),
+                    path: literal(dir),
                 }),
                 basename: literal(basename),
                 ext: literal(ext),

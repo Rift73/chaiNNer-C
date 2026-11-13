@@ -22,9 +22,9 @@ from bench_oracle import (
     FFPROBE,
     TOOL_SHA256,
     require_pinned_tools,
-    sha256_file,
     video_snapshot,
 )
+from package_files import hash_file
 from verify_runtime import run_owned
 
 PINS = DATA / "fixtures.json"
@@ -52,7 +52,7 @@ def verify_inputs(inputs: list[dict]) -> None:
         path = Path(item["path"])
         if not path.is_file():
             raise FileNotFoundError(f"Benchmark input missing: {path}")
-        if sha256_file(path) != item["sha256"]:
+        if hash_file(path) != item["sha256"]:
             raise RuntimeError(f"Benchmark input changed: {path}")
 
 
@@ -89,7 +89,7 @@ def prepare(media: Path) -> Fixtures:
             raise RuntimeError(f"Cannot encode fixture {index}")
         (images / f"{index:03}.jpg").write_bytes(encoded.tobytes())
     check_pins(
-        {f"images/{p.name}": sha256_file(p) for p in sorted(images.iterdir())},
+        {f"images/{p.name}": hash_file(p) for p in sorted(images.iterdir())},
         pins["images"],
     )
     command = [
@@ -122,7 +122,7 @@ def prepare(media: Path) -> Fixtures:
     record = {
         "input_hashes": {item["path"]: item["sha256"] for item in inputs},
         "assets": {
-            p.relative_to(assets).as_posix(): sha256_file(p)
+            p.relative_to(assets).as_posix(): hash_file(p)
             for p in sorted(assets.rglob("*"))
             if p.is_file()
         },
@@ -139,5 +139,5 @@ def verify_unchanged(fixtures: Fixtures) -> None:
         [{"path": p, "sha256": h} for p, h in fixtures.record["input_hashes"].items()]
     )
     for relative, expected in fixtures.record["assets"].items():
-        if sha256_file(fixtures.assets / relative) != expected:
+        if hash_file(fixtures.assets / relative) != expected:
             raise RuntimeError(f"Benchmark fixture changed: {relative}")

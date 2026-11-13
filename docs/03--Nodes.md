@@ -54,7 +54,7 @@ Metadata is used to define a contract between a node, the rest of the backend, a
 
 Nodes must explicitly declare all their inputs and outputs as part of their metadata. This is done using the `inputs` and `outputs` properties. Each argument of the python function has a corresponding input, and the return value of the function has a corresponding output. See [The anatomy of a node](#the-anatomy-of-a-node) for an example.
 
-The main purpose of explicitly declaring inputs and outputs is to provide more information about the node. E.g. the type information is used to determine which connections are valid, the minimum/maximum information is used to validate user inputs, and placeholder and defaults are used to improve the user experience. They also [make guarantees about input data and enforce conventions](./data-representation.md).
+The main purpose of explicitly declaring inputs and outputs is to provide more information about the node. E.g. the type information is used to determine which connections are valid, the minimum/maximum information is used to validate user inputs, and placeholder and defaults are used to improve the user experience. They also [make guarantees about input data and enforce conventions](02--Data-Representation.md).
 
 The most common classes used to declare inputs are `NumberInput`, `TextInput`, and `ImageInput`. There is also `SliderInput` as an alternative to `NumberInput`. Many more inputs are available.
 
@@ -181,7 +181,7 @@ All inputs and outputs have types. These types are automatically generated from 
 
 Types are expressed using a custom type system called Navi. Navi is not relative to Python's type hints or TypeScript types, it's a completely separate system.
 
-More information about Navi can be found in the [Navi documentation](./navi.md).
+More information about Navi can be found in the [Navi documentation](04--Navi.md).
 
 #### Type narrowing
 

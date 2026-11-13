@@ -38,6 +38,23 @@ function region(text, start, end) {
     return { text: text.slice(left, right), left, right };
 }
 
+// A JSX element as the bundles' jsx/jsxs calls build it, and the first one of a type in a tree.
+function element(type, props = {}) {
+    return { type, props };
+}
+
+function firstElement(tree, type) {
+    if (!tree || typeof tree !== 'object') return undefined;
+    if (tree.type === type) return tree;
+    for (const child of Object.values(tree)) {
+        for (const item of Array.isArray(child) ? child : [child]) {
+            const found = firstElement(item, type);
+            if (found) return found;
+        }
+    }
+    return undefined;
+}
+
 function resolveRoots() {
     const { values } = parseArgs({
         options: {
@@ -106,4 +123,4 @@ async function runChecks(title, body) {
     process.exitCode = ok ? 0 : 1;
 }
 
-module.exports = { CSS, INSTALLED_SHA256, MAIN, RENDERER, count, loadBundles, region, runChecks, sha256 };
+module.exports = { CSS, INSTALLED_SHA256, MAIN, RENDERER, count, element, firstElement, loadBundles, region, runChecks, sha256 };

@@ -1,7 +1,7 @@
 /* Port of regex-syntax 0.7.2 src/unicode.rs, MIT OR Apache-2.0. */
 /* Unicode class queries, the Perl classes and simple case folding (unicode.c), with
- * every unicode-* feature enabled as regex 1.8.4 builds regex-syntax. Private to X1's
- * files. */
+ * every unicode-* feature enabled as regex 1.8.4 builds regex-syntax. Private to the
+ * front end. */
 #ifndef CHAINNER_REGEX_UNICODE_H
 #define CHAINNER_REGEX_UNICODE_H
 #include "chainner_hir.h"

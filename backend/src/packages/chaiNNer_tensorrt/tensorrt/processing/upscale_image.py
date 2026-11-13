@@ -15,6 +15,7 @@ from nodes.impl.tensorrt.runner import (
     use_runner_session,
 )
 from nodes.impl.upscale.convenient_upscale import convenient_upscale
+from nodes.impl.upscale.temporal_window import LOOK_AHEAD, WARM_UP
 from nodes.impl.upscale.tile_report import TileReport
 from nodes.properties.inputs import BoolInput, ImageInput, TensorRTEngineInput
 from nodes.properties.outputs import ImageOutput, TextOutput
@@ -23,6 +24,12 @@ from util import held
 
 from ...settings import get_settings
 from .. import processing_group
+
+
+def context_applies(engine: object) -> bool:
+    """Upscale Image's gate (`temporal_if` on its engine input): the context items apply
+    to an engine set, and to a value that is no engine, which it cannot judge."""
+    return not isinstance(engine, TensorRTEngine) or engine.info.temporal is not None
 
 
 def engine_upscale(
@@ -36,6 +43,15 @@ def engine_upscale(
     """Upscale Image's image and its tiles' size, also for PyTorch's Upscale Image with Use
     TensorRT Engine. before_clip: sees each result before its clip (tiled_upscale)."""
     settings = get_settings(context)
+    if engine.info.temporal is not None:
+        # The session imports PyTorch and spandrel, which image engines do not need.
+        from nodes.impl.tensorrt.rdual_session import temporal_engine_upscale
+
+        report = TileReport()
+        image = temporal_engine_upscale(
+            context, img, engine, settings.gpu_index, report
+        )
+        return image, report.text
     scale = engine.scale
     if scale is None:
         raise ValueError("The TensorRT engine's upscale factor is unknown.")
@@ -93,12 +109,10 @@ if processing_group is not None:
 
     @processing_group.register(
         schema_id="chainner:tensorrt:upscale_image",
-        description=(
-            "Upscales an image using a TensorRT engine. Images of any size are split into"
-            " overlapping tiles that fit the engine's optimization profile, and the tiles"
-            " are blended back together without seams. When the GPU's memory runs out, a"
-            " Dynamic engine goes on with smaller tiles."
-        ),
+        description=[
+            "Upscales an image using a TensorRT engine. Images of any size are split into overlapping tiles that fit the engine's optimization profile, and the tiles are blended back together without seams. When the GPU's memory runs out, a Dynamic engine goes on with smaller tiles.",
+            "An RDUAL engine set (a video model's engines, from Build Engine or Load Engine) runs inside a loop with the frames around each one, as PyTorch's Upscale Image runs the model: the frame must have the set's size, Separate Alpha and Balanced Tiles do not apply, and when the GPU's memory runs out it reads fewer frames ahead.",
+        ],
         inputs=[
             ImageInput().with_id(1),
             TensorRTEngineInput().with_id(0),
@@ -146,6 +160,8 @@ if processing_group is not None:
         name="Upscale Image",
         icon="BsNvidia",
         node_context=True,
+        temporal_context=(WARM_UP, LOOK_AHEAD),
+        temporal_if=(0, context_applies),
     )
     def upscale_image_node(
         context: NodeContext,

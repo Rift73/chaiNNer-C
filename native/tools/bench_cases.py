@@ -12,14 +12,14 @@ Adding a case:
      as CPU-only and deterministic.
   4. Keep exactly one load_images or load_video generator per graph; the
      completion oracle (bench_oracle.validate_record) checks that generator.
-  5. Its shared throughput floor is the stand-in's decision: the harness never
+  5. Its shared throughput floor is a reviewer's decision: the harness never
      writes the shared floors, and until one is recorded its throughput verdict
      is "unknown". --record-noise records its CPU floors, per K setting, on
      trees with identical sources, using at least 6 pairs and an even number of
      repeats, for example (3 launches at each K setting used):
        bench.py --record-noise --cases NEW --repeats 6 --a TREE --b TREE
      Until then its CPU verdict is "unknown". Confirm the floors with a later A/A
-     run without --record-noise (see bench.py), judged by the FIRST run's
+     run without --record-noise, judged by the FIRST run's
      summary verdicts (all neutral), not by its confirmation.md.
 """
 

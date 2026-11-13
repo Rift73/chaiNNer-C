@@ -1,6 +1,6 @@
 /* The chainner_native.dll entries that the run engine and the native node entry points (native/src/run) call,
  * grouped by the kernel file that defines and documents them; that file includes this header, so a declaration
- * cannot drift from its definition. A node lane adds its kernels under their file's heading (kept in file order). */
+ * cannot drift from its definition. A new node's kernels go under their file's heading (kept in file order). */
 #ifndef CHAINNER_RUN_KERNELS_H
 #define CHAINNER_RUN_KERNELS_H
 #include "chainner.h"
@@ -119,9 +119,6 @@ CN_RUN_KERNEL cn_status cn_convolution_box(const float *src, float *out,
 CN_RUN_KERNEL cn_status cn_convolution_spatial(const float *src, float *out,
     size_t h, size_t w, size_t c, const float *kernel,
     size_t kh, size_t kw, size_t padding, size_t fused_lanes);
-/* cv_resize_ops.c */
-CN_RUN_KERNEL cn_status cn_cv_resize_area(const float *src, float *out,
-    size_t h, size_t w, size_t channels, size_t dh, size_t dw);
 /* denoise_ops.cpp */
 CN_RUN_KERNEL cn_status cn_denoise_u8(const uint8_t *src, uint8_t *out,
     size_t height, size_t width, size_t channels, float strength, float color_strength,
@@ -197,9 +194,6 @@ CN_RUN_KERNEL cn_status cn_lens_kernel(float *out, size_t radius,
     float scale, float a, float b, int use_fma);
 CN_RUN_KERNEL cn_status cn_lens_power(const float *src, float *out, size_t count,
     float exponent, int finish);
-CN_RUN_KERNEL cn_status cn_lens_compose(const float *f1, const float *f2,
-    const float *f3, const float *f4, float *out, size_t count,
-    float a, float b, int accumulate);
 CN_RUN_KERNEL cn_status cn_lens_blur(const float *src, float *out, size_t h, size_t w, size_t c,
     const float *kernels, const float *weights, size_t components, size_t length, size_t fused_lanes, float exponent);
 CN_RUN_KERNEL cn_status cn_lens_blur_sums(const float *src, float *out, size_t h, size_t w, size_t c,

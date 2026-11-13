@@ -3,9 +3,11 @@ import {
     NamedExpression,
     StructInstanceType,
     Type,
+    UnionExpression,
     evaluate,
     isDisjointWith,
     isStructInstance,
+    isSubsetOf,
 } from '@chainner/navi';
 import { assertNever } from '../util';
 import { assign } from './assign';
@@ -205,5 +207,34 @@ export const simpleError = (
         };
     }
 
+    return undefined;
+};
+
+/**
+ * The sentence for a VapourSynth clip and an image connected the wrong way round, naming the nodes
+ * that turn one into the other: an image into an input that takes only clips, or a clip into one
+ * that takes images; undefined for every other mismatch. `subject` names the input.
+ */
+export const clipImageError = (
+    assigned: Type,
+    definition: Type,
+    subject = 'This input'
+): string | undefined => {
+    if (definition.type === 'never') return undefined;
+    const scope = getChainnerScope();
+    const clipOrFilter = evaluate(
+        new UnionExpression([new NamedExpression('VideoClip'), new NamedExpression('VSFilter')]),
+        scope
+    );
+
+    if (isImage(assigned) && isSubsetOf(definition, clipOrFilter)) {
+        return `${subject} takes a clip, not single images: the node works on the clip as a whole or looks at other frames. Open the video with Load Clip, or turn images into a clip with Frames to Clip.`;
+    }
+    const image = evaluate(new NamedExpression('Image'), scope);
+    const clip = evaluate(new NamedExpression('VideoClip'), scope);
+    // an input that takes images, alone or with other things (a colour, audio), but not this clip
+    if (isSubsetOf(assigned, clip) && !isDisjointWith(definition, image)) {
+        return `${subject} takes an image. Add Clip Frames to turn the clip into images.`;
+    }
     return undefined;
 };

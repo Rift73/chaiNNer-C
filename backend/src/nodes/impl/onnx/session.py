@@ -14,6 +14,7 @@ from weakref import WeakKeyDictionary, WeakValueDictionary
 import onnxruntime as ort
 
 from ..native_onnx_runtime import NativeSession
+from . import rdual_bundle
 from .load import model_facts
 from .model import OnnxModel, content_digest
 from .utils import OnnxParsedTensorShape, parse_onnx_shape
@@ -113,6 +114,7 @@ def create_inference_session(
     migraphx_cache_path: str | None = None,
     migraphx_exhaustive_tune: bool = False,
 ) -> NativeSession | ort.InferenceSession:
+    rdual_bundle.refuse(model, "ONNX Runtime")
     if (
         execution_provider == "CPUExecutionProvider"
         and model_facts(model).native_session
@@ -346,16 +348,10 @@ def _check_provider(session: OnnxSession, execution_provider: str) -> None:
 
 
 def get_input_shape(session: OnnxSession) -> OnnxParsedTensorShape:
-    """
-    Returns the input shape, input channels, input width (optional), and input height (optional).
-    """
-
+    """The input's layout, channels, width and height (None when dynamic)."""
     return parse_onnx_shape(session.get_inputs()[0].shape)
 
 
 def get_output_shape(session: OnnxSession) -> OnnxParsedTensorShape:
-    """
-    Returns the output shape, output channels, output width (optional), and output height (optional).
-    """
-
+    """The output's layout, channels, width and height (None when dynamic)."""
     return parse_onnx_shape(session.get_outputs()[0].shape)

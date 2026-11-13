@@ -1,4 +1,4 @@
-/* The shared scratch pool (scratch.h; SP4b D10). The lease logic is resample's
+/* The shared scratch pool (scratch.h). The lease logic is resample's
  * workspace lease (resample_filters.c): exclusive slots taken under a short lock, a
  * retention cap per slot, and a busy caller takes an ordinary temporary and never
  * waits. No source or output pointer is kept between calls. */

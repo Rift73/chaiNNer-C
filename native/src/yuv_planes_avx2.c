@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "yuv_planes_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* YUV plane codes and values, AVX2 unit (/arch:AVX2, spec 4.3): no export,
+/* YUV plane codes and values, AVX2 unit (/arch:AVX2): no export,
  * reached only through the entries' dispatch on the call's ISA level. Each lane
  * runs its element's sequence of yuv_planes_shared.h; groups of 8 start at the
  * segment's first column, and the last (last - first) % 8 elements run the scalar

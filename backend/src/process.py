@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import functools
+import os
 import sys
 import threading
 import time
@@ -10,10 +11,23 @@ import typing
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Iterable, List, Literal, Mapping, NewType, Sequence, Union
+from types import NoneType
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    Iterable,
+    List,
+    Literal,
+    Mapping,
+    NewType,
+    Sequence,
+    Union,
+)
 
+import numpy as np
 from sanic.log import logger
 
 import navi
@@ -84,6 +98,7 @@ from nodes.impl.item_window import (
     serial_producer,
     window_size,
 )
+from nodes.utils.utils import split_file_path
 from progress_controller import Aborted, ProgressController, ProgressToken
 from util import combine_sets, timed_supplier, waiting
 
@@ -247,7 +262,7 @@ def registered_phases(node: NodeData) -> Phases:
 
 def phase_inputs(node: NodeData) -> list[int]:
     """
-    The indices of the inputs a prepare phase receives (SP3-P9): a collector's iterated inputs, as on_iterate does, else all of them.
+    The indices of the inputs a prepare phase receives: a collector's iterated inputs, as on_iterate does, else all of them.
     """
     if node.kind == "collector":
         return [
@@ -262,7 +277,7 @@ def prepare_node(
     node: NodeData, inputs: list[object], collector: Collector | None = None
 ) -> object | None:
     """
-    A side-effect node's prepare phase (SP3-P9): its inputs enforced as the node would receive them, a lazy input as the value it produces; a collector's prepare also receives its collector.
+    A side-effect node's prepare phase: its inputs enforced as the node would receive them, a lazy input as the value it produces; a collector's prepare also receives its collector.
     """
     enforced = [
         node.inputs[index].enforce_(value)
@@ -398,7 +413,7 @@ def compute_broadcast(output: Output, node_outputs: Iterable[BaseOutput]):
                 data[node_output.id] = node_output.get_broadcast_data(value)
                 types[node_output.id] = node_output.get_broadcast_type(value)
         except Exception as e:
-            logger.error(f"Error broadcasting output: {e}")
+            logger.error(f"Error broadcasting output: {e}", exc_info=True)
     return (data, types)
 
 
@@ -413,7 +428,7 @@ def compute_sequence_broadcast(
             for output_id, type in iter_output.get_broadcast_item_types(g).items():
                 item_types[output_id] = type
         except Exception as e:
-            logger.error(f"Error broadcasting output: {e}")
+            logger.error(f"Error broadcasting output: {e}", exc_info=True)
     return (sequence_types, item_types)
 
 
@@ -448,7 +463,7 @@ def loop_node_error(
     node: Node, assigned: Sequence[Input], error: Exception, token: object = None
 ) -> Exception:
     """An error a loop's node raises outside its node's run, a generator's item (Load
-    Images' undecodable file, Load Video's In after Out) or a collector's completion
+    Images' undecodable file, Load Video's Start after End) or a collector's completion
     (Merge Spritesheet's sprite count), as the run reports it: the node's
     NodeExecutionError, so the error names the node, with the error as its cause and
     its message, after the file a split iterator's item token names (Load Images'
@@ -708,6 +723,7 @@ class _LoopRun:
         ],
         first: int = 0,
         base: int = 0,
+        unread: frozenset[NodeId] = frozenset(),
     ) -> None:
         self.slot = 0
         self.generators = generators
@@ -716,8 +732,12 @@ class _LoopRun:
         # Slots before `first` are context items; the slot `first` is item `base`.
         self.first = first
         self.base = base
+        # The temporal nodes whose output no node reads on a context item.
+        self.unread = unread
         self.decided = False
         self.deciding: asyncio.Task[None] | None = None
+        # pure_in_loop per temporal node on a pure schema, made at its first run on the commit path.
+        self.pure: dict[NodeId, bool] = {}
         # The read-ahead blocker that set K = 1, and the look-ahead nodes warned of it.
         self.blocker: str | None = None
         self.warned: set[NodeId] = set()
@@ -778,6 +798,10 @@ class _IterationView(IterationView):
     @property
     def context(self) -> bool:
         return self.__at() < self.__run.first
+
+    @property
+    def unread(self) -> bool:
+        return self.context and self.__node.id in self.__run.unread
 
     @property
     def source(self) -> str:
@@ -853,7 +877,7 @@ class _IterationView(IterationView):
 @dataclass(frozen=True)
 class _ItemCache:
     """
-    The cache test of one later item (spec 4.4): its generator values and stored results, and the shared static cache for nodes that are not iterated. The live cache's iterated entries belong to the committing item.
+    The cache test of one later item: its generator values and stored results, and the shared static cache for nodes that are not iterated. The live cache's iterated entries belong to the committing item.
     """
 
     available: set[NodeId]
@@ -873,7 +897,7 @@ class _ItemView:
     node_cache: _ItemCache
 
 
-# Into Directory resolves the on-disk spelling of a folder that earlier items' saves may create, so running it ahead could change its output (SP3 Task 4 audit).
+# Into Directory resolves the on-disk spelling of a folder that earlier items' saves may create, so running it ahead could change its output.
 _NOT_SPECULATED: frozenset[str] = frozenset({"chainner:utility:into_directory"})
 
 
@@ -926,6 +950,442 @@ def _computable_folder(
     return True
 
 
+def writer_directories(
+    chain: Chain,
+    inputs: InputMap,
+    writers: Iterable[Node],
+    generator_outputs: Mapping[NodeId, GeneratorOutput],
+    iterated: set[NodeId],
+    resolved: Callable[[Node, int, EdgeInput], object],
+) -> tuple[list[tuple[NodeId, Path | None]], list[tuple[NodeId, Path, Path]]]:
+    """
+    Returns the base directory of every directory input of the given writers, each followed by the folder its file goes to when the relative path inputs after it (subdirectory, file name) are known: the directory joined with them, `..` included, the file name's own folder last. A known part is a constant (an unset one adds nothing) or a resolved value; the join stops at the first unknown part. Also returns (writer, directory, target folder) for each such folder.
+
+    The blocker checks the directory and the target folder alike, so a target outside the directory can only set K = 1 in more cases. Nothing is computed: an input fed by an iterated output or node, a value `resolved` does not have (None: missing from the cache), or a value that is not a path is unresolved (None). `resolved(writer, index, input)` reads the other inputs: a collector's from its construction, a regular writer's from the cache.
+    """
+    directories: list[tuple[NodeId, Path | None]] = []
+    targets: list[tuple[NodeId, Path, Path]] = []
+
+    def add_target(writer: NodeId, base: Path | None, parts: list[str], complete: bool):
+        # The file name's folder when every part is known, else the folder of the known ones.
+        if base is None or not parts:
+            return
+        joined = base.joinpath(*parts)
+        folder = joined.parent if complete else joined
+        directories.append((writer, folder))
+        targets.append((writer, base, folder))
+
+    for node in sorted(writers, key=lambda n: n.id):
+        assigned_inputs = inputs.get(node.id)
+        base: Path | None = None
+        parts: list[str] = []
+        complete = False  # every relative path input after the directory is known
+        for index, i in enumerate(node.data.inputs):
+            relative = _relative_path_input(i)
+            if i.kind != "directory" and not relative:
+                continue
+            node_input = assigned_inputs[index]
+            value: object
+            if not isinstance(node_input, EdgeInput):
+                value = node_input.value
+            elif node_input.id in generator_outputs:
+                source = chain.nodes[node_input.id]
+                value = (
+                    None
+                    if source.data.outputs[node_input.index].id
+                    in source.data.single_iterable_output.outputs
+                    else _output_value(
+                        generator_outputs[node_input.id], node_input.index
+                    )
+                )
+            elif node_input.id in iterated:
+                value = None
+            else:
+                value = resolved(node, index, node_input)
+            if not relative:
+                add_target(node.id, base, parts, complete)
+                base = Path(value) if isinstance(value, (str, Path)) else None
+                directories.append((node.id, base))
+                parts, complete = [], True
+            elif complete and isinstance(value, str):
+                parts.append(value)
+            elif not (value is None and not isinstance(node_input, EdgeInput)):
+                complete = False  # unknown: the join stops before it
+        add_target(node.id, base, parts, complete)
+    return directories, targets
+
+
+def escaping_target_warning(
+    chain: Chain, writer: NodeId, folder: Path
+) -> ExecutionWarningEvent:
+    """The run warning for a writer whose target folder escapes its directory (escaping_targets); logs it."""
+    message = f"{chain.nodes[writer].data.name} writes to {folder}, outside its chosen folder."
+    logger.warning(message)
+    return {"event": "execution-warning", "data": {"message": message}}
+
+
+def look_ahead_off_warning(
+    chain: Chain, node_id: NodeId, blocker: str
+) -> ExecutionWarningEvent:
+    """
+    The run warning for a node that looks ahead in a loop whose read-ahead blocker set K = 1, so it runs without its look-ahead; logs it.
+    """
+    kind, _, subject = blocker.partition(": ")
+    name = chain.nodes[node_id].data.name
+    if kind == PATH_CHECK_FAILED:
+        reason = f"The output folder could not be checked ({subject})"
+    else:
+        other = chain.nodes[NodeId(subject)].data.name
+        reason = {
+            SOURCES_UNKNOWN: f"The files {other} reads are unknown",
+            OUTPUT_UNRESOLVED: f"{other}'s output folder is computed after {name}",
+            SOURCE_UNDER_OUTPUT: f"{other}'s output folder may overlap the source folder",
+        }[kind]
+    message = f"{reason}, so {name} runs without its look-ahead: it uses only the current and earlier frames."
+    logger.warning(message)
+    return {"event": "execution-warning", "data": {"message": message}}
+
+
+_UNKNOWN = object()
+LOAD_IMAGES = "chainner:image:load_images"
+IMAGES_MODULE = "packages.chaiNNer_standard.image.batch_processing.load_images"
+
+
+def _reached(
+    start: Iterable[NodeId], step: Callable[[NodeId], Iterable[NodeId]]
+) -> set[NodeId]:
+    reached = set(start)
+    pending = list(reached)
+    while pending:
+        for node_id in step(pending.pop()):
+            if node_id not in reached:
+                reached.add(node_id)
+                pending.append(node_id)
+    return reached
+
+
+def _upstream(chain: Chain, start: Iterable[NodeId]) -> set[NodeId]:
+    return _reached(start, lambda n: [e.source.id for e in chain.edges_to(n)])
+
+
+def _scalar_node(data: NodeData) -> bool:
+    """A node the collision check may run ahead of a file: pure, and no output of it is an image."""
+    return (
+        pure_cpu_node(data)
+        and not data.node_context
+        and all(o.associated_type is not np.ndarray for o in data.outputs)
+    )
+
+
+@dataclass(frozen=True)
+class _LoopItems:
+    """A loop's items as the collision check compares them: its generator, the nodes that run once per item, the
+    items' source paths in the loop's order, and `named`, the generator's outputs that follow from an item's
+    (position, path) alone."""
+
+    node: Node
+    per_item: set[NodeId]
+    paths: Sequence[Path]
+    named: Callable[[int, Path], dict[OutputId, object]]
+
+
+@dataclass
+class _FileScalars:
+    """The strings, paths and numbers of one item's run that follow from its path, before it runs. The generator's own
+    outputs among them are `named`; a value nothing here knows is _UNKNOWN."""
+
+    chain: Chain
+    loop: _LoopItems
+    computed: dict[NodeId, NodeOutput]
+    named: dict[OutputId, object]
+    outputs: dict[NodeId, list[object]] = field(default_factory=dict)
+
+    def input(self, node_id: NodeId, i: BaseInput) -> object:
+        edge = self.chain.edge_to(node_id, i.id)
+        if edge is None:
+            value = self.chain.inputs.get(node_id, i.id)
+        elif edge.source.id == self.loop.node.id:
+            value = self.named.get(edge.source.output_id, _UNKNOWN)
+        else:
+            source = self.chain.nodes[edge.source.id].data.outputs
+            index = next(
+                n for n, o in enumerate(source) if o.id == edge.source.output_id
+            )
+            if edge.source.id in self.loop.per_item:
+                results = self.outputs.get(edge.source.id)
+                value = _UNKNOWN if results is None else results[index]
+            else:
+                output = self.computed.get(edge.source.id)
+                value = _UNKNOWN if output is None else _output_value(output, index)
+        return (
+            value if isinstance(value, (str, Path, int, float, NoneType)) else _UNKNOWN
+        )
+
+    def run(self, node_id: NodeId) -> None:
+        """Runs a scalar node on this item's values, if it knows them all. Its error leaves its output unknown: this
+        item's run reports it, where the node runs."""
+        data = self.chain.nodes[node_id].data
+        inputs = [self.input(node_id, i) for i in data.inputs]
+        if any(value is _UNKNOWN for value in inputs):
+            return
+        try:
+            enforced = enforce_inputs(inputs, data, node_id, [])
+            self.outputs[node_id] = enforce_output(data.run(*enforced), data).output
+        except Exception as error:
+            logger.warning(
+                "%s, on an item's values, before the run: %s",
+                data.name,
+                error,
+                exc_info=error,
+            )
+
+
+def _colliding_files(
+    chain: Chain, loops: list[_LoopItems], computed: dict[NodeId, NodeOutput]
+) -> tuple[NodeId, Path, Path] | None:
+    """A writer of the loops' items and two items that would give it one path, where the later one would replace the
+    earlier one's output; None if there are none. It compares the final paths, for each item: the generator's outputs
+    that follow from the item's path, the shared nodes' values and the scalar nodes over those, run here. Two writers
+    also have to agree on their dropdowns, which hold the format. A path that reads anything else (an image's content,
+    FPS, a zipped generator's output) is not compared: that may tell the items apart. Nor is one without a file name
+    input: a folder alone does not say which files go there. Two writers on one item, and an item that writes over its
+    own source, are that chain's own choice."""
+    order = list(reversed(chain.topological_order()))
+    seen: dict[tuple[object, ...], tuple[NodeId, Path]] = {}
+    for loop in loops:
+        writers: list[tuple[NodeId, list[BaseInput], list[object]]] = []
+        for node_id in order:
+            writer = chain.nodes[node_id]
+            data = writer.data
+            if (
+                node_id in loop.per_item
+                and (
+                    isinstance(writer, CollectorNode)
+                    or (isinstance(writer, FunctionNode) and writer.has_side_effects())
+                )
+                and any(_relative_path_input(i) for i in data.inputs)
+            ):
+                path_inputs = [
+                    i
+                    for i in data.inputs
+                    if i.kind == "directory" or _relative_path_input(i)
+                ]
+                choices = [
+                    chain.inputs.get(node_id, i.id)
+                    for i in data.inputs
+                    if i.kind == "dropdown"
+                ]
+                writers.append((node_id, path_inputs, choices))
+        if not writers:
+            continue
+        feeding = _upstream(
+            chain,
+            [
+                edge.source.id
+                for node_id, path_inputs, _ in writers
+                for edge in chain.edges_to(node_id)
+                if edge.target.input_id in {i.id for i in path_inputs}
+            ],
+        )
+        steps = [
+            node_id
+            for node_id in order
+            if node_id in feeding
+            and node_id in loop.per_item
+            and _scalar_node(chain.nodes[node_id].data)
+        ]
+        for position, path in enumerate(loop.paths):
+            scalars = _FileScalars(chain, loop, computed, loop.named(position, path))
+            for node_id in steps:
+                scalars.run(node_id)
+            for node_id, path_inputs, choices in writers:
+                parts = [scalars.input(node_id, i) for i in path_inputs]
+                if any(part is _UNKNOWN for part in parts):
+                    continue
+                try:
+                    enforced = [i.enforce_(v) for i, v in zip(path_inputs, parts)]
+                    final = os.path.join(*(p for p in enforced if p is not None))
+                except Exception as error:
+                    logger.warning(
+                        "%s's path, on an item's values, before the run: %s",
+                        chain.nodes[node_id].data.name,
+                        error,
+                        exc_info=error,
+                    )
+                    continue
+                key = (
+                    chain.nodes[node_id].schema_id,
+                    *choices,
+                    os.path.normcase(os.path.normpath(final)),
+                )
+                first_loop, first = seen.setdefault(key, (loop.node.id, path))
+                if first != path or first_loop != loop.node.id:
+                    return node_id, first, path
+    return None
+
+
+def _collision_message(
+    chain: Chain, collision: tuple[NodeId, Path, Path], advice: str
+) -> str:
+    writer, first, second = collision
+    return (
+        f"{chain.nodes[writer].data.name} would write {first} and {second} to one file:"
+        f" its folder and file name do not tell them apart. {advice}"
+    )
+
+
+def check_loop_outputs(
+    chain: Chain,
+    generators: Iterable[tuple[Node, GeneratorOutput]],
+    per_item: set[NodeId],
+) -> None:
+    """Refuses a Load Images loop, before its first item, two of whose items would give a writer one path
+    (_colliding_files): the later would replace the earlier's output, or a source not read yet. Only constants and the
+    items' own values are compared, as both run engines know them then."""
+    loops: list[_LoopItems] = []
+    for node, output in generators:
+        paths = output.generator.source_paths
+        if node.schema_id != LOAD_IMAGES or not paths:
+            continue
+        module = sys.modules[IMAGES_MODULE]
+        directory = Path(
+            typing.cast(Path, output.partial_output[module.DIRECTORY_INDEX])
+        )
+        base = output.generator.index_base
+
+        def named(
+            position: int,
+            path: Path,
+            module: Any = module,
+            directory: Path = directory,
+            base: int = base,
+        ) -> dict[OutputId, object]:
+            return {
+                module.DIRECTORY: directory,
+                module.SUBDIRECTORY: os.path.relpath(path.parent, directory),
+                module.NAME: split_file_path(path)[1],
+                module.INDEX: base + position,
+            }
+
+        loops.append(_LoopItems(node, per_item, paths, named))
+    collision = _colliding_files(chain, loops, {}) if loops else None
+    if collision is not None:
+        # Named after the writer, whichever node the run engine was at (on_failing_node).
+        raise NodeAttributedError(
+            _collision_message(
+                chain,
+                collision,
+                "Connect Load Images' Name to its file name and its Subdirectory Path"
+                " to its subdirectory, or narrow the glob expression.",
+            ),
+            collision[0],
+        )
+
+
+def _refuse(
+    chain: Chain,
+    node_id: NodeId,
+    generator: NodeId,
+    ended: NodeId,
+    per_item: dict[NodeId, set[NodeId]],
+    members: list[NodeId],
+) -> typing.NoReturn:
+    """refuse_reads_across_loops' error: on the node, its first input an item of the generator reaches it through."""
+    node = chain.nodes[node_id]
+    iterated = chain.nodes[generator].data.single_iterable_output.outputs
+    edge = next(
+        edge
+        for edge in sorted(chain.edges_to(node_id), key=lambda e: e.target.input_id)
+        if edge.source.id in per_item[generator]
+        or (edge.source.id == generator and edge.source.output_id in iterated)
+    )
+    label = next(i.label for i in node.data.inputs if i.id == edge.target.input_id)
+    later = next(
+        (
+            other
+            for other in members
+            if node_id in per_item[other] and ended in _upstream(chain, [other])
+        ),
+        None,
+    )
+    names = {key: chain.nodes[key].data.name for key in (generator, ended)}
+    advice = (
+        f"Take {label} from the outputs of {chain.nodes[later].data.name} instead, or connect a value that does not change per item."
+        if later is not None
+        else f"Connect a value to {label} that does not change per item."
+    )
+    raise loop_node_error(
+        node,
+        InputMap.from_chain(chain).get(node_id),
+        ValueError(
+            f"{label} of {node.data.name} comes from the items of {names[generator]}, one value per item, but {node.data.name} also depends on {names[ended]}, which has its result only after the loop of {names[generator]} has ended. {advice}"
+        ),
+    )
+
+
+def refuse_reads_across_loops(chain: Chain) -> None:
+    """
+    Refuses, before anything runs, a node that runs once per item of a generator's loop (an iterated output reaches it) and also depends on a collector of that loop, which has its result only once the loop has ended: no order of the run gives it both (it would fail as "A collector was not run before another node needed it"). The error names the node, the input the item's value reaches it through, the collector and, when a later loop gives the node its items, that loop's generator.
+    """
+    order = chain.topological_order()
+    position = {node_id: index for index, node_id in enumerate(order)}
+    per_item: dict[NodeId, set[NodeId]] = {}
+    collectors: dict[NodeId, set[NodeId]] = {}
+    for generator_id in order:
+        node = chain.nodes[generator_id]
+        if not isinstance(node, GeneratorNode):
+            continue
+        iterated = node.data.single_iterable_output.outputs
+        reached: set[NodeId] = set()
+        ends: set[NodeId] = set()
+        pending = [
+            edge.target.id
+            for edge in chain.edges_from(node.id)
+            if edge.source.output_id in iterated
+        ]
+        while pending:
+            node_id = pending.pop()
+            target = chain.nodes[node_id]
+            if isinstance(target, CollectorNode):
+                ends.add(node_id)
+            elif isinstance(target, FunctionNode) and node_id not in reached:
+                reached.add(node_id)
+                pending.extend(edge.target.id for edge in chain.edges_from(node_id))
+        per_item[node.id], collectors[node.id] = reached, ends
+    # A loop: the generators whose items reach a common node, which the run zips.
+    for loop in combine_sets(
+        [{g, *reached, *collectors[g]} for g, reached in per_item.items()]
+    ):
+        members = [g for g in order if g in loop and g in per_item]
+        loop_ends = set().union(*(collectors[g] for g in members))
+        # Sources first: the node where an item first meets the loop's collector.
+        for node_id in reversed(order):
+            needed = _upstream(chain, [e.source.id for e in chain.edges_to(node_id)])
+            for generator in members:
+                if node_id not in per_item[generator] | collectors[generator]:
+                    continue
+                # A collector the generator itself reads is the input of a later loop.
+                ended = sorted(
+                    (loop_ends & needed) - _upstream(chain, [generator]),
+                    key=position.__getitem__,
+                )
+                if ended:
+                    _refuse(chain, node_id, generator, ended[0], per_item, members)
+
+
+def shown_alone(chain: Chain, node: Node, looped: set[NodeId]) -> bool:
+    """Whether a generator that feeds no sink (outside `looped`) runs for what it shows,
+    its items unread: one with a seek bar whose input is connected (Clip Frames behind
+    its clip), whose Preview and frame count nothing else renders. Load Video alone
+    renders them by itself; folder loaders and the rest stay skipped, as before."""
+    return (
+        isinstance(node, GeneratorNode)
+        and node.id not in looped
+        and any(i.kind == "video-seek" for i in node.data.inputs)
+        and len(chain.edges_to(node.id)) > 0
+    )
+
+
 def generator_loops(
     chain: Chain, gens_by_outs: dict[NodeId, set[NodeId]]
 ) -> list[list[GeneratorNode]]:
@@ -966,9 +1426,189 @@ def generator_loops(
     return loops
 
 
+def temporal_nodes(
+    chain: Chain, iterated: Collection[NodeId], sinks: Iterable[Node]
+) -> list[FunctionNode]:
+    """
+    A loop's nodes without side effects that declare a temporal context (NodeData.temporal_context) and feed one of its sinks, so the loop runs them, in the chain's sink-first order.
+    """
+    ancestors: set[NodeId] = set()
+    pending = [node.id for node in sinks]
+    while pending:
+        for edge in chain.edges_to(pending.pop()):
+            if edge.source.id not in ancestors:
+                ancestors.add(edge.source.id)
+                pending.append(edge.source.id)
+    temporal: list[FunctionNode] = []
+    for node_id in chain.topological_order():
+        node = chain.nodes[node_id]
+        if (
+            node_id in ancestors
+            and node_id in iterated
+            and isinstance(node, FunctionNode)
+            and (not node.has_side_effects())
+            and node.data.temporal_context is not None
+        ):
+            temporal.append(node)
+    return temporal
+
+
+def eager_ancestors(
+    chain: Chain, inputs: InputMap, sinks: Iterable[Node]
+) -> set[NodeId]:
+    """
+    The ancestors the sinks reach without a lazy input their node may leave unread (may_go_unread: a Conditional's other branch, Save Image's image with Skip existing files).
+    """
+    eager: set[NodeId] = set()
+    pending = [node.id for node in sinks]
+    while pending:
+        target = pending.pop()
+        data = chain.nodes[target].data
+        unread = {
+            i.id
+            for index, i in enumerate(data.inputs)
+            if i.lazy and may_go_unread(data, inputs.get(target), index)
+        }
+        for edge in chain.edges_to(target):
+            if edge.target.input_id not in unread and edge.source.id not in eager:
+                eager.add(edge.source.id)
+                pending.append(edge.source.id)
+    return eager
+
+
+def reads_context(generator: Generator) -> bool:
+    """
+    Whether the generator may read context items: it reads part of its source (Generator.context) and has items. Only then are a loop's known gates resolved before its items.
+    """
+    return generator.context is not None and generator.expected_length > 0
+
+
+def known_gates(
+    chain: Chain,
+    inputs: InputMap,
+    iterated: Collection[NodeId],
+    sinks: Iterable[Node],
+    temporal: Iterable[FunctionNode],
+) -> list[tuple[FunctionNode, int]]:
+    """
+    The gated temporal nodes (NodeData.temporal_if) whose gate value is known before the loop, with the gate's input position: a constant or an input fed from outside the loop, of a node the sinks read eagerly (eager_ancestors), so the gate's source would run anyway.
+    """
+    eager = eager_ancestors(chain, inputs, sinks)
+    gates: list[tuple[FunctionNode, int]] = []
+    for node in temporal:
+        gate = node.data.temporal_if
+        if gate is None or node.id not in eager:
+            continue
+        position = gate_position(node.data)
+        assigned = inputs.get(node.id)[position]
+        if not (isinstance(assigned, EdgeInput) and assigned.id in iterated):
+            gates.append((node, position))
+    return gates
+
+
+def gate_position(data: NodeData) -> int:
+    """The position of the gated node's gate input (NodeData.temporal_if)."""
+    assert data.temporal_if is not None
+    return next(
+        i
+        for i, node_input in enumerate(data.inputs)
+        if node_input.id == data.temporal_if[0]
+    )
+
+
+def temporal_applies(
+    node: Node, gates: Mapping[NodeId, object], inputs: InputMap
+) -> bool:
+    """
+    Whether the temporal node's context applies: it has no gate, its gate's value is not known before the loop (not in `gates`, the known gates' values), or the gate's predicate is true for it. The predicate's error is the node's (loop_node_error).
+    """
+    gate = node.data.temporal_if
+    if gate is None or node.id not in gates:
+        return True
+    try:
+        return gate[1](gates[node.id])
+    except Exception as error:
+        failure = loop_node_error(node, inputs.get(node.id), error)
+        if failure is error:
+            raise
+        raise failure from error
+
+
+def temporal_pure(data: NodeData) -> bool:
+    """A temporal node on a pure schema (a locked-device one): in a loop, pure only as pure_in_loop decides."""
+    return pure_cpu_node(data) and data.temporal_context is not None
+
+
+def pure_in_loop(
+    node: Node, inputs: InputMap, iterated: Collection[NodeId], value: object
+) -> bool:
+    """
+    Whether a temporal node on a pure schema (temporal_pure) runs as a pure one for the rest of the loop run, decided at its first run there from its gate input's value then (`value`): it needs its iteration view wherever it runs, so it is pure only while its context does not apply: its gate known (a constant or an input fed from outside the loop) and judged false. The predicate's error is the node's (temporal_applies).
+    """
+    gate = node.data.temporal_if
+    if gate is None:
+        return False
+    assigned = inputs.get(node.id)[gate_position(node.data)]
+    if not isinstance(assigned, EdgeInput):
+        value = assigned.value
+    elif assigned.id in iterated:
+        return False
+    return not temporal_applies(node, {node.id: value}, inputs)
+
+
+def context_nodes(
+    chain: Chain, iterated: Collection[NodeId], temporal: Sequence[Node]
+) -> tuple[frozenset[NodeId], frozenset[NodeId]]:
+    """
+    The loop's nodes that run for a context item: its temporal nodes whose context applies and the nodes they need; and those temporal nodes none of them reads (IterationView.unread).
+    """
+    needed: set[NodeId] = set()
+    pending = [node.id for node in temporal]
+    while pending:
+        node_id = pending.pop()
+        if (
+            node_id not in needed
+            and node_id in iterated
+            and isinstance(chain.nodes[node_id], FunctionNode)
+        ):
+            needed.add(node_id)
+            pending.extend(edge.source.id for edge in chain.edges_to(node_id))
+    unread = frozenset(
+        node.id
+        for node in temporal
+        if all(edge.target.id not in needed for edge in chain.edges_from(node.id))
+    )
+    return frozenset(needed), unread
+
+
+def context_wanted(
+    chain: Chain, iterated: Collection[NodeId], temporal: Iterable[Node]
+) -> tuple[int, int]:
+    """
+    The context items (before, after) the loop's temporal nodes whose context applies want: their radii added along each path, sources first, taking maxima where paths merge.
+    """
+    radii = {
+        n.id: typing.cast(tuple[int, int], n.data.temporal_context) for n in temporal
+    }
+    needs: dict[NodeId, tuple[int, int]] = {}
+    for node_id in reversed(chain.topological_order()):
+        if node_id not in iterated:
+            continue
+        inputs = [needs.get(edge.source.id, (0, 0)) for edge in chain.edges_to(node_id)]
+        radius = radii.get(node_id, (0, 0))
+        needs[node_id] = (
+            max((need[0] for need in inputs), default=0) + radius[0],
+            max((need[1] for need in inputs), default=0) + radius[1],
+        )
+    return (
+        max((need[0] for need in needs.values()), default=0),
+        max((need[1] for need in needs.values()), default=0),
+    )
+
+
 class _ItemPlanner:
     """
-    Which iterated nodes of a generator group run ahead for a later item, and their jobs (spec 4.4); then the prepare phases of its sinks that registered them (spec 4.7).
+    Which iterated nodes of a generator group run ahead for a later item, and their jobs; then the prepare phases of its sinks that registered them.
     """
 
     def __init__(
@@ -980,9 +1620,10 @@ class _ItemPlanner:
         iterated: set[NodeId],
         sinks: list[Node],
         collectors: Mapping[NodeId, Collector],
-        new_context: Callable[[Node], _ExecutorNodeContext],
+        pure_context: Callable[[Node], _ExecutorNodeContext],
         ahead_context: Callable[[FunctionNode, int], _ExecutorNodeContext],
         fail_fast: bool,
+        decided: Mapping[NodeId, bool],
     ) -> None:
         self.__chain = chain
         self.__inputs = inputs
@@ -991,10 +1632,12 @@ class _ItemPlanner:
         self.__iterated = iterated
         # The collector sinks' collectors, which their prepares receive.
         self.__collectors = collectors
-        self.__new_context = new_context
+        self.__pure_context = pure_context
         self.__ahead_context = ahead_context
         # Deferred errors drop an item at whatever node fails first, maybe before a serial node's turn, which a run ahead could not undo: serial nodes run ahead only when every error ends the loop.
         self.__fail_fast = fail_fast
+        # The loop run's pure_in_loop decisions (_LoopRun.pure), as they are made.
+        self.__decided = decided
         ancestors: set[NodeId] = set()
         pending = [node.id for node in sinks]
         while pending:
@@ -1002,21 +1645,7 @@ class _ItemPlanner:
                 if edge.source.id not in ancestors:
                     ancestors.add(edge.source.id)
                     pending.append(edge.source.id)
-        # The ancestors the sinks reach without a lazy input their node may leave unread (may_go_unread: a Conditional's other branch, Save Image's image with Skip existing files).
-        eager: set[NodeId] = set()
-        pending = [node.id for node in sinks]
-        while pending:
-            target = pending.pop()
-            data = chain.nodes[target].data
-            unread = {
-                i.id
-                for index, i in enumerate(data.inputs)
-                if i.lazy and may_go_unread(data, inputs.get(target), index)
-            }
-            for edge in chain.edges_to(target):
-                if edge.target.input_id not in unread and edge.source.id not in eager:
-                    eager.add(edge.source.id)
-                    pending.append(edge.source.id)
+        eager = eager_ancestors(chain, inputs, sinks)
 
         def depends(sources: Iterable[Input]) -> frozenset[NodeId]:
             return frozenset(
@@ -1033,7 +1662,7 @@ class _ItemPlanner:
                 node_id,
                 depends(inputs.get(node_id)),
                 serial=(
-                    not pure_cpu_node(chain.nodes[node_id].data)
+                    self.__pure(node_id) is False
                     and (not any(i.lazy for i in chain.nodes[node_id].data.inputs))
                 )
                 or (
@@ -1062,11 +1691,22 @@ class _ItemPlanner:
     def candidates(self) -> Sequence[Candidate]:
         return self.__candidates
 
+    def __pure(self, node_id: NodeId) -> bool | None:
+        """
+        Whether the node runs as a pure one in this loop run: pure_cpu_node, and for a temporal node on a pure schema the loop run's pure_in_loop, None until its first run on the commit path decided it (the window may be made before that, by a look-ahead during the first item). An undecided node is neither a serial candidate nor eligible, and no answer that depends on it is remembered.
+        """
+        data = self.__chain.nodes[node_id].data
+        if not temporal_pure(data):
+            return pure_cpu_node(data)
+        return self.__decided.get(node_id)
+
     def ahead(self, node_id: NodeId) -> bool:
         """
         Whether the window computes this node ahead in every later slot whose generators all yielded and whose candidates it depends on did not fail, so a look-ahead can wait for it: a candidate (not a prepare), pure CPU and not Into Directory, or serial when every error ends the loop, whose inputs are constants, generator outputs, cached static values or such nodes. Asked once the commit path ran the node, so its static inputs are cached.
         """
         if node_id not in self.__ahead:
+            if self.__pure(node_id) is None:
+                return False
             candidate = next(
                 (
                     c
@@ -1080,7 +1720,10 @@ class _ItemPlanner:
                 candidate is not None
                 and (
                     (candidate.serial and self.__fail_fast)
-                    or (data.schema_id not in _NOT_SPECULATED and pure_cpu_node(data))
+                    or (
+                        data.schema_id not in _NOT_SPECULATED
+                        and self.__pure(node_id) is True
+                    )
                 )
                 and all(
                     not isinstance(i, EdgeInput)
@@ -1090,6 +1733,15 @@ class _ItemPlanner:
                     for i in self.__inputs.get(node_id)
                 )
             )
+            if not all(
+                not isinstance(i, EdgeInput)
+                or i.id in self.__generators
+                or i.id not in self.__iterated
+                or i.id in self.__ahead
+                for i in self.__inputs.get(node_id)
+            ):
+                # It depends on an undecided node: asked again later.
+                return self.__ahead.pop(node_id)
         return self.__ahead[node_id]
 
     def threads(self, node_id: NodeId) -> int:
@@ -1127,7 +1779,10 @@ class _ItemPlanner:
                 or (i.id not in self.__iterated and self.__cache.has(i.id))
                 for i in self.__phase_sources(node_id)
             )
-        if self.__chain.nodes[node_id].data.schema_id in _NOT_SPECULATED:
+        if (
+            self.__chain.nodes[node_id].data.schema_id in _NOT_SPECULATED
+            or self.__pure(node_id) is None
+        ):
             return False
         available = {*values, *(n for n, s in store.items() if s.error is None)}
         cache = _ItemCache(available, self.__iterated, self.__cache)
@@ -1184,20 +1839,18 @@ class _ItemPlanner:
                     prepare_node, node.data, inputs, self.__collectors.get(node_id)
                 )
             )
-        if node_id in self.__serial:
-            # Its own cleanups after it, as the commit path runs a node's.
-            context = self.__ahead_context(typing.cast(FunctionNode, node), slot)
-            return functools.partial(
-                with_node_cleanups,
-                timed_supplier(
-                    functools.partial(run_node, node.data, context, inputs, node_id)
-                ),
-                context,
-            )
-        return timed_supplier(
-            functools.partial(
-                run_node, node.data, self.__new_context(node), inputs, node_id
-            )
+        context = (
+            self.__ahead_context(typing.cast(FunctionNode, node), slot)
+            if node_id in self.__serial
+            else self.__pure_context(node)
+        )
+        # Its own cleanups after it, as the commit path runs a node's.
+        return functools.partial(
+            with_node_cleanups,
+            timed_supplier(
+                functools.partial(run_node, node.data, context, inputs, node_id)
+            ),
+            context,
         )
 
     def nbytes(self, value: object) -> int:
@@ -1208,7 +1861,7 @@ class _ItemPlanner:
 
 class _SplitIterator(typing.Protocol):
     """
-    Load Images' native iterator (SP3b spec 4.1): describe() names its next item and raises StopIteration at the end; materialize(token) loads that item and returns an error as its value, as __next__ yields it.
+    Load Images' native iterator: describe() names its next item and raises StopIteration at the end; materialize(token) loads that item and returns an error as its value, as __next__ yields it.
     """
 
     def describe(self) -> object: ...
@@ -1527,6 +2180,27 @@ class Executor:
             context.iteration_view = self.__iteration_view(run, node, context)
         return context
 
+    def __decide_pure(self, node: Node, inputs: list[object]) -> Exception | None:
+        """
+        At a temporal node on a pure schema's first run on its loop run's commit path: whether it runs as a pure one for the rest of the run (pure_in_loop, from its gate input's value), remembered in the run. The predicate's error is returned, as this run's failure, once: the node then needs its view for the rest of the run.
+        """
+        run = self.__run
+        if (
+            run is None
+            or node.id not in run.iterated
+            or node.id in run.pure
+            or not temporal_pure(node.data)
+        ):
+            return None
+        gate = node.data.temporal_if
+        value = None if gate is None else inputs[gate_position(node.data)]
+        try:
+            run.pure[node.id] = pure_in_loop(node, self.inputs, run.iterated, value)
+        except Exception as error:
+            run.pure[node.id] = False
+            return error
+        return None
+
     async def __process(
         self, node: Node, perform_cache: bool = True
     ) -> NodeOutput | CollectorOutput:
@@ -1556,7 +2230,14 @@ class Executor:
         await self.progress.suspend()
         lazy_time_before = get_lazy_evaluation_time()
         window = self.__window
-        if window is not None and window.holds(node.id):
+        refused = self.__decide_pure(node, inputs)
+        if refused is not None:
+            failed: asyncio.Future[tuple[NodeOutput | CollectorOutput, float]] = (
+                self.loop.create_future()
+            )
+            failed.set_exception(refused)
+            pending = failed
+        elif window is not None and window.holds(node.id):
             # The window's job for this node runs run_node (_ItemPlanner.job), so it returns what the pool job would.
             pending = typing.cast(
                 typing.Awaitable[tuple[NodeOutput | CollectorOutput, float]],
@@ -1665,7 +2346,7 @@ class Executor:
         self, generator_supplier: typing.Iterator[Output | Exception]
     ) -> tuple[object] | None:
         """
-        The generator's next item as a token (SP3b P1): the 1-tuple of the values it yields, so a yielded None stays an item; None once it is exhausted. A yielded error is raised.
+        The generator's next item as a token: the 1-tuple of the values it yields, so a yielded None stays an item; None once it is exhausted. A yielded error is raised.
         """
         present, values = advance_iterator(generator_supplier)
         if not present:
@@ -1738,87 +2419,16 @@ class Executor:
             )
         )
 
-    def __writer_directories(
-        self,
-        writers: list[Node],
-        generator_outputs: dict[NodeId, GeneratorOutput],
-        all_iterated_nodes: set[NodeId],
-    ) -> tuple[list[tuple[NodeId, Path | None]], list[tuple[NodeId, Path, Path]]]:
+    def __resolved_folder_input(
+        self, writer: Node, index: int, node_input: EdgeInput
+    ) -> object:
         """
-        Returns the base directory of every directory input of the given writers (SP3-P4), each followed by the folder its file goes to when the relative path inputs after it (subdirectory, file name) are known: the directory joined with them, `..` included, the file name's own folder last. A known part is a constant (an unset one adds nothing) or a resolved value; the join stops at the first unknown part. Also returns (writer, directory, target folder) for each such folder.
-
-        The blocker checks the directory and the target folder alike, so a target outside the directory can only set K = 1 in more cases. Nothing is computed: an input fed by an iterated output or node, a value missing from the cache, or a value that is not a path is unresolved (None).
+        A writer's folder input for writer_directories: a collector's from its construction, a regular writer's from the cache (None when missing).
         """
-        directories: list[tuple[NodeId, Path | None]] = []
-        targets: list[tuple[NodeId, Path, Path]] = []
-        for node in sorted(writers, key=lambda n: n.id):
-            assigned_inputs = self.inputs.get(node.id)
-            base: Path | None = None
-            parts: list[str] = []
-            complete = False  # every relative path input after the directory is known
-            for index, i in enumerate(node.data.inputs):
-                relative = _relative_path_input(i)
-                if i.kind != "directory" and not relative:
-                    continue
-                node_input = assigned_inputs[index]
-                if not isinstance(node_input, EdgeInput):
-                    value = node_input.value
-                elif node_input.id in generator_outputs:
-                    source = self.chain.nodes[node_input.id]
-                    iterated = (
-                        source.data.outputs[node_input.index].id
-                        in source.data.single_iterable_output.outputs
-                    )
-                    value = (
-                        None
-                        if iterated
-                        else _output_value(
-                            generator_outputs[node_input.id], node_input.index
-                        )
-                    )
-                elif node_input.id in all_iterated_nodes:
-                    value = None
-                elif isinstance(node, CollectorNode):
-                    value = self.__collector_directories[node.id][index]
-                else:
-                    cached = self.node_cache.peek(node_input.id)
-                    value = (
-                        None
-                        if cached is None
-                        else _output_value(cached, node_input.index)
-                    )
-                if not relative:
-                    self.__add_target(
-                        node.id, base, parts, complete, directories, targets
-                    )
-                    base = Path(value) if isinstance(value, (str, Path)) else None
-                    directories.append((node.id, base))
-                    parts, complete = [], True
-                elif complete and isinstance(value, str):
-                    parts.append(value)
-                elif not (value is None and not isinstance(node_input, EdgeInput)):
-                    complete = False  # unknown: the join stops before it
-            self.__add_target(node.id, base, parts, complete, directories, targets)
-        return directories, targets
-
-    @staticmethod
-    def __add_target(
-        writer: NodeId,
-        base: Path | None,
-        parts: list[str],
-        complete: bool,
-        directories: list[tuple[NodeId, Path | None]],
-        targets: list[tuple[NodeId, Path, Path]],
-    ) -> None:
-        """
-        Adds the target folder of a directory input and the known relative path inputs after it (see __writer_directories): the file name's folder when all are known, else the folder of the known ones.
-        """
-        if base is None or not parts:
-            return
-        joined = base.joinpath(*parts)
-        folder = joined.parent if complete else joined
-        directories.append((writer, folder))
-        targets.append((writer, base, folder))
+        if isinstance(writer, CollectorNode):
+            return self.__collector_directories[writer.id][index]
+        cached = self.node_cache.peek(node_input.id)
+        return None if cached is None else _output_value(cached, node_input.index)
 
     async def __open_window(
         self,
@@ -1834,7 +2444,7 @@ class Executor:
         stops: int,
     ) -> tuple[ItemWindow | None, str | None]:
         """
-        Decides the group's item window K at the range's second slot (slot 1 without context items) and logs it (spec 4.2, SP3-P1).
+        Decides the group's item window K at the range's second slot (slot 1 without context items) and logs it.
 
         K = 1 builds no window and resolves no path. Else the writers' folder nodes not computed yet run first (folder_sources). Returns the window and the read-ahead blocker that set K = 1, if one did. The window learns the context items (before `first`, from `end` on), where it computes ahead only `context_nodes`.
         """
@@ -1864,8 +2474,13 @@ class Executor:
                 (node.id, generator_outputs[node.id].generator.source_paths)
                 for node in generator_nodes
             ]
-            directories, targets = self.__writer_directories(
-                writers, generator_outputs, all_iterated_nodes
+            directories, targets = writer_directories(
+                self.chain,
+                self.inputs,
+                writers,
+                generator_outputs,
+                all_iterated_nodes,
+                self.__resolved_folder_input,
             )
             blocker = await await_owned_node(
                 self.loop.run_in_executor(
@@ -1881,12 +2496,7 @@ class Executor:
                 )
             )
             for writer, folder in escaping:
-                name = self.chain.nodes[writer].data.name
-                message = f"{name} writes to {folder}, outside its chosen folder."
-                logger.warning(message)
-                self.queue.put(
-                    {"event": "execution-warning", "data": {"message": message}}
-                )
+                self.queue.put(escaping_target_warning(self.chain, writer, folder))
         logger.info("item window K=%d (%s)", k, reason)
         self.__item_bytes = None
         if k == 1:
@@ -1916,7 +2526,7 @@ class Executor:
             and (not generators[0].inline)
             and (not serial_producer())
         ):
-            # The group's single generator, Range aside, is described serially and materialized as engine jobs (SP3b spec 4.2). A split iterator (Load Images) names each item, then loads it; any other yields it at describe, and its enforce (an image's normalize) is the materialize.
+            # The group's single generator, Range aside, is described serially and materialized as engine jobs. A split iterator (Load Images) names each item, then loads it; any other yields it at describe, and its enforce (an image's normalize) is the materialize.
             node = generator_nodes[0]
             supplier, output = (
                 generator_suppliers[node.id],
@@ -1942,6 +2552,8 @@ class Executor:
             *output_nodes,
             *(collector_node for _, _, collector_node in collectors),
         ]
+        run = self.__run
+        assert run is not None
         planner = self.__planner = _ItemPlanner(
             self.chain,
             self.inputs,
@@ -1950,9 +2562,10 @@ class Executor:
             all_iterated_nodes,
             sinks,
             {node.id: collector for collector, _, node in collectors},
-            self.__new_node_context,
+            self.__pure_ahead_context,
             self.__ahead_context,
             all(generator.fail_fast for generator in generators),
+            run.pure,
         )
         window = ItemWindow(
             size=k,
@@ -1998,6 +2611,17 @@ class Executor:
             for view in run.views.values():
                 view.close()
             run.views.clear()
+
+    def __pure_ahead_context(self, node: Node) -> _ExecutorNodeContext:
+        """
+        The context of a pure node computed ahead at a later item: a new one, without an iteration view, with node cleanups of its own, which its job runs after it (with_node_cleanups), and its own context's chain cleanups, which the run's end runs.
+        """
+        shared = self.__context_cache.get(node.id)
+        if shared is None:
+            shared = self.__context_cache[node.id] = self.__new_node_context(node)
+        context = self.__new_node_context(node)
+        context.chain_cleanup_fns = shared.chain_cleanup_fns
+        return context
 
     def __ahead_context(self, node: FunctionNode, slot: int) -> _ExecutorNodeContext:
         """
@@ -2123,20 +2747,7 @@ class Executor:
         if self.__run is not run or run.blocker is None or node_id in run.warned:
             return
         run.warned.add(node_id)
-        kind, _, subject = run.blocker.partition(": ")
-        name = self.chain.nodes[node_id].data.name
-        if kind == PATH_CHECK_FAILED:
-            reason = f"The output folder could not be checked ({subject})"
-        else:
-            other = self.chain.nodes[NodeId(subject)].data.name
-            reason = {
-                SOURCES_UNKNOWN: f"The files {other} reads are unknown",
-                OUTPUT_UNRESOLVED: f"{other}'s output folder is computed after {name}",
-                SOURCE_UNDER_OUTPUT: f"{other}'s output folder may overlap the source folder",
-            }[kind]
-        message = f"{reason}, so {name} runs without its look-ahead: it uses only the current and earlier frames."
-        logger.warning(message)
-        self.queue.put({"event": "execution-warning", "data": {"message": message}})
+        self.queue.put(look_ahead_off_warning(self.chain, node_id, run.blocker))
 
     async def __peek(
         self, run: _LoopRun, node_id: NodeId, origin: int, index: int, offset: int
@@ -2155,42 +2766,26 @@ class Executor:
             return None
         return _output_value(typing.cast(NodeOutput, output), source.index)
 
-    def __temporal_nodes(
-        self, iterated: set[NodeId], sinks: Iterable[Node]
-    ) -> tuple[list[FunctionNode], frozenset[NodeId]]:
+    async def __temporal_nodes(
+        self, iterated: set[NodeId], sinks: list[Node], generator: Generator
+    ) -> tuple[list[FunctionNode], frozenset[NodeId], frozenset[NodeId]]:
         """
-        The loop's temporal nodes, in the chain's sink-first order: its nodes without side effects that declare a temporal context (NodeData.temporal_context) and feed one of its sinks, so the loop runs them. Also the loop's nodes that run for a context item: those and the nodes they need.
+        The loop's temporal nodes whose context applies (temporal_nodes, temporal_applies), in the chain's sink-first order. When the generator reads context items (reads_context), a known gate's input is resolved first, so its source (Load Model) runs before the loop's first item. Also the loop's nodes that run for a context item and the temporal nodes none of those reads (context_nodes).
         """
-        ancestors: set[NodeId] = set()
-        pending = [node.id for node in sinks]
-        while pending:
-            for edge in self.chain.edges_to(pending.pop()):
-                if edge.source.id not in ancestors:
-                    ancestors.add(edge.source.id)
-                    pending.append(edge.source.id)
-        temporal: list[FunctionNode] = []
-        for node_id in self.chain.topological_order():
-            node = self.chain.nodes[node_id]
-            if (
-                node_id in ancestors
-                and node_id in iterated
-                and isinstance(node, FunctionNode)
-                and (not node.has_side_effects())
-                and node.data.temporal_context is not None
-            ):
-                temporal.append(node)
-        needed: set[NodeId] = set()
-        pending = [node.id for node in temporal]
-        while pending:
-            node_id = pending.pop()
-            if (
-                node_id not in needed
-                and node_id in iterated
-                and isinstance(self.chain.nodes[node_id], FunctionNode)
-            ):
-                needed.add(node_id)
-                pending.extend(edge.source.id for edge in self.chain.edges_to(node_id))
-        return temporal, frozenset(needed)
+        temporal = temporal_nodes(self.chain, iterated, sinks)
+        gates = {
+            node.id: await self.__resolve_node_input(self.inputs.get(node.id)[position])
+            for node, position in (
+                known_gates(self.chain, self.inputs, iterated, sinks, temporal)
+                if reads_context(generator)
+                else []
+            )
+        }
+        temporal = [
+            node for node in temporal if temporal_applies(node, gates, self.inputs)
+        ]
+        needed, unread = context_nodes(self.chain, iterated, temporal)
+        return temporal, needed, unread
 
     async def __iterate_generator_nodes(self, generator_nodes: list[GeneratorNode]):
         await self.progress.suspend()
@@ -2209,6 +2804,7 @@ class Executor:
         # look-aheads.
         temporal_nodes: list[FunctionNode] = []
         context_nodes: frozenset[NodeId] = frozenset()
+        unread: frozenset[NodeId] = frozenset()
         before = after = 0
         for node in generator_nodes:
             generator_output = await self.process_generator_node(node)
@@ -2232,31 +2828,10 @@ class Executor:
                     self.__chosen_items[iterated_node.id] = generator.chosen_item
             if contextual:
                 assert generator.context is not None
-                temporal_nodes, context_nodes = self.__temporal_nodes(
-                    all_iterated_nodes, [*output_nodes, *collector_nodes]
+                temporal_nodes, context_nodes, unread = await self.__temporal_nodes(
+                    all_iterated_nodes, [*output_nodes, *collector_nodes], generator
                 )
-                radii = {
-                    n.id: typing.cast(tuple[int, int], n.data.temporal_context)
-                    for n in temporal_nodes
-                }
-                needs: dict[NodeId, tuple[int, int]] = {}
-                # Sources first: add along each path, taking maxima where paths merge.
-                for node_id in reversed(self.chain.topological_order()):
-                    if node_id not in all_iterated_nodes:
-                        continue
-                    inputs = [
-                        needs.get(edge.source.id, (0, 0))
-                        for edge in self.chain.edges_to(node_id)
-                    ]
-                    radius = radii.get(node_id, (0, 0))
-                    needs[node_id] = (
-                        max((need[0] for need in inputs), default=0) + radius[0],
-                        max((need[1] for need in inputs), default=0) + radius[1],
-                    )
-                wanted = (
-                    max((need[0] for need in needs.values()), default=0),
-                    max((need[1] for need in needs.values()), default=0),
-                )
+                wanted = context_wanted(self.chain, all_iterated_nodes, temporal_nodes)
                 if wanted == (0, 0) or generator.expected_length == 0:
                     generator_suppliers[node.id] = generator.supplier().__iter__()
                 else:
@@ -2290,6 +2865,12 @@ class Executor:
             raise AssertionError(
                 "Expected all connected iterators to have the same length"
             )
+        # Before the first item, in both run engines: no two items may give a writer one path.
+        check_loop_outputs(
+            self.chain,
+            [(node, generator_outputs[node.id]) for node in generator_nodes],
+            all_iterated_nodes,
+        )
         total_stopiters = 0
         # The generators whose items ran out
         ended: set[NodeId] = set()
@@ -2318,6 +2899,7 @@ class Executor:
             ),
             first=first,
             base=bases.pop() if len(bases) == 1 else 0,
+            unread=unread,
         )
         slot = -1
         while True:
@@ -2395,8 +2977,9 @@ class Executor:
                         await self.__send_node_broadcast(node, iter_output.output)
                 if is_context:
                     # A context item updates the temporal nodes' state: they run, with the
-                    # nodes they need, and nothing else.
-                    for temporal_node in temporal_nodes:
+                    # nodes they need, and nothing else. Sources first: a temporal node another
+                    # one reads is cached for it, not run again after the reader took it.
+                    for temporal_node in reversed(temporal_nodes):
                         await self.process_regular_node(temporal_node)
                 for output_node in () if is_context else output_nodes:
                     await self.process_regular_node(output_node)
@@ -2520,24 +3103,15 @@ class Executor:
             raise Exception(f"Errors occurred during iteration:\n{error_string}")
 
     async def __process_nodes(self):
+        refuse_reads_across_loops(self.chain)
         self.__send_chain_start()
         gens_by_outs: dict[NodeId, set[NodeId]] = {}
         for node_id in self.chain.topological_order():
             node = self.chain.nodes[node_id]
             if isinstance(node, GeneratorNode):
-                collector_nodes, output_nodes, __all_iterated_nodes = (
-                    self.__get_iterated_nodes(node)
-                )
-                for collector in collector_nodes:
-                    if gens_by_outs.get(collector.id, None) is not None:
-                        gens_by_outs[collector.id].add(node.id)
-                    else:
-                        gens_by_outs[collector.id] = {node.id}
-                for out_node in output_nodes:
-                    if gens_by_outs.get(out_node.id, None) is not None:
-                        gens_by_outs[out_node.id].add(node.id)
-                    else:
-                        gens_by_outs[out_node.id] = {node.id}
+                collector_nodes, output_nodes, _ = self.__get_iterated_nodes(node)
+                for sink in (*collector_nodes, *output_nodes):
+                    gens_by_outs.setdefault(sink.id, set()).add(node.id)
         self.__looped = {
             generator
             for generators in gens_by_outs.values()
@@ -2549,6 +3123,13 @@ class Executor:
             finally:
                 self.__end_loop()
                 await self.__close_window()
+        # A seek-bar generator that feeds no sink runs for what it shows (shown_alone).
+        for node in self.chain.nodes.values():
+            if isinstance(node, GeneratorNode) and shown_alone(
+                self.chain, node, self.__looped
+            ):
+                await self.progress.suspend()
+                await self.process_generator_node(node)
         non_iterable_output_nodes = [
             node
             for node, iter_node in self.chain.get_parent_iterator_map().items()
@@ -2580,11 +3161,8 @@ class Executor:
                         raise
                     logger.exception("Broadcast failed while execution was exiting")
             finally:
-                try:
-                    self.node_cache.clear()
-                    self.__run_cleanups(preserve_error or sys.exc_info()[0] is not None)
-                finally:
-                    pass
+                self.node_cache.clear()
+                self.__run_cleanups(preserve_error or sys.exc_info()[0] is not None)
 
     def __run_cleanups(self, preserve_error: bool) -> None:
         run_cleanup_groups(

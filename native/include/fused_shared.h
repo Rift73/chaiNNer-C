@@ -12,7 +12,7 @@
 
 /* One fused tap, value * coefficient + sum rounded once. In the baseline unit the
  * CRT's fmaf (B3's call); in an ISA unit (/arch:AVX2 defines __AVX2__) the FMA3
- * instruction, since fmaf stays a CRT call there (SP4a compiler check). */
+ * instruction, since fmaf stays a CRT call there. */
 static float fused_tap(float value, float coefficient, float sum)
 {
 #if defined(__AVX2__)

@@ -21,4 +21,6 @@ export interface OutputProps {
     readonly size: Readonly<Size> | undefined;
     readonly setSize: (size: Readonly<Size>) => void;
     readonly sequenceType?: Type;
+    /** The node's seek bar, for a large image output's maximized view. */
+    readonly seekBar?: JSX.Element;
 }

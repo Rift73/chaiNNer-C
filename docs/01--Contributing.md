@@ -4,9 +4,8 @@
 
 1. Fork the repository on GitHub
 2. Clone the forked repository to your local machine
-3. Install the dependencies of the frontend with `npm ci`
-4. Install the dev dependencies of the backend with `pip install -r requirements.txt`
-5. Install the dependencies of the backend with `python ./backend/src/run.py --close-after-start --install-builtin-packages`. The backend will install all of its dependencies with this command, including torch. This can take a while, so be patient.
+3. Build the native layer and set up the development environment as described in [`native/BUILDING.md`](../native/BUILDING.md) (the build's Python, `native\Build.ps1`, the test environment from `requirements.txt`)
+4. Install the dependencies of the frontend with `npm ci`
 
 ChaiNNer is an Electron application that uses Python for the backend. The frontend and backend communicate through a JSON API. The frontend is located in the `src` folder and the backend is located in the `backend` folder.
 
@@ -146,8 +145,8 @@ Let's go through the metadata:
 -   `inputs` declares all arguments of the python function. In our case, we have 2 inputs: `img` and `radius`. `ImageInput` and `NumberInput` are classes that define the type of the input. `ImageInput` is used for images, and `NumberInput` is used for numbers. `NumberInput` takes a few arguments. `minimum` and `maximum` define the range of the number, `default` defines the default value, and `precision` defines the number of decimal places.
 -   `outputs` declares all return values of the python function. In our case, we return one image. `ImageOutput` is used for images. `shape_as=0` means that the output image has the same size and number of channels as the input image.
 
-For more information about metadata, see the [Node Metadata docs](nodes.md#node-metadata).
+For more information about metadata, see the [Node Metadata docs](03--Nodes.md#node-metadata).
 
 And that's it. We have successfully implemented a new node. Now we can start chaiNNer and see our new node in action.
 
-For more information about nodes, see [the nodes documentation](nodes.md).
+For more information about nodes, see [the nodes documentation](03--Nodes.md).

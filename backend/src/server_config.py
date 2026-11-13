@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,20 @@ def __getattr__(name: str) -> object:
     }
     globals()["LOG_CONFIG"] = log_config
     return log_config
+
+
+class SSEFilter(logging.Filter):
+    """Leaves out the access log lines of the event streams that opened."""
+
+    def __init__(self, routes: tuple[str, ...]):
+        super().__init__()
+        self.routes = routes
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        request: str = getattr(record, "request", "")
+        return not (
+            request.endswith(self.routes) and getattr(record, "status", None) == 200
+        )
 
 
 @dataclass

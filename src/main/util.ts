@@ -1,4 +1,13 @@
-import { constants, mkdirSync, renameSync, rmSync, writeFileSync } from 'fs';
+import {
+    closeSync,
+    constants,
+    fsyncSync,
+    mkdirSync,
+    openSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { delay } from '../common/util';
@@ -72,7 +81,8 @@ const renameRetryingSync = (from: string, to: string): void => {
 /**
  * Writes a file through a temporary file in the same folder and a rename, so a reader finds
  * either the old content or the new one, never a partial file (a crash or a second instance
- * writing at the same time).
+ * writing at the same time). The content is flushed to the disk before the rename: a rename can
+ * reach it first, and a power loss would then leave the name with no content.
  */
 export const writeFileAtomic = async (
     file: string,
@@ -81,7 +91,13 @@ export const writeFileAtomic = async (
     await fs.mkdir(path.dirname(file), { recursive: true });
     const temp = tempFileFor(file);
     try {
-        await fs.writeFile(temp, content, 'utf-8');
+        const handle = await fs.open(temp, 'w');
+        try {
+            await handle.writeFile(content, 'utf-8');
+            await handle.sync();
+        } finally {
+            await handle.close();
+        }
         await renameRetrying(temp, file);
     } catch (error) {
         await fs.rm(temp, { force: true });
@@ -94,10 +110,43 @@ export const writeFileAtomicSync = (file: string, content: string): void => {
     mkdirSync(path.dirname(file), { recursive: true });
     const temp = tempFileFor(file);
     try {
-        writeFileSync(temp, content, 'utf-8');
+        const fd = openSync(temp, 'w');
+        try {
+            writeFileSync(fd, content, 'utf-8');
+            fsyncSync(fd);
+        } finally {
+            closeSync(fd);
+        }
         renameRetryingSync(temp, file);
     } catch (error) {
         rmSync(temp, { force: true });
         throw error;
+    }
+};
+
+/** Whether `file` is `folder` or inside it (case-insensitively on Windows, as its paths are). */
+export const isInFolder = (file: string, folder: string): boolean => {
+    const relative = path.relative(folder, file);
+    return !path.isAbsolute(relative) && relative.split(path.sep)[0] !== '..';
+};
+
+/**
+ * Calls `attempt` until it resolves or `deadline` (a Date.now() time) has passed, waiting 1 ms after
+ * the first failure and twice as long after each next one, at most 250 ms. Rejects with the last
+ * attempt's error.
+ */
+export const retryUntil = async <T>(
+    attempt: () => Promise<T>,
+    deadline: number,
+    wait = 1
+): Promise<T> => {
+    try {
+        return await attempt();
+    } catch (error) {
+        if (Date.now() >= deadline) {
+            throw error;
+        }
+        await delay(Math.min(wait, deadline - Date.now()));
+        return retryUntil(attempt, deadline, Math.min(wait * 2, 250));
     }
 };

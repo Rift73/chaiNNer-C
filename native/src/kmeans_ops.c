@@ -9,7 +9,6 @@
 #include "run_kernels.h"
 #include <float.h>
 #include <limits.h>
-#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 

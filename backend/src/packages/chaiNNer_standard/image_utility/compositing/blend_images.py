@@ -59,8 +59,6 @@ BLEND_OVERLAY_X0_Y0_FACTORS = {
     BlendOverlayPosition.BOTTOM_LEFT: np.array([0, 1]),
     BlendOverlayPosition.BOTTOM: np.array([0.5, 1]),
     BlendOverlayPosition.BOTTOM_RIGHT: np.array([1, 1]),
-    BlendOverlayPosition.PERCENT_OFFSET: np.array([1, 1]),
-    BlendOverlayPosition.PIXEL_OFFSET: np.array([0, 0]),
 }
 
 

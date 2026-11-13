@@ -13,17 +13,11 @@ namespace {
 
 using namespace cn::run;
 
-/* native_adjustments._channels: a two- or three-dimensional image without an empty axis. */
-void adjustable_shape(const Image &image)
-{
-    if (image.height == 0 || image.width == 0) throw NodeError("ValueError", "Invalid image shape " + shape_text(image));
-}
-
 /* native_adjustments.adjust: the result has the image's shape; an enforced image is C-ordered, so the channel
  * stride is 1. */
 Value adjust(const Image &image, int op, double a = 0, double b = 0, bool clip = false)
 {
-    adjustable_shape(image);
+    shaped(image);
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     check(cn_adjust_f32(image.data, out.data(), pixels(image), size_t(image.channels), 1, op, float(a), float(b),
                         clip ? 1 : 0));
@@ -63,7 +57,7 @@ void color_levels(NodeContext &, std::span<const Value> inputs, std::vector<Valu
     unsigned mask = unsigned(std::get<bool>(inputs[3])) | unsigned(std::get<bool>(inputs[2])) << 1 |
                     unsigned(std::get<bool>(inputs[1])) << 2 | unsigned(std::get<bool>(inputs[4])) << 3;
     double gamma = number(inputs[7]);
-    adjustable_shape(image);
+    shaped(image);
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     check(cn_levels_f32(image.data, out.data(), pixels(image), size_t(image.channels), 1, mask, float(number(inputs[5])),
                         float(number(inputs[6])), float(gamma > 0.001 ? gamma : 0.001), float(number(inputs[8])),
@@ -86,7 +80,7 @@ void opacity(NodeContext &, std::span<const Value> inputs, std::vector<Value> &o
         outputs.push_back(inputs[0]);
         return;
     }
-    adjustable_shape(image);
+    shaped(image);
     MutableImage out = MutableImage::allocate(image.height, image.width, 4);
     check(cn_opacity_f32(image.data, out.data(), pixels(image), size_t(image.channels), float(value / 100)));
     outputs.push_back(std::move(out).publish());
@@ -156,7 +150,7 @@ void log_to_linear(NodeContext &, std::span<const Value> inputs, std::vector<Val
     if (offset == 1.0) throw NodeError("ValueError", "Black and White must differ");
     double gain = 1.0 / (1.0 - offset);
     const Image &image = std::get<Image>(inputs[0]);
-    adjustable_shape(image);
+    shaped(image);
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     check(cn_log_linear_f32(image.data, out.data(), image.values(), float(white), float(gamma), float(offset),
                             float(gain), float(0.002 / gamma), std::get<bool>(inputs[4]) ? 1 : 0));
@@ -169,7 +163,7 @@ void generate_threshold(NodeContext &, std::span<const Value> inputs, std::vecto
 {
     const Image &image = std::get<Image>(inputs[0]);
     Image colours = image.channels == 4 ? select_channels(image, {0, 1, 2}) : image;
-    adjustable_shape(colours);
+    shaped(colours);
     int value = 0;
     check(cn_auto_threshold(colours.data, pixels(colours), size_t(colours.channels), int(std::get<int64_t>(inputs[1])),
                             &value));
@@ -179,7 +173,7 @@ void generate_threshold(NodeContext &, std::span<const Value> inputs, std::vecto
 /* native_color_ops.linear: image * factor + offset (c_floats). */
 Image linear(const Image &image, double factor, double offset)
 {
-    adjustable_shape(image);
+    shaped(image);
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     check(cn_color_linear(image.data, out.data(), image.values(), float(factor), float(offset)));
     return std::move(out).publish();
@@ -237,7 +231,7 @@ void threshold(NodeContext &, std::span<const Value> inputs, std::vector<Value> 
     double smoothness = double(integer(inputs[5])) / 10;
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     if (!std::get<bool>(inputs[4])) {
-        adjustable_shape(image);
+        shaped(image);
         check(cn_threshold_hard(image.data, out.data(), image.values(), kind, float(value), float(maximum),
                                 dispatch::cv2_use_ipp() ? 1 : 0));
         outputs.push_back(std::move(out).publish());
@@ -262,7 +256,7 @@ void threshold_adaptive(NodeContext &, std::span<const Value> inputs, std::vecto
     int method = int(std::get<int64_t>(inputs[3]));
     int64_t radius = integer(inputs[4]);
     int delta = int(std::nearbyint(number(inputs[5]) / 100 * 255));
-    adjustable_shape(image);
+    shaped(image);
     std::vector<uint8_t> source = to_uint8(image, true), mean(source.size()), result(source.size());
     size_t height = size_t(image.height), width = size_t(image.width);
     if (method == 0) {

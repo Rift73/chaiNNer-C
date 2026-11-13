@@ -232,7 +232,7 @@ static long convert_generic(const convert_job *j, size_t begin, size_t end)
     return events;
 }
 
-/* The D7 loops over [begin, end), one per (type, output, normalize); returns the
+/* The conversion loops over [begin, end), one per (type, output, normalize); returns the
  * event bits. u8 -> f32 (type 2, output 0) reads B3's quotients in round to
  * nearest and otherwise divides as B3 does; the clamp leaves the quotients as they
  * are in every mode. f32 -> f32 is the clamp, or a copy when normalize is 0. */

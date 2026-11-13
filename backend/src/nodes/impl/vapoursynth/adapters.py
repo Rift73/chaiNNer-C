@@ -159,23 +159,53 @@ VIDEO_FILE_TYPES = tuple(
     ).split()
 )
 
+# Text boxes' placeholders: at most 28 characters (the node shows about 31), each
+# example a value the box takes.
 _PLACEHOLDERS = {
-    "int": "Default",
-    "float": "Default",
-    "ranges": "e.g. 682-687, 713-717, 721",
+    "ranges": "e.g. 10-20, 35",
     "fraction": "e.g. 24000/1001",
-    "sequence": "e.g. 0.35, 0",
-    "texts": "one for all planes, or a list: ['x 2 *', '']",
-    # vsexprtools' ExprLike: a list is one expression, a tuple one per plane.
-    "expressions": "one for all planes, or a tuple: ('x 2 *', '')",
-    "extra": "Python value, e.g. 1, 'text', [1, 2] or {'name': 1}",
+    "extra": "Python value, e.g. [1, 2]",
 }
+
+# Field order dropdowns (vstools' FieldBased; True is top field first) by source.
+_TFF = "vstools.FieldBased.TFF"
+_BFF = "vstools.FieldBased.BFF"
+_FIELD_ORDER = {
+    DEFAULT: "As the video says",
+    _TFF: "Top field first (TFF)",
+    _BFF: "Bottom field first (BFF)",
+    "vstools.FieldBased.PROGRESSIVE": "Progressive",
+}
+# Type aliases the catalog does not resolve: (enum, the members they allow, or all).
+_ENUM_ALIASES = {
+    "OneDimConvMode": ("ConvMode", ("HORIZONTAL", "VERTICAL", "HV")),
+    "SpatialConvMode": ("ConvMode", ("SQUARE", "HORIZONTAL", "VERTICAL", "HV")),
+    "TempConvMode": ("ConvMode", ("TEMPORAL",)),
+    "ExprOpBase": ("ExprOp", ()),
+}
+# Words of enum names that stay in capitals in their sentence-case label, and those
+# that are people's names.
+_ACRONYMS = frozenset(
+    {
+        *("HQ", "SAD", "RTC", "ZIP", "OPENC", "CL", "LR", "HR", "THR", "RGC", "RGCL"),
+        # Backends and their compilers.
+        *("CPU", "GPU", "CUDA", "NVRTC", "ISPC", "HIP", "HIPRTC", "SYCL", "OPENCL"),
+        # Filters, field orders, colour names and expression tokens.
+        *("DFTTEST", "DPIR", "NLMEANS", "MINBLUR", "FLUXSMOOTHST", "TFF", "BFF", "HV"),
+        *("RGB", "RGBH", "RGBS", "YUV", "GRAY", "GRAYH", "GRAYS", "FCC", "GCC", "MMG"),
+        *("ICTCP", "YCGCO", "NW", "SE", "SW", "EQ", "NE", "GE", "LE", "GT", "LT"),
+    }
+)
+_PROPER = frozenset(
+    {"BLACKMAN", "HARRIS", "KAISER", "BESSEL", "BARLETT", "HANN", "NUTTALL", "SIERRA"}
+)
+_KEPT_WORD = re.compile(r"RG\w*\d|\d+[A-Z]")
 
 # The last part of annotation names, by what they mean.
 _CLIPS = {"VideoNode", "ConstantFormatVideoNode", "VariableFormatVideoNode"}
 # A clip or (nested) lists of clips (vstools'), so it also takes a list of clips.
 _CLIP_ITERABLES = {"VideoNodeIterable"}
-_CALLABLES = ("VSFunction", "Callable", "GenericVSFunction")
+_CALLABLES = ("VSFunction", "Callable", "GenericVSFunction", "_DebanderFunc")
 _RANGES = {
     "FrameRange",
     "FrameRangeN",
@@ -283,6 +313,7 @@ _OUTPUT_PATH = re.compile(r"^(out|dest|log)|folder|dir|cache|index", re.IGNORECA
 _RANGE = re.compile(r"\s*(\d+)\s*(?:-\s*(\d+)\s*)?")
 _WHOLE = re.compile(r"[+-]?\d+")
 _ENUM_REPR = re.compile(r"<(?:class ')?([\w.]+)(?:'>|: (.*)>)")
+_NUMBER_ITEMS = frozenset({"int", "float", "None"})
 _LITERAL_ERRORS = (ValueError, TypeError, SyntaxError, MemoryError, RecursionError)
 
 
@@ -326,12 +357,10 @@ class Adapter:
     # numbers, Repair.Mode | bool's False): a Python value input beside it gives them.
     other: bool = False
 
-    def make_input(
-        self, label: str, param: Param, input_id: int, value: object = None
-    ) -> BaseInput:
+    def make_input(self, label: str, input_id: int, value: object = None) -> BaseInput:
         """The input; `value` (from start_value) is the value it starts with instead of
         the function's default."""
-        return self._widget(label, param, value).with_id(input_id)
+        return self._widget(label, value).with_id(input_id)
 
     def start_value(self, value: object) -> object:
         """A value an overlay sets as the input's starting value (a TOML number, text
@@ -347,7 +376,10 @@ class Adapter:
             if not isinstance(value, bool):
                 raise ValueError(f"{value!r} is not true or false")
             shown = value
-        elif self._number_field():
+        elif kind in ("int", "float"):
+            if isinstance(value, str):
+                # A number written as a text ("20"), as the text box took it.
+                value = ast.literal_eval(self._source(value) or "None")
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"{value!r} is not a number")
             shown = value
@@ -360,13 +392,6 @@ class Adapter:
         self._source(shown)
         return shown
 
-    def _number_field(self) -> bool:
-        # A number without a default (None) is an optional text instead: chaiNNer's
-        # number field cannot be empty.
-        return self.kind in ("int", "float") and not (
-            self.optional and self.default is None
-        )
-
     def to_source(self, value: object) -> str | None:
         """The argument's Python source, or None to leave the argument out (the function
         then uses its default). Raises ValueError, in plain English, for bad input."""
@@ -375,7 +400,7 @@ class Adapter:
             return None
         return source
 
-    def _widget(self, label: str, param: Param, value: object) -> BaseInput:
+    def _widget(self, label: str, value: object) -> BaseInput:
         kind = self.kind
         shown = self.default if value is None else value
         if kind in ("clip", "optional_clip"):
@@ -403,8 +428,8 @@ class Adapter:
                 if kind == "format"
                 else None,
             )
-        if self._number_field():
-            return NumberInput(
+        if kind in ("int", "float"):
+            number = NumberInput(
                 label,
                 precision=0 if kind == "int" else "unlimited",
                 step=1 if kind == "int" else 0.1,
@@ -412,22 +437,50 @@ class Adapter:
                 min=None,
                 max=None,
             )
-        placeholder = _PLACEHOLDERS.get(
-            ("expressions" if self.nested else "texts")
-            if kind == "text" and self.container == "list"
-            else kind
-        )
-        if kind == "extra":
-            if self.var_keyword:
-                placeholder = "Python dict, e.g. {'name': 1}"
-            elif param.annotation.strip():
-                label = f"{label} ({param.annotation.strip()})"
+            if not (self.optional and self.default is None):
+                return number
+            # No default to show: empty leaves the argument out.
+            number.make_optional()
+            if isinstance(shown, (int, float)):
+                number.default = shown
+            return number
         text = TextInput(
             label,
-            placeholder=placeholder,
+            placeholder=self.placeholder(),
             default=shown if isinstance(shown, str) else None,
         )
         return text.make_optional() if self.optional else text
+
+    def _text_box(self) -> bool:
+        return not (
+            self.choices
+            or self.kind in ("clip", "optional_clip", "clip_or_filter", "path", "bool")
+            or self.kind in ("int", "float")
+        )
+
+    def placeholder(self) -> str | None:
+        """A text box's hint: what to type, as an example the box takes."""
+        kind = self.kind
+        if not self._text_box():
+            return None
+        if kind == "sequence":
+            return "e.g. 0, 2" if self.integers else "e.g. 0.35, 0"
+        if kind == "text":
+            if self.nested or self.name == "expr":
+                return "e.g. x 2 *"
+            return "text, or ['a', 'b']" if self.container == "list" else None
+        if kind == "extra" and self.var_keyword:
+            return "e.g. {'name': 1}"
+        return _PLACEHOLDERS.get(kind)
+
+    def missing(self, label: str) -> str:
+        """The error of a required value that was not given."""
+        if not self._text_box():
+            return f"{label} needs a value."
+        hint = self.placeholder()
+        return f"{label} needs a value: type one in its box" + (
+            f" ({hint})." if hint else "."
+        )
 
     def _source(self, value: object) -> str | None:
         kind = self.kind
@@ -634,9 +687,22 @@ def _first_rule(param: Param, members: list[ast.expr], enums: Enums) -> Adapter:
     callable_ = any(last.startswith(_CALLABLES) for last in lasts)
     sequences = [(m, _elements(m)) for m in members if _last(m) in _SEQUENCES]
 
+    # A number beside a function is what is usually given (Dehalo's blur sigma): a
+    # typed box, no socket. So is one beside a clip when the function's default is a
+    # number (finalize_clip's bits, DPIR's strength, a fade's colour); a required one
+    # (based_diff_mask's ref_or_height) or the first (a main clip) keeps its socket.
+    numeric = bool(lasts & {"int", "float", "SupportsFloat"}) or any(
+        isinstance(m, ast.Subscript) and _elements(m) and _elements(m) <= _NUMBER_ITEMS
+        for m in members
+    )
+    numeric_default = numeric and _is_number(_literal(param.default))
     clips = _CLIPS | _CLIP_ITERABLES
     clip_sequence = any(e and e <= clips for _, e in sequences)
-    if lasts & clips or clip_sequence:
+    # A format (resample's) or a kernel (ClampScaler's reference) beside a clip:
+    # the dropdown.
+    if (lasts & clips or clip_sequence) and not (
+        numeric_default or lasts & (_FORMATS | _KERNEL_ALIASES)
+    ):
         if callable_:
             return Adapter("clip_or_filter", name=name, optional=optional)
         return Adapter(
@@ -665,12 +731,17 @@ def _first_rule(param: Param, members: list[ast.expr], enums: Enums) -> Adapter:
     for kind, names in _COLOUR_NAMES.items():
         if lasts & names:
             return _choice(param, kind, _colour_choices(kind), optional)
-    # depth(clip, 16): a format-or-bits parameter is a number of bits.
-    if lasts & _FORMATS and "int" not in lasts:
+    # depth(clip, 16), finalize_clip(clip, 10): a format-or-bits parameter is a
+    # number of bits; a format-or-int one named otherwise is a format.
+    if lasts & _FORMATS and ("int" not in lasts or "bit" not in name):
         return _choice(param, "format", _FORMAT_CHOICES, optional)
+    if lasts & _FORMATS:
+        return _number_adapter(param, "int", optional)
 
     choices, literals, imports = _enum_choices(members, enums)
-    numbers = lasts & {"int", "float"}
+    numbers = lasts & {"int", "float"} | (
+        {"float"} if "SupportsFloat" in lasts else set()
+    )
     number_sequences = [
         (m, e) for m, e in sequences if e and e <= {"int", "float", "None"}
     ]
@@ -679,8 +750,11 @@ def _first_rule(param: Param, members: list[ast.expr], enums: Enums) -> Adapter:
         # A bool beside the enum is two more choices (Repair.Mode | bool's False).
         bools = [("True", "True"), ("False", "False")] if "bool" in lasts else []
         enum = _choice(param, "enum", _unique(choices + literals + bools), optional)
+        if any(source == _TFF for _, source in choices):
+            enum = _field_order(enum)
         return replace(enum, imports=imports)
-    if callable_:
+    # A function or a switch (show_pretty_progress): the switch.
+    if callable_ and not numeric and "bool" not in lasts:
         return Adapter("clip_or_filter", name=name, optional=optional)
     if "bool" in lasts:
         default = _literal(param.default)
@@ -889,6 +963,22 @@ def _choice(
     )
 
 
+def _field_order(enum: Adapter) -> Adapter:
+    """A field order dropdown in words, top field first first, without the True and
+    False that repeat TFF and BFF; a `tff` (the field order of interlaced video, which
+    every such function refuses to be progressive) also without Progressive."""
+    drop = {"True", "False"}
+    if enum.name == "tff":
+        drop.add("vstools.FieldBased.PROGRESSIVE")
+    order = list(_FIELD_ORDER)
+    choices = sorted(
+        ((_FIELD_ORDER[s], s) for _, s in enum.choices if s not in drop),
+        key=lambda choice: order.index(choice[1]),
+    )
+    default = {"True": _TFF, "False": _BFF}.get(str(enum.default), enum.default)
+    return replace(enum, choices=tuple(choices), default=default)
+
+
 def _colour_choices(kind: str) -> tuple[tuple[str, str], ...]:
     return tuple((f"{label} ({n})", str(n)) for n, label in _COLOUR[kind])
 
@@ -928,11 +1018,14 @@ def _enum_choices(
         # Built-in names are never enums; skipping them skips the catalog scan.
         if _last(member) in _BUILTINS:
             continue
-        entry = _enum_entry(_dotted(member), enums)
+        alias = _ENUM_ALIASES.get(_last(member))
+        entry = _enum_entry(alias[0] if alias else _dotted(member), enums)
         if entry is not None:
             # Module-qualified (vsdenoise.bm3d.Profile.HIGH; VapourSynth's own
             # through `vs`): vstools has enums of VapourSynth's names (FieldBased).
             for m in entry["members"]:
+                if alias and alias[1] and m["name"] not in alias[1]:
+                    continue
                 import_line, expr = qualified(entry["import"], m["expr"])
                 choices.append((_plain(m["name"]), expr))
                 if import_line:
@@ -1128,7 +1221,23 @@ def _is_none(node: ast.expr) -> bool:
 
 
 def _plain(name: str) -> str:
-    return name.replace("_", " ")
+    """An enum member's name as a label in sentence case ("TWO_WAY_MATCH" -> "Two way
+    match", "NONE" -> "None"), keeping acronyms, people's names and codes with digits
+    (a model code such as "C4F16_DN" or "BM3D" stays as it is)."""
+    words = name.split("_")
+    if not name.isupper() or any(c.isdigit() for c in words[0]):
+        return " ".join(words)
+    if len(words) == 1:
+        return name if name in _ACRONYMS else name.capitalize()
+    plain = []
+    for index, word in enumerate(words):
+        if word in _ACRONYMS or _KEPT_WORD.fullmatch(word):
+            plain.append(word)
+        elif word in _PROPER or index == 0:
+            plain.append(word.capitalize())
+        else:
+            plain.append(word.lower())
+    return " ".join(plain)
 
 
 def _unique(choices: list[tuple[str, str]]) -> tuple[tuple[str, str], ...]:

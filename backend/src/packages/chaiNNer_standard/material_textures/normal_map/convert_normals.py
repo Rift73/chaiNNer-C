@@ -5,13 +5,6 @@ import numpy as np
 import navi
 from nodes.impl import native_geometry
 from nodes.impl.image_utils import NormalMapType
-from nodes.impl.normals.util import (
-    XYZ,
-    gr_to_xyz,
-    octahedral_gr_to_xyz,
-    xyz_to_bgr,
-    xyz_to_octahedral_bgr,
-)
 from nodes.properties.inputs import EnumInput, ImageInput
 from nodes.properties.outputs import ImageOutput
 
@@ -68,37 +61,11 @@ def convert_normals_node(
     from_type: NormalMapType,
     to_type: NormalMapType,
 ) -> np.ndarray:
-    if native_geometry.image_supported(img):
-        formats = (
-            NormalMapType.DIRECTX,
-            NormalMapType.OPENGL,
-            NormalMapType.OCTAHEDRAL,
-        )
-        return native_geometry.normal_map(
-            img, 2, formats.index(from_type), formats.index(to_type)
-        )
-    # Step 1: Read/decode the image to get the XYZ components of the normals
-
-    # we define this as DirectX normals
-    xyz: XYZ
-    if from_type == NormalMapType.DIRECTX:
-        xyz = gr_to_xyz(img)
-    elif from_type == NormalMapType.OPENGL:
-        xyz = gr_to_xyz(img)
-        # OpenGL to DirectX
-        _, y, _ = xyz
-        np.negative(y, out=y)
-    elif from_type == NormalMapType.OCTAHEDRAL:
-        xyz = octahedral_gr_to_xyz(img)
-
-    # Step 2: Convert/encode the XYZ components of the normals to BGR
-
-    if to_type == NormalMapType.DIRECTX:
-        return xyz_to_bgr(xyz)
-    elif to_type == NormalMapType.OPENGL:
-        # DirectX to OpenGL
-        _, y, _ = xyz
-        np.negative(y, out=y)
-        return xyz_to_bgr(xyz)
-    elif to_type == NormalMapType.OCTAHEDRAL:
-        return xyz_to_octahedral_bgr(xyz)
+    formats = (
+        NormalMapType.DIRECTX,
+        NormalMapType.OPENGL,
+        NormalMapType.OCTAHEDRAL,
+    )
+    return native_geometry.normal_map(
+        img, 2, formats.index(from_type), formats.index(to_type)
+    )

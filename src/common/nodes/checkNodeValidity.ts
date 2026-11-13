@@ -1,7 +1,12 @@
 import { isSameType } from '@chainner/navi';
 import { Input, InputData, InputId, NodeSchema } from '../common-types';
 import { FunctionInstance } from '../types/function';
-import { generateAssignmentErrorTrace, printErrorTrace, simpleError } from '../types/mismatch';
+import {
+    clipImageError,
+    generateAssignmentErrorTrace,
+    printErrorTrace,
+    simpleError,
+} from '../types/mismatch';
 import { nullType, withoutNull } from '../types/util';
 import { assertNever } from '../util';
 import { VALID, Validity, invalid } from '../Validity';
@@ -105,6 +110,9 @@ export const checkNodeValidity = ({
         for (const { inputId, assignedType, inputType } of functionInstance.inputErrors) {
             const input = schema.inputs.find((i) => i.id === inputId)!;
 
+            const clipError = clipImageError(assignedType, withoutNull(inputType), input.label);
+            if (clipError) return invalid(clipError);
+
             const error = simpleError(assignedType, withoutNull(inputType));
             if (error) {
                 return invalid(
@@ -124,8 +132,8 @@ export const checkNodeValidity = ({
             );
         }
 
-        // eslint-disable-next-line no-unreachable-loop
-        for (const { message } of functionInstance.outputErrors) {
+        if (functionInstance.outputErrors.length > 0) {
+            const { message } = functionInstance.outputErrors[0];
             return invalid(`Some inputs are incompatible with each other. ${message ?? ''}`);
         }
     }
@@ -139,7 +147,7 @@ export const checkNodeValidity = ({
             });
             if (sourceLineage !== undefined) {
                 // eslint-disable-next-line @typescript-eslint/no-use-before-define
-                const lineageValid = checkAssignedLineage(sourceLineage, nodeId, input.id, schema);
+                const lineageValid = checkAssignedLineage(sourceLineage, input.id, schema);
                 if (!lineageValid.isValid) {
                     return lineageValid;
                 }
@@ -187,7 +195,6 @@ export const checkRequiredInputs = (schema: NodeSchema, inputData: InputData): V
 
 export const checkAssignedLineage = (
     sourceLineage: Lineage | null,
-    nodeId: string,
     inputId: InputId,
     schema: NodeSchema
 ): Validity => {

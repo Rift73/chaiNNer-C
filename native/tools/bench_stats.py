@@ -8,7 +8,7 @@ second position effect. A case's noise floor for one launch is the largest
 
 Throughput verdicts take two floors: the shared noise floor, which flags a
 change, and the current floor: a win must beat the larger of the two, and a
-regression must exceed the current floor to block (see bench.py, Noise floors).
+regression must exceed the current floor to block (native/README.md, Bench).
 
 CPU per item is paired the same way: a pair's CPU ratio is A's job CPU seconds per
 item over B's, so values above 1 mean B used less CPU. The same quads, floors and

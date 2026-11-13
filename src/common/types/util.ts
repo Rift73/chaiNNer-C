@@ -12,7 +12,9 @@ import {
     isStructInstance,
     without,
 } from '@chainner/navi';
+import { OutputId } from '../common-types';
 import { getChainnerScope } from './chainner-scope';
+import type { FunctionInstance } from './function';
 
 export type IntNumberType =
     | NumericLiteralType
@@ -50,6 +52,19 @@ export const isColor = createAssertFn('Color');
 export const isDirectory = createAssertFn('Directory');
 export const isTrue = createAssertFn('true');
 export const isFalse = createAssertFn('false');
+
+/**
+ * The first output that gives a VapourSynth clip (struct VideoClip, not a filter or an image) as
+ * the node's types stand; undefined while they are unknown.
+ */
+export const getClipOutput = (
+    instance: Pick<FunctionInstance, 'outputs'> | undefined
+): OutputId | undefined => {
+    for (const [outputId, type] of instance?.outputs ?? []) {
+        if (isStructInstance(type) && type.descriptor.name === 'VideoClip') return outputId;
+    }
+    return undefined;
+};
 
 export const getFields = <N extends keyof KnownStructDefinitions>(
     type: StructInstanceType & KnownInstance<N>

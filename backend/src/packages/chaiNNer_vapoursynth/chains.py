@@ -3,12 +3,16 @@ chain's compiled script, and the named clips of Preview Clips and Save Script.""
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import stat
 import time
 import uuid
+from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
+from threading import Lock
 from typing import Callable, Mapping, Sequence, cast
 
 import numpy as np
@@ -19,16 +23,17 @@ from nodes.condition import Condition
 from nodes.groups import if_group, optional_list_group
 from nodes.impl.native_graph import graph
 from nodes.impl.vapoursynth.catalog_types import Method
-from nodes.impl.vapoursynth.runner import VSScriptError, save_frames
+from nodes.impl.vapoursynth.runner import VSScriptError, clip_props, save_frames
 from nodes.impl.vapoursynth.schema_gen import MAIN_ID
 from nodes.impl.vapoursynth.script import (
+    ClipShown,
     VideoClip,
     VSFilter,
     compile_script,
     image_clip,
 )
 from nodes.properties.inputs import TextInput, VideoClipInput
-from nodes.utils.utils import get_h_w_c
+from nodes.utils.utils import file_identity, get_h_w_c
 
 from .settings import get_settings
 
@@ -98,6 +103,61 @@ def write_script(
     script = compile_script(outputs, cache_mb=get_settings(context).cache_mb)
     graph().atomic_write(path, script.replace("\n", os.linesep).encode("utf-8"))
     return path
+
+
+# The field orders of _FieldBased's values, as a clip's node shows them.
+FIELD_ORDERS = {0: "Progressive", 1: "BFF", 2: "TFF"}
+
+
+# shown_clip's results of the last clips, by _shown_key, as video.py keeps its scans:
+# a clip whose statement and files are unchanged is not evaluated again.
+SHOWN: OrderedDict[tuple, ClipShown] = OrderedDict()
+SHOWN_LOCK = Lock()
+SHOWN_KEPT = 64
+
+
+def _shown_key(clip: VideoClip) -> tuple:
+    """What shown_clip's result depends on: the statements up to the clip (the loader
+    and its options), their imports, and the version (file_identity) of each file a
+    statement names."""
+    records: list[VideoClip | VSFilter] = [clip]
+    texts: list[str] = []
+    for record in records:
+        texts.append(record.stmt if isinstance(record, VideoClip) else record.expr)
+        records.extend(record.deps)
+    names = {
+        node.value
+        for text in texts
+        for node in ast.walk(ast.parse(text))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    files = tuple(file_identity(Path(n)) for n in sorted(names) if Path(n).is_file())
+    return (tuple(texts), clip.imports, files)
+
+
+def shown_clip(context: NodeContext, clip: VideoClip) -> VideoClip:
+    """The clip with its size, frame rate and field order, for its node to show (Load
+    Clip's): one evaluation of the script up to it, which reads its first frame, unless
+    an unchanged clip was evaluated before (SHOWN)."""
+    key = _shown_key(clip)
+    with SHOWN_LOCK:
+        kept = SHOWN.get(key)
+        if kept is not None:
+            SHOWN.move_to_end(key)
+            return replace(clip, shown=kept)
+    script = write_script(context, [(clip, "Clip")], chain_dir(context) / "shown.vpy")
+    info, props, _ = clip_props(script, 0, context)
+    shown = ClipShown(
+        width=info.width,
+        height=info.height,
+        fps=info.fps_num / info.fps_den if info.fps_num else 0.0,
+        field_order=FIELD_ORDERS.get(props.get("_FieldBased", -1), ""),
+    )
+    with SHOWN_LOCK:
+        SHOWN[key] = shown
+        while len(SHOWN) > SHOWN_KEPT:
+            SHOWN.popitem(last=False)
+    return replace(clip, shown=shown)
 
 
 def render_images(
@@ -235,14 +295,29 @@ def image_node_output(
     )
 
 
-def named_clip_inputs() -> list[BaseInput | NestedGroup]:
+def named_clip_inputs(
+    clip_help: str, by_method: bool = False
+) -> list[BaseInput | NestedGroup]:
     """Clip 1 and its name, then clips 2 to NAMED_CLIPS with theirs, which the user adds
-    a pair at a time. New inputs each call: registering a node numbers its inputs, so
-    pairs added later take new ids and the earlier ones keep theirs (saved chains)."""
+    a pair at a time; `clip_help` is each clip's pop-up, `by_method` as named_clips'.
+    New inputs each call:
+    registering a node numbers its inputs, so pairs added later take new ids and the
+    earlier ones keep theirs (saved chains)."""
 
     def pair(number: int) -> tuple[BaseInput, BaseInput]:
-        clip = VideoClipInput(f"Clip {number}")
-        name = TextInput(f"Name {number}", placeholder=f"Clip {number}")
+        clip = VideoClipInput(f"Clip {number}").with_docs(clip_help, hint=True)
+        empty = (
+            f"the method's name, such as Denoise, strong (BM3D); Clip {number} if two"
+            " clips share it"
+            if by_method
+            else f"Clip {number}"
+        )
+        name = TextInput(
+            f"Name {number}",
+            placeholder="Method's name" if by_method else f"Clip {number}",
+        ).with_docs(
+            f"The clip's name in vsview; empty: {empty}. Example: Filtered", hint=True
+        )
         return (clip if number == 1 else clip.make_optional()), name.make_optional()
 
     return [
@@ -258,15 +333,25 @@ def named_clip_inputs() -> list[BaseInput | NestedGroup]:
 
 
 def named_clips(
-    values: Sequence[VideoClip | str | None],
+    values: Sequence[VideoClip | str | None], by_method: bool = False
 ) -> list[tuple[VideoClip, str]]:
-    """The connected clips of named_clip_inputs' values, in order, each with its name
-    (or "Clip <number>"): the i-th becomes output i of the script."""
+    """The connected clips of named_clip_inputs' values, in order, each with its name,
+    else (`by_method`) its method's label if no other unnamed clip has it, else
+    "Clip <number>": the i-th becomes output i of the script."""
+    pairs = [
+        (number, clip, name)
+        for number, (clip, name) in enumerate(
+            zip(values[::2], values[1::2], strict=True), 1
+        )
+        if isinstance(clip, VideoClip)
+    ]
+    labels = [clip.label for _, clip, name in pairs if not name]
     named: list[tuple[VideoClip, str]] = []
-    pairs = zip(values[::2], values[1::2], strict=True)
-    for number, (clip, name) in enumerate(pairs, 1):
-        if isinstance(clip, VideoClip):
-            named.append(
-                (clip, name if isinstance(name, str) and name else f"Clip {number}")
-            )
+    for number, clip, name in pairs:
+        if isinstance(name, str) and name:
+            named.append((clip, name))
+        elif by_method and clip.label and labels.count(clip.label) == 1:
+            named.append((clip, clip.label))
+        else:
+            named.append((clip, f"Clip {number}"))
     return named

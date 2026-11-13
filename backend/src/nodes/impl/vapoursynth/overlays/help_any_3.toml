@@ -1,0 +1,1078 @@
+# Help texts of Any Function methods: zsmooth, descale, resize2, fmtc, placebo, noise.
+
+[method."zsmooth.Median"]
+help = "Replaces each pixel with the median of its square neighbourhood (3x3 to 7x7): removes specks and dots, keeps edges better than a blur. The Sharpen and Blur node's Median (median_blur) is the friendlier form. Example: `radius = 1`."
+
+[method."zsmooth.Median".docs]
+radius = "Neighbourhood per plane: 1 = 3x3, 2 = 5x5, 3 = 7x7, 0 = plane left alone. Larger = stronger, flatter. Example: `radius = 1`"
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."zsmooth.InterQuartileMean"]
+help = "Averages the middle half of the values in each pixel's neighbourhood, dropping the darkest and brightest quarter: a denoise between a median and a blur. Example: `radius = 1`."
+
+[method."zsmooth.InterQuartileMean".docs]
+radius = "Neighbourhood per plane: 1 = 3x3, 2 = 5x5, 3 = 7x7, 0 = plane left alone. Larger = stronger, flatter. Example: `radius = 1`"
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."zsmooth.SmartMedian"]
+help = "Median that only touches flat areas: pixels whose neighbourhood varies less than the threshold are smoothed, edges and texture stay. Example: `radius = 1`, `threshold = 50`."
+
+[method."zsmooth.SmartMedian".docs]
+radius = "Neighbourhood per plane: 1 = 3x3, 2 = 5x5, 3 = 7x7, 0 = plane left alone. Larger = stronger, flatter. Example: `radius = 1`"
+threshold = "Variance limit below which a pixel is smoothed; higher = more is smoothed. Default 50 for radius 1, 128 for larger. In the clip's own scale unless `scalep = True`. Example: `threshold = 50`"
+scalep = "True = thresholds are on the 8-bit scale (0-255) and scaled to the clip's bit depth. Example: `scalep = True`"
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."zsmooth.RemoveGrain"]
+help = "Classic spatial cleaner with 24 modes (median variants, blurs, line-preserving clips) working on 3x3 neighbourhoods. The Sharpen and Blur node's Small 3x3 filters (remove_grain) is the friendlier form. Example: `mode = 1` removes isolated specks."
+
+[method."zsmooth.RemoveGrain".docs]
+mode = "Mode 1 to 24 per plane (a short list reuses its last value for the remaining planes); see the RGVS documentation for each mode. Example: `mode = [11, 0]`"
+
+[method."zsmooth.Repair"]
+help = "Limits a filtered clip to the range of the original's neighbourhood, undoing damage such as thinned lines from strong filtering. Wire the original into Repair clip. The Sharpen and Blur node's Limit to a reference (repair) is the friendlier form. Example: `mode = 1`."
+
+[method."zsmooth.Repair".docs]
+mode = "Mode 1 to 24 per plane, as in RemoveGrain's RGVS documentation; a short list reuses its last value. Example: `mode = 1`"
+repairclip = "The reference, usually the clip before filtering."
+
+[method."zsmooth.VerticalCleaner"]
+help = "Fast vertical median: removes thin horizontal lines and specks such as dropout lines. The Sharpen and Blur node's Vertical median (vertical_cleaner) is the friendlier form. Example: `mode = 1`."
+
+[method."zsmooth.VerticalCleaner".docs]
+mode = "Per plane: 0 = pass through, 1 = vertical median, 2 = relaxed median that keeps more detail. Example: `mode = 1`"
+
+[method."zsmooth.Clense"]
+help = "Temporal median of the previous, current and next frame: removes one-frame spots and flicker on still content; moving areas can ghost. The Sharpen and Blur node's Remove one-frame specks (clense) is the friendlier form. Example: no settings needed."
+
+[method."zsmooth.Clense".docs]
+previous = "Clip to take the previous frames from. Empty = the main clip."
+next = "Clip to take the next frames from. Empty = the main clip."
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."zsmooth.ForwardClense"]
+help = "Temporal median of the current frame and the two after it. Like Clense, for the first frame after a scene change. Example: no settings needed."
+
+[method."zsmooth.ForwardClense".docs]
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."zsmooth.BackwardClense"]
+help = "Temporal median of the current frame and the two before it. Like Clense, for the last frame before a scene change. Example: no settings needed."
+
+[method."zsmooth.BackwardClense".docs]
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."zsmooth.TemporalMedian"]
+help = "Median over several frames: removes noise and spots on still content; moving areas can ghost. The first and last Radius frames are left alone. Example: `radius = 2`."
+
+[method."zsmooth.TemporalMedian".docs]
+radius = "Frames on each side, 1 to 10. Larger = stronger, more ghosting. Example: `radius = 2`"
+scenechange = "True = frames across a scene change are not used; needs scene-change properties on the clip (Clip Properties node). Example: `scenechange = True`"
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."zsmooth.TemporalSoften"]
+help = "Averages up to Radius frames on each side, using only pixels that differ from the current frame by less than the threshold: a gentle temporal denoise. Example: `radius = 2`, `threshold = 4`."
+
+[method."zsmooth.TemporalSoften".docs]
+radius = "Frames on each side, 1 to 7. Example: `radius = 2`"
+threshold = "Largest difference from the current frame that is still averaged, per plane; 0 copies the plane. Default 4, 8, 8 for YUV. Example: `threshold = [4, 8, 8]`"
+scenechange = "0 = no scene detection; -1 = use the clip's scene-change properties; above 0 = detect with this percentage (needs the misc plugin). Example: `scenechange = 0`"
+scalep = "True = thresholds are on the 8-bit scale (0-255) and scaled to the clip's bit depth. Example: `scalep = True`"
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."zsmooth.FluxSmoothT"]
+help = "Temporal denoise: averages a pixel with the previous or next frame where both lie on the same side of it and within the threshold, so motion is kept. The Sharpen and Blur node's Smooth over time (flux_smooth) is the friendlier form. Example: `temporal_threshold = 7`."
+
+[method."zsmooth.FluxSmoothT".docs]
+temporal_threshold = "Largest frame-to-frame difference that is averaged, per plane; higher = stronger; a negative value copies that plane. Example: `temporal_threshold = 7`"
+scalep = "True = thresholds are on the 8-bit scale (0-255) and scaled to the clip's bit depth. Example: `scalep = True`"
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."zsmooth.FluxSmoothST"]
+help = "FluxSmoothT plus averaging with the eight neighbouring pixels within the spatial threshold. Stronger; the outer rows and columns are not processed. Example: `temporal_threshold = 7`, `spatial_threshold = 7`."
+
+[method."zsmooth.FluxSmoothST".docs]
+temporal_threshold = "Largest frame-to-frame difference that is averaged, per plane; higher = stronger; a negative value copies that plane. Example: `temporal_threshold = 7`"
+spatial_threshold = "Largest difference to a neighbouring pixel that is averaged, per plane; a negative value skips that plane. Example: `spatial_threshold = 7`"
+scalep = "True = thresholds are on the 8-bit scale (0-255) and scaled to the clip's bit depth. Example: `scalep = True`"
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."zsmooth.DegrainMedian"]
+help = "Limited median over the 3x3 neighbourhood of the previous, current and next frame: removes grain and noise while each pixel changes at most by Limit. Example: `limit = 7`, `mode = 1`."
+
+[method."zsmooth.DegrainMedian".docs]
+limit = "Largest change per pixel, per plane; higher = smoother. Example: `limit = [7, 5, 5]`"
+mode = "0 (strongest) to 5 (weakest), per plane. Example: `mode = 1`"
+interlaced = "True = uses lines of the same field; only for interlaced clips. Example: `interlaced = True`"
+norow = "True = leaves out the pixels left and right of the current one (frames before and after still count). Example: `norow = True`"
+scalep = "True = thresholds are on the 8-bit scale (0-255) and scaled to the clip's bit depth. Example: `scalep = True`"
+
+[method."zsmooth.TTempSmooth"]
+help = "Motion-adaptive temporal smoother: weights neighbouring frames by distance and by how much pixels differ, so still areas smooth and motion is kept. Example: `maxr = 3`, `thresh = [4, 5, 5]`."
+
+[method."zsmooth.TTempSmooth".docs]
+maxr = "Largest temporal radius, 1 to 7. Higher = steadier picture, slower. Example: `maxr = 3`"
+thresh = "Largest frame difference that is smoothed, 8-bit scale, per plane. Example: `thresh = [4, 5, 5]`"
+mdiff = "Differences up to this (8-bit scale) count as none. Example: `mdiff = [2, 3, 3]`"
+strength = "How fast the weight of farther frames drops, 1 to 8; higher = stronger smoothing. Example: `strength = 2`"
+scthresh = "Scene-change threshold in percent of the largest brightness change; 0 = off, -1 = use the clip's properties. Example: `scthresh = 12`"
+fp = "True = the weight not given to other frames goes back to the current pixel, fewer artefacts in motion. Example: `fp = False`"
+pfclip = "A prefiltered clip used only to decide the weights; the original's pixels are averaged."
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."zsmooth.TemporalRepair"]
+help = "Brings static detail back from Repair clip onto a filtered clip (experimental). Example: `mode = 0`."
+
+[method."zsmooth.TemporalRepair".docs]
+repairclip = "The clip whose static detail is restored, usually the source."
+mode = "0 to 4: 0 and 4 look only over time, 1 to 3 also at neighbours; 2 restores least, 4 most. Example: `mode = 0`"
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."zsmooth.CCD"]
+help = "Colour denoiser (Camcorder Color Denoiser): averages nearby pixels whose colour is within the threshold. For colour blotches in camcorder and VHS footage. The Denoise node's Chroma denoise (ccd) is the friendlier form. Example: `threshold = 4`."
+
+[method."zsmooth.CCD".docs]
+threshold = "Colour distance below which pixels are averaged; higher = stronger. YUV needs about half the RGB value. Example: `threshold = 4`"
+temporal_radius = "Frames on each side also used, 0 to 10. Example: `temporal_radius = 1`"
+points = "Which of the low, medium and high reference points are used. Example: `points = [True, True, False]`"
+scale = "Size of the area searched; 1 = 25x25. Empty = from the clip height. Example: `scale = 1`"
+ref = "Clip used only for the weights; same format and size as the main clip."
+
+[method."zsmooth.Cnr4"]
+help = "Temporal colour denoiser (after Cnr2): removes colour noise that changes from frame to frame, for analogue captures. 8 to 16-bit YUV only. Example: `mode = 'oxx'`."
+
+[method."zsmooth.Cnr4".docs]
+mode = "One letter per plane: `o` wide (stronger), `x` narrow (keeps more detail). Example: `mode = 'oxx'`"
+radius = "Temporal radius, 1 to 10. Example: `radius = 2`"
+sense = "Noise and motion sensitivity per plane, 0 to 255; higher catches more noise, risks ghosting. Example: `sense = [35, 47, 47]`"
+str = "Strength per plane, 0 to 255. Example: `str = [192, 255, 255]`"
+pow = "Power of the weight curve; below 1 = weaker, fewer artefacts. Example: `pow = [1.0, 1.0, 1.0]`"
+tmode = "Temporal mode 0 to 4; higher = weaker and faster. Example: `tmode = 0`"
+wmode = "Distance weighting 0 to 3; higher = weaker. Example: `wmode = 0`"
+scenechange = "True (default) = respects the clip's scene-change properties; off causes artefacts across cuts. Example: `scenechange = False`"
+ref = "Clip used only for the weights, such as a prefiltered copy."
+
+[method."zsmooth.DCTFilter"]
+help = "Scales the frequencies of each 8x8 block (DCT) and transforms back: lowering the high factors softens and removes fine noise. Example: `factors = [1, 1, 1, 1, 1, 0.5, 0.5, 0.5]`."
+
+[method."zsmooth.DCTFilter".docs]
+factors = "Eight factors 0 to 1, low to high frequency, for the rows and columns of each block; keep the first at 1. Example: `factors = [1, 1, 1, 1, 1, 0.5, 0.5, 0.5]`"
+planes = "Planes to process, as a list of plane numbers (0 = Y or R); the others are copied. Empty = all. Example: `planes = [0]`"
+
+[method."descale.Debilinear"]
+help = "Undoes an upscale made with the bilinear kernel, back to the size the picture was made at. The Resize node's Descale: undo an upscale (descale) is the friendlier form. The kernel and size must match the original upscale. Example: `width = 1280`, `height = 720`."
+
+[method."descale.Debilinear".docs]
+width = "Width the picture was made at, before the upscale. Example: `width = 1280`"
+height = "Height the picture was made at, before the upscale. Example: `height = 720`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+
+[method."descale.Debicubic"]
+help = "Undoes an upscale made with the bicubic kernel, back to the size the picture was made at. The Resize node's Descale: undo an upscale (descale) is the friendlier form. The kernel and size must match the original upscale. Example: `width = 1280`, `height = 720`."
+
+[method."descale.Debicubic".docs]
+width = "Width the picture was made at, before the upscale. Example: `width = 1280`"
+height = "Height the picture was made at, before the upscale. Example: `height = 720`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+b = "Bicubic b of the original upscale. Example: `b = 0`"
+c = "Bicubic c of the original upscale. Example: `c = 0.5`"
+
+[method."descale.Delanczos"]
+help = "Undoes an upscale made with the Lanczos kernel, back to the size the picture was made at. The Resize node's Descale: undo an upscale (descale) is the friendlier form. The kernel and size must match the original upscale. Example: `width = 1280`, `height = 720`."
+
+[method."descale.Delanczos".docs]
+width = "Width the picture was made at, before the upscale. Example: `width = 1280`"
+height = "Height the picture was made at, before the upscale. Example: `height = 720`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+taps = "Taps of the kernel (Lanczos default 3). Example: `taps = 3`"
+
+[method."descale.Depoint"]
+help = "Undoes an upscale made with the point kernel, back to the size the picture was made at. The Resize node's Descale: undo an upscale (descale) is the friendlier form. The kernel and size must match the original upscale. Example: `width = 1280`, `height = 720`."
+
+[method."descale.Depoint".docs]
+width = "Width the picture was made at, before the upscale. Example: `width = 1280`"
+height = "Height the picture was made at, before the upscale. Example: `height = 720`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+
+[method."descale.Despline16"]
+help = "Undoes an upscale made with the Spline16 kernel, back to the size the picture was made at. The Resize node's Descale: undo an upscale (descale) is the friendlier form. The kernel and size must match the original upscale. Example: `width = 1280`, `height = 720`."
+
+[method."descale.Despline16".docs]
+width = "Width the picture was made at, before the upscale. Example: `width = 1280`"
+height = "Height the picture was made at, before the upscale. Example: `height = 720`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+
+[method."descale.Despline36"]
+help = "Undoes an upscale made with the Spline36 kernel, back to the size the picture was made at. The Resize node's Descale: undo an upscale (descale) is the friendlier form. The kernel and size must match the original upscale. Example: `width = 1280`, `height = 720`."
+
+[method."descale.Despline36".docs]
+width = "Width the picture was made at, before the upscale. Example: `width = 1280`"
+height = "Height the picture was made at, before the upscale. Example: `height = 720`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+
+[method."descale.Despline64"]
+help = "Undoes an upscale made with the Spline64 kernel, back to the size the picture was made at. The Resize node's Descale: undo an upscale (descale) is the friendlier form. The kernel and size must match the original upscale. Example: `width = 1280`, `height = 720`."
+
+[method."descale.Despline64".docs]
+width = "Width the picture was made at, before the upscale. Example: `width = 1280`"
+height = "Height the picture was made at, before the upscale. Example: `height = 720`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+
+[method."descale.Decustom"]
+help = "Undoes an upscale made with the your own kernel, back to the size the picture was made at. The Resize node's Descale: undo an upscale (descale) is the friendlier form. The kernel and size must match the original upscale. Example: `width = 1280`, `height = 720`."
+
+[method."descale.Decustom".docs]
+width = "Width the picture was made at, before the upscale. Example: `width = 1280`"
+height = "Height the picture was made at, before the upscale. Example: `height = 720`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+taps = "Taps of the kernel (Lanczos default 3). Example: `taps = 3`"
+custom_kernel = "A Python function of the distance that returns the kernel value. Example: `custom_kernel = lambda x: 1.0 - x` with `taps = 1` is bilinear"
+
+[method."descale.Bilinear"]
+help = "Scales with descale's own bilinear kernel, the exact counterpart of its De function: upscale a descaled clip to compare with the source. The Resize node's Upscale a descaled clip (rescale) is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."descale.Bilinear".docs]
+width = "Output width. Example: `width = 1920`"
+height = "Output height. Example: `height = 1080`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+
+[method."descale.Bicubic"]
+help = "Scales with descale's own bicubic kernel, the exact counterpart of its De function: upscale a descaled clip to compare with the source. The Resize node's Upscale a descaled clip (rescale) is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."descale.Bicubic".docs]
+width = "Output width. Example: `width = 1920`"
+height = "Output height. Example: `height = 1080`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+b = "Bicubic b of the original upscale. Example: `b = 0`"
+c = "Bicubic c of the original upscale. Example: `c = 0.5`"
+
+[method."descale.Lanczos"]
+help = "Scales with descale's own Lanczos kernel, the exact counterpart of its De function: upscale a descaled clip to compare with the source. The Resize node's Upscale a descaled clip (rescale) is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."descale.Lanczos".docs]
+width = "Output width. Example: `width = 1920`"
+height = "Output height. Example: `height = 1080`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+taps = "Taps of the kernel (Lanczos default 3). Example: `taps = 3`"
+
+[method."descale.Point"]
+help = "Scales with descale's own point kernel, the exact counterpart of its De function: upscale a descaled clip to compare with the source. The Resize node's Upscale a descaled clip (rescale) is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."descale.Point".docs]
+width = "Output width. Example: `width = 1920`"
+height = "Output height. Example: `height = 1080`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+
+[method."descale.Spline16"]
+help = "Scales with descale's own Spline16 kernel, the exact counterpart of its De function: upscale a descaled clip to compare with the source. The Resize node's Upscale a descaled clip (rescale) is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."descale.Spline16".docs]
+width = "Output width. Example: `width = 1920`"
+height = "Output height. Example: `height = 1080`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+
+[method."descale.Spline36"]
+help = "Scales with descale's own Spline36 kernel, the exact counterpart of its De function: upscale a descaled clip to compare with the source. The Resize node's Upscale a descaled clip (rescale) is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."descale.Spline36".docs]
+width = "Output width. Example: `width = 1920`"
+height = "Output height. Example: `height = 1080`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+
+[method."descale.Spline64"]
+help = "Scales with descale's own Spline64 kernel, the exact counterpart of its De function: upscale a descaled clip to compare with the source. The Resize node's Upscale a descaled clip (rescale) is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."descale.Spline64".docs]
+width = "Output width. Example: `width = 1920`"
+height = "Output height. Example: `height = 1080`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+
+[method."descale.ScaleCustom"]
+help = "Scales with descale's own your own kernel, the exact counterpart of its De function: upscale a descaled clip to compare with the source. The Resize node's Upscale a descaled clip (rescale) is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."descale.ScaleCustom".docs]
+width = "Output width. Example: `width = 1920`"
+height = "Output height. Example: `height = 1080`"
+border_handling = "How the upscale padded the edges: 0 mirror, 1 black (zero), 2 repeat the last row. Example: `border_handling = 1`"
+src_left = "Left edge of the source area, in pixels; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area, in pixels; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = Width. Example: `src_width = 1279.5`"
+src_height = "Height of the source area. Empty = Height. Example: `src_height = 719.5`"
+ignore_mask = "Mask clip the size of the main clip; white areas (credits added after the upscale) are left out of the calculation."
+opt = "CPU code path: 0 automatic, 1 plain, 2 AVX2. Example: `opt = 1`"
+taps = "Taps of the kernel (Lanczos default 3). Example: `taps = 3`"
+custom_kernel = "A Python function of the distance that returns the kernel value. Example: `custom_kernel = lambda x: 1.0 - x` with `taps = 1` is bilinear"
+
+[method."resize2.Bicubic"]
+help = "The VapourSynth resizer (Bicubic) with extra Blur and Force settings: scales and converts format in one step. The Resize node's Resize with a kernel (scale), or Convert Format's Convert, is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."resize2.Bicubic".docs]
+width = "Output width. Empty = unchanged. Example: `width = 1920`"
+height = "Output height. Empty = unchanged. Example: `height = 1080`"
+format = "Output format, as a VapourSynth format constant or its number. Empty = unchanged."
+matrix = "Output matrix, H.273 number (1 = BT.709, 6 = BT.601); needed when converting to YUV. Example: `matrix = 1`"
+matrix_s = "Output matrix by name. Example: `matrix_s = '709'`"
+transfer = "Output transfer (gamma curve), H.273 number. Example: `transfer = 1`"
+primaries = "Output primaries, H.273 number. Example: `primaries = 1`"
+range = "Output range: 0 limited, 1 full. Example: `range = 1`"
+chromaloc = "Output chroma location: 0 left, 1 centre, 2 top left. Example: `chromaloc = 0`"
+matrix_in = "Input matrix, used only when the clip does not say. Example: `matrix_in = 1`"
+transfer_in = "Input transfer, used only when the clip does not say. Example: `transfer_in = 1`"
+primaries_in = "Input primaries, used only when the clip does not say. Example: `primaries_in = 1`"
+range_in = "Input range, used only when the clip does not say: 0 limited, 1 full. Example: `range_in = 0`"
+chromaloc_in = "Input chroma location, used only when the clip does not say. Example: `chromaloc_in = 0`"
+filter_param_a = "Kernel setting: Bicubic b, or Lanczos taps. Example: `filter_param_a = 0`"
+filter_param_b = "Kernel setting: Bicubic c. Example: `filter_param_b = 0.5`"
+resample_filter_uv = "Kernel for the colour planes: point, bilinear, bicubic, spline16, spline36, spline64 or lanczos. Empty = the same. Example: `resample_filter_uv = 'spline36'`"
+filter_param_a_uv = "Filter param a for the colour-plane kernel. Example: `filter_param_a_uv = 0`"
+filter_param_b_uv = "Filter param b for the colour-plane kernel. Example: `filter_param_b_uv = 0.5`"
+dither_type = "Dither when the output is integer: none (default), ordered, random, error_diffusion. Example: `dither_type = 'error_diffusion'`"
+src_left = "Left edge of the source area; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = whole frame. Example: `src_width = 1918`"
+src_height = "Height of the source area. Empty = whole frame. Example: `src_height = 1078`"
+nominal_luminance = "Brightness of the value 1.0, in cd/m2, for HDR conversions. Example: `nominal_luminance = 203`"
+approximate_gamma = "True (default) = faster table for gamma curves. Example: `approximate_gamma = False`"
+chromatic_adaptation = "True (default) = adjusts colours when the white point changes; off usually gives a colour cast. Example: `chromatic_adaptation = False`"
+blur = "Stretches the kernel: above 1 softer, below 1 sharper. Example: `blur = 1.5`"
+blur_uv = "Blur for the colour planes only. Example: `blur_uv = 1.2`"
+force = "True = scales even when the size does not change (zimg would skip it). Example: `force = True`"
+force_h = "True = always processes horizontally. Example: `force_h = True`"
+force_v = "True = always processes vertically. Example: `force_v = True`"
+force_uv = "Force for the colour planes. Example: `force_uv = True`"
+force_h_uv = "Force horizontal processing of the colour planes. Example: `force_h_uv = True`"
+force_v_uv = "Force vertical processing of the colour planes. Example: `force_v_uv = True`"
+transfer_s = "Output transfer by name instead of number. Example: `transfer_s = '709'`"
+transfer_in_s = "Input transfer by name, used only when the clip does not say. Example: `transfer_in_s = '709'`"
+primaries_s = "Output primaries by name instead of number. Example: `primaries_s = '709'`"
+primaries_in_s = "Input primaries by name, used only when the clip does not say. Example: `primaries_in_s = '709'`"
+range_s = "Output range by name instead of number. Example: `range_s = 'full'`"
+range_in_s = "Input range by name, used only when the clip does not say. Example: `range_in_s = 'limited'`"
+chromaloc_s = "Output chromaloc by name instead of number. Example: `chromaloc_s = 'left'`"
+chromaloc_in_s = "Input chromaloc by name, used only when the clip does not say. Example: `chromaloc_in_s = 'left'`"
+matrix_in_s = "Input matrix by name, used only when the clip does not say. Example: `matrix_in_s = '709'`"
+cpu_type = "CPU code path; for testing only."
+
+[method."resize2.Bilinear"]
+help = "The VapourSynth resizer (Bilinear) with extra Blur and Force settings: scales and converts format in one step. The Resize node's Resize with a kernel (scale), or Convert Format's Convert, is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."resize2.Bilinear".docs]
+width = "Output width. Empty = unchanged. Example: `width = 1920`"
+height = "Output height. Empty = unchanged. Example: `height = 1080`"
+format = "Output format, as a VapourSynth format constant or its number. Empty = unchanged."
+matrix = "Output matrix, H.273 number (1 = BT.709, 6 = BT.601); needed when converting to YUV. Example: `matrix = 1`"
+matrix_s = "Output matrix by name. Example: `matrix_s = '709'`"
+transfer = "Output transfer (gamma curve), H.273 number. Example: `transfer = 1`"
+primaries = "Output primaries, H.273 number. Example: `primaries = 1`"
+range = "Output range: 0 limited, 1 full. Example: `range = 1`"
+chromaloc = "Output chroma location: 0 left, 1 centre, 2 top left. Example: `chromaloc = 0`"
+matrix_in = "Input matrix, used only when the clip does not say. Example: `matrix_in = 1`"
+transfer_in = "Input transfer, used only when the clip does not say. Example: `transfer_in = 1`"
+primaries_in = "Input primaries, used only when the clip does not say. Example: `primaries_in = 1`"
+range_in = "Input range, used only when the clip does not say: 0 limited, 1 full. Example: `range_in = 0`"
+chromaloc_in = "Input chroma location, used only when the clip does not say. Example: `chromaloc_in = 0`"
+filter_param_a = "Kernel setting: Bicubic b, or Lanczos taps. Example: `filter_param_a = 0`"
+filter_param_b = "Kernel setting: Bicubic c. Example: `filter_param_b = 0.5`"
+resample_filter_uv = "Kernel for the colour planes: point, bilinear, bicubic, spline16, spline36, spline64 or lanczos. Empty = the same. Example: `resample_filter_uv = 'spline36'`"
+filter_param_a_uv = "Filter param a for the colour-plane kernel. Example: `filter_param_a_uv = 0`"
+filter_param_b_uv = "Filter param b for the colour-plane kernel. Example: `filter_param_b_uv = 0.5`"
+dither_type = "Dither when the output is integer: none (default), ordered, random, error_diffusion. Example: `dither_type = 'error_diffusion'`"
+src_left = "Left edge of the source area; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = whole frame. Example: `src_width = 1918`"
+src_height = "Height of the source area. Empty = whole frame. Example: `src_height = 1078`"
+nominal_luminance = "Brightness of the value 1.0, in cd/m2, for HDR conversions. Example: `nominal_luminance = 203`"
+approximate_gamma = "True (default) = faster table for gamma curves. Example: `approximate_gamma = False`"
+chromatic_adaptation = "True (default) = adjusts colours when the white point changes; off usually gives a colour cast. Example: `chromatic_adaptation = False`"
+blur = "Stretches the kernel: above 1 softer, below 1 sharper. Example: `blur = 1.5`"
+blur_uv = "Blur for the colour planes only. Example: `blur_uv = 1.2`"
+force = "True = scales even when the size does not change (zimg would skip it). Example: `force = True`"
+force_h = "True = always processes horizontally. Example: `force_h = True`"
+force_v = "True = always processes vertically. Example: `force_v = True`"
+force_uv = "Force for the colour planes. Example: `force_uv = True`"
+force_h_uv = "Force horizontal processing of the colour planes. Example: `force_h_uv = True`"
+force_v_uv = "Force vertical processing of the colour planes. Example: `force_v_uv = True`"
+transfer_s = "Output transfer by name instead of number. Example: `transfer_s = '709'`"
+transfer_in_s = "Input transfer by name, used only when the clip does not say. Example: `transfer_in_s = '709'`"
+primaries_s = "Output primaries by name instead of number. Example: `primaries_s = '709'`"
+primaries_in_s = "Input primaries by name, used only when the clip does not say. Example: `primaries_in_s = '709'`"
+range_s = "Output range by name instead of number. Example: `range_s = 'full'`"
+range_in_s = "Input range by name, used only when the clip does not say. Example: `range_in_s = 'limited'`"
+chromaloc_s = "Output chromaloc by name instead of number. Example: `chromaloc_s = 'left'`"
+chromaloc_in_s = "Input chromaloc by name, used only when the clip does not say. Example: `chromaloc_in_s = 'left'`"
+matrix_in_s = "Input matrix by name, used only when the clip does not say. Example: `matrix_in_s = '709'`"
+cpu_type = "CPU code path; for testing only."
+
+[method."resize2.Lanczos"]
+help = "The VapourSynth resizer (Lanczos) with extra Blur and Force settings: scales and converts format in one step. The Resize node's Resize with a kernel (scale), or Convert Format's Convert, is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."resize2.Lanczos".docs]
+width = "Output width. Empty = unchanged. Example: `width = 1920`"
+height = "Output height. Empty = unchanged. Example: `height = 1080`"
+format = "Output format, as a VapourSynth format constant or its number. Empty = unchanged."
+matrix = "Output matrix, H.273 number (1 = BT.709, 6 = BT.601); needed when converting to YUV. Example: `matrix = 1`"
+matrix_s = "Output matrix by name. Example: `matrix_s = '709'`"
+transfer = "Output transfer (gamma curve), H.273 number. Example: `transfer = 1`"
+primaries = "Output primaries, H.273 number. Example: `primaries = 1`"
+range = "Output range: 0 limited, 1 full. Example: `range = 1`"
+chromaloc = "Output chroma location: 0 left, 1 centre, 2 top left. Example: `chromaloc = 0`"
+matrix_in = "Input matrix, used only when the clip does not say. Example: `matrix_in = 1`"
+transfer_in = "Input transfer, used only when the clip does not say. Example: `transfer_in = 1`"
+primaries_in = "Input primaries, used only when the clip does not say. Example: `primaries_in = 1`"
+range_in = "Input range, used only when the clip does not say: 0 limited, 1 full. Example: `range_in = 0`"
+chromaloc_in = "Input chroma location, used only when the clip does not say. Example: `chromaloc_in = 0`"
+filter_param_a = "Kernel setting: Bicubic b, or Lanczos taps. Example: `filter_param_a = 0`"
+filter_param_b = "Kernel setting: Bicubic c. Example: `filter_param_b = 0.5`"
+resample_filter_uv = "Kernel for the colour planes: point, bilinear, bicubic, spline16, spline36, spline64 or lanczos. Empty = the same. Example: `resample_filter_uv = 'spline36'`"
+filter_param_a_uv = "Filter param a for the colour-plane kernel. Example: `filter_param_a_uv = 0`"
+filter_param_b_uv = "Filter param b for the colour-plane kernel. Example: `filter_param_b_uv = 0.5`"
+dither_type = "Dither when the output is integer: none (default), ordered, random, error_diffusion. Example: `dither_type = 'error_diffusion'`"
+src_left = "Left edge of the source area; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = whole frame. Example: `src_width = 1918`"
+src_height = "Height of the source area. Empty = whole frame. Example: `src_height = 1078`"
+nominal_luminance = "Brightness of the value 1.0, in cd/m2, for HDR conversions. Example: `nominal_luminance = 203`"
+approximate_gamma = "True (default) = faster table for gamma curves. Example: `approximate_gamma = False`"
+chromatic_adaptation = "True (default) = adjusts colours when the white point changes; off usually gives a colour cast. Example: `chromatic_adaptation = False`"
+blur = "Stretches the kernel: above 1 softer, below 1 sharper. Example: `blur = 1.5`"
+blur_uv = "Blur for the colour planes only. Example: `blur_uv = 1.2`"
+force = "True = scales even when the size does not change (zimg would skip it). Example: `force = True`"
+force_h = "True = always processes horizontally. Example: `force_h = True`"
+force_v = "True = always processes vertically. Example: `force_v = True`"
+force_uv = "Force for the colour planes. Example: `force_uv = True`"
+force_h_uv = "Force horizontal processing of the colour planes. Example: `force_h_uv = True`"
+force_v_uv = "Force vertical processing of the colour planes. Example: `force_v_uv = True`"
+transfer_s = "Output transfer by name instead of number. Example: `transfer_s = '709'`"
+transfer_in_s = "Input transfer by name, used only when the clip does not say. Example: `transfer_in_s = '709'`"
+primaries_s = "Output primaries by name instead of number. Example: `primaries_s = '709'`"
+primaries_in_s = "Input primaries by name, used only when the clip does not say. Example: `primaries_in_s = '709'`"
+range_s = "Output range by name instead of number. Example: `range_s = 'full'`"
+range_in_s = "Input range by name, used only when the clip does not say. Example: `range_in_s = 'limited'`"
+chromaloc_s = "Output chromaloc by name instead of number. Example: `chromaloc_s = 'left'`"
+chromaloc_in_s = "Input chromaloc by name, used only when the clip does not say. Example: `chromaloc_in_s = 'left'`"
+matrix_in_s = "Input matrix by name, used only when the clip does not say. Example: `matrix_in_s = '709'`"
+cpu_type = "CPU code path; for testing only."
+
+[method."resize2.Point"]
+help = "The VapourSynth resizer (Point) with extra Blur and Force settings: scales and converts format in one step. The Resize node's Resize with a kernel (scale), or Convert Format's Convert, is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."resize2.Point".docs]
+width = "Output width. Empty = unchanged. Example: `width = 1920`"
+height = "Output height. Empty = unchanged. Example: `height = 1080`"
+format = "Output format, as a VapourSynth format constant or its number. Empty = unchanged."
+matrix = "Output matrix, H.273 number (1 = BT.709, 6 = BT.601); needed when converting to YUV. Example: `matrix = 1`"
+matrix_s = "Output matrix by name. Example: `matrix_s = '709'`"
+transfer = "Output transfer (gamma curve), H.273 number. Example: `transfer = 1`"
+primaries = "Output primaries, H.273 number. Example: `primaries = 1`"
+range = "Output range: 0 limited, 1 full. Example: `range = 1`"
+chromaloc = "Output chroma location: 0 left, 1 centre, 2 top left. Example: `chromaloc = 0`"
+matrix_in = "Input matrix, used only when the clip does not say. Example: `matrix_in = 1`"
+transfer_in = "Input transfer, used only when the clip does not say. Example: `transfer_in = 1`"
+primaries_in = "Input primaries, used only when the clip does not say. Example: `primaries_in = 1`"
+range_in = "Input range, used only when the clip does not say: 0 limited, 1 full. Example: `range_in = 0`"
+chromaloc_in = "Input chroma location, used only when the clip does not say. Example: `chromaloc_in = 0`"
+filter_param_a = "Kernel setting: Bicubic b, or Lanczos taps. Example: `filter_param_a = 0`"
+filter_param_b = "Kernel setting: Bicubic c. Example: `filter_param_b = 0.5`"
+resample_filter_uv = "Kernel for the colour planes: point, bilinear, bicubic, spline16, spline36, spline64 or lanczos. Empty = the same. Example: `resample_filter_uv = 'spline36'`"
+filter_param_a_uv = "Filter param a for the colour-plane kernel. Example: `filter_param_a_uv = 0`"
+filter_param_b_uv = "Filter param b for the colour-plane kernel. Example: `filter_param_b_uv = 0.5`"
+dither_type = "Dither when the output is integer: none (default), ordered, random, error_diffusion. Example: `dither_type = 'error_diffusion'`"
+src_left = "Left edge of the source area; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = whole frame. Example: `src_width = 1918`"
+src_height = "Height of the source area. Empty = whole frame. Example: `src_height = 1078`"
+nominal_luminance = "Brightness of the value 1.0, in cd/m2, for HDR conversions. Example: `nominal_luminance = 203`"
+approximate_gamma = "True (default) = faster table for gamma curves. Example: `approximate_gamma = False`"
+chromatic_adaptation = "True (default) = adjusts colours when the white point changes; off usually gives a colour cast. Example: `chromatic_adaptation = False`"
+blur = "Stretches the kernel: above 1 softer, below 1 sharper. Example: `blur = 1.5`"
+blur_uv = "Blur for the colour planes only. Example: `blur_uv = 1.2`"
+force = "True = scales even when the size does not change (zimg would skip it). Example: `force = True`"
+force_h = "True = always processes horizontally. Example: `force_h = True`"
+force_v = "True = always processes vertically. Example: `force_v = True`"
+force_uv = "Force for the colour planes. Example: `force_uv = True`"
+force_h_uv = "Force horizontal processing of the colour planes. Example: `force_h_uv = True`"
+force_v_uv = "Force vertical processing of the colour planes. Example: `force_v_uv = True`"
+transfer_s = "Output transfer by name instead of number. Example: `transfer_s = '709'`"
+transfer_in_s = "Input transfer by name, used only when the clip does not say. Example: `transfer_in_s = '709'`"
+primaries_s = "Output primaries by name instead of number. Example: `primaries_s = '709'`"
+primaries_in_s = "Input primaries by name, used only when the clip does not say. Example: `primaries_in_s = '709'`"
+range_s = "Output range by name instead of number. Example: `range_s = 'full'`"
+range_in_s = "Input range by name, used only when the clip does not say. Example: `range_in_s = 'limited'`"
+chromaloc_s = "Output chromaloc by name instead of number. Example: `chromaloc_s = 'left'`"
+chromaloc_in_s = "Input chromaloc by name, used only when the clip does not say. Example: `chromaloc_in_s = 'left'`"
+matrix_in_s = "Input matrix by name, used only when the clip does not say. Example: `matrix_in_s = '709'`"
+cpu_type = "CPU code path; for testing only."
+
+[method."resize2.Spline16"]
+help = "The VapourSynth resizer (Spline16) with extra Blur and Force settings: scales and converts format in one step. The Resize node's Resize with a kernel (scale), or Convert Format's Convert, is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."resize2.Spline16".docs]
+width = "Output width. Empty = unchanged. Example: `width = 1920`"
+height = "Output height. Empty = unchanged. Example: `height = 1080`"
+format = "Output format, as a VapourSynth format constant or its number. Empty = unchanged."
+matrix = "Output matrix, H.273 number (1 = BT.709, 6 = BT.601); needed when converting to YUV. Example: `matrix = 1`"
+matrix_s = "Output matrix by name. Example: `matrix_s = '709'`"
+transfer = "Output transfer (gamma curve), H.273 number. Example: `transfer = 1`"
+primaries = "Output primaries, H.273 number. Example: `primaries = 1`"
+range = "Output range: 0 limited, 1 full. Example: `range = 1`"
+chromaloc = "Output chroma location: 0 left, 1 centre, 2 top left. Example: `chromaloc = 0`"
+matrix_in = "Input matrix, used only when the clip does not say. Example: `matrix_in = 1`"
+transfer_in = "Input transfer, used only when the clip does not say. Example: `transfer_in = 1`"
+primaries_in = "Input primaries, used only when the clip does not say. Example: `primaries_in = 1`"
+range_in = "Input range, used only when the clip does not say: 0 limited, 1 full. Example: `range_in = 0`"
+chromaloc_in = "Input chroma location, used only when the clip does not say. Example: `chromaloc_in = 0`"
+filter_param_a = "Kernel setting: Bicubic b, or Lanczos taps. Example: `filter_param_a = 0`"
+filter_param_b = "Kernel setting: Bicubic c. Example: `filter_param_b = 0.5`"
+resample_filter_uv = "Kernel for the colour planes: point, bilinear, bicubic, spline16, spline36, spline64 or lanczos. Empty = the same. Example: `resample_filter_uv = 'spline36'`"
+filter_param_a_uv = "Filter param a for the colour-plane kernel. Example: `filter_param_a_uv = 0`"
+filter_param_b_uv = "Filter param b for the colour-plane kernel. Example: `filter_param_b_uv = 0.5`"
+dither_type = "Dither when the output is integer: none (default), ordered, random, error_diffusion. Example: `dither_type = 'error_diffusion'`"
+src_left = "Left edge of the source area; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = whole frame. Example: `src_width = 1918`"
+src_height = "Height of the source area. Empty = whole frame. Example: `src_height = 1078`"
+nominal_luminance = "Brightness of the value 1.0, in cd/m2, for HDR conversions. Example: `nominal_luminance = 203`"
+approximate_gamma = "True (default) = faster table for gamma curves. Example: `approximate_gamma = False`"
+chromatic_adaptation = "True (default) = adjusts colours when the white point changes; off usually gives a colour cast. Example: `chromatic_adaptation = False`"
+blur = "Stretches the kernel: above 1 softer, below 1 sharper. Example: `blur = 1.5`"
+blur_uv = "Blur for the colour planes only. Example: `blur_uv = 1.2`"
+force = "True = scales even when the size does not change (zimg would skip it). Example: `force = True`"
+force_h = "True = always processes horizontally. Example: `force_h = True`"
+force_v = "True = always processes vertically. Example: `force_v = True`"
+force_uv = "Force for the colour planes. Example: `force_uv = True`"
+force_h_uv = "Force horizontal processing of the colour planes. Example: `force_h_uv = True`"
+force_v_uv = "Force vertical processing of the colour planes. Example: `force_v_uv = True`"
+transfer_s = "Output transfer by name instead of number. Example: `transfer_s = '709'`"
+transfer_in_s = "Input transfer by name, used only when the clip does not say. Example: `transfer_in_s = '709'`"
+primaries_s = "Output primaries by name instead of number. Example: `primaries_s = '709'`"
+primaries_in_s = "Input primaries by name, used only when the clip does not say. Example: `primaries_in_s = '709'`"
+range_s = "Output range by name instead of number. Example: `range_s = 'full'`"
+range_in_s = "Input range by name, used only when the clip does not say. Example: `range_in_s = 'limited'`"
+chromaloc_s = "Output chromaloc by name instead of number. Example: `chromaloc_s = 'left'`"
+chromaloc_in_s = "Input chromaloc by name, used only when the clip does not say. Example: `chromaloc_in_s = 'left'`"
+matrix_in_s = "Input matrix by name, used only when the clip does not say. Example: `matrix_in_s = '709'`"
+cpu_type = "CPU code path; for testing only."
+
+[method."resize2.Spline36"]
+help = "The VapourSynth resizer (Spline36) with extra Blur and Force settings: scales and converts format in one step. The Resize node's Resize with a kernel (scale), or Convert Format's Convert, is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."resize2.Spline36".docs]
+width = "Output width. Empty = unchanged. Example: `width = 1920`"
+height = "Output height. Empty = unchanged. Example: `height = 1080`"
+format = "Output format, as a VapourSynth format constant or its number. Empty = unchanged."
+matrix = "Output matrix, H.273 number (1 = BT.709, 6 = BT.601); needed when converting to YUV. Example: `matrix = 1`"
+matrix_s = "Output matrix by name. Example: `matrix_s = '709'`"
+transfer = "Output transfer (gamma curve), H.273 number. Example: `transfer = 1`"
+primaries = "Output primaries, H.273 number. Example: `primaries = 1`"
+range = "Output range: 0 limited, 1 full. Example: `range = 1`"
+chromaloc = "Output chroma location: 0 left, 1 centre, 2 top left. Example: `chromaloc = 0`"
+matrix_in = "Input matrix, used only when the clip does not say. Example: `matrix_in = 1`"
+transfer_in = "Input transfer, used only when the clip does not say. Example: `transfer_in = 1`"
+primaries_in = "Input primaries, used only when the clip does not say. Example: `primaries_in = 1`"
+range_in = "Input range, used only when the clip does not say: 0 limited, 1 full. Example: `range_in = 0`"
+chromaloc_in = "Input chroma location, used only when the clip does not say. Example: `chromaloc_in = 0`"
+filter_param_a = "Kernel setting: Bicubic b, or Lanczos taps. Example: `filter_param_a = 0`"
+filter_param_b = "Kernel setting: Bicubic c. Example: `filter_param_b = 0.5`"
+resample_filter_uv = "Kernel for the colour planes: point, bilinear, bicubic, spline16, spline36, spline64 or lanczos. Empty = the same. Example: `resample_filter_uv = 'spline36'`"
+filter_param_a_uv = "Filter param a for the colour-plane kernel. Example: `filter_param_a_uv = 0`"
+filter_param_b_uv = "Filter param b for the colour-plane kernel. Example: `filter_param_b_uv = 0.5`"
+dither_type = "Dither when the output is integer: none (default), ordered, random, error_diffusion. Example: `dither_type = 'error_diffusion'`"
+src_left = "Left edge of the source area; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = whole frame. Example: `src_width = 1918`"
+src_height = "Height of the source area. Empty = whole frame. Example: `src_height = 1078`"
+nominal_luminance = "Brightness of the value 1.0, in cd/m2, for HDR conversions. Example: `nominal_luminance = 203`"
+approximate_gamma = "True (default) = faster table for gamma curves. Example: `approximate_gamma = False`"
+chromatic_adaptation = "True (default) = adjusts colours when the white point changes; off usually gives a colour cast. Example: `chromatic_adaptation = False`"
+blur = "Stretches the kernel: above 1 softer, below 1 sharper. Example: `blur = 1.5`"
+blur_uv = "Blur for the colour planes only. Example: `blur_uv = 1.2`"
+force = "True = scales even when the size does not change (zimg would skip it). Example: `force = True`"
+force_h = "True = always processes horizontally. Example: `force_h = True`"
+force_v = "True = always processes vertically. Example: `force_v = True`"
+force_uv = "Force for the colour planes. Example: `force_uv = True`"
+force_h_uv = "Force horizontal processing of the colour planes. Example: `force_h_uv = True`"
+force_v_uv = "Force vertical processing of the colour planes. Example: `force_v_uv = True`"
+transfer_s = "Output transfer by name instead of number. Example: `transfer_s = '709'`"
+transfer_in_s = "Input transfer by name, used only when the clip does not say. Example: `transfer_in_s = '709'`"
+primaries_s = "Output primaries by name instead of number. Example: `primaries_s = '709'`"
+primaries_in_s = "Input primaries by name, used only when the clip does not say. Example: `primaries_in_s = '709'`"
+range_s = "Output range by name instead of number. Example: `range_s = 'full'`"
+range_in_s = "Input range by name, used only when the clip does not say. Example: `range_in_s = 'limited'`"
+chromaloc_s = "Output chromaloc by name instead of number. Example: `chromaloc_s = 'left'`"
+chromaloc_in_s = "Input chromaloc by name, used only when the clip does not say. Example: `chromaloc_in_s = 'left'`"
+matrix_in_s = "Input matrix by name, used only when the clip does not say. Example: `matrix_in_s = '709'`"
+cpu_type = "CPU code path; for testing only."
+
+[method."resize2.Spline64"]
+help = "The VapourSynth resizer (Spline64) with extra Blur and Force settings: scales and converts format in one step. The Resize node's Resize with a kernel (scale), or Convert Format's Convert, is the friendlier form. Example: `width = 1920`, `height = 1080`."
+
+[method."resize2.Spline64".docs]
+width = "Output width. Empty = unchanged. Example: `width = 1920`"
+height = "Output height. Empty = unchanged. Example: `height = 1080`"
+format = "Output format, as a VapourSynth format constant or its number. Empty = unchanged."
+matrix = "Output matrix, H.273 number (1 = BT.709, 6 = BT.601); needed when converting to YUV. Example: `matrix = 1`"
+matrix_s = "Output matrix by name. Example: `matrix_s = '709'`"
+transfer = "Output transfer (gamma curve), H.273 number. Example: `transfer = 1`"
+primaries = "Output primaries, H.273 number. Example: `primaries = 1`"
+range = "Output range: 0 limited, 1 full. Example: `range = 1`"
+chromaloc = "Output chroma location: 0 left, 1 centre, 2 top left. Example: `chromaloc = 0`"
+matrix_in = "Input matrix, used only when the clip does not say. Example: `matrix_in = 1`"
+transfer_in = "Input transfer, used only when the clip does not say. Example: `transfer_in = 1`"
+primaries_in = "Input primaries, used only when the clip does not say. Example: `primaries_in = 1`"
+range_in = "Input range, used only when the clip does not say: 0 limited, 1 full. Example: `range_in = 0`"
+chromaloc_in = "Input chroma location, used only when the clip does not say. Example: `chromaloc_in = 0`"
+filter_param_a = "Kernel setting: Bicubic b, or Lanczos taps. Example: `filter_param_a = 0`"
+filter_param_b = "Kernel setting: Bicubic c. Example: `filter_param_b = 0.5`"
+resample_filter_uv = "Kernel for the colour planes: point, bilinear, bicubic, spline16, spline36, spline64 or lanczos. Empty = the same. Example: `resample_filter_uv = 'spline36'`"
+filter_param_a_uv = "Filter param a for the colour-plane kernel. Example: `filter_param_a_uv = 0`"
+filter_param_b_uv = "Filter param b for the colour-plane kernel. Example: `filter_param_b_uv = 0.5`"
+dither_type = "Dither when the output is integer: none (default), ordered, random, error_diffusion. Example: `dither_type = 'error_diffusion'`"
+src_left = "Left edge of the source area; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = whole frame. Example: `src_width = 1918`"
+src_height = "Height of the source area. Empty = whole frame. Example: `src_height = 1078`"
+nominal_luminance = "Brightness of the value 1.0, in cd/m2, for HDR conversions. Example: `nominal_luminance = 203`"
+approximate_gamma = "True (default) = faster table for gamma curves. Example: `approximate_gamma = False`"
+chromatic_adaptation = "True (default) = adjusts colours when the white point changes; off usually gives a colour cast. Example: `chromatic_adaptation = False`"
+blur = "Stretches the kernel: above 1 softer, below 1 sharper. Example: `blur = 1.5`"
+blur_uv = "Blur for the colour planes only. Example: `blur_uv = 1.2`"
+force = "True = scales even when the size does not change (zimg would skip it). Example: `force = True`"
+force_h = "True = always processes horizontally. Example: `force_h = True`"
+force_v = "True = always processes vertically. Example: `force_v = True`"
+force_uv = "Force for the colour planes. Example: `force_uv = True`"
+force_h_uv = "Force horizontal processing of the colour planes. Example: `force_h_uv = True`"
+force_v_uv = "Force vertical processing of the colour planes. Example: `force_v_uv = True`"
+transfer_s = "Output transfer by name instead of number. Example: `transfer_s = '709'`"
+transfer_in_s = "Input transfer by name, used only when the clip does not say. Example: `transfer_in_s = '709'`"
+primaries_s = "Output primaries by name instead of number. Example: `primaries_s = '709'`"
+primaries_in_s = "Input primaries by name, used only when the clip does not say. Example: `primaries_in_s = '709'`"
+range_s = "Output range by name instead of number. Example: `range_s = 'full'`"
+range_in_s = "Input range by name, used only when the clip does not say. Example: `range_in_s = 'limited'`"
+chromaloc_s = "Output chromaloc by name instead of number. Example: `chromaloc_s = 'left'`"
+chromaloc_in_s = "Input chromaloc by name, used only when the clip does not say. Example: `chromaloc_in_s = 'left'`"
+matrix_in_s = "Input matrix by name, used only when the clip does not say. Example: `matrix_in_s = '709'`"
+cpu_type = "CPU code path; for testing only."
+
+[method."resize2.Custom"]
+help = "The VapourSynth resizer with a kernel you write as a Python function. The Resize node's Resize with a kernel (scale) offers ready kernels. Example: `custom_kernel = lambda x: max(1.0 - abs(x), 0.0)`, `taps = 1`."
+
+[method."resize2.Custom".docs]
+width = "Output width. Empty = unchanged. Example: `width = 1920`"
+height = "Output height. Empty = unchanged. Example: `height = 1080`"
+format = "Output format, as a VapourSynth format constant or its number. Empty = unchanged."
+matrix = "Output matrix, H.273 number (1 = BT.709, 6 = BT.601); needed when converting to YUV. Example: `matrix = 1`"
+matrix_s = "Output matrix by name. Example: `matrix_s = '709'`"
+transfer = "Output transfer (gamma curve), H.273 number. Example: `transfer = 1`"
+primaries = "Output primaries, H.273 number. Example: `primaries = 1`"
+range = "Output range: 0 limited, 1 full. Example: `range = 1`"
+chromaloc = "Output chroma location: 0 left, 1 centre, 2 top left. Example: `chromaloc = 0`"
+matrix_in = "Input matrix, used only when the clip does not say. Example: `matrix_in = 1`"
+transfer_in = "Input transfer, used only when the clip does not say. Example: `transfer_in = 1`"
+primaries_in = "Input primaries, used only when the clip does not say. Example: `primaries_in = 1`"
+range_in = "Input range, used only when the clip does not say: 0 limited, 1 full. Example: `range_in = 0`"
+chromaloc_in = "Input chroma location, used only when the clip does not say. Example: `chromaloc_in = 0`"
+dither_type = "Dither when the output is integer: none (default), ordered, random, error_diffusion. Example: `dither_type = 'error_diffusion'`"
+src_left = "Left edge of the source area; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = whole frame. Example: `src_width = 1918`"
+src_height = "Height of the source area. Empty = whole frame. Example: `src_height = 1078`"
+nominal_luminance = "Brightness of the value 1.0, in cd/m2, for HDR conversions. Example: `nominal_luminance = 203`"
+approximate_gamma = "True (default) = faster table for gamma curves. Example: `approximate_gamma = False`"
+chromatic_adaptation = "True (default) = adjusts colours when the white point changes; off usually gives a colour cast. Example: `chromatic_adaptation = False`"
+blur = "Stretches the kernel: above 1 softer, below 1 sharper. Example: `blur = 1.5`"
+blur_uv = "Blur for the colour planes only. Example: `blur_uv = 1.2`"
+force = "True = scales even when the size does not change (zimg would skip it). Example: `force = True`"
+force_h = "True = always processes horizontally. Example: `force_h = True`"
+force_v = "True = always processes vertically. Example: `force_v = True`"
+force_uv = "Force for the colour planes. Example: `force_uv = True`"
+force_h_uv = "Force horizontal processing of the colour planes. Example: `force_h_uv = True`"
+force_v_uv = "Force vertical processing of the colour planes. Example: `force_v_uv = True`"
+custom_kernel = "A Python function of the position that returns the kernel value. Example: `custom_kernel = lambda x: max(1.0 - abs(x), 0.0)`"
+taps = "How far the custom kernel reaches. Example: `taps = 1`"
+transfer_s = "Output transfer by name instead of number. Example: `transfer_s = '709'`"
+transfer_in_s = "Input transfer by name, used only when the clip does not say. Example: `transfer_in_s = '709'`"
+primaries_s = "Output primaries by name instead of number. Example: `primaries_s = '709'`"
+primaries_in_s = "Input primaries by name, used only when the clip does not say. Example: `primaries_in_s = '709'`"
+range_s = "Output range by name instead of number. Example: `range_s = 'full'`"
+range_in_s = "Input range by name, used only when the clip does not say. Example: `range_in_s = 'limited'`"
+chromaloc_s = "Output chromaloc by name instead of number. Example: `chromaloc_s = 'left'`"
+chromaloc_in_s = "Input chromaloc by name, used only when the clip does not say. Example: `chromaloc_in_s = 'left'`"
+matrix_in_s = "Input matrix by name, used only when the clip does not say. Example: `matrix_in_s = '709'`"
+cpu_type = "CPU code path; for testing only."
+
+[method."resize2.Bob"]
+help = "Basic deinterlacer: stretches each field to a full frame, so frame count and rate double (checked: 25 fps in, 50 out). Soft; the Deinterlace node's methods look far better. Example: `tff = True`."
+
+[method."resize2.Bob".docs]
+format = "Output format, as a VapourSynth format constant or its number. Empty = unchanged."
+matrix = "Output matrix, H.273 number (1 = BT.709, 6 = BT.601); needed when converting to YUV. Example: `matrix = 1`"
+matrix_s = "Output matrix by name. Example: `matrix_s = '709'`"
+transfer = "Output transfer (gamma curve), H.273 number. Example: `transfer = 1`"
+primaries = "Output primaries, H.273 number. Example: `primaries = 1`"
+range = "Output range: 0 limited, 1 full. Example: `range = 1`"
+chromaloc = "Output chroma location: 0 left, 1 centre, 2 top left. Example: `chromaloc = 0`"
+matrix_in = "Input matrix, used only when the clip does not say. Example: `matrix_in = 1`"
+transfer_in = "Input transfer, used only when the clip does not say. Example: `transfer_in = 1`"
+primaries_in = "Input primaries, used only when the clip does not say. Example: `primaries_in = 1`"
+range_in = "Input range, used only when the clip does not say: 0 limited, 1 full. Example: `range_in = 0`"
+chromaloc_in = "Input chroma location, used only when the clip does not say. Example: `chromaloc_in = 0`"
+filter_param_a = "Kernel setting: Bicubic b, or Lanczos taps. Example: `filter_param_a = 0`"
+filter_param_b = "Kernel setting: Bicubic c. Example: `filter_param_b = 0.5`"
+resample_filter_uv = "Kernel for the colour planes: point, bilinear, bicubic, spline16, spline36, spline64 or lanczos. Empty = the same. Example: `resample_filter_uv = 'spline36'`"
+filter_param_a_uv = "Filter param a for the colour-plane kernel. Example: `filter_param_a_uv = 0`"
+filter_param_b_uv = "Filter param b for the colour-plane kernel. Example: `filter_param_b_uv = 0.5`"
+dither_type = "Dither when the output is integer: none (default), ordered, random, error_diffusion. Example: `dither_type = 'error_diffusion'`"
+src_left = "Left edge of the source area; fractions shift the picture. Example: `src_left = 0.5`"
+src_top = "Top edge of the source area; fractions shift the picture. Example: `src_top = 0.5`"
+src_width = "Width of the source area. Empty = whole frame. Example: `src_width = 1918`"
+src_height = "Height of the source area. Empty = whole frame. Example: `src_height = 1078`"
+nominal_luminance = "Brightness of the value 1.0, in cd/m2, for HDR conversions. Example: `nominal_luminance = 203`"
+approximate_gamma = "True (default) = faster table for gamma curves. Example: `approximate_gamma = False`"
+chromatic_adaptation = "True (default) = adjusts colours when the white point changes; off usually gives a colour cast. Example: `chromatic_adaptation = False`"
+blur = "Stretches the kernel: above 1 softer, below 1 sharper. Example: `blur = 1.5`"
+blur_uv = "Blur for the colour planes only. Example: `blur_uv = 1.2`"
+force = "True = scales even when the size does not change (zimg would skip it). Example: `force = True`"
+force_h = "True = always processes horizontally. Example: `force_h = True`"
+force_v = "True = always processes vertically. Example: `force_v = True`"
+force_uv = "Force for the colour planes. Example: `force_uv = True`"
+force_h_uv = "Force horizontal processing of the colour planes. Example: `force_h_uv = True`"
+force_v_uv = "Force vertical processing of the colour planes. Example: `force_v_uv = True`"
+filter = "Kernel used to fill the missing lines: point, bilinear, bicubic (default), spline16/36/64 or lanczos. Example: `filter = 'spline36'`"
+tff = "Field order, used only when the clip does not say: True = top field first. Example: `tff = True`"
+transfer_s = "Output transfer by name instead of number. Example: `transfer_s = '709'`"
+transfer_in_s = "Input transfer by name, used only when the clip does not say. Example: `transfer_in_s = '709'`"
+primaries_s = "Output primaries by name instead of number. Example: `primaries_s = '709'`"
+primaries_in_s = "Input primaries by name, used only when the clip does not say. Example: `primaries_in_s = '709'`"
+range_s = "Output range by name instead of number. Example: `range_s = 'full'`"
+range_in_s = "Input range by name, used only when the clip does not say. Example: `range_in_s = 'limited'`"
+chromaloc_s = "Output chromaloc by name instead of number. Example: `chromaloc_s = 'left'`"
+chromaloc_in_s = "Input chromaloc by name, used only when the clip does not say. Example: `chromaloc_in_s = 'left'`"
+matrix_in_s = "Input matrix by name, used only when the clip does not say. Example: `matrix_in_s = '709'`"
+cpu_type = "CPU code path; for testing only."
+
+[method."fmtc.resample"]
+help = "fmtconv's resizer: scales, changes subsampling, and can work as a convolution; integer input comes out 16-bit (use fmtc bitdepth after). The Resize node's Resize with a kernel (scale) is the friendlier form. Example: `w = 1920`, `h = 1080`, `kernel = 'spline36'`."
+
+[method."fmtc.resample".docs]
+w = "Output width. Empty = unchanged. Example: `w = 1920`"
+h = "Output height. Empty = unchanged. Example: `h = 1080`"
+sx = "Left edge of the source area; fractions shift. Example: `sx = 0.5`"
+sy = "Top edge of the source area. Example: `sy = 0.5`"
+sw = "Width of the source area; 0 = whole, negative counts from the right. Example: `sw = -2`"
+sh = "Height of the source area, like Sw. Example: `sh = -2`"
+scale = "Size factor for both directions; Width and Height win. Example: `scale = 0.5`"
+scaleh = "Horizontal size factor. Example: `scaleh = 2`"
+scalev = "Vertical size factor. Example: `scalev = 2`"
+kernel = "Kernel: point, box, bilinear, bicubic, lanczos, blackman, spline16, spline36 (default), spline64, gauss, sinc, impulse. Example: `kernel = 'lanczos'`"
+taps = "Kernel length, 1 to 128 (default 4). Example: `taps = 3`"
+a1 = "Kernel setting: bicubic b, or gauss sharpness. Example: `a1 = 0`"
+a2 = "Kernel setting: bicubic c. Example: `a2 = 0.5`"
+fh = "Horizontal frequency factor: below 1 blurs, above 1 sharpens; negative forces processing. Example: `fh = 0.9`"
+fv = "Vertical frequency factor, like Fh. Example: `fv = 0.9`"
+invks = "True = inverts the kernel, to undo an earlier upscale when shrinking. Example: `invks = True`"
+css = "Output chroma subsampling. Example: `css = '444'`"
+planes = "Per plane: 3 process, 2 copy, 1 leave garbage, 0 or negative fill with that value. Example: `planes = [3, 2, 2]`"
+fulls = "True = the input is full range. Example: `fulls = True`"
+fulld = "True = the output is full range. Example: `fulld = True`"
+cplace = "Chroma placement: mpeg2 (default, left), mpeg1 (centre), dv, top_left. Example: `cplace = 'top_left'`"
+interlaced = "0 progressive, 1 fields, 2 read from the clip (default). Example: `interlaced = 0`"
+tff = "0 bottom field first, 1 top field first, 2 read from the clip. Example: `tff = 1`"
+csp = "Output format (a VapourSynth format); only 16-bit integer or 32-bit float."
+flt = "True = float maths even for integer clips. Example: `flt = True`"
+cnorm = "True (default) = kernel sums to 1; off for raw convolution. Example: `cnorm = False`"
+center = "True (default) = keeps the picture centre in place. Example: `center = False`"
+kernelh = "Kernel for the horizontal pass; empty = Kernel. Example: `kernelh = 'bicubic'`"
+kernelv = "Kernel for the vertical pass; empty = Kernel. Example: `kernelv = 'bicubic'`"
+tapsh = "Taps of the horizontal pass. Example: `tapsh = 3`"
+tapsv = "Taps of the vertical pass. Example: `tapsv = 3`"
+a1h = "A1 for the horizontal pass."
+a1v = "A1 for the vertical pass."
+a2h = "A2 for the horizontal pass."
+a2v = "A2 for the vertical pass."
+a3 = "Third kernel setting, for kernels that use one."
+a3h = "A3 for the horizontal pass."
+a3v = "A3 for the vertical pass."
+impulse = "Coefficients of your own kernel when Kernel is impulse; an odd count. Example: `impulse = [1, 2, 1]`"
+impulseh = "Impulse for the horizontal pass."
+impulsev = "Impulse for the vertical pass."
+kovrspl = "Oversampling of the impulse kernel, 1 or more. Example: `kovrspl = 2`"
+total = "Sum the kernel is normalised to; 0 = its own sum. Example: `total = 4`"
+totalh = "Total for the horizontal pass."
+totalv = "Total for the vertical pass."
+invksh = "Invks for the horizontal pass only."
+invksv = "Invks for the vertical pass only."
+invkstaps = "Taps of the inverted kernel, 1 to 128 (default 4). Example: `invkstaps = 5`"
+invkstapsh = "Invkstaps for the horizontal pass."
+invkstapsv = "Invkstaps for the vertical pass."
+cplaces = "Chroma placement of the source; empty = Cplace. Example: `cplaces = 'mpeg2'`"
+cplaced = "Chroma placement of the output; empty = Cplace. Example: `cplaced = 'top_left'`"
+interlacedd = "Interlacing of the output; empty = Interlaced. Example: `interlacedd = 0`"
+tffd = "Field order of the output; empty = Tff. Example: `tffd = 1`"
+cpuopt = "Limits the CPU instruction set: -1 automatic (default), 0 default build set. For testing. Example: `cpuopt = 0`"
+
+[method."fmtc.bitdepth"]
+help = "Changes bit depth or integer/float with a choice of dithers. The Convert Format node's Bit depth (depth) is the friendlier form. Example: `bits = 10`, `dmode = 3`."
+
+[method."fmtc.bitdepth".docs]
+bits = "Output bit depth. Example: `bits = 10`"
+flt = "1 = float output, 0 = integer. Example: `flt = 1`"
+csp = "Output format (a VapourSynth format); only bit depth and type may differ from the input."
+fulls = "True = the input is full range. Example: `fulls = True`"
+fulld = "True = the output is full range. Example: `fulld = True`"
+dmode = "Dither: 0 ordered, 1 or 2 rounding, 3 to 7 error diffusion (3 default), 8 void-and-cluster, 9 quasirandom. Example: `dmode = 8`"
+ampo = "Ordered dither strength. Example: `ampo = 1.5`"
+ampn = "Added noise strength, up to 4. Example: `ampn = 0.5`"
+dyn = "True = the ordered pattern changes every frame. Example: `dyn = True`"
+staticnoise = "True = the same noise on every frame. Example: `staticnoise = True`"
+patsize = "Void-and-cluster pattern width, a power of 2 from 4 to 1024. Example: `patsize = 32`"
+planes = "Planes to process. Example: `planes = [0]`"
+tpdfo = "True = triangular distribution for the ordered dither. Example: `tpdfo = True`"
+tpdfn = "True = triangular distribution for the added noise. Example: `tpdfn = True`"
+corplane = "True = dither and noise patterns are the same on all planes. Example: `corplane = True`"
+cpuopt = "Limits the CPU instruction set: -1 automatic (default), 0 default build set. For testing. Example: `cpuopt = 0`"
+
+[method."fmtc.matrix"]
+help = "Converts between YUV and RGB (and other colour spaces) with a chosen matrix. The Convert Format node's Convert format and colours (Spline36) is the friendlier form. Example: `mat = '709'`."
+
+[method."fmtc.matrix".docs]
+mat = "Matrix for conversions to or from RGB: 601, 709, 2020, YCoCg and others. Example: `mat = '709'`"
+mats = "Source matrix. Example: `mats = '601'`"
+matd = "Destination matrix. Example: `matd = '709'`"
+fulls = "True = the input is full range. Example: `fulls = True`"
+fulld = "True = the output is full range. Example: `fulld = True`"
+coef = "Twelve coefficients of your own matrix, four per output plane, the fourth an added constant."
+csp = "Output format (a VapourSynth format)."
+col_fam = "Output colour family (a VapourSynth constant); wins over Csp."
+bits = "Output bit depth (8 to 16 or 32); cannot be lower than the input. Example: `bits = 16`"
+singleout = "Outputs only this plane, 0 to 2; -1 = all. Example: `singleout = 0`"
+cpuopt = "Limits the CPU instruction set: -1 automatic (default), 0 default build set. For testing. Example: `cpuopt = 0`"
+
+[method."fmtc.matrix2020cl"]
+help = "Converts between linear RGB and BT.2020 constant-luminance YUV, which the usual matrix conversion cannot. Example: `full = False`."
+
+[method."fmtc.matrix2020cl".docs]
+full = "True = full-range YUV, False (default) = limited. Example: `full = True`"
+bits = "Output bit depth. Example: `bits = 16`"
+csp = "Output format."
+cpuopt = "Limits the CPU instruction set: -1 automatic (default), 0 default build set. For testing. Example: `cpuopt = 0`"
+
+[method."fmtc.primaries"]
+help = "Converts linear RGB from one set of primaries (colour gamut) to another, such as BT.2020 to BT.709. The clip must already be linear RGB (fmtc transfer). Example: `prims = '2020'`, `primd = '709'`."
+
+[method."fmtc.primaries".docs]
+prims = "Source primaries preset: 709, 2020, p3d65 and others. Example: `prims = '2020'`"
+primd = "Destination primaries preset. Example: `primd = '709'`"
+wconv = "True = skips white-point adaptation. Example: `wconv = True`"
+rs = "Source red primary as x, y. Example: `rs = [0.64, 0.33]`"
+gs = "Source green primary as x, y."
+bs = "Source blue primary as x, y."
+ws = "Source white point as x, y."
+rd = "Destination red primary as x, y; empty = source."
+gd = "Destination green primary."
+bd = "Destination blue primary."
+wd = "Destination white point."
+cpuopt = "Limits the CPU instruction set: -1 automatic (default), 0 default build set. For testing. Example: `cpuopt = 0`"
+
+[method."fmtc.transfer"]
+help = "Converts between transfer curves (gamma): linear, 709, sRGB, PQ (2084), HLG and others. Example: `transs = '709'`, `transd = 'linear'`. Output is 16-bit or float."
+
+[method."fmtc.transfer".docs]
+transs = "Source curve: 709, 1886, srgb, 2084 (PQ), hlg, linear and others. Example: `transs = '709'`"
+transd = "Destination curve. Example: `transd = 'linear'`"
+cont = "Contrast multiplier on the linear signal. Example: `cont = 1.1`"
+gcor = "Extra gamma power on the linear signal. Example: `gcor = 1.2`"
+bits = "Output bit depth, 16 or 32. Example: `bits = 32`"
+flt = "1 = float output. Example: `flt = 1`"
+fulls = "True (default) = the input is full range. Example: `fulls = False`"
+fulld = "True (default) = the output is full range. Example: `fulld = False`"
+lb = "Black level of the source display, cd/m2. Example: `lb = 0.1`"
+lw = "Peak white, cd/m2. Example: `lw = 1000`"
+lws = "Peak white of the source. Example: `lws = 1000`"
+lwd = "Peak white of the destination. Example: `lwd = 100`"
+ambient = "Surrounding light for display curves, cd/m2. Example: `ambient = 5`"
+match = "Brightness matching: 0 none, 1 reference white (default), 2 display. Example: `match = 2`"
+sceneref = "True = scene-referred linear light, False = display-referred. Example: `sceneref = True`"
+gy = "True = gamma on brightness only. Example: `gy = True`"
+sig_c = "Sigmoid curvature, 0.1 to 10 (default 6.5). Example: `sig_c = 6.5`"
+sig_t = "Sigmoid centre, 0 to 1 (default 0.5). Example: `sig_t = 0.5`"
+logceis = "Exposure index for Arri Log C curves (default 800). Example: `logceis = 800`"
+logceid = "Exposure index for the destination Log C curve. Example: `logceid = 800`"
+blacklvl = "Old black-level setting; use Lb and Lw instead."
+debug = "Non-zero = adds a debug frame property. Example: `debug = 1`"
+cpuopt = "Limits the CPU instruction set: -1 automatic (default), 0 default build set. For testing. Example: `cpuopt = 0`"
+
+[method."fmtc.nativetostack16"]
+help = "Turns a 16-bit clip into the stacked 8-bit form (top half high bytes, bottom half low bytes) some old AviSynth-era filters need. Rarely needed. Example: no settings."
+
+[method."fmtc.stack16tonative"]
+help = "Turns a stacked 8-bit clip (double height) back into a normal 16-bit clip. Rarely needed. Example: no settings."
+
+[method."placebo.Resample"]
+help = "libplacebo's resizer, by default EWA Lanczos (weights by 2D distance: fewer jaggies on diagonals). The Resize node's Resize with a kernel (scale), Ewa kernels, is the friendlier form. Runs on a Vulkan device (graphics card). Example: `width = 1920`, `height = 1080`."
+
+[method."placebo.Resample".docs]
+width = "Output width. Example: `width = 1920`"
+height = "Output height. Example: `height = 1080`"
+filter = "Kernel name from libplacebo, such as ewa_lanczos (default), lanczos, spline36. Example: `filter = 'ewa_lanczossharp'`"
+radius = "Kernel radius, for kernels that allow it. Example: `radius = 3`"
+clamp = "Removes negative lobes (ringing): 0 none, 1 all. Example: `clamp = 0.5`"
+taper = "Flattens the kernel's centre. Example: `taper = 0.5`"
+blur = "Stretches the kernel without changing its radius. Example: `blur = 1.05`"
+param1 = "First kernel parameter (bicubic b). Example: `param1 = 0`"
+param2 = "Second kernel parameter (bicubic c). Example: `param2 = 0.5`"
+antiring = "Antiringing strength, 0 to 1. Example: `antiring = 0.8`"
+sx = "Left edge of the source area; fractions shift. Example: `sx = 0.5`"
+sy = "Top edge of the source area. Example: `sy = 0.5`"
+src_width = "Width of the source area. Example: `src_width = 1918`"
+src_height = "Height of the source area. Example: `src_height = 1078`"
+linearize = "True = scales in linear light; default on for RGB, off for YUV. Example: `linearize = True`"
+sigmoidize = "True = scales on a sigmoid curve (needs Linearize on); do not use on HDR. Example: `sigmoidize = True`"
+sigmoid_center = "Centre of the sigmoid curve (default 0.75). Example: `sigmoid_center = 0.75`"
+sigmoid_slope = "Steepness of the sigmoid curve (default 6.5). Example: `sigmoid_slope = 6.5`"
+trc = "Transfer curve used for linearizing, 0 to 16 (default 1, BT.1886). Example: `trc = 1`"
+min_luma = "Lowest brightness of the display model (default 1e-6). Example: `min_luma = 0`"
+log_level = "How much libplacebo logs (default 2, errors). Example: `log_level = 3`"
+
+[method."placebo.Shader"]
+help = "Runs an mpv GLSL shader (such as an FSRCNNX or Anime4K upscaler) through libplacebo. Input must be 16-bit YUV; output is 16-bit YUV 4:4:4. Runs on a Vulkan device. Example: `shader = 'C:/shaders/FSRCNNX_x2_8-0-4-1.glsl'`, `width = 3840`, `height = 2160`."
+
+[method."placebo.Shader".docs]
+filter = "Kernel name from libplacebo, such as ewa_lanczos (default), lanczos, spline36. Example: `filter = 'ewa_lanczossharp'`"
+radius = "Kernel radius, for kernels that allow it. Example: `radius = 3`"
+clamp = "Removes negative lobes (ringing): 0 none, 1 all. Example: `clamp = 0.5`"
+taper = "Flattens the kernel's centre. Example: `taper = 0.5`"
+blur = "Stretches the kernel without changing its radius. Example: `blur = 1.05`"
+param1 = "First kernel parameter (bicubic b). Example: `param1 = 0`"
+param2 = "Second kernel parameter (bicubic c). Example: `param2 = 0.5`"
+linearize = "True = scales in linear light; default on for RGB, off for YUV. Example: `linearize = True`"
+sigmoidize = "True = scales on a sigmoid curve (needs Linearize on); do not use on HDR. Example: `sigmoidize = True`"
+sigmoid_center = "Centre of the sigmoid curve (default 0.75). Example: `sigmoid_center = 0.75`"
+sigmoid_slope = "Steepness of the sigmoid curve (default 6.5). Example: `sigmoid_slope = 6.5`"
+trc = "Transfer curve used for linearizing, 0 to 16 (default 1, BT.1886). Example: `trc = 1`"
+log_level = "How much libplacebo logs (default 2, errors). Example: `log_level = 3`"
+shader = "Path of the shader file (mpv GLSL). Example: `shader = 'C:/shaders/FSRCNNX_x2_8-0-4-1.glsl'`"
+shader_s = "The shader's text itself, used when Shader is empty."
+width = "Output width; needed for scaling shaders. Example: `width = 3840`"
+height = "Output height. Example: `height = 2160`"
+chroma_loc = "Chroma location, libplacebo numbering (default 1). Example: `chroma_loc = 1`"
+matrix = "YUV matrix, libplacebo numbering (default 2). Example: `matrix = 2`"
+antiring = "Antiringing strength of the final scaling (default 0). Example: `antiring = 0.5`"
+
+[method."placebo.Deband"]
+help = "libplacebo's debander: smooths banding in gradients and adds a little grain. The Deband and Grain node's Deband, Vulkan GPU only (placebo_deband) is the friendlier form. Runs on a Vulkan device. Example: `threshold = 4`, `grain = 6`."
+
+[method."placebo.Deband".docs]
+planes = "Planes as a bit mask: 1 = Y, 2 = U, 4 = V; `1 | 2 | 4` = all. Example: `planes = 7`"
+iterations = "Debanding passes per pixel. Example: `iterations = 2`"
+threshold = "Cut-off; higher debands more but blurs detail. Example: `threshold = 4`"
+radius = "Starting radius, growing each pass; larger finds wider gradients. Example: `radius = 16`"
+grain = "Noise added to hide leftover banding; higher = more. Example: `grain = 6`"
+dither = "Dither the result to the output bit depth; works for 8-bit only. Example: `dither = False`"
+dither_algo = "Dither method (default blue noise). Example: `dither_algo = 0`"
+log_level = "How much libplacebo logs (default 2, errors). Example: `log_level = 3`"
+
+[method."noise.Add"]
+help = "Adds noise or film-like grain: Gaussian, Perlin, Simplex, fractal or Poisson. The Deband and Grain node's Add grain (Grainer) is the friendlier form. Example: `var = 2`, `uvar = 0.5`."
+
+[method."noise.Add".docs]
+var = "Brightness noise strength; 0 = none. Example: `var = 2`"
+uvar = "Colour noise strength (YUV only). Example: `uvar = 0.5`"
+type = "0 Gaussian, 1 Perlin, 2 Simplex, 3 fractal (fBm on Simplex), 4 Poisson. Example: `type = 1`"
+hcorr = "Horizontal correlation 0 to 1 (streaks; Gaussian only); raise Var to keep the amount. Example: `hcorr = 0.5`"
+vcorr = "Vertical correlation 0 to 1 (streaks; Gaussian only). Example: `vcorr = 0.5`"
+xsize = "Horizontal size of Perlin or Simplex noise (default 2). Example: `xsize = 3`"
+ysize = "Vertical size of Perlin or Simplex noise (default 2). Example: `ysize = 3`"
+seed = "Fixed seed for repeatable noise; -1 = random. Example: `seed = 42`"
+constant = "True = the same pattern on every frame. Example: `constant = True`"
+every = "New pattern every this many frames. Example: `every = 2`"
+opt = "CPU code path: 0 automatic, 1 plain, 2 SSE2, 3 AVX2, 4 AVX-512. Example: `opt = 1`"

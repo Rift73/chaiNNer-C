@@ -1,18 +1,11 @@
 import { extname } from 'path';
-import {
-    EdgeData,
-    InputData,
-    InputId,
-    InputValue,
-    Mutable,
-    NodeData,
-} from '../common/common-types';
+import { InputData, InputId, InputValue, Mutable, NodeData } from '../common/common-types';
 import { InputOverrideId } from '../common/input-override-common';
 import { log } from '../common/log';
 import { SchemaMap } from '../common/SchemaMap';
 import { joinEnglish } from '../common/util';
 import { readTextFile } from './util';
-import type { Edge, Node } from 'reactflow';
+import type { Node } from 'reactflow';
 
 const isValidInputOverrideId = (id: InputOverrideId) => /^#[a-f0-9-]{36}:\d+$/.test(id);
 export const parseInputOverrideId = (id: InputOverrideId): { nodeId: string; inputId: InputId } => {
@@ -31,7 +24,7 @@ export interface OverrideFile {
 export const readOverrideFile = async (filePath: string): Promise<OverrideFile> => {
     const content = await readTextFile(filePath);
     const data = JSON.parse(content) as unknown;
-    if (typeof data !== 'object')
+    if (typeof data !== 'object' || data === null || Array.isArray(data))
         throw new Error('Expected the override file to contain an object');
     return data as OverrideFile;
 };
@@ -125,7 +118,6 @@ const assignInput = (
 
 export const applyOverrides = (
     nodes: readonly Node<NodeData>[],
-    edges: readonly Edge<EdgeData>[],
     schemata: SchemaMap,
     overrideFile: OverrideFile
 ): void => {

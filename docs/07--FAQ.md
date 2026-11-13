@@ -7,11 +7,11 @@
 
 ## How can I batch upscale?
 
-- Any of the iterators.
+- With a loop node such as Load Images, Load Video or Load Videos.
 
 ## Can I link multiple iterators together to do paired [whatever]?
 
-- No. This will be possible once we do our iterator rewrite. For now though, this isn't possible.
+- Yes. Loop nodes in one chain (two Load Images, say) run together, item by item, and must yield the same number of items.
 
 ## Can you add [random upscaling network] support?
 

@@ -1,0 +1,406 @@
+# Plain names, order (rank), Simple settings and start values of the VapourSynth nodes Load Clip,
+# Clip Properties, Convert Format, Cut and Splice, Planes, Colour and Expression.
+
+[method."bs.VideoSource"]
+rank = 1
+label = "Open a video (BestSource)"
+labels = { track = "Track", variableformat = "Format to keep (-1 all)", fpsnum = "Frame rate numerator", fpsden = "Frame rate denominator", rff = "Apply repeat flags (0/1)", threads = "Decoder threads", seekpreroll = "Frames decoded before a seek", enable_drefs = "MP4 data references (0/1)", use_absolute_path = "MP4 absolute paths (0/1)", cachemode = "Index storage (0-4)", cachepath = "Index folder or file", cachesize = "Frame cache (MB)", timecodes = "Write timecodes to", start_number = "First image number", viewid = "View (3D files)", showprogress = "Log indexing progress (0/1)", maxdecoders = "Decoders kept", gpufallback = "CPU if GPU fails (0/1)", exporttimestamps = "Return timestamps (0/1)", apply_rotation = "Apply rotation (0/1)", gpu = "Decode on the GPU (0/1)" }
+
+[method."vssource.*.source"]
+rank = 2
+label = "Open a video, vs-jetpack indexers (source)"
+labels = { cachemode = "Index storage (0-4)", rff = "Apply repeat flags (0/1)", showprogress = "Log indexing progress (0/1)", show_pretty_progress = "Terminal progress bar", kwargs = "Indexer settings", chroma_location = "Chroma location", color_range = "Colour range", field_based = "Field order", idx_props = "Store index info", ref = "Match this clip", name = "Clip name", bin_path = "D2VWitch program", ext = "Index file extension", force = "Repair a broken index", default_out_folder = "Index folder" }
+
+[method."ffms2.Source"]
+label = "Open a video, fast indexing (ffms2.Source)"
+labels = { source = "Video file", track = "Track", cache = "Save the index (0/1)", cachefile = "Index file", fpsnum = "Frame rate numerator", fpsden = "Frame rate denominator", threads = "Decoder threads", timecodes = "Write timecodes to", seekmode = "Seek mode (-1 to 3)", width = "Width", height = "Height", resizer = "Scaling method", format = "Output format", alpha = "Output alpha (0/1)" }
+
+[method."lsmas.LWLibavSource"]
+label = "Open a video, L-SMASH (LWLibavSource)"
+labels = { source = "Video file", threads = "Decoder threads", seek_mode = "On decoding errors (0-2)", seek_threshold = "Decode-forward limit", dr = "Direct rendering (0/1)", fpsnum = "Frame rate numerator", fpsden = "Frame rate denominator", variable = "Allow format changes (0/1)", format = "Output format", decoder = "Preferred decoders", prefer_hw = "Hardware decoding (0-7)", ff_loglevel = "FFmpeg log level (0-8)", ff_options = "FFmpeg options", stream_index = "Stream", cache = "Save the index (0/1)", cachefile = "Index file", repeat = "Repeat flags (0-2)", dominance = "Field order (0-2)", cachedir = "Index folder", rap_verification = "Check keyframes (0/1)" }
+
+[method."lsmas.LibavSMASHSource"]
+label = "Open MP4 or MOV, no index (LibavSMASHSource)"
+labels = { source = "MP4 or MOV file", threads = "Decoder threads", seek_mode = "On decoding errors (0-2)", seek_threshold = "Decode-forward limit", dr = "Direct rendering (0/1)", fpsnum = "Frame rate numerator", fpsden = "Frame rate denominator", variable = "Allow format changes (0/1)", format = "Output format", decoder = "Preferred decoders", prefer_hw = "Hardware decoding (0-7)", ff_loglevel = "FFmpeg log level (0-8)", ff_options = "FFmpeg options", track = "Track" }
+
+[method."d2v.Source"]
+label = "Open a DVD index .d2v (d2v.Source)"
+labels = { input = "D2V file", threads = "Decoder threads", nocrop = "Padded picture (0/1)", rff = "Apply repeat flags (0/1)" }
+
+[method."vssource.IsoFile.get_vts"]
+hidden = ["set_output"]
+label = "Open a DVD title set (IsoFile get_vts)"
+labels = { path = "DVD (.iso or folder)", title_set_nr = "Title set", apply_rff = "Apply repeat flags" }
+
+[method."std.SetFrameProps"]
+rank = 1
+label = "Colour info and aspect (SetFrameProps)"
+defaults = {}
+
+[method."std.AssumeFPS"]
+rank = 2
+label = "Assume frame rate (AssumeFPS)"
+
+[method."vstools.change_fps"]
+rank = 3
+label = "Change frame rate (change_fps)"
+
+[method."std.SetFieldBased"]
+rank = 4
+label = "Set field order (SetFieldBased)"
+labels = { value = "Field order (0, 1 or 2)" }
+
+[method."std.SetFrameProp"]
+label = "Set one frame property (SetFrameProp)"
+labels = { prop = "Property name", intval = "Whole number(s)", floatval = "Decimal number(s)", data = "Text" }
+
+[method."std.RemoveFrameProps"]
+label = "Remove frame properties (RemoveFrameProps)"
+labels = { props = "Properties to remove" }
+
+[method."std.CopyFrameProps"]
+label = "Copy frame properties (CopyFrameProps)"
+labels = { prop_src = "Properties from", props = "Only these properties" }
+
+[method."std.PlaneStats"]
+label = "Measure min, max, average (PlaneStats)"
+labels = { clipb = "Compare with clip", plane = "Plane number", prop = "Property name start" }
+
+[method."std.ClipToProp"]
+label = "Attach a clip to the frames (ClipToProp)"
+labels = { mclip = "Clip to attach", prop = "Property name" }
+
+[method."std.PropToClip"]
+label = "Get an attached clip (PropToClip)"
+labels = { prop = "Property name", index = "Entry number" }
+
+[method."vstools.sc_detect"]
+label = "Mark scene changes (sc_detect)"
+labels = { threshold = "Scene change threshold" }
+
+[method."vstools.initialize_clip"]
+label = "Mark colour info, set depth (initialize_clip)"
+labels = { bits = "Bit depth", color_range = "Colour range", field_based = "Field order", kwargs = "Bit depth settings" }
+
+[method."vstools.finalize_clip"]
+label = "Finish for encoding (finalize_clip)"
+labels = { clamp_tv_range = "Limit to TV range", bits = "Bit depth", kwargs = "Bit depth settings" }
+
+[method."vstools.merge_clip_props"]
+label = "Merge frame properties (merge_clip_props)"
+labels = { main_idx = "Main clip number" }
+
+[method."vstools.Sar.apply"]
+label = "Set pixel aspect ratio (Sar)"
+defaults = { numerator = 1 }
+labels = { numerator = "Aspect ratio width", denominator = "Aspect ratio height" }
+
+[method."vstools.depth"]
+rank = 1
+label = "Bit depth (depth)"
+labels = { dither_type = "Dither", sample_type = "Integer or float", range_in = "Input range", range_out = "Output range" }
+
+[method."chainner_vs.range_fix"]
+rank = 2
+label = "Range fix: full or limited (range_fix)"
+labels = { mode = "Direction" }
+
+[method."resize.Bicubic"]
+rank = 3
+label = "Convert format and colours (Bicubic)"
+simple = ["format", "matrix", "transfer", "primaries", "range", "matrix_in", "transfer_in", "primaries_in", "range_in"]
+labels = { matrix = "Matrix", transfer = "Transfer", primaries = "Primaries", range = "Range", matrix_in = "Input matrix", transfer_in = "Input transfer", primaries_in = "Input primaries", range_in = "Input range", matrix_s = "Matrix (by name)", transfer_s = "Transfer (by name)", primaries_s = "Primaries (by name)", range_s = "Range (by name)", chromaloc = "Chroma location", chromaloc_s = "Chroma location (by name)", matrix_in_s = "Input matrix (by name)", transfer_in_s = "Input transfer (by name)", primaries_in_s = "Input primaries (by name)", range_in_s = "Input range (by name)", chromaloc_in = "Input chroma location", chromaloc_in_s = "Input chroma loc. (by name)", filter_param_a = "Kernel setting a (b, taps)", filter_param_b = "Kernel setting b (c)", resample_filter_uv = "Kernel for colour planes", filter_param_a_uv = "Colour kernel setting a", filter_param_b_uv = "Colour kernel setting b", dither_type = "Dither", cpu_type = "CPU type (testing)", src_left = "Source region left", src_top = "Source region top", src_width = "Source region width", src_height = "Source region height", nominal_luminance = "Brightness of 1.0 (nits)", approximate_gamma = "Fast transfer curves (0/1)", chromatic_adaptation = "Adapt white point (0/1)" }
+
+[method."resize.Bilinear"]
+rank = 4
+label = "Convert format and colours (Bilinear)"
+simple = ["format", "matrix", "transfer", "primaries", "range", "matrix_in", "transfer_in", "primaries_in", "range_in"]
+labels = { matrix = "Matrix", transfer = "Transfer", primaries = "Primaries", range = "Range", matrix_in = "Input matrix", transfer_in = "Input transfer", primaries_in = "Input primaries", range_in = "Input range", matrix_s = "Matrix (by name)", transfer_s = "Transfer (by name)", primaries_s = "Primaries (by name)", range_s = "Range (by name)", chromaloc = "Chroma location", chromaloc_s = "Chroma location (by name)", matrix_in_s = "Input matrix (by name)", transfer_in_s = "Input transfer (by name)", primaries_in_s = "Input primaries (by name)", range_in_s = "Input range (by name)", chromaloc_in = "Input chroma location", chromaloc_in_s = "Input chroma loc. (by name)", filter_param_a = "Kernel setting a (b, taps)", filter_param_b = "Kernel setting b (c)", resample_filter_uv = "Kernel for colour planes", filter_param_a_uv = "Colour kernel setting a", filter_param_b_uv = "Colour kernel setting b", dither_type = "Dither", cpu_type = "CPU type (testing)", src_left = "Source region left", src_top = "Source region top", src_width = "Source region width", src_height = "Source region height", nominal_luminance = "Brightness of 1.0 (nits)", approximate_gamma = "Fast transfer curves (0/1)", chromatic_adaptation = "Adapt white point (0/1)" }
+
+[method."resize.Lanczos"]
+rank = 5
+label = "Convert format and colours (Lanczos)"
+simple = ["format", "matrix", "transfer", "primaries", "range", "matrix_in", "transfer_in", "primaries_in", "range_in"]
+labels = { matrix = "Matrix", transfer = "Transfer", primaries = "Primaries", range = "Range", matrix_in = "Input matrix", transfer_in = "Input transfer", primaries_in = "Input primaries", range_in = "Input range", matrix_s = "Matrix (by name)", transfer_s = "Transfer (by name)", primaries_s = "Primaries (by name)", range_s = "Range (by name)", chromaloc = "Chroma location", chromaloc_s = "Chroma location (by name)", matrix_in_s = "Input matrix (by name)", transfer_in_s = "Input transfer (by name)", primaries_in_s = "Input primaries (by name)", range_in_s = "Input range (by name)", chromaloc_in = "Input chroma location", chromaloc_in_s = "Input chroma loc. (by name)", filter_param_a = "Kernel setting a (b, taps)", filter_param_b = "Kernel setting b (c)", resample_filter_uv = "Kernel for colour planes", filter_param_a_uv = "Colour kernel setting a", filter_param_b_uv = "Colour kernel setting b", dither_type = "Dither", cpu_type = "CPU type (testing)", src_left = "Source region left", src_top = "Source region top", src_width = "Source region width", src_height = "Source region height", nominal_luminance = "Brightness of 1.0 (nits)", approximate_gamma = "Fast transfer curves (0/1)", chromatic_adaptation = "Adapt white point (0/1)" }
+
+[method."resize.Point"]
+rank = 6
+label = "Convert format and colours (Point)"
+simple = ["format", "matrix", "transfer", "primaries", "range", "matrix_in", "transfer_in", "primaries_in", "range_in"]
+labels = { matrix = "Matrix", transfer = "Transfer", primaries = "Primaries", range = "Range", matrix_in = "Input matrix", transfer_in = "Input transfer", primaries_in = "Input primaries", range_in = "Input range", matrix_s = "Matrix (by name)", transfer_s = "Transfer (by name)", primaries_s = "Primaries (by name)", range_s = "Range (by name)", chromaloc = "Chroma location", chromaloc_s = "Chroma location (by name)", matrix_in_s = "Input matrix (by name)", transfer_in_s = "Input transfer (by name)", primaries_in_s = "Input primaries (by name)", range_in_s = "Input range (by name)", chromaloc_in = "Input chroma location", chromaloc_in_s = "Input chroma loc. (by name)", filter_param_a = "Kernel setting a (b, taps)", filter_param_b = "Kernel setting b (c)", resample_filter_uv = "Kernel for colour planes", filter_param_a_uv = "Colour kernel setting a", filter_param_b_uv = "Colour kernel setting b", dither_type = "Dither", cpu_type = "CPU type (testing)", src_left = "Source region left", src_top = "Source region top", src_width = "Source region width", src_height = "Source region height", nominal_luminance = "Brightness of 1.0 (nits)", approximate_gamma = "Fast transfer curves (0/1)", chromatic_adaptation = "Adapt white point (0/1)" }
+
+[method."resize.Spline36"]
+rank = 7
+label = "Convert format and colours (Spline36)"
+simple = ["format", "matrix", "transfer", "primaries", "range", "matrix_in", "transfer_in", "primaries_in", "range_in"]
+labels = { matrix = "Matrix", transfer = "Transfer", primaries = "Primaries", range = "Range", matrix_in = "Input matrix", transfer_in = "Input transfer", primaries_in = "Input primaries", range_in = "Input range", matrix_s = "Matrix (by name)", transfer_s = "Transfer (by name)", primaries_s = "Primaries (by name)", range_s = "Range (by name)", chromaloc = "Chroma location", chromaloc_s = "Chroma location (by name)", matrix_in_s = "Input matrix (by name)", transfer_in_s = "Input transfer (by name)", primaries_in_s = "Input primaries (by name)", range_in_s = "Input range (by name)", chromaloc_in = "Input chroma location", chromaloc_in_s = "Input chroma loc. (by name)", filter_param_a = "Kernel setting a (b, taps)", filter_param_b = "Kernel setting b (c)", resample_filter_uv = "Kernel for colour planes", filter_param_a_uv = "Colour kernel setting a", filter_param_b_uv = "Colour kernel setting b", dither_type = "Dither", cpu_type = "CPU type (testing)", src_left = "Source region left", src_top = "Source region top", src_width = "Source region width", src_height = "Source region height", nominal_luminance = "Brightness of 1.0 (nits)", approximate_gamma = "Fast transfer curves (0/1)", chromatic_adaptation = "Adapt white point (0/1)" }
+
+[method."resize.Spline16"]
+label = "Convert format and colours (Spline16)"
+labels = { matrix = "Matrix", transfer = "Transfer", primaries = "Primaries", range = "Range", matrix_in = "Input matrix", transfer_in = "Input transfer", primaries_in = "Input primaries", range_in = "Input range", matrix_s = "Matrix (by name)", transfer_s = "Transfer (by name)", primaries_s = "Primaries (by name)", range_s = "Range (by name)", chromaloc = "Chroma location", chromaloc_s = "Chroma location (by name)", matrix_in_s = "Input matrix (by name)", transfer_in_s = "Input transfer (by name)", primaries_in_s = "Input primaries (by name)", range_in_s = "Input range (by name)", chromaloc_in = "Input chroma location", chromaloc_in_s = "Input chroma loc. (by name)", filter_param_a = "Kernel setting a (b, taps)", filter_param_b = "Kernel setting b (c)", resample_filter_uv = "Kernel for colour planes", filter_param_a_uv = "Colour kernel setting a", filter_param_b_uv = "Colour kernel setting b", dither_type = "Dither", cpu_type = "CPU type (testing)", src_left = "Source region left", src_top = "Source region top", src_width = "Source region width", src_height = "Source region height", nominal_luminance = "Brightness of 1.0 (nits)", approximate_gamma = "Fast transfer curves (0/1)", chromatic_adaptation = "Adapt white point (0/1)" }
+
+[method."resize.Spline64"]
+label = "Convert format and colours (Spline64)"
+labels = { matrix = "Matrix", transfer = "Transfer", primaries = "Primaries", range = "Range", matrix_in = "Input matrix", transfer_in = "Input transfer", primaries_in = "Input primaries", range_in = "Input range", matrix_s = "Matrix (by name)", transfer_s = "Transfer (by name)", primaries_s = "Primaries (by name)", range_s = "Range (by name)", chromaloc = "Chroma location", chromaloc_s = "Chroma location (by name)", matrix_in_s = "Input matrix (by name)", transfer_in_s = "Input transfer (by name)", primaries_in_s = "Input primaries (by name)", range_in_s = "Input range (by name)", chromaloc_in = "Input chroma location", chromaloc_in_s = "Input chroma loc. (by name)", filter_param_a = "Kernel setting a (b, taps)", filter_param_b = "Kernel setting b (c)", resample_filter_uv = "Kernel for colour planes", filter_param_a_uv = "Colour kernel setting a", filter_param_b_uv = "Colour kernel setting b", dither_type = "Dither", cpu_type = "CPU type (testing)", src_left = "Source region left", src_top = "Source region top", src_width = "Source region width", src_height = "Source region height", nominal_luminance = "Brightness of 1.0 (nits)", approximate_gamma = "Fast transfer curves (0/1)", chromatic_adaptation = "Adapt white point (0/1)" }
+
+[method."resize.Bob"]
+family = "Deinterlace"
+label = "Bob deinterlace, simple (resize.Bob)"
+labels = { matrix = "Matrix", transfer = "Transfer", primaries = "Primaries", range = "Range", matrix_in = "Input matrix", transfer_in = "Input transfer", primaries_in = "Input primaries", range_in = "Input range", matrix_s = "Matrix (by name)", transfer_s = "Transfer (by name)", primaries_s = "Primaries (by name)", range_s = "Range (by name)", chromaloc = "Chroma location", chromaloc_s = "Chroma location (by name)", matrix_in_s = "Input matrix (by name)", transfer_in_s = "Input transfer (by name)", primaries_in_s = "Input primaries (by name)", range_in_s = "Input range (by name)", chromaloc_in = "Input chroma location", chromaloc_in_s = "Input chroma loc. (by name)", filter_param_a = "Kernel setting a (b, taps)", filter_param_b = "Kernel setting b (c)", resample_filter_uv = "Kernel for colour planes", filter_param_a_uv = "Colour kernel setting a", filter_param_b_uv = "Colour kernel setting b", dither_type = "Dither", cpu_type = "CPU type (testing)", src_left = "Source region left", src_top = "Source region top", src_width = "Source region width", src_height = "Source region height", nominal_luminance = "Brightness of 1.0 (nits)", approximate_gamma = "Fast transfer curves (0/1)", chromatic_adaptation = "Adapt white point (0/1)", filter = "Field stretch kernel", tff = "Top field first (0/1)" }
+
+[method."vstools.match_clip"]
+rank = 8
+label = "Match a clip's size, format (match_clip)"
+labels = { ref = "Reference clip", dimensions = "Match size", vformat = "Match format", matrices = "Match colour info", length = "Match length" }
+
+[method."vstools.limiter"]
+label = "Clip values to a range (limiter)"
+labels = { min_val = "Lowest value", max_val = "Highest value", tv_range = "Limit to TV range", mask = "Float mask range" }
+
+[method."std.Limiter"]
+label = "Clip values to a range (std.Limiter)"
+labels = { min = "Lowest value", max = "Highest value" }
+
+[method."std.Trim"]
+rank = 1
+defaults = { first = 0 }
+
+[method."std.Splice"]
+rank = 2
+
+[method."vstools.replace_ranges"]
+rank = 3
+label = "Replace frames (replace_ranges)"
+labels = { exclusive = "Leave out range ends", mismatch = "Allow other size or format" }
+
+[method."std.DeleteFrames"]
+rank = 4
+label = "Delete frames (DeleteFrames)"
+
+[method."std.SelectEvery"]
+rank = 5
+label = "Keep every nth frame (SelectEvery)"
+defaults = { cycle = 2, offsets = "0" }
+labels = { cycle = "Group size", offsets = "Positions kept", modify_duration = "Adjust frame rate (0/1)" }
+
+[method."std.BlankClip"]
+rank = 6
+label = "Blank clip, one colour (BlankClip)"
+labels = { color = "Colour (per plane)", fpsnum = "Frame rate numerator", fpsden = "Frame rate denominator", keep = "Same frame each time (0/1)", varsize = "Variable size (0/1)", varformat = "Variable format (0/1)", gpu = "GPU frames (0/1)" }
+
+[method."std.DuplicateFrames"]
+label = "Duplicate frames (DuplicateFrames)"
+defaults = { frames = "0" }
+labels = { frames = "Frames to repeat" }
+
+[method."std.FreezeFrames"]
+label = "Freeze frames (FreezeFrames)"
+defaults = { first = "0", last = "0", replacement = "0" }
+labels = { first = "Range starts", last = "Range ends", replacement = "Frame shown per range" }
+
+[method."std.Interleave"]
+label = "Interleave clips frame by frame (Interleave)"
+labels = { extend = "Pad shorter clips (0/1)", mismatch = "Allow differences (0/1)", modify_duration = "Raise frame rate (0/1)" }
+
+[method."std.Loop"]
+label = "Repeat the clip (Loop)"
+labels = { times = "Times (0 = as long as allowed)" }
+
+[method."std.Reverse"]
+label = "Play backwards (Reverse)"
+
+[method."vstools.insert_clip"]
+label = "Insert a clip at a frame (insert_clip)"
+labels = { insert = "Clip to insert", start_frame = "At frame", strict = "Error if too long" }
+
+[method."vstools.replace_every"]
+label = "Replace every nth frame (replace_every)"
+defaults = { cycle = 2, offsets = "0" }
+labels = { clipb = "Replacement clip", cycle = "Group size", offsets = "Positions replaced", modify_duration = "Keep the frame rate" }
+
+[method."vstools.remap_frames"]
+label = "Rebuild from a frame list (remap_frames)"
+labels = { ranges = "Frames and ranges" }
+
+[method."vstools.shift_clip"]
+label = "Shift in time (shift_clip)"
+defaults = { offset = 1 }
+labels = { offset = "Frames" }
+
+[method."vstools.shift_clip_multi"]
+label = "Shifted copies (shift_clip_multi)"
+labels = { offsets = "Range of offsets" }
+
+[method."vstools.join"]
+rank = 1
+label = "Join planes (join)"
+labels = { alpha = "Alpha", family = "Colour family" }
+
+[method."std.Merge"]
+rank = 2
+label = "Mix two clips (Merge)"
+
+[method."std.MaskedMerge"]
+rank = 3
+label = "Merge through a mask (MaskedMerge)"
+labels = { clipb = "Second clip", first_plane = "Mask plane 0 for all (0/1)", premultiplied = "Premultiplied (0/1)" }
+
+[method."vstools.get_y"]
+rank = 4
+label = "Luma only: Y (get_y)"
+
+[method."std.ShufflePlanes"]
+rank = 5
+label = "Rearrange planes (ShufflePlanes)"
+defaults = { planes = "0" }
+labels = { planes = "Plane from each clip", colorfamily = "Colour family", prop_src = "Properties from" }
+
+[method."vstools.get_u"]
+label = "U plane (get_u)"
+
+[method."vstools.get_v"]
+label = "V plane (get_v)"
+
+[method."vstools.get_r"]
+label = "R plane (get_r)"
+
+[method."vstools.get_g"]
+label = "G plane (get_g)"
+
+[method."vstools.get_b"]
+label = "B plane (get_b)"
+
+[method."vstools.plane"]
+label = "One plane by number (plane)"
+defaults = { index = "0" }
+labels = { index = "Plane number", strict = "Keep the matrix mark" }
+
+[method."std.MakeDiff"]
+label = "Difference of two clips (MakeDiff)"
+labels = { clipb = "Clip to subtract" }
+
+[method."std.MergeDiff"]
+label = "Add a difference back (MergeDiff)"
+labels = { clipb = "Difference clip" }
+
+[method."std.MakeFullDiff"]
+label = "Difference, one bit more (MakeFullDiff)"
+labels = { clipb = "Clip to subtract" }
+
+[method."std.MergeFullDiff"]
+label = "Add a full difference back (MergeFullDiff)"
+labels = { clipb = "Difference clip" }
+
+[method."std.StackHorizontal"]
+label = "Side by side (StackHorizontal)"
+
+[method."std.StackVertical"]
+label = "One above the other (StackVertical)"
+
+[method."std.SplitPlanes"]
+label = "Split into planes (SplitPlanes)"
+
+[method."vstools.stack_planes"]
+label = "Show the planes side by side (stack_planes)"
+labels = { shift_float_chroma = "Grey colour as mid-grey", offset_chroma = "Brighten colour planes", mode = "Direction", write_plane_name = "Write plane names", alignment = "Name position (numpad)", scale = "Name size" }
+
+[method."std.Levels"]
+rank = 1
+label = "Brightness and contrast levels (Levels)"
+simple = ["min_in", "max_in", "gamma", "min_out", "max_out"]
+labels = { min_in = "Input black", max_in = "Input white", gamma = "Gamma", min_out = "Output black", max_out = "Output white" }
+
+[method."std.Invert"]
+rank = 2
+label = "Negative (Invert)"
+
+[method."vszip.CLAHE"]
+rank = 3
+label = "Local contrast (CLAHE)"
+labels = { limit = "Contrast limit", tiles = "Tile grid" }
+
+[method."vs_colorfix.average"]
+rank = 4
+label = "Colour match to a clip (vs_colorfix.average)"
+
+[method."placebo.Tonemap"]
+label = "Tone map HDR to SDR (Tonemap)"
+labels = { src_csp = "Input colour space (0-3)", dst_csp = "Output colour space (0-3)", dst_prim = "Output primaries", src_max = "Source peak (nits)", src_min = "Source black (nits)", dst_max = "Target peak (nits)", dst_min = "Target black (nits)", dynamic_peak_detection = "Measure scene peaks (0/1)", smoothing_period = "Peak smoothing (frames)", scene_threshold_low = "Scene cut, low", scene_threshold_high = "Scene cut, high", percentile = "Peak percentile", gamut_mapping = "Gamut mapping (0-9)", tone_mapping_function = "Tone curve (0-11)", tone_mapping_function_s = "Tone curve (by name)", tone_mapping_param = "Tone curve setting", metadata = "HDR metadata (0-4)", use_dovi = "Use Dolby Vision data (0/1)", dovi_el = "Dolby Vision layer clip", visualize_lut = "Draw the tone curve (0/1)", show_clipping = "Show clipping (0/1)", contrast_recovery = "Detail recovery", log_level = "Log level" }
+
+[method."std.Expr"]
+rank = 1
+label = "Formula per pixel (std.Expr)"
+defaults = { expr = "x" }
+labels = { expr = "Formula", format = "Output format" }
+
+[method."akarin.Expr"]
+rank = 2
+label = "Formula per pixel, neighbours (akarin.Expr)"
+defaults = { expr = "x" }
+labels = { expr = "Formula", format = "Output format", opt = "Whole-number maths (0/1)", boundary = "Edges: 0 repeat, 1 mirror" }
+
+[method."vsexprtools.norm_expr"]
+rank = 3
+label = "Formula per pixel, any bit depth (norm_expr)"
+simple = ["expr", "planes"]
+defaults = { expr = "x" }
+labels = { expr = "Formula", opt = "Whole-number maths", boundary = "Mirror at the edges", format = "Output format", split_planes = "Each plane as its own input", kwargs = "Placeholder values" }
+
+[method."vsexprtools.expr_func"]
+rank = 4
+label = "Formula per pixel, as typed (expr_func)"
+defaults = { expr = "x" }
+labels = { expr = "Formula", opt = "Whole-number maths", boundary = "Mirror at the edges", format = "Output format" }
+
+[method."vsexprtools.combine"]
+rank = 5
+label = "Combine clips, brightest wins (combine)"
+labels = { operator = "Operator", suffix = "After each clip", prefix = "Before each clip", expr_suffix = "After the whole formula", expr_prefix = "Before the whole formula", split_planes = "Each plane as its own input", kwargs = "More formula settings" }
+
+[method."std.Lut"]
+hidden = ["function"]
+label = "Lookup table, one clip (Lut)"
+labels = { lut = "Table (whole numbers)", lutf = "Table (decimals)", bits = "Output bit depth", floatout = "Float output (0/1)" }
+
+[method."std.Lut2"]
+hidden = ["function"]
+label = "Lookup table, two clips (Lut2)"
+labels = { lut = "Table (whole numbers)", lutf = "Table (decimals)", bits = "Output bit depth", floatout = "Float output (0/1)", clipb = "Second clip" }
+
+[method."akarin.Select"]
+label = "Pick a clip per frame by formula (Select)"
+labels = { prop_src = "Properties from", expr = "Formula" }
+
+[method."akarin.Text"]
+label = "Draw text on the frames (akarin.Text)"
+labels = { text = "Text", alignment = "Position (numpad 1-9)", scale = "Text size", prop = "Store in property instead", strict = "Stop on format errors (0/1)", vspipe = "Also when encoding (0/1)" }
+
+[method."akarin.Cambi"]
+family = "Deband and Grain"
+label = "Banding score (Cambi)"
+labels = { window_size = "Window size", topk = "Worst share pooled", tvi_threshold = "Visibility threshold", scores = "Per-scale scores (0/1)", scaling = "Score scaling" }
+
+[method."akarin.DLISR"]
+family = "Resize"
+label = "Upscale, NVIDIA RTX (DLISR)"
+labels = { scale = "Upscale factor" }
+
+[method."akarin.DLVFX"]
+family = "Resize"
+label = "NVIDIA video effects (DLVFX)"
+labels = { op = "Effect (0 clean, 1 upscale)", scale = "Upscale factor", strength = "Strength (0 or 1)", output_depth = "Output bit depth", num_streams = "Frames at once" }
+
+[method."dvdsrc2.FullVts"]
+hide = true
+
+[method."dvdsrc2.RawVob"]
+hide = true
+
+[method."dvdsrc2.RawAc3"]
+hide = true
+
+[method."akarin.PropExpr"]
+hide = true
+
+[method."vstools.stack_clips"]
+hide = true

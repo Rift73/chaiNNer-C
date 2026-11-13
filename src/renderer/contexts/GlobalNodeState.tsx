@@ -16,6 +16,7 @@ import {
 import { createContext, useContext } from 'use-context-selector';
 import {
     EdgeData,
+    FileOpenResult,
     InputData,
     InputId,
     InputKind,
@@ -38,6 +39,7 @@ import {
 } from '../../common/nodes/editorChain';
 import { ChainLineage } from '../../common/nodes/lineage';
 import { TypeState } from '../../common/nodes/TypeState';
+import { isRegexLoaded, regexLoaded } from '../../common/rust-regex';
 
 import {
     EMPTY_SET,
@@ -180,7 +182,6 @@ enum SaveResult {
     Canceled,
 }
 
-// TODO: Find default
 export const GlobalVolatileContext = createContext<Readonly<GlobalVolatile>>({} as GlobalVolatile);
 export const GlobalContext = createContext<Readonly<Global>>({} as Global);
 
@@ -257,6 +258,12 @@ export const GlobalProvider = memo(
             [clearManualOutputTypes, clearManualSequenceOutputTypes]
         );
 
+        // the regex engine loads in the background: the types it decides are evaluated again once
+        // it has
+        const [isRegexReady, setIsRegexReady] = useState(isRegexLoaded);
+        useEffect(() => {
+            regexLoaded.then(() => setIsRegexReady(true)).catch(log.error);
+        }, []);
         const [typeState, setTypeState] = useState(TypeState.empty);
         const typeStateRef = useRef(typeState);
         const [chainLineage, setChainLineage] = useState(ChainLineage.EMPTY);
@@ -306,6 +313,7 @@ export const GlobalProvider = memo(
             passthrough,
             getEdges,
             getNodes,
+            isRegexReady,
         ]);
 
         const [outputDataMap, outputDataActions] = useOutputDataStore();
@@ -485,10 +493,12 @@ export const GlobalProvider = memo(
                     if (!saveAs && savePath) {
                         await ipcRenderer.invoke('file-save-json', saveData, savePath);
                     } else {
+                        // the recent list is oldest first
+                        const lastOpened = openRecent.at(-1);
                         const result = await ipcRenderer.invoke(
                             'file-save-as-json',
                             saveData,
-                            savePath || (openRecent[0] && dirname(openRecent[0]))
+                            savePath || (lastOpened && dirname(lastOpened))
                         );
                         if (result.kind === 'Canceled') {
                             return SaveResult.Canceled;
@@ -765,7 +775,6 @@ export const GlobalProvider = memo(
             setViewport,
         ]);
 
-        // Register New File event handler
         useIpcRendererListener(
             'file-new',
             useCallback(() => {
@@ -773,26 +782,33 @@ export const GlobalProvider = memo(
             }, [clearState])
         );
 
+        const openFileResult = useCallback(
+            async (result: FileOpenResult<ParsedSaveData>) => {
+                if (result.kind === 'Success') {
+                    await setStateFromJSONRef.current(result.saveData, result.path, true);
+                } else {
+                    removeRecentPath(result.path);
+                    sendAlert({
+                        type: AlertType.ERROR,
+                        message: i18n.t(
+                            'chain.unableToOpenFile',
+                            'Unable to open file {{path}}\n\n{{error}}',
+                            { path: result.path, error: result.error }
+                        ),
+                    });
+                }
+            },
+            [removeRecentPath, sendAlert]
+        );
+
         useAsyncEffect(
             () => async () => {
                 const result = await ipcRenderer.invoke('get-auto-open');
                 if (result) {
-                    if (result.kind === 'Success') {
-                        await setStateFromJSONRef.current(result.saveData, result.path, true);
-                    } else {
-                        removeRecentPath(result.path);
-                        sendAlert({
-                            type: AlertType.ERROR,
-                            message: i18n.t(
-                                'chain.unableToOpenFile',
-                                'Unable to open file {{path}}\n\n{{error}}',
-                                { path: result.path, error: result.error }
-                            ),
-                        });
-                    }
+                    await openFileResult(result);
                 }
             },
-            [removeRecentPath, sendAlert]
+            [openFileResult]
         );
 
         // A chain opened with the node list of the last start is checked again, as on open,
@@ -862,32 +878,16 @@ export const GlobalProvider = memo(
             changeEdges(edges);
         }, [nodesFromCache, schemata, getNodes, getEdges, sendAlert, changeNodes, changeEdges]);
 
-        // Register Open File event handler
         useIpcRendererListener(
             'file-open',
             useCallback(
                 (_, result) => {
-                    if (result.kind === 'Success') {
-                        setStateFromJSONRef
-                            .current(result.saveData, result.path, true)
-                            .catch(log.error);
-                    } else {
-                        removeRecentPath(result.path);
-                        sendAlert({
-                            type: AlertType.ERROR,
-                            message: i18n.t(
-                                'chain.unableToOpenFile',
-                                'Unable to open file {{path}}\n\n{{error}}',
-                                { path: result.path, error: result.error }
-                            ),
-                        });
-                    }
+                    openFileResult(result).catch(log.error);
                 },
-                [removeRecentPath, sendAlert]
+                [openFileResult]
             )
         );
 
-        // Register Save/Save-As event handlers
         useIpcRendererListener(
             'file-save-as',
             // eslint-disable-next-line @typescript-eslint/no-misused-promises
@@ -1348,6 +1348,7 @@ export const GlobalProvider = memo(
                         status: 'warning',
                         description: 'Cannot export viewport because there are no nodes.',
                     });
+                    return;
                 }
 
                 takeScreenshot(currentFlowWrapper, currentReactFlowInstance, viewportExportPadding)

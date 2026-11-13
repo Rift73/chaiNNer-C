@@ -12,7 +12,6 @@ interface NodeDocumentationContextState {
     onClose: () => void;
 }
 
-// TODO: create context requires default values
 export const NodeDocumentationContext = createContext<NodeDocumentationContextState>(
     {} as NodeDocumentationContextState
 );

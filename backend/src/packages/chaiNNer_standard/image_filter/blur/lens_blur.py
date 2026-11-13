@@ -70,10 +70,6 @@ def normalize_kernels(kernels: list[np.ndarray], params: list[Params]):
     return normalize_lens(kernels, [(p["A"], p["B"]) for p in params])
 
 
-def weighted_sum(kernel: np.ndarray, params: Params) -> np.ndarray:
-    return np.add(np.real(kernel) * params["A"], np.imag(kernel) * params["B"])
-
-
 def lens_blur(
     img: np.ndarray, radius: int, component_count: int, exposure_gamma: float
 ) -> np.ndarray:
@@ -119,9 +115,8 @@ def lens_blur(
         return freeze_normalized(
             straight(output_image.transpose(1, 2, 0), 1.0 / exposure_gamma)
         )
-    # Upstream clips and powers the planar (c, h, w) image, then returns its
-    # transpose(1, 2, 0): that view's strides reach the next node (ImageOutput keeps
-    # np.clip's order K), so the port returns the same view of its frozen plane.
+    # The output is the transpose(1, 2, 0) view of the planar (c, h, w) result: its
+    # strides reach the next node (ImageOutput keeps np.clip's order K).
     return freeze_normalized(
         power(output_image, 1.0 / exposure_gamma, finish=True)
     ).transpose(1, 2, 0)

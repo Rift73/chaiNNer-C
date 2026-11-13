@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from sanic.log import logger
 from spandrel import ImageModelDescriptor
 from spandrel.architectures.DAT import DAT
 from spandrel.architectures.DRFT import DRFT
@@ -62,12 +61,12 @@ def convert_to_ncnn_node(
             convert_to_ncnn_node as onnx_convert_to_ncnn_node,
         )
     except Exception as e:
-        logger.error(e)
-        raise ModuleNotFoundError(  # noqa: B904
-            "Converting to NCNN is done through ONNX as an intermediate format (PyTorch -> ONNX -> NCNN), \
-                and therefore requires the ONNX dependency to be installed. Please install ONNX through the dependency \
-                manager to use this node."
-        )
+        raise ModuleNotFoundError(
+            "Converting to NCNN is done through ONNX as an intermediate format"
+            " (PyTorch -> ONNX -> NCNN), and therefore requires the ONNX dependency to"
+            " be installed. Please install ONNX through the dependency manager to use"
+            f" this node ({type(e).__name__}: {e})."
+        ) from e
 
     # NCNN's layers have fixed shapes; DRFT's windows and NAFNet's padding to a multiple
     # (and its LayerNorm's weight views) take theirs from the image's size as it runs.

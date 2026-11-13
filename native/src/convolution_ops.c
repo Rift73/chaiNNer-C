@@ -149,7 +149,7 @@ static void convolution_range(void *context, size_t begin, size_t end) {
     }
 }
 
-/* One axis's reflected-offset table (D8): entry i is padded-frame position
+/* One axis's reflected-offset table: entry i is padded-frame position
  * i - reach, mapped to reflect101(i - reach, length) - padding when that lies
  * in [0, size), else -1. */
 static void reflected_offsets(int32_t *table, size_t length, size_t size, size_t padding, size_t reach) {

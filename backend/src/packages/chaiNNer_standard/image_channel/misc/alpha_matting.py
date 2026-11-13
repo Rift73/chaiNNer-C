@@ -77,7 +77,7 @@ def alpha_matting_node(
     ):
         img, trimap = matting_input(img, trimap, fg_threshold / 255, bg_threshold / 255)
     else:
-        # Other helper dtypes retain the original NumPy/OpenCV behavior.
+        # Other dtypes (direct callers; the node's input is float32) use NumPy and OpenCV.
         trimap = np.where(trimap > fg_threshold / 255, 1, trimap)
         trimap = np.where(trimap < bg_threshold / 255, 0, trimap)
         trimap = trimap.astype(np.float64)
@@ -95,7 +95,7 @@ def alpha_matting_node(
         assert isinstance(foreground, np.ndarray)
         return output(foreground, alpha)
 
-    # Preserve the original general-helper errors for empty/HWC trimaps. Imported only
+    # Empty and HWC trimaps get PyMatting's own errors. Imported only
     # here: PyMatting loads Numba and SciPy, and compiles its kernels on a first start.
     import pymatting
 
@@ -103,6 +103,5 @@ def alpha_matting_node(
     foreground = pymatting.estimate_foreground_ml(img, alpha)
     assert isinstance(foreground, np.ndarray)
 
-    # convert to bgr
     foreground = cv2.cvtColor(foreground, cv2.COLOR_RGB2BGR)
     return np.dstack((foreground, alpha))

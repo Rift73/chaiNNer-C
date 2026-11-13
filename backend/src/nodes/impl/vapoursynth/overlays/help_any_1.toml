@@ -1,0 +1,597 @@
+# Any Function, part 1: mvu, edgemasks, hysteresis, std, text, sub, atwt, awarp, deblock, dmetrics, vivtc.
+# Arguments here are typed as `name = value` rows; clips go in a Clip or filter socket with their name.
+
+[method."mvu.Super"]
+help = "First step of every MVUtensils chain: prepares a clip for motion search (padding, sub-pixel planes, a pyramid). Its output only feeds Analyse, AnalyseMany and the other mvu methods. For plain denoising, the Denoise node's Denoise moving grain (mc_degrain) does the whole chain. Pitfall: type `blksize = 8` and `overlap = 4`; both are required."
+
+[method."mvu.Super".docs]
+blksize = "Block size in pixels, one value or `[h, v]`; required. Must match the block size used in Analyse. 8 or 16 is usual. Example: `blksize = 8`"
+overlap = "Block overlap in pixels, at most half of blksize; required. Example: `overlap = 4`"
+pad = "Border padding in pixels, one value or `[h, v]`. Example: `pad = [16, 16]`"
+onelevel = "Builds only the finest level. Use for a super that only feeds Degrain, Compensate, Flow or Recalculate (saves memory); Analyse needs the full pyramid. Example: `onelevel = True`"
+sharp = "Sub-pixel interpolation: 0 bilinear, 1 bicubic, 2 Wiener (sharpest, default). Example: `sharp = 1`"
+rfilter = "Filter used to shrink the pyramid levels: 0 average, 1 bilinear (default), 2 cubic. Example: `rfilter = 2`"
+pel = "Motion precision: 1 full pixel, 2 half pixel (default), 4 quarter pixel. Higher = more accurate, more memory and time. Example: `pel = 1`"
+pelclip = "Optional ready-made upscaled clip used for the sub-pixel planes instead of the built-in interpolation. Connect it to a Clip or filter socket and type `pelclip` as its Argument name."
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.Analyse"]
+help = "Finds motion vectors between each frame and one other frame (direction and distance from delta). Connect the Super (mvu) output as the main clip. Use it when a method needs one vector clip (Compensate, Flow, masks, SCDetection); for Degrain and the Flow interpolators AnalyseMany gives the whole list. Example: `delta = -1` for forward vectors."
+
+[method."mvu.Analyse".docs]
+blksize = "Block size in pixels, one value or `[h, v]`; defaults to the super clip's. Smaller = finer motion, slower. Example: `blksize = 16`"
+overlap = "Block overlap, at most half the block size; defaults to the super clip's. More = smoother vectors, slower. Example: `overlap = 8`"
+levels = "How many levels of the coarse-to-fine search pyramid to use; 0 = all. Example: `levels = 0`"
+search = "Search pattern: 0 diamond, 1 exhaustive, 2 hexagon (default), 3 uneven multi-hexagon (most thorough of the fast ones), 4 horizontal only, 5 vertical only. Example: `search = 3`"
+searchparam = "Search radius or step of that pattern. Higher = finds larger motion, slower. Example: `searchparam = 2`"
+pelsearch = "Search radius at the finest, sub-pixel level; defaults to the super clip's pel. Example: `pelsearch = 2`"
+mvlambda = "How strongly each block's vector is pulled towards its neighbours. High (default 1000) = smooth, true motion for interpolation; 0 = best match per block, often better for denoising. Example: `mvlambda = 0`"
+chroma = "Includes the colour planes when comparing blocks. Example: `chroma = False`"
+delta = "Which frame to match and in which direction: positive = past frames (backward), negative = future frames (forward); 2 means two frames away. Example: `delta = -1`"
+lsad = "Block difference above which the smoothness pull (mvlambda) is relaxed, so poorly matching blocks may search freely. No effect when mvlambda is 0. Example: `lsad = 400`"
+plevel = "How the smoothness pull grows at the coarse levels: 0 constant, 1 linear (default), 2 quadratic. Example: `plevel = 2`"
+globalmv = "Also estimates one whole-frame (camera pan) vector and tries it for every block. Example: `globalmv = False`"
+pnew = "Penalty, out of 256, a newly found vector must overcome to replace the predicted one. Higher = steadier vectors. Example: `pnew = 50`"
+pzero = "Same penalty for choosing the zero (no motion) vector; defaults to pnew. Example: `pzero = 0`"
+pglobal = "Same penalty for choosing the whole-frame vector. Example: `pglobal = 0`"
+badsad = "Block difference above which a block gets a second, wider search. Example: `badsad = 10000`"
+badrange = "Radius of that wider search in pixels. Example: `badrange = 24`"
+meander = "Scans block rows alternately left-to-right and right-to-left, which reuses neighbour vectors better. Example: `meander = False`"
+trymany = "Tries several candidate vectors per block: 0 off, 1 on all but the finest level, 2 everywhere. Slower, occasionally better. Example: `trymany = 1`"
+fields = "Treats the clip as separated fields (interlaced material after SeparateFields). Example: `fields = True`"
+tff = "Top field first; only used with `fields = True`. Example: `tff = True`"
+satd = "Compares blocks with SATD (transform-based, closer to visible difference) instead of plain SAD. Slower. Example: `satd = True`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.AnalyseMany"]
+help = "Finds all the motion vectors Degrain and the Flow interpolators need, in the right order: backward and forward for distances 1 to radius. Connect the Super (mvu) output as the main clip and wire the result to a socket named `vectors`. Example: `radius = 2` gives four vector clips."
+
+[method."mvu.AnalyseMany".docs]
+blksize = "Block size in pixels, one value or `[h, v]`; defaults to the super clip's. Smaller = finer motion, slower. Example: `blksize = 16`"
+overlap = "Block overlap, at most half the block size; defaults to the super clip's. More = smoother vectors, slower. Example: `overlap = 8`"
+levels = "How many levels of the coarse-to-fine search pyramid to use; 0 = all. Example: `levels = 0`"
+search = "Search pattern: 0 diamond, 1 exhaustive, 2 hexagon (default), 3 uneven multi-hexagon (most thorough of the fast ones), 4 horizontal only, 5 vertical only. Example: `search = 3`"
+searchparam = "Search radius or step of that pattern. Higher = finds larger motion, slower. Example: `searchparam = 2`"
+pelsearch = "Search radius at the finest, sub-pixel level; defaults to the super clip's pel. Example: `pelsearch = 2`"
+mvlambda = "How strongly each block's vector is pulled towards its neighbours. High (default 1000) = smooth, true motion for interpolation; 0 = best match per block, often better for denoising. Example: `mvlambda = 0`"
+chroma = "Includes the colour planes when comparing blocks. Example: `chroma = False`"
+delta = "Step between the analysed distances (always positive here): 2 analyses frames 2, 4, 6 away. Example: `delta = 1`"
+lsad = "Block difference above which the smoothness pull (mvlambda) is relaxed, so poorly matching blocks may search freely. No effect when mvlambda is 0. Example: `lsad = 400`"
+plevel = "How the smoothness pull grows at the coarse levels: 0 constant, 1 linear (default), 2 quadratic. Example: `plevel = 2`"
+globalmv = "Also estimates one whole-frame (camera pan) vector and tries it for every block. Example: `globalmv = False`"
+pnew = "Penalty, out of 256, a newly found vector must overcome to replace the predicted one. Higher = steadier vectors. Example: `pnew = 50`"
+pzero = "Same penalty for choosing the zero (no motion) vector; defaults to pnew. Example: `pzero = 0`"
+pglobal = "Same penalty for choosing the whole-frame vector. Example: `pglobal = 0`"
+badsad = "Block difference above which a block gets a second, wider search. Example: `badsad = 10000`"
+badrange = "Radius of that wider search in pixels. Example: `badrange = 24`"
+meander = "Scans block rows alternately left-to-right and right-to-left, which reuses neighbour vectors better. Example: `meander = False`"
+trymany = "Tries several candidate vectors per block: 0 off, 1 on all but the finest level, 2 everywhere. Slower, occasionally better. Example: `trymany = 1`"
+fields = "Treats the clip as separated fields (interlaced material after SeparateFields). Example: `fields = True`"
+tff = "Top field first; only used with `fields = True`. Example: `tff = True`"
+satd = "Compares blocks with SATD (transform-based, closer to visible difference) instead of plain SAD. Slower. Example: `satd = True`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+radius = "Number of frames on each side to analyse; Degrain then uses that many. 1 to 3 is usual. Example: `radius = 2`"
+
+[method."mvu.Recalculate"]
+help = "Refines existing vectors at a smaller block size instead of searching again, for finer motion at little cost. Connect a Super (mvu) of the same bit depth as the main clip and the AnalyseMany result to a socket named `vectors`. Example: `blksize = 4` and `overlap = 2` after an 8/4 analysis."
+
+[method."mvu.Recalculate".docs]
+vectors = "The vector clip or list to refine (for example from AnalyseMany). Connect it to a Clip or filter socket and type `vectors` as its Argument name."
+thsad = "Blocks whose difference is below this keep their vector; worse ones are searched again. Example: `thsad = 200`"
+smooth = "Starts the finer vectors from an interpolation of their neighbours (on) or from the nearest old vector (off). Example: `smooth = False`"
+blksize = "The finer block size, usually half the original. Example: `blksize = 4`"
+overlap = "The finer overlap, usually half the original. Example: `overlap = 2`"
+search = "Search pattern: 0 diamond, 1 exhaustive, 2 hexagon (default), 3 uneven multi-hexagon (most thorough of the fast ones), 4 horizontal only, 5 vertical only. Example: `search = 3`"
+searchparam = "Search radius or step of that pattern. Higher = finds larger motion, slower. Example: `searchparam = 2`"
+mvlambda = "How strongly each block's vector is pulled towards its neighbours. High (default 1000) = smooth, true motion for interpolation; 0 = best match per block, often better for denoising. Example: `mvlambda = 0`"
+chroma = "Includes the colour planes when comparing blocks. Example: `chroma = False`"
+pnew = "Penalty, out of 256, a newly found vector must overcome to replace the predicted one. Higher = steadier vectors. Example: `pnew = 50`"
+meander = "Scans block rows alternately left-to-right and right-to-left, which reuses neighbour vectors better. Example: `meander = False`"
+fields = "Treats the clip as separated fields (interlaced material after SeparateFields). Example: `fields = True`"
+tff = "Top field first; only used with `fields = True`. Example: `tff = True`"
+satd = "Compares blocks with SATD (transform-based, closer to visible difference) instead of plain SAD. Slower. Example: `satd = True`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.Degrain"]
+help = "Motion-compensated temporal denoise: averages each block with the matching blocks of neighbouring frames, so grain drops while moving detail stays sharp. Main clip = the video; sockets `super` (Super (mvu)) and `vectors` (AnalyseMany (mvu)). The Denoise node's Denoise moving grain (mc_degrain) does all three steps in one. Example: `thsad = 300`."
+
+[method."mvu.Degrain".docs]
+super = "The super clip made by Super (mvu) from the same video. Connect it to a Clip or filter socket and type `super` as its Argument name."
+vectors = "The vector list from AnalyseMany (mvu); its length sets how many frames are averaged. Connect it to a Clip or filter socket and type `vectors` as its Argument name."
+thsad = "Block difference at which a neighbouring frame's block stops counting, `[luma, chroma]` or one value. Higher = stronger denoising, more risk of ghosting. 200 to 500 is usual. Example: `thsad = [300, 200]`"
+thsad2 = "The same threshold for the furthest frames; the frames between blend from thsad to this. Lower than thsad cuts blur from distant frames. Example: `thsad2 = 150`"
+limit = "Largest change allowed per pixel, `[luma, chroma]`, in the clip's own values; default no limit. Example: `limit = [8, 8]`"
+thscd1 = "Block difference (SAD, sum of absolute differences, given for an 8x8 block at 8-bit) above which a block counts as changed, for scene-change detection. Higher = fewer scene changes. Example: `thscd1 = 400`"
+thscd2 = "Percentage (0 to 100) of changed blocks that makes the frame a scene change; there the frame passes through unprocessed. Example: `thscd2 = 51`"
+weights = "Extra weight per frame in time order, from the furthest past through the current frame to the furthest future (2 x radius + 1 values); only ratios matter. Example: `weights = [1, 2, 1]`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.Compensate"]
+help = "Builds each frame from its reference frame moved along the motion vectors (block by block): a motion-aligned neighbour, for your own temporal filters. Main clip = the video; sockets `super` and `vectors` (one clip from Analyse). Flow (mvu) does the same per pixel, without block edges."
+
+[method."mvu.Compensate".docs]
+super = "The super clip made by Super (mvu) from the same video. Connect it to a Clip or filter socket and type `super` as its Argument name."
+vectors = "One vector clip from Analyse (mvu). Connect it to a Clip or filter socket and type `vectors` as its Argument name."
+thsad = "Blocks whose difference exceeds this are taken from the current frame instead of the reference. Example: `thsad = 1000`"
+fields = "Treats the clip as separated fields (interlaced material after SeparateFields). Example: `fields = True`"
+time = "Position between the frame and its reference, 0 to 100 percent; 100 = fully at the reference. Example: `time = 50`"
+thscd1 = "Block difference (SAD, sum of absolute differences, given for an 8x8 block at 8-bit) above which a block counts as changed, for scene-change detection. Higher = fewer scene changes. Example: `thscd1 = 400`"
+thscd2 = "Percentage (0 to 100) of changed blocks that makes the frame a scene change; there the frame passes through unprocessed. Example: `thscd2 = 51`"
+tff = "Top field first; only used with `fields = True`. Example: `tff = True`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.Flow"]
+help = "Warps the reference frame onto the current one pixel by pixel along the motion vectors: a smooth motion-aligned neighbour without block edges. Main clip = the video; sockets `super` and `vectors` (one clip from Analyse). Example: `time = 50` warps half way."
+
+[method."mvu.Flow".docs]
+super = "The super clip made by Super (mvu) from the same video. Connect it to a Clip or filter socket and type `super` as its Argument name."
+vectors = "One vector clip from Analyse (mvu). Connect it to a Clip or filter socket and type `vectors` as its Argument name."
+time = "Position between the frame and its reference, 0 to 100 percent; 100 = fully at the reference. Example: `time = 50`"
+fields = "Treats the clip as separated fields (interlaced material after SeparateFields). Example: `fields = True`"
+thscd1 = "Block difference (SAD, sum of absolute differences, given for an 8x8 block at 8-bit) above which a block counts as changed, for scene-change detection. Higher = fewer scene changes. Example: `thscd1 = 400`"
+thscd2 = "Percentage (0 to 100) of changed blocks that makes the frame a scene change; there the frame passes through unprocessed. Example: `thscd2 = 51`"
+tff = "Top field first; only used with `fields = True`. Example: `tff = True`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.FlowBlur"]
+help = "Adds motion blur: smears each pixel along its motion. Use it to soften judder or fake shutter blur. Main clip = the video; sockets `super` and `vectors` (AnalyseMany with radius 1). Example: `blur = 100` for a full-frame smear."
+
+[method."mvu.FlowBlur".docs]
+super = "The super clip made by Super (mvu) from the same video. Connect it to a Clip or filter socket and type `super` as its Argument name."
+vectors = "The vector list from AnalyseMany (mvu) with radius 1 (backward and forward). Connect it to a Clip or filter socket and type `vectors` as its Argument name."
+blur = "Blur length as a percentage of the motion, 0 to 200. Example: `blur = 50`"
+prec = "Step between blur samples in pixels; lower = smoother, slower. Example: `prec = 1`"
+thscd1 = "Block difference (SAD, sum of absolute differences, given for an 8x8 block at 8-bit) above which a block counts as changed, for scene-change detection. Higher = fewer scene changes. Example: `thscd1 = 400`"
+thscd2 = "Percentage (0 to 100) of changed blocks that makes the frame a scene change; there the frame passes through unprocessed. Example: `thscd2 = 51`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.FlowFPS"]
+help = "Changes the frame rate by building new in-between frames from motion (frame interpolation), e.g. 24 to 60 fps. Main clip = the video; sockets `super` and `vectors` (AnalyseMany with radius 1). The Clip Properties node's Change frame rate (change_fps) only drops or repeats frames. Pitfall: fast or complex motion shows warping artefacts."
+
+[method."mvu.FlowFPS".docs]
+super = "The super clip made by Super (mvu) from the same video. Connect it to a Clip or filter socket and type `super` as its Argument name."
+vectors = "The vector list from AnalyseMany (mvu) with radius 1 (backward and forward). Connect it to a Clip or filter socket and type `vectors` as its Argument name."
+num = "Output frame rate numerator. Default 25 fps (num 25, den 1), so type both; num or den 0 doubles the input rate. Example: `num = 60000`"
+den = "Output frame rate denominator. Example: `den = 1001`"
+extramask = "Uses a second occlusion pass, which hides more warping in covered or revealed areas. Example: `extramask = False`"
+ml = "Motion length that counts as full occlusion; lower = stronger occlusion masking. Example: `ml = 100`"
+blend = "Blends both directions in occluded areas instead of picking one. Example: `blend = False`"
+thscd1 = "Block difference (SAD, sum of absolute differences, given for an 8x8 block at 8-bit) above which a block counts as changed, for scene-change detection. Higher = fewer scene changes. Example: `thscd1 = 400`"
+thscd2 = "Percentage (0 to 100) of changed blocks that makes the frame a scene change; there the frame passes through unprocessed. Example: `thscd2 = 51`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.FlowInter"]
+help = "Builds a frame between each frame and the next from motion, at the position set by time; the frame count stays the same. Use it to replace a broken or duplicated frame with an interpolated one. Main clip = the video; sockets `super` and `vectors` (AnalyseMany with radius 1). Example: `time = 50`."
+
+[method."mvu.FlowInter".docs]
+super = "The super clip made by Super (mvu) from the same video. Connect it to a Clip or filter socket and type `super` as its Argument name."
+vectors = "The vector list from AnalyseMany (mvu) with radius 1 (backward and forward). Connect it to a Clip or filter socket and type `vectors` as its Argument name."
+time = "Position of the new frame between the two source frames, 0 to 100; 50 = midway. Example: `time = 50`"
+ml = "Motion length that counts as full occlusion; lower = stronger occlusion masking. Example: `ml = 100`"
+blend = "Blends both directions in occluded areas instead of picking one. Example: `blend = False`"
+thscd1 = "Block difference (SAD, sum of absolute differences, given for an 8x8 block at 8-bit) above which a block counts as changed, for scene-change detection. Higher = fewer scene changes. Example: `thscd1 = 400`"
+thscd2 = "Percentage (0 to 100) of changed blocks that makes the frame a scene change; there the frame passes through unprocessed. Example: `thscd2 = 51`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.VectorLengthMask"]
+help = "Motion mask: brighter where the motion vectors are longer, so moving areas are white and static ones black. Connect one vector clip from Analyse as the main clip. Use it as the Mask of Merge through a mask (Planes) to filter only static or only moving parts. Output is grey at the vectors' bit depth."
+
+[method."mvu.VectorLengthMask".docs]
+ml = "Value that maps to full white; lower = brighter mask. Example: `ml = 50`"
+gamma = "Gamma curve of the mask; below 1 brightens weak values. Example: `gamma = 0.5`"
+time = "Time position used to project the vectors, 0 to 100. Example: `time = 50`"
+scval = "Mask value written on scene-change frames, in the mask's own values (8-bit: 0 to 255). Example: `scval = 255`"
+thscd1 = "Block difference (SAD, sum of absolute differences, given for an 8x8 block at 8-bit) above which a block counts as changed, for scene-change detection. Higher = fewer scene changes. Example: `thscd1 = 400`"
+thscd2 = "Percentage (0 to 100) of changed blocks that makes the frame a scene change; there the frame passes through unprocessed. Example: `thscd2 = 51`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.SADMask"]
+help = "Mask of poor motion matches: brighter where a block matched its reference badly (new objects, fast motion, flashes). Connect one vector clip from Analyse as the main clip. Use it to keep a temporal filter away from those areas via Merge through a mask (Planes)."
+
+[method."mvu.SADMask".docs]
+ml = "Value that maps to full white; lower = brighter mask. Example: `ml = 50`"
+gamma = "Gamma curve of the mask; below 1 brightens weak values. Example: `gamma = 0.5`"
+time = "Time position used to project the vectors, 0 to 100. Example: `time = 50`"
+scval = "Mask value written on scene-change frames, in the mask's own values (8-bit: 0 to 255). Example: `scval = 255`"
+thscd1 = "Block difference (SAD, sum of absolute differences, given for an 8x8 block at 8-bit) above which a block counts as changed, for scene-change detection. Higher = fewer scene changes. Example: `thscd1 = 400`"
+thscd2 = "Percentage (0 to 100) of changed blocks that makes the frame a scene change; there the frame passes through unprocessed. Example: `thscd2 = 51`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.OcclusionMask"]
+help = "Mask of covered and revealed areas: brighter where the motion field pulls apart or piles up, the places interpolation gets wrong. Connect one vector clip from Analyse as the main clip. Use it to blend a fallback in over interpolation artefacts."
+
+[method."mvu.OcclusionMask".docs]
+ml = "Value that maps to full white; lower = brighter mask. Example: `ml = 50`"
+gamma = "Gamma curve of the mask; below 1 brightens weak values. Example: `gamma = 0.5`"
+time = "Time position used to project the vectors, 0 to 100. Example: `time = 50`"
+scval = "Mask value written on scene-change frames, in the mask's own values (8-bit: 0 to 255). Example: `scval = 255`"
+thscd1 = "Block difference (SAD, sum of absolute differences, given for an 8x8 block at 8-bit) above which a block counts as changed, for scene-change detection. Higher = fewer scene changes. Example: `thscd1 = 400`"
+thscd2 = "Percentage (0 to 100) of changed blocks that makes the frame a scene change; there the frame passes through unprocessed. Example: `thscd2 = 51`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.SCDetection"]
+help = "Marks scene changes from the motion vectors: sets the `_SceneChangePrev` and `_SceneChangeNext` frame properties that many temporal filters read. Main clip = the clip to tag; socket `vectors` (one clip from Analyse). The Clip Properties node's Mark scene changes (sc_detect) does this without motion search."
+
+[method."mvu.SCDetection".docs]
+vectors = "One vector clip from Analyse (mvu) of the same video. Connect it to a Clip or filter socket and type `vectors` as its Argument name."
+thscd1 = "Block difference (SAD, sum of absolute differences, given for an 8x8 block at 8-bit) above which a block counts as changed, for scene-change detection. Higher = fewer scene changes. Example: `thscd1 = 400`"
+thscd2 = "Percentage (0 to 100) of changed blocks that makes the frame a scene change; there the frame passes through unprocessed. Example: `thscd2 = 51`"
+prefix = "Name prefix of the frame properties that carry the vectors. Must be the same on the super, vector and consumer calls; only change it to run two analyses on one clip. Example: `prefix = 'B'`"
+
+[method."mvu.DepanEstimate"]
+help = "First step of stabilising: measures each frame's whole-picture motion (camera pan, optionally zoom) directly from the image. Feed the result to DepanStabilise (mvu) as `data`. Integer clips only, no float. Example: `zoommax = 1.1` to also measure zoom."
+
+[method."mvu.DepanEstimate".docs]
+trust = "Trust limit for accepting an estimate; higher = more permissive. Example: `trust = 4.0`"
+winx = "Width of the measuring window in pixels; 0 = automatic. Example: `winx = 512`"
+winy = "Height of the measuring window in pixels; 0 = automatic. Example: `winy = 256`"
+wleft = "Left edge of the measuring window; -1 = centred. Example: `wleft = -1`"
+wtop = "Top edge of the measuring window; -1 = centred. Example: `wtop = -1`"
+dxmax = "Largest expected horizontal motion in pixels; -1 = automatic. Example: `dxmax = 40`"
+dymax = "Largest expected vertical motion in pixels; -1 = automatic. Example: `dymax = 20`"
+zoommax = "Largest expected zoom factor; 1.0 = pan only. Example: `zoommax = 1.1`"
+stab = "Stability factor of the estimate. Example: `stab = 1.0`"
+pixaspect = "Pixel aspect ratio of the source (1 = square pixels). Example: `pixaspect = 1.0`"
+info = "Prints the measured or applied values on the frame. Example: `info = True`"
+show = "Draws the measured motion on the frame, to check it. Example: `show = True`"
+fields = "Treats the clip as separated fields (interlaced material after SeparateFields). Example: `fields = True`"
+tff = "Top field first; only used with `fields = True`. Example: `tff = True`"
+
+[method."mvu.DepanAnalyse"]
+help = "Measures each frame's whole-picture motion (pan, zoom, rotation) from block motion vectors instead of the image; often steadier than DepanEstimate on busy scenes. Main clip = the video; socket `vectors` (one clip from Analyse). Feed the result to DepanStabilise (mvu) as `data`. Integer clips only."
+
+[method."mvu.DepanAnalyse".docs]
+vectors = "One vector clip from Analyse (mvu) of the same video. Connect it to a Clip or filter socket and type `vectors` as its Argument name."
+mask = "Optional mask: white areas are trusted for the fit, e.g. to ignore a moving foreground. Connect it to a Clip or filter socket and type `mask` as its Argument name."
+zoom = "Also measures zoom. Example: `zoom = False`"
+rot = "Also measures rotation. Example: `rot = False`"
+pixaspect = "Pixel aspect ratio of the source (1 = square pixels). Example: `pixaspect = 1.0`"
+error = "Error limit for accepting the global fit. Example: `error = 15.0`"
+info = "Prints the measured or applied values on the frame. Example: `info = True`"
+wrong = "Penalty for block vectors that disagree with the global motion. Example: `wrong = 10.0`"
+zerow = "Weight given to zero (static) vectors in the fit. Example: `zerow = 0.05`"
+thscd1 = "Block difference (SAD, sum of absolute differences, given for an 8x8 block at 8-bit) above which a block counts as changed, for scene-change detection. Higher = fewer scene changes. Example: `thscd1 = 400`"
+thscd2 = "Percentage (0 to 100) of changed blocks that makes the frame a scene change; there the frame passes through unprocessed. Example: `thscd2 = 51`"
+fields = "Treats the clip as separated fields (interlaced material after SeparateFields). Example: `fields = True`"
+tff = "Top field first; only used with `fields = True`. Example: `tff = True`"
+
+[method."mvu.DepanStabilise"]
+help = "Removes camera shake: smooths the measured camera path and moves each frame to follow the smooth path, keeping deliberate pans. Main clip = the video; socket `data` (DepanEstimate or DepanAnalyse). Pitfall: shifted frames expose borders; fill them with mirror or hide them with zoom. Integer clips only."
+
+[method."mvu.DepanStabilise".docs]
+data = "The global-motion data from DepanEstimate (mvu) or DepanAnalyse (mvu). Connect it to a Clip or filter socket and type `data` as its Argument name."
+cutoff = "How fast the stabilised path may follow the real one, in Hz; lower = smoother, more correction. Example: `cutoff = 0.5`"
+damping = "Damping of the smoothing; higher = less overshoot. Example: `damping = 0.9`"
+initzoom = "Fixed zoom applied to every frame to hide exposed borders. Example: `initzoom = 1.05`"
+addzoom = "Adds zoom automatically as needed to hide exposed borders. Example: `addzoom = True`"
+prev = "Previous frames used to fit the path. Example: `prev = 0`"
+next = "Following frames used to fit the path. Example: `next = 0`"
+mirror = "Fills the borders exposed by the shift by mirroring; add 1 top, 2 bottom, 4 left, 8 right. Example: `mirror = 15`"
+blur = "Blur width applied to the mirrored border area. Example: `blur = 30`"
+dxmax = "Largest horizontal correction in pixels. Example: `dxmax = 60`"
+dymax = "Largest vertical correction in pixels. Example: `dymax = 30`"
+zoommax = "Largest zoom correction factor. Example: `zoommax = 1.05`"
+rotmax = "Largest rotation correction in degrees. Example: `rotmax = 1.0`"
+subpixel = "Interpolation when shifting: 0 none, 1 bilinear, 2 bicubic (default). Example: `subpixel = 1`"
+pixaspect = "Pixel aspect ratio of the source (1 = square pixels). Example: `pixaspect = 1.0`"
+tzoom = "Number of frames over which zoom is smoothed. Example: `tzoom = 3.0`"
+info = "Prints the measured or applied values on the frame. Example: `info = True`"
+fields = "Treats the clip as separated fields (interlaced material after SeparateFields). Example: `fields = True`"
+
+[method."mvu.DepanCompensate"]
+help = "Shifts (and zooms or rotates) each frame by its measured whole-picture motion, scaled by offset: undo or reproduce a camera move, or align neighbouring frames. Main clip = the video; socket `data` (DepanEstimate or DepanAnalyse). Use DepanStabilise (mvu) to remove shake. Integer clips only."
+
+[method."mvu.DepanCompensate".docs]
+data = "The global-motion data from DepanEstimate (mvu) or DepanAnalyse (mvu). Connect it to a Clip or filter socket and type `data` as its Argument name."
+offset = "How much of the measured motion to apply: 0 = none, 1 = the full move to the next frame, -1 = to the previous one, fractions in between. Example: `offset = -1`"
+subpixel = "Interpolation when shifting: 0 none, 1 bilinear, 2 bicubic (default). Example: `subpixel = 1`"
+pixaspect = "Pixel aspect ratio of the source (1 = square pixels). Example: `pixaspect = 1.0`"
+matchfields = "Keeps fields matched for interlaced material. Example: `matchfields = False`"
+mirror = "Fills the borders exposed by the shift by mirroring; add 1 top, 2 bottom, 4 left, 8 right. Example: `mirror = 15`"
+blur = "Blur width applied to the mirrored border area. Example: `blur = 30`"
+info = "Prints the measured or applied values on the frame. Example: `info = True`"
+fields = "Treats the clip as separated fields (interlaced material after SeparateFields). Example: `fields = True`"
+tff = "Top field first; only used with `fields = True`. Example: `tff = True`"
+
+[method."edgemasks.Cross"]
+help = "Edge mask, diagonal differences only: very thin, dim lines, fastest. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector Cross runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.Cross".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.ExKirsch"]
+help = "Edge mask, 5x5 compass: the brightest and thickest, catches grain too. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector ExKirsch runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.ExKirsch".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.ExPrewitt"]
+help = "Edge mask, 5x5 Prewitt: thick lines, among the least grain-sensitive. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector ExPrewitt runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.ExPrewitt".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.ExSobel"]
+help = "Edge mask, 5x5 Sobel: thick, bright lines, low grain sensitivity. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector ExSobel runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.ExSobel".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.FDoG"]
+help = "Edge mask, 5x5 smoothed detector: thick lines, low grain sensitivity. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector FDoG runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.FDoG".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.Kirsch"]
+help = "Edge mask, 3x3 compass (strongest of eight directions): bright, solid lines. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector Kirsch runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.Kirsch".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.Kroon"]
+help = "Edge mask, 3x3 accuracy-tuned: thin lines, a bit brighter than Sobel. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector Kroon runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.Kroon".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.Prewitt"]
+help = "Edge mask, classic 3x3: thin, clean lines. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector Prewitt runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.Prewitt".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.Robinson3"]
+help = "Edge mask, 3x3 compass with light weights: thin, Prewitt-like lines. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector Robinson3 runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.Robinson3".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.Robinson5"]
+help = "Edge mask, 3x3 compass with Sobel weights: thin, Sobel-like lines. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector Robinson5 runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.Robinson5".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.RScharr"]
+help = "Edge mask, refined 3x3 Scharr: thin lines, even in all directions. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector RScharr runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.RScharr".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.Scharr"]
+help = "Edge mask, 3x3 with even response in every direction: thin, brighter than Sobel. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector Scharr runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.Scharr".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.Sobel"]
+help = "Edge mask, classic 3x3: thin, clean lines; the usual first choice. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector Sobel runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.Sobel".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."edgemasks.Tritical"]
+help = "Edge mask, plain pixel difference from TCanny: thinnest, dim lines. White lines on black, full range. The Masks node's Edge mask (edgemask) with Edge detector Tritical runs this same plugin and adds thresholds, so prefer it; use this for the bare, fastest call. Example: `scale = 2` for brighter lines."
+
+[method."edgemasks.Tritical".docs]
+scale = "Multiplies the result; above 1 brightens the lines. One value or one per plane. Example: `scale = 2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1, 3 AVX2, 4 AVX-512. Only for testing. Example: `opt = 1`"
+
+[method."hysteresis.Hysteresis"]
+help = "Grows a seed mask into whole shapes: keeps every connected white area of Candidate mask that touches a white pixel of the main clip (the seed), drops the rest. Use it to turn a strict, spotty mask into complete shapes, e.g. full subtitle letters from a few sure pixels. Pitfall: both must be black-and-white masks of the same format."
+
+[method."hysteresis.Hysteresis".docs]
+clipb = "The wider black-and-white mask whose areas are kept where they touch the seed; same format as the main clip."
+
+[method."atwt.ExtractFrequency"]
+help = "Splits off fine detail with an a trous wavelet: the output is the picture minus a blur of it, grey-centred like a difference clip. Use it to separate detail from colour or light, e.g. fix colour from one clip while keeping another's detail. The Denoise node's Only what DFTTest removes (extract_freq) does a similar split by frequency."
+
+[method."atwt.ExtractFrequency".docs]
+radius = "Wavelet scale: the blur reaches 2 to the power (radius - 1) pixels apart; higher = coarser detail layer. Example: `radius = 2`"
+
+[method."atwt.ReplaceFrequency"]
+help = "Adds a detail layer back onto a base picture (base + detail - grey). The reverse of ExtractFrequency (atwt): main clip = the base; socket `detail` = the detail layer, usually from another clip. Example: detail of the filtered clip on the colours of the source."
+
+[method."atwt.ReplaceFrequency".docs]
+detail = "The detail layer, usually from ExtractFrequency (atwt). Connect it to a Clip or filter socket and type `detail` as its Argument name."
+
+[method."awarp.AWarp"]
+help = "Warp sharpening, the second half of aWarpSharp: moves pixels towards edges along a supplied edge mask, thinning lines. The Sharpen and Blur node's Sharpen lines by warping (awarpsharp) builds the mask and calls this for you, so prefer it. Main clip = the video; socket `mask` (an edge mask of the same format)."
+
+[method."awarp.AWarp".docs]
+mask = "Edge mask of the same format, same size or a quarter of the clip's size (clip upscaled 4x). Usually a blurred Sobel mask. Connect it to a Clip or filter socket and type `mask` as its Argument name."
+depth_h = "How far to warp horizontally; negative values blur instead. Example: `depth_h = 3`"
+depth_v = "How far to warp vertically; defaults to depth_h. Example: `depth_v = 3`"
+mask_first_plane = "Uses the luma mask to warp all planes (default for YUV); off = each plane uses its own mask plane. Example: `mask_first_plane = False`"
+
+[method."deblock.Deblock"]
+help = "Smooths 8x8 block edges with the H.264 deblocking filter, for blocky low-bitrate or MPEG-2 sources. Deblock (deblock_qed) in this node is a gentler, block-aware variant built on it. Example: Strength `30` for heavier blocking. Pitfall: strong values soften detail along the block grid."
+
+[method."deblock.Deblock".docs]
+quant = "Strength, 0 to 60; higher = stronger. Empty = 25. Nothing happens while Strength plus an offset is below 16. Example: `30`"
+aoffset = "Shifts the block-edge detection threshold; higher = more edges treated. Example: `2`"
+boffset = "Shifts detection and strength together; higher = stronger. Example: `2`"
+opt = "CPU code path: 0 automatic (default), 1 plain C, 2 SSE4.1. Only for testing. Example: `1`"
+
+[method."dmetrics.DMetrics"]
+help = "Measures field-match quality (Decomb Telecide's metrics) and stores it as the frame properties MMetrics and VMetrics, mainly for the Wobbly IVTC editor. The Deinterlace node's Field metrics for Wobbly (dmetrics) handles the format and field order for you. Pitfall: this bare call takes 8-bit 4:2:0 only."
+
+[method."dmetrics.DMetrics".docs]
+tff = "Field order: `tff = True` for top field first. Example: `tff = True`"
+chroma = "Includes the colour planes when judging combing. Example: `chroma = False`"
+nt = "Noise tolerance; higher ignores more small differences. Example: `nt = 10`"
+y0 = "First row of a band left out of the matching (e.g. subtitles); same as y1 = off. Example: `y0 = 900`"
+y1 = "Last row of that band. Example: `y1 = 1080`"
+prefix = "Text added in front of the property names (MMetrics becomes XMMetrics). Example: `prefix = 'X'`"
+
+[method."vivtc.VFM"]
+help = "Field matching, first step of inverse telecine: rebuilds the original progressive frames from telecined video by pairing the right fields. Follow it with VDecimate (vivtc). The Deinterlace node's Detelecine step 1: field match (VFM) converts formats and can fix leftover combed frames, so prefer it. Pitfall: 8-bit only here; order must be typed."
+
+[method."vivtc.VFM".docs]
+order = "Field order, required: `order = 1` top field first, `order = 0` bottom field first. Example: `order = 1`"
+field = "Field to match from: 0 bottom, 1 top, 2 and 3 follow the clip's field order property (default 2). Example: `field = 2`"
+mode = "Matching strategy, 0 to 5: 0 safest 2-way, 1 default (adds a third match on combed frames), up to 5 most thorough but most risk of jerky duplicates. Example: `mode = 0`"
+mchroma = "Includes chroma when comparing matches; turn off for sources with rainbowing. Example: `mchroma = False`"
+cthresh = "How visible combing must be to count, -1 to 255; 8 to 12 is good. Default 9. Example: `cthresh = 10`"
+mi = "How many combed pixels in one block make the frame combed. Default 80. Example: `mi = 64`"
+chroma = "Includes chroma in the combed-frame decision. Example: `chroma = False`"
+blockx = "Width of the combing-detection block, a power of 2 from 4 to 512. Example: `blockx = 16`"
+blocky = "Height of the combing-detection block, a power of 2 from 4 to 512. Example: `blocky = 16`"
+y0 = "First row of a band ignored for matching (subtitles, logo); equal to y1 = off. Example: `y0 = 900`"
+y1 = "Last row of that band. Example: `y1 = 1060`"
+scthresh = "Scene-change threshold, percent of maximum luma change; 8 to 14 is good. Example: `scthresh = 12`"
+micmatch = "Uses combing values to choose matches: 0 never, 1 around scene changes (default), 2 everywhere. Example: `micmatch = 2`"
+micout = "Computes combing values for all five matches, not only those of the mode. Example: `micout = True`"
+clip2 = "Optional full-quality clip: matching is computed on the main clip, but the output fields are taken from this one (works around the 8-bit limit). Connect it to a Clip or filter socket and type `clip2` as its Argument name."
+
+[method."vivtc.VDecimate"]
+help = "Drops one frame in every cycle, the likeliest duplicate: the second step of inverse telecine after VFM (vivtc), turning 29.97 into 23.976 fps. The Deinterlace node's Detelecine step 2: drop repeats (VDecimate) also handles other bit depths. Example: `cycle = 5`."
+
+[method."vivtc.VDecimate".docs]
+cycle = "One frame is dropped in every cycle frames. Example: `cycle = 5`"
+chroma = "Includes chroma in the duplicate comparison. Example: `chroma = False`"
+dupthresh = "Difference below which a frame counts as a duplicate, percent of a block's maximum change. Example: `dupthresh = 1.1`"
+scthresh = "Scene-change threshold, percent of maximum luma change; 10 to 15 is good. Example: `scthresh = 15`"
+blockx = "Width of the comparison blocks, a power of 2 from 4 to 512; larger = more noise-robust, misses small motion. Example: `blockx = 32`"
+blocky = "Height of the comparison blocks, a power of 2 from 4 to 512. Example: `blocky = 32`"
+clip2 = "Optional clip the frames are dropped from, while the decision uses the main clip. Connect it to a Clip or filter socket and type `clip2` as its Argument name."
+ovr = "Text file with manual overrides of which frames are dropped. Example: `ovr = 'C:/ivtc/overrides.txt'`"
+dryrun = "Drops nothing; only writes VDecimateDrop and the difference values as frame properties, to inspect. Example: `dryrun = True`"
+
+[method."std.AverageFrames"]
+help = "Weighted average of frames: with one clip, of neighbouring frames (a simple temporal blur); with several, of the same frame across clips (e.g. merging several captures of a tape). Connect the clip as the main clip. Example: `weights = [1, 1, 1]` averages three frames."
+
+[method."std.AverageFrames".docs]
+weights = "Weight per frame (one clip: an odd count, centred on the current frame, up to 31) or per clip. Integers for integer clips. Example: `weights = [1, 2, 1]`"
+scale = "Divisor of the weighted sum; default the sum of the weights. Example: `scale = 4`"
+scenechange = "One clip only: does not average across scene changes (reads the scene-change frame properties). Example: `scenechange = True`"
+
+[method."std.GPUUpload"]
+help = "Moves frames to the GPU (the core's Vulkan device) for GPU filters. VapourSynth inserts this by itself when needed, so use it only to choose where in the chain the transfer happens."
+
+[method."std.GPUDownload"]
+help = "Brings frames from the GPU back to the CPU for CPU filters. Does nothing if the clip is already on the CPU."
+
+[method."std.PEMVerifier"]
+help = "Checks that every pixel lies inside an allowed range and raises an error naming the first bad pixel; a debugging aid for filter output. Example: `upper = [235, 240, 240]`."
+
+[method."std.PEMVerifier".docs]
+upper = "Highest allowed value per plane, in the clip's own values; default the format's maximum. Example: `upper = [235, 240, 240]`"
+lower = "Lowest allowed value per plane, in the clip's own values; default the format's minimum. Example: `lower = [16, 16, 16]`"
+
+[method."std.PreMultiply"]
+help = "Multiplies a clip by its alpha (transparency) clip, which gives cleaner edges when resizing and is the form Merge through a mask (Planes) can take with premultiplied on. Main clip = the picture; socket `alpha` = its grey alpha clip."
+
+[method."std.PreMultiply".docs]
+alpha = "The alpha clip, grey, same size and bit depth as the main clip. Connect it to a Clip or filter socket and type `alpha` as its Argument name."
+
+[method."text.Text"]
+help = "Prints a fixed text on every frame with a simple built-in font, for labels when comparing clips. Example: `text = 'Filtered'`. For styled text use Subtitle (sub). Pitfall: Latin characters only (Windows-1252)."
+
+[method."text.Text".docs]
+text = "The text to print. Example: `text = 'Filtered'`"
+alignment = "Position by numpad key: 7 top-left (default), 8 top, 9 top-right, 4 left, 5 centre, 6 right, 1 bottom-left, 2 bottom, 3 bottom-right. Example: `alignment = 8`"
+scale = "Integer enlargement of the 8x16 bitmap font. Example: `scale = 2`"
+
+[method."text.ClipInfo"]
+help = "Prints the clip's details on each frame: format, size, frame count, frame rate. A quick check of what a chain produces."
+
+[method."text.ClipInfo".docs]
+alignment = "Position by numpad key: 7 top-left (default), 8 top, 9 top-right, 4 left, 5 centre, 6 right, 1 bottom-left, 2 bottom, 3 bottom-right. Example: `alignment = 8`"
+scale = "Integer enlargement of the 8x16 bitmap font. Example: `scale = 2`"
+
+[method."text.CoreInfo"]
+help = "Prints VapourSynth's version, thread count and cache size on the frame (on a blank clip when none is connected)."
+
+[method."text.CoreInfo".docs]
+alignment = "Position by numpad key: 7 top-left (default), 8 top, 9 top-right, 4 left, 5 centre, 6 right, 1 bottom-left, 2 bottom, 3 bottom-right. Example: `alignment = 8`"
+scale = "Integer enlargement of the 8x16 bitmap font. Example: `scale = 2`"
+
+[method."text.FrameNum"]
+help = "Prints each frame's number on it, to find frame numbers for trims, ranges and overrides."
+
+[method."text.FrameNum".docs]
+alignment = "Position by numpad key: 7 top-left (default), 8 top, 9 top-right, 4 left, 5 centre, 6 right, 1 bottom-left, 2 bottom, 3 bottom-right. Example: `alignment = 8`"
+scale = "Integer enlargement of the 8x16 bitmap font. Example: `scale = 2`"
+
+[method."text.FrameProps"]
+help = "Prints the frame properties of each frame on it (field order, scene changes, metrics ...), to see what earlier filters set. Example: `props = ['_FieldBased', '_Combed']` limits the list."
+
+[method."text.FrameProps".docs]
+props = "Names of the properties to show; default all. Example: `props = ['_Combed']`"
+alignment = "Position by numpad key: 7 top-left (default), 8 top, 9 top-right, 4 left, 5 centre, 6 right, 1 bottom-left, 2 bottom, 3 bottom-right. Example: `alignment = 8`"
+scale = "Integer enlargement of the 8x16 bitmap font. Example: `scale = 2`"
+
+[method."sub.TextFile"]
+help = "Burns a subtitle file (ASS, SRT and other text formats) into the video with libass, with its fonts and styling. Use it for hardsubbing or previews. Example: `file = 'C:/subs/ep01.ass'`. Pitfall: fonts the file names must be installed or in fontdir."
+
+[method."sub.TextFile".docs]
+file = "Path of the subtitle file. Example: `file = 'C:/subs/ep01.ass'`"
+charset = "Character set of the file; default UTF-8. Example: `charset = 'CP1252'`"
+scale = "Font scale. Example: `scale = 1.5`"
+style = "ASS style line for formats without styles (SRT); no effect on ASS files. Example: `style = 'Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,40,1'`"
+debuglevel = "How much libass reports in the log, 0 (default) to more. Example: `debuglevel = 5`"
+fontdir = "Folder with extra fonts. Example: `fontdir = 'C:/fonts'`"
+linespacing = "Extra space between lines in pixels. Example: `linespacing = 4`"
+margins = "Extra margins in pixels: top, bottom, left, right. Example: `margins = [0, 40, 0, 0]`"
+sar = "Pixel aspect ratio to render for; 0 (default) reads it from each frame, 1 = square pixels. Example: `sar = 1`"
+blend = "On (default) burns the text into the clip. Off returns the subtitle picture alone with its transparency in the `_Alpha` property. Example: `blend = False`"
+matrix = "Colour matrix of the clip as a number, overriding its frame property (only when blending). Example: `matrix = 1`"
+matrix_s = "Same as a name. Example: `matrix_s = '709'`"
+transfer = "Transfer of the clip as a number (only when blending); `transfer = 1` with `primaries = 1` turns colour conversion off. Example: `transfer = 1`"
+transfer_s = "Same as a name. Example: `transfer_s = '709'`"
+primaries = "Colour primaries of the clip as a number (only when blending). Example: `primaries = 1`"
+primaries_s = "Same as a name. Example: `primaries_s = '709'`"
+
+[method."sub.Subtitle"]
+help = "Burns a line of text into the video with libass styling (font, outline, position, ASS tags), between two frames. Nicer than Text (text) for titles or labels. Example: `text = 'Episode 1'` with `start = 0` and `end = 120`."
+
+[method."sub.Subtitle".docs]
+text = "The text, may contain ASS tags. Example: `text = '{\\an8}Episode 1'`"
+start = "First frame showing it. Example: `start = 0`"
+end = "Frame where it stops; default the clip's end. Example: `end = 120`"
+style = "ASS style line (font, size, colours, outline, alignment, margins). Example: `style = 'Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,40,1'`"
+debuglevel = "How much libass reports in the log, 0 (default) to more. Example: `debuglevel = 5`"
+fontdir = "Folder with extra fonts. Example: `fontdir = 'C:/fonts'`"
+linespacing = "Extra space between lines in pixels. Example: `linespacing = 4`"
+margins = "Extra margins in pixels: top, bottom, left, right. Example: `margins = [0, 40, 0, 0]`"
+sar = "Pixel aspect ratio to render for; 0 (default) reads it from each frame, 1 = square pixels. Example: `sar = 1`"
+blend = "On (default) burns the text into the clip. Off returns the subtitle picture alone with its transparency in the `_Alpha` property. Example: `blend = False`"
+matrix = "Colour matrix of the clip as a number, overriding its frame property (only when blending). Example: `matrix = 1`"
+matrix_s = "Same as a name. Example: `matrix_s = '709'`"
+transfer = "Transfer of the clip as a number (only when blending); `transfer = 1` with `primaries = 1` turns colour conversion off. Example: `transfer = 1`"
+transfer_s = "Same as a name. Example: `transfer_s = '709'`"
+primaries = "Colour primaries of the clip as a number (only when blending). Example: `primaries = 1`"
+primaries_s = "Same as a name. Example: `primaries_s = '709'`"
+
+[method."sub.ImageFile"]
+help = "Burns picture-based subtitles (VobSub .idx/.sub from DVDs, PGS .sup from Blu-rays) into the video. Example: `file = 'C:/subs/movie.idx'`. Use `info = True` to list the tracks."
+
+[method."sub.ImageFile".docs]
+file = "Path of the subtitle file; for VobSub the .idx, with the .sub beside it. Example: `file = 'C:/subs/movie.idx'`"
+id = "Subtitle track to render; -1 (default) = the first one. Example: `id = 2`"
+palette = "Replacement colours, up to 256 numbers packed as alpha, red, green, blue. Example: `palette = [0xFF000000, 0xFFFFFFFF]`"
+gray = "Turns the subtitles grey. Example: `gray = True`"
+info = "Prints the available tracks (id, language, size) on each frame. Example: `info = True`"
+flatten = "Outputs exactly one frame per subtitle picture instead of following the clip; blend then has no effect. Example: `flatten = True`"
+blend = "On (default) burns the text into the clip. Off returns the subtitle picture alone with its transparency in the `_Alpha` property. Example: `blend = False`"
+matrix = "Colour matrix of the clip as a number, overriding its frame property (only when blending). Example: `matrix = 1`"
+matrix_s = "Same as a name. Example: `matrix_s = '709'`"
+transfer = "Transfer of the clip as a number (only when blending); `transfer = 1` with `primaries = 1` turns colour conversion off. Example: `transfer = 1`"
+transfer_s = "Same as a name. Example: `transfer_s = '709'`"
+primaries = "Colour primaries of the clip as a number (only when blending). Example: `primaries = 1`"
+primaries_s = "Same as a name. Example: `primaries_s = '709'`"

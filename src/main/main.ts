@@ -1,7 +1,5 @@
 import electronLog from 'electron-log/main';
 import { app } from 'electron/main';
-import { readdirSync, rmSync } from 'fs';
-import os from 'os';
 import path from 'path';
 import './i18n';
 import { LEVEL_NAME, log } from '../common/log';
@@ -10,6 +8,7 @@ import { createCli } from './cli/create';
 import { createGuiApp } from './gui/create';
 import { getLogsFolder, getRootDir } from './platform';
 import { handleSquirrel } from './squirrel';
+import { checkUnfinishedUpdate, removeUnpackedReleases, showUpdateAtStart } from './updater';
 
 const startApp = () => {
     const args = parseArgs(process.argv.slice(app.isPackaged ? 1 : 2));
@@ -51,32 +50,49 @@ const startApp = () => {
         globalThis.startupFile = filePath;
     });
 
-    app.on('quit', () => {
-        log.info('Cleaning up temp folders...');
-        const tempDir = os.tmpdir();
-        // find all the folders starting with 'chaiNNer-'
-        const tempFolders = readdirSync(tempDir, { withFileTypes: true })
-            .filter((dir) => dir.isDirectory())
-            .map((dir) => dir.name)
-            .filter((name) => name.includes('chaiNNer-'));
-        tempFolders.forEach((folder) => {
-            try {
-                rmSync(path.join(tempDir, folder), { force: true, recursive: true });
-            } catch (error) {
-                log.error(`Error removing temp folder. ${String(error)}`);
-            }
-        });
-    });
+    app.on('quit', removeUnpackedReleases);
 
-    if (args.command === 'open') {
-        createGuiApp(args);
-    } else {
-        // Only a run needs the type engine and its regex WebAssembly: a window launch does not load them.
-        createCli(async () => {
-            const { runChainInCli } = await import('./cli/run');
-            await runChainInCli(args);
+    // A command-line run the update kept from running ends with exit code 1, as a run that failed
+    // does (cli/create.ts); a window session just ends.
+    const endStart = () => {
+        if (args.command === 'open') {
+            app.quit();
+        } else {
+            app.exit(1);
+        }
+    };
+
+    // An update that did not finish keeps the app from starting on a half-swapped install.
+    checkUnfinishedUpdate()
+        .then(async (message) => {
+            if (message) {
+                if (await showUpdateAtStart(message)) {
+                    // a release kept by the user: the next start finds no update left. Only a
+                    // window session starts again; a command-line run is not repeated on its own.
+                    if (args.command === 'open') {
+                        app.relaunch();
+                    } else {
+                        log.error('The release in the install was kept. Run the command again.');
+                    }
+                } else {
+                    await message.afterwards?.();
+                }
+                endStart();
+            } else if (args.command === 'open') {
+                createGuiApp(args);
+            } else {
+                // Only a run needs the type engine and its regex WebAssembly: a window launch does not load them.
+                createCli(async () => {
+                    const { runChainInCli } = await import('./cli/run');
+                    await runChainInCli(args);
+                });
+            }
+        })
+        .catch(async (error) => {
+            log.error('Could not finish the last update.', error);
+            await showUpdateAtStart({ title: 'The update did not finish', text: String(error) });
+            endStart();
         });
-    }
 };
 
 if (handleSquirrel()) {

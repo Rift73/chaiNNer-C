@@ -1,4 +1,3 @@
-# pylint: disable=relative-beyond-top-level
 from __future__ import annotations
 
 from typing import Union
@@ -11,13 +10,6 @@ from api import BaseInput, ErrorValue
 from ...impl.color.color import Color
 from ...utils.format import format_color_with_channels, format_image_with_channels
 from ...utils.utils import get_h_w_c
-
-
-class AudioInput(BaseInput):
-    """Input a 1D Audio NumPy array"""
-
-    def __init__(self, label: str = "Audio"):
-        super().__init__("Audio", label)
 
 
 class ImageInput(BaseInput):
@@ -105,10 +97,3 @@ class ImageInput(BaseInput):
             }
         else:
             return super().get_error_value(value)
-
-
-class VideoInput(BaseInput):
-    """Input a 3D Video NumPy array"""
-
-    def __init__(self, label: str = "Video"):
-        super().__init__("Video", label)

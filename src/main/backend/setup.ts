@@ -123,7 +123,7 @@ const spawnBackend = (port: number, pythonInfo: PythonInfo) => {
         return backend;
     } catch (error) {
         log.error('Error spawning backend.', error);
-        throw new CriticalError({ message: 'Unable to start backend.' });
+        throw new CriticalError({ message: `Unable to start the backend: ${String(error)}` });
     }
 };
 

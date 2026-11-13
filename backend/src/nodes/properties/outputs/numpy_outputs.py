@@ -40,11 +40,6 @@ class NumPyOutput(BaseOutput[np.ndarray]):
         return value
 
 
-def AudioOutput():
-    """Output a 1D Audio NumPy array"""
-    return NumPyOutput("Audio", "Audio")
-
-
 class ImageOutput(NumPyOutput):
     def __init__(
         self,
@@ -187,8 +182,3 @@ def _previews(img: np.ndarray, image_size: int) -> list[dict[str, object]]:
         le_h, le_w, _ = get_h_w_c(last_encoded)
         previews.append({"width": le_w, "height": le_h, "url": url})
     return previews
-
-
-def VideoOutput():
-    """Output a 3D Video NumPy array"""
-    return NumPyOutput("Video", "Video")

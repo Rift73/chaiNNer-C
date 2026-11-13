@@ -106,7 +106,7 @@ export const StyledSlider = memo(
                 onChange={(n) => onChange(scale.fromScale(n))}
                 onChangeEnd={(n) => onChangeEnd(scale.fromScale(n))}
                 onContextMenu={onContextMenu}
-                onDoubleClick={() => onChangeEnd(def)}
+                onDoubleClick={isDisabled ? undefined : () => onChangeEnd(def)}
                 onMouseEnter={() => setShowTooltip(true)}
                 onMouseLeave={() => setShowTooltip(false)}
             >

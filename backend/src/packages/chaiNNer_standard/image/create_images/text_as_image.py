@@ -98,7 +98,7 @@ def text_as_image_node(
     ink = tuple(to_uint8(np.array(color.value)))
     pil_image = Image.new("L", (width, height))
     # Text without width (empty, or blank lines only) draws nothing: a fully transparent
-    # image, where upstream divides by its zero width.
+    # image.
     if w_ref > 0:
         font_size = native_text.fit(width, height, w_ref, h_ref, line_count)
         with font_lease(font_path, font_size) as font:

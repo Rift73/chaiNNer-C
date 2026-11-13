@@ -1,15 +1,20 @@
 import { NeverType, Type, evaluate } from '@chainner/navi';
-import { memo, useCallback, useEffect } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo } from 'react';
 import { useContext, useContextSelector } from 'use-context-selector';
 import { OutputId, OutputKind, Size } from '../../../common/common-types';
 import { log } from '../../../common/log';
+import { getGroupStacks } from '../../../common/nodes/groupStacks';
 import { getChainnerScope } from '../../../common/types/chainner-scope';
 import { ExpressionJson, fromJson } from '../../../common/types/json';
 import { BackendContext } from '../../contexts/BackendContext';
 import { GlobalContext, GlobalVolatileContext } from '../../contexts/GlobalNodeState';
+import { WithInputContext } from '../../contexts/InputContext';
 import { NodeState } from '../../helpers/nodeState';
+import { getSeekUnderPreview } from '../../helpers/videoSeek';
 import { useAutomaticFeatures } from '../../hooks/useAutomaticFeatures';
 import { useIsCollapsedNode } from '../../hooks/useIsCollapsedNode';
+import { SchemaInput } from '../inputs/SchemaInput';
+import { SeekBarLayoutContext } from '../inputs/VideoSeekInput';
 import { GenericOutput } from '../outputs/GenericOutput';
 import { LargeImageOutput } from '../outputs/LargeImageOutput';
 import { OutputContainer } from '../outputs/OutputContainer';
@@ -105,6 +110,40 @@ export const NodeOutputs = memo(({ nodeState, animated }: NodeOutputProps) => {
         appliesRunTypes,
     ]);
 
+    // a seek bar belongs with the picture it seeks: under the Preview, and in its maximized view
+    const seek = getSeekUnderPreview(schema);
+    const seekBar = seek && (
+        <SchemaInput
+            input={seek.input}
+            nodeState={nodeState}
+        />
+    );
+    // Frames, Start and End go with the bar, under the same conditions as among the inputs: shown
+    // when their groups' conditions hold, and inactive but shown while connected otherwise.
+    const seekLayout = useMemo(() => {
+        const companions = seek?.companions.map((input) => {
+            const conditions = getGroupStacks(schema).inputConditions.get(input.id) ?? [];
+            const element = (
+                <SchemaInput
+                    input={input}
+                    key={input.id}
+                    nodeState={nodeState}
+                />
+            );
+            if (conditions.every(nodeState.testCondition)) return element;
+            if (!nodeState.connectedInputs.has(input.id)) return null;
+            return (
+                <WithInputContext
+                    conditionallyInactive
+                    key={input.id}
+                >
+                    {element}
+                </WithInputContext>
+            );
+        });
+        return { isWide: false, companions };
+    }, [seek, schema, nodeState]);
+
     const isCollapsed = useIsCollapsedNode();
     if (isCollapsed) {
         // just need the effect for collapsed nodes, not the elements
@@ -114,7 +153,7 @@ export const NodeOutputs = memo(({ nodeState, animated }: NodeOutputProps) => {
     const functionDef = functionDefinitions.get(schemaId);
     const functions = functionDef?.outputDefaults;
     return (
-        <>
+        <SeekBarLayoutContext.Provider value={seekLayout}>
             {schema.outputs.map((output) => {
                 if (schema.inputs.some((i) => i.fused?.outputId === output.id)) {
                     return null;
@@ -135,33 +174,37 @@ export const NodeOutputs = memo(({ nodeState, animated }: NodeOutputProps) => {
                 };
 
                 const OutputType = OutputComponents[output.kind];
+                const isSeekOutput = seek?.outputId === output.id;
                 return (
-                    <OutputContainer
-                        definitionType={definitionType}
-                        generic={OutputIsGeneric[output.kind]}
-                        id={id}
-                        isConnected={nodeState.connectedOutputs.has(output.id)}
-                        isIterated={iteratedOutputs.has(output.id)}
-                        key={`${id}-${output.id}`}
-                        output={output}
-                        sequenceType={outputLength}
-                        type={type}
-                    >
-                        <OutputType
-                            animated={animated}
+                    <Fragment key={`${id}-${output.id}`}>
+                        <OutputContainer
                             definitionType={definitionType}
+                            generic={OutputIsGeneric[output.kind]}
                             id={id}
+                            isConnected={nodeState.connectedOutputs.has(output.id)}
+                            isIterated={iteratedOutputs.has(output.id)}
                             output={output}
-                            schema={nodeState.schema}
                             sequenceType={outputLength}
-                            setSize={setSize}
-                            size={size}
-                            type={type ?? NeverType.instance}
-                            useOutputData={useOutputData}
-                        />
-                    </OutputContainer>
+                            type={type}
+                        >
+                            <OutputType
+                                animated={animated}
+                                definitionType={definitionType}
+                                id={id}
+                                output={output}
+                                schema={nodeState.schema}
+                                seekBar={isSeekOutput ? seekBar : undefined}
+                                sequenceType={outputLength}
+                                setSize={setSize}
+                                size={size}
+                                type={type ?? NeverType.instance}
+                                useOutputData={useOutputData}
+                            />
+                        </OutputContainer>
+                        {isSeekOutput && seekBar}
+                    </Fragment>
                 );
             })}
-        </>
+        </SeekBarLayoutContext.Provider>
     );
 });

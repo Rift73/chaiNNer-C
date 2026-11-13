@@ -1,8 +1,8 @@
 # chaiNNer-C: build, test, package, bench
 
-chaiNNer-C v0.3.11, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
-installed nightly `0.25.1-nightly.2025-10-21` UI with pinned bundle patches, the single backend in `backend/src`, and a
-native C17/C++20 layer. The UI shows v0.3.11 (header, About, startup log, system information with `app.upstream`), while
+chaiNNer-C v0.3.12, based on chaiNNer 0.25.1-nightly.2025-10-21, is an independent portable edition of chaiNNer: the
+UI in `src/` (the release zips; the local package uses the nightly's UI bundles with pinned patches), the single
+backend in `backend/src`, and a native C17/C++20 layer. The UI shows v0.3.12 (header, About, startup log, system information with `app.upstream`), while
 `app.getVersion()` stays upstream's, so saved chains keep the upstream version stamp and upstream's migrations read
 them correctly. Design: `ARCHITECTURE.md`. State and
 decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md` (user guide) and
@@ -16,10 +16,9 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
 | `backend/src/` | The only backend; ships byte for byte (stored verbatim as LF, upstream's line ending: `backend/src/** -text`); its `nodes/impl/chainner_native.dll` and `_chainner_graph.pyd` (and `nodes/impl/pytorch/vosr2_qkv.dll` when built) are git-ignored binaries written by the build |
 | `native/src/`, `native/include/`, `native/third_party/` | C17 kernels, C++20 modules; vendored pybind11, the image codec libraries, ONNX Runtime C header |
 | `native/tests/` | pytest suites and frozen `reference_*` oracles (stored verbatim: `native/tests/reference_*/** -text`) |
-| `native/tools/` | Packager, UI patches, runtime verifiers, benchmark harness, code generators, `isa_check.py text` (compares two binaries' code sections), `golden_kernels.py` (golden manifests of the SP4 kernels; usage in each docstring) |
+| `native/tools/` | Packager, UI patches, runtime verifiers, benchmark harness, code generators, `isa_check.py text` (compares two binaries' code sections), `golden_kernels.py` (golden manifests of the native kernels; usage in each docstring) |
 | `native/reports/`, `out/chaiNNer-C/` | Ignored: local evidence (never needed to build or package), and the portable package |
-| `out/chaiNNer-C-py311/` | Ignored: the last CPython 3.11 package, kept read-only as the old-stack bench side and the undo; deleting it is a manual step |
-| `src/`, `tests/` | Upstream frontend at `d56e507f` with the package's two UI patches ported, CPython 3.14.8 as its integrated Python and `%APPDATA%\chaiNNer-C` as its root (a `portable` build: its own folder), where `ui-cache\backend-ui.json` keeps the last node list so the editor shows at once while the backend starts; the run-from-source UI (`npm start`), never shipped. It alone has VOSR's iterated input condition (no package patch carries them) |
+| `src/`, `tests/` | Upstream frontend at `d56e507f` with the package's two UI patches ported, CPython 3.14.8 as its integrated Python and `%APPDATA%\chaiNNer-C` as its root (a `portable` build: its own folder), where `ui-cache\backend-ui.json` keeps the last node list so the editor shows at once while the backend starts; `npm start` runs it from source and `npm run make` builds the release zips from it (`MAINTAINING.md`). It alone has VOSR's iterated input condition (no package patch carries them) |
 
 ## Prerequisites
 
@@ -61,8 +60,7 @@ decisions: `STATUS.md`. Parked GPU work: `GPU-DEFERRED.md`. VOSR 2.0: `VOSR2.md`
   & '.\native\.venv\Scripts\python.exe' -B native\tools\make_oracle.py
   ```
 
-  It replaces the installed app (`$env:LOCALAPPDATA\chaiNNer\app-0.25.1-nightly2025-10-21`), which the installed chaiNNer
-  update removed on 2026-10-08. Its UI bundles are the pinned ones (`BASELINE_HASHES`); its backend is upstream's own,
+  Its UI bundles are the pinned ones (`BASELINE_HASHES`); its backend is upstream's own,
   without the installed copy's local delta (ARCHITECTURE section 2: the GPU lease's 4 files and 10 changed files: the
   server, process, events and cache modules and 4 PyTorch files; no `chaiNNer_standard` node and not `texconv`).
 - `native\.venv`: the test and tool interpreter, made with
@@ -176,7 +174,8 @@ $env:NUMBA_CACHE_DIR = "$env:TEMP\chainner-c-numba"
 - Faster, the same tests and results: `& '.\native\.venv\Scripts\python.exe' -B native\tools\run_tests.py` sets that
   environment itself and runs one pytest process per shard, each pinned to its own two CPUs with thread pools capped
   to them (`test_parallel*.py` run unpinned), balanced by the durations it keeps in `native/local/test-durations.json`:
-  102 s instead of 744 s on 16 cores. Extra arguments go to every shard's pytest.
+  102 s instead of 744 s on 16 cores. Test files, folders and node ids given run instead of the whole suite, sharded the same
+  way; other arguments go to every shard's pytest.
 
 - `CUDA_VISIBLE_DEVICES` hides the GPU from CUDA only. `native/tests/conftest.py` sets
   `VK_LOADER_DRIVERS_DISABLE=*`, which hides it from ncnn's Vulkan (the port's ncnn modules query it when
@@ -240,11 +239,10 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
   change it). The copy skips every `__pycache__` of the source runtime (its timestamp `.pyc`, and numba's `.nbi`/`.nbc`
   caches for the build CPU); the build then compiles the copy's whole `Lib`, stdlib and site-packages, with the
   packaged interpreter (`compileall --invalidation-mode unchecked-hash`, `-s` the destination, so the bytes do not
-  depend on the build directory), records each `.pyc` in the manifest's `runtime` and verifies them (Consult 10 D-9).
+  depend on the build directory), records each `.pyc` in the manifest's `runtime` and verifies them.
   A file that does not compile fails the build. `resources\src` is not compiled. `python_stack.bytecode` names the
-  mode, so a package copied before it refuses `--refresh`. The portable profile is never touched. Never rebuild the real package from scratch,
-  with one exception: the Python-stack upgrade required a fresh package (the runtime is not refreshable); the
-  previous 3.11 package was kept as `out\chaiNNer-C-py311`.
+  mode, so a package copied before it refuses `--refresh`. The portable profile is never touched. Never rebuild the
+  real package from scratch, except for a Python-stack upgrade (the runtime is not refreshable).
 - At run time the worker sets `NUMBA_CACHE_DIR` to `<storage_dir>\numba-cache` (`backend-storage\numba-cache` in the
   package) before any node module imports numba, so PyMatting's cached kernels never land in `python\` (ARCHITECTURE
   section 9; upstream keeps numba's cache in-tree).
@@ -281,7 +279,7 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
   attempts had to match (`verify_runtime.REPEAT_RULES`: exact but iterated items' final values on the oracle, and also
   but broadcast multiplicities on the port), and `broadcast_multisets` records each attempt's previews per node. An
   iterated item's broadcast field (a node output sent with several values) is compared by its broadcast multiset, not
-  last-wins: upstream on 3.14 sends such broadcasts in timing-dependent order (Consult D-35). The port's final value
+  last-wins: upstream on 3.14 sends such broadcasts in timing-dependent order. The port's final value
   must be one the oracle broadcast, and `report.json` and the printed summary flag a run whose oracle attempts ended on
   different final values (`oracle_repeat_final_values_differ`). Rerun
   `make_oracle.py` after each native build: the verifiers refuse an oracle whose `chainner_ext` hashes
@@ -289,10 +287,10 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
   runtime). `& $py -B native\tools\verify_runtime.py`, then `verify_<kind>.py --include-port` (without it, oracle only) for
   `io_execution_runtime`, `utility_runtime` and `video_runtime`. `verify_framework_runtime.py` loads models by default:
   never in a no-model CPU run. `verify_resize_pipeline.py prepare|run|compare --root <dir>` checks every resize filter.
-- The real-use CPU pass (U3-3, Consult 6 P3): `& $py -B native\tools\real_use_pass.py [--package DIR]`. It launches the
+- The real-use CPU pass: `& $py -B native\tools\real_use_pass.py [--package DIR]`. It launches the
   package's `chaiNNer.exe` (an owned job, no input; WM_CLOSE, then termination by PID) and checks `%APPDATA%\chaiNNer`
-  unchanged, the package diff against the ruled allow-list (`launch_change`, Consult 8 R-i: a frozen list at the root,
-  bytecode only under the backend, since the runtime ships compiled, Consult 10 D-9, and a write there names the
+  unchanged, the package diff against the allow-list (`launch_change`: a frozen list at the root,
+  bytecode only under the backend, since the runtime ships compiled, and a write there names the
   module the build missed; the app does not inherit `PYTHONDONTWRITEBYTECODE`) and the
   startup log; then the dependency manager and the reference chains (`CHAINS`, `default.chn` with PyTorch on the CPU: allow
   time) on the package's host against the oracle, with a mid-run `/kill`. It refuses to start while the installed
@@ -310,7 +308,7 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
 
 - A defaults to the frozen B0 copy `native/reports/baselines/B0-20261001/src` (local, read-only), B to the packaged backend
   `out/chaiNNer-C/resources/src`; each side runs on the packaged Python with CUDA hidden, or on another existing `python.exe`
-  (`--python-a`/`--python-b`, recorded as `pythons`; installs into a foreign interpreter are blocked and checked: `bench.py` docstring).
+  (`--python-a`/`--python-b`, recorded as `pythons`; installs into a foreign interpreter are blocked and checked: see Per-side options below).
   Parity against the oracle: `--a native\build\oracle\src`. The verifiers' guard applies (the four `chainner_ext` hashes
   equal the package manifest's, or B's own files for a plain tree), and A runs on the provisioned runtime, `--python-a`'s
   default; another `--python-a`, or the oracle as B, is refused. Cases: `resize-real-256`, `gaussian`, `lens-spectral`, `morphology`,
@@ -332,13 +330,33 @@ $py = '.\native\.venv\Scripts\python.exe'; $pkg = @('-B', '.\native\tools\packag
   is final when 2 of 3 runs flag it; anything else is `unconfirmed`, which does not clear a regression. Quote the confirmation run's
   change, never the first run's. A floor needs `MIN_LAUNCHES = 3` A/A launches on identical trees (`unknown` until then);
   `--record-noise` writes only `cpu_floors.<auto|k<n>>`, never the shared floors. A WARNING marks runs whose background load exceeds the floors'.
+- Confirmation in detail: a win stands only when the confirmation run repeats it. A regression whose confirmation gives another
+  label, and a win the confirmation flips to a regression, go to one tie-break run; a regression is final when 2 of the 3 runs
+  flag one, and it is `regression` (blocks) when 2 of the 3 put it beyond the current floor, else `regression (within current
+  A/A)`. The exit status is 1 when a run fails or a final verdict is `regression`. Judge an A/A holdout run by its first run's
+  verdicts, not by `confirmation.md`.
+- Floors: a launch's floor for a case is its largest |ln q| over position-balanced quads q (the geometric mean of a B-first
+  pair and the A-first pair after it); a case's floor is the largest over its recorded launches, each with an even number of at
+  least `MIN_PAIRS` pairs. The shared throughput floors are never written by the harness. `--record-noise` (identical trees, no
+  per-side options) merges this launch's CPU floors into `cpu_floors.<setting>`, each launch keeping its throughput floor beside
+  them; the largest of those is the case's current floor. Recording a run name again replaces that launch.
+- Background load: a WARNING when the machine is over 10 % busy before the run, or when a case's median background load exceeds
+  the highest load its floors were recorded under by more than `BACKGROUND_MARGIN = 5` points.
+- Per-side options: `--env-a`/`--env-b` NAME=VALUE (names upper-cased; refused when given twice or reserved: `CHAINNER_C_ITEM_WINDOW`,
+  `CHAINNER_C_PROFILE`, `PYTHONPATH`, `PYTHONHOME` and the backend's isolation variables). `CHAINNER_C_ISA` in the harness's own
+  environment refuses the start; a side that sets it must log its ISA line within 10 s. Every backend runs with `-B`,
+  `PYTHONDONTWRITEBYTECODE=1` and `PIP_REQUIRE_VIRTUALENV=1`; its tree is hashed and its interpreter's site-packages fingerprinted
+  before and after, and a change fails the run. The confirmation runs keep every per-side option, the PNG mode and the modes below.
+- `--cross-stack`: two interpreters of different Python versions (each probed); each side must match its own first trial, and
+  the sides' first trials are compared and recorded (`cross_stack.cases`), never gating. `--allow-schema-change` records the
+  `/nodes` difference as `schema_change` with a WARNING. `--profile`: every verdict is `unknown`; a tree with the timer must log
+  one table per trial within 10 s, and a table where profiling is off fails the run.
 - Records: `native/reports/bench-<UTC>/` (`result.json`, `summary.md`, `confirmation.*`); media: `F:\chaiNNer-C-diagnostics\bench-<UTC>\`
-  (each trial's JSON after a success, everything after a failure; a backend deletes its private FFmpeg copy on exit). Rules: `bench.py`.
+  (each trial's JSON after a success, everything after a failure; a backend deletes its private FFmpeg copy on exit).
 
 ## Safety
 
-The `F:\` paths in this section and in the bench records above are the local gates' paths on the machine
-(Consult 14 D-30 (d)).
+The `F:\` paths in this section and in the bench records above are the local gates' paths on the development machine.
 
 - Protected, read-only: the installed app, `$env:APPDATA\chaiNNer` (profile and
   Python), the dataset `F:\Download\New folder\DiverSeg-IP\HR\0`. Never write to or run diagnostics

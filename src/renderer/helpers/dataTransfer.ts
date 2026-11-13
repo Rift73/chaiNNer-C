@@ -100,20 +100,7 @@ const chainnerPresetProcessor: DataTransferProcessor = (
     const deriveId = (oldId: string) => deriveUniqueId(duplicationId + oldId);
 
     changeNodes((nodes) => {
-        const currentIds = new Set(nodes.map((n) => n.id));
-        const newIds = new Set(chain.nodes.map((n) => n.id));
-
-        let newNodes = copyNodes(
-            chain.nodes,
-            (oldId) => {
-                if (newIds.has(oldId)) return deriveId(oldId);
-                if (currentIds.has(oldId)) return oldId;
-                return oldId;
-            },
-            false
-        );
-
-        newNodes = newNodes.map((node) => ({
+        const newNodes = copyNodes(chain.nodes, deriveId, false).map((node) => ({
             ...node,
             position: getNodePosition(-node.position.x, -node.position.y),
         }));

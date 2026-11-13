@@ -12,6 +12,7 @@ from .drft import load_plugins
 from .dual import input_alignment
 from .memory import check_cuda, get_cuda_compute_capability, gpu_setup_lock
 from .model import DeserializedEngine, TensorRTEngineInfo
+from .rdual_engine_set import is_engine_set
 from .trt_logger import TRT_LOGGER
 
 
@@ -21,7 +22,13 @@ def _dims(shape: trt.Dims) -> tuple[int, int, int, int]:
 
 
 def deserialize_engine(engine_bytes: bytes, gpu_index: int) -> DeserializedEngine:
-    """Deserialize an engine on a GPU, kept together with its runtime."""
+    """Deserialize an engine on a GPU, kept together with its runtime. An RDUAL engine
+    set is refused: its parts are deserialized by the session that runs them."""
+    if is_engine_set(engine_bytes):
+        raise ValueError(
+            "This TensorRT engine is an RDUAL engine set (a video model's engines for one"
+            " frame size), which runs only as a whole, not as an image engine."
+        )
     check_cuda(cudart.cudaSetDevice(gpu_index))
     trt.init_libnvinfer_plugins(TRT_LOGGER, "")
     load_plugins()

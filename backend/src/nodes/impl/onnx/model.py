@@ -1,5 +1,4 @@
-# This class defines an interface.
-# It is important that is does not contain types that depend on ONNX.
+# Nothing here may depend on ONNX.
 from __future__ import annotations
 
 import hashlib
@@ -31,9 +30,7 @@ class SizeReq:
         self.multiple_of = multiple_of
 
     def get_padding(self, width: int, height: int) -> tuple[int, int]:
-        """
-        Given an image size, this returns the minimum amount of padding necessary to satisfy the size requirements. The returned padding is in the format `(pad_width, pad_height)` and is guaranteed to be non-negative.
-        """
+        """The least non-negative `(pad_width, pad_height)` that meets the requirement."""
 
         def ceil_modulo(x: int, mod: int) -> int:
             if x % mod == 0:
@@ -91,6 +88,10 @@ FP16_ARCHS: Final[dict[str, tuple[str, ...]]] = {
     "RetinexFormer": (),  # 68.44 to 72.75, flat white 48.19
     # On gradients and bars its FP32 misses 50 dB too (FFT rounding: 34 dB on a horizontal one)
     "FIGSR": (),  # 53.88 to 65.93, flats 65.48 to 72.42
+    # Its Dynamic FP16 engine against eager FP32 (TF32 off), 4x, 8 real crops at 256 and 384 px
+    "HEART": (),  # 67.73 to 74.41; 65.76 to 71.06
+    # Its Dynamic FP16 engine against eager FP32 (TF32 off), a trained 2x, 8 real crops
+    "GaterV3": (),  # 68.56 on its worst crop, 70.49 on average
 }
 # The names, as a navi union of strings: a type knows no sizes.
 FP16_ARCHS_NAVI: Final = " | ".join(f'"{arch}"' for arch in FP16_ARCHS)

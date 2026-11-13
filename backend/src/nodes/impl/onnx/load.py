@@ -15,6 +15,7 @@ from api import NodeContext
 from ..native_graph import graph
 from ..tensorrt import drft
 from ..tensorrt.dual import export_manifest
+from . import rdual_bundle
 from .autocast import mixed_precision
 from .frozen_grid import FrozenGrid, find_frozen_grid
 from .model import (
@@ -59,6 +60,9 @@ class ModelFacts:
     # DySample's sampling grid frozen at one size; None for any other
     frozen_grid: FrozenGrid | None = None
 
+
+# An RDUAL ONNX bundle's: no graph to parse, and no session runs it (rdual_bundle.refuse)
+_BUNDLE_FACTS = ModelFacts(native_session=False, dual_manifest=None)
 
 # The facts load_onnx_model found while it parsed each model, so that its sessions and
 # engine builds do not parse the model's bytes again.
@@ -140,6 +144,9 @@ def with_recorded_arch(onnx_bytes: bytes, arch: str, precision: str) -> bytes:
 def model_facts(model: OnnxModel) -> ModelFacts:
     """`model`'s facts: those load_onnx_model kept, else parsed from its bytes once."""
     facts = _facts.get(model)
+    if facts is None and rdual_bundle.is_bundle(model.bytes):
+        facts = _BUNDLE_FACTS
+        _facts[model] = facts
     if facts is None:
         try:
             facts = _facts_of(onnx.load_model_from_string(model.bytes))
@@ -166,6 +173,11 @@ def warn_if_grid_frozen(context: NodeContext, model: OnnxModel, subject: str) ->
 
 
 def load_onnx_model(model_or_bytes: onnx.ModelProto | bytes) -> OnnxModel:
+    """The model of an ONNX, or of an RDUAL ONNX bundle's bytes (rdual_bundle.py)."""
+    if isinstance(model_or_bytes, bytes) and rdual_bundle.is_bundle(model_or_bytes):
+        bundle = rdual_bundle.load(model_or_bytes)
+        _facts[bundle] = _BUNDLE_FACTS
+        return bundle
     parsed: list[ModelFacts] = []
 
     def fp_datatype(model: onnx.ModelProto) -> str:

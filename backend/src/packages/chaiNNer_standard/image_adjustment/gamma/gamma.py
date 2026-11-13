@@ -31,7 +31,6 @@ from .. import gamma_group
 )
 def gamma_node(img: np.ndarray, gamma: float, invert_gamma: bool) -> np.ndarray:
     if gamma == 1:
-        # noop
         return img
 
     if invert_gamma:

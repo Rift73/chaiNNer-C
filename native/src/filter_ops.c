@@ -8,10 +8,8 @@
 #include "parallel.h"
 #include "run_kernels.h"
 #include "scratch.h"
-#include <float.h>
 #include <limits.h>
 #include <math.h>
-#include <stdlib.h>
 #include <string.h>
 
 static float clipped(float x, float low, float high) {
@@ -185,9 +183,9 @@ static void morph_merge(void *context, size_t begin, size_t end) {
 }
 
 /* horizontal, alternate (cross, iterations > 1) and the queue are one lease of the
- * shared pool, every buffer written before it is read (D10). Iteration i writes out
+ * shared pool, every buffer written before it is read. Iteration i writes out
  * when (iterations - 1 - i) is even, else alternate, so the last writes out
- * (ping-pong, D11). */
+ * (ping-pong). */
 CN_EXPORT cn_status cn_filter_morphology(const float *src, float *out,
                                        size_t height, size_t width, size_t channels,
                                        size_t radius, size_t iterations,
@@ -197,7 +195,7 @@ CN_EXPORT cn_status cn_filter_morphology(const float *src, float *out,
     if (width > SIZE_MAX / height || width * height > SIZE_MAX / channels ||
         width * height * channels > SIZE_MAX / sizeof(size_t)) return CN_SIZE_OVERFLOW;
     if (!cross && radius > SIZE_MAX / iterations) return CN_SIZE_OVERFLOW;
-    /* OpenCV's int dimensions (D11), before any allocation. */
+    /* OpenCV's int dimensions, before any allocation. */
     if (height > INT_MAX || width > INT_MAX) return CN_SIZE_OVERFLOW;
     size_t n = width * height * channels;
     if (!cross) { radius *= iterations; iterations = 1; }
@@ -346,83 +344,4 @@ CN_EXPORT cn_status cn_filter_quantize_reference(const float *src, const float *
     reference_job job = {src, reference, out, width, height, ref_width, ref_height,
                          channels, radius, width / ref_width, height / ref_height, spatial};
     return cn_parallel_for(width * height, 4096, reference_range, &job);
-}
-
-/* The installed OpenCV 4.8 Intel IPP backend uses floating-point 5x5 chamfer
-   costs (1, 1.4, 2.1969). Use a generic two-sweep neighborhood implementation;
-   dependencies inside a sweep deliberately remain serial. The scalar OpenCV
-   backend has different fixed-point rounding and stays a separate Python path. */
-static void chamfer(const unsigned char *binary, float *distance,
-                    size_t height, size_t width, int white_zero) {
-    const int dy[8] = {-2, -2, -1, -1, -1, -1, -1, 0};
-    const int dx[8] = {-1, 1, -2, -1, 0, 1, 2, -1};
-    const float cost[8] = {2.1969f, 2.1969f, 2.1969f, 1.4f, 1.0f, 1.4f, 2.1969f, 1.0f};
-    size_t pixels = width * height;
-    for (size_t p = 0; p < pixels; ++p)
-        distance[p] = ((binary[p] != 0) == white_zero) ? 0 : FLT_MAX;
-    for (int pass = 0; pass < 2; ++pass) {
-        int direction = pass == 0 ? 1 : -1;
-        for (size_t index = 0; index < pixels; ++index) {
-            size_t p = pass == 0 ? index : pixels - index - 1;
-            if (distance[p] == 0) continue;
-            int64_t y = (int64_t)(p / width), x = (int64_t)(p % width);
-            float best = distance[p];
-            for (size_t k = 0; k < 8; ++k) {
-                int64_t ny = y + direction * dy[k], nx = x + direction * dx[k];
-                if (ny < 0 || nx < 0 || (size_t)ny >= height || (size_t)nx >= width) continue;
-                float alternative = distance[(size_t)ny * width + (size_t)nx] + cost[k];
-                if (alternative < best) best = alternative;
-            }
-            distance[p] = best;
-        }
-    }
-}
-
-typedef struct distance_job {
-    const unsigned char *binary;
-    const float *black, *white;
-    float *out;
-    float spread;
-} distance_job;
-
-typedef struct chamfer_job {
-    const unsigned char *binary;
-    float *distances[2];
-    size_t height, width;
-} chamfer_job;
-
-static void chamfer_range(void *context, size_t begin, size_t end) {
-    chamfer_job *j = (chamfer_job *)context;
-    for (size_t i = begin; i < end; ++i)
-        chamfer(j->binary, j->distances[i], j->height, j->width, i == 1);
-}
-
-static void distance_finish(void *context, size_t begin, size_t end) {
-    distance_job *j = (distance_job *)context;
-    for (size_t p = begin; p < end; ++p) {
-        float value = j->binary[p] ? j->black[p] : j->white[p];
-        value /= j->spread; value /= 2;
-        value = j->binary[p] ? value + 0.5f : 0.5f - value;
-        j->out[p] = clipped(value, 0, 1);
-    }
-}
-
-CN_EXPORT cn_status cn_filter_binary_sdf(const unsigned char *binary, float *out,
-                                       size_t height, size_t width, float spread) {
-    if (!binary || !out || !height || !width || !(spread > 0)) return CN_INVALID_ARGUMENT;
-    if (width > SIZE_MAX / height || width * height > SIZE_MAX / sizeof(float) ||
-        width > (size_t)INT64_MAX / 2 || height > (size_t)INT64_MAX / 2)
-        return CN_SIZE_OVERFLOW;
-    size_t n = width * height;
-    float *black = (float *)malloc(n * sizeof(float)), *white = (float *)malloc(n * sizeof(float));
-    if (!black || !white) { free(black); free(white); return CN_ALLOCATION_FAILED; }
-    chamfer_job transforms = {binary, {black, white}, height, width};
-    cn_status status;
-    if (n >= 65536) status = cn_parallel_for(2, 1, chamfer_range, &transforms);
-    else { chamfer_range(&transforms, 0, 2); status = CN_OK; }
-    if (status != CN_OK) { free(black); free(white); return status; }
-    distance_job job = {binary, black, white, out, spread};
-    status = cn_parallel_for(n, 65536, distance_finish, &job);
-    free(black); free(white);
-    return status;
 }

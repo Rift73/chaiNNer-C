@@ -90,6 +90,22 @@ def f32(array: object) -> np.ndarray:
     return np.require(checked_f32(array), dtype=np.float32, requirements=["C", "A"])
 
 
+def image_f32(image: object) -> tuple[np.ndarray, int]:
+    """f32(image) and its channel count, for a nonempty 2D or 3D image."""
+    source = f32(image)
+    if source.ndim not in (2, 3) or 0 in source.shape:
+        raise ValueError(f"Invalid image shape {source.shape}")
+    return source, source.shape[2] if source.ndim == 3 else 1
+
+
+def image_shape(image: object) -> tuple[int, int, int]:
+    """The height, width and channels of a nonempty 2D or 3D float32 image."""
+    array = checked_f32(image)
+    if array.ndim not in (2, 3) or 0 in array.shape:
+        raise ValueError("Expected a nonempty two- or three-dimensional image")
+    return array.shape[0], array.shape[1], array.shape[2] if array.ndim == 3 else 1
+
+
 def ptr(array: np.ndarray):
     return array.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 

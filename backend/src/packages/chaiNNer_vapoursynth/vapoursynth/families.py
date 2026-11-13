@@ -12,13 +12,15 @@ from nodes.impl.vapoursynth.schema_gen import (
     register_families,
 )
 
-from ..chains import image_node_output
+from ..chains import image_node_output, shown_clip
 from . import clips_group, filters_group, functions_group
 
 FUNCTIONS = ("User Functions", ANY_FUNCTION)
 
 _catalog = current_catalog()
-register_families(_catalog.methods, clips_group, _catalog.enums, [LOAD_CLIP])
+register_families(
+    _catalog.methods, clips_group, _catalog.enums, [LOAD_CLIP], on_clip=shown_clip
+)
 register_families(
     _catalog.methods,
     filters_group,

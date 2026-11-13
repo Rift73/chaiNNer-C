@@ -1,5 +1,5 @@
 /* chaiNNer blend modes and alpha composition, ported from nodes/impl/blend.py and
- * moved from blend.c (SP4b Task 6). Shared by that baseline unit and the /arch:AVX2
+ * moved from blend.c. Shared by that baseline unit and the /arch:AVX2
  * unit blend_avx2.c: the job, and static helpers compiled into each including unit,
  * never inline, so the linker cannot fold a VEX copy into baseline callers. Every
  * including unit uses them (C4505): blend.c through mode_range and image_range,
@@ -221,7 +221,7 @@ static void image_pixels(const blend_job *job, size_t begin, size_t end)
                 blended[c] = apply_mode(channel(overlay, i, overlay_channels, c),
                     channel(base, i, base_channels, c), mode);
                 /* Divide's quotient has no bound: unclipped, a dark, nearly transparent overlay
-                   pixel would mix up to 10000 times the base and turn white (2026-11-06). */
+                   pixel would mix up to 10000 times the base and turn white. */
                 if (mode == 15) blended[c] = clip(blended[c]);
             }
         if (target < 4) {

@@ -1,7 +1,7 @@
-"""The native run engine's Python side (native/local/instant-exec/DESIGN.md section 2).
+"""The native run engine's Python side.
 
 CHAINNER_C_EXECUTOR selects the executor of /run and /run/individual: "native" (this module, the default) or "python"
-(process.Executor, the diagnostic oracle: DESIGN.md amendment A5); a diagnostic switch, never a user setting. The engine (native/src/run/executor.cpp,
+(process.Executor, the diagnostic oracle); a diagnostic switch, never a user setting. The engine (native/src/run/executor.cpp,
 _chainner_graph.RunEngine) owns the run: its driver thread follows process.Executor's control flow (generator
 groups one after another, items in order, each item's sinks then collectors, then the non-iterated sinks) and runs
 every node that may not run beside others (side effects, a context, a GPU, a lazy input) there, in today's order;
@@ -54,10 +54,6 @@ from nodes.impl.execution_scheduler import (
     pure_cpu_node,
 )
 from nodes.impl.item_window import (
-    OUTPUT_UNRESOLVED,
-    PATH_CHECK_FAILED,
-    SOURCE_UNDER_OUTPUT,
-    SOURCES_UNKNOWN,
     Prepared,
     affinity_cpus,
     escaping_targets,
@@ -69,6 +65,7 @@ from nodes.impl.item_window import (
 )
 from nodes.impl.native_graph import graph
 from nodes.impl.result_cache import cache_budget, keyed_settings
+from nodes.utils import utils
 from process import (
     CollectorOutput,
     ExecutionId,
@@ -76,19 +73,34 @@ from process import (
     NodeExecutionError,
     NodeOutput,
     RegularOutput,
+    check_loop_outputs,
     collect_input_information,
     compute_broadcast,
     compute_sequence_broadcast,
+    context_nodes,
+    context_wanted,
+    escaping_target_warning,
     folder_sources,
+    gate_position,
     generator_loops,
+    known_gates,
+    look_ahead_off_warning,
     loop_node_error,
     on_failing_node,
     prepare_node,
+    pure_in_loop,
+    reads_context,
+    refuse_reads_across_loops,
     run_collector_complete,
     run_collector_iterate,
     run_node,
     run_progress,
     run_warning,
+    shown_alone,
+    temporal_applies,
+    temporal_nodes,
+    temporal_pure,
+    writer_directories,
 )
 from progress_controller import Aborted
 from util import waited_seconds
@@ -104,7 +116,7 @@ EXECUTORS = ("python", "native")
 DEFAULT_EXECUTOR = "native"
 STATIC_HITS = -1  # a static cache entry (StaticCaching) in the plan
 # A /run's LargeImage previews of a loop's items: per node, the first at once, then at most one start per this many
-# seconds, the newest kept meanwhile; a loop's and the run's end send what waits (hunt-misc 6, ruling R4). 0: no limit
+# seconds, the newest kept meanwhile; a loop's and the run's end send what waits. 0: no limit
 # (engine_differential.every_broadcast, as the oracle sends every broadcast).
 PREVIEW_INTERVAL = 0.25
 # A stopped run's own end (its events and cleanups) is awaited this long; a node still running then (a long Python
@@ -147,7 +159,7 @@ def _log_stopped_run_error(done: asyncio.Future[object]) -> None:
         logger.error("A stopped run's node failed: %s", error, exc_info=error)
 
 
-# The memo cache's allow-list (DESIGN.md amendment A3): native nodes without side effects or a context, except the
+# The memo cache's allow-list: native nodes without side effects or a context, except the
 # random generators below; these Python nodes, audited as deterministic and side-effect free (no file, clock, random,
 # network or GPU reads); and Load Image, keyed by its file's identity. test_engine_memo.py lists the sets.
 MEMO_PYTHON_NODES: frozenset[str] = frozenset(
@@ -182,7 +194,8 @@ MEMO_EXCLUDED_NATIVE: frozenset[str] = frozenset(
 )
 # The generators whose per-run (not iterated) outputs follow from their inputs alone, so their run is keyed by them
 # (the key Load Images' items extend with their files' identities): Load Images' and Load Models' Directory is their
-# input, Clip Frames' FPS and Colour Info are its clip's, and Range, Split Spritesheet and Load DDS Images have none.
+# input, Clip Frames' FPS, Colour Info and Frame Count are its clip's and its Preview is the clip's frame at Seek, an
+# input, and Range, Split Spritesheet and Load DDS Images have none.
 # Load Video is not one: its FPS, Audio Stream, Colour Info and Colour are read from its file.
 MEMO_GENERATORS: frozenset[str] = frozenset(
     {
@@ -240,16 +253,15 @@ def memo_bytes(values: list[object]) -> int:
 
 
 def file_identity(path: object) -> str | None:
-    """A file's identity for memo keys: its path, size, modification time, volume and file id; None when it cannot
-    be read."""
+    """A file's version (nodes.utils.utils.file_identity) as a memo key, in ASCII as memo_constant is; None when it
+    cannot be read."""
     if not isinstance(path, (str, os.PathLike)):
         return None
     try:
-        stat = os.stat(path)
-    except (OSError, ValueError):
+        identity = utils.file_identity(Path(path))
+    except (OSError, TypeError, ValueError):
         return None
-    # In ASCII, as memo_constant is.
-    return f"{os.fspath(path)!a}|{stat.st_size}|{stat.st_mtime_ns}|{stat.st_dev}|{stat.st_ino}"
+    return None if identity[1] is None else ascii(identity)
 
 
 # Load Image outputs of individual runs, with their files' identities as they were loaded: a later run that finds one in
@@ -346,39 +358,6 @@ def _groups(chain: Chain) -> list[list[GeneratorNode]]:
     return generator_loops(chain, gens_by_outs)
 
 
-def _temporal_nodes(
-    chain: Chain, iterated: set[NodeId], sinks: list[Node]
-) -> list[FunctionNode]:
-    """process.Executor.__temporal_nodes: a loop's nodes without side effects that declare a temporal context
-    (NodeData.temporal_context) and feed one of its sinks, in the chain's sink-first order. The engine runs them for
-    a context item, with the nodes they need."""
-    ancestors: set[NodeId] = set()
-    pending = [node.id for node in sinks]
-    while pending:
-        for edge in chain.edges_to(pending.pop()):
-            if edge.source.id not in ancestors:
-                ancestors.add(edge.source.id)
-                pending.append(edge.source.id)
-    temporal: list[FunctionNode] = []
-    for node_id in chain.topological_order():
-        node = chain.nodes[node_id]
-        if (
-            node_id in ancestors
-            and node_id in iterated
-            and isinstance(node, FunctionNode)
-            and not node.has_side_effects()
-            and node.data.temporal_context is not None
-        ):
-            temporal.append(node)
-    return temporal
-
-
-def _relative_path_input(i: object) -> bool:
-    """process._relative_path_input: whether the input is a RelativePathInput (a writer's subdirectory or file name)."""
-    module = sys.modules.get("nodes.properties.inputs.file_inputs")
-    return module is not None and isinstance(i, module.RelativePathInput)
-
-
 class _EngineIterationView(IterationView):
     """A node's iteration view for one loop run: its index counts the slots the engine commits (or the later slot a
     serial node is computed ahead at, see at()) from the range's first one, numbered by the loop's index base
@@ -392,6 +371,7 @@ class _EngineIterationView(IterationView):
         sources: tuple[str | None, ...],
         first: int,
         index_base: int,
+        unread_on_context: bool,
         base: _EngineIterationView | None = None,
         slot: int = -1,
     ) -> None:
@@ -402,6 +382,7 @@ class _EngineIterationView(IterationView):
         # Slots before `first` are context items; the slot `first` is item `index_base`.
         self.__first = first
         self.__index_base = index_base
+        self.__unread_on_context = unread_on_context
         self.__state: object | None = None
         self.__base = base  # the view whose state this one shares
         # The item the node is computed ahead at; -1: the committing one.
@@ -417,6 +398,7 @@ class _EngineIterationView(IterationView):
             self.__sources,
             self.__first,
             self.__index_base,
+            self.__unread_on_context,
             self,
             slot,
         )
@@ -428,6 +410,10 @@ class _EngineIterationView(IterationView):
     @property
     def context(self) -> bool:
         return self.__at() < self.__first
+
+    @property
+    def unread(self) -> bool:
+        return self.__unread_on_context and self.context
 
     @property
     def source(self) -> str:
@@ -499,6 +485,8 @@ class _EngineContext(NodeContext):
         self.iteration_view: _EngineIterationView | None = None
         # The chosen item of the loop the node belongs to (NodeContext.chosen_item).
         self.chosen: int | None = None
+        # A temporal node whose output no node reads on a context item (IterationView.unread).
+        self.unread_on_context = False
 
     @property
     def iteration(self) -> IterationView | None:
@@ -612,9 +600,6 @@ class _Hooks:
             self.done.set_exception(error)
         else:
             self.done.set_result(result)
-
-    def warn(self, message: str) -> None:
-        logger.warning(message)
 
     def info(self, message: str) -> None:
         logger.info(message)
@@ -732,23 +717,45 @@ class _Hooks:
         self,
         index: int,
         output: object,
-        wanted: tuple[int, int] | None,
+        context: tuple[list[int], dict[int, object]] | None,
         iterated: list[int],
-    ) -> tuple[Iterator[object], bool, int, bool, int, int, int, bool]:
-        """A generator node's items: (iterator, split, expected length, fail_fast, before, after, index base, exact length). split:
-        the iterator names its items (describe) apart from loading them (materialize), as Load Images' native iterator
-        does. wanted: the context items (before, after) the loop's temporal nodes want when the generator is its
-        group's only one, else None (process.Executor.__iterate_generator_nodes): it then gives its chosen item to
-        the group's nodes (iterated, collectors included, before they are made), and reads the context items through
-        Generator.context, once, when it has one and they want any; before, after: the clipped counts it read."""
+    ) -> tuple[Iterator[object], bool, int, bool, int, int, int, bool, list[int]]:
+        """A generator node's items: (iterator, split, expected length, fail_fast, before, after, index base, exact length,
+        temporal). split: the iterator names its items (describe) apart from loading them (materialize), as Load Images'
+        native iterator does. context: the loop's temporal nodes and their known gates' values by node, when the
+        generator is its group's only one, else None (process.Executor.__iterate_generator_nodes): it then gives its
+        chosen item to the group's nodes (iterated, collectors included, before they are made), keeps the temporal
+        nodes whose context applies (temporal, which run for a context item), and reads the context items they want
+        through Generator.context, once, when it has one and they want any; before, after: the clipped counts it read."""
         assert isinstance(output, GeneratorOutput)
+        # Before its loop's first item, as process.Executor: no two items may give a writer one path. Here, as an
+        # error of this hook is the run's as raised.
+        check_loop_outputs(
+            self.chain,
+            [(self.nodes[index], output)],
+            {self.nodes[node].id for node in iterated},
+        )
         generator = output.generator
         before = after = 0
         iterator: Iterator[object] | None = None
-        if wanted is not None:
+        temporal: list[int] = []
+        if context is not None:
             if generator.chosen_item is not None:
                 for node in iterated:
                     self.contexts[node].chosen = generator.chosen_item
+            candidates, values = context
+            gates = {self.nodes[node].id: value for node, value in values.items()}
+            temporal = [
+                node
+                for node in candidates
+                if temporal_applies(self.nodes[node], gates, self.inputs)
+            ]
+            loop = {self.nodes[node].id for node in iterated}
+            applying = [self.nodes[node] for node in temporal]
+            _, unread = context_nodes(self.chain, loop, applying)
+            for node in temporal:
+                self.contexts[node].unread_on_context = self.nodes[node].id in unread
+            wanted = context_wanted(self.chain, loop, applying)
             if (
                 generator.context is not None
                 and wanted != (0, 0)
@@ -771,7 +778,20 @@ class _Hooks:
             after,
             generator.index_base,
             generator.length_is_exact,
+            temporal,
         )
+
+    def pure_in_loop(self, index: int, value: object) -> bool:
+        """Whether a temporal node on a pure schema runs as a pure one for the rest of this loop run
+        (process.pure_in_loop), asked on the driver when the loop first runs it: value, its gate input's value then
+        (None without a gate), known when the input is a constant or fed from outside the loop."""
+        return pure_in_loop(self.nodes[index], self.inputs, self.loop_iterated, value)
+
+    def reads_context(self, output: object) -> bool:
+        """Whether the generator's loop resolves its known gates before its items (process.reads_context): the engine
+        then runs their sources first."""
+        assert isinstance(output, GeneratorOutput)
+        return reads_context(output.generator)
 
     def file_identity(self, path: object) -> str | None:
         return file_identity(path)
@@ -943,7 +963,13 @@ class _Hooks:
                 for lineage in lineages
             )
             view = self.views[index] = _EngineIterationView(
-                self.engine, index, node, sources, self.loop_first, self.loop_base
+                self.engine,
+                index,
+                node,
+                sources,
+                self.loop_first,
+                self.loop_base,
+                self.contexts[index].unread_on_context,
             )
         self.contexts[index].iteration_view = view
 
@@ -1019,122 +1045,46 @@ class _Hooks:
                 sources.append(
                     (self.nodes[node_index].id, output.generator.source_paths)
                 )
-            directories, targets = self.__writer_directories(
-                writers,
-                dict(zip(generators, generator_outputs)),
-                set(iterated),
-                cached,
-                collector_inputs,
+            positions = {node.id: index for index, node in enumerate(self.nodes)}
+
+            def resolved(writer: Node, index: int, node_input: EdgeInput) -> object:
+                if isinstance(writer, CollectorNode):
+                    return collector_inputs[positions[writer.id]][index]
+                found, value = cached(positions[node_input.id], node_input.index)
+                return value if found else None
+
+            directories, targets = writer_directories(
+                self.chain,
+                self.inputs,
+                [self.nodes[writer] for writer in writers],
+                {
+                    self.nodes[index].id: cast("GeneratorOutput", output)
+                    for index, output in zip(generators, generator_outputs)
+                },
+                {self.nodes[index].id for index in iterated},
+                resolved,
             )
             blocker = read_ahead_blocker(sources, directories)
             if blocker is not None:
                 k, reason = 1, blocker
-            for writer, folder in escaping_targets(targets):
-                name = self.chain.nodes[writer].data.name
-                message = f"{name} writes to {folder}, outside its chosen folder."
-                logger.warning(message)
-                warnings.append(
-                    {"event": "execution-warning", "data": {"message": message}}
-                )
+            warnings = [
+                cast("dict[str, object]", escaping_target_warning(self.chain, *target))
+                for target in escaping_targets(targets)
+            ]
         logger.info("item window K=%d (%s)", k, reason)
         return k, reason, blocker, memory_budget() if k > 1 else 0, warnings
 
-    def __writer_directories(
-        self,
-        writers: list[int],
-        generator_outputs: dict[int, object],
-        iterated: set[int],
-        cached: Callable[[int, int], tuple[bool, object]],
-        collector_inputs: dict[int, list[object]],
-    ) -> tuple[list[tuple[NodeId, Path | None]], list[tuple[NodeId, Path, Path]]]:
-        """process.Executor.__writer_directories over the engine's cells."""
-        positions = {node.id: index for index, node in enumerate(self.nodes)}
-        directories: list[tuple[NodeId, Path | None]] = []
-        targets: list[tuple[NodeId, Path, Path]] = []
-        for writer in sorted(writers, key=lambda w: self.nodes[w].id):
-            node = self.nodes[writer]
-            assigned_inputs = self.inputs.get(node.id)
-            base: Path | None = None
-            parts: list[str] = []
-            complete = False
-            for index, i in enumerate(node.data.inputs):
-                relative = _relative_path_input(i)
-                if i.kind != "directory" and not relative:
-                    continue
-                node_input = assigned_inputs[index]
-                value: object
-                if not isinstance(node_input, EdgeInput):
-                    value = node_input.value
-                elif positions[node_input.id] in generator_outputs:
-                    source = self.chain.nodes[node_input.id]
-                    output = generator_outputs[positions[node_input.id]]
-                    assert isinstance(output, GeneratorOutput)
-                    is_iterated = (
-                        source.data.outputs[node_input.index].id
-                        in source.data.single_iterable_output.outputs
-                    )
-                    value = (
-                        None if is_iterated else output.partial_output[node_input.index]
-                    )
-                elif positions[node_input.id] in iterated:
-                    value = None
-                elif isinstance(node, CollectorNode):
-                    value = collector_inputs[writer][index]
-                else:
-                    found, value = cached(positions[node_input.id], node_input.index)
-                    if not found:
-                        value = None
-                if not relative:
-                    self.__add_target(
-                        node.id, base, parts, complete, directories, targets
-                    )
-                    base = Path(value) if isinstance(value, (str, Path)) else None
-                    directories.append((node.id, base))
-                    parts, complete = [], True
-                elif complete and isinstance(value, str):
-                    parts.append(value)
-                elif not (value is None and not isinstance(node_input, EdgeInput)):
-                    complete = False
-            self.__add_target(node.id, base, parts, complete, directories, targets)
-        return directories, targets
-
-    @staticmethod
-    def __add_target(
-        writer: NodeId,
-        base: Path | None,
-        parts: list[str],
-        complete: bool,
-        directories: list[tuple[NodeId, Path | None]],
-        targets: list[tuple[NodeId, Path, Path]],
-    ) -> None:
-        if base is None or not parts:
-            return
-        joined = base.joinpath(*parts)
-        folder = joined.parent if complete else joined
-        directories.append((writer, folder))
-        targets.append((writer, base, folder))
-
     def warn_look_ahead_off(self, index: int, blocker: str) -> dict[str, object]:
         """process.Executor.__warn_look_ahead_off's warning event (the engine sends it once per node and loop run)."""
-        kind, _, subject = blocker.partition(": ")
-        name = self.nodes[index].data.name
-        if kind == PATH_CHECK_FAILED:
-            reason = f"The output folder could not be checked ({subject})"
-        else:
-            other = self.chain.nodes[NodeId(subject)].data.name
-            reason = {
-                SOURCES_UNKNOWN: f"The files {other} reads are unknown",
-                OUTPUT_UNRESOLVED: f"{other}'s output folder is computed after {name}",
-                SOURCE_UNDER_OUTPUT: f"{other}'s output folder may overlap the source folder",
-            }[kind]
-        message = f"{reason}, so {name} runs without its look-ahead: it uses only the current and earlier frames."
-        logger.warning(message)
-        return {"event": "execution-warning", "data": {"message": message}}
+        return cast(
+            "dict[str, object]",
+            look_ahead_off_warning(self.chain, self.nodes[index].id, blocker),
+        )
 
 
 def _image_input(node_input: object) -> tuple[list[int] | None, bool] | None:
     """(channels, allow_colors) of an input whose enforce the engine performs for images and colours: an ImageInput
-    itself (read from sys.modules, as _relative_path_input: importing the inputs package loads torch)."""
+    itself (read from sys.modules, as process._relative_path_input does: importing the inputs package loads torch)."""
     module = sys.modules.get("nodes.properties.inputs.numpy_inputs")
     if module is None or type(node_input) is not module.ImageInput:
         return None
@@ -1246,6 +1196,9 @@ def build_plan(
                 "kind": {"regularNode": 0, "generator": 1, "collector": 2}[data.kind],
                 "side_effects": data.side_effects,
                 "pure": pure_cpu_node(data),
+                # A temporal node on a pure schema: in a loop, pure only as the items hook's pure_in_loop says.
+                "temporal_pure": temporal_pure(data),
+                "gate": -1 if data.temporal_if is None else gate_position(data),
                 "device": data.schema_id in LOCKED_DEVICE_NODES,
                 "node_context": data.node_context,
                 "inputs": plan_inputs,
@@ -1292,6 +1245,7 @@ def build_plan(
         iterated: set[int] = set()
         # A group's only generator may read context items for its temporal nodes (Generator.context).
         temporal: list[FunctionNode] = []
+        gates: list[tuple[int, int]] = []
         for generator in generators:
             collectors, outputs, seen = _iterated_nodes(chain, generator)
             output_nodes.extend(n for n in outputs if n not in output_nodes)
@@ -1303,39 +1257,34 @@ def build_plan(
                 }
             )
             if len(generators) == 1:
-                temporal = _temporal_nodes(
-                    chain, {n.id for n in seen}, [*outputs, *collectors]
-                )
-        radii = {
-            n.id: cast("tuple[int, int]", n.data.temporal_context) for n in temporal
-        }
-        needs: dict[NodeId, tuple[int, int]] = {}
-        # Sources first: add along each path, taking maxima where paths merge.
-        for node_id in reversed(chain.topological_order()):
-            if positions[node_id] not in iterated:
-                continue
-            inputs_needs = [
-                needs.get(edge.source.id, (0, 0)) for edge in chain.edges_to(node_id)
-            ]
-            radius = radii.get(node_id, (0, 0))
-            needs[node_id] = (
-                max((need[0] for need in inputs_needs), default=0) + radius[0],
-                max((need[1] for need in inputs_needs), default=0) + radius[1],
-            )
+                seen_ids = {n.id for n in seen}
+                sinks = [*outputs, *collectors]
+                temporal = temporal_nodes(chain, seen_ids, sinks)
+                gates = [
+                    (positions[n.id], position)
+                    for n, position in known_gates(
+                        chain, inputs, seen_ids, sinks, temporal
+                    )
+                ]
         groups.append(
             {
                 "generators": entries,
                 "outputs": [positions[n.id] for n in output_nodes],
                 "iterated": sorted(iterated),
+                # Its temporal nodes, those whose context may not apply included: the items hook keeps the
+                # ones whose context applies, from their known gates' values (node, input position).
                 "temporal": [positions[n.id] for n in temporal],
-                # The context items (before, after) its temporal nodes want.
-                "context": (
-                    max((need[0] for need in needs.values()), default=0),
-                    max((need[1] for need in needs.values()), default=0),
-                ),
+                "gates": gates,
             }
         )
+    # process.Executor.__process_nodes: a seek-bar generator that feeds no sink runs
+    # (shown_alone), then the side-effect nodes outside every loop.
+    looped = {generator.id for generators in _groups(chain) for generator in generators}
     tail = [
+        positions[node.id]
+        for node in chain.nodes.values()
+        if shown_alone(chain, node, looped)
+    ] + [
         positions[node.id]
         for node, iterator in chain.get_parent_iterator_map().items()
         if iterator is None and node.has_side_effects()
@@ -1504,6 +1453,7 @@ class NativeExecutor:
     async def run(self) -> None:
         logger.debug("Running native executor %s", self.id)
         try:
+            refuse_reads_across_loops(self.chain)
             await self.__drive("run", -1)
         except Exception as error:
             moved = on_failing_node(error, self.chain.nodes)

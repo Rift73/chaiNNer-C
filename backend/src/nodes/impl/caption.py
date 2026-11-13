@@ -31,7 +31,7 @@ def get_font_size(font: ImageFont.FreeTypeFont, text: str) -> tuple[float, float
 def _font_path():
     return os.path.join(
         os.path.dirname(sys.modules["__main__"].__file__),  # type: ignore
-        "fonts/Roboto-Light.ttf",  # type: ignore
+        "fonts/Roboto-Light.ttf",
     )
 
 

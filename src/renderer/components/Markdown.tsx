@@ -40,7 +40,6 @@ const getDocsMarkdownComponents = (interactive: boolean, selectable: boolean): C
         code: memo(({ inline, className, children, ...props }) => {
             const { schemata } = useContext(BackendContext);
 
-            // const language = /language-([\w-]+)/.exec(className || '')?.[1];
             const text = String(children);
 
             if (inline && schemata.has(text as SchemaId)) {

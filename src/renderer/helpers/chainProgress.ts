@@ -1,5 +1,5 @@
-import { Edge, Node } from 'reactflow';
-import { EdgeData, NodeData } from '../../common/common-types';
+import { Node } from 'reactflow';
+import { NodeData } from '../../common/common-types';
 import { SchemaMap } from '../../common/SchemaMap';
 
 export type ChainProgress = ReadonlyMap<string, ChainNodeProgress>;
@@ -59,9 +59,6 @@ export const nodeProgressLabel = (values: NodeProgressValues): string => {
 
 export const getInitialChainProgress = (
     nodes: readonly Node<NodeData>[],
-
-    _edges: readonly Edge<EdgeData>[],
-
     schemata: SchemaMap
 ): ChainProgress => {
     const progress = new Map<string, ChainNodeProgress>();

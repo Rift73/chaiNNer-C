@@ -32,7 +32,11 @@ PLANE_TYPE = (
         "An RGB image gives its R, G and B planes as gray images.",
     ],
     icon="MdCallSplit",
-    inputs=[VideoClipInput("Clip").take_images("VideoClip | Image { channels: 3 }")],
+    inputs=[
+        VideoClipInput("Clip")
+        .take_images("VideoClip | Image { channels: 3 }")
+        .with_docs("A YUV or RGB clip, or an RGB image, to split.", hint=True)
+    ],
     outputs=[
         VideoClipOutput("Y", PLANE_TYPE, images=True),
         VideoClipOutput("U", PLANE_TYPE, images=True),

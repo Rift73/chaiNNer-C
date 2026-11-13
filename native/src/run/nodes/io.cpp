@@ -295,7 +295,7 @@ std::filesystem::path utf8_path(const std::string &text)
 }
 
 /* image_io.cpp full_path: base / relative (unless empty or ".") / f"{filename}.{extension}", absolutised as
- * ntpath.abspath does (GetFullPathNameW) instead of Path.resolve(), which names the same file (ruling, lane I Q3). */
+ * ntpath.abspath does (GetFullPathNameW) instead of Path.resolve(), which names the same file. */
 std::filesystem::path full_path(std::span<const Value> inputs)
 {
     std::filesystem::path path = std::get<Path>(inputs[1]).value;
@@ -342,14 +342,15 @@ void save_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
     if (!std::holds_alternative<std::monostate>(inputs.back())) throw RunPython{}; // metadata, the last input: its tags are Python's
     std::filesystem::path path = full_path(inputs);
 #ifdef _WIN32
-    const DWORD attributes = GetFileAttributesW(path.c_str());
+    // Through write_path, as the write goes: a file past MAX_PATH is seen with long paths off.
+    const DWORD attributes = GetFileAttributesW(cn::files::write_path(path).c_str());
     if (attributes != INVALID_FILE_ATTRIBUTES) {
         // A link takes today's path (Path.exists() follows it, and a dangling one does not exist there).
         if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) throw RunPython{};
-        if (std::get<bool>(inputs[26])) return; // skip existing files
-        // Path.resolve() names an existing file by its on-disk spelling, which an overwrite keeps; a folder in the
-        // way takes today's path.
+        // A folder in the way takes today's path, whose write raises (Skip existing files skips files only).
         if (attributes & FILE_ATTRIBUTE_DIRECTORY) throw RunPython{};
+        if (std::get<bool>(inputs[26])) return; // skip existing files
+        // Path.resolve() names an existing file by its on-disk spelling, which an overwrite keeps.
         WIN32_FIND_DATAW found;
         const HANDLE search = FindFirstFileW(path.c_str(), &found);
         if (search == INVALID_HANDLE_VALUE) throw RunPython{};
@@ -368,9 +369,10 @@ void save_image(NodeContext &, std::span<const Value> inputs, std::vector<Value>
     const std::filesystem::file_status status = std::filesystem::symlink_status(path, error);
     if (status.type() != std::filesystem::file_type::not_found) {
         if (error) throw RunPython{};
-        if (std::get<bool>(inputs[26])) return; // skip existing files (full_path declined a link)
-        // A folder in the way takes today's path; Linux names keep their case, so an overwrite keeps the path's.
+        // A folder in the way takes today's path, whose write raises; Linux names keep their case, so an overwrite
+        // keeps the path's.
         if (std::filesystem::is_directory(status)) throw RunPython{};
+        if (std::get<bool>(inputs[26])) return; // skip existing files (full_path declined a link)
     } else {
         std::filesystem::create_directories(path.parent_path(), error);
         if (error) throw RunPython{};

@@ -2,6 +2,7 @@ import { EvaluationError, NonNeverType, Type, isSameType } from '@chainner/navi'
 import { EdgeData, InputId, IterOutputId, NodeData, OutputId, SchemaId } from '../common-types';
 import { log } from '../log';
 import { PassthroughInfo, PassthroughMap } from '../PassthroughMap';
+import { isRegexLoaded } from '../rust-regex';
 import {
     FunctionDefinition,
     FunctionInputAssignmentError,
@@ -85,6 +86,8 @@ interface Dependencies {
     readonly sequenceOutputNarrowing: readonly (readonly [IterOutputId, Type])[];
     /** In the order the evaluation asked for them. */
     readonly inputs: readonly InputDependency[];
+    // the regex functions give a type only once the regex engine has loaded
+    readonly regexLoaded: boolean;
 }
 const entriesOf = <K, V>(map: ReadonlyMap<K, V> | undefined): readonly (readonly [K, V])[] =>
     map ? [...map] : [];
@@ -171,6 +174,7 @@ export class TypeState {
                 before &&
                 before.definition === definition &&
                 before.passthrough === passthroughInfo &&
+                before.regexLoaded === isRegexLoaded() &&
                 sameEntries(before.outputNarrowing, narrowing) &&
                 sameEntries(before.sequenceOutputNarrowing, sequenceNarrowing) &&
                 before.inputs.every(({ id, edgeType, value }) => {
@@ -242,6 +246,7 @@ export class TypeState {
                 outputNarrowing: entriesOf(narrowing),
                 sequenceOutputNarrowing: entriesOf(sequenceNarrowing),
                 inputs,
+                regexLoaded: isRegexLoaded(),
             });
             functions.set(n.id, instance);
             return instance;

@@ -1,7 +1,7 @@
 /* chaiNNer blend modes and alpha composition, ported from nodes/impl/blend.py.
  * SPDX-License-Identifier: GPL-3.0-only
  * Keep float32 operation order: upstream NumPy materializes each expression.
- * The per-element helpers and image_pixels live in blend_shared.h (SP4b Task 6),
+ * The per-element helpers and image_pixels live in blend_shared.h,
  * shared with the AVX2 unit blend_avx2.c.
  */
 #include "blend_shared.h"

@@ -17,11 +17,9 @@ from __future__ import annotations
 import argparse
 import ctypes
 import hashlib
-import http.client
 import json
 import os
 import shutil
-import socket
 import subprocess
 import time
 import traceback
@@ -31,22 +29,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from bench_oracle import decoded_png
-from verify_framework_runtime import OPTIONS, file_hash, source_hashes
+from package_files import hash_file
+from verify_framework_runtime import OPTIONS, source_hashes
 from verify_runtime import (
     METADATA_COMPARISON,
-    METADATA_ENDPOINTS,
-    METADATA_TIMEOUT,
     ORACLE,
     PROJECT,
     REPEAT_RULES,
     SSE_EVENT_COMPARISON,
     Events,
     OwnedJob,
+    backend_launch,
     broadcast_multisets,
     canonical,
     check_success,
     compare_metadata,
     edge,
+    fetch_metadata,
     generator_node_ids,
     make_node,
     metadata_record,
@@ -55,6 +54,7 @@ from verify_runtime import (
     repeat_final_value_differences,
     repeat_mismatches,
     request,
+    request_shutdown,
     run_owned,
     sse_event_mismatches,
     sse_record,
@@ -155,11 +155,11 @@ def prepare_fixtures(directory: Path, ffmpeg: Path, ffprobe: Path):
     write_json(
         directory / "manifest.json",
         {
-            "files": {p.name: file_hash(p) for p in directory.iterdir() if p.is_file()},
+            "files": {p.name: hash_file(p) for p in directory.iterdir() if p.is_file()},
             "ffmpeg": str(ffmpeg),
             "ffprobe": str(ffprobe),
-            "ffmpeg_sha256": file_hash(ffmpeg),
-            "ffprobe_sha256": file_hash(ffprobe),
+            "ffmpeg_sha256": hash_file(ffmpeg),
+            "ffprobe_sha256": hash_file(ffprobe),
             "ffmpeg_version": run_owned([str(ffmpeg), "-version"])
             .decode()
             .splitlines()[0],
@@ -188,7 +188,7 @@ def fixture_graphs(schemas: dict, assets: Path, output: Path):
         cancel: bool = False,
     ) -> dict:
         directory = output / name
-        # The installed node's limit; this repository's frame range (Frames, In, Out)
+        # The installed node's limit; this repository's frame range (Frames, Start, End)
         # reads it as the Range 0..limit - 1, as old chains migrate.
         frames: dict[int, object] = {}
         if 10 not in {item["id"] for item in schemas[LOAD_VIDEO]["inputs"]}:
@@ -369,7 +369,7 @@ def close_owned_job(job: OwnedJob, processes: dict):
 
 
 def snapshot(path: Path, ffmpeg: Path, ffprobe: Path):
-    result: dict = {"sha256": file_hash(path)}
+    result: dict = {"sha256": hash_file(path)}
     if path.suffix.lower() == ".png":
         # The port writes default PNGs with its own encoder: the same pixels in other bytes.
         result["semantic"] = decoded_png(path)
@@ -483,7 +483,7 @@ def provision_ffmpeg(storage: Path, ffmpeg: Path, ffprobe: Path):
         target = directory / source.name
         # New copies keep cleanup and ownership independent of original engines.
         shutil.copy2(source, target)
-        hashes[source.name] = file_hash(target)
+        hashes[source.name] = hash_file(target)
     return hashes
 
 
@@ -497,48 +497,9 @@ def run_backend(
     timeout: float,
 ):
     directory = root / label
-    directory.mkdir()
-    for name in ("storage", "output", "profile", "appdata", "localappdata", "temp"):
-        (directory / name).mkdir()
+    env, port, command = backend_launch(backend, python, directory)
     binaries = provision_ffmpeg(directory / "storage", ffmpeg, ffprobe)
-    env = dict(os.environ)
-    for key in ("PYTHONPATH", "PYTHONHOME"):
-        env.pop(key, None)
-    env.update(
-        {
-            "PYTHONNOUSERSITE": "1",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONHASHSEED": "0",
-            "PYTHONIOENCODING": "utf-8",
-            "CUDA_VISIBLE_DEVICES": "-1",
-            "NVIDIA_VISIBLE_DEVICES": "none",
-            # ncnn's Vulkan, hidden on both sides (Consult 8 sweep item 6): no
-            # instance, so no crash at the host's exit and no clone holding DLLs.
-            "VK_LOADER_DRIVERS_DISABLE": "*",
-            # A host's dependency installer must never write into the provisioned
-            # runtime or the package (bench_backend.ISOLATION): a needed install
-            # fails the start instead; pip list ignores it.
-            "PIP_REQUIRE_VIRTUALENV": "1",
-            "APPDATA": str(directory / "appdata"),
-            "LOCALAPPDATA": str(directory / "localappdata"),
-            "USERPROFILE": str(directory / "profile"),
-            "HOME": str(directory / "profile"),
-            "TMP": str(directory / "temp"),
-            "TEMP": str(directory / "temp"),
-            "PATH": str(ffmpeg.parent) + os.pathsep + env["PATH"],
-        }
-    )
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    command = [
-        str(python),
-        "-B",
-        str(backend / "run.py"),
-        str(port),
-        "--storage-dir",
-        str(directory / "storage"),
-    ]
+    env["PATH"] = str(ffmpeg.parent) + os.pathsep + env["PATH"]
     job, process, events = OwnedJob(), None, None
     log = (directory / "backend.log").open("wb")
     result: dict = {
@@ -572,12 +533,7 @@ def run_backend(
             time.sleep(0.2)
         else:
             raise TimeoutError("Backend startup deadline")
-        metadata = {
-            key: request(port, "/" + key, timeout=METADATA_TIMEOUT)
-            for key in METADATA_ENDPOINTS
-        }
-        for key, value in metadata.items():
-            write_json(directory / (key + ".json"), value)
+        metadata = fetch_metadata(port, directory)
         result.update(metadata_record(metadata))
         schemas = {item["schemaId"]: item for item in metadata["nodes"]["nodes"]}
         if not VIDEO_IDS <= schemas.keys():
@@ -687,7 +643,7 @@ def run_backend(
                         continue
                     relative = path.relative_to(output).as_posix()
                     files[relative] = (
-                        {"sha256": file_hash(path)}
+                        {"sha256": hash_file(path)}
                         if (fixture["expected_error"] and name != "midstream-failure")
                         or fixture["cancel"]
                         else snapshot(path, ffmpeg, ffprobe)
@@ -755,20 +711,8 @@ def run_backend(
         if events is not None:
             write_json(directory / "events.json", events.events)
             events.close()
-        if process is not None and process.poll() is None:
-            try:
-                request(port, "/shutdown", {}, timeout=15)
-            except (
-                OSError,
-                urllib.error.URLError,
-                json.JSONDecodeError,
-                http.client.HTTPException,
-            ):
-                pass
-            try:
-                process.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                pass
+        if process is not None:
+            request_shutdown(process, port)
         result["owned_processes_before_job_close"] = job_processes(job)
         result["owned_children_stopped"] = close_owned_job(
             job, result["owned_processes_before_job_close"]
@@ -852,7 +796,7 @@ def compare_runs(baseline: dict, converted: dict) -> dict:
     metadata = compare_metadata(baseline, converted)
     return {
         "fixtures": comparisons,
-        # Flagged, not failed (Consult D-35): the oracle's own attempts ended on
+        # Flagged, not failed: the oracle's own attempts ended on
         # different final values of an iterated field.
         "oracle_repeat_final_values_differ": oracle_repeat_flags(baseline),
         **metadata,
@@ -910,7 +854,7 @@ def main():
         if args.include_port
         else "baseline-fixture-validation-only",
         "cpu_only": True,
-        "verifier_sha256": file_hash(Path(__file__)),
+        "verifier_sha256": hash_file(Path(__file__)),
         "performance_benchmark": False,
         "limitations": [
             "FFmpeg/ffprobe remain the existing codec engines; no GPU acceleration is requested.",
@@ -969,7 +913,7 @@ def main():
             and all(report["original_source_trees_unchanged"].values())
             and report["all_owned_processes_stopped"]
         )
-        # Flagged, not failed (Consult D-35): the oracle's own attempts ended on
+        # Flagged, not failed: the oracle's own attempts ended on
         # different final values of an iterated field.
         report["oracle_repeat_final_values_differ"] = (
             oracle_repeat_flags(report["runs"][0]) if report["runs"] else {}

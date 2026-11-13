@@ -27,18 +27,18 @@ bundles + pinned patches (local package)
 | Executor | The native run engine (section 4): `native/src/run/executor.cpp`, `backend/src/native_executor.py`, node ABI `native/include/run_engine.hpp`, entry points `native/src/run/nodes/*.cpp`; `backend/src/process.py` (the diagnostic oracle); `backend/src/server.py` (worker app) |
 | Scheduling and lifetime | `backend/src/nodes/impl/execution_scheduler.py`, `execution_cleanup.py`, `item_window.py`, `backend/src/api/lazy.py` |
 | Native CPU pool | `native/src/parallel.c`, `native/include/parallel.h` |
-| Mirrors' CRT math from the process's `ucrtbase.dll` (Consult 6 D-4; groups in the header) | `native/include/cn_crt_math.h`, `native/src/crt_math.c` |
+| Mirrors' CRT math from the process's `ucrtbase.dll` (groups in the header) | `native/include/cn_crt_math.h`, `native/src/crt_math.c` |
 | Ownership, cache, events | `backend/src/nodes/impl/native_buffers.py`, `nodes/properties/outputs/numpy_outputs.py`, `chain/cache.py`, `nodes/impl/event_queue.py`, `nodes/impl/numpy_pool.py` (section 6) |
 | Resize and PNG | `backend/src/nodes/impl/native_resample.py`, `native/src/resample_filters.c`, `native/src/dpid_ops.c` (DPID), `native/src/image_io.cpp`, `native/src/png_encode.c` (`png_encode_avx2.c`; the default PNG encoder, with `native/third_party/libdeflate`) |
-| Image codecs and atomic writes (instant-exec lane I) | `native/cmake/codecs.cmake`, `native/src/codecs/*.c` (`native/include/image_codecs.h`), `native/src/image_decode.cpp`, `image_encode.cpp`, `image_preview.cpp`, `native/src/atomic_file.cpp`, `native/src/run/nodes/io.cpp`, `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}`; OpenEXR: `native/src/codecs/exr_codec.c`, `native/third_party/{openexr,imath,libdeflate,zstd,openjph}` |
+| Image codecs and atomic writes | `native/cmake/codecs.cmake`, `native/src/codecs/*.c` (`native/include/image_codecs.h`), `native/src/image_decode.cpp`, `image_encode.cpp`, `image_preview.cpp`, `native/src/atomic_file.cpp`, `native/src/run/nodes/io.cpp`, `native/third_party/{libjpeg-turbo,zlib,libpng,libwebp,libtiff}`; OpenEXR: `native/src/codecs/exr_codec.c`, `native/third_party/{openexr,imath,libdeflate,zstd,openjph}` |
 | Linear Light (Descale, Resize) | `native/include/linear_light.h` (the curves), `native/src/linear_light_ops.c` (`linear_light_avx2.c`), `backend/src/nodes/impl/linear_light.py` |
 | Get Native Resolution | `native/third_party/vernier` (Vernier 0.2's core), `native/src/getnative_ops.cpp` (C entries), `getnative_unit.cpp` (session, reports), `getnative_kernel.cpp` (cross-frame kernel decision, the unscaled axis of a one-axis upscale), `backend/src/nodes/impl/native_getnative.py`, `getnative_media.py` (sampling and frames) |
 | Video | `native/src/video_io.cpp`, `backend/src/nodes/impl/video.py`, `backend/src/nodes/impl/ffmpeg.py` (the pinned FFmpeg and its update) |
 | Packaging | `native/tools/package_port.py`, `package_files.py`, `package_manifest.py` |
 | UI patches | `native/tools/independent_ui.py`, `native/tools/input-drop.json`, `native/tools/tensorrt-types.json`, `native/tools/tensorrt-clear.json`, `verify_*.cjs` |
 | Benchmark and profile | `native/tools/bench*.py`, `native/tools/bench-data/`; native-call timer `backend/src/nodes/impl/native_profile.py` (`CHAINNER_C_PROFILE`, README Bench) |
-| Runtime verification | `native/tools/verify_*runtime.py`, `verify_resize_pipeline.py`, `clipboard_isolation.py` |
-| VOSR 2.0 (two PyTorch nodes, optional TensorRT plugin; [`VOSR2-MAINTAINING.md`](VOSR2-MAINTAINING.md)) | `backend/src/nodes/impl/pytorch/vosr2*.py`, `backend/src/vendor/vosr2/`, `native/src/vosr2/` |
+| Runtime verification | `native/tools/verify_*runtime.py`, `verify_resize_pipeline.py` |
+| VOSR 2.0 (one PyTorch node, optional TensorRT plugin; [`VOSR2-MAINTAINING.md`](VOSR2-MAINTAINING.md)) | `backend/src/nodes/impl/pytorch/vosr2*.py`, `backend/src/vendor/vosr2/`, `native/src/vosr2/` |
 
 ## 2. Shipped baseline and frontend
 
@@ -57,10 +57,10 @@ bundles + pinned patches (local package)
   overlays, delegates, transplants or AST pins.
 - Line endings (root `.gitattributes`): every text file is LF in the index and in every checkout (`* text=auto
   eol=lf`). `backend/src/** -text` stores and checks out the shipped bytes exactly; they are LF, as upstream's GitHub
-  source is (the installed app's CRLF is its Windows build's; Consult 10 R-o, lane E). `native/tests/reference_*/**`,
+  source is (the installed app's CRLF is its Windows build's). `native/tests/reference_*/**`,
   `native/tests/oracle/**` and `native/tests/chainner_ext/**` are `-text` too: frozen copies and corpora keep their
   bytes (CRLF, LF and mixed alike).
-- The two binaries are git-ignored (`.gitignore` names the DLL; `*.py[cod]` covers the `.pyd`): build or copy them.
+- The native binaries are git-ignored (`.gitignore` names each DLL; `*.py[cod]` covers the `.pyd` files): build or copy them.
 - The nightly's GPU lease was removed on 2026-10-05 (decision): its 4 files are gone and every spot it hooked is
   upstream again. The delta's TF32, ONNX export size 32, `gc.collect()` removals and 8-worker pool stay (deliberate choice).
 - UI: the local package (`package_port.py`, the artifact the acceptance gates test) ships the installed nightly's
@@ -74,8 +74,8 @@ bundles + pinned patches (local package)
 
 ## 3. Native layer
 
-- Sources: 311 files under `native/src` and `native/include`, subfolders included (139 `.c`, 61 `.cpp`, 5 `.cu`,
-  2 `.hip`, 71 `.h`, 31 `.hpp`, 2 `.inc`; 130,269 physical lines including generated tables and attributed adaptations).
+- Sources: 313 files under `native/src` and `native/include`, subfolders included (140 `.c`, 61 `.cpp`, 5 `.cu`,
+  2 `.hip`, 72 `.h`, 31 `.hpp`, 2 `.inc`; 131,400 physical lines including generated tables and attributed adaptations).
   Vendored libraries are under `native/third_party`.
 - `chainner_native.dll`: C17 image kernels behind a C ABI. `backend/src/nodes/impl/native.py`
   loads it with ctypes and requires `cn_abi_version() == 2`; a load or ABI failure raises, never
@@ -95,7 +95,7 @@ bundles + pinned patches (local package)
   parity is held by the conformance manifest (`native/tests/chainner_ext/`, `test_chainner_ext_manifest.py`).
 - Generated sources, never run in the application (README Build): `native/include/onnx_converter_passes.hpp`,
   `pixel_art_tables.inc`, `tiling_control.hpp`.
-- Build (decision 2026-10-06; Consult 9): clang-cl, lld-link and llvm-lib of LLVM 23.1.2 only, under Ninja,
+- Build (decision 2026-10-06): clang-cl, lld-link and llvm-lib of LLVM 23.1.2 only, under Ninja,
   with the Build Tools' MSVC 14.44 libraries and Windows SDK 10.0.26100 (`toolchain.cmake` pins them;
   `CMakeLists.txt` refuses any other compiler). Every unit is baseline x86-64 code (the ISA units compiled for their level only, the vendored
   libraries' SIMD behind their own CPU checks; `CHAINNER_C_MARCH` adds `-march` to local builds only) with ThinLTO, `/fp:strict`
@@ -276,7 +276,7 @@ its 1.5 s.
   Color Fix's blur, the float16 cast, Linear Light's curves and Denoise's rows), the AVX2 build of Get Native
   Resolution's analysis (below) and the kept `convolution_avx512.c`, `separable_avx512.c`, `denoise_avx512.c` and `lens_avx512.c`
   (16-lane groups; spec 4.3's keep rule: a timer win, no throughput loss; separable: kept on the 8-CPU timer by
-  controller ruling), which `CHAINNER_C_ISA=avx2`
+  ruling), which `CHAINNER_C_ISA=avx2`
   caps on parts that downclock. The multiply (`spectral_avx2.c`), the normal output (`color_avx2.c`) and Linear Light
   (`linear_light_avx2.c`) share their per-element code with the baseline unit through `spectral_shared.h`,
   `color_shared.h` and `linear_light_shared.h` (static helpers); the
@@ -396,7 +396,7 @@ features alone:
   add, multiply) run X86_V3: 8 lanes with FMA3, and MSVC's `/fp:contract` fuses their quadrant step. Add Normals and
   Lens reproduce that sine and exp. Full reductions follow NumPy's iterator (`native_numpy_reduce`): one pairwise tree
   for an unbuffered operand, else buffer blocks that restart at every outer index.
-- **The C runtime** (Consult 6 D-4, `cn_crt_math.h`): mirrors of NumPy's, SciPy's and CPython's own scalar math
+- **The C runtime** (`cn_crt_math.h`): mirrors of NumPy's, SciPy's and CPython's own scalar math
   (pocketfft's twiddles and `_nd_image`'s Gaussian included) call the `ucrtbase.dll` exports those libraries use,
   through the `cn_crt` table; OpenCV's mirrors keep the static CRT, as cv2.pyd does.
 
@@ -411,7 +411,7 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   overflow, as OpenCV's int dimensions. Other oversized arithmetic.
 - Nonconstant border extension of an empty image raises `ValueError` instead of hanging in OpenCV 4.8's reflective-border loop.
 - Threshold TRUNC NaN/zero ties; Specular to Metal signed-zero clamp.
-- NCNN's tile reader (`ncnn/auto_split.py`) reads its input by logical index (Consult 11 D-18), where upstream's
+- NCNN's tile reader (`ncnn/auto_split.py`) reads its input by logical index, where upstream's
   `Mat.from_pixels` reads the raw buffer, a permuted one as interleaved pixels. No node output changes: Upscale Image's
   cvtColor hands the reader a C copy of 3 and 4 channels, and one channel has one order, so Lens Blur's planar layout
   never reached that read through the node (VERIFIED on CPU, upstream's node and the port's).
@@ -486,23 +486,23 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
 - ONNX Upscale Image pads each tile only to the size requirement it finds by running the model once on a CPU session
   (64x64, then (64+m)x(64+3m) for m = 1, 2, 4, ..., 64; the first exactly scaled result wins; shape inference's answer
   is the fallback; cached per model), where upstream pads to the multiple of 16 that shape inference reports for
-  nearly every model (upstream chaiNNer #3106; stand-in 2026-10-09). Convolution models' edges on images or
+  nearly every model (upstream chaiNNer #3106; decided 2026-10-09). Convolution models' edges on images or
   tiles that are not a multiple of 16 now equal PyTorch's and NCNN's, and window-attention exports run at any size
   (`backend/tests/test_onnx_size_probe.py`). The answer is also kept in `<storage>/onnx-size-probe` (1024 files, least
   recently used removed first) under a key of the model's bytes, ORT's version, the probe's code and shape inference's
   answer; a damaged file is probed again. On a GPU provider Load Model starts the probe in the background, whose own
   CPU session is most of its cost; on the CPU provider the node's session runs it.
 - PyTorch Upscale Image raises when the model turns a finite image into NaN or Inf (an fp16 overflow; the message
-  says to turn FP16 off), where upstream saves NaN as black and clips Inf (upstream chaiNNer #3071; stand-in
-  D15; `backend/tests/test_pytorch_nan_output.py`).
+  says to turn FP16 off), where upstream saves NaN as black and clips Inf (upstream chaiNNer #3071;
+  `backend/tests/test_pytorch_nan_output.py`).
 - NCNN: a failed inference or model load raises (out of memory retries with smaller tiles), where upstream's binding
   ignored ncnn's return codes; a tile whose result is not a whole multiple of its input raises, and without tiling only
   the waifu2x-style crop (the same border short of the model's scale on both axes) is refused, naming both sizes
   (upstream chaiNNer #3011, #2486; `backend/tests/test_ncnn_errors.py`).
 - NCNN Upscale Image on the CPU (no Vulkan GPU), with automatic tile size, tiles an image whose memory estimate
   exceeds 80 % of the available RAM, the budget PyTorch's CPU path uses (`cpu_memory_budget`), where upstream's CPU
-  budget is 1 PiB without a Memory Budget Limit and ncnn aborts the process when an allocation fails (stand-in
-  D8, 2026-10-09). An image whose estimate fits is split exactly as before: whole without a limit, as the limit splits
+  budget is 1 PiB without a Memory Budget Limit and ncnn aborts the process when an allocation fails (decided
+  2026-10-09). An image whose estimate fits is split exactly as before: whole without a limit, as the limit splits
   it with one (`backend/tests/test_ncnn_errors.py`).
 - Upscale Image on PyTorch, NCNN, ONNX and TensorRT has a Tile Size text output: the tiles the model ran, with their
   overlap and after any cut for lack of memory, or Whole image; of an image's last pass (`upscale/tile_report.py`,
@@ -521,13 +521,13 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
 - ONNX sessions raise when the chosen execution provider did not start, where upstream silently ran on CUDA or the CPU
   (upstream chaiNNer #2715; `backend/tests/test_onnx_session_providers.py`). On Windows with NVIDIA, the ONNX package
   installs `onnxruntime-gpu 1.30.0+trt11.4` (the fork release `v1.30.0-trt11`: the unmodified v1.30.0 source
-  rebuilt against TensorRT 11.4, decisions D19/D20), whose TensorRT provider uses the TensorRT package's TensorRT 11
+  rebuilt against TensorRT 11.4), whose TensorRT provider uses the TensorRT package's TensorRT 11
   (loaded through `tensorrt_libs` before the session; without that package the error says to install it). The
   TensorRT session leaves out upstream's `trt_dump_subgraphs`, which wrote two copies of the model per session, and
   `trt_fp16_enable` has no effect with TensorRT 11 (engines follow the model's precision).
 - Save Video fails when FFmpeg exits non-zero at a normal close, naming its exit code and message (as an early exit
   does, upstream chaiNNer #3109), before the audio mux and keeping the file FFmpeg wrote, where upstream leaves the
-  exit code unchecked (stand-in D18; `test_writer_nonzero_exit_code_original_policy`).
+  exit code unchecked (`test_writer_nonzero_exit_code_original_policy`).
 - Save Video's audio mux (approved, upstream chaiNNer #3331): chaiNNer's own FFmpeg muxes the audio after the
   video, as upstream v0.25.1 does, where the frozen nightly ran the `ffmpeg` on `PATH` with the audio first and only
   logged a failure, so without FFmpeg on `PATH` every saved video was silent. Auto copies the audio and, when the
@@ -540,7 +540,9 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   min(320 kb/s, 256 kb/s × channels) per stream, libopus's per-channel ceiling (approved 2026-10-09): a mono
   stream gets 256 kb/s (`b:a:N`), where upstream's fixed 320 kb/s fails, and streams of two or more channels keep
   320 kb/s, also beside a mono stream. Only a source file without audio saves the video without it.
-  The temporary file never stays behind, and `os.replace` swaps the files, so a failed swap keeps the video. Video
+  After the encoder exited 0, a failed mux keeps the encoded video beside the path as `<name>.no-audio.<ext>` and a
+  failed rename the finished one as `<name>.new.<ext>` (`<name>-2.no-audio.<ext>` and on if taken; the error names it); otherwise a failure
+  deletes the temporary file, never the file at the path. Video
   packets are unchanged; the stream order and, where a PATH FFmpeg differed, the audio encoder's build change. The
   tests' oracle is the frozen v0.25.1 mux with these departures (`INTENDED_MUX`, `native/tests/test_video_io.py`), and
   the video verifier compares the oracle's files video stream first (`verify_video_runtime.video_first`).
@@ -584,12 +586,12 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   once when the job finished before it was wrapped, which adds upstream's own order as one interleaving. Measured
   2026-10-07 (g0 → {a, b} → join → save, 200 runs of 6 items, CPUs 28–31): upstream 1200 of 1200 items `sa fa sb fb`;
   the port at K = 1: 891 `sa sb fa fb`, 296 `sa sb fb fa`, 13 `sa fa sb fb`.
-- The normalize/enforce clamp follows `np.clip` on the tested stack (NumPy 2.5.3 `clip.cpp`: `x<min→min`, `x>max→max`; −0 and NaN payloads pass; under DAZ a denormal becomes the converted zero of its sign). On the 3.11 stack, NumPy 1.24.4 gave +0 for −0 and Task 3b1 (`602146a5`) mirrored that; U2 lane H restored B3's form when the stack moved.
+- The normalize/enforce clamp follows `np.clip` on the tested stack (NumPy 2.5.3 `clip.cpp`: `x<min→min`, `x>max→max`; −0 and NaN payloads pass; under DAZ a denormal becomes the converted zero of its sign). On the 3.11 stack NumPy 1.24.4 gave +0 for −0.
 - Kept for the record: default PNGs are chaiNNer-C's own (MinSum filter, libdeflate level 6 on row bands),
   pixel-identical to chaiNNer's, 79 % of fpng's size on the six sample frames and faster than fpng's default on
   large images (2026-10-21; fpng, the encoder before, was about 19 % larger than chaiNNer's). Composite's
   full-overlap shortcut (SP4b Task 6) allocates nothing and succeeds where B3's region mallocs failed under memory exhaustion.
-- Widened annotations, annotation-only (Consult 14 D-31): where upstream annotates `ort.InferenceSession`, the
+- Widened annotations, annotation-only: where upstream annotates `ort.InferenceSession`, the
   backend's session parameters, returns and cache use the `OnnxSession` Protocol (`nodes/impl/onnx/session.py`:
   `get_inputs`, `get_outputs`, `run`), which ORT's session and the native `NativeSession` both satisfy (rembg `bg.py`,
   `session_base.py`, `session_factory.py`; onnx `auto_split.py`, `session.py`; `upscale_image.py`), so the cast to
@@ -597,19 +599,19 @@ chaiNNer (outputs may differ only here; the 13 bench graphs equal chaiNNer's at 
   sessions' shapes are lists), and NCNN's `load_layer_weights` takes a `BinaryIO` where upstream's says
   `BufferedReader` (the native reader only calls `read(n)`; no caller uses a BufferedReader-only member). No runtime
   change.
-- Bridge annotations widened to the contract the tests pin, annotation-only (Consult 15 B2): `image_fill`'s `color`
+- Bridge annotations widened to the contract the tests pin, annotation-only: `image_fill`'s `color`
   and `second` and `chroma_key`'s `color` take `tuple[float, ...] | np.ndarray`, and `normalize_lens`'s
   `coefficients` takes `list[tuple[float, float]] | np.ndarray`; each already reads them through `np.require` or
   sequence indexing, so foreign (reversed, unaligned) arrays were always accepted. No runtime change.
-- One body change of the pyright lane is a code-path removal, not an annotation (R3 M-7): `blue.py`'s removed
+- One body change of the type-check pass is a code-path removal, not an annotation: `blue.py`'s removed
   `isinstance(seed, (int, np.integer))` guard was the port's own always-true native-dispatch condition (B0; the only
   caller passes an `int`), not upstream text, removed in `1dee63a3` as a root fix. Upstream's `blue.py` has no
   `isinstance`.
 - Don't-cares: which NaN payload survives where two meet (table below); under DAZ|FTZ, which neither chaiNNer nor the
   port sets, Dilate and Erode may return a zero where OpenCV returns a same-sign denormal, or the reverse (equal after the clamp);
   Soft Light with a negative-denormal base gives NaN where upstream gives 0.541 (C `sqrtf` against NumPy's DAZ sqrt);
-  and Pin Light returns a flushed zero where upstream's `np.where` keeps the denormal's bits (both equal B3; Consult 13).
-  Nothing in the stack sets DAZ (U4-light's MXCSR readout was `0x00000000` after every in-process GPU item), and new threads start
+  and Pin Light returns a flushed zero where upstream's `np.where` keeps the denormal's bits (both equal B3).
+  Nothing in the stack sets DAZ (an MXCSR readout was `0x00000000` after every in-process GPU item), and new threads start
   with the default FP state.
 
 Test tolerances (saved-image and runtime fixtures stay exact, but for the last row):
@@ -624,7 +626,7 @@ Test tolerances (saved-image and runtime fixtures stay exact, but for the last r
 | SSIM (six decimals) | abs 1e-6 |
 | Linear Histogram / Principal Color float64 BLAS | abs/rel 3e-14, before float32 conversion |
 | NaN payloads where two different NaNs (a generated one, from inf·0 or inf − inf, included) can meet in one operation (SP4 forced paths, B3 goldens; e.g. a pairwise sum's horizontal tree, where x86 keeps the first operand's NaN and the compiler orders a float addition's operands freely, MSVC in NumPy's build and LLVM in ours, so source order cannot steer it) | NaN positions and every non-NaN bit; single-payload inputs bit for bit |
-| Iterated items' broadcast types and values (runtime verifiers, Consult D-35) | Upstream on 3.14 broadcasts iterated items' types in timing-dependent order (CPython `_chain_future`); the UI may show either last item; the io verifier compares broadcast multisets, not last-wins, for these fields (the port's final value is one the oracle broadcast; `report.json` flags an oracle whose own attempts disagree). A same-side check that the port's final value equals its own last broadcast would be a tautology (the final state is the newest-wins merge of those broadcasts); the port's "latest pending" contract is pinned in the `LatestBroadcasts` unit tests instead (`test_execution_scheduler.py`, `test_execution_cleanup.py`; R3 M-1) |
+| Iterated items' broadcast types and values (runtime verifiers) | Upstream on 3.14 broadcasts iterated items' types in timing-dependent order (CPython `_chain_future`); the UI may show either last item; the io verifier compares broadcast multisets, not last-wins, for these fields (the port's final value is one the oracle broadcast; `report.json` flags an oracle whose own attempts disagree). A same-side check that the port's final value equals its own last broadcast would be a tautology (the final state is the newest-wins merge of those broadcasts); the port's "latest pending" contract is pinned in the `LatestBroadcasts` unit tests instead (`test_execution_scheduler.py`, `test_execution_cleanup.py`) |
 
 Not claimed: unchanged global Torch RNG state when alignment/face helpers are reused (reuse skips
 repeated random initialization); identical PNG bytes between chaiNNer-C's PNG encoder and OpenCV, in files and
@@ -653,10 +655,10 @@ verified copy, lock probe, atomic replace) and `package_manifest.py` (schema, id
    download table) becomes `gR.gte(s.version,"3.14.0")`, so a shipped CPython 3.14.x is kept. A missing runtime, or
    one below 3.14, no longer takes upstream's branch that deletes it and downloads 3.11.5: it throws "chaiNNer-C's
    integrated Python is missing or older than 3.14; reinstall chaiNNer-C", which upstream's setup catch logs and
-   offers Retry, system Python or exit (Consult 2 Q6). Main shows chaiNNer-C's version (About `chaiNNer v0.3.11`, the
-   startup log `chaiNNer-C 0.3.11 (upstream 0.25.1-nightly.2025-10-21)`, system information `app.version` 0.3.11 plus
-   `app.upstream`), drops the Release Notes item and leaves `app.getVersion()` upstream's, since it stamps saved chains
-   (Consult 2 Q5). The renderer replaces the update header with the logo, the title and a `v0.3.11` tag (no Alpha
+   offers Retry, system Python or exit. Main shows chaiNNer-C's version (About `chaiNNer v0.3.12`, the
+   startup log `chaiNNer-C 0.3.12 (upstream 0.25.1-nightly.2025-10-21)`, system information `app.version` 0.3.12 plus
+   `app.upstream`), drops the Release Notes item and leaves `app.getVersion()` upstream's, since it stamps saved chains.
+   The renderer replaces the update header with the logo, the title and a `v0.3.12` tag (no Alpha
    badge; the manifest's `app_version` stays the upstream baseline), removes the update toggle and rejects
    release-API strings. The renderer then applies the 11 drop edits in `input-drop.json`
    (own baseline pin): directory drops with toasts, locked/connected guards for file and node drops, directory

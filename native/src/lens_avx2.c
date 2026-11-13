@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "lens_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* Lens Blur's component composition and tap fold, AVX2 unit (/arch:AVX2, spec 4.3): no
+/* Lens Blur's component composition and tap fold, AVX2 unit (/arch:AVX2): no
  * export, reached only through compose_range's and the fold's dispatch on the call's ISA
  * level. In the composition each lane runs compose_one's operations in its order, the
  * zero products and sums included: they are significant for infinities and signed zero.

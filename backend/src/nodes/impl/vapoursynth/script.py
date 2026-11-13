@@ -33,6 +33,17 @@ else:
 
 
 @dataclass(frozen=True)
+class ClipShown:
+    """What a clip's node shows of it after a run: its size (0 when it varies), frame
+    rate (0 when it varies) and field order ("" when its first frame does not say)."""
+
+    width: int
+    height: int
+    fps: float
+    field_order: str
+
+
+@dataclass(frozen=True)
 class VideoClip:
     """A clip: `stmt` is one Python statement that binds `var` (several clips of one
     node may share a statement, e.g. `y, u, v = split(clip)`)."""
@@ -45,6 +56,11 @@ class VideoClip:
     node_id: str
     # `var` holds a list of clips (shift_clip_multi's), for an input that takes several.
     many: bool = False
+    # The Method entry that makes it, e.g. "Denoise, strong (BM3D)": its tab name in
+    # vsview when the user gave none.
+    label: str = ""
+    # Set by a node that evaluated the clip in its run (Load Clip).
+    shown: ClipShown | None = None
 
 
 def one_clip(clip: VideoClip, where: str) -> str:

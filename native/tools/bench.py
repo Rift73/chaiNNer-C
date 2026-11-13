@@ -7,259 +7,19 @@ Usage, from the project root:
       [--python-a PATH] [--python-b PATH] [--png-compare {sha256,decoded}]
       [--cross-stack] [--allow-schema-change]
 
-Defaults: A is frozen baseline B0 and B is the packaged backend. Each case runs
-one warm-up pair (AB), then N measured pairs in alternating order (BA, AB, ...).
-Outputs and final UI state must be identical across every trial of a case (of
-one side, under --cross-stack; see Cross-stack runs), or the run fails and
-result.json keeps the failing trial. Records go to
-native/reports/bench-<UTC>/ and media to F:\\chaiNNer-C-diagnostics\\bench-<UTC>\\; a
-successful run keeps only each trial's JSON there, a failed run keeps everything.
-A trial whose SSE wait fails also keeps the events it saw, in order, each with
-its arrival in seconds after its /run was sent, as events-failed.json beside its
-outputs.
+A is the frozen baseline B0 and B the packaged backend unless given. Each case
+runs one warm-up pair, then N (even) measured pairs in alternating order. Every
+trial of a case must give the same outputs and final UI state, or the run fails
+and result.json keeps the failing trial. Verdicts (win, regression, regression
+(within current A/A), neutral, unknown) compare the median paired ratio with the
+noise floors in bench-data/noise-floor.json; a flagged case is re-run on fresh
+backends before its verdict is final, except under --record-noise or --profile.
+Records go to native/reports/bench-<UTC>/, media to
+F:\\chaiNNer-C-diagnostics\\bench-<UTC>\\.
 
-Pairs: N (--repeats) must be even, so A runs first in exactly half the pairs and
-order effects cancel. Verdicts and noise floors need at least MIN_PAIRS = 6 pairs;
-with fewer, every verdict is "unknown".
-
-Verdicts compare the median paired ratio (A seconds / B seconds) with two floors
-from bench-data/noise-floor.json (see Noise floors): the case's shared noise
-floor, which flags a change, and its current floor, beyond which a regression
-blocks:
-  win         B faster beyond both floors, in a majority of the pairs
-  regression  B slower beyond both floors (no majority needed, so a bimodal
-              slowdown cannot slip through)
-  regression (within current A/A)
-              B slower beyond the noise floor but not beyond the current floor:
-              flagged and confirmed like a regression, but it does not block;
-              the run warns with both floors, for the stand-in
-  neutral     anything else: within the noise floor, or faster but not a win
-  unknown     no usable noise floor: none recorded, fewer than MIN_LAUNCHES
-              launches recorded, or fewer than MIN_PAIRS pairs
-Without a current floor, the noise floor alone decides.
-
-Confirmation: win and regression in a single run's summary.md are provisional,
-and every such summary.md says so. Each backend launch carries its own small,
-constant speed bias, which more pairs within that launch never average away, so
-over many cases a false win or regression is expected now and then. Unless
---record-noise or --profile is set, the harness therefore automatically re-runs
-the flagged cases (a win or either regression; CPU verdicts never flag a case)
-in a confirmation run on freshly started backends, with the same trees, repeats
-and per-side environments; that run's summary.md names the run it confirms. A
-missed regression is the costlier error, so the rules are asymmetric: a
-regression is final when 2 of the 3 runs flag it; wins need the confirmation run
-to repeat them.
-  win          stays win only if the confirmation run is also win. If the
-               confirmation run flags a regression instead, the case goes to the
-               tie-break; any other outcome is unconfirmed, with no tie-break
-  regression   either label stays as it is if the confirmation run gives the
-               same label. If the confirmation run gives the other label, says
-               anything else or lacks the case, the case goes to the tie-break
-  tie-break    ONE more fresh run, labelled as the tie-break in its summary.md,
-               covering just the cases sent to it, together; each is a
-               regression if 2 of the 3 runs flagged one, otherwise unconfirmed
-  unconfirmed  anything else that was flagged: inconclusive, NOT neutral. An
-               unconfirmed regression is not cleared.
-A final regression is "regression", which blocks, when 2 of the 3 runs put it
-beyond the current floor, and otherwise "regression (within current A/A)", which
-does not block and goes to the stand-in with both floors (the warnings of the
-runs that gave it name them).
-Neutral and unknown verdicts stay as the first run gave them. confirmation.json
-and confirmation.md go into the first run's directory, with each run's verdict
-and paired change per flagged case, and the same table is appended to the first
-run's summary.md under "Confirmed verdicts"; the harness prints each flagged
-case's final verdict. Only the final column counts as a claim. Always quote the
-confirmation run's paired change, never the first run's: the first run picked the
-case for looking large, so its magnitudes are inflated by selection. Re-running
-whole comparisons until a win confirms counts each attempt and raises the
-false-claim rate. The runs share machine conditions (thermal state, persistent
-background load), so replication removes per-launch bias but not those. A
---record-noise or --profile run is never confirmed.
-
-Noise floors: a floor is built from at least MIN_LAUNCHES = 3 A/A launches on
-identical trees, each with an even number of at least MIN_PAIRS pairs. A launch
-stores, per measured case, its largest |ln q| over position-balanced quads q:
-the geometric mean of a B-first pair and the A-first pair after it, which
-cancels the first-vs-second position effect. A case's floor is the maximum of
-its launch floors over all recorded launches, kept in bench-data/
-noise-floor.json with each launch's run, repeats, floor and background load.
-Until a case has 3 launches its floor stays unusable and its verdict "unknown".
-The shared throughput floors ("floors") stay as recorded through SP3, so that
-throughput verdicts remain comparable across sub-projects: the harness never
-writes them, and re-basing them is the stand-in's decision, with no harness
-flag. --record-noise records CPU floors instead (see CPU per item). A case's
-current floor, by contrast, follows today's machine: the largest throughput
-floor among its A/A launches recorded for the run's K setting, which keep it
-beside their CPU floors in cpu_floors.<setting> (see current_floors). It applies
-once the case has MIN_LAUNCHES launches there, and only where the shared floor
-is usable; result.json records it as current_floors and summary.md shows it
-beside the noise floor. A --record-noise run reads it before its own launch
-merges into those launches. Recording a run name that is already stored replaces
-that launch, and the first launch recorded for a case replaces an old-format
-entry (one max-pair floor and no "launches"), which is not carried over. A
---record-noise run's CPU verdicts use the merged launches, its own included;
-they are not guaranteed neutral and do not confirm the floors. A floor is
-confirmed only by a later holdout A/A run without --record-noise, whose verdicts
-should all be neutral. Judge the holdout by the FIRST run's summary verdicts,
-not by confirmation.md: a win or regression there counts against the floors even
-when the confirmation runs do not repeat it.
-
-CPU per item: a trial's job_cpu_seconds (the owned backend job, FFmpeg children
-included) over its item count. A pair's CPU ratio is A's CPU per item over B's,
-so a positive CPU/item change means B used less CPU. It is judged like
-throughput, by the same quads, verdict rule, MIN_PAIRS and MIN_LAUNCHES, against
-its CPU floor alone (no current floor); a case whose measured trials do not all
-have job_cpu_seconds > 0 has no CPU summary and CPU verdict "unknown". CPU
-verdicts are information only: Job-object CPU is charged per scheduler tick and
-inflated by helper wake-ups, so the A/A CPU floors are too wide to judge a
-kernel. They stay in summary.md and result.json's cpu_verdicts and never send a
-case to the confirmation run. CPU floors depend on K, so they are kept per K
-setting: "k<n>" when CHAINNER_C_ITEM_WINDOW in the harness's environment forces
-K = n (read as the item window reads it), else "auto". A run's CPU verdicts use
-the CPU floors of its own K setting. --record-noise merges this launch's CPU
-floors into noise-floor.json cpu_floors.<setting>, each launch storing its
-throughput floor beside its CPU floor, and never writes the shared floors; a
-launch whose throughput floor exceeds a case's shared floor prints a WARNING
-with its background load, for the stand-in.
-
-Page faults: a trial also records job_page_faults, the page faults (soft and hard)
-of every process in the owned backend job, FFmpeg children included, over the
-same span as job_cpu_seconds. summary.md shows one line per run, the median of
-a case's measured trials of job_page_faults over the item count for A and B,
-n/a for a case whose measured trials do not all have the field (a result.json
-from before it). It is information only: never a verdict, a floor or a gate
-input, and never sent to the confirmation run.
-
-Background load: each trial records background_busy_percent, the machine's busy
-CPU minus the owned backend jobs' CPU (backend plus FFmpeg children). A WARNING
-is printed and kept in result.json and summary.md when the machine is over 10%
-busy before the run, and when a case's median background load exceeds the highest
-load any launch of one of its floors was recorded under by more than
-BACKGROUND_MARGIN = 5 points: checked separately against its shared throughput
-floor and against its CPU floor of the run's K setting, and naming the floor.
-The current floor comes from the CPU floor's launches, so the second check
-covers it too and says so. Such verdicts are less reliable; rerun on a quieter
-machine.
-
-Item window: each trial records in result.json the item-window decisions its
-backend logged during the request (item_windows, one per generator group; B0
-logs none), each with the window's counts when K > 1 (items, ahead, jobs,
-replayed, awaited, discarded). An empty item_windows on a candidate trial
-means K is not proven, never K = 1. CHAINNER_C_ITEM_WINDOW in the harness's
-environment reaches both backends and forces K (1 = sequential);
-environment.affinity_cpus is the CPU count the harness and its backends may use.
-
-Per-side environment: --env-a NAME=VALUE and --env-b NAME=VALUE, each
-repeatable, set a variable in one backend's environment only, applied last
-(after the isolation and private-directory variables); the confirmation and
-tie-break runs keep them. Each backend's own variables are recorded in
-result.json as backends.<label>.env and listed in summary.md. Names are
-upper-cased, as Windows reads them without case, and refused when given twice
-or reserved: CHAINNER_C_ITEM_WINDOW and CHAINNER_C_PROFILE (the harness controls
-them for both sides), PYTHONPATH and PYTHONHOME (dropped from both), and the
-variables the backend sets for its isolation and private directories.
---record-noise refuses both options: a noise floor needs both sides launched
-alike. CHAINNER_C_ISA in the harness's environment, whatever its value, refuses
-the start: it would reach both backends; set it per side. A side that sets
-CHAINNER_C_ISA must log its ISA line (see ISA record) within 10 s of becoming
-ready, or the run fails, since a tree that ignores the variable would run the
-same code on both sides.
-
-Per-side interpreter: --python-a PATH and --python-b PATH run one backend's
-run.py under another interpreter, such as an installed chaiNNer's own Python;
-both default to the packaged port's (bench_backend.PYTHON). A side whose
-interpreter, given or default, is not an existing python.exe refuses the start
-before anything is created. Every backend runs with -B and
-PYTHONDONTWRITEBYTECODE=1, so a read-only tree or interpreter gets no bytecode,
-and with PIP_REQUIRE_VIRTUALENV=1: a host's dependency installer (pip or
-chainner_pip install, at startup) then exits before installing, so a needed
-install fails the start instead of writing into the interpreter, while pip list
-still works. The tree is hashed before and after (backend_unchanged); the
-interpreter's Lib\\site-packages is fingerprinted by its top-level entries' names
-and mtimes (interpreter_unchanged); a change in either fails the run. The
-interpreters are recorded in result.json as pythons (and backends.<label>.python)
-and listed in summary.md; the confirmation and tie-break runs keep them, and
---record-noise refuses them, since noise floors need both sides launched alike.
-
-Oracle side (parity runs): when A is make_oracle.py's tree (native/build/oracle/
-src), the runtime verifiers' guard applies before anything starts. The oracle's
-four chainner_ext hashes must equal the candidate's: the package manifest's when
-B is a package's resources/src, B's own files otherwise. A runs on the
-provisioned runtime: the one the package was copied from (python_stack.runtime,
-while the project's lock is the one it recorded), else this project's
-native/runtime/cpython-<the lock's interpreter>. That is --python-a's default;
-another --python-a is refused, and the oracle as B is refused. result.json
-records the oracle's record as oracle (None for any other A).
-
-PNG comparison: --png-compare sha256, the default, requires every output PNG's
-bytes to match. --png-compare decoded requires its pixels plus colour/orientation
-chunks to match instead: each PNG is read with cv2.imread(path, IMREAD_UNCHANGED)
-and compared by shape, dtype and every byte of the array, with no tolerance, and
-by the type and payload SHA-256 of each gAMA, cHRM, sRGB, iCCP, sBIT, tRNS or eXIf
-chunk it holds, so two encoders of the same pixels and metadata agree
-(bench_oracle.png_outputs). Video outputs keep their decoded-frame oracle in both
-modes. result.json records the mode as png_compare and summary.md
-names it; the confirmation and tie-break runs keep it.
-
-Cross-stack runs: --cross-stack compares two Python stacks, such as a package on
-CPython 3.11 against one on 3.14, whose outputs need not match. It refuses the
-start unless the two sides' interpreters report different sys.version_info[:2],
-each probed by running its python.exe (-I -B) before anything is created, and it
-refuses --record-noise. The schema_sha256 gate stays hard. Within a side, every
-trial must equal that side's first trial, in outputs and final UI state, or the
-run fails as usual. Across the sides, each case records cross_stack.cases.<case>
-in result.json: {outputs_equal, files: [{name, equal, max_abs,
-differing_pixels}], final_state_equal, first_difference}, from the two sides'
-first trials, compared decoded. A PNG is equal when bench_oracle.png_outputs'
-decoded records match (pixels plus colour/orientation chunks); max_abs and
-differing_pixels are 0 for an equal file and, for a differing PNG on both
-sides, verify_runtime.compare_images' maximum channel difference and count of
-differing pixels, decoded in the harness's interpreter; otherwise None. A video
-is equal when its decoded-frame snapshot matches. first_difference names the
-first differing output, else where the final UI state differs, else None. A
-difference between A and B fails nothing; a final UI state that differs is
-also a WARNING, so summary.md flags it, and summary.md lists every case's
-comparison under "Cross-stack". Verdicts are judged as usual and the floors are
-only read. The run is labelled "cross-stack <A's version> → <B's version>,
-recorded, not gating" in result.json (cross_stack.label, beside the probed
-versions) and summary.md; an ordinary run records cross_stack as None. The
-confirmation and tie-break runs keep the mode.
-
-Schema changes: the two backends' /nodes must be identical (schema_sha256), or
-the run fails before any trial. --allow-schema-change, for a before/after
-comparison across a branch that changes node schemas, records the difference
-instead, as schema_change in result.json: each side's schema_sha256, the schema
-ids only A or only B serves, those both serve with different schemas, and
-whether the node order differs; a WARNING names them. Each side's requests are
-built from its own schemas, as always, and outputs and final UI state must still
-match. An ordinary run records schema_change as None; --record-noise refuses
-the option, and the confirmation and tie-break runs keep it.
-
-Profile runs: --profile sets CHAINNER_C_PROFILE=1 on both sides. A tree with the
-timer (it holds nodes/impl/native_profile.py) then logs one line per /run after
-its executor finishes, "native profile: <json>", the JSON with sorted keys and no
-spaces, mapping each timed name to {"calls", "inclusive_ns", "exclusive_ns",
-"max_ns"}: inclusive is the elapsed time, exclusive the elapsed time minus timed
-children on the same thread, max the largest exclusive time of one call. A tree
-whose timer attaches the DLL's pool counters adds "pool", {"dispatches", "wakes",
-"empty_wakes"}: their deltas over the /run, not a timed name. Each
-trial records that table as native_profile, beside item_windows, parsed after the
-SSE wait and outside the timed region; the harness does not interpret its keys.
-A trial of a tree with the timer must log exactly one table, waited for up to
-10 s; a tree without it, such as B3, records None. A table in a trial that is
-not profiled (no --profile, or a tree without the timer) fails the run: the
-timer was on where it must be off. --profile refuses --record-noise and needs at
-least one tree with the timer. Every timing carries the timer's overhead, so a
-profile run applies no floors (every throughput and CPU verdict is "unknown",
-and no floor's background load is compared), is never confirmed and is never a
-gate; result.json records "profile": true. Without --profile, CHAINNER_C_PROFILE
-in the harness's environment, whatever its value, refuses the start: it would
-reach both backends and turn the timer on in a gate.
-
-ISA record: each backend's startup line "native isa=<level> (requested <x>, cpu
-<max>)" is recorded in result.json as backends.<label>.native_isa, {"level",
-"requested", "cpu"}, from the first such line of its backend.log; a tree that
-logs none, such as B3, records None.
+The exit status is 1 when a run fails or a case's final verdict is a blocking
+"regression". The verdict, confirmation, floor and per-side rules are in
+native/README.md, Bench.
 """
 
 from __future__ import annotations
@@ -334,7 +94,7 @@ ITEM_WINDOW_VARIABLE = "CHAINNER_C_ITEM_WINDOW"
 # The timer's switch (native_profile.VARIABLE, not importable here); only --profile
 # may set it.
 PROFILE_VARIABLE = "CHAINNER_C_PROFILE"
-# The timer's table, one line per /run (P6).
+# The timer's table, one line per /run.
 NATIVE_PROFILE = re.compile(r"native profile: (\{.*\})$")
 # Names --env-a and --env-b may not set: the variables the harness controls for both
 # sides, and the ones the backend drops or sets for its isolation.
@@ -383,7 +143,7 @@ PROFILE_NOTE = (
     "every timing, so no floors apply, every verdict is unknown, and the run is "
     "never confirmed or used as a gate."
 )
-# Closing paragraphs of confirmation.md; the module docstring explains each rule.
+# Closing paragraphs of confirmation.md; native/README.md, Bench, explains each rule.
 CONFIRMATION_NOTES = (
     (
         "Claims require the Final column: a regression counts if 2 of the 3 runs flag "
@@ -394,8 +154,8 @@ CONFIRMATION_NOTES = (
     (
         "A regression blocks only when 2 of the 3 runs put it beyond the current floor "
         "(the A/A launches of the run's K setting); otherwise it is final as "
-        f'"{bench_stats.WITHIN_CURRENT}", which does not block and goes to the '
-        "stand-in with both floors, named in the warnings of the runs that gave it."
+        f'"{bench_stats.WITHIN_CURRENT}", which does not block and goes to '
+        "review with both floors, named in the warnings of the runs that gave it."
     ),
     (
         "Unconfirmed means inconclusive, not neutral; an unconfirmed regression is not "
@@ -545,7 +305,7 @@ def has_timer(tree: Path) -> bool:
 
 
 def schema_change(a: Backend, b: Backend) -> dict:
-    """How B's /nodes differs from A's (see Schema changes)."""
+    """How B's /nodes differs from A's."""
     common = a.schemas.keys() & b.schemas.keys()
     return {
         "schema_sha256": {"A": a.info["schema_sha256"], "B": b.info["schema_sha256"]},
@@ -568,7 +328,7 @@ def python_version(python: Path) -> tuple[int, int]:
 
 
 def cross_stack_record(a: dict, b: dict) -> dict:
-    """A case's comparison of A's and B's first trials, decoded (see Cross-stack runs).
+    """A case's comparison of A's and B's first trials, decoded.
 
     a and b are the two sides' trial records. A video's "files" entry is already
     its decoded-frame snapshot; an image trial's PNGs are read back from its
@@ -1065,7 +825,7 @@ def compare(
     refuses either. When a is make_oracle.py's tree, oracle_side guards it and
     python_a defaults to the provisioned runtime. png_compare is the
     bench_oracle.PNG_MODES entry that output PNGs must match under. cross_stack
-    makes this a cross-stack run (see Cross-stack runs): each trial must equal
+    makes this a cross-stack run: each trial must equal
     its own side's first trial, and A against B is recorded per case by
     cross_stack_record, never failed; it refuses record_noise and two
     interpreters that python_version() finds to be one Python version.
@@ -1353,7 +1113,7 @@ def compare(
                         f"+{100 * math.expm1(floors[case]):.1f}% (median background "
                         f"load {'n/a' if load is None else f'{load:.1f}%'}, machine "
                         f"busy before {busy:.1f}%); re-basing the shared floors is "
-                        "the stand-in's decision",
+                        "a reviewer's decision",
                     )
             cpu_entries = merge_floors(
                 cpu_entries,
@@ -1380,7 +1140,7 @@ def compare(
                     f"{case}: regression {change:+.1f}% is beyond the shared floor "
                     f"{bench_stats.bounds(floors[case])} but within the current floor "
                     f"{bench_stats.bounds(current[case])} of the {setting} A/A "
-                    "launches; it does not block and goes to the stand-in",
+                    "launches; it does not block and goes to review",
                 )
         result["cpu_verdicts"] = {
             case: bench_stats.verdict(item["cpu"], cpu_floors.get(case))
@@ -1464,7 +1224,7 @@ def compare(
         if result["success"]:
             # A successful run's outputs and fixture copies (about 2 GB for 13 cases)
             # were compared during the run; each trial's events.json and request.json
-            # are evidence (sp4b-verdict.py reads them) and stay. A failed run keeps
+            # are evidence and stay. A failed run keeps
             # everything for diagnosis.
             removed = 0
             try:
@@ -1707,7 +1467,8 @@ def confirm(
     return block["final"]
 
 
-def main() -> None:
+def main() -> int:
+    """The exit status is 1 when a case's final verdict is a blocking regression."""
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -1825,21 +1586,23 @@ def main() -> None:
         cross_stack=args.cross_stack,
         allow_schema_change=args.allow_schema_change,
     )
-    if not (args.record_noise or args.profile):
-        confirm(
-            first,
-            a,
-            b,
-            args.repeats,
-            env_a,
-            env_b,
-            python_a,
-            python_b,
-            args.png_compare,
-            args.cross_stack,
-            args.allow_schema_change,
-        )
+    if args.record_noise or args.profile:
+        return 0
+    final = confirm(
+        first,
+        a,
+        b,
+        args.repeats,
+        env_a,
+        env_b,
+        python_a,
+        python_b,
+        args.png_compare,
+        args.cross_stack,
+        args.allow_schema_change,
+    )
+    return 1 if "regression" in final.values() else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

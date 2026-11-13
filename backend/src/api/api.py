@@ -118,16 +118,23 @@ class NodeGroup:
         keywords: list[str] | None = None,
         generated: bool = False,
         temporal_context: tuple[int, int] | None = None,
+        temporal_if: tuple[int, Callable[[object], bool]] | None = None,
     ):
         """Registers a node. `keywords` are more words node search finds it by (a
         generated node's method names). `generated`: the node is made at run time,
         several per file, so the naming check (one node per file named after it) does
         not apply. `temporal_context`: the (before, after) neighbours the node needs in
-        a generator loop (NodeData.temporal_context)."""
+        a generator loop (NodeData.temporal_context). `temporal_if`: (input id,
+        predicate), the context applies only when the predicate is true for that
+        input's value (NodeData.temporal_if)."""
         if temporal_context is not None:
             assert len(temporal_context) == 2 and all(
                 isinstance(count, int) and count >= 0 for count in temporal_context
             ), f"{schema_id}: temporal_context is two counts >= 0"
+        if temporal_if is not None:
+            assert temporal_context is not None, (
+                f"{schema_id}: temporal_if gates a temporal_context"
+            )
         if not isinstance(description, str):
             description = "\n\n".join(description)
 
@@ -176,6 +183,10 @@ class NodeGroup:
         def inner_wrapper(wrapped_func: T) -> T:
             p_inputs, group_layout = _process_inputs(inputs)
             p_outputs = _process_outputs(outputs)
+            if temporal_if is not None:
+                assert any(i.id == temporal_if[0] for i in p_inputs), (
+                    f"{schema_id}: temporal_if names input {temporal_if[0]}, which it has not"
+                )
 
             original_fn = wrapped_func
 
@@ -204,6 +215,9 @@ class NodeGroup:
                 features=features,
                 run=wrapped_func,
                 temporal_context=temporal_context,
+                temporal_if=None
+                if temporal_if is None
+                else (InputId(temporal_if[0]), temporal_if[1]),
             )
 
             run_check(

@@ -22,7 +22,7 @@ adds to these procedures is in section 11.
    must pass unchanged.
 7. A changed lock needs a new package (a refresh refuses another stack): `package_port.py --destination out\<child>`.
 8. `make_oracle.py`, then the oracle verifiers and the parity bench (section 10).
-9. Update the stack lines in the root `README.md` and the versions in `ARCHITECTURE.md` section 7.
+9. Update the stack lines in `BUILDING.md` (The tested Python stack) and the versions in `ARCHITECTURE.md` section 7.
 
 ## 2. Upgrade CPython
 
@@ -150,7 +150,7 @@ packaging (section 4, item 6; README Build). VOSR's modules, engine caches, host
    `drft_trt_plugins.dll` builds from the same roots in the same configure (a failure of its target fails the
    build), so this check covers it; a package without it has no DRFT TensorRT route.
 6. A Windows release with the AMD GPU parts builds with `Build.ps1 -RocmRoot <ROCm 10.0 SDK> -MigraphxRoot <MIGraphX
-   2.16 install>` as well (`BUILDING.md`, AMD GPUs; the MIGraphX whose DLLs the published Windows `onnxruntime-migraphx`
+   2.17 install>` as well (`BUILDING.md`, AMD GPUs; the MIGraphX whose DLLs the published Windows `onnxruntime-migraphx`
    wheel bundles): `nodes\impl\migraphx\_chainner_migraphx.pyd`, `drft_migx_ops.dll`, `dual_migx_ops.dll` and
    `vosr2_migx_ops.dll` ship
    when built and are never required (`package_files.py`), and the other binaries keep the SHA-256 of a build without
@@ -160,8 +160,8 @@ packaging (section 4, item 6; README Build). VOSR's modules, engine caches, host
 
 1. Nothing private: the git-ignored `native/reports/`, `docs/superpowers/`, `native/local/`, `native/runtime/` and
    `out/` stay local (`git status --ignored`); grep the tree for personal paths and names before publishing.
-2. One commit on upstream `d56e507f`, for example `git commit-tree "HEAD^{tree}" -p d56e507f -m "<message>"`, and a
-   branch at the printed hash.
+2. One commit on the previous release's commit (the first release's parent was upstream `d56e507f`), for example
+   `git commit-tree "HEAD^{tree}" -p <previous release> -m "<message>"`, and a branch and tag at the printed hash.
 3. `git diff --check`, LF only (`.gitattributes`), hosted CI green (`.github/workflows/lint-backend.yml`).
 4. Optionally attach the release zip (section 8, step 3).
 

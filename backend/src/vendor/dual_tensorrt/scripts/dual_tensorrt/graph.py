@@ -43,9 +43,17 @@ def phase_weight(w: np.ndarray, scale: int, grandchildren: bool = False) -> np.n
     return result
 
 
+# The retrieval neighborhood on the coarse grid (the source's pack_qk)
+NEIGHBORHOOD = 48
+
+
 class Graph:
-    def __init__(self, arch, spec):
+    def __init__(self, arch, spec, local_na=False, retrieval_na=False, row_sums=False):
+        """local_na, retrieval_na: the source's local and retrieval neighborhoods (the
+        model's flags of those names, spec.LOCAL and spec.RETRIEVAL); row_sums: the
+        router means of NHWC trunks as DualRowSum. All off: the earlier graph."""
         self.arch, self.spec = arch, spec
+        self.local_na, self.retrieval_na, self.row_sums = local_na, retrieval_na, row_sums
         channels = spec.channels
         self.height, self.width = spec.trunk
         self.dynamic_sites = 0
@@ -53,6 +61,10 @@ class Graph:
         self.tag, self.counter = "", 0
         self.mha_count = 0
         self.na_sites = 0
+        self.barrier_sites = 0
+        self.local_sites = 0
+        self.retrieval_sites = 0
+        self.row_sum_sites = 0
 
     def name(self, label):
         self.counter += 1
@@ -193,6 +205,7 @@ class Graph:
 
     def mha(self, q, k, v, bias=None, barrier=False):
         if barrier:
+            self.barrier_sites += 1
             q = self.plugin("DualAttentionBarrier_TRT", [q])
         score = self.op("MatMul", [q, self.trans(k, [0, 1, 3, 2])])
         if bias is not None:
@@ -204,6 +217,8 @@ class Graph:
         """Spatial attention: the source's pre_gate_core, then its gate and projection."""
         if mod.context_na and self.neighborhoods(mod, size):
             out = self.neighborhood(x, mod)
+        elif self.local_na and mod.local_na and self.neighborhoods(mod, size):
+            out = self.local_neighborhood(x, mod)
         else:
             out = self.windows(x, mod, size)
         gate = self.op(
@@ -236,6 +251,18 @@ class Graph:
                 self.const(bk, T.BFLOAT16),
             ],
             window=mod.window,
+        )
+
+    def local_neighborhood(self, x, mod):
+        """_local_na_core as one plugin node: QKV projected once over the [1,H,W,C] trunk,
+        then DualLocalNA(qkv, table) -> BF16 [1,H,W,C] (the operator:
+        cpu_graph_oracle.local_neighborhood_attention). The table is the layer's dense
+        relative position bias, FP32 [C/32, (2*16-1)^2]."""
+        self.local_sites += 1
+        table = mod.relative_bias.detach().float().T.contiguous()
+        return self.plugin(
+            f"DualLocalNA_{self.spec.plugin_key}_TRT",
+            [self.pw(x, mod.qkv), self.const(table, T.FLOAT)],
         )
 
     def windows(self, x, mod, size):
@@ -372,6 +399,10 @@ class Graph:
         )
 
     def retrieval_descriptors(self, q, k):
+        # The source's pack_qk with retrieval_na: neighborhoods once the coarse grid
+        # exceeds 48 on an axis; a smaller grid keeps the 96 px blocks.
+        if self.retrieval_na and max(self.height, self.width) // 2 > NEIGHBORHOOD:
+            return ("na", q, k)
         layout = self.arch.block_layout(self.height, self.width, 96)
         classes = []
         for _, items in self.arch.grouped_layout(layout):
@@ -395,6 +426,8 @@ class Graph:
         return layout, classes
 
     def retrieve(self, packed, v, log_tau):
+        if packed[0] == "na":
+            return self.retrieve_neighborhoods(packed[1], packed[2], v, log_tau)
         layout, classes = packed
         outputs = [None] * len(layout)
         for items, q, k, n, count in classes:
@@ -445,6 +478,32 @@ class Graph:
             rows.append(self.op("Concat", row, axis=2))
         return self.op("Concat", rows, axis=1)
 
+    def retrieve_neighborhoods(self, q, k, v, log_tau):
+        """attend_packed's neighborhoods as one plugin node DualXR(q, k, v) -> BF16
+        [1,H,W,C] (the operator: cpu_graph_oracle.retrieval_attention): the query scaled
+        by the head's tau, then by log(Ky * Kx) / (log(1024) * sqrt(32)), both in BF16
+        as the source does, with K = min(48, coarse length) per axis."""
+        self.retrieval_sites += 1
+        ky, kx = self.retrieval_window(k)
+        tau = (
+            log_tau.exp().clamp(0.1, 10).reshape(1, 1, 1, -1).repeat_interleave(32, -1)
+        )
+        q = self.op("Mul", [q, self.const(tau, T.BFLOAT16)])
+        q = self.op("Mul", [q, self.retrieval_scale(ky, kx)])
+        return self.plugin(
+            f"DualXR_{self.spec.plugin_key}_TRT", [q, k, v], neighbourhood=NEIGHBORHOOD
+        )
+
+    def retrieval_window(self, k):
+        """K = min(48, coarse length) per axis (k's grid)."""
+        hc, wc = self.height // 2, self.width // 2
+        return min(NEIGHBORHOOD, hc), min(NEIGHBORHOOD, wc)
+
+    def retrieval_scale(self, ky, kx):
+        return self.const(
+            math.log(ky * kx) / (math.log(1024) * math.sqrt(32)), T.BFLOAT16
+        )
+
     def downsample(self, shifted, model):
         taps = model.xr.down_taps.to(torch.bfloat16).float()
         x = self.cast(self.cast(shifted, T.BFLOAT16), T.FLOAT)
@@ -467,16 +526,32 @@ class Graph:
             x = self.cast(self.cast(x, T.BFLOAT16), T.FLOAT)
         return self.cast(x, T.BFLOAT16)
 
+    def router_row_mean(self, x):
+        """The router's global FP32 mean [1, C] of an NHWC trunk: DualRowSum's FP32 row
+        sums [1, H, C], summed and divided by H * W."""
+        self.row_sum_sites += 1
+        rows = self.plugin(f"DualRowSum_{self.spec.plugin_key}_TRT", [x])
+        total = self.op("ReduceSum", [rows, self.const([1], T.INT64)], keepdims=0)
+        return self.op("Mul", [total, self.inverse_positions(x)])
+
+    def inverse_positions(self, x):
+        """1 / (H * W) of an NHWC trunk, FP32."""
+        return self.const(1.0 / (self.height * self.width), T.FLOAT)
+
     def dynamic_conv(self, x, mod, nhwc):
         self.dynamic_sites += 1
-        if nhwc:
-            x = self.trans(x, [0, 3, 1, 2])
         k = mod.experts.shape[0]
-        pooled = self.op(
-            "ReduceMean",
-            [self.cast(x, T.FLOAT), self.const([2, 3], T.INT64)],
-            keepdims=0,
-        )
+        if nhwc and self.row_sums:
+            pooled = self.router_row_mean(x)
+            x = self.trans(x, [0, 3, 1, 2])
+        else:
+            if nhwc:
+                x = self.trans(x, [0, 3, 1, 2])
+            pooled = self.op(
+                "ReduceMean",
+                [self.cast(x, T.FLOAT), self.const([2, 3], T.INT64)],
+                keepdims=0,
+            )
         normalized = self.op(
             "LayerNormalization",
             [

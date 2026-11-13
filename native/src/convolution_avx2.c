@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "convolution_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* The spatial convolution's AVX2 unit (/arch:AVX2, spec 4.3): no export, reached
+/* The spatial convolution's AVX2 unit (/arch:AVX2): no export, reached
  * only through convolution_range's dispatch on the call's ISA level (no OpenCV
  * source code incorporated). Called only for the matching AVX2/FMA OpenCV CPU
  * dispatch, selected by the checked bridge (fused_lanes 8): every lane of a group

@@ -26,7 +26,10 @@ from .. import io_group
 @io_group.register(
     schema_id="chainner:onnx:save_model",
     name="Save Model",
-    description="""Save ONNX model to file (.onnx).""",
+    description=[
+        "Save ONNX model to file (.onnx).",
+        "An RDUAL model's ONNX from Convert To ONNX (its four TensorRT parts for one frame size) is saved as one file, compressed or not, that only chaiNNer-C reads (Load Model, then Build Engine).",
+    ],
     icon="MdSave",
     inputs=[
         OnnxModelInput(),

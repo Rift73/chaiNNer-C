@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "statistics_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* np.min/np.max's 8-lane reduce (statistics_ops.c reduce_contiguous), AVX2 unit (/arch:AVX2, spec 4.3): no export,
+/* np.min/np.max's 8-lane reduce (statistics_ops.c reduce_contiguous), AVX2 unit (/arch:AVX2): no export,
  * reached only through reduce_contiguous's dispatch on the ISA level. Each lane runs the scalar extreme's sequence:
  * vmaxps/vminps (the second operand on ties and on a NaN second operand), then a NaN first operand put back by a
  * blend, so every lane holds the scalar accumulator's bits. */

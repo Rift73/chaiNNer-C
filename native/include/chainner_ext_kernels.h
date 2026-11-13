@@ -43,7 +43,7 @@ CN_EXT_KERNEL cn_status cn_distance_esdf_ex(const float *source, float *out,
 CN_EXT_KERNEL cn_status cn_pixel_art_f32(const float *src, float *dst,
     size_t height, size_t width, size_t channels, int mode) CN_EXT_NOEXCEPT;
 /* neighborhood_ops.c. compatible, on the palette entries: optional, written 1 when given
-   (every input dithers since Consult 8 D-5; kept for the B3 goldens, Consult 10 D-8). */
+   (every input dithers; kept for the B3 goldens). */
 CN_EXT_KERNEL cn_status cn_neighborhood_dither(const float *src, float *out,
     size_t h, size_t w, size_t c, uint32_t colors, int mode, size_t map_size,
     int algorithm, const float *palette, size_t palette_count, int *compatible);

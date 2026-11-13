@@ -78,6 +78,13 @@ inline void nonempty(const Image &image)
         throw NodeError("ValueError", "Expected a nonempty two- or three-dimensional image");
 }
 
+/* The bridges' shape checks that name the shape (native_adjustments, native_filters, native_neighborhood, ...): a
+ * nonempty image. */
+inline void shaped(const Image &image)
+{
+    if (image.height == 0 || image.width == 0) throw NodeError("ValueError", "Invalid image shape " + shape_text(image));
+}
+
 /* linear_light.linearize of a nonempty image: a copy whose colour channels went through the LightTransfer value's
  * curve to linear light (alpha, a fourth channel, as is). */
 inline Image linearize(const Image &image, int64_t transfer)
@@ -276,9 +283,8 @@ inline double python_pow(double base, double exponent)
  * scale and threshold as c_floats): each operand nonempty, both of one shape. */
 inline Image analysis_binary(const Image &image, const Image &other, int op, double scale = 0, double threshold = 0)
 {
-    for (const Image *operand : {&image, &other})
-        if (operand->height == 0 || operand->width == 0)
-            throw NodeError("ValueError", "Invalid image shape " + shape_text(*operand));
+    shaped(image);
+    shaped(other);
     if (image.height != other.height || image.width != other.width || image.channels != other.channels)
         throw NodeError("ValueError", "Native image operands must have the same shape");
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);

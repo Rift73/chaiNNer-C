@@ -48,13 +48,10 @@ export const useValidity = (id: string, schema: NodeSchema, inputData: InputData
         }
     }, [alwaysValid, id, schema, inputData, edgeChanges, getEdges, functionInstance, chainLineage]);
 
-    // The problem with `checkNodeValidity` is that is must be computed with a delay due to
-    // `getEdges`. This means that the full validity we return here might be outdated. This is a
-    // problem when other aspects of the problem rely on the fact that that valid nodes can be
-    // executed. To mitigate (but unfortunately not fully fix) this problem, we also synchronously
-    // compute an approximate conservative validity. This second validity will only be invalid, if
-    // the node is guaranteed to be invalid, but it might be valid even though the node is
-    // actually invalid.
+    // `checkNodeValidity` runs after a delay (it needs `getEdges`), so the full validity can be
+    // stale, while other code expects a valid node to be runnable. A conservative validity is also
+    // computed at once: invalid only when the node is surely invalid. This narrows the gap, it does
+    // not close it.
     const validity =
         fullValidity.isValid && !guaranteedMissingInputs.isValid
             ? guaranteedMissingInputs

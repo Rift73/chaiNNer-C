@@ -159,8 +159,7 @@ def mean_std_transfer(
             transfer = cvt_color(transfer, cv2.COLOR_LAB2BGR)
         return transfer
 
-    # Original public-helper compatibility outside the float32 image/mask
-    # node contract; this NumPy/OpenCV path is not counted as converted C.
+    # NumPy path for inputs outside the node's float32 image and mask.
     # Compute color statistics for the source and target images
     (
         a_mean_tar,

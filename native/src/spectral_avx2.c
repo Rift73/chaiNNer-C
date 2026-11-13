@@ -1,9 +1,9 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "spectral_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* The spectral filter's packed-spectrum product, AVX2 unit (/arch:AVX2, spec 4.3): no
- * export, reached only through spectrum_range's dispatch on the call's ISA level (SP4b
- * Task 8). Each value is multiply_pair's: its products, difference and sum in its order
+/* The spectral filter's packed-spectrum product, AVX2 unit (/arch:AVX2): no
+ * export, reached only through spectrum_range's dispatch on the call's ISA level.
+ * Each value is multiply_pair's: its products, difference and sum in its order
  * (vaddsubpd subtracts in the real lanes and adds in the imaginary ones; no fused
  * multiply-add). Where two NaN inputs meet in a pair, which payload survives may differ
  * from B3's commuted mulsd/addsd (a don't-care: NaN positions and every other bit match).

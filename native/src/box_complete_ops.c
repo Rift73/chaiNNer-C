@@ -252,10 +252,10 @@ CN_EXPORT cn_status cn_box_mean_u8(const uint8_t *src, uint8_t *dst,
 
 /* Float32 separable filters (OpenCV 5.0.0 filter.simd.hpp: small symmetric rows,
  * ordinary larger rows, and symmetric columns; each output's sequence in
- * separable_shared.h) in row tiles (SP4b D9). A tile is a band of output rows by a
+ * separable_shared.h) in row tiles. A tile is a band of output rows by a
  * block of row columns: it writes the horizontal outputs of the rows its band's
  * vertical taps read into a stack buffer of SEPARABLE_TILE_FLOATS floats, then
- * its vertical outputs from the buffer. Constants from Task 3's geometry sweep
+ * its vertical outputs from the buffer. Constants from a geometry sweep
  * (gaussian and parallel-branches at K = 1); they never depend on the machine or
  * the ISA level. */
 #define SEPARABLE_TILE_FLOATS 32768 /* 128 KiB of the tile function's stack */
@@ -347,7 +347,7 @@ static void reflected_table(int32_t *table, size_t length, size_t radius, int bo
     for (i = 0; i < length; ++i) table[radius + i] = (int32_t)i;
 }
 
-/* D9's geometry: band rows B = min(height, max(B0, 4 ry)), buffer rows
+/* The tiles' geometry: band rows B = min(height, max(B0, 4 ry)), buffer rows
  * R = min(height, B + 2 ry), block columns W = min(16 ceil(row_width / 16),
  * 16 floor(SEPARABLE_TILE_FLOATS / (16 R))). Sets band, block and blocks and
  * returns the tile count, or 0 when R > SEPARABLE_TILE_FLOATS / 16 (the

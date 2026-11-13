@@ -85,7 +85,8 @@ static int compare_key(const void *a, const void *b)
     return x->index < y->index ? -1 : x->index > y->index;
 }
 
-/* extract_unique_const's key: numeric.h's for 1, 3 and 4 channels; two channels sum. */ float palette_key(const float *color, size_t channels)
+/* extract_unique_const's key: numeric.h's for 1, 3 and 4 channels; two channels sum. */
+static float palette_key(const float *color, size_t channels)
 {
     return channels == 2 ? 0.0f + color[0] + color[1] : cn_palette_key(color, channels);
 }
@@ -207,7 +208,7 @@ static const void *palette_plan(palette_object *palette, size_t channels)
      * whose bulk load unwraps partial_cmp: any NaN coordinate panics (aabb.rs:217). One
      * channel keeps the corrected search (upstream: "Point dimension too small"). Any
      * other nonfinite colour or pixel, which the R-tree's traversal decides, takes the
-     * sub-300 linear rule (Consult 8 D-5, in the plan). */
+     * sub-300 linear rule. */
     if (nan && channels > 1 && palette->count >= 300) {
         free(colors);
         chn_panic("called `Option::unwrap()` on a `None` value");

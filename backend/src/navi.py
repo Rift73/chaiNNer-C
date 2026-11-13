@@ -16,16 +16,6 @@ def to_number_json(n: int | float) -> NumberJson:
     return n
 
 
-def from_number_json(n: NumberJson) -> int | float:
-    if n == "NaN":
-        return float("nan")
-    if n == "inf":
-        return float("inf")
-    if n == "-inf":
-        return float("-inf")
-    return n
-
-
 ExpressionJson = Union[
     str,
     int,

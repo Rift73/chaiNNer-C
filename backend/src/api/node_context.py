@@ -171,6 +171,15 @@ class IterationView(ABC):
         return False
 
     @property
+    def unread(self) -> bool:
+        """
+        True when nothing reads the node's output for this item: a context item (see
+        `context`) on which no node that runs for it takes this node's output. The node
+        then only needs to update its state, and may return any value its outputs accept.
+        """
+        return False
+
+    @property
     @abstractmethod
     def source(self) -> str:
         """

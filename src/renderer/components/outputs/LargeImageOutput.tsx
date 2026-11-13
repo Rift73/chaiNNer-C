@@ -1,9 +1,20 @@
 /* eslint-disable no-nested-ternary */
 import { ViewOffIcon, WarningIcon } from '@chakra-ui/icons';
-import { Box, Center, HStack, Image, Spinner, Text } from '@chakra-ui/react';
+import {
+    Box,
+    Center,
+    HStack,
+    IconButton,
+    Image,
+    Spinner,
+    Text,
+    Tooltip,
+    useDisclosure,
+} from '@chakra-ui/react';
 import { Resizable } from 're-resizable';
 import { CSSProperties, memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { MdOpenInFull } from 'react-icons/md';
 import { useContextSelector } from 'use-context-selector';
 import { Size } from '../../../common/common-types';
 import { GlobalVolatileContext } from '../../contexts/GlobalNodeState';
@@ -11,6 +22,7 @@ import { useDevicePixelRatio } from '../../hooks/useDevicePixelRatio';
 import { useMemoArray } from '../../hooks/useMemo';
 import { useSettings } from '../../hooks/useSettings';
 import { DragHandleSVG } from '../CustomIcons';
+import { MaximizedImage } from './MaximizedImage';
 import { OutputProps } from './props';
 
 const IMAGE_PREVIEW_SIZE = 216;
@@ -38,8 +50,9 @@ const pickImage = (previews: readonly PreviewImage[], realWidth: number): Previe
 };
 
 export const LargeImageOutput = memo(
-    ({ output, useOutputData, animated, size = DEFAULT_SIZE, setSize }: OutputProps) => {
+    ({ output, useOutputData, animated, size = DEFAULT_SIZE, setSize, seekBar }: OutputProps) => {
         const { t } = useTranslation();
+        const maximized = useDisclosure();
 
         const [currentSize, setCurrentSize] = useState<Size>();
 
@@ -53,6 +66,17 @@ export const LargeImageOutput = memo(
         const fontColor = 'var(--node-image-preview-color)';
 
         const previewImage = last ? pickImage(last.previews, realWidth) : null;
+        // the maximized view shows the largest preview the node sent
+        const largestImage = last ? pickImage(last.previews, Infinity) : null;
+        const imageAlt = t(
+            'outputs.largeImage.imagePreviewFailed',
+            'Image preview failed to load, probably unsupported file type.'
+        );
+        const imageBackground =
+            last?.channels === 4
+                ? // https://stackoverflow.com/a/65129916/7595472
+                  'repeating-conic-gradient(#CDCDCD 0% 25%, #FFFFFF 0% 50%) 50% / 20px 20px'
+                : '';
 
         const { snapToGrid, snapToGridAmount } = useSettings();
 
@@ -209,16 +233,8 @@ export const LargeImageOutput = memo(
                                     w="full"
                                 >
                                     <Image
-                                        alt={t(
-                                            'outputs.largeImage.imagePreviewFailed',
-                                            'Image preview failed to load, probably unsupported file type.'
-                                        )}
-                                        background={
-                                            last.channels === 4
-                                                ? // https://stackoverflow.com/a/65129916/7595472
-                                                  'repeating-conic-gradient(#CDCDCD 0% 25%, #FFFFFF 0% 50%) 50% / 20px 20px'
-                                                : ''
-                                        }
+                                        alt={imageAlt}
+                                        background={imageBackground}
                                         draggable={false}
                                         src={previewImage.url}
                                         style={imageStyle}
@@ -231,6 +247,31 @@ export const LargeImageOutput = memo(
                                                     : 'auto',
                                         }}
                                     />
+                                    <Tooltip
+                                        closeOnClick
+                                        hasArrow
+                                        borderRadius={8}
+                                        label={t('outputs.largeImage.maximize', 'Maximize')}
+                                        openDelay={500}
+                                    >
+                                        <IconButton
+                                            aria-label={t(
+                                                'outputs.largeImage.maximize',
+                                                'Maximize'
+                                            )}
+                                            bgColor={imgBgColor}
+                                            className="nodrag"
+                                            icon={<MdOpenInFull />}
+                                            opacity={0.75}
+                                            position="absolute"
+                                            right={1}
+                                            size="xs"
+                                            top={1}
+                                            variant="ghost"
+                                            zIndex={100}
+                                            onClick={maximized.onOpen}
+                                        />
+                                    </Tooltip>
                                 </Center>
                             ) : animated ? (
                                 // 10 steps per second, as the node's running spinner: each
@@ -256,6 +297,16 @@ export const LargeImageOutput = memo(
                         </Center>
                     </Center>
                 </Resizable>
+                {largestImage && (
+                    <MaximizedImage
+                        alt={imageAlt}
+                        background={imageBackground}
+                        isOpen={maximized.isOpen}
+                        seekBar={seekBar}
+                        url={largestImage.url}
+                        onClose={maximized.onClose}
+                    />
+                )}
             </Center>
         );
     }

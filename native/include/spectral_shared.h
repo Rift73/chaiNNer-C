@@ -1,5 +1,5 @@
-/* The spectral filter's packed-spectrum product, moved from spectral_filter_ops.c
- * (SP4b Task 8). Shared by that baseline unit and the /arch:AVX2 unit spectral_avx2.c:
+/* The spectral filter's packed-spectrum product, moved from spectral_filter_ops.c.
+ * Shared by that baseline unit and the /arch:AVX2 unit spectral_avx2.c:
  * multiply_pair, a static helper compiled into each including unit, never inline, so
  * the linker cannot fold a VEX copy into baseline callers. Both includers use it
  * (C4505): spectral_filter_ops.c for the packed columns and, below the AVX2 level,

@@ -1,7 +1,7 @@
 """PyTorch model calls of fixed shapes, replayed as CUDA graphs.
 
 A DiT prediction issues about 3,400 small GPU operations from Python, and issuing them
-took 58 of its 60 ms (RTX 5090, 2026-11-08). A graph holds the same kernels, so the same
+took 58 of its 60 ms (RTX 5090). A graph holds the same kernels, so the same
 bits, and starts them all with one call.
 """
 

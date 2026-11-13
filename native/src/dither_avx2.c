@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "dither_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* The palette dither's AVX2 unit (/arch:AVX2, spec 4.3; SP4b D12): no export, reached
+/* The palette dither's AVX2 unit (/arch:AVX2): no export, reached
  * only through nearest_palette's linear branch when cn_neighborhood_palette_apply read
  * ISA level avx2 or above for the call and built the channel-major palette (job->soa). */
 #include "dither_shared.h"
@@ -10,7 +10,6 @@
 #ifdef _MSC_VER
 #include <intrin.h>
 #endif
-#include <math.h>
 
 #define DITHER_GROUPS (DITHER_SOA_ENTRIES / 8)
 

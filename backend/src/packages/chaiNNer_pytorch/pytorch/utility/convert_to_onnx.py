@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import math
+import tempfile
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from threading import Lock
 from weakref import WeakKeyDictionary
 
@@ -15,6 +17,7 @@ from spandrel import ImageModelDescriptor
 
 from api import Aborted, NodeContext, NodeId
 from nodes.groups import Condition, if_group
+from nodes.impl.onnx import rdual_bundle
 from nodes.impl.onnx.load import load_onnx_model, with_recorded_arch
 from nodes.impl.onnx.model import (
     FP16_ARCHS,
@@ -135,10 +138,13 @@ def _keep_export(
         _exports.setdefault(model, {})[node] = key, export
 
 
-IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" }')
-# Shown until the model is known to be DUAL
+# DUAL and RDUAL convert to TensorRT-only ONNX, of the TensorRT Shape inputs
+IS_DUAL = Condition.type(0, 'PyTorchModel { arch: "DUAL" | "RDUAL" }')
+# Shown until the model is known to be DUAL or RDUAL
 NOT_DUAL = Condition.type(
-    0, 'PyTorchModel { arch: invStrSet("DUAL") }', if_not_connected=True
+    0,
+    'PyTorchModel { arch: invStrSet("DUAL") & invStrSet("RDUAL") }',
+    if_not_connected=True,
 )
 # Every architecture has one automatic precision, so Data Type is hidden for any model,
 # known or not, and a value a saved chain holds is ignored.
@@ -160,6 +166,7 @@ FP16_ARCH_NAMES = ", ".join(
         "The ONNX records its architecture and precision, so Build Engine and Build Program build it in that precision with no Precision to pick, also after it is saved and loaded again.",
         "With PyTorch's FP16 setting on, Load Model keeps a model in FP16; the conversion reads its file again for its FP32 weights (if the file changed since, it exports the FP16 weights, and the log says so).",
         "A legacy DRFT model (LayerNorm, not i-LN) converts to a TensorRT-only ONNX with chaiNNer-C's DRFT TensorRT plugins, which ONNX Runtime cannot run: its precision is fixed and mixed (FP16 with BF16 attention, FP32 input and output), its opset is 20, it takes every input size from 64 px (twice the window for larger windows), and Opset and Verify do not apply to it.",
+        "An RDUAL model (a video model) converts to TensorRT-only ONNX parts for one frame size, with TensorRT Shape Fixed at the video's height and width (any size; Dynamic is refused). The four parts and their manifest are one ONNX model, which Build Engine builds into one engine set and Save Model writes as one file that only chaiNNer-C reads.",
         "It is recommended to save converted models as a separate step, then load the converted models instead of converting them every time you run the chain.",
         "Note: Converted models are not guaranteed to work with other programs that support ONNX models. This is for a variety of reasons and cannot be changed.",
     ],
@@ -191,7 +198,7 @@ FP16_ARCH_NAMES = ", ".join(
                 hint=True,
             ),
             BoolInput("Verify", default=False).with_docs(
-                "An FP16 export is always verified, with this on or off, against the model in FP32, kept in FP16 between its layers as a GPU keeps it: no NaN or infinite values; on a smooth image at two sizes and on flat black and white, a root mean square difference of at most 0.005 and no sample off by more than 0.02 (about five 8-bit steps); on a drawn and a textured image, a root mean square difference of at most 0.015. This guards against one odd model on the CPU and is no proof of what a GPU does. PyTorch's own FP16 is no reference: it and ONNX Runtime round at different places.",
+                "An FP16 export is always verified, with this on or off, against the model in FP32, kept in FP16 between its layers as a GPU keeps it: no NaN or infinite values; on a smooth image at two sizes, on flat black and white and on a gradient, a root mean square difference of at most 0.005; on a drawn and a textured image, a root mean square difference of at most 0.015. This guards against one odd model on the CPU and is no proof of what a GPU does. PyTorch's own FP16 is no reference: it and ONNX Runtime round at different places.",
                 "An export in FP32 is compared on those images too, and with this off the node warns if it does not match the model. With this on, it also runs on noise, must stay within 0.001 of the model, and the node refuses it if not.",
                 hint=True,
             ),
@@ -217,16 +224,18 @@ FP16_ARCH_NAMES = ", ".join(
                 " at that size, padding smaller images. DUAL pools over its whole input,"
                 " so tiles and padding can change its output slightly against one whole"
                 " image.",
+                "RDUAL takes Fixed only, at the video's frame size (any height and"
+                " width): its engines are built for one size.",
                 hint=True,
             ),
         ),
         if_group(IS_DUAL & Condition.enum(6, DualShape.FIXED))(
             NumberInput("TensorRT Height", default=512, min=4, step=4, unit="px")
             .with_id(4)
-            .with_docs("The fixed input height (a multiple of 4)."),
+            .with_docs("The fixed input height (for DUAL a multiple of 4)."),
             NumberInput("TensorRT Width", default=512, min=4, step=4, unit="px")
             .with_id(5)
-            .with_docs("The fixed input width (a multiple of 4)."),
+            .with_docs("The fixed input width (for DUAL a multiple of 4)."),
         ),
     ],
     outputs=[
@@ -242,6 +251,7 @@ FP16_ARCH_NAMES = ", ".join(
             f"""
                 match Input0.arch {{
                     "DUAL" => "mixed",
+                    "RDUAL" => "mixed",
                     "DRFT" => "mixed" | "fp32",
                     {FP16_ARCHS_NAVI} => "fp16" | "fp32",
                     _ => "fp32",
@@ -254,6 +264,7 @@ FP16_ARCH_NAMES = ", ".join(
                 let opset = Input2;
                 match Input0.arch {
                     "DUAL" => "opset20",
+                    "RDUAL" => "opset20",
                     _ => match opset {
                         Opset::Opset14 => "opset14",
                         Opset::Opset15 => "opset15",
@@ -307,6 +318,9 @@ def convert_to_onnx_node(
         _keep_export(model, context.node_id, key, _Export(result, verified=False))
         return result
 
+    if model.architecture.id == "RDUAL":
+        return _rdual_onnx(context, model, dual_shape, (dual_height, dual_width))
+
     if drft_export.is_legacy_drft(model):
         key = ("DRFT", model.dtype)
         kept = _kept_export(model, context.node_id, key)
@@ -323,7 +337,7 @@ def convert_to_onnx_node(
         return result
 
     assert is_onnx_supported(model), (
-        f"{model.architecture} is not supported for ONNX conversion at this time."
+        f"{model.architecture.name} is not supported for ONNX conversion at this time."
     )
 
     # One automatic precision (FP16_ARCHS), whatever a saved chain's hidden Data Type holds and
@@ -416,6 +430,44 @@ def convert_to_onnx_node(
     return result
 
 
+def _rdual_onnx(
+    context: NodeContext,
+    model: ImageModelDescriptor,
+    shape: DualShape,
+    size: tuple[int, int],
+) -> tuple[OnnxGeneric, str, str]:
+    """RDUAL's ONNX bundle (rdual_bundle.py) of rdual_export.py's parts for frames of
+    `size` (height, width); the flow part is traced on the settings' GPU if there is one."""
+    # The model's spandrel holds RDUAL, which rdual_export imports.
+    from nodes.impl.tensorrt import rdual, rdual_export
+
+    if shape != DualShape.FIXED:
+        raise ValueError(
+            "RDUAL converts to ONNX for one frame size: set TensorRT Shape to Fixed with"
+            " the video's height and width."
+        )
+    key = ("RDUAL", model.dtype, size)
+    kept = _kept_export(model, context.node_id, key)
+    if kept is not None:
+        return kept.result
+    settings = get_settings(context)
+    gpu_index = settings.gpu_index if settings.device.type == "cuda" else None
+    with tempfile.TemporaryDirectory(prefix="chaiNNer-rdual-onnx-") as temporary:
+        folder = Path(temporary)
+        rdual.export(
+            full_precision_source(model, "Convert To ONNX"),
+            *size,
+            folder,
+            gpu_index,
+            context,
+        )
+        onnx_model = load_onnx_model(rdual_bundle.pack(folder, rdual_export.OPSET))
+    assert onnx_model.sub_type == "Generic"
+    result = onnx_model, MIXED, "opset20"
+    _keep_export(model, context.node_id, key, _Export(result, verified=False))
+    return result
+
+
 def no_stop() -> None:
     """A check for Stop where no node runs."""
 
@@ -489,7 +541,9 @@ def verify_inputs(model: ImageModelDescriptor, fp16: bool) -> list[torch.Tensor]
             )
         else:
             inputs.append(
-                torch.rand(1, channels, dummy_size, dummy_size, device=device)
+                torch.rand(1, channels, dummy_size, dummy_size, generator=generator).to(
+                    device
+                )
             )
     if fp16:
         ramp = torch.linspace(0, 1, inputs[0].shape[-1], device=device)

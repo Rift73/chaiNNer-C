@@ -1,7 +1,7 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "png_encode_avx2.c is an x86-64 AVX2 unit"
 #endif
-/* PNG row filters, AVX2 unit (spec 4.3): no export, reached only through png_encode.c's dispatch on the call's ISA
+/* PNG row filters, AVX2 unit: no export, reached only through png_encode.c's dispatch on the call's ISA
  * level. 32 bytes at a time from byte bpp on, the row's first bpp bytes and its tail by the scalar rules
  * (png_encode_shared.h); every filtered byte and cost is an exact integer, so the choice and the bytes are the
  * scalar unit's. */

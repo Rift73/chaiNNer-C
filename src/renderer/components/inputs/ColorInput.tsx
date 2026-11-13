@@ -260,13 +260,19 @@ interface ColorPickerProps {
     onChange: (value: ColorJson) => void;
     kinds: ReadonlySet<ColorKind>;
 }
+interface ColorPickerPopoverProps extends ColorPickerProps {
+    /** A locked node's color does not open. */
+    isDisabled: boolean;
+}
 
-const ColorPickerPopover = memo(({ color, onChange, kinds }: ColorPickerProps) => {
+const ColorPickerPopover = memo((props: ColorPickerPopoverProps) => {
+    const { color, onChange, kinds, isDisabled } = props;
     const internalColor = useRef(color);
 
     return (
         <Popover
             isLazy
+            isOpen={isDisabled ? false : undefined}
             placement="bottom-start"
             onClose={() => onChange(internalColor.current)}
         >
@@ -300,6 +306,7 @@ export const ColorInput = memo(
         input,
         definitionType,
         isConnected,
+        isLocked,
         sequenceType,
     }: InputProps<'color', string>) => {
         const { label, optional, def, channels } = input;
@@ -344,8 +351,10 @@ export const ColorInput = memo(
         }, [channels]);
 
         const onChange = useCallback(
-            (newColor: ColorJson) => setValue(JSON.stringify(newColor)),
-            [setValue]
+            (newColor: ColorJson) => {
+                if (!isLocked) setValue(JSON.stringify(newColor));
+            },
+            [isLocked, setValue]
         );
 
         return (
@@ -372,6 +381,7 @@ export const ColorInput = memo(
                             <Spacer />
                             <ColorPickerPopover
                                 color={color}
+                                isDisabled={isLocked}
                                 kinds={kinds}
                                 onChange={onChange}
                             />

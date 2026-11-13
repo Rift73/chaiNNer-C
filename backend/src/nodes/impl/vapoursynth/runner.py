@@ -48,10 +48,12 @@ VIEWER_LOG = "vsview.log"
 VIEWER_LOG_LINES = 10
 # The pid and start time of the vsview opened for the script beside it.
 VIEWER_PID = "vsview.pid"
+# Starts vsview and reloads it when its script is rewritten.
+VIEWER_LAUNCHER = Path(__file__).with_name("viewer.py")
 # The environment variables with which vsview (Qt) finds a window system on Linux.
 DISPLAY_VARIABLES = ("DISPLAY", "WAYLAND_DISPLAY", "QT_QPA_PLATFORM")
-# The colour frame properties clip_props reads.
-COLOUR_PROPS = tuple(prop for prop, _ in PROPS.values())
+# The frame properties clip_props reads: the colour ones and the field order.
+FRAME_PROPS = (*(prop for prop, _ in PROPS.values()), "_FieldBased")
 
 # R81 says on every run that it refuses API 3 plugins, and vs-jetpack's extras install
 # one (bm3dcpu): the line says nothing about the script.
@@ -59,6 +61,31 @@ _API3_NOTICE = re.compile(
     r"^(\w+: )?Plugin .* uses API 3, which is no longer supported\.$"
 )
 _TRACEBACK_FILE = re.compile(r'^\s*File "(?P<file>.+)", line (?P<line>\d+), in ')
+# A plain hint added to a script error that contains the fragment (the wording of the
+# plugins and of vs-jetpack).
+_FLOAT_ONLY = (
+    "This method needs a 32-bit float clip: add Convert Format > Bit depth (depth)"
+    " set to 32 before it."
+)
+_ERROR_HINTS = (
+    (
+        "cuInit",
+        "No usable NVIDIA GPU: pick a CPU backend in the method's Backend setting.",
+    ),
+    (
+        "Progressive video isn't field based.",
+        (
+            "The video does not say its field order: set Top or Bottom field first in the"
+            " method's field order setting."
+        ),
+    ),
+    # descale; vsdenoise's BM3D; the bm3dcpu and vszip BM3D plugins.
+    ("Only float32 input is supported", _FLOAT_ONLY),
+    ("only supports 32 bit float input", _FLOAT_ONLY),
+    ("only constant format 32 bit float input supported", _FLOAT_ONLY),
+    # vstools' check (FixInterlacedFades).
+    ("must be of FLOAT sample type", _FLOAT_ONLY),
+)
 _FPS = re.compile(r"^(\d+)/(\d+)")
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 FRAME_WORKER_PY = Path(__file__).with_name("frame_worker.py")
@@ -205,6 +232,9 @@ def script_error(
             if node_id is not None:
                 break
     message = "\n".join(lines[-STDERR_TAIL_LINES:]).strip()
+    hints = dict.fromkeys(hint for part, hint in _ERROR_HINTS if part in message)
+    if message and hints:
+        message = "\n".join([message, *hints])
     if not message and returncode and returncode < 0:
         # POSIX: a child that a signal ended has the signal's number, negated, as code.
         signal_name = signal.strsignal(-returncode) or "unknown signal"
@@ -308,17 +338,25 @@ def _script_copy(script: Path, lines: str, suffix: str) -> Path:
 
 
 def clip_props(
-    script: Path, output: int, context: NodeContext | None = None
-) -> tuple[ClipInfo, dict[str, int]]:
-    """clip_info of a script's output and the colour frame properties (COLOUR_PROPS)
+    script: Path,
+    output: int,
+    context: NodeContext | None = None,
+    *,
+    preview: int | None = None,
+) -> tuple[ClipInfo, dict[str, int], np.ndarray | None]:
+    """clip_info of a script's output and the frame properties (FRAME_PROPS)
     of its first frame that are set, in one evaluation of the script. A first frame
-    that fails gives none: the run of the frames fails on it and reports the error."""
+    that fails gives none: the run of the frames fails on it and reports the error.
+    With `preview`, the same evaluation renders that frame (the last one past the end)
+    as read_frames gives it, or its Y plane in gray when RGB cannot convert its
+    matrix; then a clip whose size or format varies raises."""
     script = script.resolve()
     handle, name = tempfile.mkstemp(suffix=".json")
     os.close(handle)
     props = Path(name)
+    frame = props.with_suffix(".frame")
     lines = (
-        "\n# chaiNNer reads the colour properties of the first frame.\n"
+        "\n# chaiNNer reads the colour properties and field order of the first frame.\n"
         "import json\n"
         "import vapoursynth\n"
         "_props = {}\n"
@@ -329,16 +367,66 @@ def clip_props(
         "        # The run of the frames fails on this frame again, and reports it.\n"
         "        pass\n"
         f"with open({str(props)!r}, 'w', encoding='utf-8') as _file:\n"
-        f"    json.dump({{k: int(_props[k]) for k in {COLOUR_PROPS!r} if k in _props}},"
+        f"    json.dump({{k: int(_props[k]) for k in {FRAME_PROPS!r} if k in _props}},"
         " _file)\n"
     )
+    if preview is not None:
+        lines += _preview_lines(output, max(0, preview), frame)
     copy = _script_copy(script, lines, ".props.vpy")
     try:
         info = _video_output(copy, output, context)[0]
-        return info, json.loads(props.read_text(encoding="utf-8"))
+        image = None
+        if preview is not None:
+            if not frame.exists():
+                raise _varying(output)
+            planes = np.fromfile(frame, np.float32).reshape(-1, info.height, info.width)
+            image = _gray_frame(planes) if len(planes) == 1 else _rgb_frame(planes)
+        return info, json.loads(props.read_text(encoding="utf-8")), image
     finally:
         copy.unlink(missing_ok=True)
         props.unlink(missing_ok=True)
+        frame.unlink(missing_ok=True)
+
+
+def _preview_lines(output: int, n: int, path: Path) -> str:
+    """Script lines that write frame `n` of the output (the last one past the end) to
+    `path` as read_frames reads it: float32 planes in vspipe's order, converted as
+    _float_output converts. A clip of varying size or format writes nothing."""
+    return (
+        "\n# chaiNNer renders the Preview frame.\n"
+        f"if {output} in vapoursynth.get_outputs():\n"
+        f"    _clip = vapoursynth.get_output({output}).clip\n"
+        "    _format = _clip.format\n"
+        "    if _format is not None and _clip.width and _clip.height:\n"
+        "        _family = _format.color_family\n"
+        "        if _family == vapoursynth.GRAY:\n"
+        "            _to = {'format': vapoursynth.GRAYS}\n"
+        "        elif _family == vapoursynth.RGB:\n"
+        "            _to = {'format': vapoursynth.RGBS}\n"
+        "        else:\n"
+        "            # _yuv_to_rgbs: BT.709 for HD (high_definition), else SMPTE 170M.\n"
+        "            _hd = _clip.width >= 1280 or _clip.height > 576\n"
+        "            _to = {'format': vapoursynth.RGBS, 'matrix_in': 1 if _hd else 6}\n"
+        "        _float = _format.sample_type == vapoursynth.FLOAT\n"
+        "        _out = _clip\n"
+        "        if _family == vapoursynth.YUV or not (_float and _format.bits_per_sample == 32):\n"
+        "            _out = _clip.resize.Bicubic(**_to)\n"
+        f"        _n = min({n}, _clip.num_frames - 1)\n"
+        "        # vspipe's order of RGB planes: G, B, R.\n"
+        "        _order = (0,) if _family == vapoursynth.GRAY else (1, 2, 0)\n"
+        "        try:\n"
+        "            _frame = _out.get_frame(_n)\n"
+        "        except vapoursynth.Error:\n"
+        "            if _family != vapoursynth.YUV:\n"
+        "                raise\n"
+        "            # A matrix RGB cannot convert (Planes mode reads it): the Y plane.\n"
+        "            _y = _clip.std.ShufflePlanes(0, vapoursynth.GRAY)\n"
+        "            _frame = _y.resize.Point(format=vapoursynth.GRAYS).get_frame(_n)\n"
+        "            _order = (0,)\n"
+        f"        with open({str(path)!r}, 'wb') as _file:\n"
+        "            for _plane in _order:\n"
+        "                _file.write(memoryview(_frame[_plane]).tobytes())\n"
+    )
 
 
 def save_frames(
@@ -744,7 +832,7 @@ _viewers_lock = threading.Lock()
 _NEW_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
 
-def _open_viewer(script: Path) -> subprocess.Popen[bytes]:
+def _open_viewer(script: Path, title: str) -> subprocess.Popen[bytes]:
     if importlib.util.find_spec("vsview") is None:
         raise VSScriptError(
             "vsview is not installed. Install the vsview package in the dependency"
@@ -761,7 +849,8 @@ def _open_viewer(script: Path) -> subprocess.Popen[bytes]:
     log_path = script.parent / VIEWER_LOG
     with open(log_path, "wb") as log:
         viewer = subprocess.Popen(
-            [str(vs_python()), "-m", "vsview", str(script)],
+            # -P: the launcher's folder stays off sys.path (its modules are no packages).
+            [str(vs_python()), "-P", str(VIEWER_LAUNCHER), str(script), title],
             cwd=script.parent,
             # It runs the script in its own process, which needs no vsscript
             # configuration: on Linux its Qt and its settings keep the user's config
@@ -807,14 +896,14 @@ def _earlier_viewer(script: Path) -> bool:
         return False
 
 
-def launch_preview(script: Path, key: str) -> None:
+def launch_preview(script: Path, key: str, title: str) -> None:
     """Shows `script` in vsview, one window per key: while the key's window is open, it
-    stays (the user reloads the rewritten script there), also one that an earlier
-    worker opened; once closed, a new one opens."""
+    stays and reloads the rewritten script, also one that an earlier worker opened;
+    once closed, a new one opens, titled `title`."""
     with _viewers_lock:
         viewer = _viewers.get(key)
         if viewer is not None and viewer.poll() is None:
             return
         if viewer is None and _earlier_viewer(script):
             return
-        _viewers[key] = _open_viewer(script)
+        _viewers[key] = _open_viewer(script, title)

@@ -1,8 +1,8 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "color_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* Normal map output, AVX2 unit (/arch:AVX2, spec 4.3): no export, reached only through
- * normal_output_range's dispatch on the call's ISA level (SP4b Task 8). Whole groups of
+/* Normal map output, AVX2 unit (/arch:AVX2): no export, reached only through
+ * normal_output_range's dispatch on the call's ISA level. Whole groups of
  * 8 pixels run normal_pixels' operations in its order, lane by lane: vsqrtps for B3's
  * CRT sqrtf (sqrtss on every input the sum can be: non-negative, +inf or a NaN, which
  * it quiets), vdivps, the inversions as sign xors and fabsf as a sign clear (B3's

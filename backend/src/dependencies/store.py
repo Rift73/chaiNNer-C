@@ -392,6 +392,30 @@ def install_dependencies_sync(
     return len(dependencies_to_install)
 
 
+class _PipProgress:
+    """The progress callback while pip's output is read. A failing call ends the calls,
+    not the read: pip is read to its end (with nobody reading, a full pipe would block
+    it, and a half-done change is worse than a finished one), then `raise_error` raises
+    the call's error."""
+
+    def __init__(self, callback: UpdateProgressFn) -> None:
+        self.callback = callback
+        self.error: Exception | None = None
+
+    async def __call__(
+        self, message: str, progress: float, status_progress: float | None
+    ) -> None:
+        if self.error is None:
+            try:
+                await self.callback(message, progress, status_progress)
+            except Exception as error:
+                self.error = error
+
+    def raise_error(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+
 async def install_dependencies(
     dependencies: list[DependencyInfo],
     update_progress_cb: UpdateProgressFn | None = None,
@@ -451,6 +475,7 @@ async def install_dependencies(
         )
         assert process.stdout is not None
         last_lines: deque[str] = deque(maxlen=PIP_REASON_LINES)
+        progress = _PipProgress(update_progress_cb)
         installing_name = "Unknown"
         # Up to the end of the output, which holds pip's error lines when it fails. Read
         # in a thread: pip can be silent for a long time (a slow index, its retries), and
@@ -478,7 +503,7 @@ async def install_dependencies(
                         transitive_deps_counter += 1
                     else:
                         deps_counter += 1
-                    await update_progress_cb(
+                    await progress(
                         f"Collecting {installing_name}...", get_progress_amount(), None
                     )
             # The Downloading step of pip. It tells us what package is currently being downloaded.
@@ -493,7 +518,7 @@ async def install_dependencies(
                     installing_name = dependency_name_map.get(
                         distribution_name(package_name), package_name
                     )
-                await update_progress_cb(
+                await progress(
                     f"Downloading {installing_name}...",
                     get_progress_amount() + dep_small_incr,
                     None,
@@ -504,25 +529,26 @@ async def install_dependencies(
                 try:
                     parsed = json.loads(json_line)
                     current, total = parsed["current"], parsed["total"]
-                    if total is not None and total > 0:
-                        percent = current / total
-                        await update_progress_cb(
-                            f"Downloading {installing_name}...",
-                            get_progress_amount() + dep_small_incr,
-                            percent,
-                        )
-                except Exception as e:
+                    percent = (
+                        current / total if total is not None and total > 0 else None
+                    )
+                except (ValueError, KeyError, TypeError) as e:
                     if logger is not None:
-                        logger.error(str(e))
-                    # pass
+                        logger.warning("Unreadable pip progress line %r: %s", line, e)
+                    continue
+                if percent is not None:
+                    await progress(
+                        f"Downloading {installing_name}...",
+                        get_progress_amount() + dep_small_incr,
+                        percent,
+                    )
             # The Installing step of pip. Installs happen for all the collected packages at once.
             # We can't get the progress of the installation, so we just tell the user that it's happening.
             elif "Installing collected packages" in line:
-                await update_progress_cb(
-                    "Installing collected dependencies...", 0.9, None
-                )
+                await progress("Installing collected dependencies...", 0.9, None)
 
         exit_code = await asyncio.to_thread(process.wait)
+        progress.raise_error()
         if exit_code != 0:
             raise ValueError(pip_error_message("installing", last_lines))
 
@@ -608,6 +634,7 @@ async def uninstall_dependencies(
         )
         assert process.stdout is not None
         last_lines: deque[str] = deque(maxlen=PIP_REASON_LINES)
+        progress = _PipProgress(update_progress_cb)
         uninstalling_name = "Unknown"
         # Up to the end of the output, which holds pip's error lines when it fails. Read
         # in a thread: pip can be silent for a long time (a slow index, its retries), and
@@ -635,7 +662,7 @@ async def uninstall_dependencies(
                         transitive_deps_counter += 1
                     else:
                         deps_counter += 1
-                    await update_progress_cb(
+                    await progress(
                         f"Uninstalling {uninstalling_name}...",
                         get_progress_amount(),
                         None,
@@ -644,13 +671,14 @@ async def uninstall_dependencies(
             # Later, we can use this to get the progress of the download.
             # For now, we just tell the user that it's happening.
             elif "Successfully uninstalled" in line:
-                await update_progress_cb(
+                await progress(
                     f"Uninstalled {uninstalling_name}.",
                     get_progress_amount() + dep_small_incr,
                     None,
                 )
 
         exit_code = await asyncio.to_thread(process.wait)
+        progress.raise_error()
         if exit_code != 0:
             raise ValueError(pip_error_message("uninstalling", last_lines))
 

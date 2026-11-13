@@ -195,7 +195,7 @@ void palette_from_image(NodeContext &, std::span<const Value> inputs, std::vecto
             return;
         }
     }
-    if (image.height == 0 || image.width == 0) throw NodeError("ValueError", "Invalid image shape " + shape_text(image));
+    shaped(image);
     std::vector<float> distinct(image.values());
     size_t count = 0;
     check(cn_analysis_distinct(image.data, distinct.data(), pixel_rows(image), channels, &count));

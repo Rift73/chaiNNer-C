@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import gc
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 
 import cv2
 import numpy as np
@@ -36,10 +36,8 @@ from nodes.properties.outputs import ImageOutput, TextOutput
 from nodes.utils.utils import get_h_w_c
 from system import is_mac
 
-from ...settings import CPU_DEVICE, NcnnSettings, get_settings
+from ...settings import CPU_DEVICE, NcnnSettings, get_settings, use_gpu
 from .. import processing_group
-
-use_gpu = ncnn.get_gpu_count() > 0
 
 
 @contextmanager
@@ -121,31 +119,20 @@ def upscale_impl(
                 estimate_tile_size(heap_budget_bytes, int(model_size_estimate), img, 4)
             )
 
+        allocators: AbstractContextManager[
+            tuple[ncnn.VkBlobAllocator | None, ncnn.VkStagingAllocator | None]
+        ] = nullcontext((None, None))
         if on_vulkan:
             vkdev = ncnn.get_gpu_device(settings.gpu_index)
-            with ncnn_allocators(vkdev) as (blob_vkallocator, staging_vkallocator):
-                result = ncnn_auto_split(
-                    img,
-                    net,
-                    input_name=input_name,
-                    output_name=output_name,
-                    blob_vkallocator=blob_vkallocator,
-                    staging_vkallocator=staging_vkallocator,
-                    tiler=parse_tile_size_input(tile_size, estimate),
-                    collect_after=collect_after,
-                    size_multiple=model.size_multiple,
-                    swap_red_blue=swap_red_blue,
-                    progress=progress,
-                    report=report,
-                )
-        else:
+            allocators = ncnn_allocators(vkdev)
+        with allocators as (blob_vkallocator, staging_vkallocator):
             result = ncnn_auto_split(
                 img,
                 net,
                 input_name=input_name,
                 output_name=output_name,
-                blob_vkallocator=None,
-                staging_vkallocator=None,
+                blob_vkallocator=blob_vkallocator,
+                staging_vkallocator=staging_vkallocator,
                 tiler=parse_tile_size_input(tile_size, estimate),
                 collect_after=collect_after,
                 size_multiple=model.size_multiple,

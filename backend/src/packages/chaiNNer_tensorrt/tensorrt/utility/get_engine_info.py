@@ -34,11 +34,16 @@ if utility_group is not None:
             TextOutput(
                 "Shape Info",
             ),
+            TextOutput("Temporal Info").with_docs(
+                "For an RDUAL engine set (a video model's engines for one frame size):"
+                " its architecture, frame size, engines and plugin key. None for an"
+                " image engine.",
+            ),
         ],
     )
     def get_engine_info_node(
         engine: TensorRTEngine,
-    ) -> tuple[int, str, str, str, str]:
+    ) -> tuple[int, str, str, str, str, str]:
         info = engine.info
 
         scale = info.scale if info.scale is not None else -1
@@ -61,4 +66,13 @@ if utility_group is not None:
         else:
             shape_info = "Fixed"
 
-        return scale, precision, gpu_arch, trt_version, shape_info
+        temporal = info.temporal
+        temporal_info = "None"
+        if temporal is not None:
+            temporal_info = (
+                f"{temporal.architecture} engine set: {temporal.width}x{temporal.height}"
+                f" frames (width x height), engines {', '.join(temporal.parts)},"
+                f" plugins {temporal.plugin_key}"
+            )
+
+        return scale, precision, gpu_arch, trt_version, shape_info, temporal_info

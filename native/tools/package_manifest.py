@@ -59,8 +59,8 @@ URL_PIN = re.compile(
     r"(?:  # .*)?"
 )
 # The native toolchain's pins, relative to the project: CMakeLists.txt refuses any
-# other clang-cl, toolchain.cmake any other MSVC toolset or Windows SDK (Consult 14
-# D-30), so they name the versions every native binary of the tree is built with.
+# other clang-cl, toolchain.cmake any other MSVC toolset or Windows SDK, so they name
+# the versions every native binary of the tree is built with.
 TOOLCHAIN_PINS = {
     "clang_cl": (
         "native/CMakeLists.txt",

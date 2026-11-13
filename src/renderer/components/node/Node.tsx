@@ -1,16 +1,7 @@
 import { Center, VStack } from '@chakra-ui/react';
 import i18n from 'i18next';
 import path from 'path';
-import {
-    DragEvent,
-    DragEventHandler,
-    LegacyRef,
-    MouseEventHandler,
-    memo,
-    useCallback,
-    useMemo,
-    useRef,
-} from 'react';
+import { DragEvent, DragEventHandler, MouseEventHandler, memo, useCallback, useMemo } from 'react';
 import { useReactFlow } from 'reactflow';
 import { useContext, useContextSelector } from 'use-context-selector';
 import { Input, NodeData } from '../../../common/common-types';
@@ -69,7 +60,6 @@ export interface NodeViewProps {
     nodeProgress?: NodeProgress;
     borderColor?: string;
 
-    targetRef?: LegacyRef<HTMLDivElement>;
     onContextMenu?: MouseEventHandler<HTMLDivElement>;
     onDragOver?: DragEventHandler<HTMLDivElement>;
     onDrop?: DragEventHandler<HTMLDivElement>;
@@ -87,7 +77,6 @@ export const NodeView = memo(
         passthrough = NO_PASSTHROUGH,
         nodeProgress,
         borderColor,
-        targetRef,
         onContextMenu,
         onDragOver,
         onDrop,
@@ -116,7 +105,6 @@ export const NodeView = memo(
                 minWidth="240px"
                 opacity={isEnabled ? 1 : 0.75}
                 overflow="hidden"
-                ref={targetRef}
                 transition="0.15s ease-in-out"
                 transitionProperty="border-color, opacity"
                 onContextMenu={onContextMenu}
@@ -187,13 +175,9 @@ const NodeInner = memo(({ data, selected }: NodeProps) => {
 
     const { getEdge } = useReactFlow();
 
-    // We get inputs and outputs this way in case something changes with them in the future
-    // This way, we have to do less in the migration file
     const { inputs } = schema;
 
     const { validity } = useValidity(id, schema, inputData);
-
-    const targetRef = useRef<HTMLDivElement>(null);
 
     const collidingAccentColor = useContextSelector(
         GlobalVolatileContext,
@@ -316,7 +300,6 @@ const NodeInner = memo(({ data, selected }: NodeProps) => {
             nodeState={nodeState}
             passthrough={passthrough}
             selected={selected}
-            targetRef={targetRef}
             toggleCollapse={toggleCollapse}
             validity={validity}
             onContextMenu={menu.onContextMenu}

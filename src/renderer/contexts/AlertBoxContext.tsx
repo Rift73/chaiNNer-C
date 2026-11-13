@@ -184,8 +184,8 @@ const getButtons = (
                         onClick={() => {
                             ipcRenderer
                                 .invoke('shell-openPath', path.join(appDataPath, 'logs'))
-                                .catch(() => {
-                                    log.error('Failed to open logs folder');
+                                .catch((error) => {
+                                    log.error('Failed to open logs folder', error);
                                 });
                         }}
                     >
@@ -201,8 +201,8 @@ const getButtons = (
                         ref={cancelRef}
                         onClick={() => {
                             window.close();
-                            ipcRenderer.invoke('app-quit').catch(() => {
-                                log.error('Failed to quit application');
+                            ipcRenderer.invoke('app-quit').catch((error) => {
+                                log.error('Failed to quit application', error);
                             });
                         }}
                     >

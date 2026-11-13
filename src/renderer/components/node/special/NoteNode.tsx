@@ -77,8 +77,6 @@ const NoteNodeInner = memo(({ data, selected }: NodeProps) => {
     const { schema, setInputValue, inputData, inputHeight, setInputHeight, nodeWidth, setWidth } =
         nodeState;
 
-    const targetRef = useRef<HTMLDivElement>(null);
-
     const menu = useNodeMenu(data);
 
     const zoom = useContextSelector(GlobalVolatileContext, (c) => c.zoom);
@@ -178,7 +176,6 @@ const NoteNodeInner = memo(({ data, selected }: NodeProps) => {
                 minHeight="120px"
                 minWidth="240px"
                 overflow="hidden"
-                ref={targetRef}
                 transition="0.15s ease-in-out"
             >
                 <VStack

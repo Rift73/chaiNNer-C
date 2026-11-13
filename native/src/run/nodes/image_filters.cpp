@@ -123,9 +123,9 @@ double beyond_doubles(std::string_view token)
     return std::copysign(place + exponent >= 0 ? HUGE_VAL : 0.0, token[0] == '-' ? -1.0 : 1.0);
 }
 
-/* The kernel text of chainner:image:image_convolve as np.stack([l.split() for l in text.splitlines()]).astype(float):
- * rows of decimal numbers. Anything else (other characters, other number syntax, ragged or missing rows) declines to
- * the Python body, which parses or rejects it with NumPy. */
+/* The kernel text of chainner:image:image_convolve as convolve.py parses it: rows of decimal numbers, one per line,
+ * blank lines skipped. Anything else (other characters, other number syntax, ragged rows, no row) declines to the
+ * Python body, which parses or rejects it. */
 Kernel parse_kernel(const std::string &text)
 {
     for (char ch : text)
@@ -175,7 +175,8 @@ Kernel parse_kernel(const std::string &text)
             ++columns;
             i += token.size();
         }
-        if (columns == 0 || (kernel.rows > 0 && columns != kernel.columns)) throw RunPython{};
+        if (columns == 0) continue;  // a blank line is no row
+        if (kernel.rows > 0 && columns != kernel.columns) throw RunPython{};
         kernel.columns = columns;
         ++kernel.rows;
     }
@@ -196,14 +197,10 @@ void convolve_node(NodeContext &, std::span<const Value> inputs, std::vector<Val
 Image arithmetic(const Image &a, int operation, double scale, const Image *b = nullptr, const Image *c = nullptr,
                  const Image *d = nullptr, bool clip = false)
 {
-    auto valid = [](const Image &image) {
-        if (image.height == 0 || image.width == 0)
-            throw NodeError("ValueError", "Invalid image shape " + shape_text(image));
-    };
-    valid(a);
+    shaped(a);
     for (const Image *operand : {b, c, d}) {
         if (!operand) continue;
-        valid(*operand);
+        shaped(*operand);
         if (operand->height != a.height || operand->width != a.width || operand->channels != a.channels)
             throw NodeError("ValueError", "Filter operands must have identical shapes");
     }
@@ -399,12 +396,6 @@ void box_blur(NodeContext &, std::span<const Value> inputs, std::vector<Value> &
     outputs.push_back(finish(std::move(out).publish()));
 }
 
-/* native_neighborhood._image: a nonempty image. */
-void neighborhood_image(const Image &image)
-{
-    if (image.height == 0 || image.width == 0) throw NodeError("ValueError", "Invalid image shape " + shape_text(image));
-}
-
 /* chainner:image:median_blur (blur/median_blur.py, native_neighborhood.median): radii 1 and 2 on float32 (OpenCV's
  * median_blur dispatch lanes), larger ones on the uint8 image, whose uint8 result is normalized here as the output
  * enforce converts it. Transparent pixels hold no colour. */
@@ -416,7 +407,7 @@ void median_blur(NodeContext &, std::span<const Value> inputs, std::vector<Value
         outputs.push_back(inputs[0]);
         return;
     }
-    neighborhood_image(image);
+    shaped(image);
     if (has_transparency(image)) image = finish_alpha(image, false);
     size_t height = size_t(image.height), width = size_t(image.width), channels = size_t(image.channels);
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
@@ -445,7 +436,7 @@ void dither(NodeContext &, std::span<const Value> inputs, std::vector<Value> &ou
     if (mode == 1) map_size = size_t(std::stoi(std::get<std::string>(inputs[3]).substr(1)));
     int map = 0;
     if (mode == 2) map = diffusion_map(std::get<std::string>(inputs[4]));
-    neighborhood_image(image);
+    shaped(image);
     uint32_t colors = dither_count(inputs[1], 0xFFFFFFFF, "Dither colors must be an integer in [2,4294967295]");
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     size_t height = size_t(image.height), width = size_t(image.width), channels = size_t(image.channels);
@@ -496,8 +487,7 @@ void distance_transform(NodeContext &, std::span<const Value> inputs, std::vecto
     int64_t spread = integer(inputs[1]);
     MutableImage out = MutableImage::allocate(image.height, image.width, 1);
     if (std::get<bool>(inputs[2])) {
-        if (image.height == 0 || image.width == 0)
-            throw NodeError("ValueError", "Invalid image shape " + shape_text(image));
+        shaped(image);
         check(cn_distance_esdf(image.data, out.data(), size_t(image.height), size_t(image.width),
                                float(double(spread) * 2)));
     } else {
@@ -544,9 +534,8 @@ void quantize_to_reference(NodeContext &, std::span<const Value> inputs, std::ve
     require(image.width % reference.width == 0, "Image width must be a multiple of reference image width");
     double scale = number(inputs[3]) / 100;
     scale = scale * scale;
-    for (const Image *operand : {&image, &reference})
-        if (operand->height == 0 || operand->width == 0)
-            throw NodeError("ValueError", "Invalid image shape " + shape_text(*operand));
+    shaped(image);
+    shaped(reference);
     MutableImage out = MutableImage::allocate(image.height, image.width, image.channels);
     check(cn_filter_quantize_reference(image.data, reference.data, out.data(), size_t(image.height), size_t(image.width),
                                        size_t(reference.height), size_t(reference.width), size_t(image.channels),

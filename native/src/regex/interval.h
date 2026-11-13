@@ -2,7 +2,7 @@
 /* IntervalSet<ClassUnicodeRange> and IntervalSet<ClassBytesRange> (interval.c): the
  * ClassUnicode and ClassBytes of chainner_hir.h. Every operation keeps Rust's results
  * and its `folded` bookkeeping. Statuses are CHN_HIR_OK or CHN_HIR_ERROR_NOMEM; on
- * NOMEM the set is left valid (possibly unchanged). Private to X1's files. */
+ * NOMEM the set is left valid (possibly unchanged). Private to the front end. */
 #ifndef CHAINNER_REGEX_INTERVAL_H
 #define CHAINNER_REGEX_INTERVAL_H
 #include "chainner_hir.h"

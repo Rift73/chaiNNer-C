@@ -60,7 +60,14 @@ class AiUpscalePrecision(Enum):
     ],
     icon="MdAutoFixHigh",
     inputs=[
-        VideoClipInput().take_images("VideoClip | Image").with_id(0),
+        VideoClipInput()
+        .take_images("VideoClip | Image")
+        .with_id(0)
+        .with_docs(
+            "The clip to upscale, 32-bit float RGB or gray (RGBS or GRAYS; Convert"
+            " Format makes one), or an image.",
+            hint=True,
+        ),
         FileInput(
             label="Model",
             file_kind="pth",
@@ -79,7 +86,8 @@ class AiUpscalePrecision(Enum):
         .with_docs(
             "A PyTorch model (.pth, .pt, .ckpt, .safetensors), an ONNX model (.onnx)"
             " or a TensorRT engine (.engine, .trt, .plan). The backend must match the"
-            " file."
+            " file.",
+            hint=True,
         ),
         EnumInput(
             AiUpscaleBackend,
@@ -105,6 +113,7 @@ class AiUpscalePrecision(Enum):
             " which converts, tiles and blends frames on the GPU. They tile by the engine's"
             " shape range (the sizes it was built for), so there is no tile size for"
             " them.",
+            hint=True,
         ),
         if_enum_group(2, AiUpscaleBackend.PYTORCH)(
             EnumInput(
@@ -120,7 +129,8 @@ class AiUpscalePrecision(Enum):
             .with_docs(
                 "FP16 uses less memory and is faster on most NVIDIA GPUs. On the CPU,"
                 " PyTorch runs in FP32 either way. ONNX models and TensorRT engines run"
-                " in their own precision."
+                " in their own precision.",
+                hint=True,
             ),
         ),
         if_enum_group(2, (AiUpscaleBackend.PYTORCH, AiUpscaleBackend.ONNX))(
@@ -132,6 +142,7 @@ class AiUpscalePrecision(Enum):
                 "Auto estimates the tile size from free memory for PyTorch; ONNX models"
                 " use 256 px tiles on Auto. TensorRT engines tile by the engine's own"
                 " shape limits.",
+                hint=True,
             ),
             if_enum_group(4, CUSTOM)(
                 NumberInput(
@@ -140,7 +151,13 @@ class AiUpscalePrecision(Enum):
                     max=None,
                     default=TILE_SIZE_256,
                     unit="px",
-                ).with_id(5),
+                )
+                .with_id(5)
+                .with_docs(
+                    "The tile size in pixels. Smaller tiles need less memory and take"
+                    " longer. Example: 512",
+                    hint=True,
+                ),
             ),
         ),
         if_enum_group(2, AiUpscaleBackend.TENSORRT)(
@@ -157,6 +174,7 @@ class AiUpscalePrecision(Enum):
                 " models or resolutions.",
                 "The Python path (CHAINNER_C_TRT_RUNNER=0, or a build without the"
                 " runner) upscales one frame at a time and ignores this.",
+                hint=True,
             ),
         ),
     ],

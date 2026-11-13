@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal, Sequence, Tuple, Union
 
 import onnx
-from onnx.onnx_pb import ModelProto, ValueInfoProto
+from onnx.onnx_pb import ModelProto
 from sanic.log import logger
 
 from ..native_graph import graph
@@ -21,23 +21,7 @@ OnnxParsedTensorShape = Tuple[
     Union[int, None],
     Union[int, None],
 ]
-"""
-The elements are:
-- The tensor format (BCHW or BHWC).
-- The number of channels.
-- The width (optional).
-- The height (optional).
-"""
-
-
-def _as_int(value: object) -> int | None:
-    if isinstance(value, int):
-        return value
-    return None
-
-
-def _or_else(value: int | None, default: int) -> int:
-    return value if value is not None else default
+"""The tensor format, the channels, and the width and height (None when dynamic)."""
 
 
 def parse_onnx_shape(shape: Sequence[int | str | None]) -> OnnxParsedTensorShape:
@@ -50,14 +34,8 @@ def to_onnx_tensor_shape(
     return graph().onnx_tensor_shape(tensor)
 
 
-def is_tensor_input(input: ValueInfoProto) -> bool:
-    return graph().onnx_tensor_input(input)
-
-
 def is_image_to_image(model: ModelProto) -> bool:
-    """
-    Returns whether the model is an image to image model (single image input -> single image output).
-    """
+    """Whether the model takes one image tensor and gives one."""
     return graph().onnx_image_to_image(model)
 
 
@@ -71,13 +49,8 @@ class ModelShapeInference:
         tuple[int | None, int | None, int | None],
         tuple[int | None, int | None, int | None],
     ]:
-        """
-        input_shape: The size of the input tensors as width, height.
-
-        return: The shapes of the input and output tensors in HWC format.
-
-        **This will mutate the model.**
-        """
+        """The HWC shapes of the input and output for an input of `input_size`
+        (width, height). Changes the model."""
         return graph().onnx_infer_shape(self, input_size)
 
 
@@ -113,14 +86,12 @@ def _reshape_copies_from_a_reshape(model_proto: ModelProto) -> bool:
 
 
 def safely_optimize_onnx_model(model_proto: ModelProto) -> ModelProto:
-    """
-    Optimizes the model using onnxoptimizer. If onnxoptimizer is not installed, the model is returned as is.
-    So is a model that is not valid ONNX: onnxoptimizer's native code can end the
-    process on one (a node without the inputs its op needs, an output no node makes).
-    Its eliminate_consecutive_idempotent_ops drops the first of two Reshapes, which
-    changes the second's result when that copies a dimension from the first, so a model
-    with such a pair goes without that pass.
-    """
+    """The model optimized by onnxoptimizer; as it is when onnxoptimizer is not
+    installed or fails (logged), and when the model is not valid ONNX: onnxoptimizer's
+    native code can end the process on one (a node without the inputs its op needs, an
+    output no node makes). Its eliminate_consecutive_idempotent_ops drops the first of
+    two Reshapes, which changes the second's result when that copies a dimension from
+    the first, so a model with such a pair goes without that pass."""
     # The checker takes a model in memory up to 2 GiB, as onnxoptimizer does.
     if model_proto.ByteSize() <= onnx.checker.MAXIMUM_PROTOBUF:
         try:
@@ -130,11 +101,16 @@ def safely_optimize_onnx_model(model_proto: ModelProto) -> ModelProto:
             return model_proto
     try:
         import onnxoptimizer
-
+    except ImportError:
+        return model_proto
+    try:
         passes = onnxoptimizer.get_fuse_and_elimination_passes()
         if _reshape_copies_from_a_reshape(model_proto):
             passes.remove("eliminate_consecutive_idempotent_ops")
-        model_proto = onnxoptimizer.optimize(model_proto, passes)
-    except Exception:
-        pass
-    return model_proto
+        return onnxoptimizer.optimize(model_proto, passes)
+    except Exception as e:
+        logger.warning(
+            f"Not optimizing the ONNX model: onnxoptimizer failed ({type(e).__name__}: {e}).",
+            exc_info=True,
+        )
+        return model_proto

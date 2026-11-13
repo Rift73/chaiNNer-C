@@ -9,11 +9,6 @@ import { ipcRenderer } from '../safeIpc';
 
 interface SettingsContextValue {
     settings: Readonly<ChainnerSettings>;
-    updateSettings: (
-        update:
-            | Partial<Readonly<ChainnerSettings>>
-            | ((prev: Readonly<ChainnerSettings>) => Partial<Readonly<ChainnerSettings>>)
-    ) => void;
     setSetting: <K extends keyof ChainnerSettings>(
         key: K,
         update: SetStateAction<ChainnerSettings[K]>
@@ -22,7 +17,6 @@ interface SettingsContextValue {
 
 export const SettingsContext = createContext<Readonly<SettingsContextValue>>({
     settings: defaultSettings,
-    updateSettings: noop,
     setSetting: noop,
 });
 
@@ -36,16 +30,7 @@ export const SettingsProvider = memo(
             ...initialSettings,
         }));
 
-        // setters that change nothing keep the settings object, so nothing re-renders or is saved
-        const updateSettings: SettingsContextValue['updateSettings'] = useCallback((update) => {
-            setSettings((prev) => {
-                const changes = typeof update === 'function' ? update(prev) : update;
-                const keys = Object.keys(changes) as (keyof ChainnerSettings)[];
-                if (keys.every((key) => prev[key] === changes[key])) return prev;
-                return { ...prev, ...changes };
-            });
-        }, []);
-
+        // a setter that changes nothing keeps the settings object, so nothing re-renders or is saved
         const setSetting: SettingsContextValue['setSetting'] = useCallback((key, update) => {
             setSettings((prev) => {
                 const oldValue = prev[key];
@@ -72,7 +57,6 @@ export const SettingsProvider = memo(
 
         const contextValue = useMemoObject<SettingsContextValue>({
             settings,
-            updateSettings,
             setSetting,
         });
 

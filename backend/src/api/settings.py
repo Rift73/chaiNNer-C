@@ -61,7 +61,7 @@ class SettingsParser:
             return int(value)
         if isinstance(value, int) and not isinstance(value, bool):
             return value
-        raise ValueError(f"Invalid str value for {key}: {value}")
+        raise ValueError(f"Invalid int value for {key}: {value}")
 
     def get_number(self, key: str, default: float) -> float:
         """A number setting as its field stores it: an int or a float (whatever was

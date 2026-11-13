@@ -19,6 +19,36 @@ never in chaiNNer's, so a plugin crash costs only that process; the setting **Va
 caps each one's frame cache. Below, `<storage>` is the `backend-storage` folder of chaiNNer-C's own folder (where you
 unzipped it; `%APPDATA%\chaiNNer-C` from source).
 
+## Start here
+
+Every chain starts with **Load Clip** (Open a video (BestSource)), not Load Video: the filter nodes work on a whole
+clip, and most cannot take single frames. Then the filter nodes, and at the end one of:
+
+- **Preview Clips**: a Run renders nothing; it opens vsview, which computes each frame when you scrub to it. The first
+  Run on a new video waits while BestSource indexes the file once. After a change, Run again and the open vsview
+  reloads by itself; if it does not, press Reload Script (Ctrl+R).
+- **Clip Frames**: the frames as images, for Save Image or Save Video (use its own Index and FPS). Its seek bar fills
+  after the first Run; Run this frame renders that one frame through the whole chain, correct after field matching.
+- **Save Script**: the chain as a `.vpy` file.
+
+Routes, as node > Method:
+
+- Detelecine (film telecined to 29.97 fps): Deinterlace > Detelecine: film back to 24 fps (detelecine). Its two
+  steps also exist apart: Detelecine step 1: field match (VFM), then Detelecine step 2: drop repeats (VDecimate).
+- Wrong levels (too dark and contrasty, or washed out): Convert Format > Range fix: full or limited (range_fix).
+- Deinterlace: Deinterlace > Deinterlace, fast (Bwdif), or Deinterlace, best and slow (QTempGaussMC).
+- Denoise: Denoise > Denoise, gentle (NL-Means), or Denoise, strong (BM3D).
+- Descale (undo an upscale): Resize > Descale: undo an upscale (descale). Half or double size: Resize > Scale by a
+  factor (0.5 = half size).
+- AI upscale: Load Clip > Convert Format, Convert format and colours (Point) to RGBS > AI Upscale > Convert Format >
+  Clip Frames.
+- Before and after: wire the source and the result into Preview Clips (Clip 1 and Clip 2); vsview shows each as a tab.
+
+To look at one frame of a filtered clip, use Clip Frames' seek bar and Run this frame: it renders that frame through
+the whole chain, neighbouring frames included where a filter needs them. Images turned into a clip by Frames to Clip
+under Run this frame make a clip of one frame instead, which field matching, decimation and temporal denoising cannot
+work on (Frames to Clip warns of it).
+
 ## The nodes
 
 22 nodes in the groups Clips, Filters and Functions; 23 once you add functions of your own. Method counts are about.
@@ -29,15 +59,20 @@ unzipped it; `%APPDATA%\chaiNNer-C` from source).
 | Clip Frames, Frames to Clip | Clip to images and back, for chaiNNer's image nodes | |
 | Split Planes | Splits a clip into Y, U, V (R, G, B for RGB) clips | |
 | Preview Clips, Save Script | Opens up to 16 clips in vsview; writes the chain as a `.vpy` file | |
-| Clip Properties, Convert Format | Colour info, aspect ratio, frame rate, frame statistics; format, bit depth, colour space | 15, 12 |
-| Resize, Cut and Splice, Planes | Scale with any kernel, descale, crop, pad, turn; trim, join, replace and shift frames; split, join, merge planes | 39, 16, 21 |
-| Deinterlace | Field matching (VFM), decimation, NNEDI3, Bwdif, fields | 25 |
+| Clip Properties, Convert Format | Colour info, aspect ratio, frame rate, frame statistics; format, bit depth, colour space, range fix | 15, 13 |
+| Resize, Cut and Splice, Planes | Scale with any kernel or by a factor, descale, crop, pad, turn; trim, join, replace and shift frames; split, join, merge planes | 40, 16, 21 |
+| Deinterlace | Detelecine in one step, field matching (VFM), decimation, NNEDI3, Bwdif, fields | 26 |
 | Denoise | BM3D, NL-Means, Motion-compensated degrain, DFTTest, prefilters | 29 |
 | Sharpen and Blur, Anti-alias, Dehalo | Sharpening and blurring; jagged edges; halos | 26, 21, 9 |
 | Deband and Grain, Masks, Colour, Expression | Banding and grain; masks; levels, tone mapping, CLAHE; per-pixel formulas | 16, 71, 4, 14 |
 | AI Upscale | Runs an upscaling model on every frame (below) | |
 | User Functions | Your own functions (below); shown only when there are some | |
 | Any Function | Every other function, grouped by module (vs-jetpack's internal helper classes left out) | 192 |
+
+chaiNNer's own methods: Convert Format's Range fix (Compress (Full to Limited) or Expand (Limited to Full) rescales the
+values and leaves the range flag as it is; a float clip comes back unchanged), Deinterlace's Detelecine (VFM with NNEDI3
+on leftover combing, then VDecimate: 30000/1001 to 24000/1001) and Resize's Scale by a factor (sizes rounded to whole
+chroma samples).
 
 ## One chain, one script
 
@@ -62,11 +97,17 @@ another VapourSynth.
 ## Preview Clips and vsview
 
 Preview Clips takes Clip 1 and, with the plus button, up to 15 more, each with an optional name. A run writes the
-script, checks it with one trial evaluation, and opens vsview with each clip as an output under its name (a tab). If the
-check fails, the error shows on its node, no window opens, and an open window keeps the last script that worked. Each
-Preview Clips node has one window. While it is open, also after chaiNNer-C restarts, a run only rewrites the script:
-press **Reload Script** (Ctrl+R) in vsview. After you close it the next run opens a new one. If vsview ends within three
-seconds of its start, the node reports it with the end of `vsview.log`. vsview keeps its settings in `%LOCALAPPDATA%\vsview`.
+script, checks it with one trial evaluation, and opens vsview with each clip as an output under its name (a tab); a
+clip without a name takes the name of its node's Method entry (Denoise, strong (BM3D), say), or Clip 2 and so on when
+two clips share it. The window title lists the tab names. If the check fails, the error shows on its node, no window
+opens, and an open window keeps the last script that worked. Each Preview Clips node has one window. While it is open, also after chaiNNer-C restarts, a run
+rewrites the script and the window reloads it within a second, as **Reload Script** (Ctrl+R) does: frame, tab and zoom
+stay. After you close it the next run opens a new one. If vsview ends within three seconds of its start, the node
+reports it with the end of `vsview.log`. vsview keeps its settings in `%LOCALAPPDATA%\vsview`.
+
+vsview has no interface for reloading from outside, so `backend/src/nodes/impl/vapoursynth/viewer.py` starts it and
+uses a few of its internals, listed in that file. If one is missing after a vsview update, vsview runs as before (press
+Ctrl+R) and `vsview.log` says that auto-reload is off and why.
 
 ## Clip Frames and Frames to Clip
 
@@ -77,6 +118,13 @@ to white, U and V centred on 0.5, the clip's range and bit depth undone; float c
 frames and the planes from one render of the chain. **Colour Info** comes from the first frame's `_Matrix`, `_Transfer`,
 `_Primaries`, `_Range` and `_ChromaLocation`; one that is not set is guessed as Load Video guesses it. Reading them
 renders the first frame once more when the run starts.
+**Seek**, **Frames** (All or Range, Start to End) and **Run this frame** work as Load Video's. VapourSynth computes only
+the frames asked for, each through the whole chain, so a Range or a single frame after field matching and decimation
+equals the same frame of a full run, and **Index** is the frame's number in the clip. The seek bar spans **Frame Count**
+from the last run, so it is empty until the first; it stays off for a variable frame rate (FPS 0). The **Preview** is
+the Seek frame in RGB (a YUV matrix RGB cannot convert shows the Y plane in gray), rendered in the run's first
+evaluation of the chain; Run this frame in Mode RGB uses that render as its frame, one vspipe start in all (a Range or
+All: two).
 Every frame needs one size and format. **Frames to Clip** ends a loop of RGB or gray images, with an FPS, and saves
 them as a file that BestSource reads as a clip; the next run replaces it. **Precision** 16-bit (default) rounds the
 values to 16 bits, clipped to 0-1, in a lossless FFV1 video (`.mkv`, an RGB48 or Gray16 clip); 32-bit float keeps every
@@ -137,7 +185,7 @@ is searchable. Node search finds a family by its methods: typing `bm3d`, `scale`
 and the like, with that method picked. The **Inputs** tabs give **Simple** (the main settings, plainly named) or
 **Advanced** (everything). A setting left at its function's default is not written. A function that exists in many
 variants (every scaling kernel, edge mask or prefilter) is one method with a dropdown ("Kernel"). A setting that takes
-several kinds of value shows the main kind; Advanced adds "<Setting> as a Python value" for the others (`(2, 2)` for a
+several kinds of value shows the main kind; Advanced adds "<Setting> (other values)", a Python value, for the others (`(2, 2)` for a
 yes/no prefilter that also takes a radius pair, `[1, 2, 2]` for per-plane modes), which wins when filled. An expression
 setting takes one expression for every plane or a list with one per plane (`['x 2 *', '']`).
 
@@ -194,8 +242,19 @@ defaults = { gain = 1.2 }          # what the input starts at, and what the node
 ```
 
 Other keys: `help`, `simple` (the settings in Simple), `hidden`, `annotations`, `class_default`, `images` (true: it looks
-only at the current frame, so it takes images; false: it does not). A function with an
-overlay is listed under "Common". A file may not be named `sys`, `vs`, `core` or `set_output` (names chaiNNer's scripts
+only at the current frame, so it takes images; false: it does not), `hide = true` (the function is in no node),
+`rank` (a whole number). A function with a `rank`
+is listed under "Common", ranked ones first by rank, and a new node starts on the first; any other key except the
+texts (`help`, `docs`, `init_docs`, `choices`) lists it there too, after them, when it comes from an overlay of
+yours (the shipped overlays list functions by `rank` only). So an overlay of yours with only `help` documents a
+function without listing it there.
+
+Texts are Markdown, shown as pop-ups when the pointer rests on the setting or the Method entry: `help` (the method),
+`docs = { gain = "..." }` (settings), `init_docs` (a class's constructor settings, else `docs`), `choices =
+{ Catrom = "..." }` (the entries of a Kernel or other class dropdown). A setting without one shows the shipped glossary's
+text of its name (`[param."planes"]` tables with `doc` and an optional `annotation` the setting's type must contain)
+when the entry has `override = true`, else the function's docstring, else the glossary's text; an entry with
+`hidden = true` leaves the setting out (vs-jetpack's error-message `func`). A file may not be named `sys`, `vs`, `core` or `set_output` (names chaiNNer's scripts
 use), like a clip variable (`n_<word>_<number>`), like an installed module or like one of chaiNNer's own (`util`,
 `system`, `api`...); it is skipped with a line in the log. The
 function list is read when chaiNNer-C starts (Settings > Restart chaiNNer) and after a dependency install: it scans
@@ -236,7 +295,7 @@ The same package works on Linux x86-64; paths read `<storage>/vapoursynth` and t
   81 refuses the API 3 plugin bm3dcpu that the installer pulls in), NL-Means ISPC, DFTTest CPU. Prefilter has no such
   setting: for a CPU prefilter use DFTTest with Backend CPU and Use as filter, which differs from vs-jetpack's own
   prefilter (that one also leaves dark areas out).
-- AI Upscale: TensorRT has not been run on a GPU yet (2026-10-15). It ignores chaiNNer's PyTorch and ONNX settings (GPU
+- AI Upscale ignores chaiNNer's PyTorch and ONNX settings (GPU
   choice, memory limit), offers no BF16, and takes gray through the nodes' BT.601 luma.
 - Any Function calls a class's method without constructor settings. An error in an import line shows on the node that
   runs the script, a bad filter setting on the node it is wired into.
@@ -248,6 +307,9 @@ The same package works on Linux x86-64; paths read `<storage>/vapoursynth` and t
   `noise.Add` is the plugin as it is and takes clips only: its type 4 on float samples gives what the frame's memory held.
   Placebo does not use this plugin: libplacebo needs a Vulkan device, and without one the VapourSynth process ends.
   An install without the plugin (one that has not been updated) gets the plugin's name in the error of these five types.
+- BM3D's backends other than Old take only 32-bit float, so Denoise's BM3D (`chainner_vs.bm3d`) runs another clip
+  through 32-bit float and back to its own format, as Convert Format's Bit depth (depth) does both ways, and gives
+  a Search or Reference clip 32-bit float too. A 32-bit float clip and the Old backend go to vs-jetpack's BM3D as they are.
 - What always fails with vs-jetpack 2.2.6 is left out: base classes in Class and kernel dropdowns (Kernel, Scaler,
   Descaler...), MVTools' compensate, degrain, flow and mask methods (they need an analyze on the same object first; use
   Motion-compensated degrain), functions that need an object no input gives, and methods that give no clip. Another

@@ -161,17 +161,17 @@ bool valid_name(const std::wstring &name) {
            });
 }
 
-// The temporary name for sequence number `seq` (the ruled format, decision P8):
+// The temporary name for sequence number `seq`:
 // `<final>.chainner-c-<pid>-<seq>.tmp`; `.cnc-<pid>-<seq>.tmp` in final's folder where that name would pass the
 // 255-unit name limit or, with long paths off, MAX_PATH. In the \\?\ form once its full path reaches MAX_PATH.
-// The short name only for a valid final name (valid_name()): an invalid one keeps the ruled name, whose creation then
+// The short name only for a valid final name (valid_name()): an invalid one keeps the long name, whose creation then
 // fails as open(final, "wb") fails, before anything is written.
 std::filesystem::path temporary_candidate(const std::filesystem::path &final, uint64_t seq) {
     const std::wstring tail = std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(seq) + L".tmp";
-    const std::filesystem::path ruled(final.native() + L".chainner-c-" + tail);
+    const std::filesystem::path named(final.native() + L".chainner-c-" + tail);
     if (!valid_name(final.filename().native()) ||
-        (ruled.filename().native().size() <= 255 && (long_paths() || full(ruled).size() < MAX_PATH)))
-        return extended(ruled);
+        (named.filename().native().size() <= 255 && (long_paths() || full(named).size() < MAX_PATH)))
+        return extended(named);
     return extended(final.parent_path() / (L".cnc-" + tail));
 }
 
@@ -190,14 +190,14 @@ bool valid_name(const std::string &name) {
            name.find('\0') == std::string::npos;
 }
 
-// The temporary name for sequence number `seq` (the ruled format, decision P8):
+// The temporary name for sequence number `seq`:
 // `<final>.chainner-c-<pid>-<seq>.tmp`; `.cnc-<pid>-<seq>.tmp` in final's folder where that name would pass the
 // 255-byte name limit. Linux has no long-path switch or \\?\ form: a path past PATH_MAX fails as open(final, "wb")
 // fails. The short name only for a valid final name (valid_name()), as on Windows.
 std::filesystem::path temporary_candidate(const std::filesystem::path &final, uint64_t seq) {
     const std::string tail = std::to_string(getpid()) + "-" + std::to_string(seq) + ".tmp";
-    const std::filesystem::path ruled(final.native() + ".chainner-c-" + tail);
-    if (!valid_name(final.filename().native()) || ruled.filename().native().size() <= 255) return ruled;
+    const std::filesystem::path named(final.native() + ".chainner-c-" + tail);
+    if (!valid_name(final.filename().native()) || named.filename().native().size() <= 255) return named;
     return final.parent_path() / (".cnc-" + tail);
 }
 
@@ -361,6 +361,14 @@ void refuse_unwritable(const std::filesystem::path &final) {
 
 } // namespace
 
+std::filesystem::path write_path(const std::filesystem::path &path) {
+#ifdef _WIN32
+    return extended(path);
+#else
+    return path;
+#endif
+}
+
 FileError::FileError(int error, bool windows, std::filesystem::path path)
     : std::runtime_error(describe(error, windows)), error_(error), windows_(windows), path_(std::move(path)) {}
 
@@ -381,6 +389,11 @@ bool AtomicTarget::commit() {
     }
     rename();
     return true;
+}
+
+bool AtomicTarget::commit_or_keep() {
+    keep_failed_ = true;
+    return commit();
 }
 
 #ifdef _WIN32
@@ -414,7 +427,7 @@ void AtomicTarget::check() const {
 #endif
 
 void AtomicTarget::abandon() noexcept {
-    if (state_ == State::committed) return;
+    if (state_ == State::committed || state_ == State::kept) return;
 #ifdef _WIN32
     DeleteFileW(temp_.c_str());
 #else
@@ -423,16 +436,36 @@ void AtomicTarget::abandon() noexcept {
     state_ = State::abandoned;
 }
 
+// A failed rename: the temporary file is deleted (kept for commit_or_keep), or for a move it goes back to `source`;
+// where that fails too it stays as the temporary file (kept), so a failed move never loses the file.
+void AtomicTarget::undo(const std::filesystem::path *source) noexcept {
+    if (!source) {
+        if (keep_failed_) state_ = State::kept;
+        else abandon();
+        return;
+    }
 #ifdef _WIN32
-void AtomicTarget::rename() {
+    const bool restored = MoveFileExW(temp_.c_str(), extended(*source).c_str(), MOVEFILE_COPY_ALLOWED) != 0;
+#else
+    bool restored = ::rename(temp_.c_str(), source->c_str()) == 0;
+    if (!restored && errno == EXDEV) {
+        std::error_code error;
+        restored = std::filesystem::copy_file(temp_, *source, error) && unlink(temp_.c_str()) == 0;
+    }
+#endif
+    state_ = restored ? State::abandoned : State::kept;
+}
+
+#ifdef _WIN32
+void AtomicTarget::rename(const std::filesystem::path *source) {
     try {
         refuse_unwritable(final_);
     } catch (const FileError &) {
-        abandon();
+        undo(source);
         throw;
     }
     if (const DWORD error = replace(temp_, on_disk(final_))) {
-        abandon();
+        undo(source);
         throw os_error(error, final_);
     }
     state_ = State::committed;
@@ -470,15 +503,15 @@ bool move_atomic(const std::filesystem::path &source, const std::filesystem::pat
     // A rename on one volume; across volumes MoveFileExW copies the file and deletes the source.
     if (!MoveFileExW(extended(source).c_str(), target.temp().c_str(), MOVEFILE_COPY_ALLOWED))
         throw os_error(GetLastError(), final);
-    target.rename();
+    target.rename(&source);
     return true;
 }
 #else
-void AtomicTarget::rename() {
+void AtomicTarget::rename(const std::filesystem::path *source) {
     try {
         refuse_unwritable(final_);
     } catch (const FileError &) {
-        abandon();
+        undo(source);
         throw;
     }
     // The file replaced keeps its permission bits, as open(final, "wb") keeps them (a new file takes the umask's).
@@ -486,7 +519,7 @@ void AtomicTarget::rename() {
     const bool replaced = stat(final_.c_str(), &status) == 0 && S_ISREG(status.st_mode);
     if ((replaced && chmod(temp_.c_str(), status.st_mode & 07777) != 0) || ::rename(temp_.c_str(), final_.c_str()) != 0) {
         const int error = errno;
-        abandon();
+        undo(source);
         throw FileError(error, false, final_);
     }
     state_ = State::committed;
@@ -527,7 +560,7 @@ bool move_atomic(const std::filesystem::path &source, const std::filesystem::pat
         if (!std::filesystem::copy_file(source, target.temp(), error)) throw FileError(error.value(), false, final);
         unlink(source.c_str());
     }
-    target.rename();
+    target.rename(&source);
     return true;
 }
 #endif

@@ -36,11 +36,10 @@ const loadMathjs = lazy(async () => {
                 if (isUnit(result)) return result.toNumber();
                 // just return the real part of complex numbers
                 if (isComplex(result)) return result.re;
-                // just return the real part of complex numbers
                 if (isBigNumber(result)) return result.toNumber();
                 if (isFraction(result)) return number(result);
             } catch {
-                // noop
+                // not something mathjs reads: parsed as a plain number below
             }
             return parseFloat(s);
         };
@@ -200,7 +199,6 @@ export const AdvancedNumberInput = memo(
         };
         useEffect(() => registerInputFlush(() => flushDraft.current()), [registerInputFlush]);
 
-        // event handlers
         const onChange = (value: string) => {
             changedSinceCommit.current = true;
             setInputString(value);

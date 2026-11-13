@@ -24,9 +24,8 @@ def _native_supported(image: object, amount: object, seed: object) -> bool:
     )
 
 
-# Original NumPy helper compatibility for inputs outside Add Noise's node
-# contract (e.g. float64/empty images, other amounts or NumPy seed objects).
-# This path is retained behavior and is not counted as converted C work.
+# NumPy path for inputs outside Add Noise's node contract (float64 or empty images,
+# other amounts, NumPy seed objects).
 def __add_noises(
     image: np.ndarray,
     noise_gen: Callable[[int, int], list[np.ndarray]],

@@ -10,6 +10,7 @@ from nodes.impl.compressed_file import read_file
 from nodes.impl.tensorrt.cache import engines
 from nodes.impl.tensorrt.engine_info import deserialize_engine, read_engine_info
 from nodes.impl.tensorrt.model import TensorRTEngine
+from nodes.impl.tensorrt.rdual_engine_set import engine_set, is_engine_set
 from nodes.properties.inputs import TensorRTFileInput
 from nodes.properties.outputs import (
     DirectoryOutput,
@@ -29,7 +30,10 @@ if io_group is not None:
         description=(
             "Load a TensorRT engine file (.engine, .trt, .plan), compressed by Save Engine or not. "
             "TensorRT engines are built for a specific GPU architecture and may not work "
-            "on different GPUs. The node will warn you if there's a potential compatibility issue."
+            "on different GPUs. The node will warn you if there's a potential compatibility issue. "
+            "An RDUAL engine set (a video model's engines, from Build Engine) is one file, which "
+            "only chaiNNer-C reads; a damaged one, or one saved by another chaiNNer-C version, "
+            "is refused before TensorRT reads it."
         ),
         icon="BsNvidia",
         inputs=[TensorRTFileInput(primary_input=True)],
@@ -53,6 +57,9 @@ if io_group is not None:
         def load() -> TensorRTEngine:
             logger.debug("Reading TensorRT engine from path: %s", path)
             engine_bytes = read_file(path)
+            if is_engine_set(engine_bytes):
+                # Checked whole here; its session deserializes the parts.
+                return engine_set(engine_bytes)
             loaded = deserialize_engine(engine_bytes, gpu_index)
             try:
                 return TensorRTEngine(engine_bytes, read_engine_info(loaded), loaded)

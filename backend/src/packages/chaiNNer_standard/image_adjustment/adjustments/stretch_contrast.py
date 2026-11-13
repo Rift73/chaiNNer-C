@@ -15,10 +15,6 @@ from nodes.utils.utils import get_h_w_c
 from .. import adjustments_group
 
 
-def _stretch(img: np.ndarray, range_min: float, range_max: float) -> np.ndarray:
-    return stretch_range(img, range_min, range_max)
-
-
 def _bounds(values: np.ndarray, percentile: float | None) -> tuple[float, float]:
     low, high = contrast_bounds(values, percentile)
     if not (math.isnan(low) or math.isnan(high)):
@@ -93,11 +89,10 @@ def stretch_contrast_node(
     def stretched(i: np.ndarray) -> np.ndarray:
         range_min, range_max = get_range_of(i)
         # A flat image or channel has no range to stretch and stays as it is, as in
-        # Pillow's autocontrast and scikit-image's rescale_intensity (upstream turned
-        # it black).
+        # Pillow's autocontrast and scikit-image's rescale_intensity.
         if range_min == range_max and mode != StretchMode.MANUAL:
             return i
-        return _stretch(i, range_min, range_max)
+        return stretch_range(i, range_min, range_max)
 
     _, _, c = get_h_w_c(img)
 

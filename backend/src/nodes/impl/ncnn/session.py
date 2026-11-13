@@ -6,11 +6,9 @@ from weakref import WeakKeyDictionary
 
 from ncnn import ncnn
 
-from packages.chaiNNer_ncnn.settings import CPU_DEVICE, NcnnSettings
+from packages.chaiNNer_ncnn.settings import CPU_DEVICE, NcnnSettings, use_gpu
 
 from .model import NcnnModelWrapper
-
-use_gpu = ncnn.get_gpu_count() > 0
 
 
 def create_ncnn_net(model: NcnnModelWrapper, settings: NcnnSettings) -> ncnn.Net:

@@ -75,10 +75,10 @@ export const IconSet = memo(({ inputs, nodeState }: IconSetProps) => {
 
                 let leftIsSelected = false;
                 if (i > 0) {
-                    const rightInput = inputs[i - 1];
-                    const rightValue = inputData[rightInput.id];
-                    const rightYes = rightInput.options[0];
-                    leftIsSelected = rightValue === rightYes.value;
+                    const leftInput = inputs[i - 1];
+                    const leftValue = inputData[leftInput.id];
+                    const leftYes = leftInput.options[0];
+                    leftIsSelected = leftValue === leftYes.value;
                 }
 
                 return (

@@ -27,8 +27,8 @@ from nodes.impl import numpy_pool
 
 from .vosr2_memory import available_memory
 
-# The grain's luma RMS relative to the input's local grain RMS. Chosen by eye on the
-# a 2x sample (2026-10-13): 1.4 times the strength of the input grain enlarged
+# The grain's luma RMS relative to the input's local grain RMS. Chosen by eye on
+# a 2x sample: 1.4 times the strength of the input grain enlarged
 # with bicubic, which measured 1.13 to 1.16 times the input grain at 2x and 4x.
 GRAIN_GAIN = 1.16
 # The grain's softness: a Gaussian of sigma 0.6 output pixels.

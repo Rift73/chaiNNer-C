@@ -1,0 +1,81 @@
+# Parameters that mean the same in every function that has them. Each table is
+# [param."<name>"] with any of:
+#   doc = "Markdown text"   the pop-up where no method overlay gives one: before the
+#                           docstring's text with override = true, else only where the
+#                           docstring has none
+#   annotation = "text"     only parameters whose annotation contains it
+#   label = "Plain name"    its label where the method overlay gives none
+#   hidden = true           left out of the node, keeping its default
+
+[param."clip"]
+doc = "The video clip it works on."
+annotation = "VideoNode"
+override = true
+
+[param."planes"]
+doc = "A plane is one channel of the picture: Y the brightness, U and V the colour (R, G and B in an RGB clip). Picks the planes it changes; most functions copy the others unchanged. Default leaves the choice to the function."
+override = true
+
+[param."kwargs"]
+doc = "More arguments by name, typed as a Python dict. Example: {'sigma': 1.0}"
+annotation = "Any"
+
+# Only the function name that error messages show (vs-jetpack's FuncExcept).
+[param."func"]
+hidden = true
+annotation = "tuple[Callable[..., Any] | str, str]"
+
+# Plain names (a method's own labels win).
+[param."tff"]
+label = "Field order"
+
+[param."field_based"]
+label = "Field order"
+
+[param."thr"]
+label = "Threshold"
+
+[param."b"]
+label = "Bicubic b"
+annotation = "float"
+
+[param."c"]
+label = "Bicubic c"
+annotation = "float"
+
+[param."ref"]
+label = "Reference clip"
+annotation = "VideoNode"
+
+[param."clipb"]
+label = "Second clip"
+annotation = "VideoNode"
+
+[param."tr"]
+label = "Temporal radius"
+
+[param."double_rate"]
+label = "Double the frame rate"
+
+[param."matrix_in"]
+label = "Input matrix"
+
+[param."transfer_in"]
+label = "Input transfer"
+
+[param."primaries_in"]
+label = "Input primaries"
+
+[param."range_in"]
+label = "Input range"
+
+[param."chromaloc"]
+label = "Chroma position"
+
+[param."chromaloc_in"]
+label = "Input chroma position"
+
+# A window function (WindowedSinc's): only a Python function can be given.
+[param."window"]
+hidden = true
+annotation = "Callable[[float, int], float]"

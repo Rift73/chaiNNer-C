@@ -17,8 +17,51 @@ alignment (dual.aligned_input_name), which Upscale Image's tiler reads.
 from __future__ import annotations
 
 import sys
+from typing import TYPE_CHECKING
 
 from ..pytorch.vosr2_process import end_with_parent
+
+if TYPE_CHECKING:
+    # Annotations only: the entry point imports TensorRT after end_with_parent.
+    import tensorrt as trt
+
+
+def builder_config(
+    builder: trt.Builder,
+    workspace_gib: str,
+    level: str,
+    tf32: str,
+    sparse: str,
+    tiling: str,
+    timing_cache: trt.ITimingCache | None = None,
+) -> trt.IBuilderConfig:
+    """The guide's builder policy with Build Engine's settings as the command line gives
+    them (workspace GiB, optimization level, TF32 1/0, sparse weights 1/0, tiling
+    optimization), no auxiliary streams and detailed profiling verbosity. Without
+    `timing_cache` the build gets a fresh one; builds that pass one share it
+    (rdual_engine_worker.py's engines of one model and size)."""
+    import tensorrt as trt
+
+    config = builder.create_builder_config()
+    if tf32 != "1":
+        config.clear_flag(trt.BuilderFlag.TF32)
+    if sparse == "1":
+        config.set_flag(trt.BuilderFlag.SPARSE_WEIGHTS)
+    config.builder_optimization_level = int(level)
+    config.tiling_optimization_level = getattr(
+        trt.TilingOptimizationLevel, tiling.upper()
+    )
+    config.max_aux_streams = 0
+    config.set_memory_pool_limit(
+        trt.MemoryPoolType.WORKSPACE, int(float(workspace_gib) * (1 << 30))
+    )
+    config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
+    # TensorRT refuses a cache of another GPU or version: the build starts a fresh one.
+    if timing_cache is None or not config.set_timing_cache(
+        timing_cache, ignore_mismatch=False
+    ):
+        config.set_timing_cache(config.create_timing_cache(b""), ignore_mismatch=False)
+    return config
 
 
 def main(
@@ -62,21 +105,7 @@ def main(
         errors = [str(parser.get_error(i)) for i in range(parser.num_errors)]
         raise RuntimeError("ONNX parse failed:\n" + "\n".join(errors))
     dual_aot.attach(network, lowered)
-    config = builder.create_builder_config()
-    if tf32 != "1":
-        config.clear_flag(trt.BuilderFlag.TF32)
-    if sparse == "1":
-        config.set_flag(trt.BuilderFlag.SPARSE_WEIGHTS)
-    config.builder_optimization_level = int(level)
-    config.tiling_optimization_level = getattr(
-        trt.TilingOptimizationLevel, tiling.upper()
-    )
-    config.max_aux_streams = 0
-    config.set_memory_pool_limit(
-        trt.MemoryPoolType.WORKSPACE, int(float(workspace_gib) * (1 << 30))
-    )
-    config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
-    config.set_timing_cache(config.create_timing_cache(b""), ignore_mismatch=False)
+    config = builder_config(builder, workspace_gib, level, tf32, sparse, tiling)
     image = network.get_input(0)
     image.name = dual.aligned_input_name(int(profile[3]) if dynamic else dual.ALIGNMENT)
     if dynamic:

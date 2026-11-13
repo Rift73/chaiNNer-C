@@ -132,6 +132,7 @@ def load_preview(node_id: str, loader: VideoLoader, n: int) -> np.ndarray:
     open preview reader (video.py preview_frame), whatever the Mode. A video read in
     Planes mode whose matrix RGB cannot convert (BT.2020 constant luminance) shows its Y
     plane in gray instead, so the node still reports its Frame Count and FPS."""
+    gray = False
     try:
         loader.preview_format()
     except ValueError as reason:
@@ -140,17 +141,23 @@ def load_preview(node_id: str, loader: VideoLoader, n: int) -> np.ndarray:
             vars(loader)["path"],
             reason,
         )
-        ((_, y, _, _),) = list(loader.stream_items(n, n + 1))
+        gray = True
+
+    def read(frame: int) -> np.ndarray:
+        if not gray:
+            return preview_frame(node_id, loader, frame)
+        ((_, y, _, _),) = list(loader.stream_items(frame, frame + 1))
         assert y is not None
         return np.dstack((y, y, y))
+
     try:
-        return preview_frame(node_id, loader, n)
+        return read(n)
     except PastTheEnd as past:
         # The Frame Count of a file the FFmpeg CLI reads is an estimate, which can pass
         # its frames (a longer audio track, a cut file): the seek bar's last frame.
         if past.count == 0:
             raise
-        return preview_frame(node_id, loader, past.count - 1)
+        return read(past.count - 1)
 
 
 RGB_MODES = "VideoMode::Rgb | VideoMode::Both"
@@ -238,9 +245,9 @@ def later_outputs(preview_docs: str) -> list[BaseOutput]:
     schema_id="chainner:image:load_video",
     name="Load Video",
     description=[
-        "Iterate over the frames in a video as images: all of them, or a Range from In to Out.",
+        "Iterate over the frames in a video as images: all of them, or a Range from Start to End.",
         "Uses FFMPEG to read video files.",
-        "The seek bar picks a frame, which the Preview shows. In and Out set the Range there, and Run this frame runs the chain on that frame alone. A run of one frame (Run this frame, or a Range whose In is its Out) makes Save Video save the frame as a PNG image instead of a video.",
+        "The seek bar picks a frame, which the Preview shows. Set start and Set end set the Range there, and Run this frame runs the chain on that frame alone. A run of one frame (Run this frame, or a Range whose Start is its End) makes Save Video save the frame as a PNG image instead of a video.",
         "This iterator is much slower than just using FFMPEG directly, so if you are doing a simple conversion, just use FFMPEG outside chaiNNer instead.",
     ],
     icon="MdVideoCameraBack",
@@ -268,18 +275,18 @@ def later_outputs(preview_docs: str) -> list[BaseOutput]:
         )
         .with_id(10)
         .with_docs(
-            "All reads every frame. Range reads the frames from In to Out, both"
+            "All reads every frame. Range reads the frames from Start to End, both"
             " included, by their numbers in the video (0 is the first), and cuts the"
             " audio to them."
         ),
         if_enum_group(10, FramesMode.RANGE)(
-            NumberInput("In", default=0, min=0)
+            NumberInput("Start", default=0, min=0)
             .with_id(11)
             .with_docs(
                 "The first frame read. Past the video's last frame, the run fails.",
                 hint=True,
             ),
-            NumberInput("Out", default=9, min=0)
+            NumberInput("End", default=9, min=0)
             .with_id(12)
             .with_docs(
                 "The last frame read. Past the video's last frame, the video is read to"
@@ -301,10 +308,10 @@ def later_outputs(preview_docs: str) -> list[BaseOutput]:
             """,
         )
         .with_docs(
-            "The frame's number in the video: 0 for its first frame, In for the first"
+            "The frame's number in the video: 0 for its first frame, Start for the first"
             " frame of a Range."
         )
-        .with_never_reason("In is after Out."),
+        .with_never_reason("Start is after End."),
         DirectoryOutput("Video Directory", of_input=0),
         FileNameOutput("Name", of_input=0),
         NumberOutput("FPS", output_type="0.."),

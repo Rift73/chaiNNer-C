@@ -59,8 +59,7 @@ ALLOW_NO_VOSR_PLUGIN = "CHAINNER_C_PACKAGE_WITHOUT_VOSR_PLUGIN"
 BINARY_SUFFIXES = (".dll", ".pyd", ".exe")
 REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: symlinks and junctions
 SITE_PACKAGES = "Lib/site-packages"
-# Distributions of the provisioned runtime that the package copy leaves out
-# (Consult 6 P2, Consult 7 and its precedent, Consult 8 sweep item 4), with the
+# Distributions of the provisioned runtime that the package copy leaves out, with the
 # reason the manifest records: the test and build tools, and the ones only
 # upstream's code needs (the oracle and the frozen references): google-re2 (the
 # ONNX loader), Sanic-Cors (the server; chaiNNer-C has cors.py) and pynvml (the
@@ -86,11 +85,8 @@ def sha(data: bytes) -> str:
 
 
 def hash_file(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(4 * 1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def shell_skip(relative: str, is_dir: bool) -> bool:

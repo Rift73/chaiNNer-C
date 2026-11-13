@@ -1,9 +1,9 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "resample_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* Resample's two passes, AVX2 unit (/arch:AVX2, spec 4.3): no export, reached only
- * through horizontal_range's and vertical_range's dispatch on the call's ISA level
- * (SP4b D14). The horizontal pass runs eight source rows side by side, one per lane, on
+/* Resample's two passes, AVX2 unit (/arch:AVX2): no export, reached only
+ * through horizontal_range's and vertical_range's dispatch on the call's ISA level.
+ * The horizontal pass runs eight source rows side by side, one per lane, on
  * columns transposed from them (cn_resample_horizontal_avx2 in resample_shared.h).
  * In the vertical pass each lane runs
  * its output's vertical_one sequence: acc = 0, then acc = acc + in * w per tap in

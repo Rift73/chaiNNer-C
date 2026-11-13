@@ -191,7 +191,6 @@ int classify(py::bytes data) {
 void cn_bind_onnx_graph(py::module_& module) {
     module.def("onnx_parse_shape", &parse_shape);
     module.def("onnx_tensor_shape", &tensor_shape);
-    module.def("onnx_tensor_input", &tensor_input);
     module.def("onnx_image_to_image", &image_to_image);
     module.def("onnx_fp_type", &fp_type);
     module.def("onnx_opset", &opset);

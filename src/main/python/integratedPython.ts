@@ -8,7 +8,7 @@ import { log } from '../../common/log';
 import { isArmMac } from '../env';
 import { SupportedPlatform, getPlatform } from '../platform';
 import { checkFileExists, readTextFile, writeFileAtomic } from '../util';
-import { checkPythonPaths } from './checkPythonPaths';
+import { checkPython } from './version';
 
 interface PythonDownload {
     url: string;
@@ -197,7 +197,7 @@ const checkPythonCached = async (pythonPath: string, cacheFile: string): Promise
         // no cache yet, or one that cannot be read: the executable is checked below
     }
 
-    const pythonInfo = await checkPythonPaths([pythonPath]);
+    const pythonInfo = await checkPython(pythonPath);
     const cache: PythonVersionCache = {
         python: pythonPath,
         size,
@@ -255,5 +255,5 @@ export const getIntegratedPython = async (
     log.info('Removing downloaded files...');
     await fs.rm(tarPath);
 
-    return checkPythonPaths([pythonPath]);
+    return checkPython(pythonPath);
 };

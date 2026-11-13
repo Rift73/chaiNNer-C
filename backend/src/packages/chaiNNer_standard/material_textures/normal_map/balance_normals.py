@@ -4,7 +4,6 @@ import numpy as np
 
 import navi
 from nodes.impl import native_geometry
-from nodes.impl.normals.util import gr_to_xyz, normalize_normals, xyz_to_bgr
 from nodes.properties.inputs import ImageInput
 from nodes.properties.outputs import ImageOutput
 
@@ -26,11 +25,4 @@ from .. import normal_map_group
     ],
 )
 def balance_normals_node(n: np.ndarray) -> np.ndarray:
-    if native_geometry.image_supported(n):
-        return native_geometry.normal_map(n, 1)
-    x, y, _ = gr_to_xyz(n)
-
-    x -= np.mean(x)
-    y -= np.mean(y)
-
-    return xyz_to_bgr(normalize_normals(x, y))
+    return native_geometry.normal_map(n, 1)

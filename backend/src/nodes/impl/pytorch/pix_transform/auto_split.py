@@ -13,7 +13,7 @@ from ...upscale.auto_split import Split, auto_split
 from ...upscale.grayscale import SplitMode, grayscale_split
 from ...upscale.passthrough import passthrough_single_color
 from ...upscale.tiler import Tiler
-from ..utils import safe_cuda_cache_empty
+from ..utils import is_out_of_memory, safe_cuda_cache_empty
 from .pix_transform import Params, pix_transform
 
 
@@ -51,17 +51,16 @@ def pix_transform_auto_split(
     tile_size: int,
     progress: Progress,
 ) -> np.ndarray:
-    """
-    Automatically splits the source and guide image into segments that can be processed by PixTransform.
+    """Runs PixTransform on the source in tiles, with the matching tiles of the guide.
 
-    The source and guide image may have any number of channels and any size, also long as the size of the guide image is a whole number (greater than 1) multiple of the size of the source image.
-    """
+    The source and guide may have any number of channels and any size, as long as the
+    guide's size is a whole multiple (greater than 1) of the source's."""
 
-    s_w, s_h, _ = get_h_w_c(source)
-    g_w, g_h, _ = get_h_w_c(guide)
+    s_h, s_w, _ = get_h_w_c(source)
+    g_h, g_w, _ = get_h_w_c(guide)
 
     assert g_h > s_h and g_w > s_w, (
-        "The guide image mus be larger than the source image."
+        "The guide image must be larger than the source image."
     )
     assert g_w / s_w == g_w // s_w and g_w / s_w == g_h / s_h, (
         "The size of the guide image must be an integer multiple of the size of the source image (e.g. 2x, 3x, 4x, ...)."
@@ -84,21 +83,11 @@ def pix_transform_auto_split(
 
             return _as_3d(grayscale_split(tile, pass_op, split_mode))
         except (RuntimeError, MemoryError) as e:
-            # Only retry device or host memory failures.
-            if (
-                isinstance(e, torch.OutOfMemoryError)
-                or isinstance(e, MemoryError)
-                or "allocate" in str(e).lower()
-                or "out of memory" in str(e).lower()
-                or "ALLOC_FAILED" in str(e)
-            ):
-                # Collect garbage (clear VRAM)
-                gc.collect()
-                safe_cuda_cache_empty()
-                return Split()
-            else:
-                # Re-raise the exception if not an OOM error
+            if not is_out_of_memory(e):
                 raise
+            gc.collect()
+            safe_cuda_cache_empty()
+            return Split()
 
     try:
         return auto_split(source, upscale, tiler)

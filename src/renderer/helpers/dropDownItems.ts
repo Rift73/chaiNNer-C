@@ -18,6 +18,20 @@ export interface DropDownOptionItem {
 }
 export type DropDownItem = DropDownGroupItem | DropDownOptionItem;
 
+/** Dropdowns with more options than this get a search field. */
+const SEARCH_THRESHOLD = 12;
+
+/**
+ * How a dropdown shows its options. The native select is used unless an option has a description
+ * (a select cannot show a pop-up per option) or the options are too many to find without a search
+ * field.
+ */
+export const getDropDownKind = (options: readonly InputOption[]): 'select' | 'list' | 'search' => {
+    if (options.length > SEARCH_THRESHOLD) return 'search';
+    if (options.some((o) => o.description)) return 'list';
+    return 'select';
+};
+
 /**
  * Returns the options of a dropdown in order, each group item placed before the option it starts at.
  */

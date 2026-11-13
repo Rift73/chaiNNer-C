@@ -13,7 +13,7 @@ typedef struct { size_t start, count, channel; float range; } bucket;
 
 /* Channel c's extrema widen the bucket as np.argmax does, in channel order: the first
    widest channel, and the first NaN before every finite one (then 1: stop). low and
-   high reach nothing but range = high - low and its compares (SP4b D12 as built): the
+   high reach nothing but range = high - low and its compares: the
    AVX2 extrema may return another zero-class value than B3's first-seen one, which
    leaves the stored range's bits unchanged (a zero-class pair's +-0 range is never
    stored; palette_shared.h). A change that lets their bits reach
@@ -88,7 +88,7 @@ static size_t count_above(const float *values, size_t count, float median, cn_is
     return above;
 }
 
-/* The median's selection (SP4b Task 5b): an exact radix select over order-preserving
+/* The median's selection: an exact radix select over order-preserving
    keys. A non-NaN float's key is bits ^ (bits >> 31 ? 0xFFFFFFFF : 0x80000000), Rust's
    f32::total_cmp order: unsigned key order is -inf < ... < -0 < +0 < ... < +inf, and
    equal keys are equal bits. Key order refines the compare order in both MXCSR states:
@@ -252,7 +252,7 @@ static void median_select(const float *values, size_t count, size_t first, size_
    slots of the span unwritten for the copy-back to read as stale pooled bytes. At ISA
    level avx2 it comes from another unit
    (cn_palette_count_above_avx2, whose prototype states the coupling). A per-pixel
-   bound on the low slot cost 9-12 % of the split (SP4b Task 5b). */
+   bound on the low slot cost 9-12 % of the split. */
 static size_t next_slot(size_t above, size_t *high, size_t *low) {
     size_t mask = (size_t)0 - above;
     size_t slot = (*high & mask) | (*low & ~mask);
@@ -358,8 +358,8 @@ CN_EXPORT cn_status cn_palette_median_cut(const float *src, float *out,
     /* A split produces nonempty children, so at most pixels colors exist. */
     size_t limit = capacity < pixels ? capacity : pixels;
     size_t count = pixels * channels;
-    /* data, scratch and the selection's narrowed copy and counts from one pooled lease
-       (SP4b D10): data is written whole (src) before any read; each split writes the
+    /* data, scratch and the selection's narrowed copy and counts from one pooled lease:
+       data is written whole (src) before any read; each split writes the
        bucket's span of scratch (every slot, as its count of values above the median is
        the split's own predicate) before the copy back reads it. The selected channel's
        copy lives at the start of scratch: it is read (selection, counts) before the

@@ -19,7 +19,7 @@ from nodes.properties.outputs import (
 from nodes.utils.utils import file_identity, list_all_files_sorted
 
 from .. import batch_processing_group
-from ..io.load_model import load_model_node
+from ..io.load_model import read_model
 
 
 @batch_processing_group.register(
@@ -73,7 +73,7 @@ def load_models_node(
 
     return (
         from_list_read_ahead(
-            model_files, load_model_node, load_model, identity=file_identity
+            model_files, read_model, load_model, identity=file_identity
         ).with_fail_fast(fail_fast),
         directory,
     )

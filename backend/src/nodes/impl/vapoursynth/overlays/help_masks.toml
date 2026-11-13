@@ -1,0 +1,694 @@
+# Masks node: pop-up texts. A mask is a grey clip: white = "act here", black = "leave alone".
+# Threshold scales below are checked against vsmasktools 2.2.6 / VapourSynth R81 sources.
+
+# ---------------------------------------------------------------- edge and line masks
+
+[method."vsmasktools.*.edgemask"]
+help = "Makes an edge mask: outlines of objects and lines turn white, flat areas stay black. Wire it as the Mask of Merge through a mask (Planes) so a sharpen, anti-alias or dehalo touches only the lines. Pick the detector in Edge detector; it starts on Sobel. Example: Kirsch with Low threshold `0.1` for a clean, solid line mask."
+
+[method."vsmasktools.*.edgemask".docs]
+lthr = "Cuts weak edges: values below it become black. Scale 0 to 1 of the full range, whatever the bit depth. Higher = fewer, cleaner lines; 0.05 to 0.2 is usual. Example: `0.1`"
+hthr = "Edges above it become fully white. Scale 0 to 1. Lower = more solid white lines. Empty = no limit. Set equal to Low threshold for a pure black-and-white mask. Example: `0.3`"
+multi = "Multiplies the edge strength before the thresholds: above 1 brightens faint edges, below 1 dims. Example: `2`"
+clamp = "Keeps the output inside the legal 0 to 1 range. Matters only for 32-bit float clips, where strong edges can go above white."
+planes = "Which planes get an edge mask. Planes left out become black, they are not copied."
+use_expr = "Computes the edges with VapourSynth expressions instead of the faster EdgeMasks plugin. Slower; leave off unless the plugin is missing."
+mag_directions = "Only for compass detectors (Kirsch, Robinson, TheToof): keep edges of one direction only, e.g. N finds horizontal edges lit from the top. Default uses all eight directions. Picking one switches to a slower computation."
+rady = "MinMax only: radius on the luma (brightness) plane. Higher = thicker, stronger lines; 1 to 3 is usual. Example: `2`"
+radc = "MinMax only: radius on the colour planes. 0 leaves the colour planes as the original picture, not a mask, so use a luma-only clip or set 1 or more. Example: `1`"
+
+[method."vsmasktools.*.edgemask".choices]
+ASobel = "Sobel variant from aWarpSharp2: bright, saturates quickly, 2-pixel lines. Slower (expression based)."
+Cross = "Diagonal differences only: very thin, dim lines, very fast. Raise Strength to see it."
+ExKirsch = "5x5 Kirsch: the brightest and thickest of all; even weak edges go white. Picks up grain too."
+ExLaplacian1 = "5x5 second-derivative detector: thick lines, about as sensitive to grain as to real edges. Slow."
+ExLaplacian2 = "5x5 Laplacian variant: dim on edges, very grain-sensitive. Rarely the right pick. Slow."
+ExLaplacian3 = "5x5 Laplacian variant: dim on edges, very grain-sensitive. Rarely the right pick. Slow."
+ExLaplacian4 = "5x5 Laplacian: bright, thick lines, quite grain-sensitive. Default of Credit mask from NC clip (diff_creditless). Slow."
+ExPrewitt = "5x5 Prewitt: thick, bright lines and among the least sensitive to grain. Fast."
+ExSobel = "5x5 Sobel: thick, bright lines, low grain sensitivity. A good pick for grainy sources. Fast."
+FDoG = "5x5 smoothed detector: thick lines, low grain sensitivity, medium brightness. Default of Bright text mask (luma_credit_mask). Fast."
+Farid = "5x5 precise detector: thick, very dim lines (raise Strength), low grain sensitivity. Slowest."
+FreyChen = "Nine-matrix 3x3 detector computed in 32-bit: thin, dim lines. Slow."
+FreyChenG41 = "3x3 Frei-Chen variant from G41Fun: thin lines, medium brightness. Slow."
+Kayyali = "Single diagonal matrix: misses straight edges and mostly reacts to grain and corners. Rarely useful alone."
+Kirsch = "3x3 compass detector (strongest of eight directions): bright, solid 2-pixel lines. Default inside Detail mask (detail_mask). Fast."
+Kroon = "3x3 detector tuned for accuracy: thin lines, a bit brighter than Sobel. Fast."
+Laplacian1 = "3x3 second-derivative detector: thin, dim lines and as sensitive to grain as to edges."
+Laplacian2 = "3x3 Laplacian variant that misses plain straight edges and mostly shows grain. Rarely useful."
+Laplacian3 = "3x3 Laplacian variant: thin lines, noticeably grain-sensitive."
+Laplacian4 = "Classic 3x3 Laplacian (all eight neighbours): thin lines, grain-sensitive."
+LoG = "Laplacian of Gaussian, 5x5: blurs before detecting, so thicker lines; still fairly grain-sensitive. Slow."
+MinMax = "Local brightest minus darkest within a radius: thick lines whose brightness equals the local contrast. Set Luma radius and Colour radius."
+Prewitt = "Classic 3x3 detector: thin, clean lines, moderate grain sensitivity. A safe default. Fast."
+RScharr = "Refined 3x3 Scharr: like Scharr, slightly more accurate on diagonals. Fast."
+Robinson3 = "3x3 compass detector, light weights: thin lines, Prewitt-like brightness. Fast."
+Robinson5 = "3x3 compass detector, Sobel weights: thin lines, Sobel-like brightness. Fast."
+Scharr = "3x3 detector with even response in every direction: thin lines, brighter than Sobel. Fast."
+Sobel = "Classic 3x3 detector: thin, clean lines, moderate grain sensitivity. The usual first choice. Fast."
+TEdge = "1-D 5-tap detector from AviSynth TEdgeMask: thick, dim lines. Slow."
+TheToof = "3x3 compass detector from SharpAAMCmod: thin, bright lines. Slow (expression based)."
+Tritical = "Plain pixel difference from TCanny: thinnest, dim lines, fastest."
+
+[method."vsmasktools.*.ridgemask"]
+help = "Makes a ridge mask: the middle of thin lines (bright or dark) turns white, instead of both sides of an edge as Edge mask (edgemask) does. Good for line art, e.g. as the Mask of a line darkener or anti-alias. Pitfall: works best on a 32-bit float clip; convert with Convert Format first."
+
+[method."vsmasktools.*.ridgemask".docs]
+lthr = "Cuts weak ridges: values below it become black. Scale 0 to 1 of the full range. Higher = fewer, cleaner lines. Example: `0.1`"
+hthr = "Ridges above it become fully white. Scale 0 to 1. Empty = no limit. Example: `0.3`"
+multi = "Multiplies the ridge strength before the thresholds: above 1 brightens faint lines. Example: `2`"
+clamp = "Keeps the output inside the legal 0 to 1 range. Matters only for 32-bit float clips."
+planes = "Which planes get a mask. Planes left out become black, they are not copied."
+
+[method."vsmasktools.*.ridgemask".choices]
+Cross = "Diagonal differences: very thin, dim result, fastest."
+ExPrewitt = "5x5 Prewitt: wider ridges, least grain-sensitive."
+ExSobel = "5x5 Sobel: wider ridges, low grain sensitivity."
+FDoG = "5x5 smoothed detector: wide, smooth ridges, low grain sensitivity."
+Farid = "5x5 precise detector: wide but dim (raise Strength)."
+FreyChenG41 = "3x3 Frei-Chen variant from G41Fun: thin ridges."
+Kroon = "3x3 accurate detector: thin ridges."
+Prewitt = "Classic 3x3: thin ridges, moderate grain sensitivity."
+RScharr = "Refined 3x3 Scharr: thin ridges, even in all directions."
+Scharr = "3x3 with even response in every direction: thin ridges."
+Sobel = "Classic 3x3: thin ridges; a safe start."
+Tritical = "Plain pixel difference: thinnest ridges, fastest."
+
+[method."vsmasktools.get_all_edge_detects"]
+help = "Runs every edge detector on the clip and gives one labelled mask per detector, to compare them side by side and pick one for Edge mask (edgemask). Pitfall: the output is several clips; wire it into Interleave clips frame by frame (Cut and Splice) or Side by side (Planes)."
+
+[method."vsmasktools.get_all_edge_detects".docs]
+lthr = "Cuts weak edges in every mask: values below it become black. Scale 0 to 1. Example: `0.1`"
+hthr = "Edges above it become fully white in every mask. Scale 0 to 1. Empty = no limit. Example: `0.3`"
+multi = "Multiplies edge strength before the thresholds. Example: `2`"
+clamp = "Keeps the output inside the legal 0 to 1 range; matters only for 32-bit float clips."
+
+[method."vsmasktools.get_all_ridge_detect"]
+help = "Runs every ridge detector on the clip and gives one labelled mask per detector, to compare them and pick one for Line-centre mask (ridgemask). Pitfall: the output is several clips; wire it into Interleave clips frame by frame (Cut and Splice) or Side by side (Planes)."
+
+[method."vsmasktools.get_all_ridge_detect".docs]
+lthr = "Cuts weak ridges in every mask: values below it become black. Scale 0 to 1. Example: `0.1`"
+hthr = "Ridges above it become fully white in every mask. Scale 0 to 1. Empty = no limit. Example: `0.3`"
+multi = "Multiplies ridge strength before the thresholds. Example: `2`"
+clamp = "Keeps the output inside the legal 0 to 1 range; matters only for 32-bit float clips."
+
+[method."vsmasktools.dre_edgemask"]
+help = "Edge mask that also finds lines in dark or low-contrast scenes: it first boosts local contrast (Retinex or CLAHE), then detects edges and adds a Kirsch mask of the original. Output is black and white by default. Use it where Edge mask (edgemask) misses lines in night scenes. Example: RETINEX with Threshold `0.122`."
+
+[method."vsmasktools.dre_edgemask".choices]
+RETINEX = "Boosts shadows with multi-scale Retinex. Strong in very dark scenes; slower."
+CLAHE = "Boosts contrast tile by tile (limited adaptive histogram equalization), a milder, more even boost. Needs the vszip plugin."
+
+[method."vsmasktools.dre_edgemask".docs]
+sigma = "Blur strength applied after the contrast boost, before edge detection. Higher = fewer grain edges, softer lines; 0 = no blur. Example: `1`"
+brz = "Threshold that turns the mask pure black and white. Scale 0 to 1. Higher = fewer lines. 0 keeps a soft grey mask. Example: `0.122`"
+operator = "Edge detector run on the boosted picture. See the Edge detector list of Edge mask (edgemask) for how they differ; Prewitt is the default."
+kwargs = "Settings of the contrast boost. RETINEX: `{'sigmas': [50, 200, 350], 'lower_thr': 0.001, 'upper_thr': 0.005}`. CLAHE: `{'limit': 0.0305, 'tile': 5}` (limit on a 0 to 1 scale)."
+
+[method."std.Prewitt"]
+help = "VapourSynth's built-in Prewitt edge detector: lines white, flat areas black. Simpler and faster than Edge mask (edgemask), but without thresholds. Wire the result as the Mask of Merge through a mask (Planes). Example: Strength `2` for brighter lines."
+
+[method."std.Prewitt".docs]
+scale = "Multiplies the result: above 1 brightens the lines, below 1 dims them. Empty = 1. Example: `2`"
+
+[method."std.Sobel"]
+help = "VapourSynth's built-in Sobel edge detector: lines white, flat areas black. Simpler and faster than Edge mask (edgemask), but without thresholds. Wire the result as the Mask of Merge through a mask (Planes). Example: Strength `2` for brighter lines."
+
+[method."std.Sobel".docs]
+scale = "Multiplies the result: above 1 brightens the lines, below 1 dims them. Empty = 1. Example: `2`"
+
+[method."vsmasktools.luma_credit_mask"]
+help = "Marks bright, near-white text such as credits and titles: white on the edges of pixels brighter than Brightness threshold, then grown a little. Wire it as the Mask of Merge through a mask (Planes) to keep credits untouched by a rescale or denoise. Pitfall: misses coloured or dark text."
+
+[method."vsmasktools.luma_credit_mask".docs]
+thr = "How bright a pixel must be to count as credit text. Scale 0 to 1 of the luma range. Lower = catches greyer text but also bright scenery. Example: `0.85`"
+draft = "Skips growing the mask (4 expand and 2 soften passes). Faster, but the mask hugs the letters tightly."
+edgemask = "Edge detector that outlines the text; default FDoG. Connect a finished mask clip to use it instead."
+
+[method."vsmasktools.limited_linemask"]
+help = "Line mask of the luma built from several sources at once: edge detectors, Line mask for dark scenes (tcanny_retinex) at several strengths and Detail mask, one knob (multi_detail_mask), added together. Finds faint lines that one detector misses. Use as the Mask of an anti-alias or line darkener. Pitfall: slow, it runs Retinex three times."
+
+[method."vsmasktools.limited_linemask".docs]
+sigmas = "Strengths of the tcanny_retinex passes, one mask per value; smaller values find fainter lines. Empty = `0.000125, 0.0025, 0.0055`. Example: `0.0025, 0.0055`"
+detail_sigmas = "Thresholds of the multi_detail_mask passes, one mask per value; lower = more detail. Empty = `0.011, 0.013`. Example: `0.011`"
+edgemasks = "List of edge detectors added to the mask; default a single Kirsch."
+
+[method."vsmasktools.tcanny_retinex"]
+help = "Line mask that works in dark scenes: blurs, boosts contrast with Retinex, then detects edges with Prewitt. Lines white on black. Use as the Mask of an anti-alias or line darkener on dark footage. Starts at Contrast boost `0.0025`."
+
+[method."vsmasktools.tcanny_retinex".docs]
+thr = "Share of the brightest pixels clipped during the contrast boost, 0 to 1 (exclusive). Higher = stronger boost and more lines. 0.0001 to 0.006 is usual. Example: `0.0025`"
+sigma = "Blur sizes of the Retinex contrast boost, one per scale. Larger = smoother, wider boost. Example: `50, 200, 350`"
+blur_sigma = "Blur before everything else. Higher = fewer grain lines, softer mask. Example: `1`"
+
+[method."vsmasktools.retinex"]
+help = "Brightens shadows and evens out contrast (multi-scale Retinex). The result is a grey luma picture, not a mask: feed it into an edge detector such as Edge mask (edgemask) to find lines in dark scenes. Example: default Blur sizes `25, 80, 250`. Output is luma only."
+
+[method."vsmasktools.retinex".docs]
+sigma = "Blur sizes of the scales that are compared; three values balance speed and quality. Larger = broader, smoother lighting correction. Example: `25, 80, 250`"
+lower_thr = "Share of the darkest pixels clipped to black when stretching the result, 0 to 1 (exclusive). Higher = deeper shadows, more contrast. Example: `0.001`"
+upper_thr = "Share of the brightest pixels clipped to white when stretching the result, 0 to 1 (exclusive). Higher = brighter, more compressed highlights. Example: `0.005`"
+fast = "Uses a quicker approximation for the largest blur. Turn off for the exact result at a higher cost."
+
+# ---------------------------------------------------------------- detail, texture and flat masks
+
+[method."vsmasktools.detail_mask"]
+help = "Marks detail and lines white, flat areas black. Typical use: deband, then Merge through a mask (Planes) with the original on top using this mask, so banding is fixed while texture and lines stay intact. Example: raise Texture threshold to `0.04` for less texture. The default pick among the detail masks."
+
+[method."vsmasktools.detail_mask".docs]
+brz_mm = "Threshold for the texture part (local contrast). Scale 0 to 1. Higher = less texture marked. Example: `0.025`"
+brz_ed = "Threshold for the line part (edge detector). Scale 0 to 1. Higher = only stronger lines. Example: `0.045`"
+minmax = "Radii of the local-contrast part: luma 3, colour 2 by default. Larger = thicker detail areas."
+edge = "Edge detector for the line part; default Kirsch. Connect a finished mask clip to use it instead."
+sigma = "Blurs the picture first so grain is not marked as detail. Empty or 0 = no blur. Example: `1`"
+
+[method."vsmasktools.detail_mask_neo"]
+help = "Detail and line mask of the luma: compares the picture with a blurred copy to find texture, adds a Prewitt line mask, then cleans it. Use like Detail mask (detail_mask) to protect detail from a deband; it often keeps finer texture. Example: Texture threshold `0.01` for less texture."
+
+[method."vsmasktools.detail_mask_neo".docs]
+sigma = "Blur size used to find texture. Larger = coarser detail counts too. Example: `5`"
+detail_brz = "Threshold for the texture part. Scale 0 to 1. Higher = less texture. 0 keeps it soft (grey). Example: `0.005`"
+lines_brz = "Threshold for the line part. Scale 0 to 1. Higher = only stronger lines. 0 keeps it soft. Example: `0.08`"
+edgemask = "Edge detector for the line part; default Prewitt. Connect a finished mask clip to use it instead."
+rg_mode = "Final clean-up filter of the mask (RemoveGrain mode). The default removes isolated specks; None skips it."
+
+[method."vsmasktools.multi_detail_mask"]
+help = "Luma detail mask with one knob: combines detail masks at two radii so isolated grain is dropped and real detail areas stay white. Use like Detail mask (detail_mask) to protect detail from a deband. Example: Threshold `0.02` for less detail."
+
+[method."vsmasktools.multi_detail_mask".docs]
+thr = "Sensitivity; scale 0 to 1. Higher = less is marked as detail. 0.01 to 0.03 is usual. Example: `0.015`"
+
+[method."vsmasktools.simple_detail_mask"]
+help = "Older form of Detail mask (detail_mask): luma only, Prewitt lines, no colour radius. Marked deprecated by its authors: pick Detail mask (detail_mask) instead. Example: Radius `3`."
+
+[method."vsmasktools.simple_detail_mask".docs]
+sigma = "Blurs the picture first so grain is not marked. Empty = no blur. Example: `1`"
+rad = "Radius of the local-contrast part. Larger = thicker detail areas. Example: `3`"
+brz_a = "Threshold for the texture part. Scale 0 to 1. Higher = less texture. Example: `0.025`"
+brz_b = "Threshold for the line part. Scale 0 to 1. Higher = only stronger lines. Example: `0.045`"
+
+[method."vsmasktools.range_mask"]
+help = "Marks texture and edges by local contrast: each pixel becomes the difference between the brightest and darkest pixel around it, so flat areas are black and detail is grey to white. A soft building block for detail masks. Example: Luma radius `3` for thicker areas."
+
+[method."vsmasktools.range_mask".docs]
+rad = "Radius on the luma plane. Larger = thicker, brighter areas. Example: `2`"
+radc = "Radius on the colour planes. 0 = use Luma radius there too. Example: `1`"
+
+[method."vsmasktools.texture_mask"]
+help = "Soft mask meant to mark textured areas (fine grain-like detail) as opposed to lines and flat areas, for grain or detail protection. Pitfall: on test patterns it returned an all-black mask at the start values; check its output with Preview Clips before relying on it."
+
+[method."vsmasktools.texture_mask".docs]
+rady = "Radius of the local-contrast measure on luma. Larger = broader texture areas. Example: `2`"
+radc = "Same radius for the colour planes. Empty = same as Luma radius. Example: `1`"
+blur = "Blur that smooths the final mask. Larger = softer, wider areas. Example: `8`"
+
+[method."vsmasktools.flat_mask"]
+help = "Despite the name, white marks pixels noticeably darker than their surroundings (dark lines, dark detail, the dark side of edges); flat and bright areas are black. Output is luma only. Invert it with Invert a mask (InvertMask) to get flat areas white. Example: Area size `5`, Threshold `0.011`."
+
+[method."vsmasktools.flat_mask".docs]
+radius = "Size of the area each pixel is compared with. Larger = broader comparison. Example: `5`"
+thr = "How much darker than its surroundings a pixel must be to turn white. Scale 0 to 1. Higher = fewer pixels marked. Example: `0.011`"
+gauss = "Uses a Gaussian blur for the surroundings instead of a plain average: smoother, less blocky result."
+
+[method."vsmasktools.adg_mask"]
+help = "Adaptive grain mask: white in dark and mid tones, fading to black in highlights, and the fade depends on each frame's average brightness. Wire it as the Mask of Merge through a mask (Planes) to add grain or deband only where banding shows. Example: Fade strength `10`."
+
+[method."vsmasktools.adg_mask".docs]
+luma_scaling = "How fast the mask fades in brighter areas. Higher = only darker areas stay white. Negative values swap the roles (bright areas white). 8 to 14 is usual. Example: `10`"
+relative = "Compares each pixel with the frame's own darkest and brightest values instead of absolute brightness. Slower (expression path)."
+
+[method."vsmasktools.ringing_mask"]
+help = "Marks the area around strong edges where ringing and halos sit, but not the edges themselves. Wire it as the Mask of Merge through a mask (Planes) so a dering or dehalo filter only touches those bands. Example: Band width `3` for wider bands."
+
+[method."vsmasktools.ringing_mask".docs]
+rad = "How far from the edge the band reaches. Larger = wider bands. Example: `2`"
+brz = "Threshold that shapes the protected edge core. Scale 0 to 1. Example: `0.35`"
+thmi = "Lower bound of the edge strengths taken as strong edges. Scale 0 to 1. Lower = more edges count. Example: `0.315`"
+thma = "Upper bound of the edge strengths used for the band. Scale 0 to 1. Example: `0.5`"
+thlimi = "Lower limit of the edge strength stretch. Scale 0 to 1. Example: `0.195`"
+thlima = "Upper limit of the edge strength stretch. Scale 0 to 1. Example: `0.392`"
+credit_mask = "Edge detector used to find the strong edges; default Prewitt. Connect a finished mask clip to use it instead."
+
+[method."vsmasktools.luma_mask"]
+help = "Marks pixels by brightness. With Dark areas white on, pixels darker than High threshold turn white and brighter ones black; off swaps that. Use it as the Mask of Merge through a mask (Planes) to filter only shadows or only highlights. Pitfall: no smooth ramp between the two thresholds in this version (see Low threshold)."
+
+[method."vsmasktools.luma_mask".docs]
+thr_lo = "Brightness below which pixels get the full mask value. Scale 0 to 1. In this version it barely changes the result; High threshold sets the cut. Example: `0.2`"
+thr_hi = "Brightness that splits white from black. Scale 0 to 1. Starts at 0.4. Example: `0.5`"
+invert = "On = dark areas white (shadows mask). Off = bright areas white."
+
+[method."vsmasktools.stabilize_mask"]
+help = "Steadies a flickering mask, typically a credit mask: smooths it over neighbouring frames, then turns it pure black and white, so holes and flashes from frame to frame disappear. Connect the mask as the clip. Example: Radius `3`; give scene changes so masks do not bleed across cuts."
+
+[method."vsmasktools.stabilize_mask".docs]
+radius = "Frames on each side that are compared. Higher = steadier but slower to react. Example: `3`"
+ranges = "Frame ranges whose start and end are treated as scene changes. Example: `682-687, 713-717`"
+scenechanges = "Frame numbers where a new scene starts; the smoothing does not cross them. Example: `120, 450`"
+kernel = "How the frames are averaged after the median step. The default leaves the centre frame out."
+brz = "Strictness: 0 keeps a pixel white if any nearby frame has it; higher needs more frames. From 0 to twice Radius. Example: `1`"
+
+[method."vsmasktools.max_planes"]
+help = "Combines masks: the result is the brightest value of every plane of every connected clip, one grey mask. Use it to join an edge mask and a credit mask, or to fold a colour mask's three planes into one. Clips of other sizes are resized to the first."
+
+[method."vsmasktools.max_planes".docs]
+resizer = "Resizer used to bring all clips to the size of the first one; Bilinear is enough for masks."
+
+[method."vsmasktools.normalize_mask"]
+help = "Turns a mask source into a mask that matches the clip's format and bit depth: a connected mask clip is converted, an edge detector is run on the clip. Useful before Merge through a mask (Planes) when a mask came from another format."
+
+[method."vsmasktools.normalize_mask".docs]
+mask = "The mask source: connect a finished mask clip, or an edge or ridge detector."
+ridge = "With a ridge detector, makes a ridge mask (middle of lines) instead of an edge mask."
+ref = "Second clip that some mask sources need (two-clip masks such as the hardsub masks)."
+
+# ---------------------------------------------------------------- difference and credit masks
+
+[method."vsmasktools.based_diff_mask"]
+help = "Difference mask: white where the clip and Other clip differ, grown a little. Use it to find what one release has and another lacks (credits, signs, edits), then Merge through a mask (Planes) to take those parts from one source. Pitfall: with a clip in Other clip, Kernel is not used."
+
+[method."vsmasktools.based_diff_mask".docs]
+ref_or_height = "The clip to compare with; same length and size as the main clip."
+kernel = "Only for the descale-and-compare form (a height instead of a clip), which this input does not take; it has no effect here."
+thr = "Sensitivity. The difference is amplified 16 times and compared with this, on a 0 to 1 scale, so 0.216 means about 1.4 % of the range. Higher = only bigger differences. Example: `0.3`"
+prefilter = "Blurs both clips (edge-preserving blur) before comparing so grain differences are ignored. Off = none, on = blur size 5; another size goes in Pre-blur (other values).\n\nExample: on"
+postfilter = "Clean-up of the difference before the threshold: a number = how many speck-removal passes (default 2)."
+ampl = "Expression that turns the difference into the mask; `{thr}` stands for Threshold. Leave as is unless you write expressions."
+expand = "Grows the white areas by this many pixels (round shape). Example: `4`"
+
+[method."vsmasktools.diff_rescale"]
+help = "Marks what does not survive a descale to Native height and back: native high-resolution parts such as credits, overlays and text. White there. Use it to protect those parts when rescaling an upscaled anime. Starts at Native height `720`. Pitfall: needs a 32-bit float clip (Convert Format first); works on luma."
+
+[method."vsmasktools.diff_rescale".docs]
+height = "The native height the source was produced at, the one you descale to. Example: `720`"
+kernel = "Resizer the source was upscaled with; must match the descale you use. Catrom is the default."
+thr = "Sensitivity on a 0 to 1 scale (the difference is amplified 16 times first). Higher = only clear differences. Example: `0.216`"
+expand = "Extra growth of the white areas in pixels (2 more are always added). Example: `2`"
+
+[method."vsmasktools.diff_creditless"]
+help = "Credit mask from a creditless version: white where the credited clip differs from the clean one (NC opening or ending). Use it to keep credits untouched or to restore them after filtering. Both clips must show the same frames. Example: Threshold `0.01`, connect the NCOP to Creditless clip."
+
+[method."vsmasktools.diff_creditless".docs]
+nc_clip = "The creditless (NC) version of the same section, frame for frame."
+thr = "Sensitivity on a 0 to 1 scale. Higher = only clear differences count as credits. Example: `0.02`"
+start_frame = "Where the section starts in the full episode; used only with Full episode connected. Example: `1200`"
+expand = "Grows the white areas by this many pixels (2 more are always added). Example: `2`"
+prefilter = "Blurs both clips (edge-preserving) before comparing so grain differences are ignored. On = default strength; a number sets the blur size."
+edgemask = "Detector that turns the difference into the mask; ExLaplacian4 is the default. See the Edge detector list of Edge mask (edgemask)."
+ep_clip = "The full episode. When connected, the mask is placed at Start frame in episode inside a black clip of the episode's length."
+
+[method."vsmasktools.diff_creditless_oped"]
+help = "Whole-episode credit mask from the creditless opening and ending: compares the episode with the NCOP and NCED at the given frames; black elsewhere. Use it to protect credits through a whole episode filter. Pitfall: type at least Opening first and last frame (or Ending first and last frame), or it stops with an error."
+
+[method."vsmasktools.diff_creditless_oped".docs]
+ncop = "The creditless opening clip."
+nced = "The creditless ending clip."
+thr = "Sensitivity on a 0 to 1 scale. Higher = only clear differences count as credits. Example: `0.1`"
+opstart = "First frame of the opening in the episode. Example: `1200`"
+opend = "Last frame of the opening in the episode. Example: `3356`"
+edstart = "First frame of the ending in the episode. Example: `31000`"
+edend = "Last frame of the ending in the episode. Example: `33157`"
+
+[method."vsmasktools.diff_hardsub_mask"]
+help = "Gives the difference between a hardsubbed clip and a Clean clip only where white-with-black-border subtitles are found, neutral grey elsewhere. It is a difference clip, not a mask: add it back with Add a difference back (Planes) to put the subtitles onto another clip."
+
+[method."vsmasktools.diff_hardsub_mask".docs]
+b = "The clean version of the same video without subtitles."
+
+# ---------------------------------------------------------------- hardsub removal
+
+[method."vsmasktools.*.apply_dehardsub"]
+help = "Removes burned-in subtitles or signs: inside the Frame ranges, the areas the chosen mask finds are copied from Clean clip, a clean release of the same video. Connect the hardsubbed clip as the main clip. Pick Subtitle kind by subtitle type; HardsubSign is the general case. Pitfall: both clips must be frame-aligned."
+
+[method."vsmasktools.*.apply_dehardsub".choices]
+HardsubASS = "Draws the mask from the subtitle file itself; needs the .ass file that matches the burned-in subtitles."
+HardsubLine = "Dialogue in white text with a black border; finds it automatically."
+HardsubLineFade = "Like HardsubLine, but builds each range's mask from one frame chosen by Mask frame position; for fading dialogue."
+HardsubSign = "Any sign: marks where the two clips differ by more than Difference threshold. The general choice."
+HardsubSignFades = "Signs in fades or hard-to-catch signs: compares the edges of both clips."
+
+[method."vsmasktools.*.apply_dehardsub".docs]
+filename = "The subtitle file (.ass) matching the burned-in subtitles."
+ranges = "Frames where subtitles are replaced; elsewhere the clip is unchanged. Empty = every frame. Example: `682-687, 713-717`"
+bound = "Optional rectangle (size and position) that limits where the mask may act. Empty = whole frame."
+ref = "The clean release of the same video (no subtitles), frame-aligned with the main clip."
+fontdir = "Folder with the fonts the subtitle file uses, if they are not installed."
+blur = "Softens the edge of the Limit to a rectangle box. Has no effect without it."
+refframes = "One frame per range whose mask is used for that whole range, for signs that are hard to catch on every frame. Count must match Frame ranges. Example: `684, 715`"
+partials = "Other hardsubbed releases (other languages) used first, step by step, before falling back to Clean clip."
+expand = "How many pixels the mask grows. HardsubLine: empty = width divided by 200. Example: `8`"
+refframe = "Which frame of each range builds its mask: 0 = first, 1 = last, 0.5 = middle. Example: `0.5`"
+thr = "How different the clips must be to count as a sign. Scale 0 to 1. Lower = catches faint signs and also more noise. Example: `0.06`"
+minimum = "Shrink passes that remove specks before growing. Example: `1`"
+inflate = "Softening passes on the mask's edge after growing. Example: `7`"
+expand_mode = "Shape of the growth: Rectangle (square corners), Ellipse (rounder), Losange (diamond)."
+highpass = "Edge difference needed to count as a sign. Scale 0 to 1. Lower if parts of the sign remain, at the cost of more false areas. Example: `0.05`"
+edgemask = "Edge detector used to compare both clips; Sobel is the default."
+
+[method."vsmasktools.*.get_mask"]
+help = "Builds and returns a mask only, without merging: a hardsub mask (subtitles white) from the clip and a Clean clip, or a hand-made mask loaded from image files. Wire it as the Mask of Merge through a mask (Planes), or check it with Preview Clips before Remove burned-in subtitles (apply_dehardsub)."
+
+[method."vsmasktools.*.get_mask".choices]
+CustomMaskFromFolder = "Hand-drawn mask images from one folder; the file name gives the frames: `100_200.png` = frames 100 to 200, `150.png` = frame 150."
+CustomMaskFromRanges = "Hand-drawn mask images, each listed with its frame ranges in Ranges."
+HardsubASS = "Mask drawn from the .ass subtitle file itself."
+HardsubLine = "Dialogue in white text with a black border."
+HardsubLineFade = "Like HardsubLine, with the mask taken from one frame per range (Mask frame position); for fading dialogue."
+HardsubSign = "Any sign: where the two clips differ by more than Difference threshold."
+HardsubSignFades = "Signs in fades or hard-to-catch signs: compares edges of both clips."
+
+[method."vsmasktools.*.get_mask".docs]
+folder_path = "Folder holding the mask images; each file is named by its frames, e.g. `100_200.png`. Example: `C:\\masks\\ep01`"
+filename = "The subtitle file (.ass) matching the burned-in subtitles."
+ref = "The clean release of the same video (no subtitles), frame-aligned with the main clip."
+processing = "Filter applied to each loaded image; default turns it pure black and white at mid-grey."
+idx = "Source filter used to open the images; default BestSource."
+ranges = "Hardsub classes: frames where the mask is made; black elsewhere. Empty = every frame. Example: `682-687, 713-717`"
+bound = "Optional rectangle (size and position) that limits where the mask may act. Empty = whole frame."
+fontdir = "Folder with the fonts the subtitle file uses, if they are not installed."
+blur = "Softens the edge of the Limit to a rectangle box. Has no effect without it."
+refframes = "One frame per range whose mask is used for that whole range. Count must match Frame ranges. Example: `684, 715`"
+expand = "How many pixels the mask grows. HardsubLine: empty = width divided by 200. Example: `8`"
+refframe = "Which frame of each range builds its mask: 0 = first, 1 = last, 0.5 = middle. Example: `0.5`"
+thr = "How different the clips must be to count as a sign. Scale 0 to 1. Lower = catches fainter signs and more noise. Example: `0.06`"
+minimum = "Shrink passes that remove specks before growing. Example: `1`"
+inflate = "Softening passes on the mask's edge after growing. Example: `7`"
+expand_mode = "Shape of the growth: Rectangle (square corners), Ellipse (rounder), Losange (diamond)."
+highpass = "Edge difference needed to count as a sign. Scale 0 to 1. Lower if parts of the sign remain. Example: `0.05`"
+edgemask = "Edge detector used to compare both clips; Sobel is the default."
+
+[method."vsmasktools.CustomMaskFromRanges.get_mask".docs]
+ranges = "Each mask image with the frames it covers. Example: `{'C:/masks/sign.png': (100, 200)}`"
+
+[method."vsmasktools.CustomMaskFromFolder.apply_mask"]
+help = "Places Overlay clip over the main clip wherever hand-drawn mask images from a folder are white. The file names give the frames: `100_200.png` covers frames 100 to 200. Use it for manual fixes such as restoring a sign from another source."
+
+[method."vsmasktools.CustomMaskFromFolder.apply_mask".docs]
+folder_path = "Folder holding the mask images, each named by its frames. Example: `C:\\masks\\ep01`"
+processing = "Filter applied to each loaded image; default turns it pure black and white at mid-grey."
+idx = "Source filter used to open the images; default BestSource."
+_clipb = "The clip shown where the mask is white."
+_ref = "Clip whose size and frame count the mask follows. Empty = the main clip."
+
+[method."vsmasktools.CustomMaskFromRanges.apply_mask"]
+help = "Places Overlay clip over the main clip wherever hand-drawn mask images are white, each image used for the frame ranges you list. Use it for manual fixes such as restoring a sign from another source."
+
+[method."vsmasktools.CustomMaskFromRanges.apply_mask".docs]
+ranges = "Each mask image with the frames it covers. Example: `{'C:/masks/sign.png': (100, 200)}`"
+processing = "Filter applied to each loaded image; default turns it pure black and white at mid-grey."
+idx = "Source filter used to open the images; default BestSource."
+_clipb = "The clip shown where the mask is white."
+_ref = "Clip whose size and frame count the mask follows. Empty = the main clip."
+
+[method."vsmasktools.squaremask"]
+help = "Makes a rectangle mask: white box on black (or the reverse with White outside the box). Wire it as the Mask of Merge through a mask (Planes) to filter or replace one area, e.g. a sign or a logo. Pitfall: Width and Height start at 0; type the size first, and the box must fit inside the frame."
+
+[method."vsmasktools.squaremask".docs]
+width = "Box width in pixels. Box left plus width must not exceed the frame width. Example: `400`"
+height = "Box height in pixels. Example: `120`"
+offset_x = "Distance of the box from the left edge, in pixels. Example: `760`"
+offset_y = "Distance of the box from the top edge, in pixels. Example: `900`"
+invert = "Makes everything except the box white."
+force_gray = "Gives a one-plane grey mask. Off = the clip's own format with all its planes."
+
+[method."vsmasktools.replace_squaremask"]
+help = "Copies a rectangle from Patch clip onto the main clip, optionally only in some frames. Use it to restore a sign or logo from another source, or patch one area. Example: Box `400, 120, 760, 900` and Frame ranges `100-250`. Pitfall: the box must be filled first."
+
+[method."vsmasktools.replace_squaremask".docs]
+clipb = "The clip the rectangle is taken from; same size as the main clip."
+mask_params = "Box as width, height, distance from left, distance from top, in pixels. Example: `400, 120, 760, 900`"
+ranges = "Frames where the box is replaced. Empty = every frame. Example: `100-250`"
+blur_sigma = "Softens the box's edge so the patch blends in. Empty = hard edge. Example: `2`"
+invert = "Replaces everything except the box."
+show_mask = "Outputs the box mask instead of the result, to check placement."
+
+[method."vsmasktools.freeze_replace_squaremask"]
+help = "Patches a rectangle over a frame range with a still: takes the Still frame from Patch clip, pastes its box onto the same frame of the main clip, and repeats it over First, last frame. Use it to freeze a cleaned sign. Pitfall: the box and the frame range must be filled first."
+
+[method."vsmasktools.freeze_replace_squaremask".docs]
+insert = "The clip the box is taken from; same size as the main clip."
+mask_params = "Box as width, height, distance from left, distance from top, in pixels. Example: `400, 120, 760, 900`"
+frame = "The frame of both clips used to build the still. Example: `120`"
+frame_range = "First and last frame replaced by the still. Example: `100, 150`"
+
+[method."vsmasktools.region_abs_mask"]
+help = "Keeps a rectangle and blacks out the rest (or fills inside or outside with values you set). Apply it to a mask to limit that mask to one area, e.g. only the bottom third. Size and position in pixels. Pitfall: Width and Height start at 0; type them first."
+
+[method."vsmasktools.region_abs_mask".docs]
+width = "Width of the kept rectangle in pixels. Example: `1920`"
+height = "Height of the kept rectangle in pixels. Example: `360`"
+left = "Distance of the rectangle from the left edge, in pixels. Example: `0`"
+top = "Distance of the rectangle from the top edge, in pixels. Example: `720`"
+replace_in = "Value or expression for pixels inside. Empty = keep them. `mask_max` means full white. Example: `mask_max`"
+replace_out = "Value or expression for pixels outside. Empty = black. Example: `0`"
+
+[method."vsmasktools.region_rel_mask"]
+help = "Keeps a rectangle given as margins from each side and blacks out the rest. Apply it to a mask to limit that mask to one area, e.g. Top margin `720` keeps only the bottom of a 1080p frame. Example: Left margin `100`, Right margin `100`."
+
+[method."vsmasktools.region_rel_mask".docs]
+left = "Margin cut from the left side, in pixels. Example: `100`"
+right = "Margin cut from the right side, in pixels. Example: `100`"
+top = "Margin cut from the top, in pixels. Example: `720`"
+bottom = "Margin cut from the bottom, in pixels. Example: `0`"
+replace_in = "Value or expression for pixels inside. Empty = keep them. `mask_max` means full white. Example: `mask_max`"
+replace_out = "Value or expression for pixels outside. Empty = black. Example: `0`"
+
+[method."vsmasktools.rekt_partial"]
+help = "Runs a filter only inside a rectangle: the area is cropped, filtered and put back, which is much faster than filtering the whole frame for a small fix. Connect the filter to Filter, e.g. an anti-alias for one sign. Example: Left margin `1400`, Top margin `800`."
+
+[method."vsmasktools.rekt_partial".docs]
+func = "The filter to run inside the rectangle; it must keep the size of what it gets."
+left = "Pixels cut from the left edge; the rectangle starts there. Example: `1400`"
+right = "Pixels cut from the right edge. Example: `0`"
+top = "Pixels cut from the top edge. Example: `800`"
+bottom = "Pixels cut from the bottom edge. Example: `0`"
+
+[method."vsmasktools.strength_zones_mask"]
+help = "Makes a flat mask whose brightness changes by frame range, e.g. 0.3 in calm scenes and 1 in action. Wire it as the Mask of Merge through a mask (Planes) to blend strong and weak filtering per scene. The main clip sets the base values outside the zones."
+
+[method."vsmasktools.strength_zones_mask".docs]
+length = "Number of frames of the mask. Empty = length of the main clip. Example: `34000`"
+zones = "Frame ranges with their strength, 0 to 1. Example: `[((0, 500), 0.3), ((501, 900), 1.0)]`"
+format = "Format of the mask; default 32-bit grey."
+
+# ---------------------------------------------------------------- shaping masks (morphology)
+
+[method."vsmasktools.grow_mask"]
+help = "Makes a soft band just outside the white shapes of a mask: it closes gaps, grows the shapes, then keeps only the ring around them, blurred. Use it to treat the halo zone around lines or text. Pitfall: the inside of the shapes ends up black; to thicken a mask, use Grow white areas (dilation)."
+
+[method."vsmasktools.grow_mask".docs]
+radius = "How far each grow step reaches: 1 = 3x3 pixels, 2 = 5x5. Larger = wider band further out. Example: `2`"
+thr = "Limits how much one pass may change a pixel. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+iterations = "Repeats of the ring step. More = wider band. Example: `1`"
+coords = "Which neighbours count, as 0 or 1 per neighbour (8 numbers for radius 1). Example: `0, 1, 0, 1, 1, 0, 1, 0`"
+multiply = "Multiplies the result: below 1 dims the band. Example: `0.5`"
+
+[method."vsmasktools.Morpho.dilation"]
+help = "Grows the white areas of a mask: each pixel takes the brightest value around it. Use it to make a line or credit mask cover a bit more so a filter does not miss the edges. Example: Radius `2`. Opposite: Shrink white areas (erosion)."
+
+[method."vsmasktools.Morpho.erosion"]
+help = "Shrinks the white areas of a mask: each pixel takes the darkest value around it. Removes thin specks and pulls the mask back from edges. Example: Radius `1`. Opposite: Grow white areas (dilation)."
+
+[method."vsmasktools.Morpho.maximum"]
+help = "Grows the white areas by one pixel per pass (3x3 neighbourhood). Use Passes for more. Same as Grow white areas (dilation) with radius 1, plus a choice of which neighbours count. Example: Passes `2`."
+
+[method."vsmasktools.Morpho.minimum"]
+help = "Shrinks the white areas by one pixel per pass (3x3 neighbourhood). Use Passes for more. Same as Shrink white areas (erosion) with radius 1, plus a choice of which neighbours count. Example: Passes `2`."
+
+[method."vsmasktools.Morpho.expand"]
+help = "Grows the white areas by a set number of pixels, with separate horizontal and vertical amounts and a chosen corner shape. The usual way to widen a credit or sign mask. Starts at 2 pixels. Example: Left and right pixels `4`, Corner shape Ellipse."
+
+[method."vsmasktools.Morpho.inpand"]
+help = "Shrinks the white areas by a set number of pixels, with separate horizontal and vertical amounts and a chosen corner shape. Starts at 2 pixels. Example: Left and right pixels `1`. Opposite: Grow by pixels, shaped (expand)."
+
+[method."vsmasktools.Morpho.inflate"]
+help = "Softens and slightly grows the edges of a mask: a pixel rises to the average of its neighbours when that is brighter. Use it after a hard black-and-white mask so the merge blends instead of showing a seam. Example: Passes `2`. Opposite: Soften and shrink edges (Morpho.deflate)."
+
+[method."vsmasktools.Morpho.deflate"]
+help = "Softens and slightly shrinks the edges of a mask: a pixel drops to the average of its neighbours when that is darker. Example: Passes `2`. Opposite: Soften and grow edges (Morpho.inflate)."
+
+[method."vsmasktools.Morpho.closing"]
+help = "Fills small black holes and gaps inside white areas (grow, then shrink back). Use it to make a patchy credit or detail mask solid without making it bigger. Example: Radius `2`. Opposite: Remove small specks (opening)."
+
+[method."vsmasktools.Morpho.opening"]
+help = "Removes small white specks while keeping larger white areas their size (shrink, then grow back). Use it to clean grain dots from a mask. Example: Radius `1`. Opposite: Fill small holes (closing)."
+
+[method."vsmasktools.Morpho.gradient"]
+help = "Outlines the shapes: grown minus shrunk, so only the borders of white areas (or edges of a picture) stay. Use it to get a thin edge band from a solid mask. Example: Radius `1`."
+
+[method."vsmasktools.Morpho.top_hat"]
+help = "Keeps only small bright details narrower than the radius (picture minus its opening), e.g. thin bright lines or specks. Example: Radius `2`."
+
+[method."vsmasktools.Morpho.bottom_hat"]
+help = "Keeps only small dark details narrower than the radius (closing minus picture), shown white, e.g. thin dark line art. Example: Radius `2`."
+
+[method."vsmasktools.Morpho.outer_hat"]
+help = "Gives the ring just outside the white shapes (grown minus original). Use it to target the zone around lines or text, such as halos. Example: Radius `2`."
+
+[method."vsmasktools.Morpho.inner_hat"]
+help = "Gives the ring just inside the edges of white shapes (original minus shrunk). Example: Radius `1`."
+
+[method."vsmasktools.Morpho.binarize"]
+help = "Turns a picture pure black and white at a threshold: below Threshold becomes Value below, the rest Value above. For a picture with colour planes. For a mask clip use Mask to black or white (Morpho.binarize_mask). Example: Threshold `0.5`."
+
+[method."vsmasktools.Morpho.binarize".docs]
+midthr = "The cut point, on a 0 to 1 scale. Empty = middle of the range. One value per plane is allowed. Example: `0.5`"
+lowval = "Value given to pixels below the cut, 0 to 1 scale. Empty = black. Example: `0`"
+highval = "Value given to pixels at or above the cut, 0 to 1 scale. Empty = white. Example: `1`"
+
+[method."vsmasktools.Morpho.binarize_mask"]
+help = "Turns a soft grey mask pure black and white: below Threshold becomes black, the rest white. Use it after an edge or detail mask to get a solid, clean mask. Example: Threshold `0.1` keeps faint lines too."
+
+[method."vsmasktools.Morpho.binarize_mask".docs]
+midthr = "The cut point, on a 0 to 1 scale. Lower = more becomes white. Empty = 0.5. Example: `0.1`"
+lowval = "Value given to pixels below the cut, 0 to 1 scale. Empty = black. Example: `0`"
+highval = "Value given to pixels at or above the cut, 0 to 1 scale. Empty = white. Example: `1`"
+
+# Morphology settings shared by every Morpho method that has them.
+
+[method."vsmasktools.Morpho.dilation".docs]
+radius = "How far it reaches: 1 = 3x3 pixels, 2 = 5x5. Larger = stronger. Example: `2`"
+thr = "Limits how much a pixel may brighten per pass. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+iterations = "Number of passes. More = stronger. Example: `2`"
+coords = "Which neighbours count, 0 or 1 each, row by row without the centre: 8 numbers for radius 1, 24 for 2. Overrides Radius. Example: `0, 1, 0, 1, 1, 0, 1, 0`"
+multiply = "Multiplies the result: below 1 dims, above 1 brightens. Example: `0.5`"
+
+[method."vsmasktools.Morpho.erosion".docs]
+radius = "How far it reaches: 1 = 3x3 pixels, 2 = 5x5. Larger = stronger. Example: `2`"
+thr = "Limits how much a pixel may darken per pass. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+iterations = "Number of passes. More = stronger. Example: `2`"
+coords = "Which neighbours count, 0 or 1 each, row by row without the centre: 8 numbers for radius 1, 24 for 2. Overrides Radius. Example: `0, 1, 0, 1, 1, 0, 1, 0`"
+multiply = "Multiplies the result: below 1 dims, above 1 brightens. Example: `0.5`"
+
+[method."vsmasktools.Morpho.maximum".docs]
+thr = "Limits how much a pixel may brighten per pass. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+iterations = "Number of passes, one pixel of growth each. Example: `3`"
+coords = "Which of the 8 neighbours count, 0 or 1 each: top-left, top, top-right, left, right, bottom-left, bottom, bottom-right. Example: `0, 1, 0, 1, 1, 0, 1, 0` (plus shape)"
+multiply = "Multiplies the result: below 1 dims, above 1 brightens. Example: `0.5`"
+
+[method."vsmasktools.Morpho.minimum".docs]
+thr = "Limits how much a pixel may darken per pass. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+iterations = "Number of passes, one pixel of shrinking each. Example: `3`"
+coords = "Which of the 8 neighbours count, 0 or 1 each: top-left, top, top-right, left, right, bottom-left, bottom, bottom-right. Example: `0, 1, 0, 1, 1, 0, 1, 0` (plus shape)"
+multiply = "Multiplies the result: below 1 dims, above 1 brightens. Example: `0.5`"
+
+[method."vsmasktools.Morpho.expand".docs]
+sw = "Pixels of growth to the left and right. Example: `4`"
+sh = "Pixels of growth up and down. Empty = same as Left and right pixels. Example: `2`"
+mode = "Corner shape of the growth: Rectangle keeps square corners, Ellipse rounds them, Losange gives a diamond."
+thr = "Limits how much a pixel may brighten per step. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+
+[method."vsmasktools.Morpho.inpand".docs]
+sw = "Pixels of shrinking from the left and right. Example: `2`"
+sh = "Pixels of shrinking from top and bottom. Empty = same as Left and right pixels. Example: `2`"
+mode = "Corner shape: Rectangle keeps square corners, Ellipse rounds them, Losange gives a diamond."
+thr = "Limits how much a pixel may darken per step. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+
+[method."vsmasktools.Morpho.inflate".docs]
+radius = "Neighbourhood averaged: 1 = 3x3 pixels, 2 = 5x5. Larger = softer. Example: `1`"
+thr = "Limits how much a pixel may brighten per pass. Scale 0 to 1. Empty = no limit. Example: `0.1`"
+iterations = "Number of passes. More = softer, wider edge. Example: `2`"
+coords = "Which neighbours count, 0 or 1 each, row by row without the centre: 8 numbers for radius 1. Example: `0, 1, 0, 1, 1, 0, 1, 0`"
+multiply = "Multiplies the result: below 1 dims, above 1 brightens. Example: `0.5`"
+
+[method."vsmasktools.Morpho.deflate".docs]
+radius = "Neighbourhood averaged: 1 = 3x3 pixels, 2 = 5x5. Larger = softer. Example: `1`"
+thr = "Limits how much a pixel may darken per pass. Scale 0 to 1. Empty = no limit. Example: `0.1`"
+iterations = "Number of passes. More = softer, narrower. Example: `2`"
+coords = "Which neighbours count, 0 or 1 each, row by row without the centre: 8 numbers for radius 1. Example: `0, 1, 0, 1, 1, 0, 1, 0`"
+multiply = "Multiplies the result: below 1 dims, above 1 brightens. Example: `0.5`"
+
+[method."vsmasktools.Morpho.closing".docs]
+radius = "Size of the holes that get filled: 1 = 3x3 pixels, 2 = 5x5. Example: `2`"
+thr = "Limits how much a pixel may change per pass. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+iterations = "Passes of the grow and of the shrink. More = fills bigger gaps. Example: `1`"
+coords = "Which neighbours count, 0 or 1 each, row by row without the centre: 8 numbers for radius 1. Overrides Radius. Example: `0, 1, 0, 1, 1, 0, 1, 0`"
+multiply = "Multiplies each step's result. Example: `0.5`"
+
+[method."vsmasktools.Morpho.opening".docs]
+radius = "Size of the specks that get removed: 1 = 3x3 pixels, 2 = 5x5. Example: `1`"
+thr = "Limits how much a pixel may change per pass. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+iterations = "Passes of the shrink and of the grow. More = removes bigger specks. Example: `1`"
+coords = "Which neighbours count, 0 or 1 each, row by row without the centre: 8 numbers for radius 1. Overrides Radius. Example: `0, 1, 0, 1, 1, 0, 1, 0`"
+multiply = "Multiplies each step's result. Example: `0.5`"
+
+[method."vsmasktools.Morpho.gradient".docs]
+radius = "Width of the outline: 1 = 3x3 pixels, 2 = 5x5. Example: `1`"
+thr = "Limits how much a pixel may change per pass. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+iterations = "Passes of grow and shrink. More = wider outline. Example: `1`"
+coords = "Which neighbours count, 0 or 1 each, row by row without the centre: 8 numbers for radius 1. Example: `0, 1, 0, 1, 1, 0, 1, 0`"
+multiply = "Multiplies the outline: above 1 brightens. Example: `2`"
+
+[method."vsmasktools.Morpho.top_hat".docs]
+radius = "Largest detail size kept: 1 = 3x3 pixels, 2 = 5x5. Example: `2`"
+thr = "Limits how much a pixel may change per pass. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+iterations = "Passes of the inner steps. More = larger details kept. Example: `1`"
+coords = "Which neighbours count, 0 or 1 each, row by row without the centre: 8 numbers for radius 1. Example: `0, 1, 0, 1, 1, 0, 1, 0`"
+multiply = "Multiplies each inner step's result. Example: `0.5`"
+
+[method."vsmasktools.Morpho.bottom_hat".docs]
+radius = "Largest detail size kept: 1 = 3x3 pixels, 2 = 5x5. Example: `2`"
+thr = "Limits how much a pixel may change per pass. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+iterations = "Passes of the inner steps. More = larger details kept. Example: `1`"
+coords = "Which neighbours count, 0 or 1 each, row by row without the centre: 8 numbers for radius 1. Example: `0, 1, 0, 1, 1, 0, 1, 0`"
+multiply = "Multiplies each inner step's result. Example: `0.5`"
+
+[method."vsmasktools.Morpho.outer_hat".docs]
+radius = "Width of the ring: 1 = 3x3 pixels, 2 = 5x5. Example: `2`"
+thr = "Limits how much a pixel may change per pass. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+iterations = "Passes of the grow step. More = wider ring. Example: `1`"
+coords = "Which neighbours count, 0 or 1 each, row by row without the centre: 8 numbers for radius 1. Example: `0, 1, 0, 1, 1, 0, 1, 0`"
+multiply = "Multiplies the ring: below 1 dims. Example: `0.5`"
+
+[method."vsmasktools.Morpho.inner_hat".docs]
+radius = "Width of the ring: 1 = 3x3 pixels, 2 = 5x5. Example: `1`"
+thr = "Limits how much a pixel may change per pass. Scale 0 to 1. Empty = no limit. Example: `0.2`"
+iterations = "Passes of the shrink step. More = wider ring. Example: `1`"
+coords = "Which neighbours count, 0 or 1 each, row by row without the centre: 8 numbers for radius 1. Example: `0, 1, 0, 1, 1, 0, 1, 0`"
+multiply = "Multiplies the ring: below 1 dims. Example: `0.5`"
+
+# ---------------------------------------------------------------- VapourSynth built-ins
+
+[method."std.Binarize"]
+help = "Turns a picture pure black and white at a threshold, in the clip's own values (8-bit: 0 to 255). Colour planes are treated as colour (centred on grey). For mask clips use Mask to black or white (BinarizeMask). Example: Threshold `128` on an 8-bit clip."
+
+[method."std.Binarize".docs]
+threshold = "Cut point in the clip's own values (8-bit 0 to 255, 16-bit 0 to 65535). Below = Value below, at or above = Value above. Empty = middle of the range. Example: `128`"
+v0 = "Value for pixels below the threshold, in the clip's own values. Empty = the lowest value. Example: `0`"
+v1 = "Value for pixels at or above the threshold, in the clip's own values. Empty = the highest value. Example: `255`"
+
+[method."std.BinarizeMask"]
+help = "Turns a mask pure black and white at a threshold, in the clip's own values (8-bit: 0 to 255). Unlike Black or white by a threshold (Binarize), every plane is treated like a mask, not like colour. Example: Threshold `64` on an 8-bit mask keeps faint parts white."
+
+[method."std.BinarizeMask".docs]
+threshold = "Cut point in the clip's own values (8-bit 0 to 255, 16-bit 0 to 65535). Below = Value below, at or above = Value above. Empty = middle of the range. Example: `64`"
+v0 = "Value for pixels below the threshold, in the clip's own values. Empty = black. Example: `0`"
+v1 = "Value for pixels at or above the threshold, in the clip's own values. Empty = white. Example: `255`"
+
+[method."std.InvertMask"]
+help = "Swaps black and white of a mask, so a filter acts on what was protected and the reverse. Unlike Negative (Colour), every plane is treated as a mask. Example: invert an edge mask to filter only flat areas."
+
+[method."std.Maximum"]
+help = "Grows white areas by one pixel: each pixel takes the brightest of its 3x3 neighbours. Chain several to grow more. Same idea as Grow bright areas (Morpho.maximum), in the clip's own values. Example: Threshold empty for full growth."
+
+[method."std.Maximum".docs]
+threshold = "Largest change allowed per pixel, in the clip's own values (8-bit 0 to 255). Empty = no limit. Example: `40`"
+coordinates = "Which of the 8 neighbours count, 0 or 1 each: top-left, top, top-right, left, right, bottom-left, bottom, bottom-right. Example: `0, 1, 0, 1, 1, 0, 1, 0` (plus shape)"
+
+[method."std.Minimum"]
+help = "Shrinks white areas by one pixel: each pixel takes the darkest of its 3x3 neighbours. Removes single-pixel specks from a mask. Same idea as Shrink bright areas (Morpho.minimum), in the clip's own values. Example: Threshold empty for full shrinking."
+
+[method."std.Minimum".docs]
+threshold = "Largest change allowed per pixel, in the clip's own values (8-bit 0 to 255). Empty = no limit. Example: `40`"
+coordinates = "Which of the 8 neighbours count, 0 or 1 each: top-left, top, top-right, left, right, bottom-left, bottom, bottom-right. Example: `0, 1, 0, 1, 1, 0, 1, 0` (plus shape)"
+
+[method."std.Inflate"]
+help = "Softens and slightly grows mask edges: a pixel rises to the average of its 8 neighbours when that is brighter. Use after a hard mask so a merge blends without a seam. Example: chain two for a softer edge."
+
+[method."std.Inflate".docs]
+threshold = "Largest change allowed per pixel, in the clip's own values (8-bit 0 to 255). Empty = no limit. Example: `40`"
+
+[method."std.Deflate"]
+help = "Softens and slightly shrinks mask edges: a pixel drops to the average of its 8 neighbours when that is darker. Opposite of Soften and grow edges (Inflate). Example: chain two for a softer, smaller mask."
+
+[method."std.Deflate".docs]
+threshold = "Largest change allowed per pixel, in the clip's own values (8-bit 0 to 255). Empty = no limit. Example: `40`"

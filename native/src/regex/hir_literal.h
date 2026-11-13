@@ -1,5 +1,5 @@
 /* Port of regex-syntax 0.7.2 src/hir/literal.rs (Extractor, Seq, Literal, PreferenceTrie), MIT OR Apache-2.0. */
-/* X2's private header: the literal sequences regex 1.8.4's exec.rs extracts from a HIR
+/* The engine's private header: the literal sequences regex 1.8.4's exec.rs extracts from a HIR
  * (literal_analysis) and literal/imp.rs searches for. Only the parts regex 1.8.4 reaches
  * are ported. */
 #ifndef CHAINNER_REGEX_HIR_LITERAL_H

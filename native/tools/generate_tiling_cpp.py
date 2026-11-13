@@ -1,9 +1,7 @@
-"""Generate fixed C++ tile state machines from pinned installed/source variants.
+"""Generate fixed C++ tile state machines from the pinned installed tiling modules.
 
-The two public callback/progress APIs remain separate. Only the installed
-variant ships: its Python bridges are written into backend/src. The source
-variant's functions stay in tiling_control.hpp because the shipped native
-module still binds them. This development tool never runs in the application
+The modules' functions become tiling_control.hpp, and their Python bridges are
+written into backend/src. This development tool never runs in the application
 and rejects unsupported syntax.
 """
 
@@ -19,6 +17,8 @@ from generate_onnx_converter import OnnxEmitter, global_reads, write_bridge
 
 ROOT = Path(__file__).resolve().parents[2]
 FROZEN = ROOT / "native/tests/reference_tiling"
+# The pinned modules' directory, which also prefixes the generated names.
+VARIANT = "installed"
 OUTPUT = ROOT / "native/include/tiling_control.hpp"
 # The bridges' home sets their ruff settings; BRIDGES is where they are written.
 BRIDGE_HOME = ROOT / "backend/src/nodes/impl/upscale"
@@ -189,7 +189,7 @@ def bridge(fn: ast.FunctionDef, name: str) -> ast.FunctionDef:
 
 
 def main() -> None:
-    paths = sorted(FROZEN.glob("*/*.py"))
+    paths = sorted((FROZEN / VARIANT).glob("*.py"))
     hashes = {
         str(path.relative_to(FROZEN)).replace("\\", "/"): hashlib.sha256(
             path.read_bytes()
@@ -209,8 +209,6 @@ def main() -> None:
     )
     functions = []
     for path in paths:
-        variant = path.parent.name
-        ships = variant == "installed"
         first = len(functions)
         tree = ast.parse(path.read_text(encoding="utf-8-sig"))
         for node in tree.body:
@@ -225,7 +223,7 @@ def main() -> None:
                 if not isinstance(fn, ast.FunctionDef):
                     continue
                 name = (
-                    variant
+                    VARIANT
                     + "_"
                     + path.stem
                     + "_"
@@ -235,14 +233,10 @@ def main() -> None:
                 native = copy.deepcopy(fn)
                 native.name = name
                 functions.append(native)
-                if not ships:
-                    continue
                 if isinstance(node, ast.ClassDef):
                     node.body[index] = bridge(fn, name)
                 else:
                     tree.body[tree.body.index(node)] = bridge(fn, name)
-        if not ships:
-            continue
         # Retain public classes, decorators, annotations and module-level imports.
         position = (
             1
@@ -277,7 +271,7 @@ def main() -> None:
         emitter.line(f'    module.def("tiling_{fn.name}", &tile_{fn.name});')
     emitter.line("}")
     OUTPUT.write_text("\n".join(emitter.lines) + "\n", encoding="utf-8", newline="\n")
-    print(f"Generated {len(functions)} fixed tiling functions across both pinned APIs.")
+    print(f"Generated {len(functions)} fixed tiling functions.")
 
 
 if __name__ == "__main__":

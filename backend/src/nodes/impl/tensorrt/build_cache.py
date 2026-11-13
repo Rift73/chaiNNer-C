@@ -12,6 +12,8 @@ atomically (the temporary file of a crashed write goes with the key's next build
 files of that name are removed). A file holds the info the build returned (JSON) and
 the SHA-256 of the engine before the engine itself, so a hit returns what the build
 did; a damaged file is removed and the engine built again, as one that cannot be read.
+An RDUAL engine set (rdual_engine_set.py) is one entry under one key, its container kept
+in Zstandard.
 
 This module must not import TensorRT (the tests have none).
 """
@@ -31,24 +33,38 @@ from pathlib import Path
 from threading import Lock
 
 import psutil
+from compression import zstd
 from sanic.log import logger
 
+from ..compressed_file import Compression, compress, decompress
 from ..onnx.model import OnnxModel, content_digest
 from . import drft, dual
-from .model import TensorRTEngine, TensorRTEngineInfo
+from .model import TensorRTEngine
+from .rdual_engine_set import info_from_dict
 
 MEMORY_ENGINES = 4
 DISK_BYTES = 16 * 1024**3
 SUFFIX = ".chainner-c.engine"
 # The record a file holds (_encode): a new layout takes the next version.
 FORMAT_VERSION = 1
-# The code a DUAL engine's plugins are built from (dual.build_engine's worker)
+# The code a DUAL engine's plugins are built from (dual.build_engine's worker), and the
+# vendored exporter and model source its graph comes from (dual.export_onnx): an engine
+# kept for a model's weights was built from that graph.
 _DUAL_PLUGIN_SOURCES = (
     Path(__file__).with_name("dual_aot.py"),
+    Path(__file__).with_name("dual_chain_kernels.py"),
     Path(__file__).with_name("dual_dynamic_kernels.py"),
     Path(__file__).with_name("dual_na_kernel.py"),
+    Path(__file__).with_name("dual_local_na_kernel.py"),
+    Path(__file__).with_name("dual_retrieval_na_kernel.py"),
+    Path(__file__).with_name("dual_row_sum_kernel.py"),
     Path(__file__).with_name("dual_engine_worker.py"),
     dual.VENDOR / "scripts" / "dual_tensorrt" / "kernels.py",
+    *(
+        dual.VENDOR / "scripts" / "dual_tensorrt" / name
+        for name in ("dynamic.py", "export.py", "graph.py", "spec.py")
+    ),
+    dual.VENDOR / "traiNNer" / "archs" / "dual_arch.py",
 )
 # What a DRFT engine's build runs besides TensorRT (drft.build_engine's worker)
 _DRFT_PLUGIN_SOURCES = (
@@ -64,7 +80,8 @@ def memory_budget() -> int:
 
 @cache
 def dual_plugin_identity() -> str:
-    """The SHA-256 of DUAL's plugin code and the Triton that compiles its kernels."""
+    """The SHA-256 of DUAL's plugin code, its exporter and the Triton that compiles its
+    kernels."""
     digest = hashlib.sha256()
     for source in _DUAL_PLUGIN_SOURCES:
         digest.update(source.read_bytes())
@@ -208,13 +225,23 @@ def _magic() -> bytes:
 
 
 def _encode(engine: TensorRTEngine) -> bytes:
+    """The record of an engine: an engine set's container (rdual_engine_set.py) is
+    kept in Zstandard; an image engine's info has no `temporal` entry, as before."""
+    info = dataclasses.asdict(engine.info)
+    if info["temporal"] is None:
+        del info["temporal"]
+        compression = None
+    else:
+        compression = Compression.ZSTD
     header = json.dumps(
         {
-            "info": dataclasses.asdict(engine.info),
+            "info": info,
             "sha256": hashlib.sha256(engine.bytes).hexdigest(),
+            **({} if compression is None else {"compression": compression.value}),
         }
     ).encode()
-    return _magic() + len(header).to_bytes(8, "little") + header + engine.bytes
+    body = compress(engine.bytes, compression)
+    return _magic() + len(header).to_bytes(8, "little") + header + body
 
 
 def _decode(data: bytes) -> TensorRTEngine | None:
@@ -226,13 +253,16 @@ def _decode(data: bytes) -> TensorRTEngine | None:
     end = start + int.from_bytes(data[len(magic) : start], "little")
     try:
         header = json.loads(data[start:end])
-        info = dict(header["info"])
-        for name in ("min_shape", "opt_shape", "max_shape"):
-            if info[name] is not None:
-                info[name] = tuple(info[name])
-        engine = TensorRTEngine(data[end:], TensorRTEngineInfo(**info))
+        body = data[end:]
+        if "compression" in header:
+            if header["compression"] != Compression.ZSTD.value:
+                return None
+            body = decompress(body)
+            if body is None:
+                return None
+        engine = TensorRTEngine(body, info_from_dict(header["info"]))
         digest = header["sha256"]
-    except (ValueError, KeyError, TypeError):
+    except (ValueError, KeyError, TypeError, zstd.ZstdError):
         return None
     if hashlib.sha256(engine.bytes).hexdigest() != digest:
         return None

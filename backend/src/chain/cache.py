@@ -26,7 +26,7 @@ class CacheStrategy:
 
 
 StaticCaching = CacheStrategy(CacheStrategy.STATIC_HITS_TO_LIVE)
-"The value is cached for the during of the execution of the chain."
+"The value is cached for the duration of the chain's execution."
 
 
 def get_cache_strategies(chain: Chain) -> dict[NodeId, CacheStrategy]:

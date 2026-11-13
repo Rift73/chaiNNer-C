@@ -26,7 +26,7 @@ from .format import SRGB_FORMATS as SRGB_FORMATS
 
 __TEXCONV_DIR = os.path.join(
     os.path.dirname(sys.modules["__main__"].__file__),  # type: ignore
-    "texconv",  # type: ignore
+    "texconv",
 )
 # Microsoft's texconv.exe on Windows; on Linux chaiNNer-C's own (native/texconv)
 __TEXCONV_EXE = os.path.join(

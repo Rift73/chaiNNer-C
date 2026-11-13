@@ -1,0 +1,1143 @@
+# Help texts of the Resize, Anti-alias and Dehalo nodes (overlay format).
+
+[method."vskernels.*.bob"]
+help = "Deinterlaces by stretching each field to full height with the kernel: one frame per field, so the frame rate doubles. Fast and soft, with bobbing on fine lines; the other deinterlacers in this node look far better. Needs the field order."
+
+[method."vskernels.*.bob".docs]
+b = "Bicubic's blur term. Higher = softer and blurrier, less ringing; 0 to 1 is usual. Example: `0.333`"
+c = "Bicubic's sharpness term. Higher = sharper with more ringing; 0 to 1 is usual. Example: `0.5`"
+taps = "How many lobes the kernel has. More = sharper with more ringing and slower; 2 to 4 is usual. Example: `3`"
+tff = "Field order. As the video says reads the clip's tag and stops if the clip says it is progressive or does not say. TFF = top field first, BFF = bottom field first."
+
+[method."vskernels.*.bob".choices]
+Catrom = "Bicubic with b 0, c 0.5 (Catmull-Rom). Sharp with little ringing; the usual all-round pick for upscaling and downscaling."
+Mitchell = "Bicubic with b 1/3, c 1/3. A little softer than Catrom with less ringing and aliasing; a safe neutral pick."
+Hermite = "Bicubic with b 0, c 0. Soft, no ringing; good for downscaling when halos must not appear."
+BSpline = "Bicubic with b 1, c 0. Very soft and blurry, no ringing; for smoothing, not for keeping detail."
+Bicubic = "Bicubic with your own Bicubic b and Bicubic c (defaults 0 and 0.5, the same as Catrom). Higher B = softer and blurrier; higher C = sharper with more ringing."
+BicubicAuto = "Bicubic where you set only Bicubic b or only Bicubic c and the other follows b + 2c = 1, a balanced pair. Setting both stops with an error."
+BicubicSharp = "Bicubic with b 0, c 1. Very sharp with strong ringing; mostly for descaling sources that were upscaled with it."
+FFmpegBicubic = "Bicubic with b 0, c 0.6, FFmpeg's default bicubic. Pick it to match or undo a scale made by FFmpeg."
+AdobeBicubic = "Bicubic with b 0, c 0.75, Adobe's \"Bicubic\" preset. Sharper than Catrom with more ringing; mostly for descaling Adobe-made upscales."
+AdobeBicubicSharper = "Bicubic with b 0, c 1 and blur 1.05, Adobe's \"Bicubic Sharper\" preset. For matching or descaling Adobe output."
+AdobeBicubicSmoother = "Bicubic with b 0, c 0.625 and blur 1.15, Adobe's \"Bicubic Smoother\" preset. Soft; for matching or descaling Adobe output."
+Robidoux = "Bicubic with b 0.378, c 0.311. Close to Mitchell, slightly sharper; balanced with low ringing."
+RobidouxSharp = "Bicubic with b 0.262, c 0.369. Between Robidoux and Catrom in sharpness."
+RobidouxSoft = "Bicubic with b 0.680, c 0.160. Soft with almost no ringing."
+Bilinear = "Blends the two nearest pixels in each direction. Soft when upscaling, aliased when shrinking a lot; fast. A common kernel to descale."
+Point = "Nearest neighbour: copies whole pixels. Blocky when upscaling, aliased when downscaling; for pixel art, masks and exact integer upscales."
+Lanczos = "Windowed sinc with Taps lobes (default 3). Sharp, with ringing next to hard edges; a common pick for live action. More taps = sharper, more ringing."
+Spline16 = "Spline, 2 taps. Sharp like Catrom with a little ringing."
+Spline36 = "Spline, 3 taps. Sharp with moderate ringing; a common pick for upscaling."
+Spline64 = "Spline, 4 taps. Slightly sharper than Spline36 with a bit more ringing."
+CustomPoint = "Point built through the custom-kernel route of the resize plugin. Same look as Point; pick Point unless a script names this one."
+CustomBilinear = "Bilinear built through the custom-kernel route of the resize plugin. Same look as Bilinear; pick Bilinear unless a script names this one."
+CustomLanczos = "Lanczos built through the custom-kernel route of the resize plugin. Same look as Lanczos; pick Lanczos unless a script names this one."
+
+[method."vskernels.*.deinterlace"]
+help = "Deinterlaces by stretching fields to full height with the kernel; Double rate on gives one frame per field (frame rate doubles), off keeps the frame rate. Fast and soft; the other deinterlacers in this node look far better. Needs the field order."
+
+[method."vskernels.*.deinterlace".docs]
+b = "Bicubic's blur term. Higher = softer and blurrier, less ringing; 0 to 1 is usual. Example: `0.333`"
+c = "Bicubic's sharpness term. Higher = sharper with more ringing; 0 to 1 is usual. Example: `0.5`"
+taps = "How many lobes the kernel has. More = sharper with more ringing and slower; 2 to 4 is usual. Example: `3`"
+tff = "Field order. As the video says reads the clip's tag and stops if the clip says it is progressive or does not say. TFF = top field first, BFF = bottom field first."
+double_rate = "On: one frame per field, so the frame rate doubles (50i becomes 50p). Off: one frame per frame, half the fields dropped."
+
+[method."vskernels.*.deinterlace".choices]
+Catrom = "Bicubic with b 0, c 0.5 (Catmull-Rom). Sharp with little ringing; the usual all-round pick for upscaling and downscaling."
+Mitchell = "Bicubic with b 1/3, c 1/3. A little softer than Catrom with less ringing and aliasing; a safe neutral pick."
+Hermite = "Bicubic with b 0, c 0. Soft, no ringing; good for downscaling when halos must not appear."
+BSpline = "Bicubic with b 1, c 0. Very soft and blurry, no ringing; for smoothing, not for keeping detail."
+Bicubic = "Bicubic with your own Bicubic b and Bicubic c (defaults 0 and 0.5, the same as Catrom). Higher B = softer and blurrier; higher C = sharper with more ringing."
+BicubicAuto = "Bicubic where you set only Bicubic b or only Bicubic c and the other follows b + 2c = 1, a balanced pair. Setting both stops with an error."
+BicubicSharp = "Bicubic with b 0, c 1. Very sharp with strong ringing; mostly for descaling sources that were upscaled with it."
+FFmpegBicubic = "Bicubic with b 0, c 0.6, FFmpeg's default bicubic. Pick it to match or undo a scale made by FFmpeg."
+AdobeBicubic = "Bicubic with b 0, c 0.75, Adobe's \"Bicubic\" preset. Sharper than Catrom with more ringing; mostly for descaling Adobe-made upscales."
+AdobeBicubicSharper = "Bicubic with b 0, c 1 and blur 1.05, Adobe's \"Bicubic Sharper\" preset. For matching or descaling Adobe output."
+AdobeBicubicSmoother = "Bicubic with b 0, c 0.625 and blur 1.15, Adobe's \"Bicubic Smoother\" preset. Soft; for matching or descaling Adobe output."
+Robidoux = "Bicubic with b 0.378, c 0.311. Close to Mitchell, slightly sharper; balanced with low ringing."
+RobidouxSharp = "Bicubic with b 0.262, c 0.369. Between Robidoux and Catrom in sharpness."
+RobidouxSoft = "Bicubic with b 0.680, c 0.160. Soft with almost no ringing."
+Bilinear = "Blends the two nearest pixels in each direction. Soft when upscaling, aliased when shrinking a lot; fast. A common kernel to descale."
+Point = "Nearest neighbour: copies whole pixels. Blocky when upscaling, aliased when downscaling; for pixel art, masks and exact integer upscales."
+Lanczos = "Windowed sinc with Taps lobes (default 3). Sharp, with ringing next to hard edges; a common pick for live action. More taps = sharper, more ringing."
+Spline16 = "Spline, 2 taps. Sharp like Catrom with a little ringing."
+Spline36 = "Spline, 3 taps. Sharp with moderate ringing; a common pick for upscaling."
+Spline64 = "Spline, 4 taps. Slightly sharper than Spline36 with a bit more ringing."
+CustomPoint = "Point built through the custom-kernel route of the resize plugin. Same look as Point; pick Point unless a script names this one."
+CustomBilinear = "Bilinear built through the custom-kernel route of the resize plugin. Same look as Bilinear; pick Bilinear unless a script names this one."
+CustomLanczos = "Lanczos built through the custom-kernel route of the resize plugin. Same look as Lanczos; pick Lanczos unless a script names this one."
+
+[method."vskernels.*.descale"]
+help = "Undoes an upscale: computes the picture at the size it was made at (e.g. 720p anime released as 1080p), which a normal downscale cannot. The kernel and size must match the ones that made the upscale, or the result rings and loses detail. Example: Bilinear at 1280x720. Needs a 32-bit float clip. Wrong guesses look worse than plain scaling."
+
+[method."vskernels.*.descale".docs]
+b = "Bicubic's blur term. Higher = softer and blurrier, less ringing; 0 to 1 is usual. Example: `0.333`"
+c = "Bicubic's sharpness term. Higher = sharper with more ringing; 0 to 1 is usual. Example: `0.5`"
+taps = "How many lobes the kernel has. More = sharper with more ringing and slower; 2 to 4 is usual. Example: `3`"
+sigma = "Width of the Gaussian curve. Higher = blurrier; 0.3 to 1 is usual. Example: `0.5`"
+cutoff = "Distance in pixels beyond which the kernel gives 0, even inside Taps. Empty = no cut. Example: `2.5`"
+blur = "The blur (kernel stretch) the original upscale used. Empty = 1, none. Example: `1.05` for Adobe's Bicubic Sharper."
+width = "The width the picture was made at, before it was upscaled. Empty keeps the clip's width (nothing is undone). Example: `1280`"
+height = "The height the picture was made at, before it was upscaled, as found with a descale test. Empty keeps the clip's height (nothing is undone). Example: `720`"
+linear = "Undoes the upscale in linear light. Only right when the source was upscaled in linear light; most were not. Default = only when Sigmoid light is on."
+sigmoid = "Undoes an upscale that was made on a sigmoid curve. Tick for the usual curve (6.5, 0.75); most sources were not made that way."
+shift = "Fraction-of-a-pixel offset the original upscale had, as (top, left). Leave (0, 0) unless the source was shifted. Example: `(0.25, 0)`"
+border_handling = "How the edges are padded: `0` mirror, `1` black (zero), `2` repeat the last row. Change it only when undoing a scale that padded that way. Example: `0`"
+sample_grid_model = "`0` lines up the outer edges of the pictures (normal); `1` lines up the centres of the outer pixels, as some programs do. Example: `1`"
+field_based = "As the video says reads the clip's tag. Top field first (TFF) or Bottom field first (BFF) descales each field on its own and weaves them back, for cross-converted (upscaled while interlaced) sources; Height must then be even."
+ignore_mask = "A mask clip: white areas (credits, overlays added after the upscale) are left out of the descale calculation. Wire a mask from the Masks node."
+
+[method."vskernels.*.descale".choices]
+Catrom = "Bicubic with b 0, c 0.5 (Catmull-Rom). Sharp with little ringing; the usual all-round pick for upscaling and downscaling."
+Mitchell = "Bicubic with b 1/3, c 1/3. A little softer than Catrom with less ringing and aliasing; a safe neutral pick."
+Hermite = "Bicubic with b 0, c 0. Soft, no ringing; good for downscaling when halos must not appear."
+BSpline = "Bicubic with b 1, c 0. Very soft and blurry, no ringing; for smoothing, not for keeping detail."
+Bicubic = "Bicubic with your own Bicubic b and Bicubic c (defaults 0 and 0.5, the same as Catrom). Higher B = softer and blurrier; higher C = sharper with more ringing."
+BicubicAuto = "Bicubic where you set only Bicubic b or only Bicubic c and the other follows b + 2c = 1, a balanced pair. Setting both stops with an error."
+BicubicSharp = "Bicubic with b 0, c 1. Very sharp with strong ringing; mostly for descaling sources that were upscaled with it."
+FFmpegBicubic = "Bicubic with b 0, c 0.6, FFmpeg's default bicubic. Pick it to match or undo a scale made by FFmpeg."
+AdobeBicubic = "Bicubic with b 0, c 0.75, Adobe's \"Bicubic\" preset. Sharper than Catrom with more ringing; mostly for descaling Adobe-made upscales."
+AdobeBicubicSharper = "Bicubic with b 0, c 1 and blur 1.05, Adobe's \"Bicubic Sharper\" preset. For matching or descaling Adobe output."
+AdobeBicubicSmoother = "Bicubic with b 0, c 0.625 and blur 1.15, Adobe's \"Bicubic Smoother\" preset. Soft; for matching or descaling Adobe output."
+Robidoux = "Bicubic with b 0.378, c 0.311. Close to Mitchell, slightly sharper; balanced with low ringing."
+RobidouxSharp = "Bicubic with b 0.262, c 0.369. Between Robidoux and Catrom in sharpness."
+RobidouxSoft = "Bicubic with b 0.680, c 0.160. Soft with almost no ringing."
+Bilinear = "Blends the two nearest pixels in each direction. Soft when upscaling, aliased when shrinking a lot; fast. A common kernel to descale."
+Point = "Nearest neighbour: copies whole pixels. Blocky when upscaling, aliased when downscaling; for pixel art, masks and exact integer upscales."
+Box = "Averages the pixels each output pixel covers. Clean for downscaling by whole factors (2x, 3x); blocky when upscaling."
+Lanczos = "Windowed sinc with Taps lobes (default 3). Sharp, with ringing next to hard edges; a common pick for live action. More taps = sharper, more ringing."
+Spline16 = "Spline, 2 taps. Sharp like Catrom with a little ringing."
+Spline36 = "Spline, 3 taps. Sharp with moderate ringing; a common pick for upscaling."
+Spline64 = "Spline, 4 taps. Slightly sharper than Spline36 with a bit more ringing."
+Spline = "Spline with any number of taps (Taps, default 2). Spline16, Spline36 and Spline64 are 2, 3 and 4 taps."
+Gaussian = "Gaussian curve; Sigma sets its width (default 0.5). Soft, no ringing; larger sigma = blurrier."
+Sinc = "Plain sinc cut at Taps (default 4), no window. Very sharp with strong ringing; mostly to match a source made with it."
+Blackman = "Sinc with a Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+BlackmanMinLobe = "Sinc with a minimum-lobe Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+Hann = "Sinc with a Hann window, 3 taps by default. Mostly to match or descale a source made with it."
+Hamming = "Sinc with a Hamming window, 3 taps by default. Mostly to match or descale a source made with it."
+Welch = "Sinc with a Welch (parabola) window, 3 taps by default. Mostly to match or descale a source made with it."
+Cosine = "Sinc with a cosine window, 3 taps by default. Mostly to match or descale a source made with it."
+Bohman = "Sinc with a Bohman window, 3 taps by default. Mostly to match or descale a source made with it."
+WindowedSinc = "Sinc with a window function you supply (Window; empty = plain sinc) and an optional Cutoff. For experiments."
+CustomPoint = "Point built through the custom-kernel route of the resize plugin. Same look as Point; pick Point unless a script names this one."
+CustomBilinear = "Bilinear built through the custom-kernel route of the resize plugin. Same look as Bilinear; pick Bilinear unless a script names this one."
+CustomLanczos = "Lanczos built through the custom-kernel route of the resize plugin. Same look as Lanczos; pick Lanczos unless a script names this one."
+
+[method."vskernels.*.resample"]
+help = "Converts the clip to another format (YUV to RGB, 4:2:0 to 4:4:4, bit depth), using the chosen kernel for the colour planes it scales. Example: Format from an RGB clip turns YUV into RGB. Wrong matrix tags give wrong colours."
+
+[method."vskernels.*.resample".docs]
+b = "Bicubic's blur term. Higher = softer and blurrier, less ringing; 0 to 1 is usual. Example: `0.333`"
+c = "Bicubic's sharpness term. Higher = sharper with more ringing; 0 to 1 is usual. Example: `0.5`"
+taps = "How many lobes the kernel has. More = sharper with more ringing and slower; 2 to 4 is usual. Example: `3`"
+sigma = "Width of the Gaussian curve. Higher = blurrier; 0.3 to 1 is usual. Example: `0.5`"
+cutoff = "Distance in pixels beyond which the kernel gives 0, even inside Taps. Empty = no cut. Example: `2.5`"
+format = "The output format (colour family, subsampling, bit depth).\n\nExample: YUV444P16"
+matrix = "Matrix of the output (how YUV maps to RGB). Default = from the clip's tags. Example: BT.709 (1) for HD."
+matrix_in = "Matrix the input really uses, when its tag is missing or wrong. Default = the clip's tag."
+transfer = "Transfer (gamma curve) of the output. Default = unchanged."
+transfer_in = "Transfer the input really uses, when its tag is missing or wrong."
+primaries = "Colour primaries of the output. Default = unchanged."
+primaries_in = "Primaries the input really uses, when its tag is missing or wrong."
+range = "Output range: Limited (16-235 in 8-bit, normal for video) or Full (0-255). Default = unchanged."
+range_in = "Range the input really uses, when its tag is missing or wrong."
+chromaloc = "Where the colour samples sit relative to the brightness samples in the output. Left is normal for HD and DVD, Top left for UHD."
+chromaloc_in = "Where the input's colour samples really sit, when its tag is missing or wrong."
+
+[method."vskernels.*.resample".choices]
+Catrom = "Bicubic with b 0, c 0.5 (Catmull-Rom). Sharp with little ringing; the usual all-round pick for upscaling and downscaling."
+Mitchell = "Bicubic with b 1/3, c 1/3. A little softer than Catrom with less ringing and aliasing; a safe neutral pick."
+Hermite = "Bicubic with b 0, c 0. Soft, no ringing; good for downscaling when halos must not appear."
+BSpline = "Bicubic with b 1, c 0. Very soft and blurry, no ringing; for smoothing, not for keeping detail."
+Bicubic = "Bicubic with your own Bicubic b and Bicubic c (defaults 0 and 0.5, the same as Catrom). Higher B = softer and blurrier; higher C = sharper with more ringing."
+BicubicAuto = "Bicubic where you set only Bicubic b or only Bicubic c and the other follows b + 2c = 1, a balanced pair. Setting both stops with an error."
+BicubicSharp = "Bicubic with b 0, c 1. Very sharp with strong ringing; mostly for descaling sources that were upscaled with it."
+FFmpegBicubic = "Bicubic with b 0, c 0.6, FFmpeg's default bicubic. Pick it to match or undo a scale made by FFmpeg."
+AdobeBicubic = "Bicubic with b 0, c 0.75, Adobe's \"Bicubic\" preset. Sharper than Catrom with more ringing; mostly for descaling Adobe-made upscales."
+AdobeBicubicSharper = "Bicubic with b 0, c 1 and blur 1.05, Adobe's \"Bicubic Sharper\" preset. For matching or descaling Adobe output."
+AdobeBicubicSmoother = "Bicubic with b 0, c 0.625 and blur 1.15, Adobe's \"Bicubic Smoother\" preset. Soft; for matching or descaling Adobe output."
+Robidoux = "Bicubic with b 0.378, c 0.311. Close to Mitchell, slightly sharper; balanced with low ringing."
+RobidouxSharp = "Bicubic with b 0.262, c 0.369. Between Robidoux and Catrom in sharpness."
+RobidouxSoft = "Bicubic with b 0.680, c 0.160. Soft with almost no ringing."
+Bilinear = "Blends the two nearest pixels in each direction. Soft when upscaling, aliased when shrinking a lot; fast. A common kernel to descale."
+Point = "Nearest neighbour: copies whole pixels. Blocky when upscaling, aliased when downscaling; for pixel art, masks and exact integer upscales."
+Box = "Averages the pixels each output pixel covers. Clean for downscaling by whole factors (2x, 3x); blocky when upscaling."
+Lanczos = "Windowed sinc with Taps lobes (default 3). Sharp, with ringing next to hard edges; a common pick for live action. More taps = sharper, more ringing."
+Spline16 = "Spline, 2 taps. Sharp like Catrom with a little ringing."
+Spline36 = "Spline, 3 taps. Sharp with moderate ringing; a common pick for upscaling."
+Spline64 = "Spline, 4 taps. Slightly sharper than Spline36 with a bit more ringing."
+Spline = "Spline with any number of taps (Taps, default 2). Spline16, Spline36 and Spline64 are 2, 3 and 4 taps."
+Gaussian = "Gaussian curve; Sigma sets its width (default 0.5). Soft, no ringing; larger sigma = blurrier."
+Sinc = "Plain sinc cut at Taps (default 4), no window. Very sharp with strong ringing; mostly to match a source made with it."
+Blackman = "Sinc with a Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+BlackmanMinLobe = "Sinc with a minimum-lobe Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+Hann = "Sinc with a Hann window, 3 taps by default. Mostly to match or descale a source made with it."
+Hamming = "Sinc with a Hamming window, 3 taps by default. Mostly to match or descale a source made with it."
+Welch = "Sinc with a Welch (parabola) window, 3 taps by default. Mostly to match or descale a source made with it."
+Cosine = "Sinc with a cosine window, 3 taps by default. Mostly to match or descale a source made with it."
+Bohman = "Sinc with a Bohman window, 3 taps by default. Mostly to match or descale a source made with it."
+WindowedSinc = "Sinc with a window function you supply (Window; empty = plain sinc) and an optional Cutoff. For experiments."
+CustomPoint = "Point built through the custom-kernel route of the resize plugin. Same look as Point; pick Point unless a script names this one."
+CustomBilinear = "Bilinear built through the custom-kernel route of the resize plugin. Same look as Bilinear; pick Bilinear unless a script names this one."
+CustomLanczos = "Lanczos built through the custom-kernel route of the resize plugin. Same look as Lanczos; pick Lanczos unless a script names this one."
+
+[method."vskernels.*.rescale"]
+help = "Upscales a descaled clip back with the same kernel, exactly the reverse of Descale: undo an upscale (descale). Compare it with the source to check a descale guess, or to build masks of what the descale changed. Example: Bilinear from 1280x720 to 1920x1080. For a final upscale pick Resize with a kernel or a neural upscaler instead."
+
+[method."vskernels.*.rescale".docs]
+b = "Bicubic's blur term. Higher = softer and blurrier, less ringing; 0 to 1 is usual. Example: `0.333`"
+c = "Bicubic's sharpness term. Higher = sharper with more ringing; 0 to 1 is usual. Example: `0.5`"
+taps = "How many lobes the kernel has. More = sharper with more ringing and slower; 2 to 4 is usual. Example: `3`"
+sigma = "Width of the Gaussian curve. Higher = blurrier; 0.3 to 1 is usual. Example: `0.5`"
+cutoff = "Distance in pixels beyond which the kernel gives 0, even inside Taps. Empty = no cut. Example: `2.5`"
+blur = "The same kernel stretch given to Descale: undo an upscale (descale). Empty = 1. Example: `1.05`"
+width = "Width to scale back up to, usually the source's. Example: `1920`"
+height = "Height to scale back up to, usually the source's. Example: `1080`"
+linear = "Rescales in linear light; match what Descale: undo an upscale (descale) used. Default = only when Sigmoid light is on."
+sigmoid = "Rescales on a sigmoid curve; match what Descale: undo an upscale (descale) used."
+shift = "The same (top, left) offset given to Descale: undo an upscale (descale). Example: `(0.25, 0)`"
+border_handling = "How the edges are padded: `0` mirror, `1` black (zero), `2` repeat the last row. Change it only when undoing a scale that padded that way. Example: `0`"
+sample_grid_model = "`0` lines up the outer edges of the pictures (normal); `1` lines up the centres of the outer pixels, as some programs do. Example: `1`"
+field_based = "Interlaced rescaling is not supported: leave As the video says or pick Progressive."
+ignore_mask = "The same mask given to Descale: undo an upscale (descale): white areas are left out of the calculation."
+
+[method."vskernels.*.rescale".choices]
+Catrom = "Bicubic with b 0, c 0.5 (Catmull-Rom). Sharp with little ringing; the usual all-round pick for upscaling and downscaling."
+Mitchell = "Bicubic with b 1/3, c 1/3. A little softer than Catrom with less ringing and aliasing; a safe neutral pick."
+Hermite = "Bicubic with b 0, c 0. Soft, no ringing; good for downscaling when halos must not appear."
+BSpline = "Bicubic with b 1, c 0. Very soft and blurry, no ringing; for smoothing, not for keeping detail."
+Bicubic = "Bicubic with your own Bicubic b and Bicubic c (defaults 0 and 0.5, the same as Catrom). Higher B = softer and blurrier; higher C = sharper with more ringing."
+BicubicAuto = "Bicubic where you set only Bicubic b or only Bicubic c and the other follows b + 2c = 1, a balanced pair. Setting both stops with an error."
+BicubicSharp = "Bicubic with b 0, c 1. Very sharp with strong ringing; mostly for descaling sources that were upscaled with it."
+FFmpegBicubic = "Bicubic with b 0, c 0.6, FFmpeg's default bicubic. Pick it to match or undo a scale made by FFmpeg."
+AdobeBicubic = "Bicubic with b 0, c 0.75, Adobe's \"Bicubic\" preset. Sharper than Catrom with more ringing; mostly for descaling Adobe-made upscales."
+AdobeBicubicSharper = "Bicubic with b 0, c 1 and blur 1.05, Adobe's \"Bicubic Sharper\" preset. For matching or descaling Adobe output."
+AdobeBicubicSmoother = "Bicubic with b 0, c 0.625 and blur 1.15, Adobe's \"Bicubic Smoother\" preset. Soft; for matching or descaling Adobe output."
+Robidoux = "Bicubic with b 0.378, c 0.311. Close to Mitchell, slightly sharper; balanced with low ringing."
+RobidouxSharp = "Bicubic with b 0.262, c 0.369. Between Robidoux and Catrom in sharpness."
+RobidouxSoft = "Bicubic with b 0.680, c 0.160. Soft with almost no ringing."
+Bilinear = "Blends the two nearest pixels in each direction. Soft when upscaling, aliased when shrinking a lot; fast. A common kernel to descale."
+Point = "Nearest neighbour: copies whole pixels. Blocky when upscaling, aliased when downscaling; for pixel art, masks and exact integer upscales."
+Box = "Averages the pixels each output pixel covers. Clean for downscaling by whole factors (2x, 3x); blocky when upscaling."
+Lanczos = "Windowed sinc with Taps lobes (default 3). Sharp, with ringing next to hard edges; a common pick for live action. More taps = sharper, more ringing."
+Spline16 = "Spline, 2 taps. Sharp like Catrom with a little ringing."
+Spline36 = "Spline, 3 taps. Sharp with moderate ringing; a common pick for upscaling."
+Spline64 = "Spline, 4 taps. Slightly sharper than Spline36 with a bit more ringing."
+Spline = "Spline with any number of taps (Taps, default 2). Spline16, Spline36 and Spline64 are 2, 3 and 4 taps."
+Gaussian = "Gaussian curve; Sigma sets its width (default 0.5). Soft, no ringing; larger sigma = blurrier."
+Sinc = "Plain sinc cut at Taps (default 4), no window. Very sharp with strong ringing; mostly to match a source made with it."
+Blackman = "Sinc with a Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+BlackmanMinLobe = "Sinc with a minimum-lobe Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+Hann = "Sinc with a Hann window, 3 taps by default. Mostly to match or descale a source made with it."
+Hamming = "Sinc with a Hamming window, 3 taps by default. Mostly to match or descale a source made with it."
+Welch = "Sinc with a Welch (parabola) window, 3 taps by default. Mostly to match or descale a source made with it."
+Cosine = "Sinc with a cosine window, 3 taps by default. Mostly to match or descale a source made with it."
+Bohman = "Sinc with a Bohman window, 3 taps by default. Mostly to match or descale a source made with it."
+WindowedSinc = "Sinc with a window function you supply (Window; empty = plain sinc) and an optional Cutoff. For experiments."
+CustomPoint = "Point built through the custom-kernel route of the resize plugin. Same look as Point; pick Point unless a script names this one."
+CustomBilinear = "Bilinear built through the custom-kernel route of the resize plugin. Same look as Bilinear; pick Bilinear unless a script names this one."
+CustomLanczos = "Lanczos built through the custom-kernel route of the resize plugin. Same look as Lanczos; pick Lanczos unless a script names this one."
+
+[method."vskernels.*.scale"]
+help = "Changes the picture size with the chosen kernel, which decides how sharp or soft the result is. Catrom is the safe start for both upscaling and downscaling; Lanczos or Spline36 for sharper upscales, Hermite for halo-free downscales. Example: 1920x1080 to 1280x720. To undo an upscale use Descale: undo an upscale (descale)."
+
+[method."vskernels.*.scale".docs]
+b = "Bicubic's blur term. Higher = softer and blurrier, less ringing; 0 to 1 is usual. Example: `0.333`"
+c = "Bicubic's sharpness term. Higher = sharper with more ringing; 0 to 1 is usual. Example: `0.5`"
+taps = "How many lobes the kernel has. More = sharper with more ringing and slower; 2 to 4 is usual. Example: `3`"
+sigma = "Width of the Gaussian curve. Higher = blurrier; 0.3 to 1 is usual. Example: `0.5`"
+radius = "How far the kernel reaches, in pixels. Larger = sharper, more ringing, slower; leave the kernel's own value unless matching a source. Example: `3`"
+antiring = "Holds back the halos (ringing) a sharp kernel draws next to edges. 0 = off, 1 = strongest; 0.5 to 0.8 is usual. Example: `0.8`"
+cutoff = "Distance in pixels beyond which the kernel gives 0, even inside Taps. Empty = no cut. Example: `2.5`"
+blur = "Stretches the kernel. Above 1 = softer, below 1 = sharper; empty keeps the kernel's own value. Example: `1.05`"
+width = "Output width in pixels. Empty = the clip's width. Example: `1920`"
+height = "Output height in pixels. Empty = the clip's height. Example: `1080`"
+linear = "Scales in linear light (converted from the clip's gamma and back). Keeps fine bright detail from darkening when downscaling; slower. Default = only when Sigmoid light is on. Example: Yes"
+sigmoid = "Scales on an S-curve of linear light, which keeps halos from ringing kernels small when upscaling. Tick it for the usual curve (slope 6.5, centre 0.75). Example: `(6.5, 0.75)` in the Python value box. Cannot be used with Linear light set to No."
+shift = "Moves the picture by a fraction of a pixel while scaling, as (top, left); positive moves it up or left. A list gives one value per plane. Example: `(0.5, 0)`"
+border_handling = "How the edges are padded: `0` mirror, `1` black (zero), `2` repeat the last row. Change it only when undoing a scale that padded that way. Example: `0`"
+sample_grid_model = "`0` lines up the outer edges of the pictures (normal); `1` lines up the centres of the outer pixels, as some programs do. Example: `1`"
+sar = "Takes the clip's sample aspect ratio (SAR, the shape of its pixels) into account and keeps the shape of the picture, cropping as Keep aspect ratio does."
+keep_ar = "Keeps the picture's shape: when Width and Height have another aspect ratio, crops the sides or top and bottom of the source instead of stretching."
+
+[method."vskernels.*.scale".choices]
+Catrom = "Bicubic with b 0, c 0.5 (Catmull-Rom). Sharp with little ringing; the usual all-round pick for upscaling and downscaling."
+Mitchell = "Bicubic with b 1/3, c 1/3. A little softer than Catrom with less ringing and aliasing; a safe neutral pick."
+Hermite = "Bicubic with b 0, c 0. Soft, no ringing; good for downscaling when halos must not appear."
+BSpline = "Bicubic with b 1, c 0. Very soft and blurry, no ringing; for smoothing, not for keeping detail."
+Bicubic = "Bicubic with your own Bicubic b and Bicubic c (defaults 0 and 0.5, the same as Catrom). Higher B = softer and blurrier; higher C = sharper with more ringing."
+BicubicAuto = "Bicubic where you set only Bicubic b or only Bicubic c and the other follows b + 2c = 1, a balanced pair. Setting both stops with an error."
+BicubicSharp = "Bicubic with b 0, c 1. Very sharp with strong ringing; mostly for descaling sources that were upscaled with it."
+FFmpegBicubic = "Bicubic with b 0, c 0.6, FFmpeg's default bicubic. Pick it to match or undo a scale made by FFmpeg."
+AdobeBicubic = "Bicubic with b 0, c 0.75, Adobe's \"Bicubic\" preset. Sharper than Catrom with more ringing; mostly for descaling Adobe-made upscales."
+AdobeBicubicSharper = "Bicubic with b 0, c 1 and blur 1.05, Adobe's \"Bicubic Sharper\" preset. For matching or descaling Adobe output."
+AdobeBicubicSmoother = "Bicubic with b 0, c 0.625 and blur 1.15, Adobe's \"Bicubic Smoother\" preset. Soft; for matching or descaling Adobe output."
+Robidoux = "Bicubic with b 0.378, c 0.311. Close to Mitchell, slightly sharper; balanced with low ringing."
+RobidouxSharp = "Bicubic with b 0.262, c 0.369. Between Robidoux and Catrom in sharpness."
+RobidouxSoft = "Bicubic with b 0.680, c 0.160. Soft with almost no ringing."
+Bilinear = "Blends the two nearest pixels in each direction. Soft when upscaling, aliased when shrinking a lot; fast. A common kernel to descale."
+Point = "Nearest neighbour: copies whole pixels. Blocky when upscaling, aliased when downscaling; for pixel art, masks and exact integer upscales."
+Box = "Averages the pixels each output pixel covers. Clean for downscaling by whole factors (2x, 3x); blocky when upscaling."
+Lanczos = "Windowed sinc with Taps lobes (default 3). Sharp, with ringing next to hard edges; a common pick for live action. More taps = sharper, more ringing."
+Spline16 = "Spline, 2 taps. Sharp like Catrom with a little ringing."
+Spline36 = "Spline, 3 taps. Sharp with moderate ringing; a common pick for upscaling."
+Spline64 = "Spline, 4 taps. Slightly sharper than Spline36 with a bit more ringing."
+Spline = "Spline with any number of taps (Taps, default 2). Spline16, Spline36 and Spline64 are 2, 3 and 4 taps."
+Gaussian = "Gaussian curve; Sigma sets its width (default 0.5). Soft, no ringing; larger sigma = blurrier."
+Sinc = "Plain sinc cut at Taps (default 4), no window. Very sharp with strong ringing; mostly to match a source made with it."
+Blackman = "Sinc with a Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+BlackmanMinLobe = "Sinc with a minimum-lobe Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+Hann = "Sinc with a Hann window, 3 taps by default. Mostly to match or descale a source made with it."
+Hamming = "Sinc with a Hamming window, 3 taps by default. Mostly to match or descale a source made with it."
+Welch = "Sinc with a Welch (parabola) window, 3 taps by default. Mostly to match or descale a source made with it."
+Cosine = "Sinc with a cosine window, 3 taps by default. Mostly to match or descale a source made with it."
+Bohman = "Sinc with a Bohman window, 3 taps by default. Mostly to match or descale a source made with it."
+WindowedSinc = "Sinc with a window function you supply (Window; empty = plain sinc) and an optional Cutoff. For experiments."
+CustomPoint = "Point built through the custom-kernel route of the resize plugin. Same look as Point; pick Point unless a script names this one."
+CustomBilinear = "Bilinear built through the custom-kernel route of the resize plugin. Same look as Bilinear; pick Bilinear unless a script names this one."
+CustomLanczos = "Lanczos built through the custom-kernel route of the resize plugin. Same look as Lanczos; pick Lanczos unless a script names this one."
+EwaLanczos = "Lanczos in EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaLanczosSharp = "EwaLanczos tuned sharper (blur 0.981). EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaLanczos4Sharpest = "Four-lobe EWA Lanczos tuned sharpest, with antiringing 0.8 holding back halos. EWA weighs by 2D distance: fewer diagonal jaggies, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaJinc = "Jinc (the 2D sinc) without a window, EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaGinseng = "Jinc with a sinc window, EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaHann = "Jinc with a Hann window, EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaRobidoux = "Robidoux bicubic in EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaRobidouxSharp = "Sharper Robidoux bicubic in EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaBicubic = "Bicubic with your own Bicubic b and Bicubic c in EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+NoScale = "Returns the clip unchanged; stops if Width or Height differs from the clip. For chains that need a scaler where you want none."
+
+[method."vskernels.*.shift"]
+help = "Moves the picture by a fraction of a pixel without changing its size, using the chosen kernel. Example: `0.5` moves it half a pixel up. Use it to line up chroma or two clips that are offset."
+
+[method."vskernels.*.shift".docs]
+b = "Bicubic's blur term. Higher = softer and blurrier, less ringing; 0 to 1 is usual. Example: `0.333`"
+c = "Bicubic's sharpness term. Higher = sharper with more ringing; 0 to 1 is usual. Example: `0.5`"
+taps = "How many lobes the kernel has. More = sharper with more ringing and slower; 2 to 4 is usual. Example: `3`"
+sigma = "Width of the Gaussian curve. Higher = blurrier; 0.3 to 1 is usual. Example: `0.5`"
+cutoff = "Distance in pixels beyond which the kernel gives 0, even inside Taps. Empty = no cut. Example: `2.5`"
+shifts_or_top = "Vertical move in pixels (positive moves the picture up), or `top, left` for both. Fractions are allowed. Example: `0.5`"
+shift_left = "Horizontal move in pixels (positive moves the picture left); ignored when the first box holds two values. Example: `0.25`"
+
+[method."vskernels.*.shift".choices]
+Catrom = "Bicubic with b 0, c 0.5 (Catmull-Rom). Sharp with little ringing; the usual all-round pick for upscaling and downscaling."
+Mitchell = "Bicubic with b 1/3, c 1/3. A little softer than Catrom with less ringing and aliasing; a safe neutral pick."
+Hermite = "Bicubic with b 0, c 0. Soft, no ringing; good for downscaling when halos must not appear."
+BSpline = "Bicubic with b 1, c 0. Very soft and blurry, no ringing; for smoothing, not for keeping detail."
+Bicubic = "Bicubic with your own Bicubic b and Bicubic c (defaults 0 and 0.5, the same as Catrom). Higher B = softer and blurrier; higher C = sharper with more ringing."
+BicubicAuto = "Bicubic where you set only Bicubic b or only Bicubic c and the other follows b + 2c = 1, a balanced pair. Setting both stops with an error."
+BicubicSharp = "Bicubic with b 0, c 1. Very sharp with strong ringing; mostly for descaling sources that were upscaled with it."
+FFmpegBicubic = "Bicubic with b 0, c 0.6, FFmpeg's default bicubic. Pick it to match or undo a scale made by FFmpeg."
+AdobeBicubic = "Bicubic with b 0, c 0.75, Adobe's \"Bicubic\" preset. Sharper than Catrom with more ringing; mostly for descaling Adobe-made upscales."
+AdobeBicubicSharper = "Bicubic with b 0, c 1 and blur 1.05, Adobe's \"Bicubic Sharper\" preset. For matching or descaling Adobe output."
+AdobeBicubicSmoother = "Bicubic with b 0, c 0.625 and blur 1.15, Adobe's \"Bicubic Smoother\" preset. Soft; for matching or descaling Adobe output."
+Robidoux = "Bicubic with b 0.378, c 0.311. Close to Mitchell, slightly sharper; balanced with low ringing."
+RobidouxSharp = "Bicubic with b 0.262, c 0.369. Between Robidoux and Catrom in sharpness."
+RobidouxSoft = "Bicubic with b 0.680, c 0.160. Soft with almost no ringing."
+Bilinear = "Blends the two nearest pixels in each direction. Soft when upscaling, aliased when shrinking a lot; fast. A common kernel to descale."
+Point = "Nearest neighbour: copies whole pixels. Blocky when upscaling, aliased when downscaling; for pixel art, masks and exact integer upscales."
+Box = "Averages the pixels each output pixel covers. Clean for downscaling by whole factors (2x, 3x); blocky when upscaling."
+Lanczos = "Windowed sinc with Taps lobes (default 3). Sharp, with ringing next to hard edges; a common pick for live action. More taps = sharper, more ringing."
+Spline16 = "Spline, 2 taps. Sharp like Catrom with a little ringing."
+Spline36 = "Spline, 3 taps. Sharp with moderate ringing; a common pick for upscaling."
+Spline64 = "Spline, 4 taps. Slightly sharper than Spline36 with a bit more ringing."
+Spline = "Spline with any number of taps (Taps, default 2). Spline16, Spline36 and Spline64 are 2, 3 and 4 taps."
+Gaussian = "Gaussian curve; Sigma sets its width (default 0.5). Soft, no ringing; larger sigma = blurrier."
+Sinc = "Plain sinc cut at Taps (default 4), no window. Very sharp with strong ringing; mostly to match a source made with it."
+Blackman = "Sinc with a Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+BlackmanMinLobe = "Sinc with a minimum-lobe Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+Hann = "Sinc with a Hann window, 3 taps by default. Mostly to match or descale a source made with it."
+Hamming = "Sinc with a Hamming window, 3 taps by default. Mostly to match or descale a source made with it."
+Welch = "Sinc with a Welch (parabola) window, 3 taps by default. Mostly to match or descale a source made with it."
+Cosine = "Sinc with a cosine window, 3 taps by default. Mostly to match or descale a source made with it."
+Bohman = "Sinc with a Bohman window, 3 taps by default. Mostly to match or descale a source made with it."
+WindowedSinc = "Sinc with a window function you supply (Window; empty = plain sinc) and an optional Cutoff. For experiments."
+CustomPoint = "Point built through the custom-kernel route of the resize plugin. Same look as Point; pick Point unless a script names this one."
+CustomBilinear = "Bilinear built through the custom-kernel route of the resize plugin. Same look as Bilinear; pick Bilinear unless a script names this one."
+CustomLanczos = "Lanczos built through the custom-kernel route of the resize plugin. Same look as Lanczos; pick Lanczos unless a script names this one."
+
+[method."vskernels.*.supersample"]
+help = "Enlarges the clip by a factor (Size factor) with the chosen kernel. Example: factor 2 makes 1920x1080 into 3840x2160, to filter at the higher size and scale back with Resize with a kernel (scale)."
+
+[method."vskernels.*.supersample".docs]
+b = "Bicubic's blur term. Higher = softer and blurrier, less ringing; 0 to 1 is usual. Example: `0.333`"
+c = "Bicubic's sharpness term. Higher = sharper with more ringing; 0 to 1 is usual. Example: `0.5`"
+taps = "How many lobes the kernel has. More = sharper with more ringing and slower; 2 to 4 is usual. Example: `3`"
+sigma = "Width of the Gaussian curve. Higher = blurrier; 0.3 to 1 is usual. Example: `0.5`"
+radius = "How far the kernel reaches, in pixels. Larger = sharper, more ringing, slower; leave the kernel's own value unless matching a source. Example: `3`"
+antiring = "Holds back the halos (ringing) a sharp kernel draws next to edges. 0 = off, 1 = strongest; 0.5 to 0.8 is usual. Example: `0.8`"
+cutoff = "Distance in pixels beyond which the kernel gives 0, even inside Taps. Empty = no cut. Example: `2.5`"
+blur = "Stretches the kernel. Above 1 = softer, below 1 = sharper; empty keeps the kernel's own value. Example: `1.05`"
+rfactor = "How many times larger the output is. 2 doubles width and height; fractions are allowed. Example: `2`"
+shift = "Fraction-of-a-pixel move while scaling, as (top, left). Example: `(0.5, 0)`"
+
+[method."vskernels.*.supersample".choices]
+Catrom = "Bicubic with b 0, c 0.5 (Catmull-Rom). Sharp with little ringing; the usual all-round pick for upscaling and downscaling."
+Mitchell = "Bicubic with b 1/3, c 1/3. A little softer than Catrom with less ringing and aliasing; a safe neutral pick."
+Hermite = "Bicubic with b 0, c 0. Soft, no ringing; good for downscaling when halos must not appear."
+BSpline = "Bicubic with b 1, c 0. Very soft and blurry, no ringing; for smoothing, not for keeping detail."
+Bicubic = "Bicubic with your own Bicubic b and Bicubic c (defaults 0 and 0.5, the same as Catrom). Higher B = softer and blurrier; higher C = sharper with more ringing."
+BicubicAuto = "Bicubic where you set only Bicubic b or only Bicubic c and the other follows b + 2c = 1, a balanced pair. Setting both stops with an error."
+BicubicSharp = "Bicubic with b 0, c 1. Very sharp with strong ringing; mostly for descaling sources that were upscaled with it."
+FFmpegBicubic = "Bicubic with b 0, c 0.6, FFmpeg's default bicubic. Pick it to match or undo a scale made by FFmpeg."
+AdobeBicubic = "Bicubic with b 0, c 0.75, Adobe's \"Bicubic\" preset. Sharper than Catrom with more ringing; mostly for descaling Adobe-made upscales."
+AdobeBicubicSharper = "Bicubic with b 0, c 1 and blur 1.05, Adobe's \"Bicubic Sharper\" preset. For matching or descaling Adobe output."
+AdobeBicubicSmoother = "Bicubic with b 0, c 0.625 and blur 1.15, Adobe's \"Bicubic Smoother\" preset. Soft; for matching or descaling Adobe output."
+Robidoux = "Bicubic with b 0.378, c 0.311. Close to Mitchell, slightly sharper; balanced with low ringing."
+RobidouxSharp = "Bicubic with b 0.262, c 0.369. Between Robidoux and Catrom in sharpness."
+RobidouxSoft = "Bicubic with b 0.680, c 0.160. Soft with almost no ringing."
+Bilinear = "Blends the two nearest pixels in each direction. Soft when upscaling, aliased when shrinking a lot; fast. A common kernel to descale."
+Point = "Nearest neighbour: copies whole pixels. Blocky when upscaling, aliased when downscaling; for pixel art, masks and exact integer upscales."
+Box = "Averages the pixels each output pixel covers. Clean for downscaling by whole factors (2x, 3x); blocky when upscaling."
+Lanczos = "Windowed sinc with Taps lobes (default 3). Sharp, with ringing next to hard edges; a common pick for live action. More taps = sharper, more ringing."
+Spline16 = "Spline, 2 taps. Sharp like Catrom with a little ringing."
+Spline36 = "Spline, 3 taps. Sharp with moderate ringing; a common pick for upscaling."
+Spline64 = "Spline, 4 taps. Slightly sharper than Spline36 with a bit more ringing."
+Spline = "Spline with any number of taps (Taps, default 2). Spline16, Spline36 and Spline64 are 2, 3 and 4 taps."
+Gaussian = "Gaussian curve; Sigma sets its width (default 0.5). Soft, no ringing; larger sigma = blurrier."
+Sinc = "Plain sinc cut at Taps (default 4), no window. Very sharp with strong ringing; mostly to match a source made with it."
+Blackman = "Sinc with a Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+BlackmanMinLobe = "Sinc with a minimum-lobe Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+Hann = "Sinc with a Hann window, 3 taps by default. Mostly to match or descale a source made with it."
+Hamming = "Sinc with a Hamming window, 3 taps by default. Mostly to match or descale a source made with it."
+Welch = "Sinc with a Welch (parabola) window, 3 taps by default. Mostly to match or descale a source made with it."
+Cosine = "Sinc with a cosine window, 3 taps by default. Mostly to match or descale a source made with it."
+Bohman = "Sinc with a Bohman window, 3 taps by default. Mostly to match or descale a source made with it."
+WindowedSinc = "Sinc with a window function you supply (Window; empty = plain sinc) and an optional Cutoff. For experiments."
+CustomPoint = "Point built through the custom-kernel route of the resize plugin. Same look as Point; pick Point unless a script names this one."
+CustomBilinear = "Bilinear built through the custom-kernel route of the resize plugin. Same look as Bilinear; pick Bilinear unless a script names this one."
+CustomLanczos = "Lanczos built through the custom-kernel route of the resize plugin. Same look as Lanczos; pick Lanczos unless a script names this one."
+EwaLanczos = "Lanczos in EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaLanczosSharp = "EwaLanczos tuned sharper (blur 0.981). EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaLanczos4Sharpest = "Four-lobe EWA Lanczos tuned sharpest, with antiringing 0.8 holding back halos. EWA weighs by 2D distance: fewer diagonal jaggies, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaJinc = "Jinc (the 2D sinc) without a window, EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaGinseng = "Jinc with a sinc window, EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaHann = "Jinc with a Hann window, EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaRobidoux = "Robidoux bicubic in EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaRobidouxSharp = "Sharper Robidoux bicubic in EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+EwaBicubic = "Bicubic with your own Bicubic b and Bicubic c in EWA (weights by 2D distance instead of row then column): fewer jaggies on diagonals, slower. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+NoScale = "Returns the clip unchanged; stops if Width or Height differs from the clip. For chains that need a scaler where you want none."
+
+[method."vskernels.*.descale_function"]
+help = "Calls the kernel's bare plugin function for descale, without vs-jetpack's handling of shifts, borders, linear light and field order. For matching a script line by line; otherwise pick the Descale method. Width and Height must be set where required."
+
+[method."vskernels.*.descale_function".docs]
+taps = "How many lobes the kernel has. More = sharper with more ringing and slower; 2 to 4 is usual. Example: `3`"
+sigma = "Width of the Gaussian curve. Higher = blurrier; 0.3 to 1 is usual. Example: `0.5`"
+cutoff = "Distance in pixels beyond which the kernel gives 0, even inside Taps. Empty = no cut. Example: `2.5`"
+width = "Output width in pixels. Example: `1280`"
+height = "Output height in pixels. Example: `720`"
+
+[method."vskernels.*.descale_function".choices]
+Box = "Averages the pixels each output pixel covers. Clean for downscaling by whole factors (2x, 3x); blocky when upscaling."
+Spline = "Spline with any number of taps (Taps, default 2). Spline16, Spline36 and Spline64 are 2, 3 and 4 taps."
+Gaussian = "Gaussian curve; Sigma sets its width (default 0.5). Soft, no ringing; larger sigma = blurrier."
+Sinc = "Plain sinc cut at Taps (default 4), no window. Very sharp with strong ringing; mostly to match a source made with it."
+Blackman = "Sinc with a Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+BlackmanMinLobe = "Sinc with a minimum-lobe Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+Hann = "Sinc with a Hann window, 3 taps by default. Mostly to match or descale a source made with it."
+Hamming = "Sinc with a Hamming window, 3 taps by default. Mostly to match or descale a source made with it."
+Welch = "Sinc with a Welch (parabola) window, 3 taps by default. Mostly to match or descale a source made with it."
+Cosine = "Sinc with a cosine window, 3 taps by default. Mostly to match or descale a source made with it."
+Bohman = "Sinc with a Bohman window, 3 taps by default. Mostly to match or descale a source made with it."
+WindowedSinc = "Sinc with a window function you supply (Window; empty = plain sinc) and an optional Cutoff. For experiments."
+CustomPoint = "Point built through the custom-kernel route of the resize plugin. Same look as Point; pick Point unless a script names this one."
+CustomBilinear = "Bilinear built through the custom-kernel route of the resize plugin. Same look as Bilinear; pick Bilinear unless a script names this one."
+CustomLanczos = "Lanczos built through the custom-kernel route of the resize plugin. Same look as Lanczos; pick Lanczos unless a script names this one."
+
+[method."vskernels.*.resample_function"]
+help = "Calls the kernel's bare plugin function for resample, without vs-jetpack's handling of shifts, borders, linear light and field order. For matching a script line by line; otherwise pick the Resample method. Width and Height must be set where required."
+
+[method."vskernels.*.resample_function".docs]
+taps = "How many lobes the kernel has. More = sharper with more ringing and slower; 2 to 4 is usual. Example: `3`"
+sigma = "Width of the Gaussian curve. Higher = blurrier; 0.3 to 1 is usual. Example: `0.5`"
+cutoff = "Distance in pixels beyond which the kernel gives 0, even inside Taps. Empty = no cut. Example: `2.5`"
+width = "Output width in pixels. Example: `1280`"
+height = "Output height in pixels. Example: `720`"
+
+[method."vskernels.*.resample_function".choices]
+Box = "Averages the pixels each output pixel covers. Clean for downscaling by whole factors (2x, 3x); blocky when upscaling."
+Spline = "Spline with any number of taps (Taps, default 2). Spline16, Spline36 and Spline64 are 2, 3 and 4 taps."
+Gaussian = "Gaussian curve; Sigma sets its width (default 0.5). Soft, no ringing; larger sigma = blurrier."
+Sinc = "Plain sinc cut at Taps (default 4), no window. Very sharp with strong ringing; mostly to match a source made with it."
+Blackman = "Sinc with a Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+BlackmanMinLobe = "Sinc with a minimum-lobe Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+Hann = "Sinc with a Hann window, 3 taps by default. Mostly to match or descale a source made with it."
+Hamming = "Sinc with a Hamming window, 3 taps by default. Mostly to match or descale a source made with it."
+Welch = "Sinc with a Welch (parabola) window, 3 taps by default. Mostly to match or descale a source made with it."
+Cosine = "Sinc with a cosine window, 3 taps by default. Mostly to match or descale a source made with it."
+Bohman = "Sinc with a Bohman window, 3 taps by default. Mostly to match or descale a source made with it."
+WindowedSinc = "Sinc with a window function you supply (Window; empty = plain sinc) and an optional Cutoff. For experiments."
+CustomPoint = "Point built through the custom-kernel route of the resize plugin. Same look as Point; pick Point unless a script names this one."
+CustomBilinear = "Bilinear built through the custom-kernel route of the resize plugin. Same look as Bilinear; pick Bilinear unless a script names this one."
+CustomLanczos = "Lanczos built through the custom-kernel route of the resize plugin. Same look as Lanczos; pick Lanczos unless a script names this one."
+
+[method."vskernels.*.rescale_function"]
+help = "Calls the kernel's bare plugin function for rescale, without vs-jetpack's handling of shifts, borders, linear light and field order. For matching a script line by line; otherwise pick the Rescale method. Width and Height must be set where required."
+
+[method."vskernels.*.rescale_function".docs]
+taps = "How many lobes the kernel has. More = sharper with more ringing and slower; 2 to 4 is usual. Example: `3`"
+sigma = "Width of the Gaussian curve. Higher = blurrier; 0.3 to 1 is usual. Example: `0.5`"
+cutoff = "Distance in pixels beyond which the kernel gives 0, even inside Taps. Empty = no cut. Example: `2.5`"
+width = "Output width in pixels. Example: `1280`"
+height = "Output height in pixels. Example: `720`"
+
+[method."vskernels.*.rescale_function".choices]
+Box = "Averages the pixels each output pixel covers. Clean for downscaling by whole factors (2x, 3x); blocky when upscaling."
+Spline = "Spline with any number of taps (Taps, default 2). Spline16, Spline36 and Spline64 are 2, 3 and 4 taps."
+Gaussian = "Gaussian curve; Sigma sets its width (default 0.5). Soft, no ringing; larger sigma = blurrier."
+Sinc = "Plain sinc cut at Taps (default 4), no window. Very sharp with strong ringing; mostly to match a source made with it."
+Blackman = "Sinc with a Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+BlackmanMinLobe = "Sinc with a minimum-lobe Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+Hann = "Sinc with a Hann window, 3 taps by default. Mostly to match or descale a source made with it."
+Hamming = "Sinc with a Hamming window, 3 taps by default. Mostly to match or descale a source made with it."
+Welch = "Sinc with a Welch (parabola) window, 3 taps by default. Mostly to match or descale a source made with it."
+Cosine = "Sinc with a cosine window, 3 taps by default. Mostly to match or descale a source made with it."
+Bohman = "Sinc with a Bohman window, 3 taps by default. Mostly to match or descale a source made with it."
+WindowedSinc = "Sinc with a window function you supply (Window; empty = plain sinc) and an optional Cutoff. For experiments."
+CustomPoint = "Point built through the custom-kernel route of the resize plugin. Same look as Point; pick Point unless a script names this one."
+CustomBilinear = "Bilinear built through the custom-kernel route of the resize plugin. Same look as Bilinear; pick Bilinear unless a script names this one."
+CustomLanczos = "Lanczos built through the custom-kernel route of the resize plugin. Same look as Lanczos; pick Lanczos unless a script names this one."
+
+[method."vskernels.*.scale_function"]
+help = "Calls the kernel's bare plugin function for scale, without vs-jetpack's handling of shifts, borders, linear light and field order. For matching a script line by line; otherwise pick Resize with a kernel. Width and Height must be set where required."
+
+[method."vskernels.*.scale_function".docs]
+taps = "How many lobes the kernel has. More = sharper with more ringing and slower; 2 to 4 is usual. Example: `3`"
+sigma = "Width of the Gaussian curve. Higher = blurrier; 0.3 to 1 is usual. Example: `0.5`"
+cutoff = "Distance in pixels beyond which the kernel gives 0, even inside Taps. Empty = no cut. Example: `2.5`"
+width = "Output width in pixels. Example: `1280`"
+height = "Output height in pixels. Example: `720`"
+
+[method."vskernels.*.scale_function".choices]
+Box = "Averages the pixels each output pixel covers. Clean for downscaling by whole factors (2x, 3x); blocky when upscaling."
+Spline = "Spline with any number of taps (Taps, default 2). Spline16, Spline36 and Spline64 are 2, 3 and 4 taps."
+Gaussian = "Gaussian curve; Sigma sets its width (default 0.5). Soft, no ringing; larger sigma = blurrier."
+Sinc = "Plain sinc cut at Taps (default 4), no window. Very sharp with strong ringing; mostly to match a source made with it."
+Blackman = "Sinc with a Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+BlackmanMinLobe = "Sinc with a minimum-lobe Blackman window, 4 taps by default. Mostly to match or descale a source made with it."
+Hann = "Sinc with a Hann window, 3 taps by default. Mostly to match or descale a source made with it."
+Hamming = "Sinc with a Hamming window, 3 taps by default. Mostly to match or descale a source made with it."
+Welch = "Sinc with a Welch (parabola) window, 3 taps by default. Mostly to match or descale a source made with it."
+Cosine = "Sinc with a cosine window, 3 taps by default. Mostly to match or descale a source made with it."
+Bohman = "Sinc with a Bohman window, 3 taps by default. Mostly to match or descale a source made with it."
+WindowedSinc = "Sinc with a window function you supply (Window; empty = plain sinc) and an optional Cutoff. For experiments."
+CustomPoint = "Point built through the custom-kernel route of the resize plugin. Same look as Point; pick Point unless a script names this one."
+CustomBilinear = "Bilinear built through the custom-kernel route of the resize plugin. Same look as Bilinear; pick Bilinear unless a script names this one."
+CustomLanczos = "Lanczos built through the custom-kernel route of the resize plugin. Same look as Lanczos; pick Lanczos unless a script names this one."
+
+[method."vskernels.resample_to"]
+help = "Converts the clip to the chosen format, picking the simplest route: bit depth only when the colour family matches, Point for 4:4:4 targets, else the chosen resampler for the colour planes. Example: pick RGB24 as the format to get 8-bit RGB."
+
+[method."vskernels.resample_to".docs]
+out_fmt = "The output format (colour family, subsampling, bit depth).\n\nExample: RGB24"
+matrix = "Matrix for a YUV to RGB conversion (or back). Default = from the clip's tags. Example: BT.709 (1) for HD."
+resampler = "Kernel for the colour planes when the subsampling changes. Catrom is the usual pick."
+
+[method."vsscale.*.scale"]
+help = "Scales with a smarter scaler than a kernel: ArtCNN or Waifu2x (neural upscalers for anime), DPIR (neural denoise or deblock), a shader, your own ONNX model, or a kernel kept free of ringing (ClampScaler). Example: ArtCNN to 3840x2160. Neural ones need vs-mlrt and are slow without a GPU."
+
+[method."vsscale.*.scale".docs]
+backend = "Where the model runs (a vs-mlrt backend such as TensorRT, CUDA or CPU). Empty picks the best one available, preferring half precision on a GPU."
+tiles = "Splits the picture into this many tiles, as `columns, rows`, to save graphics memory; results can differ slightly at tile edges. Example: `2, 2`"
+tilesize = "Size of each tile in pixels, as `width, height`, when Tiles is used. Example: `960, 540`"
+overlap = "Pixels shared by neighbouring tiles, hiding tile seams. Example: `16`"
+max_instances = "Most model copies kept for a clip whose size changes between frames. Example: `2`"
+kernel = "Kernel for the plain scaling and shifting steps around the model (such as reaching an exact size). Catrom is the usual pick."
+scaler = "Kernel for the final resize to Width and Height. Default = Kernel."
+shifter = "Kernel for fraction-of-a-pixel shifts. Default = Kernel."
+base_scaler = "The sharp scaler whose result is clamped. Example: Lanczos."
+reference = "The calmer scaler whose result sets the allowed limits. Example: Catrom."
+strength = "ClampScaler: How far the result moves toward Clamp reference where it rings. Higher = less ringing, less sharpness; 0 to 100. Example: `80` DPIR: higher = smoother."
+overshoot = "How far bright overshoot may go past Clamp reference, 0 to 1. Empty = the default. Example: `0.1`"
+undershoot = "How far dark undershoot may go past Clamp reference, 0 to 1. Empty = Overshoot. Example: `0.1`"
+limit = "How the result is limited: by Overshoot and Undershoot, or by repairing it against Clamp reference with the chosen repair mode."
+operator = "Min keeps the darker of the two results in the merge, Max the brighter."
+masked = "On: clamps only near edges, where ringing occurs; off: everywhere."
+function = "A Python function applied to the enlarged clip."
+shader = "An mpv GLSL shader file (`.glsl`), such as FSRCNNX."
+model = "Your ONNX model file (`.onnx`)."
+multiple = "Tile sizes are rounded to a multiple of this, as some models need. Example: `8`"
+func = "A Python function that scales the clip."
+copy_props = "On: the output keeps the input's frame properties (tags)."
+width = "Output width in pixels. Empty = the clip's width. Example: `3840`"
+height = "Output height in pixels. Empty = the clip's height. Example: `2160`"
+shift = "Fraction-of-a-pixel move after scaling, as top then left; positive moves the picture up or left. Example: `0.5, 0`"
+
+[method."vsscale.*.scale".choices]
+ArtCNN = "Neural upscaler trained on anime (model R8F64). Upscales the brightness with the model and the colour with Kernel. Needs vs-mlrt; slow without a GPU."
+Waifu2x = "Neural upscaler for anime and art (Cunet model), on RGB. Needs vs-mlrt; slow without a GPU."
+DPIR = "Neural denoise or deblock (Strength sets how much) at the same size, then a plain resize. Needs vs-mlrt; slow without a GPU."
+GenericOnnxScaler = "Runs your own ONNX upscaling model (Model). Needs vs-mlrt."
+ClampScaler = "Scales with Scaler to clamp and clamps it against Clamp reference so sharp kernels do not ring. Example: Lanczos clamped against Catrom."
+PlaceboShader = "Scales with an mpv GLSL shader file (Shader), such as FSRCNNX. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+GenericScaler = "Scales with a Python function you give (Func). For scripts."
+ComplexSuperSamplerProcess = "Upscales, runs your function (Function) at the higher size, and scales back. For scripts."
+
+[method."vsscale.*.supersample"]
+help = "Enlarges by a factor with the chosen smart scaler (see Smart resize: models, shaders (vsscale)), to filter at the higher size. Example: ArtCNN with factor 2. Neural ones need vs-mlrt and are slow without a GPU."
+
+[method."vsscale.*.supersample".docs]
+backend = "Where the model runs (a vs-mlrt backend such as TensorRT, CUDA or CPU). Empty picks the best one available, preferring half precision on a GPU."
+tiles = "Splits the picture into this many tiles, as `columns, rows`, to save graphics memory; results can differ slightly at tile edges. Example: `2, 2`"
+tilesize = "Size of each tile in pixels, as `width, height`, when Tiles is used. Example: `960, 540`"
+overlap = "Pixels shared by neighbouring tiles, hiding tile seams. Example: `16`"
+max_instances = "Most model copies kept for a clip whose size changes between frames. Example: `2`"
+kernel = "Kernel for the plain scaling and shifting steps around the model (such as reaching an exact size). Catrom is the usual pick."
+scaler = "Kernel for the final resize to Width and Height. Default = Kernel."
+shifter = "Kernel for fraction-of-a-pixel shifts. Default = Kernel."
+base_scaler = "The sharp scaler whose result is clamped. Example: Lanczos."
+reference = "The calmer scaler whose result sets the allowed limits. Example: Catrom."
+strength = "ClampScaler: How far the result moves toward Clamp reference where it rings. Higher = less ringing, less sharpness; 0 to 100. Example: `80` DPIR: higher = smoother."
+overshoot = "How far bright overshoot may go past Clamp reference, 0 to 1. Empty = the default. Example: `0.1`"
+undershoot = "How far dark undershoot may go past Clamp reference, 0 to 1. Empty = Overshoot. Example: `0.1`"
+limit = "How the result is limited: by Overshoot and Undershoot, or by repairing it against Clamp reference with the chosen repair mode."
+operator = "Min keeps the darker of the two results in the merge, Max the brighter."
+masked = "On: clamps only near edges, where ringing occurs; off: everywhere."
+function = "A Python function applied to the enlarged clip."
+shader = "An mpv GLSL shader file (`.glsl`), such as FSRCNNX."
+model = "Your ONNX model file (`.onnx`)."
+multiple = "Tile sizes are rounded to a multiple of this, as some models need. Example: `8`"
+func = "A Python function that scales the clip."
+rfactor = "How many times larger the output is. Example: `2`"
+shift = "Fraction-of-a-pixel move after scaling, as top then left; positive moves the picture up or left. Example: `0.5, 0`"
+
+[method."vsscale.*.supersample".choices]
+ArtCNN = "Neural upscaler trained on anime (model R8F64). Upscales the brightness with the model and the colour with Kernel. Needs vs-mlrt; slow without a GPU."
+Waifu2x = "Neural upscaler for anime and art (Cunet model), on RGB. Needs vs-mlrt; slow without a GPU."
+DPIR = "Neural denoise or deblock (Strength sets how much) at the same size, then a plain resize. Needs vs-mlrt; slow without a GPU."
+GenericOnnxScaler = "Runs your own ONNX upscaling model (Model). Needs vs-mlrt."
+ClampScaler = "Scales with Scaler to clamp and clamps it against Clamp reference so sharp kernels do not ring. Example: Lanczos clamped against Catrom."
+PlaceboShader = "Scales with an mpv GLSL shader file (Shader), such as FSRCNNX. Needs the placebo plugin, which runs on a Vulkan device (graphics card)."
+GenericScaler = "Scales with a Python function you give (Func). For scripts."
+ComplexSuperSamplerProcess = "Upscales, runs your function (Function) at the higher size, and scales back. For scripts."
+
+[method."vsscale.Rescale.default_credit_mask"]
+help = "Marks credits and other overlays that were added after the upscale: descales and rescales the clip with the given kernel and height, and shows where the result differs. Feed it to Areas to leave out of Descale: undo an upscale (descale) or a masked merge. Example: Kernel Bilinear, Height `720`."
+
+[method."vsscale.Rescale.default_credit_mask".docs]
+height = "The height the source was made at, before its upscale. A fraction descales to a fractional size. Example: `720`"
+kernel = "The kernel that made the source's upscale. Example: Bilinear."
+upscaler = "Scaler that doubles the descaled clip before it is brought back to size. Starts at Catrom; ArtCNN is sharper but needs vs-mlrt and its downloaded model."
+downscaler = "Scaler that brings the doubled clip back to the source size. Default = Hermite in linear light."
+width = "Width the source was made at. Empty = worked out from Height and the aspect ratio."
+base_height = "Whole-number height around a fractional descale. Empty = worked out from Height."
+base_width = "Whole-number width around a fractional descale. Empty = worked out from Width."
+crop = "Pixels cropped before the descale, as `(left, right, top, bottom)`. Example: `(0, 0, 138, 138)`"
+shift = "Fraction-of-a-pixel offset of the original upscale, as (top, left). Example: `(0.25, 0)`"
+field_based = "Top field first (TFF) or Bottom field first (BFF) for cross-converted (upscaled while interlaced) sources; As the video says reads the clip's tag."
+border_handling = "How the edges are padded: `0` mirror, `1` black (zero), `2` repeat the last row. Change it only when undoing a scale that padded that way. Example: `0`"
+sample_grid_model = "`0` lines up the outer edges of the pictures (normal); `1` lines up the centres of the outer pixels, as some programs do. Example: `1`"
+thr = "How big a difference counts as credits. Lower = catches more, also noise. Example: `0.216`"
+expand = "Pixels the mask grows by around what it found. Example: `4`"
+ranges = "Frames to build the mask for; other frames get an empty mask. Example: `100-250, 3000-3120`"
+stabilize = "Smooths the mask over time so it does not flicker; works only with Ranges."
+scenechanges = "Frame numbers of scene changes, used by Stabilize. Example: `120, 480`"
+rescale = "Rescaled clip to compare with. Empty = the one made from Kernel and Height."
+src = "Source clip to compare with. Empty = the main clip."
+
+[method."vsscale.Rescale.default_line_mask"]
+help = "Makes a line (edge) mask of the clip, as used to keep a descale-and-upscale only on lines. Needs the descale Kernel and Height of the source. Example: Kernel Bilinear, Height `720`."
+
+[method."vsscale.Rescale.default_line_mask".docs]
+height = "The height the source was made at, before its upscale. A fraction descales to a fractional size. Example: `720`"
+kernel = "The kernel that made the source's upscale. Example: Bilinear."
+upscaler = "Scaler that doubles the descaled clip before it is brought back to size. Starts at Catrom; ArtCNN is sharper but needs vs-mlrt and its downloaded model."
+downscaler = "Scaler that brings the doubled clip back to the source size. Default = Hermite in linear light."
+width = "Width the source was made at. Empty = worked out from Height and the aspect ratio."
+base_height = "Whole-number height around a fractional descale. Empty = worked out from Height."
+base_width = "Whole-number width around a fractional descale. Empty = worked out from Width."
+crop = "Pixels cropped before the descale, as `(left, right, top, bottom)`. Example: `(0, 0, 138, 138)`"
+shift = "Fraction-of-a-pixel offset of the original upscale, as (top, left). Example: `(0.25, 0)`"
+field_based = "Top field first (TFF) or Bottom field first (BFF) for cross-converted (upscaled while interlaced) sources; As the video says reads the clip's tag."
+border_handling = "How the edges are padded: `0` mirror, `1` black (zero), `2` repeat the last row. Change it only when undoing a scale that padded that way. Example: `0`"
+sample_grid_model = "`0` lines up the outer edges of the pictures (normal); `1` lines up the centres of the outer pixels, as some programs do. Example: `1`"
+scaler = "Scaler used to match the source clip's format. Example: Bilinear."
+
+[method."vsscale.descale_detail_mask"]
+help = "Marks detail that was added at full size (credits, overlays) by comparing the clip with its descaled-and-rescaled version, so a descale can leave those parts alone. Example: Rescaled clip from Upscale a descaled clip (rescale) with the source's kernel. Expects a float clip."
+
+[method."vsscale.descale_detail_mask".docs]
+rescaled = "The clip after Descale: undo an upscale (descale) then Upscale a descaled clip (rescale) with the source's kernel and size."
+thr = "How big a difference counts as detail. Lower = catches more; 0.03 to 0.1 is usual. Example: `0.05`"
+inflate = "How often the mask is softened outward. Example: `2`"
+xxpand = "How often the mask is grown, before and after softening, as `before, after`. Example: `4, 0`"
+
+[method."vsscale.descale_error_mask"]
+help = "Marks where a rescaled clip differs from the original, to catch frames or areas where a descale went wrong. Example: Rescaled clip from Upscale a descaled clip (rescale); the mask then protects those areas."
+
+[method."vsscale.descale_error_mask".docs]
+rescaled = "The clip after Descale: undo an upscale (descale) then Upscale a descaled clip (rescale)."
+thr = "Smallest difference that counts. Lower = catches more. Example: `0.038`"
+expands = "How often the mask grows at each step (difference, expand, binarize), as three numbers. Example: `2, 2, 3`"
+blur = "How much the clip is blurred first; a whole number box-blurs, a fraction blurs with a Gaussian. Example: `3`"
+bwbias = "Takes the clip's colour into account in the difference; 1 = off. Example: `1`"
+tr = "Temporal radius: frames on each side used to make the mask steady over time. 0 = off. Example: `1`"
+
+[method."vsscale.pre_ss"]
+help = "Enlarges the clip, runs your function at the higher size and scales the result back: filters that work on pixels then act finer. Example: Size factor `2` with a function wired in. Slower by about the factor squared."
+
+[method."vsscale.pre_ss".docs]
+function = "The filter to run on the enlarged clip."
+rfactor = "How many times larger the clip is made. Example: `2`"
+sp = "A scaler process that does the enlarging and shrinking as one object. Empty = Lanczos up, Point down."
+supersampler = "Scaler for the enlarging, when Sp is empty. Example: NNEDI3 for sharp lines."
+downscaler = "Scaler for shrinking back, when Sp is empty."
+mod = "The enlarged size is rounded to a multiple of this. Example: `4`"
+pscale = "How much of the plain up-and-down loss is added back: 1 = none added back, 0 = all, keeping more of the original detail. Example: `0.5`"
+
+[method."vstools.Padder.color"]
+help = "Enlarges the picture with bars of one colour, by default the lowest value (black). Like AddBorders, with colours given in the clip's own scale. Example: Left `16`, Right `16`."
+
+[method."vstools.Padder.color".docs]
+left = "Pixels added on the left. Example: `16`"
+right = "Pixels added on the right. Example: `16`"
+top = "Pixels added at the top. Example: `16`"
+bottom = "Pixels added at the bottom. Example: `16`"
+input_width = "Not used by this method; only Crop padding back off (Padder crop) reads it."
+input_height = "Not used by this method; only Crop padding back off (Padder crop) reads it."
+color = "Colour of the bars: a number per plane in the clip's own scale, empty = the lowest value (black). Example: `0`"
+
+[method."vstools.Padder.crop"]
+help = "Cuts the given sizes off the edges, undoing an earlier Padder mirror, repeat or color with the same values. Example: Left, Right, Top and Bottom `16` and Crop scale `1` after padding 16. Without Crop scale or Width and Height before padding it stops with an error."
+
+[method."vstools.Padder.crop".docs]
+left = "Pixels cut from the left. Example: `16`"
+right = "Pixels cut from the right. Example: `16`"
+top = "Pixels cut from the top. Example: `16`"
+bottom = "Pixels cut from the bottom. Example: `16`"
+crop_scale = "Multiplies the sizes, for a clip scaled between padding and cropping. Empty = worked out from Width before padding and Height before padding; with those empty too it stops with an error, so type `1` when nothing was scaled. Example: `2` after a 2x upscale."
+input_width = "Width of the clip before it was padded; with Crop scale empty, the sizes are scaled by how much the clip grew since. Example: `1920`"
+input_height = "Height of the clip before it was padded; used like Width before padding. Example: `1080`"
+
+[method."vstools.Padder.mirror"]
+help = "Enlarges the picture by mirroring its edges outward (CBA|ABC). Filters then see real-looking content at the borders instead of black. Example: pad 16 on every side, filter, then crop 16 back off with Crop padding back off (Padder crop)."
+
+[method."vstools.Padder.mirror".docs]
+left = "Pixels added on the left. Example: `16`"
+right = "Pixels added on the right. Example: `16`"
+top = "Pixels added at the top. Example: `16`"
+bottom = "Pixels added at the bottom. Example: `16`"
+input_width = "Not used by this method; only Crop padding back off (Padder crop) reads it."
+input_height = "Not used by this method; only Crop padding back off (Padder crop) reads it."
+
+[method."vstools.Padder.repeat"]
+help = "Enlarges the picture by repeating its outermost row and column (AAA|ABC). Example: pad 16 on every side before a filter that misbehaves at borders, then crop 16 back off."
+
+[method."vstools.Padder.repeat".docs]
+left = "Pixels added on the left. Example: `16`"
+right = "Pixels added on the right. Example: `16`"
+top = "Pixels added at the top. Example: `16`"
+bottom = "Pixels added at the bottom. Example: `16`"
+input_width = "Not used by this method; only Crop padding back off (Padder crop) reads it."
+input_height = "Not used by this method; only Crop padding back off (Padder crop) reads it."
+
+[method."std.AddBorders"]
+help = "Adds bars of one colour around the picture (black unless Color says otherwise). Example: Left `240` and Right `240` pillarbox a 1440x1080 clip to 1920x1080. Values must be even on subsampled clips."
+
+[method."std.AddBorders".docs]
+left = "Pixels added on the left. Example: `240`"
+right = "Pixels added on the right. Example: `240`"
+top = "Pixels added at the top. Example: `140`"
+bottom = "Pixels added at the bottom. Example: `140`"
+color = "Colour of the bars, one value per plane in the clip's own scale. Empty = black. Example: `16, 128, 128` for black in 8-bit limited YUV."
+
+[method."std.Crop"]
+help = "Cuts pixels off the edges, such as black bars. Example: Top `140` and Bottom `140` turn a letterboxed 1920x1080 into 1920x800. Values must be even on subsampled clips."
+
+[method."std.Crop".docs]
+left = "Pixels cut from the left edge. Example: `8`. On 4:2:0 or 4:2:2 clips the value must be even."
+right = "Pixels cut from the right edge. Example: `8`. On 4:2:0 or 4:2:2 clips the value must be even."
+top = "Pixels cut from the top edge, such as letterbox bars. Example: `140`. On 4:2:0 clips the value must be even."
+bottom = "Pixels cut from the bottom edge, such as letterbox bars. Example: `140`. On 4:2:0 clips the value must be even."
+
+[method."std.CropAbs"]
+help = "Keeps a rectangle of the given width and height, starting at Left and Top. Example: Width `1280`, Height `720`, Left `320`, Top `180` keeps the middle of a 1080p frame. Even values on subsampled clips."
+
+[method."std.CropAbs".docs]
+width = "Width of the kept rectangle in pixels. Example: `1280`"
+height = "Height of the kept rectangle in pixels. Example: `720`"
+left = "Distance of the rectangle from the left edge. Example: `320`"
+top = "Distance of the rectangle from the top edge. Example: `180`"
+x = "Another name for Left; set one of the two."
+y = "Another name for Top; set one of the two."
+
+[method."std.FlipHorizontal"]
+help = "Mirrors the picture left to right."
+
+[method."std.FlipVertical"]
+help = "Mirrors the picture top to bottom (upside-down mirror image)."
+
+[method."std.Transpose"]
+help = "Swaps rows and columns (mirrors along the diagonal), so a 1920x1080 clip becomes 1080x1920. For rotating by 90 degrees use Turn 90° clockwise (Turn90) or Turn 90° anticlockwise (Turn270)."
+
+[method."std.Turn180"]
+help = "Rotates the picture 180 degrees (upside down)."
+
+[method."std.Turn270"]
+help = "Rotates the picture 90 degrees anticlockwise; width and height swap."
+
+[method."std.Turn90"]
+help = "Rotates the picture 90 degrees clockwise; width and height swap."
+
+[method."vsaa.BWDIF.deinterlace"]
+help = "Deinterlaces with BWDIF (motion-adaptive: keeps still areas sharp, interpolates moving ones); Double rate on doubles the frame rate, off keeps it. Fast and decent. Needs the field order."
+
+[method."vsaa.BWDIF.deinterlace".docs]
+tff = "Field order. Default reads the clip's tag and stops if the clip says it is progressive or does not say. Yes = top field first (TFF), No = bottom field first (BFF). Example: Yes"
+double_rate = "On: one frame per field, so the frame rate doubles (50i becomes 50p). Off: one frame per frame, half the fields dropped."
+edeint = "Clip (or deinterlacer) whose result BWDIF uses for its spatial guess instead of cubic interpolation. Example: an NNEDI3 deinterlace; it must have as many frames as the output."
+
+[method."vsaa.EEDI3.antialias"]
+help = "Removes jaggies by rebuilding every other line with EEDI3, which follows edge directions: best at joining long thin lines, slower than NNEDI3, can draw artefacts on busy detail. Example: on aliased anime lines. Pick a GPU backend if you have one."
+
+[method."vsaa.EEDI3.antialias".docs]
+alpha = "Weight given to joining similar areas along lines, 0 to 1. Higher connects more lines, can join wrong ones. Alpha plus Beta must not exceed 1. Example: `0.2`"
+beta = "Weight given to keeping the vertical difference small, 0 to 1. Higher = less line-following; 1 turns it off. Example: `0.25`"
+gamma = "Penalty for changing direction between neighbours. Higher = smoother, steadier lines but softer edges; 10 to 50 is usual. Example: `20`"
+nrad = "Radius of the neighbourhood compared, 0 to 3. Larger joins lines better, slower. Example: `2`"
+mdis = "Farthest connection searched, 1 to 40 pixels. Larger catches flatter lines, more artefacts and slower. Example: `20`"
+hp = "On: searches in half-pixel steps (finer, slower)."
+vcheck = "Reliability check on the result: 0 none, 1 weak, 2 medium, 3 strong. Stronger falls back to plain interpolation more often. Example: `2`"
+vthresh = "Three thresholds of that check, as `first, second, direction`; lower = stricter. Example: `32, 64, 4`"
+sclip = "Clip (or filter) used where the reliability check fails, instead of cubic interpolation. Example: an NNEDI3 result."
+mclip = "Mask: only white pixels get edge-directed interpolation, the rest cubic; saves time. CPU and Vulkan backends only."
+backend = "Where EEDI3 runs: CPU, OpenCL, Vulkan or CUDA (NVIDIA). A GPU backend is much faster; the plugin for it must be installed."
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+direction = "Which jaggies are fixed: Vertical (horizontal lines), Horizontal (vertical lines) or both (Default)."
+double_rate = "On: rebuilds the picture from both line sets and averages them (smoother, slower); off: from one."
+
+[method."vsaa.EEDI3.bob"]
+help = "Deinterlaces by rebuilding each field to a full frame with EEDI3 (follows edges; best on long thin lines, slower): one frame per field, so the frame rate doubles. Needs the field order. QTempGaussMC in this node gives steadier results."
+
+[method."vsaa.EEDI3.bob".docs]
+alpha = "Weight given to joining similar areas along lines, 0 to 1. Higher connects more lines, can join wrong ones. Alpha plus Beta must not exceed 1. Example: `0.2`"
+beta = "Weight given to keeping the vertical difference small, 0 to 1. Higher = less line-following; 1 turns it off. Example: `0.25`"
+gamma = "Penalty for changing direction between neighbours. Higher = smoother, steadier lines but softer edges; 10 to 50 is usual. Example: `20`"
+nrad = "Radius of the neighbourhood compared, 0 to 3. Larger joins lines better, slower. Example: `2`"
+mdis = "Farthest connection searched, 1 to 40 pixels. Larger catches flatter lines, more artefacts and slower. Example: `20`"
+hp = "On: searches in half-pixel steps (finer, slower)."
+vcheck = "Reliability check on the result: 0 none, 1 weak, 2 medium, 3 strong. Stronger falls back to plain interpolation more often. Example: `2`"
+vthresh = "Three thresholds of that check, as `first, second, direction`; lower = stricter. Example: `32, 64, 4`"
+sclip = "Clip (or filter) used where the reliability check fails, instead of cubic interpolation. Example: an NNEDI3 result."
+mclip = "Mask: only white pixels get edge-directed interpolation, the rest cubic; saves time. CPU and Vulkan backends only."
+backend = "Where EEDI3 runs: CPU, OpenCL, Vulkan or CUDA (NVIDIA). A GPU backend is much faster; the plugin for it must be installed."
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+double_rate = "On: one frame per field, so the frame rate doubles (50i becomes 50p). Off: one frame per frame, half the fields dropped."
+
+[method."vsaa.EEDI3.deinterlace"]
+help = "Deinterlaces by rebuilding fields to full frames with EEDI3 (follows edges; best on long thin lines, slower); Double rate on doubles the frame rate, off keeps it. Needs the field order. QTempGaussMC in this node gives steadier results."
+
+[method."vsaa.EEDI3.deinterlace".docs]
+alpha = "Weight given to joining similar areas along lines, 0 to 1. Higher connects more lines, can join wrong ones. Alpha plus Beta must not exceed 1. Example: `0.2`"
+beta = "Weight given to keeping the vertical difference small, 0 to 1. Higher = less line-following; 1 turns it off. Example: `0.25`"
+gamma = "Penalty for changing direction between neighbours. Higher = smoother, steadier lines but softer edges; 10 to 50 is usual. Example: `20`"
+nrad = "Radius of the neighbourhood compared, 0 to 3. Larger joins lines better, slower. Example: `2`"
+mdis = "Farthest connection searched, 1 to 40 pixels. Larger catches flatter lines, more artefacts and slower. Example: `20`"
+hp = "On: searches in half-pixel steps (finer, slower)."
+vcheck = "Reliability check on the result: 0 none, 1 weak, 2 medium, 3 strong. Stronger falls back to plain interpolation more often. Example: `2`"
+vthresh = "Three thresholds of that check, as `first, second, direction`; lower = stricter. Example: `32, 64, 4`"
+sclip = "Clip (or filter) used where the reliability check fails, instead of cubic interpolation. Example: an NNEDI3 result."
+mclip = "Mask: only white pixels get edge-directed interpolation, the rest cubic; saves time. CPU and Vulkan backends only."
+backend = "Where EEDI3 runs: CPU, OpenCL, Vulkan or CUDA (NVIDIA). A GPU backend is much faster; the plugin for it must be installed."
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+double_rate = "On: one frame per field, so the frame rate doubles (50i becomes 50p). Off: one frame per frame, half the fields dropped."
+
+[method."vsaa.EEDI3.scale"]
+help = "Upscales by doubling the size with EEDI3 (follows edges; best on long thin lines, slower) until it reaches the target, then scales to the exact size with Scaler. Smooth, jaggy-free lines for anime. Example: 1280x720 to 1920x1080."
+
+[method."vsaa.EEDI3.scale".docs]
+alpha = "Weight given to joining similar areas along lines, 0 to 1. Higher connects more lines, can join wrong ones. Alpha plus Beta must not exceed 1. Example: `0.2`"
+beta = "Weight given to keeping the vertical difference small, 0 to 1. Higher = less line-following; 1 turns it off. Example: `0.25`"
+gamma = "Penalty for changing direction between neighbours. Higher = smoother, steadier lines but softer edges; 10 to 50 is usual. Example: `20`"
+nrad = "Radius of the neighbourhood compared, 0 to 3. Larger joins lines better, slower. Example: `2`"
+mdis = "Farthest connection searched, 1 to 40 pixels. Larger catches flatter lines, more artefacts and slower. Example: `20`"
+hp = "On: searches in half-pixel steps (finer, slower)."
+vcheck = "Reliability check on the result: 0 none, 1 weak, 2 medium, 3 strong. Stronger falls back to plain interpolation more often. Example: `2`"
+vthresh = "Three thresholds of that check, as `first, second, direction`; lower = stricter. Example: `32, 64, 4`"
+sclip = "Clip (or filter) used where the reliability check fails, instead of cubic interpolation. Example: an NNEDI3 result."
+mclip = "Mask: only white pixels get edge-directed interpolation, the rest cubic; saves time. CPU and Vulkan backends only."
+backend = "Where EEDI3 runs: CPU, OpenCL, Vulkan or CUDA (NVIDIA). A GPU backend is much faster; the plugin for it must be installed."
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+width = "Output width in pixels. Empty = the clip's width. Example: `3840`"
+height = "Output height in pixels. Empty = the clip's height. Example: `2160`"
+shift = "Fraction-of-a-pixel move as (top, left). Example: `(0.5, 0)`"
+double_rate = "On: rebuilds the picture from both line sets and averages them (smoother, slower); off: from one."
+
+[method."vsaa.EEDI3.supersample"]
+help = "Enlarges by a factor (repeated doubling) with EEDI3 (follows edges; best on long thin lines, slower), to filter at the higher size. Example: factor 2 for 1920x1080 to 3840x2160."
+
+[method."vsaa.EEDI3.supersample".docs]
+alpha = "Weight given to joining similar areas along lines, 0 to 1. Higher connects more lines, can join wrong ones. Alpha plus Beta must not exceed 1. Example: `0.2`"
+beta = "Weight given to keeping the vertical difference small, 0 to 1. Higher = less line-following; 1 turns it off. Example: `0.25`"
+gamma = "Penalty for changing direction between neighbours. Higher = smoother, steadier lines but softer edges; 10 to 50 is usual. Example: `20`"
+nrad = "Radius of the neighbourhood compared, 0 to 3. Larger joins lines better, slower. Example: `2`"
+mdis = "Farthest connection searched, 1 to 40 pixels. Larger catches flatter lines, more artefacts and slower. Example: `20`"
+hp = "On: searches in half-pixel steps (finer, slower)."
+vcheck = "Reliability check on the result: 0 none, 1 weak, 2 medium, 3 strong. Stronger falls back to plain interpolation more often. Example: `2`"
+vthresh = "Three thresholds of that check, as `first, second, direction`; lower = stricter. Example: `32, 64, 4`"
+sclip = "Clip (or filter) used where the reliability check fails, instead of cubic interpolation. Example: an NNEDI3 result."
+mclip = "Mask: only white pixels get edge-directed interpolation, the rest cubic; saves time. CPU and Vulkan backends only."
+backend = "Where EEDI3 runs: CPU, OpenCL, Vulkan or CUDA (NVIDIA). A GPU backend is much faster; the plugin for it must be installed."
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+shift = "Fraction-of-a-pixel move as (top, left). Example: `(0.5, 0)`"
+rfactor = "How many times larger the output is; reached by repeated doubling, then scaled to size. Example: `2`"
+double_rate = "On: rebuilds the picture from both line sets and averages them (smoother, slower); off: from one."
+
+[method."vsaa.NNEDI3.antialias"]
+help = "Removes jaggies (stair-stepped lines) by throwing away every other line and rebuilding it with the NNEDI3 network, in both directions. Sharper and steadier than plain blurring; softer than EEDI3 on thin lines. Example: on aliased anime lines. Blurs fine detail too; Anti-alias edges at a larger size (based_aa) limits it to edges."
+
+[method."vsaa.NNEDI3.antialias".docs]
+nsize = "Size of the area the network looks at around each pixel: 0 = 8x6, 1 = 16x6, 2 = 32x6, 3 = 48x6, 4 = 8x4, 5 = 16x4, 6 = 32x4. Wider catches flatter lines, slower. Example: `0`"
+nns = "Network size: 0 = 16 neurons up to 4 = 256. Larger = better lines, much slower; 2 to 4 is usual. Example: `3`"
+qual = "`1` or `2`: how many networks are blended. 2 is a little cleaner and about twice as slow. Example: `2`"
+etype = "Network weights: 0 trained for least absolute error, 1 for least squared error. Example: `0`"
+pscrn = "Prescreener that hands easy pixels to plain cubic interpolation: 0 = none (very slow), 1 = old, 2 to 4 = the new one at levels 0 to 2. Example: `2`"
+gpu = "On: runs NNEDI3 on the GPU (Vulkan plugin), much faster; needs a Vulkan GPU."
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+direction = "Which jaggies are fixed: Vertical (horizontal lines), Horizontal (vertical lines) or both (Default)."
+double_rate = "On: rebuilds the picture from both line sets and averages them (smoother, slower); off: from one."
+
+[method."vsaa.NNEDI3.bob"]
+help = "Deinterlaces by rebuilding each field to a full frame with the NNEDI3 network (sharp, clean lines): one frame per field, so the frame rate doubles. Needs the field order. QTempGaussMC in this node gives steadier results."
+
+[method."vsaa.NNEDI3.bob".docs]
+nsize = "Size of the area the network looks at around each pixel: 0 = 8x6, 1 = 16x6, 2 = 32x6, 3 = 48x6, 4 = 8x4, 5 = 16x4, 6 = 32x4. Wider catches flatter lines, slower. Example: `0`"
+nns = "Network size: 0 = 16 neurons up to 4 = 256. Larger = better lines, much slower; 2 to 4 is usual. Example: `3`"
+qual = "`1` or `2`: how many networks are blended. 2 is a little cleaner and about twice as slow. Example: `2`"
+etype = "Network weights: 0 trained for least absolute error, 1 for least squared error. Example: `0`"
+pscrn = "Prescreener that hands easy pixels to plain cubic interpolation: 0 = none (very slow), 1 = old, 2 to 4 = the new one at levels 0 to 2. Example: `2`"
+gpu = "On: runs NNEDI3 on the GPU (Vulkan plugin), much faster; needs a Vulkan GPU."
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+double_rate = "On: one frame per field, so the frame rate doubles (50i becomes 50p). Off: one frame per frame, half the fields dropped."
+
+[method."vsaa.NNEDI3.scale"]
+help = "Upscales by doubling the size with the NNEDI3 network (sharp, clean lines) until it reaches the target, then scales to the exact size with Scaler. Smooth, jaggy-free lines for anime. Example: 1280x720 to 1920x1080."
+
+[method."vsaa.NNEDI3.scale".docs]
+nsize = "Size of the area the network looks at around each pixel: 0 = 8x6, 1 = 16x6, 2 = 32x6, 3 = 48x6, 4 = 8x4, 5 = 16x4, 6 = 32x4. Wider catches flatter lines, slower. Example: `0`"
+nns = "Network size: 0 = 16 neurons up to 4 = 256. Larger = better lines, much slower; 2 to 4 is usual. Example: `3`"
+qual = "`1` or `2`: how many networks are blended. 2 is a little cleaner and about twice as slow. Example: `2`"
+etype = "Network weights: 0 trained for least absolute error, 1 for least squared error. Example: `0`"
+pscrn = "Prescreener that hands easy pixels to plain cubic interpolation: 0 = none (very slow), 1 = old, 2 to 4 = the new one at levels 0 to 2. Example: `2`"
+gpu = "On: runs NNEDI3 on the GPU (Vulkan plugin), much faster; needs a Vulkan GPU."
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+width = "Output width in pixels. Empty = the clip's width. Example: `3840`"
+height = "Output height in pixels. Empty = the clip's height. Example: `2160`"
+shift = "Fraction-of-a-pixel move as (top, left). Example: `(0.5, 0)`"
+double_rate = "On: rebuilds the picture from both line sets and averages them (smoother, slower); off: from one."
+
+[method."vsaa.NNEDI3.supersample"]
+help = "Enlarges by a factor (repeated doubling) with the NNEDI3 network (sharp, clean lines), to filter at the higher size. Example: factor 2 for 1920x1080 to 3840x2160."
+
+[method."vsaa.NNEDI3.supersample".docs]
+nsize = "Size of the area the network looks at around each pixel: 0 = 8x6, 1 = 16x6, 2 = 32x6, 3 = 48x6, 4 = 8x4, 5 = 16x4, 6 = 32x4. Wider catches flatter lines, slower. Example: `0`"
+nns = "Network size: 0 = 16 neurons up to 4 = 256. Larger = better lines, much slower; 2 to 4 is usual. Example: `3`"
+qual = "`1` or `2`: how many networks are blended. 2 is a little cleaner and about twice as slow. Example: `2`"
+etype = "Network weights: 0 trained for least absolute error, 1 for least squared error. Example: `0`"
+pscrn = "Prescreener that hands easy pixels to plain cubic interpolation: 0 = none (very slow), 1 = old, 2 to 4 = the new one at levels 0 to 2. Example: `2`"
+gpu = "On: runs NNEDI3 on the GPU (Vulkan plugin), much faster; needs a Vulkan GPU."
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+shift = "Fraction-of-a-pixel move as (top, left). Example: `(0.5, 0)`"
+rfactor = "How many times larger the output is; reached by repeated doubling, then scaled to size. Example: `2`"
+double_rate = "On: rebuilds the picture from both line sets and averages them (smoother, slower); off: from one."
+
+[method."vsaa.SangNom.antialias"]
+help = "Removes jaggies by rebuilding every other line with SangNom. Fast but rough; can thin or break lines. Example: quick fixes of strong aliasing. Anti-alias (NNEDI3) or Anti-alias (EEDI3) look cleaner."
+
+[method."vsaa.SangNom.antialias".docs]
+aa = "Anti-alias strength on the 8-bit scale, 0 to 128; one value, or one per plane (a missing plane reuses the previous value). Empty = 48 for every plane. Example: `48, 0, 0`"
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+direction = "Which jaggies are fixed: Vertical (horizontal lines), Horizontal (vertical lines) or both (Default)."
+double_rate = "On: rebuilds the picture from both line sets and averages them (smoother, slower); off: from one."
+
+[method."vsaa.SangNom.bob"]
+help = "Deinterlaces by rebuilding each field to a full frame with SangNom (fast, rougher): one frame per field, so the frame rate doubles. Needs the field order. QTempGaussMC in this node gives steadier results."
+
+[method."vsaa.SangNom.bob".docs]
+aa = "Anti-alias strength on the 8-bit scale, 0 to 128; one value, or one per plane (a missing plane reuses the previous value). Empty = 48 for every plane. Example: `48, 0, 0`"
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+double_rate = "On: one frame per field, so the frame rate doubles (50i becomes 50p). Off: one frame per frame, half the fields dropped."
+
+[method."vsaa.SangNom.deinterlace"]
+help = "Deinterlaces by rebuilding fields to full frames with SangNom (fast, rougher); Double rate on doubles the frame rate, off keeps it. Needs the field order. QTempGaussMC in this node gives steadier results."
+
+[method."vsaa.SangNom.deinterlace".docs]
+aa = "Anti-alias strength on the 8-bit scale, 0 to 128; one value, or one per plane (a missing plane reuses the previous value). Empty = 48 for every plane. Example: `48, 0, 0`"
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+double_rate = "On: one frame per field, so the frame rate doubles (50i becomes 50p). Off: one frame per frame, half the fields dropped."
+
+[method."vsaa.SangNom.scale"]
+help = "Upscales by doubling the size with SangNom (fast, rougher) until it reaches the target, then scales to the exact size with Scaler. Smooth, jaggy-free lines for anime. Example: 1280x720 to 1920x1080."
+
+[method."vsaa.SangNom.scale".docs]
+aa = "Anti-alias strength on the 8-bit scale, 0 to 128; one value, or one per plane (a missing plane reuses the previous value). Empty = 48 for every plane. Example: `48, 0, 0`"
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+width = "Output width in pixels. Empty = the clip's width. Example: `3840`"
+height = "Output height in pixels. Empty = the clip's height. Example: `2160`"
+shift = "Fraction-of-a-pixel move as (top, left). Example: `(0.5, 0)`"
+double_rate = "On: rebuilds the picture from both line sets and averages them (smoother, slower); off: from one."
+
+[method."vsaa.SangNom.supersample"]
+help = "Enlarges by a factor (repeated doubling) with SangNom (fast, rougher), to filter at the higher size. Example: factor 2 for 1920x1080 to 3840x2160."
+
+[method."vsaa.SangNom.supersample".docs]
+aa = "Anti-alias strength on the 8-bit scale, 0 to 128; one value, or one per plane (a missing plane reuses the previous value). Empty = 48 for every plane. Example: `48, 0, 0`"
+tff = "Field order the filter assumes. For anti-aliasing it picks which line set is rebuilt; Default = Yes (top field). For deinterlacing set it when the clip does not say."
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+scaler = "Kernel for the final resize and the half-pixel correction after doubling. Catrom is the usual pick."
+noshift = "On: skips the half-pixel correction after doubling, leaving the picture shifted. For processing that will be scaled back the same way."
+shift = "Fraction-of-a-pixel move as (top, left). Example: `(0.5, 0)`"
+rfactor = "How many times larger the output is; reached by repeated doubling, then scaled to size. Example: `2`"
+double_rate = "On: rebuilds the picture from both line sets and averages them (smoother, slower); off: from one."
+
+[method."vsaa.based_aa"]
+help = "Anti-aliasing limited to edges: enlarges the brightness (Lanczos at the start; ArtCNN is sharper but needs vs-mlrt and its model), rebuilds lines with EEDI3, scales back, cleans halos and merges only where the edge mask is white. The usual first pick for aliased anime. Example: Size factor `2`. Colour is left untouched."
+
+[method."vsaa.based_aa".docs]
+rfactor = "How much the picture is enlarged before anti-aliasing. Higher = finer result, slower; below 1 shrinks instead, for extreme aliasing. Example: `2`"
+mask_thr = "Edge threshold of the mask (8-bit scale). Lower = more of the picture is anti-aliased. Example: `60`"
+pscale = "How much of the plain up-and-down loss is added back: 0 = all (keeps the most original detail), 1 = none. Example: `0`"
+mask = "Edge mask clip, or an edge detector to make one; anti-aliasing applies where it is white. Default = Prewitt edges."
+downscaler = "Scaler that brings the result back to size. Default = Box for whole factors, else Catrom."
+supersampler = "Scaler that enlarges the clip first. Starts at Lanczos. ArtCNN is sharper but needs vs-mlrt and its downloaded model."
+antialiaser = "The anti-aliaser object. Empty = EEDI3 tuned for this (alpha 0.125, beta 0.25, gamma 40). Example: `vsaa.NNEDI3()`"
+prefilter = "Clip or filter applied before anti-aliasing, such as a denoise, to steady the result."
+postfilter = "Default cleans the halos anti-aliasing leaves (bilateral smoothing with a median). False turns that off."
+show_mask = "On: outputs the edge mask instead of the result, to check Edge threshold."
+aa_kwargs = "Extra options for the anti-aliaser, as a Python dict. Example: `{'backend': vsaa.EEDI3.Backend.CUDA}`"
+
+[method."vsaa.pre_aa"]
+help = "Light anti-aliasing for lines: per direction, keeps the middle value of the clip, its NNEDI3 anti-aliased version and a sharpened version, so lines get smoother without going soft. Example: before Anti-alias edges at a larger size (based_aa) on strong aliasing."
+
+[method."vsaa.pre_aa".docs]
+sharpener = "Filter giving the sharpened version. Default = unsharp mask with a vertical blur."
+antialiaser = "The anti-aliaser object. Default = NNEDI3. Example: `vsaa.EEDI3()`"
+transpose_first = "On: works on columns before rows. Rarely matters; can change which direction's jaggies are fixed best."
+direction = "Which jaggies are fixed: Vertical (horizontal lines), Horizontal (vertical lines) or both (Default)."
+
+[method."vsdehalo.YAHR"]
+help = "Yet Another Halo Remover: removes thin halos by warping (pulling edges tight) and repairing, limited by an edge mask. Gentler than Dehalo (dehalo_alpha); good for halos one or two pixels wide. Example: Warp depth `32`."
+
+[method."vsdehalo.YAHR".docs]
+blur = "Blur strength of the warp step. Higher = smoother warp. Example: `3`"
+depth = "Strength of the warp. Higher = stronger halo removal, can thin lines; 16 to 64 is usual. Example: `32`"
+expand = "Width of the mask around edges. Larger reaches farther; False (in the Python value box) turns the mask off. Example: `5`"
+shift = "Fine-tunes the edge mask; higher makes it cover less. Example: `8`"
+
+[method."vsdehalo.dehalo_alpha"]
+help = "Removes halos (light or dark outlines next to edges, from sharpening or bad scaling) by blending in a blurred version around edges. Strong; can thin lines and smear detail, which Dehalo, lines protected (fine_dehalo) avoids. Example: Bright halo strength `1`, Dark halo strength `0.3`. Progressive clips only."
+
+[method."vsdehalo.dehalo_alpha".docs]
+blur = "The blur that makes the cleaned version; a wider blur removes wider halos and softens more. Type a Gaussian sigma, or a list with one per pass; empty = sigma 1.4.\n\nExample: `2`"
+lowsens = "Edge sensitivity, 0 to 100. Higher = more areas get dehaloed. Both sensitivities at -1 = dehalo everywhere. A tuple runs extra passes, one value each, e.g. `(1.0, 0.5)`."
+highsens = "Edge protection, 0 to 100. Higher = strong edges are left alone more. Both sensitivities at -1 = dehalo everywhere. A tuple runs extra passes, one value each, e.g. `(1.0, 0.5)`."
+ss = "Supersampling of the final clamp, which stops aliasing. 1 = off (faster); 1.5 to 2 is usual. Example: `1.5`"
+darkstr = "How much of the dark halos is removed: 0 none, 1 all. Example: `0.3` A tuple runs extra passes, one value each, e.g. `(1.0, 0.5)`."
+brightstr = "How much of the bright halos is removed: 0 none, 1 all. Example: `0.8` A tuple runs extra passes, one value each, e.g. `(1.0, 0.5)`."
+attach_masks = "On: stores the masks it made as frame properties, to inspect them."
+kwargs = "Python dict choosing the scalers of the supersampled clamp: `supersampler` (default Lanczos) and `supersampler_ref` (default Mitchell). Example: `{'supersampler': 'Catrom'}`"
+
+[method."vsdehalo.edge_cleaner"]
+help = "Cleans dirty, noisy or slightly haloed edges by warping them tight (aWarpSharp) and repairing, kept to edges by a mask. Example: Strength `5` on rough lineart. Can thin lines at high strength."
+
+[method."vsdehalo.edge_cleaner".docs]
+strength = "Warp strength. Higher = cleaner edges, more line thinning; 3 to 10 is usual. Example: `5`"
+rmode = "Repair mode that limits the warp against the source (Repair modes of the Sharpen and Blur node). Default = 17."
+hot = "On: one more repair step against bright or dark single-pixel specks along edges."
+smode = "On: stronger mode; warps harder and also cleans spots next to edges."
+edgemask = "Edge detector for the mask that keeps the effect to edges. Default = Prewitt."
+
+[method."vsdehalo.fine_dehalo"]
+help = "Dehalo (dehalo_alpha) with masks that keep it to the area around strong lines, leaving lines and fine detail alone; optional sharpening afterwards. The usual first pick for halos. Example: Halo width `2`, Contra-sharpening `1.5`. Progressive clips only."
+
+[method."vsdehalo.fine_dehalo".docs]
+blur = "The blur that makes the cleaned version; a wider blur removes wider halos and softens more. Type a Gaussian sigma, or a list with one per pass; empty = sigma 1.4.\n\nExample: `2`"
+lowsens = "Edge sensitivity, 0 to 100. Higher = more areas get dehaloed. Both sensitivities at -1 = dehalo everywhere. A tuple runs extra passes, one value each, e.g. `(1.0, 0.5)`."
+highsens = "Edge protection, 0 to 100. Higher = strong edges are left alone more. Both sensitivities at -1 = dehalo everywhere. A tuple runs extra passes, one value each, e.g. `(1.0, 0.5)`."
+ss = "Supersampling of the final clamp, which stops aliasing. 1 = off (faster); 1.5 to 2 is usual. Example: `1.5`"
+darkstr = "How much of the dark halos is removed: 0 none, 1 all. Example: `0.3` A tuple runs extra passes, one value each, e.g. `(1.0, 0.5)`."
+brightstr = "How much of the bright halos is removed: 0 none, 1 all. Example: `0.8` A tuple runs extra passes, one value each, e.g. `(1.0, 0.5)`."
+attach_masks = "On: stores the masks it made as frame properties, to inspect them."
+kwargs = "Python dict choosing the scalers of the supersampled clamp: `supersampler` (default Lanczos) and `supersampler_ref` (default Mitchell). Example: `{'supersampler': 'Catrom'}`"
+rx = "Horizontal halo width in pixels the mask covers. Wider halos need more. Example: `2`"
+ry = "Vertical halo width in pixels. Empty = Halo width. Example: `2`"
+edgemask = "Edge detector used to find lines. Default = Robinson3."
+thmi = "Edges weaker than this are not treated as sharp lines. Lower = more lines treated. Example: `80`"
+thma = "Edges stronger than this count fully as sharp lines. Example: `128`"
+thlimi = "Lower threshold for adding back fainter edges that were skipped. Example: `50`"
+thlima = "Upper threshold for adding back fainter edges. Example: `100`"
+exclude = "On: leaves areas with lines close together (fine detail, text) alone."
+edgeproc = "Above 0: also processes the edges themselves, not only around them. Example: `0.5`"
+contra = "Sharpens back what dehaloing softened, limited so halos do not return. 0 = off. Example: `1.5`"
+pre_ss = "Works on a 2x or 4x NNEDI3-enlarged clip and scales back, for finer results; a power of 2, much slower. Example: `2`"
+
+[method."vsdehalo.hq_dering"]
+help = "Removes ringing (ripples next to edges, from compression or sharp scaling) by putting a smoothed clip only into a ring-shaped mask around edges, limited so edges stay sharp. Example: on MPEG-2 sources with mosquito noise around lines."
+
+[method."vsdehalo.hq_dering".docs]
+smooth = "The smoothed version used inside the mask: a clip, or a prefilter. Default = MinBlur. Stronger smoothing removes more ringing."
+ringmask = "Your own mask of where to dering. Empty = built from edges."
+mrad = "How far the mask grows outward from edges. Higher = wider area treated. Example: `1`"
+msmooth = "How much the mask's border is softened. Example: `1`"
+minp = "How far the mask is pulled back from the edges themselves. Higher = edges better protected. Example: `1`"
+mthr = "Edge threshold (8-bit scale). Lower = more edges found, more treated; on strong ringing too low marks ringing as edges and protects it. Example: `60`"
+incedge = "On: treats the edges themselves too, not only the area next to them."
+contra = "Sharpens the smoothed clip back, limited so ringing does not return. 0 = off. Example: `1.4`"
+drrep = "Repair mode keeping detail against the source; 24, 23, 13, 12 or 1 are recommended. Example: `24`"
+ref = "Reference clip the change limit is measured against. Empty = the main clip."
+dark_thr = "How much darker the result may get, 8-bit scale. Higher removes more bright ringing. Example: `12`"
+bright_thr = "How much brighter the result may get, 8-bit scale. Higher removes more dark ringing. Empty = Darkening limit divided by 4. Example: `3`"
+elast = "Softness of those limits: beyond the threshold, the change fades out up to threshold times this. Example: `2`"
+
+[method."vsdehalo.vine_dehalo"]
+help = "Removes halos with NL-Means (non-local means) filtering on a supersampled copy, keeping the fine detail. Slower than Dehalo, lines protected (fine_dehalo). Example: Strength `16`."
+
+[method."vsdehalo.vine_dehalo".docs]
+strength = "NL-Means strength. Higher = more halo removal and more smoothing. Example: `16`"
+sharp = "Blend between the supersampled and the normal-size filtering: higher = more of the normal-size result. Must be above 0; above 1 acts as 1. Example: `0.5`"
+sigma = "Blur sigma splitting coarse from fine detail: the coarse part stays from the source, the fine part comes from the filtered version. Higher = more taken from the filtered version. Example: `1`"
+supersampler = "Scaler that enlarges the clip first. Default = NNEDI3."
+downscaler = "Scaler that brings it back to size. Default = Catrom."

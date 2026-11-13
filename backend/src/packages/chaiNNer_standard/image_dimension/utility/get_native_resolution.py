@@ -576,10 +576,15 @@ def _status(summary: dict, selection: dict | None) -> str:
         lines.append(f"Kernel: {selection['rule']}.")
         free = selection.get("free_bicubic")
         if free is not None:
+            # A free bicubic that fits exactly has an infinite advantage, null in JSON.
+            advantage = (
+                f"exactly, where {selection['kernel']} does not"
+                if free["advantage"] is None
+                else f"{free['advantage']:.1%} better than {selection['kernel']}"
+            )
             lines.append(
                 f"The free bicubic (b {free['b']:.3f}, c {free['c']:.3f}) fits"
-                f" {free['advantage']:.1%} better than {selection['kernel']}: Candidate"
-                f" {free['rank']} carries it."
+                f" {advantage}: Candidate {free['rank']} carries it."
             )
         if chosen["kernel_status"] != "supported_model" or len(encoded) > 1:
             lines.append(

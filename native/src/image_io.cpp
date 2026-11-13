@@ -1,7 +1,6 @@
-/* chaiNNer image I/O application algorithms (GPL-3.0).
- * Codec engines are chaiNNer-C's PNG encoder/OpenCV/Pillow/DirectXTex. C++ owns decoder ordering,
- * buffer/channel preparation, save policy/options, and owned job lifecycles.
- * CPython pathlib and OS APIs preserve the installed host semantics. */
+/* chaiNNer's image load and save glue (GPL-3.0): decoder order, channel preparation and save options.
+ * The codecs are chaiNNer-C's PNG encoder, OpenCV, Pillow and DirectXTex; paths go through pathlib and the
+ * OS calls Python makes. */
 #include "atomic_file.hpp"
 #include "codec_output.hpp"
 #include "graph_python.hpp"
@@ -23,7 +22,6 @@
 #include <filesystem>
 #include <functional>
 #include <initializer_list>
-#include <limits>
 #include <mutex>
 #include <new>
 #include <stdexcept>
@@ -37,17 +35,17 @@ namespace {
 using graphpy::O;
 using graphpy::truth;
 using graphpy::contains;
+using graphpy::raise;
+using graphpy::equal;
+using graphpy::steal;
 using cn::image_decode::exif_block;
 using cn::image_decode::exif_orientation;
-O own(PyObject* result) { if (!result) throw py::error_already_set(); return py::reinterpret_steal<O>(result); }
 O name(const py::dict& g, const char* key) { return g[py::str(key)]; }
 O index(const O& value, Py_ssize_t i) { return value[py::int_(i)]; }
-bool equal(const O& a, const O& b) { return truth(own(PyObject_RichCompare(a.ptr(), b.ptr(), Py_EQ))); }
 bool option(const py::dict& g, const O& value, const char* type, const char* member) { return equal(value, name(g,type).attr(member)); }
-O add(const O& a, const O& b) { return own(PyNumber_Add(a.ptr(),b.ptr())); }
-O path_join(const O& a, const O& b) { return own(PyNumber_TrueDivide(a.ptr(),b.ptr())); }
+O add(const O& a, const O& b) { return steal(PyNumber_Add(a.ptr(),b.ptr())); }
+O path_join(const O& a, const O& b) { return steal(PyNumber_TrueDivide(a.ptr(),b.ptr())); }
 template<typename... A> O format(const char* text, A&&... args) { return py::str(text).attr("format")(std::forward<A>(args)...); }
-[[noreturn]] void raise(PyObject* type, const O& message) { PyErr_SetObject(type,message.ptr()); throw py::error_already_set(); }
 // str(path) as a filesystem path; a NUL in it raises the ValueError open() raises (the caster's error would be a
 // RuntimeError "Unable to cast").
 std::filesystem::path file_path(const O& path) {
@@ -176,7 +174,7 @@ O remove_alpha(py::dict g, O image) {
     return opaque ? O(image[py::make_tuple(all,all,py::slice(py::none(),py::int_(3),py::none()))]) : image;
 }
 // OpenCV's imdecode decodes these through a temp file, and concurrent decodes
-// could be handed the same temp name (SP3b decoder audit U2).
+// could be handed the same temp name.
 bool temp_file_suffix(const O& ext) {
     if(!PyUnicode_Check(ext.ptr()))return false;
     for(const char* suffix:{".sr",".ras",".hdr",".pic",".exr"})
@@ -220,12 +218,12 @@ O orient_tag(py::dict g,O image,long long orientation) {
 }
 // Today's decoders that decode natively: Pillow's for a JPEG, OpenCV's imdecode, the straight-alpha TIFF one.
 enum class NativeDecoder {pillow_jpeg,opencv,pillow_tiff_alpha};
-// The native decode of the file at `path` as today's decoder would give it (cn::image_decode); None when it
-// declines, and today's path then runs. The file is read and decoded without the GIL; it is taken only to create
+// The native decode of the file at `path` as the Python decoder gives it (cn::image_decode); None when it
+// declines, and the Python path then runs. The file is read and decoded without the GIL; it is taken only to create
 // the array the pixels go into.
 O native_decode(py::dict g,O path,NativeDecoder decoder) {
     const bool pillow=decoder==NativeDecoder::pillow_jpeg;
-    // CHAINNER_C_NATIVE_CODECS=0 sends a file to today's decoders, except an OpenEXR file on the OpenCV route: the
+    // CHAINNER_C_NATIVE_CODECS=0 sends a file to the Python decoders, except an OpenEXR file on the OpenCV route: the
     // runtime's OpenCV has no OpenEXR, so OpenEXRCore decodes it either way (the file is read here to tell).
     const bool ported=cn::image_decode::enabled();
     if(!ported && decoder!=NativeDecoder::opencv)return py::none();
@@ -274,7 +272,7 @@ O native_decode(py::dict g,O path,NativeDecoder decoder) {
                 (pillow?cn::image_decode::decode_pillow_jpeg(data,max_pixels,allocate):
                  decoder==NativeDecoder::opencv?cn::image_decode::decode_opencv(data,allocate,ported):
                  cn::image_decode::decode_pillow_tiff_alpha(data,max_pixels,allocate));
-        } catch(const std::bad_alloc&) {decoded=false;} // today's path reports it
+        } catch(const std::bad_alloc&) {decoded=false;} // the Python path reports it
     }
     return decoded?result:O(py::none());
 }
@@ -431,7 +429,7 @@ O full_path(O base,O relative,O filename,O format_type,O node,O name_label) {
     if(truth(relative)&&!equal(relative,py::str(".")))base=path_join(base,relative);
     return path_join(base,file).attr("resolve")();
 }
-// Save Image's conversion for every format but DDS, in today's order: Pillow
+// Save Image's conversion for every format but DDS, in the Python path's order: Pillow
 // formats (GIF, TGA, AVIF) and lossless WebP with alpha get a uint8 image in
 // RGB(A) order and their save options; OpenCV formats get their parameters and
 // the precision conversion.
@@ -709,20 +707,31 @@ O tagged(py::dict g,const py::tuple& args,const O& data,const O& image) {
     const O metadata=args[save_metadata];
     return metadata.is_none()?data:O(name(g,"embed_image_tags")(data,metadata,image));
 }
+// What the write meets at `path`, links followed as Path.exists() follows them, seen through atomic_file.hpp's
+// write_path so that a file past MAX_PATH counts with long paths off; not_found where it cannot be read, as
+// Path.exists() reads False.
+std::filesystem::file_type target_type(const O& path) {
+    std::error_code error;
+    const std::filesystem::file_status status=std::filesystem::status(cn::files::write_path(file_path(path)),error);
+    return error?std::filesystem::file_type::not_found:status.type();
+}
+// Skip existing files skips a file only: a folder in the way goes on to the write, which raises.
+bool skipped(const py::tuple& args,std::filesystem::file_type type) {
+    return truth(args[skip_existing]) && type!=std::filesystem::file_type::not_found &&
+        type!=std::filesystem::file_type::directory;
+}
 void save_image(py::dict g,py::tuple args,O prepared) {
     if(args.size()!=save_inputs)raise(PyExc_TypeError,format("Image save expects {} input values",save_inputs));
     O lazy=args[0],base=args[1],relative=args[2],filename=args[3],format_type=args[4];
     O path=name(g,"get_full_path")(base,relative,filename,format_type);
-    if(truth(path.attr("exists")())) {
-        if(truth(args[skip_existing])) {name(g,"logger").attr("debug")(format("Skipping existing file: {}",path));return;}
-    } else path.attr("parent").attr("mkdir")(py::arg("parents")=true,py::arg("exist_ok")=true);
+    const std::filesystem::file_type type=target_type(path);
+    if(skipped(args,type)) {name(g,"logger").attr("debug")(format("Skipping existing file: {}",path));return;}
+    if(type==std::filesystem::file_type::not_found)path.attr("parent").attr("mkdir")(py::arg("parents")=true,py::arg("exist_ok")=true);
     name(g,"logger").attr("debug")(format("Writing image to path: {}",path));
     O image=lazy.attr("value");
-    // A prepared value (SP3-P9) holds the bytes the branches below would write, as
-    // encoded for the format's own extension, written as each branch writes its file.
-    // A path that resolved to another spelling (an existing file or a link) encodes
-    // as today and leaves the value unused: a node-level exception to the seam's one
-    // decision point, since only the commit knows the resolved path.
+    // A prepared value holds the bytes the branches below would write for the format's
+    // own extension. A path that resolved to another extension spelling (an existing
+    // file or a link) is encoded below instead, since only this step knows the path.
     if(!prepared.is_none() && equal(index(py::module_::import("os").attr("path").attr("splitext")(path),1),add(py::str("."),format_type.attr("extension")))) {
         write_file(path,prepared.attr("result")());
         return;
@@ -742,7 +751,7 @@ void save_image(py::dict g,py::tuple args,O prepared) {
     }
     write_file(path,tagged(g,args,encode(g,index(name(g,"split_file_path")(path),2),encoded.image,encoded.params),image));
 }
-// Save Image's prepare phase (SP3-P9): the bytes save_image writes for these
+// Save Image's prepare phase: the bytes save_image writes for these
 // inputs (input 0 the image itself) to a path with the format's own extension,
 // encoded in memory, as bytes or the encoder's buffer array; None for DDS, which
 // texconv writes itself, and for a file the commit skips as existing, which it
@@ -751,13 +760,13 @@ O save_prepare(py::dict g,py::tuple args) {
     if(args.size()!=save_inputs)raise(PyExc_TypeError,format("Image save expects {} input values",save_inputs));
     O format_type=args[4];
     if(option(g,format_type,"ImageFormat","DDS"))return py::none();
-    if(truth(args[skip_existing]) && truth(name(g,"get_full_path")(args[1],args[2],args[3],format_type).attr("exists")()))return py::none();
+    if(skipped(args,target_type(name(g,"get_full_path")(args[1],args[2],args[3],format_type))))return py::none();
     O extension=add(py::str("."),format_type.attr("extension"));
     Encoding encoded=encoding(g,args[0],args);
     return tagged(g,args,encoded.pillow?pillow_bytes(g,encoded,extension):encode(g,extension,encoded.image,encoded.params),args[0]);
 }
 // LargeImageOutput.get_broadcast_data's previews of an enforced image (cn::image_preview, without the GIL): a list
-// of {"width", "height", "url"}, or None when the native path declines and today's Python loop runs.
+// of {"width", "height", "url"}, or None when the native path declines and the Python loop runs.
 O previews(O value) {
     if(!cn::image_decode::enabled() || !py::isinstance<py::array>(value))return py::none();
     py::array a=py::reinterpret_borrow<py::array>(value);
@@ -1016,7 +1025,7 @@ O raw_dds(const std::vector<py::array>& images,const std::string& kind,bool one_
         grey=grey&&channels==1;alpha=alpha||channels==4;
     }
     const size_t count=images.size(),pixel=(grey?1:4)*element,plane=size_t(height)*size_t(width)*pixel;
-    O result=own(PyBytes_FromStringAndSize(nullptr,static_cast<Py_ssize_t>(148+count*plane)));
+    O result=steal(PyBytes_FromStringAndSize(nullptr,static_cast<Py_ssize_t>(148+count*plane)));
     auto* out=reinterpret_cast<uint8_t*>(PyBytes_AS_STRING(result.ptr()));
     std::memset(out,0,148);
     const auto put=[&](size_t at,uint32_t value){for(int i=0;i<4;++i)out[at+i]=uint8_t(value>>(8*i));};

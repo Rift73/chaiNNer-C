@@ -1,9 +1,9 @@
 #if !defined(_M_X64) && !(defined(__linux__) && defined(__x86_64__))
 #error "convert_avx2.c is an x86-64 /arch:AVX2 unit"
 #endif
-/* The pixel conversions' AVX2 unit (/arch:AVX2, spec 4.3): no export, reached only
- * through convert_range's dispatch on the call's ISA level (SP4b D7),
- * cn_pixels_normalized_f32's (Task 3b) and gbr_planes_range's. Each lane runs its
+/* The pixel conversions' AVX2 unit (/arch:AVX2): no export, reached only
+ * through convert_range's dispatch on the call's ISA level,
+ * cn_pixels_normalized_f32's and gbr_planes_range's. Each lane runs its
  * element's sequence in convert_shared.h (B3's; the clamp is np.clip's: clamp_lanes);
  * groups of 8 start at indices = 0 (mod 8) inside [begin, end) and never cross the
  * chunk's ends, and the head and tail run convert_scalar. The G, B and R planes

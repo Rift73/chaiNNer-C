@@ -20,10 +20,10 @@ from .. import batch_processing_group
     inputs=[
         ImageInput("Image Sequence"),
         NumberInput("Number of rows (height)", min=1, default=1).with_docs(
-            "The number of rows to split the image into. The height of the image must be a multiple of this number."
+            "The number of rows of the spritesheet. Its height is this number times the height of one image."
         ),
         NumberInput("Number of columns (width)", min=1, default=1).with_docs(
-            "The number of columns to split the image into. The width of the image must be a multiple of this number."
+            "The number of columns of the spritesheet. Its width is this number times the width of one image."
         ),
         RowOrderDropdown().with_docs(
             """The order in which the images are combined.

@@ -9,6 +9,7 @@ from ncnn import ncnn
 from sanic.log import logger
 
 from api import Progress
+from packages.chaiNNer_ncnn.settings import use_gpu
 
 from ...utils.utils import Size, get_h_w_c
 from ..image_utils import to_uint8
@@ -17,7 +18,6 @@ from ..upscale.auto_split import Split, Tiler, auto_split
 from ..upscale.bounded_tiler import BoundedTiler
 from ..upscale.tile_report import TileReport
 
-use_gpu = ncnn.get_gpu_count() > 0
 # PyPI ncnn's Extractor has no Vulkan allocator setters, so an extractor takes them
 # from the Option it copies at creation. Nets are cached and shared, and node work
 # runs on a thread pool, so one upscale's allocators stay on net.opt only while this
@@ -81,9 +81,8 @@ def ncnn_auto_split(
     # A model that starts with a Reorg needs a height and width that are a multiple
     # of its stride (NcnnModelWrapper.size_multiple), so the image is padded with
     # its edge pixels, every tile is kept a multiple, and the result is cropped
-    # back. Other models are tiled as before. swap_red_blue: a result with 3 or 4
-    # channels comes back with red and blue swapped (RGB(A) <-> BGR(A)), as it is
-    # interleaved, whatever the image's channels.
+    # back. swap_red_blue: a result with 3 or 4 channels comes back with red and blue
+    # swapped (RGB(A) <-> BGR(A)), whatever the image's channels.
     h, w = img.shape[:2]
     pad_h, pad_w = -h % size_multiple, -w % size_multiple
     if pad_h or pad_w:
@@ -124,8 +123,7 @@ def ncnn_auto_split(
             ex = net.create_extractor()
         try:
             lr_c = get_h_w_c(img)[2]
-            pixel_image = img
-            lr_img_fix = to_uint8(pixel_image)
+            lr_img_fix = to_uint8(img)
             if lr_c in (1, 3, 4):
                 lr_planar = ncnn_input(lr_img_fix)
             else:
@@ -141,23 +139,18 @@ def ncnn_auto_split(
                 raise ValueError(f"The NCNN model has no blob named {input_name}.")
             ret, mat_out = ex.extract(output_name)
         except Exception as e:
-            if "vkQueueSubmit" in str(e):
-                ex = None
-                del ex
-                gc.collect()
-                clear_vkallocators()
+            critical = "vkQueueSubmit" in str(e)
+            if not critical and "failed" not in str(e):
+                raise
+            del ex
+            gc.collect()
+            clear_vkallocators()
+            if critical:
                 raise RuntimeError(
                     "A critical error has occurred. You may need to restart chaiNNer in order for NCNN upscaling to start working again."
                 ) from e
-            if "failed" in str(e):
-                logger.debug("NCNN out of VRAM, clearing VRAM and splitting.")
-                ex = None
-                del ex
-                gc.collect()
-                clear_vkallocators()
-                return Split()
-            else:
-                raise
+            logger.debug("NCNN out of VRAM, clearing VRAM and splitting.")
+            return Split()
         if ret != 0:
             # The output is empty; reading it would crash the process.
             del ex, mat_in, mat_out

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import signal
 import subprocess
 import sys
@@ -11,6 +10,7 @@ from json import dumps as stringify
 from json import loads as json_parse
 from typing import Any, Coroutine, Final
 
+import aiohttp
 import psutil
 from sanic import Sanic
 from sanic.log import access_logger, logger
@@ -37,12 +37,13 @@ from nodes.impl.vapoursynth.user_modules import (
     missing_user_modules,
 )
 from response import (
+    CLIENT_GONE,
     RESTART_WORKER_HEADER,
     error_response,
     no_executor_response,
     success_response,
 )
-from server_config import LOG_CONFIG, ServerConfig
+from server_config import LOG_CONFIG, ServerConfig, SSEFilter
 from server_process_helper import WorkerServer
 
 
@@ -81,15 +82,7 @@ app.config.RESPONSE_TIMEOUT = sys.maxsize
 add_cors(app)
 
 
-class SSEFilter(logging.Filter):
-    def filter(self, record):  # noqa: ANN001
-        request = record.request  # type: ignore
-        return not (
-            (request.endswith(("/sse", "/setup-sse"))) and record.status == 200  # type: ignore
-        )
-
-
-access_logger.addFilter(SSEFilter())
+access_logger.addFilter(SSEFilter(("/sse", "/setup-sse")))
 
 
 @app.route("/health")
@@ -167,12 +160,11 @@ async def kill(request: Request):
             raise Exception(response.body.decode())
         killed = response
     except Exception:
+        logger.warning("Stop failed; restarting the worker.", exc_info=True)
         try:
-            logger.debug(
-                "Regular kill failed, attempting to restart executor process..."
-            )
             await worker.restart()
         except Exception as exception:
+            logger.error("Restarting the worker failed.", exc_info=True)
             return json(
                 error_response("Error killing execution!", exception), status=500
             )
@@ -342,33 +334,37 @@ def shared_distributions(
     return shared
 
 
+def selected_packages(
+    ids: list[str], packages: list[api.Package]
+) -> list[api.Package] | HTTPResponse:
+    """The packages of `ids`, or the 404 response naming the first unknown one."""
+    known = {p.id for p in packages}
+    unknown = [i for i in ids if i not in known]
+    if unknown:
+        return json(
+            {"status": "error", "message": f"Package {unknown[0]} not found"},
+            status=404,
+        )
+    return [p for p in packages if p.id in ids]
+
+
 @app.route("/packages/uninstall", methods=["POST"])
 async def uninstall_dependencies_request(request: Request):
-    package_ids_to_install: list[str] = request.json["packages"]
+    package_ids: list[str] = request.json["packages"]
 
     ctx = AppContext.get(request.app)
     worker = await ctx.get_worker()
     packages = await worker.get_packages()
 
-    packages_to_install = [x for x in packages if x.id in package_ids_to_install]
-    valid_package_ids = [p.id for p in packages]
-    invalid_package_ids = [
-        x for x in package_ids_to_install if x not in valid_package_ids
-    ]
-    if len(invalid_package_ids) > 0:
-        return json(
-            {
-                "status": "error",
-                "message": f"Package {invalid_package_ids[0]} not found",
-            },
-            status=404,
-        )
+    selected = selected_packages(package_ids, packages)
+    if isinstance(selected, HTTPResponse):
+        return selected
 
     try:
         progress = create_update_progress(ctx)
-        shared = shared_distributions(packages_to_install, packages)
+        shared = shared_distributions(selected, packages)
         deps: list[DependencyInfo] = []
-        for p in packages_to_install:
+        for p in selected:
             deps.extend(
                 d
                 for d in deps_to_dep_info(p.dependencies)
@@ -383,7 +379,7 @@ async def uninstall_dependencies_request(request: Request):
         listed = {
             distribution_name(d.pypi_name)
             for p in packages
-            if p.id not in package_ids_to_install
+            if p.id not in package_ids
             for d in p.dependencies
         }
         try:
@@ -410,30 +406,20 @@ async def uninstall_dependencies_request(request: Request):
 
 @app.route("/packages/install", methods=["POST"])
 async def install_dependencies_request(request: Request):
-    package_ids_to_install: list[str] = request.json["packages"]
+    package_ids: list[str] = request.json["packages"]
 
     ctx = AppContext.get(request.app)
     worker = await ctx.get_worker()
     packages = await worker.get_packages()
 
-    packages_to_install = [x for x in packages if x.id in package_ids_to_install]
-    valid_package_ids = [p.id for p in packages]
-    invalid_package_ids = [
-        x for x in package_ids_to_install if x not in valid_package_ids
-    ]
-    if len(invalid_package_ids) > 0:
-        return json(
-            {
-                "status": "error",
-                "message": f"Package {invalid_package_ids[0]} not found",
-            },
-            status=404,
-        )
+    selected = selected_packages(package_ids, packages)
+    if isinstance(selected, HTTPResponse):
+        return selected
 
     try:
         progress = create_update_progress(ctx)
         deps: list[DependencyInfo] = []
-        for p in packages_to_install:
+        for p in selected:
             deps.extend(deps_to_dep_info(p.dependencies))
 
         if len(deps) > 0:
@@ -465,7 +451,11 @@ async def sse(request: Request):
         try:
             async for data in worker.get_sse(request):
                 await response.send(data)
+        except (*CLIENT_GONE, aiohttp.ClientConnectionError):
+            # The app's client has gone, or the worker it streams from.
+            break
         except Exception:
+            logger.error("The event stream failed.", exc_info=True)
             break
 
 
@@ -484,8 +474,10 @@ async def setup_sse(request: Request):
             await response.send(
                 f"event: {message['event']}\ndata: {stringify(message['data'])}\n\n"
             )
-    except Exception:
+    except CLIENT_GONE:
         pass
+    except Exception:
+        logger.error("The setup event stream failed.", exc_info=True)
     finally:
         ctx.setup_events.stop_listening(listener)
 
@@ -506,7 +498,6 @@ async def status(request: Request):
             worker = ctx.get_worker_unmanaged()
             worker_status = await worker.proxy_request(request)
             if worker_status.body is not None:
-                # decode JSOn body
                 worker_status = json_parse(worker_status.body)
         except Exception as ex:
             worker_status = {"success": False, "error": str(ex)}
@@ -583,7 +574,7 @@ async def import_packages(
     logger.info("Done checking dependencies...")
 
 
-async def setup(sanic_app: Sanic, loop: asyncio.AbstractEventLoop):
+async def setup(sanic_app: Sanic):
     ctx = AppContext.get(sanic_app)
     worker = ctx.get_worker_unmanaged()
 
@@ -609,7 +600,6 @@ async def setup(sanic_app: Sanic, loop: asyncio.AbstractEventLoop):
 
     logger.info("Importing nodes...")
 
-    # Now we can load all the nodes
     await import_packages(ctx, update_progress)
 
     logger.info("Backend almost ready...")
@@ -657,7 +647,6 @@ close_task = None
 
 
 async def close_server(sanic_app: Sanic):
-    # now we can close the server
     logger.info("Closing server...")
 
     if sys.platform == "linux":
@@ -674,9 +663,12 @@ async def close_server(sanic_app: Sanic):
         if setup_task is not None:
             await setup_task
     except Exception as ex:
-        logger.error(f"Error waiting for server to start: {ex}")
+        logger.error(f"Error waiting for server to start: {ex}", exc_info=True)
 
     worker = AppContext.get(sanic_app).get_worker_unmanaged()
+    # Its run ends as a Stop ends it (a Save Video deletes its temporary file), then the
+    # worker ends.
+    await worker.stop_run()
     await worker.stop()
     # Sanic 25 serves only after the after_server_start listeners return, and loses
     # a stop requested before that.
@@ -697,7 +689,6 @@ async def after_server_start(sanic_app: Sanic):
     global setup_task, close_task
     loop = asyncio.get_running_loop()
 
-    # initialize the queues
     ctx = AppContext.get(sanic_app)
 
     worker = ctx.get_worker_unmanaged()
@@ -705,7 +696,7 @@ async def after_server_start(sanic_app: Sanic):
     await worker.wait_for_ready()
 
     # start the setup task
-    setup_task = loop.create_task(setup(sanic_app, loop))
+    setup_task = loop.create_task(setup(sanic_app))
 
     # start task to close the server
     if ctx.config.close_after_start:

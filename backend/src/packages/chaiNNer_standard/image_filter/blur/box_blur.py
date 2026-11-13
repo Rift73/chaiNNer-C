@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from math import ceil
 
 import numpy as np
 
@@ -15,20 +14,6 @@ from nodes.properties.inputs import ImageInput, SliderInput
 from nodes.properties.outputs import ImageOutput
 
 from .. import blur_group
-
-
-def get_kernel_1d(radius: float) -> np.ndarray:
-    kernel = np.ones(ceil(radius) * 2 + 1, np.float32)
-
-    d = radius % 1
-    if d != 0:
-        kernel[0] *= d
-        kernel[-1] *= d
-
-    # normalize
-    kernel /= np.sum(kernel)
-
-    return kernel
 
 
 def get_kernel_2d(radius_x: float, radius_y: float) -> np.ndarray:

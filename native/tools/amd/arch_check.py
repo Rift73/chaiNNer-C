@@ -178,6 +178,7 @@ SKIPPED = {
     " settings its spandrel loader is tested with (spandrel's AuraSR tests are off)",
     "MAT": "an inpainting network that takes only 512x512 inputs: on the CPU it took"
     " 13 GB and minutes",
+    "RDUAL": "a recurrent video network that takes clips of frames, not single images",
 }
 
 

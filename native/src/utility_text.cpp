@@ -19,20 +19,17 @@ namespace {
 namespace py = pybind11;
 using O = py::object;
 using graphpy::compare;
+using graphpy::steal;
 using graphpy::contains;
 
-O owned(PyObject* result) {
-    if (!result) throw py::error_already_set();
-    return py::reinterpret_steal<O>(result);
-}
-O add(const O& a, const O& b) { return owned(PyNumber_Add(a.ptr(), b.ptr())); }
-O append(const O& a, const O& b) { return owned(PyNumber_InPlaceAdd(a.ptr(), b.ptr())); }
+O add(const O& a, const O& b) { return steal(PyNumber_Add(a.ptr(), b.ptr())); }
+O append(const O& a, const O& b) { return steal(PyNumber_InPlaceAdd(a.ptr(), b.ptr())); }
 O slice(const O& text, const O& start, const O& end) {
-    O key = owned(PySlice_New(start.ptr(), end.ptr(), Py_None));
-    return owned(PyObject_GetItem(text.ptr(), key.ptr()));
+    O key = steal(PySlice_New(start.ptr(), end.ptr(), Py_None));
+    return steal(PyObject_GetItem(text.ptr(), key.ptr()));
 }
 O substring(const O& text, Py_ssize_t start, Py_ssize_t end) {
-    return owned(PyUnicode_Substring(text.ptr(), start, end));
+    return steal(PyUnicode_Substring(text.ptr(), start, end));
 }
 O formatted(const char* pattern, const O& value) {
     return py::str(pattern).attr("format")(value);
@@ -57,7 +54,7 @@ public:
         if (count == 0) return py::str("");
         if (count == 1) return py::reinterpret_borrow<O>(fragments_[0]);
         py::str separator("");
-        return owned(PyUnicode_Join(separator.ptr(), fragments_.ptr()));
+        return steal(PyUnicode_Join(separator.ptr(), fragments_.ptr()));
     }
     void push(const O& value) {
         if (plain_ && PyUnicode_CheckExact(value.ptr())) {
@@ -146,7 +143,7 @@ O replacement_replace(O self, O replacements) {
         if (is_string) result.push(token);
         else if (contains(replacements, token.attr("name"))) {
             O name = token.attr("name");
-            O replacement = owned(PyObject_GetItem(replacements.ptr(), name.ptr()));
+            O replacement = steal(PyObject_GetItem(replacements.ptr(), name.ptr()));
             result.push(replacement);
         } else {
             // Keep attribute and keys/join evaluation in Python's original order.
@@ -238,7 +235,7 @@ std::vector<O> engine_names(const RegexEngine& engine, const chn_regex* re) {
     for (size_t i = 0; i < count; ++i) {
         size_t length = 0;
         const char* name = engine.api->capture_name(re, i, &length);
-        names.push_back(name ? owned(PyUnicode_DecodeUTF8(name, static_cast<Py_ssize_t>(length), "strict")) : O(py::none()));
+        names.push_back(name ? steal(PyUnicode_DecodeUTF8(name, static_cast<Py_ssize_t>(length), "strict")) : O(py::none()));
     }
     return names;
 }

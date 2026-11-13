@@ -72,7 +72,7 @@ def octahedral_gr_to_xyz(n: np.ndarray) -> XYZ:
     length = np.sqrt(np.square(x) + np.square(y) + np.square(z))
     x /= length
     y /= length
-    z /= length  # type: ignore
+    z /= length
 
     return x, y, z
 

@@ -74,11 +74,11 @@ class NormalMapType(Enum):
 
 def convert_to_bgra(img: np.ndarray, in_c: int) -> np.ndarray:
     assert in_c in (1, 3, 4), f"Number of channels ({in_c}) unexpected"
+    # The conversions already return a new array.
     if in_c == 1:
-        img = cvt_color(img, cv2.COLOR_GRAY2BGRA)
-    elif in_c == 3:
-        img = cvt_color(img, cv2.COLOR_BGR2BGRA)
-
+        return cvt_color(img, cv2.COLOR_GRAY2BGRA)
+    if in_c == 3:
+        return cvt_color(img, cv2.COLOR_BGR2BGRA)
     return img.copy()
 
 
@@ -113,13 +113,13 @@ def to_uint8(img: np.ndarray, normalized: bool = False) -> np.ndarray:
     """
     Returns a new uint8 image with the given image data.
 
-    Values saturate to the representable range before rounding. `normalized` is
-    retained for caller compatibility and does not skip saturation.
+    Values saturate to the representable range before rounding, whatever `normalized`
+    says.
     """
     if img.dtype == np.uint8:
         return img.copy()
 
-    converted = converted_pixels(img, 8, normalized)
+    converted = converted_pixels(img, 8)
     if converted is not None:
         return converted
 
@@ -132,13 +132,13 @@ def to_uint16(img: np.ndarray, normalized: bool = False) -> np.ndarray:
     """
     Returns a new uint16 image with the given image data.
 
-    Values saturate to the representable range before rounding. `normalized` is
-    retained for caller compatibility and does not skip saturation.
+    Values saturate to the representable range before rounding, whatever `normalized`
+    says.
     """
     if img.dtype == np.uint16:
         return img.copy()
 
-    converted = converted_pixels(img, 16, normalized)
+    converted = converted_pixels(img, 16)
     if converted is not None:
         return converted
 
@@ -336,7 +336,7 @@ def calculate_ssim(
     c2 = 0.03**2
 
     kernel = cv2.getGaussianKernel(11, 1.5)
-    window = np.outer(kernel, kernel.transpose())  # type: ignore
+    window = np.outer(kernel, kernel.transpose())
 
     mu1 = cv2.filter2D(img1, -1, window)[5:-5, 5:-5]
     mu2 = cv2.filter2D(img2, -1, window)[5:-5, 5:-5]
@@ -471,7 +471,7 @@ def _fast_gaussian_blur(
             img = gaussian(img, x_down_sigma, y_down_sigma)
             img = resize(img, (w, h), cv2.INTER_LINEAR)
         else:
-            # Public helper compatibility outside the float32 image-node domain.
+            # NumPy path for non-float32 callers.
             img = cv2.resize(img, (w_down, h_down), interpolation=cv2.INTER_AREA)
             img = cv2.GaussianBlur(
                 img,

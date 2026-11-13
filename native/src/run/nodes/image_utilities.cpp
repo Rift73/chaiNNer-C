@@ -88,8 +88,8 @@ void pick_color(NodeContext &, std::span<const Value> inputs, std::vector<Value>
     }
     if (!(x < w && y < h))
         throw NodeError("AssertionError", "The given coordinates (X, Y) are outside the image. Expect X=" +
-                                              std::to_string(x) + " to be to 0 to " + std::to_string(w - 1) +
-                                              " and Y=" + std::to_string(y) + " to be to 0 to " +
+                                              std::to_string(x) + " to be 0 to " + std::to_string(w - 1) +
+                                              " and Y=" + std::to_string(y) + " to be 0 to " +
                                               std::to_string(h - 1) + ".");
     // orig_img[y, x]: NumPy's negative indices count from the end; an empty axis has no valid index.
     for (auto [index, size, axis] : {std::array<int64_t, 3>{y, h, 0}, std::array<int64_t, 3>{x, w, 1}})
@@ -170,19 +170,13 @@ void z_stack(NodeContext &, std::span<const Value> inputs, std::vector<Value> &o
     outputs.push_back(std::move(out).publish());
 }
 
-/* native_analysis._image: a nonempty image. */
-void analysis_image(const Image &image)
-{
-    if (image.height == 0 || image.width == 0) throw NodeError("ValueError", "Invalid image shape " + shape_text(image));
-}
-
 /* chainner:image:lut (miscellaneous/apply_palette.py, native_analysis.apply_palette): the palette's first row. */
 void apply_palette(NodeContext &, std::span<const Value> inputs, std::vector<Value> &outputs)
 {
     const Image &image = std::get<Image>(inputs[0]);
     const Image &palette = std::get<Image>(inputs[1]);
-    analysis_image(image);
-    analysis_image(palette);
+    shaped(image);
+    shaped(palette);
     if (palette.width > (1 << 24))
         throw NodeError("AssertionError", "Quantizing float32 values with more than 2**24 levels doesn't make sense, "
                                           "because only integers up to 2**24 can be represented exactly using float32.");
@@ -202,7 +196,7 @@ void image_statistics(NodeContext &, std::span<const Value> inputs, std::vector<
 {
     const Image &image = std::get<Image>(inputs[0]);
     double percentile = number(inputs[1]);
-    analysis_image(image);
+    shaped(image);
     std::string target = dispatch::text("nodes.impl.native_numpy_simd", "loop_target", {"minimum", "fff"});
     int lanes = int(dispatch::number("nodes.impl.native_numpy_simd", "float32_lanes", {target}));
     std::array<double, 4> result{};
@@ -338,8 +332,8 @@ float analysis_mean(const Image &image)
  * images, their squares and product, cropped by 5 on every side, then the SSIM map's mean. */
 double calculate_ssim(const Image &image, const Image &other)
 {
-    analysis_image(image);
-    analysis_image(other);
+    shaped(image);
+    shaped(other);
     Kernel window{11, 11, std::vector<double>(121)};
     check(cn_ssim_window(window.values.data()));
     std::array<Image, 5> sources{image, other, analysis_binary(image, image, 3), analysis_binary(other, other, 3),

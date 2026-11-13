@@ -22,6 +22,7 @@ import { GlobalContext } from '../../contexts/GlobalNodeState';
 import { NodeDocumentationContext } from '../../contexts/NodeDocumentationContext';
 import { getCategoryAccentColor } from '../../helpers/accentColors';
 import { ChainnerDragData, TransferTypes } from '../../helpers/dataTransfer';
+import { getCenter } from '../../helpers/reactFlowUtil';
 import { useContextMenu } from '../../hooks/useContextMenu';
 import { useNodeFavorites } from '../../hooks/useNodeFavorites';
 import { IconFactory } from '../CustomIcons';
@@ -314,11 +315,9 @@ export const NodeRepresentativeList = memo(({ nodes, collapsed }: NodeRepresenta
         (schemaId: SchemaId) => {
             if (!reactFlowWrapper.current) return;
 
-            const rect = reactFlowWrapper.current.getBoundingClientRect();
-            const position = reactFlowInstance.screenToFlowPosition({
-                x: (rect.width + rect.x) / 2,
-                y: (rect.height + rect.y) / 2,
-            });
+            const position = reactFlowInstance.screenToFlowPosition(
+                getCenter(reactFlowWrapper.current.getBoundingClientRect())
+            );
 
             createNode({ position, data: { schemaId } });
         },

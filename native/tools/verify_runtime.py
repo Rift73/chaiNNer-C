@@ -48,7 +48,7 @@ OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # make_oracle.py's tree and record; every runtime verifier's baseline is its src.
 ORACLE = PROJECT / "native/build/oracle"
 ORACLE_RECORD = "oracle.json"
-# chaiNNer-C's C chainner_ext in the oracle (Consult 6 P1): each backend/src file
+# chaiNNer-C's C chainner_ext in the oracle: each backend/src file
 # and its place under the oracle's src. chainner_native.dll goes beside the pyd,
 # whose own directory Windows searches for its dependencies; __init__.py adds
 # <src>/nodes/impl, which in the oracle is upstream's and holds no DLL.
@@ -932,7 +932,7 @@ def fixture_graphs(schemas: dict[str, dict], output: Path):
         name = "chroma-" + suffix
         nodes = [matting_source(name + "-source")]
         # chroma-matting runs the full solvers. PyMatting 1.1.16's foreground is
-        # deterministic (Consult 11 D-17.3), so the whole RGBA result is saved.
+        # deterministic, so the whole RGBA result is saved.
         append_image(
             nodes,
             name + "-key",
@@ -1516,8 +1516,11 @@ def check_success(response: dict):
         raise RuntimeError(f"Backend execution did not succeed: {response}")
 
 
-def run_backend(label: str, backend: Path, python: Path, root: Path, timeout: float):
-    directory = root / label
+def backend_launch(
+    backend: Path, python: Path, directory: Path
+) -> tuple[dict[str, str], int, list[str]]:
+    """A backend's private folders under directory, its isolated environment, a free
+    port and its command."""
     directory.mkdir()
     for name in ("storage", "output", "profile", "appdata", "localappdata", "temp"):
         (directory / name).mkdir()
@@ -1532,8 +1535,8 @@ def run_backend(label: str, backend: Path, python: Path, root: Path, timeout: fl
             "PYTHONIOENCODING": "utf-8",
             "CUDA_VISIBLE_DEVICES": "-1",
             "NVIDIA_VISIBLE_DEVICES": "none",
-            # ncnn's Vulkan, hidden on both sides (Consult 8 sweep item 6): no
-            # instance, so no crash at the host's exit and no clone holding DLLs.
+            # ncnn's Vulkan, hidden on both sides: no instance, so no crash at the
+            # host's exit and no clone holding DLLs.
             "VK_LOADER_DRIVERS_DISABLE": "*",
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             # A host's dependency installer must never write into the provisioned
@@ -1559,6 +1562,61 @@ def run_backend(label: str, backend: Path, python: Path, root: Path, timeout: fl
         "--storage-dir",
         str(directory / "storage"),
     ]
+    return env, port, command
+
+
+def request_shutdown(process: subprocess.Popen, port: int) -> None:
+    """Asks a running backend to shut down and waits up to 15 s for it to exit."""
+    if process.poll() is not None:
+        return
+    try:
+        request(port, "/shutdown", {}, timeout=15)
+    except (
+        OSError,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+        http.client.HTTPException,
+    ):
+        pass  # Shutdown may close the connection before its response arrives.
+    try:
+        process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        pass  # The caller's job.close() ends it.
+
+
+def wait_until_ready(
+    process: subprocess.Popen, port: int, label: str, timeout: float, log: Path
+) -> None:
+    """Polls /status until the backend says it is ready; raises RuntimeError, naming
+    its log, when it exits first or timeout seconds pass."""
+    limit = time.monotonic() + timeout
+    last_error = None
+    while time.monotonic() < limit:
+        if process.poll() is not None:
+            raise RuntimeError(
+                f"{label} exited with {process.returncode}; inspect {log}"
+            )
+        try:
+            if request(port, "/status", timeout=3).get("ready"):
+                return
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as error:
+            last_error = str(error)
+        time.sleep(0.5)
+    raise RuntimeError(f"{label} did not become ready: {last_error}; inspect {log}")
+
+
+def fetch_metadata(port: int, directory: Path) -> dict[str, Any]:
+    """Each METADATA_ENDPOINTS response, also written to directory as <endpoint>.json."""
+    metadata = {}
+    for endpoint in METADATA_ENDPOINTS:
+        metadata[endpoint] = request(port, "/" + endpoint, timeout=METADATA_TIMEOUT)
+        write_json(directory / (endpoint + ".json"), metadata[endpoint])
+    return metadata
+
+
+def run_backend(label: str, backend: Path, python: Path, root: Path, timeout: float):
+    directory = root / label
+    env, port, command = backend_launch(backend, python, directory)
     log = (directory / "backend.log").open("wb")
     job = OwnedJob()
     process = None
@@ -1582,28 +1640,8 @@ def run_backend(label: str, backend: Path, python: Path, root: Path, timeout: fl
         )
         job.assign(process)
         result["owned_pid"] = process.pid
-        limit = time.monotonic() + timeout
-        last_error = None
-        while time.monotonic() < limit:
-            if process.poll() is not None:
-                raise RuntimeError(
-                    f"{label} exited with {process.returncode}; inspect {directory / 'backend.log'}"
-                )
-            try:
-                status = request(port, "/status", timeout=3)
-                if status.get("ready"):
-                    break
-            except (OSError, urllib.error.URLError, json.JSONDecodeError) as error:
-                last_error = str(error)
-            time.sleep(0.5)
-        else:
-            raise RuntimeError(
-                f"{label} did not become ready: {last_error}; inspect backend.log"
-            )
-        metadata = {}
-        for endpoint in METADATA_ENDPOINTS:
-            metadata[endpoint] = request(port, "/" + endpoint, timeout=METADATA_TIMEOUT)
-            write_json(directory / (endpoint + ".json"), metadata[endpoint])
+        wait_until_ready(process, port, label, timeout, directory / "backend.log")
+        metadata = fetch_metadata(port, directory)
         schemas = {x["schemaId"]: x for x in metadata["nodes"]["nodes"]}
         result.update(metadata_record(metadata))
         result["node_count"] = len(schemas)
@@ -1727,20 +1765,7 @@ def run_backend(label: str, backend: Path, python: Path, root: Path, timeout: fl
         if events:
             events.close()
         if process is not None:
-            if process.poll() is None:
-                try:
-                    request(port, "/shutdown", {}, timeout=15)
-                except (
-                    OSError,
-                    urllib.error.URLError,
-                    json.JSONDecodeError,
-                    http.client.HTTPException,
-                ):
-                    pass  # Shutdown may close the connection before its response arrives.
-                try:
-                    process.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    pass
+            request_shutdown(process, port)
             job.close()  # Terminates only remaining members of this owned job.
             process.wait(timeout=15)
             result["exit_code"] = process.returncode
@@ -1944,7 +1969,7 @@ SSE_EVENT_COMPARISON = (
     "multiplicity and payload. An iterated item's broadcast field (a node's output "
     "type or value sent with more than one value: iterated_fields) has no defined "
     "last value, since upstream on 3.14 sends iterated items' broadcasts in "
-    "timing-dependent order (CPython's _chain_future; Consult D-35): it is compared "
+    "timing-dependent order (CPython's _chain_future): it is compared "
     "by its broadcast multiset, and the port's final value must be one the oracle "
     "broadcast. A request runs twice on each backend: the oracle's two attempts are "
     "equal in full but for such final values, the port's also but for how many "
@@ -1983,7 +2008,7 @@ def broadcast_field_values(attempt: dict) -> dict[str, dict[str, Counter[str]]]:
 def iterated_fields(*attempts: dict) -> dict[str, set[str]]:
     """Per node, the broadcast fields some attempt sent with more than one value:
     an iterated item's type or value, whose last value is timing-dependent
-    upstream on 3.14 (Consult D-35)."""
+    upstream on 3.14."""
     found: defaultdict[str, set[str]] = defaultdict(set)
     for attempt in attempts:
         for node, fields in broadcast_field_values(attempt).items():
@@ -2136,7 +2161,7 @@ def repeat_mismatches(first: dict, second: dict, *, port: bool) -> list[str]:
     The oracle sends every broadcast, so its broadcast multisets are equal. On both
     sides an iterated field's final value (iterated_fields) is left out of the final
     state, since upstream's order of iterated items' broadcasts is timing-dependent
-    on 3.14 (Consult D-35); instead each attempt's final value of it must be one the
+    on 3.14; instead each attempt's final value of it must be one the
     other attempt broadcast. repeat_final_value_differences records where the two
     final values differ.
     """
@@ -2192,8 +2217,8 @@ def broadcast_multisets(attempts: list[dict]) -> list[dict[str, dict[str, int]]]
 # two that carry the Dependency declarations; each run records the latter whole.
 METADATA_ENDPOINTS = ("nodes", "packages", "features", "installed-dependencies")
 # Seconds for a metadata request. /nodes, /packages and /features answer once the
-# worker has loaded every node, which the host's readiness (/status) no longer waits
-# for (instant startup): with a cold Numba cache (a new storage folder), PyMatting
+# worker has loaded every node, which the host's readiness (/status) does not wait
+# for: with a cold Numba cache (a new storage folder), PyMatting
 # first compiles its kernels for 25-45 s.
 METADATA_TIMEOUT = 300
 DEPENDENCY_ENDPOINTS = ("packages", "installed-dependencies")
@@ -2207,19 +2232,15 @@ PYTORCH_CU132 = "https://download.pytorch.org/whl/cu132"
 # lock's, installed on its runtime); the oracle's are upstream's declarations for
 # another stack, recorded in each run's dependency_metadata and not gated. These
 # rows are the only other ways the port's /packages and /installed-dependencies
-# may differ from the oracle's, each with its ruling (Consult 8 R-g ratified the
-# rule). The pypiName/findLink table is frozen at its three ruled rows (ncnn;
-# torch and torchvision; onnxruntime-gpu): a new row is a consult. compare_metadata
-# applies them; any other difference fails.
+# may differ from the oracle's, each with its reason. The pypiName/findLink table is
+# frozen at its three rows (ncnn; torch and torchvision; onnxruntime-gpu).
+# compare_metadata applies them; any other difference fails.
 DECLARATION_CHANGES: dict[str, dict[str, Any]] = {
     # /packages: by the oracle's pypiName, (the port's pypiName, why).
     "pypiName": {
         "ncnn-vulkan": (
             "ncnn",
-            (
-                "Consult 2 Q4: ncnn-vulkan has no cp314 wheel; ncnn 1.0.20260526 "
-                "replaces it (e12d9164, U1 Task 2 pins; 8cd686a4, its import)"
-            ),
+            "ncnn-vulkan has no cp314 wheel; ncnn 1.0.20260526 replaces it",
         ),
     },
     # /packages: by the port's pypiName, (the oracle's findLink, the port's, why).
@@ -2227,15 +2248,12 @@ DECLARATION_CHANGES: dict[str, dict[str, Any]] = {
         "torch": (
             PYTORCH_CU128,
             PYTORCH_CU132,
-            "design ruling section 1: torch 2.14.1 on cu132 (e12d9164, U1 Task 2 pins)",
+            "torch 2.14.1 on cu132, the lock's pin",
         ),
         "torchvision": (
             PYTORCH_CU128,
             PYTORCH_CU132,
-            (
-                "design ruling section 1: torchvision 0.29.1 on cu132 (e12d9164, U1 "
-                "Task 2 pins)"
-            ),
+            "torchvision 0.29.1 on cu132, the lock's pin",
         ),
         "onnxruntime-gpu": (
             (
@@ -2245,14 +2263,14 @@ DECLARATION_CHANGES: dict[str, dict[str, Any]] = {
             None,
             (
                 "PyPI onnxruntime-gpu 1.30.0: the lock's wheel is PyPI's; upstream's "
-                "1.17.1 came from the CUDA 12 feed (e12d9164, U1 Task 2 pins)"
+                "1.17.1 came from the CUDA 12 feed"
             ),
         ),
     },
     # /installed-dependencies: a name only the oracle lists, why.
     "oracle_only": {
-        "google-re2": "Consult 7 (7324446e): chaiNNer-C's backend no longer "
-        "declares google-re2; the provisioned runtime keeps it for the oracle",
+        "google-re2": "chaiNNer-C's backend does not declare "
+        "google-re2; the provisioned runtime keeps it for the oracle",
     },
     # /installed-dependencies: a name only the port lists, why.
     "port_only": {
@@ -2448,7 +2466,7 @@ def oracle_tree(
 def oracle_python(manifest: dict[str, Any]) -> Path:
     """The oracle's interpreter: the provisioned runtime the package was copied from.
 
-    Consult 7: the oracle runs on the provisioned runtime, which keeps what the
+    The oracle runs on the provisioned runtime, which keeps what the
     package leaves out (google-re2, Sanic-Cors and pynvml, which upstream's ONNX
     loader and server import or declare). It is python_stack.runtime while the
     project's lock is still the one that runtime was recorded with; anything

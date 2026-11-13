@@ -6,7 +6,6 @@ import numpy as np
 import torch
 from sanic.log import logger
 from spandrel import (
-    ImageModelDescriptor,
     MaskedImageModelDescriptor,
     ModelDescriptor,
     ModelLoader,
@@ -35,7 +34,8 @@ def perform_interp(model_a: dict, model_b: dict, amount: int):
         return state_dict
     except Exception as e:
         raise ValueError(
-            "These models are not compatible and able not able to be interpolated together"
+            "These models are not compatible and cannot be interpolated together"
+            f" ({type(e).__name__}: {e})."
         ) from e
 
 
@@ -149,13 +149,8 @@ def _check_interp_state(interp_50: dict):
             fake_mask = np.ones((size, size, 1), dtype=np.float32)
             mask_tensor = np2tensor(fake_mask, change_range=True).cpu()
             t_out = model_descriptor(img_tensor, mask_tensor)
-        elif isinstance(model_descriptor, ImageModelDescriptor):  # type: ignore <- I get that this can technically never happen, but please just let me write exhaustive checks
-            t_out = model_descriptor(img_tensor)
         else:
-            logger.warning(
-                "Unknown model type used with interpolation. Since we cannot verify inference works with this model, we will assume the interpolation is valid. Please report."
-            )
-            return True
+            t_out = model_descriptor(img_tensor)
         if isinstance(t_out, tuple):
             t_out = t_out[0]
         result = tensor2np(t_out.detach(), change_range=False, imtype=np.float32)

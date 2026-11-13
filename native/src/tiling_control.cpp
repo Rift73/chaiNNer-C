@@ -1,6 +1,5 @@
 /* Native tile geometry and restart state machines. Public callbacks, image
- * views, progress objects and already-native tile blending remain adapters.
- * Source variants preserve both installed and checkout host contracts. */
+ * views, progress objects and already-native tile blending remain adapters. */
 #include "graph_python.hpp"
 #include "graph_unpack.hpp"
 #include "graph_numeric.hpp"

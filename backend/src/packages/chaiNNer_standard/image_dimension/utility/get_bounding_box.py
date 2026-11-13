@@ -29,6 +29,4 @@ def get_bounding_box_node(
     img: np.ndarray,
     thresh_val: float,
 ) -> tuple[int, int, int, int]:
-    # Threshold value 100 guarantees an empty image, so make sure the max
-    # is just below that.
     return native_channels.bounding_box(img, thresh_val)

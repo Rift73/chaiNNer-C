@@ -20,7 +20,7 @@ This wiki serves as a comprehensive guide to ChaiNNer, a visual programming lang
 
 ## Additional Resources
 
-For more information, check out the individual sections linked above. If you have any questions or need further assistance, feel free to reach out to the community in [discord](https://discord.gg/pzvAKPKyHM) or [open an issue](https://github.com/chaiNNer-org/chaiNNer/issues) on the GitHub repository.
+For more information, check out the individual sections linked above. If you have any questions or need further assistance, feel free to reach out to the community in [discord](https://discord.gg/pzvAKPKyHM) or [open an issue](https://github.com/Rift73/chaiNNer-C/issues) on the GitHub repository.
 
 ---
 

@@ -49,6 +49,13 @@ def add_normals_node(
     strength2: int,
     method: AdditionMethod,
 ) -> np.ndarray:
+    # A map of one pixel, row or column is broadcast over the other.
+    (h1, w1), (h2, w2) = n1.shape[:2], n2.shape[:2]
+    if (h1 != h2 and 1 not in (h1, h2)) or (w1 != w2 and 1 not in (w1, w2)):
+        raise ValueError(
+            f"The normal maps must be the same size, not {n1.shape[1]}x{n1.shape[0]}"
+            f" and {n2.shape[1]}x{n2.shape[0]}."
+        )
     return xyz_to_bgr(
         add_normals(
             method,

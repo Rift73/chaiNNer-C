@@ -16,7 +16,6 @@ from __future__ import annotations
 import torch
 from torch import nn
 from torch.nn import functional
-from torchvision import transforms
 
 from .warplayer import warp
 
@@ -427,6 +426,8 @@ class IFNet(nn.Module):
 
         # pre-blur fclip and fref
         if blur is not None and blur > 0:
+            from torchvision import transforms
+
             gaussblur = transforms.GaussianBlur(kernel_size=(5, 5), sigma=(blur, blur))
             fclip_pref = gaussblur(fclip_pref)
             if fref_pref_none:

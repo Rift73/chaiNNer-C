@@ -26,7 +26,12 @@ class OnnxModelOutput(BaseOutput):
             tags.append(format_channel_numbers(i.input_channels, i.output_channels))
 
         tags.append(f"opset{i.opset}")
-        tags.append("mixed (BF16/FP32)" if i.dtype == MIXED else i.dtype)
+        if i.dtype != MIXED:
+            tags.append(i.dtype)
+        elif i.arch == "RDUAL":  # its flow part runs in FP16 (rdual_export.py)
+            tags.append("mixed (BF16/FP16/FP32)")
+        else:
+            tags.append("mixed (BF16/FP32)")
 
         return {"tags": tags}
 
@@ -36,7 +41,8 @@ class OnnxModelOutput(BaseOutput):
         }
 
         i = value.info
-        if i.dtype == MIXED:
+        # DUAL's and legacy DRFT's mixed ONNX record no architecture; RDUAL's bundle does
+        if i.dtype == MIXED and i.arch is None:
             fields["arch"] = navi.literal("DUAL")
         else:
             fields["arch"] = navi.literal(NO_RECORD_ARCH if i.arch is None else i.arch)

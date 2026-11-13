@@ -1,0 +1,306 @@
+# Help texts: Sharpen and Blur, Deband and Grain.
+
+# Sharpen and Blur
+
+[method."cas.CAS"]
+help = "Contrast adaptive sharpening: sharpens low-contrast detail more than strong edges, so it adds fewer halos than Sharpen: unsharp mask. A good first pick for a mild, clean sharpen after an upscale or a denoise. Example: Strength (0 to 1) `0.5` on a soft 1080p source. On YUV it sharpens only luma (Y) unless Planes says otherwise, and it sharpens grain and noise too."
+
+[method."cas.CAS".docs]
+sharpness = "Strength, from 0 to 1; higher = sharper, and even 0 sharpens a little. Empty uses 0.5; 0.3 to 0.7 is usual.\n\nExample: `0.6`\n\nA value outside 0 to 1 stops the node with an error."
+planes = "Which planes are sharpened. Default: only luma (Y) on YUV, every plane on RGB. Sharpening chroma (U and V) rarely helps and can add colour fringes.\n\nExample: `Y`"
+opt = "Which CPU instruction set the plugin uses, for speed only. Empty or 0 picks the best one the CPU has; 1 = plain C, 2 = SSE4.1, 3 = AVX2, 4 = AVX-512. Leave empty unless testing.\n\nExample: `3`"
+
+[method."vsrgtools.awarpsharp"]
+help = "Sharpens by warping: pulls nearby pixels toward edges, which thins and tightens lines without the bright halos of an unsharp mask. Mostly for anime and cartoon line art, often after an upscale. Example: Warp depth, horizontal `8` for a moderate effect. Strong values bend shapes and smear fine texture; check detailed scenes."
+
+[method."vsrgtools.awarpsharp".docs]
+thresh = "Caps the edge mask (on a 0 to 255 scale), which limits how hard edges are warped. Lower = weaker sharpening; 127.5 is the default.\n\nExample: `64`"
+blur = "How many box-blur passes soften the edge mask; the start value 3 is the usual. A sharper mask warps more unevenly.\n\nExample: `2`"
+depth_h = "How far pixels move horizontally toward edges; larger = stronger. A negative value warps the other way and blurs instead. Empty uses the plugin's default. One number for all planes, or one per plane.\n\nExample: `8`"
+depth_v = "How far pixels move vertically toward edges; larger = stronger. A negative value warps the other way and blurs instead. Empty uses the plugin's default. One number for all planes, or one per plane.\n\nExample: `8`"
+mask_first_plane = "Yes: warps colour along the edges found in luma, so colour stays aligned with lines (the default on YUV). No: finds edges in each colour plane separately (the default on RGB).\n\nExample: `Yes`"
+kwargs = "Extra settings of the edge-mask step, as a Python dict. Rarely needed."
+mask = "Leave empty: edges are found with a Sobel edge mask. This box takes only plain values, so another mask type cannot be chosen here."
+
+[method."vsrgtools.bilateral"]
+help = "Edge-preserving blur: averages each pixel with neighbours of similar brightness, so flat areas get smooth while edges stay sharp. Pick it over Blur, Gaussian when edges must survive. Example: Size (sigmaS) `3`, Brightness tolerance (sigmaR) `0.02`. With Edges from clip connected it smooths along the edges of that clip (joint bilateral). A large Size (sigmaS) is slow on the CPU."
+
+[method."vsrgtools.bilateral".docs]
+sigmaS = "Spatial size of the blur in pixels; higher = wider and smoother. Empty uses 3. One value for all planes, or one per plane.\n\nExample: `2.5`"
+sigmaR = "How different in brightness (on a 0 to 1 scale) a neighbour may be and still be averaged; lower keeps more edges and smooths less. Empty uses 0.02; 0.01 to 0.05 is usual.\n\nExample: `0.03`"
+ref = "Optional clip whose edges decide where to smooth (joint bilateral). Same size and format as the main clip. Empty uses the main clip itself."
+backend = "Where it runs. Auto = the CPU unless a script changed the default. CPU = vszip plugin. GPU = OpenCL plugin vszipcl. CUDA and CUDA_RTC = NVIDIA GPU plugins; each needs its plugin installed.\n\nExample: `CPU`"
+kwargs = "Extra settings passed to the chosen backend's plugin, as a Python dict.\n\nExample: `{'algorithm': 2}`"
+
+[method."vsrgtools.box_blur"]
+help = "Plain average blur over a square box, fast at any radius. Several passes approach a Gaussian blur. Pick Blur, Gaussian for a smoother falloff, Median (median_blur) for specks. Example: Radius `2`, Passes `2`. Also used to build masks and limiters rather than to blur a picture for viewing."
+
+[method."vsrgtools.box_blur".docs]
+radius = "How many pixels on each side are averaged; 1 = 3x3, 2 = 5x5. Higher = blurrier. One value for all planes, or one per plane; 0 leaves a plane untouched.\n\nExample: `2`"
+passes = "How many times the blur is repeated; 2 or 3 passes look close to a Gaussian blur.\n\nExample: `2`"
+mode = "Direction. HV (the start value) blurs horizontally and vertically, Horizontal only across, Vertical only up and down, Temporal across frames.\n\nExample: Vertical"
+
+[method."std.BoxBlur"]
+help = "VapourSynth's built-in box blur, with separate horizontal and vertical radius and passes. Same effect as Blur, box, set per direction. Example: Horizontal radius `2`, Horizontal passes `2`, Vertical radius `2`, Vertical passes `2` for a soft Gaussian-like blur. A radius of 0 leaves that direction untouched."
+
+[method."std.BoxBlur".docs]
+hradius = "Pixels averaged on each side horizontally; higher = blurrier across. Empty uses 1; 0 turns horizontal blur off.\n\nExample: `2`"
+hpasses = "How many times the horizontal blur repeats; 2 or 3 look close to a Gaussian blur. Empty uses 1.\n\nExample: `2`"
+vradius = "Pixels averaged on each side vertically; higher = blurrier up and down. Empty uses 1; 0 turns vertical blur off.\n\nExample: `2`"
+vpasses = "How many times the vertical blur repeats; 2 or 3 look close to a Gaussian blur. Empty uses 1.\n\nExample: `2`"
+
+[method."vsrgtools.clense"]
+help = "Temporal median: each pixel becomes the median of itself and the same pixel in nearby frames, removing specks, dirt and flicker that last one frame. Example: Mode `Both`. It does nothing until a Mode other than None is picked. Moving detail can be damaged, since moving pixels differ across frames."
+
+[method."vsrgtools.clense".docs]
+mode = "Which frames take part. Both = previous, current and next (the classic one). Backward = current and two previous. Forward = current and two next (useful on the first frame after a cut). None = off.\n\nExample: `Both`"
+previous_clip = "Optional clip to take the previous frames from, such as a denoised copy. Empty uses the main clip."
+next_clip = "Optional clip to take the next frames from, such as a denoised copy. Empty uses the main clip."
+
+[method."vsrgtools.contrasharpening"]
+help = "Gives back sharpness a denoiser took away, but never more than it removed at each spot, so noise does not return. Connect the denoised clip as the main clip and the clip before denoising as Clip before filtering. Example: after a strong denoise, Radius `1`. Only luma is sharpened by default."
+
+[method."vsrgtools.contrasharpening".docs]
+src = "The clip before filtering (denoising). The sharpening at each pixel is limited to what filtering changed there. Same size and format as the main clip."
+radius = "Size of the sharpening; higher sharpens coarser detail. 1 is usual, 2 for strong denoising or high resolutions.\n\nExample: `1`"
+mode = "How the sharpening is limited by the source's 3x3 neighbourhood. Minmax square3 (the default) is a balance; square1 allows the most, square4 the least.\n\nExample: `Minmax square1`"
+planes = "Which planes are sharpened. The start value is luma (Y) only, which is usual.\n\nExample: `Y, U and V`"
+sharp = "Optional: wire a sharpened clip or a sharpening filter here to use it instead of the built-in one. The limit to what filtering removed still applies."
+
+[method."vsrgtools.contrasharpening_dehalo"]
+help = "Restores sharpness after a dehalo, but only where the dehalo changed the picture and only in the same direction, so halos do not come back. Connect the dehaloed clip as the main clip and the original as Clip before dehalo. Example: Strength `1.4`. Only luma is processed by default."
+
+[method."vsrgtools.contrasharpening_dehalo".docs]
+src = "The clip before dehaloing. The restored sharpness at each pixel is limited to what the dehalo changed there."
+level = "Strength of the restored sharpening; higher = sharper. 1.4 is the default; 1 to 2 is usual.\n\nExample: `1.2`"
+alpha = "Multiplies the sharpening together with Strength (the effect is Strength times Alpha). Usually left at 2.49 and only Strength changed.\n\nExample: `2.49`"
+planes = "Which planes are processed. The start value is luma (Y) only, which is usual.\n\nExample: `Y`"
+
+[method."vsrgtools.contrasharpening_median"]
+help = "A simpler contrasharpening: pushes the filtered clip away from a blurred copy of itself, but keeps each pixel between the filtered and source values. Connect the filtered clip as the main clip and the original as Clip before filtering. Example: after a light denoise. Only luma by default."
+
+[method."vsrgtools.contrasharpening_median".docs]
+src = "The clip before filtering. Every pixel stays between the filtered value and this clip's value."
+planes = "Which planes are processed. The start value is luma (Y) only, which is usual.\n\nExample: `Y`"
+mode = "The blur that the filtered clip is pushed away from. Default is a 3x3 box blur. A mode of Small 3x3 filters (remove_grain) can be picked instead, such as Minmax median opp for a gentler result.\n\nExample: `Binomial blur`"
+
+[method."std.Convolution"]
+help = "Applies your own filter kernel (a grid of weights): each pixel becomes the weighted sum of its neighbours. For custom blurs, sharpeners and edge filters. Example: Matrix `1, 2, 1, 2, 4, 2, 1, 2, 1` is a soft 3x3 blur. Negative weights make sharpeners or edge detectors, which may need Divisor and Bias."
+
+[method."std.Convolution".docs]
+matrix = "Weights, left to right and top to bottom; the middle one is the centre pixel. Square mode: 9, 25, 49, 81 or 121 numbers; other modes: an odd count from 3 to 25. Each from -1023 to 1023.\n\nExample: `0, -1, 0, -1, 5, -1, 0, -1, 0`"
+bias = "A value added after dividing, on the clip's own scale (255 = white in 8 bits). Used with edge kernels to lift negative results to grey. Empty uses 0.\n\nExample: `128`"
+divisor = "The weighted sum is divided by this. Empty or 0 divides by the sum of the weights (or by 1 if they sum to 0), which keeps brightness.\n\nExample: `16`"
+saturate = "What happens to results below zero. Empty or 1: they become 0 (black). 0: their absolute value is kept, which edge detectors want.\n\nExample: `0`"
+mode = "Shape of the kernel. `s` = square grid (default); `h` = one row, horizontal only; `v` = one column, vertical only; `hv` = the same row applied horizontally then vertically.\n\nExample: `hv`"
+
+[method."vsrgtools.fast_line_darken"]
+help = "Darkens dark lines and leaves the rest untouched, making line art look bolder. Mostly for anime and cartoons. Example: Strength `64` for bolder lines than the default 48. Works on luma only; the clip must be YUV or greyscale, not RGB."
+
+[method."vsrgtools.fast_line_darken".docs]
+strength = "How much lines are darkened, as a share of their contrast to the surroundings: 128 = by the full contrast, 48 (default) = about a third. Fainter lines darken proportionately less.\n\nExample: `64`"
+protection = "Leaves the darkest lines alone so they do not turn solid black. 0 = no protection, about 50 = protects everything.\n\nExample: `5`"
+luma_cap = "Bright pixels are treated as no brighter than this (0 = black, 255 = white), so grey lines on white do not get over-darkened. Lower = less darkening; 255 turns the cap off.\n\nExample: `191`"
+threshold = "Pixels that would darken by less than this (0 to 255 scale) are left alone, which stops random specks from darkening. 4 is recommended; too high skips some lines.\n\nExample: `4`"
+thinning = "Optional line thinning; 0 = off and much faster. Higher thins lines more, and the remaining line pixels get slightly darker.\n\nExample: `24`"
+
+[method."vsrgtools.fine_sharp"]
+help = "A general sharpener that boosts small detail without strong halos, tuned for clean 1080p sources or 720p upscaled to 1080p. Pick it over Sharpen, gentle (CAS) for a crisper, stronger look. Example: Strength `2` (default). It sharpens noise and grain too; denoise first on grainy sources."
+
+[method."vsrgtools.fine_sharp".docs]
+mode = "The blur that decides what counts as detail. 0 = binomial blur then median (weaker, the default); 1 = median then binomial blur (stronger). Other values stop the node.\n\nExample: `1`"
+sstr = "Main sharpening strength; higher = sharper and more halos. 2 is the default; 1 to 3 is usual; 0 turns the main sharpening off.\n\nExample: `1.5`"
+cstr = "Equalisation: blurs part of the added sharpening back to keep it from looking harsh. Empty picks a value to match Strength; 0 turns it off.\n\nExample: `0.9`"
+xstr = "Strength of a final edge-crisping pass (XSharpen style), from 0 (off) to 1. 0.19 is the default.\n\nExample: `0.1`"
+lstr = "Shapes the main sharpening curve: how strongly small differences are boosted. Usually left at 1.49.\n\nExample: `1.49`"
+pstr = "Exponent of the main sharpening curve; usually left at 1.272.\n\nExample: `1.272`"
+ldmp = "Low damping: keeps very small differences (such as noise) from being boosted. Higher = noise is boosted less. Empty uses Strength + 0.1.\n\nExample: `2.5`"
+hdmp = "High damping: keeps already strong differences (hard edges) from being boosted further. Higher = less boost on edges. 0.01 is the default.\n\nExample: `0.01`"
+
+[method."vsrgtools.flux_smooth"]
+help = "Temporal smoother: averages a pixel with the same pixel in the previous and next frames, but only when it is brighter or darker than both (flicker), and only with values within the threshold. Removes light grain flicker while leaving motion mostly alone. Example: Temporal threshold `7`. Adding a Spatial threshold also averages the 8 neighbours."
+
+[method."vsrgtools.flux_smooth".docs]
+temporal_threshold = "Largest difference (0 to 255 scale) to the previous or next frame that still gets averaged; higher = stronger, but motion can ghost. One value or one per plane; -1 leaves a plane untouched.\n\nExample: `7`"
+spatial_threshold = "If set, the 8 neighbouring pixels within this difference (0 to 255 scale) are averaged in too, for stronger smoothing. Empty = temporal only. -1 leaves a plane untouched.\n\nExample: `7`"
+scalep = "On: thresholds are on the 0 to 255 scale at any bit depth. Off: they are in the clip's own values (0 to 65535 at 16 bits).\n\nExample: on"
+
+[method."vsrgtools.gauss_blur"]
+help = "Gaussian blur: a smooth, natural blur set by Sigma. The usual pick for a plain soft blur or a prefilter. Pick Blur, box for speed at large sizes, Blur that keeps edges to keep them. Example: Sigma `1.5`."
+
+[method."vsrgtools.gauss_blur".docs]
+sigma = "Blur size in pixels (the Gaussian's standard deviation); higher = blurrier. 0.5 is barely visible, 2 is clearly soft. One value or one per plane.\n\nExample: `1.5`"
+radius = "How far the blur reaches, in pixels. Empty picks it from Sigma, which is right almost always; a smaller value cuts the blur short.\n\nExample: `4`"
+mode = "Direction. HV (the start value) blurs horizontally and vertically, Horizontal or Vertical one way only, Temporal across frames.\n\nExample: Horizontal"
+backend = "Where it runs. Auto and CPU = the built-in resizer. GPU = OpenCL plugin vszipcl, CUDA = NVIDIA plugin vszipcu; both need the plugin installed.\n\nExample: `CPU`"
+kwargs = "Extra settings as a Python dict. `{'_fast': True}` uses a faster approximation (a bilinear downscale and upscale).\n\nExample: `{'_fast': True}`"
+
+[method."vsrgtools.guided_filter"]
+help = "Edge-preserving smoother: flattens areas that are smooth in the guidance clip and keeps its edges. Pick it over Blur that keeps edges for wide, halo-free smoothing; with Guidance connected it transfers that clip's edges. Example: Radius `8`, Strength `1`. The clip must be 32-bit float; convert it first in Convert Format, or the node stops with an error."
+
+[method."vsrgtools.guided_filter".docs]
+radius = "Size of the smoothing window in pixels; higher = wider smoothing. Empty picks it from the size: 12 at 1280x720, larger for bigger frames. One value or one per plane.\n\nExample: `8`"
+thr = "Smoothing strength on a 0 to 255 scale; higher = flatter, and fainter edges are smoothed away too. Default 0.33. One value or one per plane.\n\nExample: `1`"
+mode = "Variant. Gradient (default) keeps edges best; Weighted adapts strength to local detail; Original is the plain guided filter, which can leave halos around strong edges.\n\nExample: `Gradient`"
+guidance = "Optional clip whose edges decide where to smooth. Same size as the main clip. Empty uses the main clip itself."
+use_gauss = "On: Gaussian averaging inside the window, softer but slower. Off: box averaging (default).\n\nExample: on"
+down_ratio = "Works on a copy shrunk by this factor, for speed; 0 = full size. 2 halves width and height; the radius shrinks with it.\n\nExample: `2`"
+downscaler = "Resizer used to shrink the copy when Work at 1/n size is set. Point (default) is fastest."
+upscaler = "Resizer used to enlarge the result back when Work at 1/n size is set. Bilinear (default) is smooth and fast."
+
+[method."std.Median"]
+help = "Replaces each pixel with the median of its 3x3 neighbourhood: removes single-pixel specks and salt-and-pepper noise, but also thin lines. VapourSynth's built-in version; Median (median_blur) offers larger sizes and other shapes. Example: run it on a clip with dead pixels."
+
+[method."vsrgtools.median_blur"]
+help = "Median filter: each pixel becomes the median of its neighbourhood, removing specks and noise while keeping edges sharper than a blur would. Example: Radius `1` with Mode `Square`. Pick Temporal mode to take the median across frames instead, which removes one-frame dirt. Larger radii erase fine detail."
+
+[method."vsrgtools.median_blur".docs]
+radius = "Neighbourhood size: 1 = 3x3, 2 = 5x5. Higher = stronger, erasing more detail. One value or one per plane (in Temporal mode one value: frames on each side).\n\nExample: `1`"
+mode = "Shape. Square = a square around the pixel; Vertical or Horizontal = one column or row; HV = both lines; Temporal = the same pixel across frames.\n\nExample: `Square`"
+smart = "On: only pixels whose neighbourhood varies less than Threshold are filtered, so texture survives. Needs Mode Square.\n\nExample: on"
+threshold = "With Skip textured areas on: neighbourhoods varying more than this are left alone. Higher = more is filtered. Empty uses the plugin's default.\n\nExample: `50`"
+scalep = "With Skip textured areas on: on = Threshold is on the 0 to 255 scale at any bit depth; off = in the clip's own values.\n\nExample: on"
+scenechange = "In Temporal mode: does not mix frames across a scene cut. Needs scene-change marks first (Clip Properties, Method Mark scene changes (sc_detect)).\n\nExample: on"
+
+[method."vsrgtools.min_blur"]
+help = "Gentle denoise that keeps edges: for each pixel it takes the middle value of the original, a soft blur and a median. Often used as a prefilter before motion search or sharpening. Example: Radius `1`; `2` or `3` for stronger. Higher radii erase small detail."
+
+[method."vsrgtools.min_blur".docs]
+radius = "Strength: 1 = 3x3, 2 = 5x5, 3 = 7x7. One value or one per plane.\n\nExample: `2`"
+mode = "Leave empty: the blur runs horizontally and vertically and the median over a square. Other shapes cannot be typed in this box."
+kwargs = "Extra settings of the blur step, as a Python dict."
+
+[method."vsrgtools.remove_grain"]
+help = "A set of small 3x3 filters picked by Mode: speck removal, light denoise, simple blurs and line-safe smoothing. Example: Mode `Minmax around1` removes single-pixel specks; `Binomial blur` is a soft blur. It does nothing until a Mode other than None is picked."
+
+[method."vsrgtools.remove_grain".docs]
+mode = "The filter. Minmax around1 to 4: clamp to the neighbours' range (1 lightest). Edge clip and Line clip: smooth along lines. Binomial blur and Mean: soft blurs. Bob modes: rebuild one field. One mode, or one per plane in the Python box.\n\nExample: `Minmax around1`"
+
+[method."vsrgtools.repair"]
+help = "Limits a filtered clip to what the reference allows: each pixel is clamped to the range of the reference's 3x3 neighbourhood. Used after a strong filter to undo its worst damage. Connect the filtered clip as the main clip and the original as Reference clip. Example: Mode `Minmax square1`. It does nothing until a Mode other than None is picked."
+
+[method."vsrgtools.repair".docs]
+repairclip = "The reference, usually the original or a lightly filtered copy. Same size and format as the main clip."
+mode = "How tightly pixels are held to the reference. Minmax square1 allows the most change, square4 the least. Line clip modes protect lines; Clip ref modes use a remove_grain mode's result as the bound.\n\nExample: `Minmax square1`"
+
+[method."vsrgtools.sbr"]
+help = "Removes only the finest detail and noise (the part of what a blur takes away that a second blur does not keep), leaving larger detail. A soft, low-damage prefilter. Example: Radius `1`. Slightly softens the picture; not meant as the final look."
+
+[method."vsrgtools.sbr".docs]
+radius = "Size of the blurs; 1 = 3x3. Higher removes coarser detail. One value or one per plane.\n\nExample: `1`"
+mode = "Direction of the blurs. HV (default) = horizontal and vertical; Square = a square kernel; Vertical or Horizontal = one direction.\n\nExample: `HV`"
+blur_diff = "Kernel used on the removed detail before it is partly restored. Binomial (default) is soft; Mean is a plain average.\n\nExample: `Binomial`"
+blur = "Optional: wire a blur filter or a blurred clip to use instead of the default binomial blur."
+
+[method."vsrgtools.side_box_blur"]
+help = "Box blur that keeps edges: averages over eight half- and full-boxes around each pixel and keeps the one closest to the original, so it never blurs across an edge. Example: Radius `2`. Slower than Blur, box; flat areas smooth, edges stay crisp."
+
+[method."vsrgtools.side_box_blur".docs]
+radius = "Box size on each side in pixels; higher = smoother flat areas.\n\nExample: `2`"
+
+[method."vsrgtools.soothe"]
+help = "Calms a sharpened clip: averages the sharpening over neighbouring frames so it flickers less, leaving a steadier and slightly softer result. Connect the sharpened clip as the main clip and the clip before sharpening as Clip before sharpening. Example: Temporal strength `0.75` (default)."
+
+[method."vsrgtools.soothe".docs]
+src = "The clip before sharpening. Only the difference between it and the main clip is soothed."
+spatial_strength = "How much the sharpening is also evened out within each frame, 0 (off, default) to 1 (fully).\n\nExample: `0.3`"
+temporal_strength = "How much the sharpening is evened out over frames, 0 (off) to 1 (fully); higher = steadier and softer.\n\nExample: `0.75`"
+spatial_radius = "Size of the in-frame averaging when Spatial strength is above 0.\n\nExample: `1`"
+temporal_radius = "Frames on each side that are averaged; higher = steadier.\n\nExample: `1`"
+scenechange = "Does not average across a scene cut. Needs scene-change marks first (Clip Properties, Method Mark scene changes (sc_detect)).\n\nExample: on"
+
+[method."vsrgtools.unsharpen"]
+help = "Unsharp mask: adds back the difference between the clip and a blurred copy, scaled by Strength. The classic sharpener; pick Sharpen, gentle (CAS) for fewer halos. Example: Strength `0.5`. Default blur is Gaussian with Sigma 1.5; wire another blur into Blur to change the size of detail that is sharpened."
+
+[method."vsrgtools.unsharpen".docs]
+strength = "How much of the difference is added back; 0 = off, 1 = doubles it. Higher = sharper, with brighter halos. 0.3 to 1 is usual.\n\nExample: `0.5`"
+blur = "Optional blur filter or blurred clip. A wider blur sharpens coarser detail. Empty uses Blur, Gaussian with Sigma 1.5."
+
+[method."vsrgtools.vertical_cleaner"]
+help = "Vertical median: each pixel becomes the median of itself and the pixels above and below. Removes horizontal streaks and specks while keeping vertical lines. Example: Mode `Median`. It does nothing until a Mode other than None is picked."
+
+[method."vsrgtools.vertical_cleaner".docs]
+mode = "Median = strict vertical median. Preserving = keeps more detail (less aggressive). None = off. One mode, or one per plane in the Python box.\n\nExample: `Preserving`"
+
+# Deband and Grain
+
+[method."vsdeband.f3k_deband"]
+help = "Removes banding (visible steps in smooth gradients): in flat areas each pixel is replaced by the average of random nearby pixels, then optional grain hides what is left. The usual debander: fast, on the CPU. Example: Strength `192`, Grain `32`. Too high a Strength flattens faint texture such as skin, fog or film grain; protect detail with Detail mask for deband."
+
+[method."vsdeband.f3k_deband".docs]
+radius = "How far away (pixels, 1 to 255) the comparison pixels are picked. Larger catches wider bands; smaller is safer near edges. 16 is the default.\n\nExample: `16`"
+thr = "Strength: a pixel is smoothed when it differs from its comparison pixels by less than this. About 256 = one 8-bit level. One-level banding needs about 192, two-level about 384. One value or one per plane.\n\nExample: `192`\n\nHigher values flatten faint texture."
+grain = "Grain added afterwards to hide leftover banding, as luma then chroma; 0 = none. 64 is a light grain (about half an 8-bit level of noise).\n\nExample: `32, 16`"
+sample_mode = "Where comparison pixels are taken. Square (default) = four points around; Column or Row = a vertical or horizontal pair; Col row mean = both pairs averaged; Mean diff modes = extra checks that protect detail and texture.\n\nExample: `Square`"
+dynamic_grain = "On: the grain changes every frame, like film grain. Off (default): the same grain pattern on every frame, which compresses better.\n\nExample: on"
+blur_first = "On (default): compares the pixel with the average of the comparison pixels, smoothing more. Off: every comparison pixel must be within Strength, which keeps more detail.\n\nExample: off"
+seed = "Number for the random positions and grain; the same seed gives the same result. Empty uses 0.\n\nExample: `7`"
+random = "Distribution of the random positions and grain. Uniform (default) spreads evenly; Gaussian favours nearer positions; Old is the original version's.\n\nExample: `Uniform`"
+kwargs = "Extra settings of the vszip Deband plugin, as a Python dict, such as `keep_tv_range` (clamps to limited range).\n\nExample: `{'keep_tv_range': True}`"
+
+[method."vsdeband.placebo_deband"]
+help = "Debanding with libplacebo, the renderer behind mpv: several smoothing passes with a growing radius, gentle on detail. Pick it over Deband (f3k_deband) for smooth, natural gradients. Example: Strength `3`, Grain `4`. Needs a GPU with Vulkan; on a PC without one the whole run crashes."
+
+[method."vsdeband.placebo_deband".docs]
+radius = "Starting search radius in pixels; it grows with each iteration. Higher finds wider gradients; lower smooths more aggressively. 16 is the default.\n\nExample: `16`"
+thr = "Strength; higher removes more banding but progressively erases fine detail. 3 is the default. One value or one per plane.\n\nExample: `4`"
+grain = "Noise added afterwards to hide what is left; 0 = none. One value or one per plane. On HDR video grain can visibly change brightness; use little or none.\n\nExample: `4`"
+iterations = "Smoothing passes per pixel; more = stronger, with little gain beyond 4 (the default).\n\nExample: `2`"
+kwargs = "Extra settings of the placebo.Deband plugin, as a Python dict, such as `dither` (on by default, 8-bit output only).\n\nExample: `{'dither': False}`"
+
+[method."vsdeband.pfdeband"]
+help = "Debands a blurred copy, then adds that change onto the original, so detail the blur would remove stays. Gentler on fine texture than Deband (f3k_deband) alone. Example: Strength `128` with the default Gaussian blur prefilter. Changes beyond Darkening limit and Brightening limit are tapered off, which keeps edges safe."
+
+[method."vsdeband.pfdeband".docs]
+radius = "How far away (pixels) the debander looks for comparison pixels; larger catches wider bands. 16 is the default.\n\nExample: `16`"
+thr = "Debanding strength, on the same scale as the Strength of Deband (f3k_deband): about 256 = one 8-bit level. One value or one per plane.\n\nExample: `128`"
+prefilter = "Blur applied before debanding; the debander works on this blurred copy. Default is a light Gaussian blur (Sigma 0.5).\n\nExample: `MINBLUR`"
+ref = "Optional clip that decides where changes are limited. Empty compares with the prefiltered clip."
+dark_thr = "Largest darkening (0 to 255 scale) kept in full. Larger changes fade out and are dropped beyond Darkening limit times Fade width. 0.3 is the default.\n\nExample: `0.5`"
+bright_thr = "Largest brightening (0 to 255 scale) kept in full. Larger changes fade out and are dropped beyond Brightening limit times Fade width. 0.3 is the default.\n\nExample: `0.5`"
+elast = "How softly changes above the thresholds fade out; higher = wider fade. Must be at least 1; 2.5 is the default.\n\nExample: `2.5`"
+debander = "Empty: Deband (f3k_deband) does the debanding. For another debander, wire in a Deband and Grain node with that method and Use as filter on."
+
+[method."vsdeband.mdb_bilateral"]
+help = "Debands in three passes with shrinking radius, then limits the result against the original. A last resort for heavy, wide banding that Deband (f3k_deband) cannot remove. Example: Radius `22`, Strength `320`. Strong; check that faint texture survives."
+
+[method."vsdeband.mdb_bilateral".docs]
+radius = "Search distance in pixels for the middle pass; the passes use 4/3, 2/3 and 1/3 of it. 16 is the default.\n\nExample: `22`"
+thr = "Debanding strength, on the Strength scale of Deband (f3k_deband) (about 256 = one 8-bit level); the first pass uses half. 260 is the default.\n\nExample: `320`"
+dark_thr = "Largest darkening (0 to 255 scale) kept in full; larger changes fade out up to Darkening limit times Fade width. 0.6 is the default.\n\nExample: `0.6`"
+bright_thr = "Largest brightening (0 to 255 scale) kept in full; larger changes fade out up to Brightening limit times Fade width. 0.6 is the default.\n\nExample: `0.6`"
+elast = "How softly changes above the thresholds fade out; higher = wider fade. 3 is the default.\n\nExample: `3`"
+debander = "Empty: Deband (f3k_deband) does each pass. For another debander, wire in a Deband and Grain node with that method and Use as filter on."
+
+[method."vsdeband.deband_detail_mask"]
+help = "Makes a black-and-white mask of edges and texture (white) that debanding should leave alone, from luma. Use it in Planes, Method Merge through a mask (MaskedMerge): debanded clip first, original second, this mask as the mask. Example: Cut-offs `0.03, 0.06` protects more. The output is a mask, not a picture."
+
+[method."vsdeband.deband_detail_mask".docs]
+sigma = "Blur size used to find texture; larger counts coarser texture as detail. 1 is the default.\n\nExample: `1`"
+rxsigma = "Blur sizes of the retinex step, which evens out brightness so detail in dark scenes is found too. Usually left as is.\n\nExample: `50, 200, 350`"
+pf_sigma = "Blur applied first so grain and noise are not marked as detail; higher ignores more; 1 is the default.\n\nExample: `1.5`"
+brz = "Two cut-offs (0 to 1): the first for texture, the second for edges. Lower = more is marked as detail and protected.\n\nExample: `0.03, 0.06`"
+rg_mode = "remove_grain mode number that cleans specks from the finished mask; 17 is used when empty. 0 = no cleaning.\n\nExample: `17`"
+
+[method."vsdeband.Grainer"]
+help = "Adds grain or noise. Used to hide leftover banding after a debander, keep gradients from banding again when encoding, or give a film look. Example: Gauss, Strength `4, 1` for clearly visible grain. The start value `1.65, 0.65` gives light Gauss grain, about 1.3 levels of noise in luma at 8 bits."
+
+[method."vsdeband.Grainer".choices]
+GAUSS = "Fine, even noise like digital sensor grain. Strength is the variance in 8-bit levels: 1 gives noise of about one level, 4 about two. The usual pick."
+PERLIN = "Smooth, blobby noise in clumps, closer to film grain. Weaker than Gauss at the same Strength; clump size via `{'size': 3}` in More arguments."
+SIMPLEX = "Similar to PERLIN with fewer grid-shaped patterns. Clump size via `{'size': 3}` in More arguments."
+FBM_SIMPLEX = "Layered simplex noise with detail at several sizes, the most organic film look. Weakest at the same Strength; 1 is almost invisible."
+POISSON = "Brightness-dependent noise like real photon noise. Strength works in reverse: higher = less noise (1 is very strong, 4 about half). 0 adds nothing."
+PLACEBO = "libplacebo's grain. Needs a GPU with Vulkan (without one the whole run crashes), and Same grain every frame must be off."
+
+[method."vsdeband.Grainer".docs]
+strength = "Amount of grain, as luma then chroma; 0 = none. For Gauss 1 is faint, 4 clearly visible. POISSON works in reverse. The chroma value is shared by U and V.\n\nExample: `4, 1`"
+static = "On: the same grain pattern on every frame, like dirt on a lens. Off (default): new grain every frame, like film. Not allowed with PLACEBO.\n\nExample: off"
+scale = "Grain is made this many times smaller, then enlarged, giving coarser clumps; 1 = native size. One value, or width then height.\n\nExample: `1.5`"
+scaler = "Resizer that enlarges the grain when Grain size is not 1. Default: Lanczos, in two steps for big enlargements."
+temporal = "Blends each frame's grain with the average of nearby frames, so it changes more slowly: weight (0 to 1), then frames on each side. One number alone uses 1 frame.\n\nExample: `0.5, 2`"
+post_process = "Optional: wire a filter that is run on the grain layer before it is added."
+protect_edges = "On (default): no grain on pixels so dark or bright that the grain would push them past the clip's black or white limits. Off: grain everywhere.\n\nExample: on"
+protect_neutral_chroma = "Yes: no colour grain on grey (colourless) pixels, so greys stay grey. Default: yes for YUV when colour planes get grain.\n\nExample: `Yes`"
+luma_scaling = "If set, grain follows brightness: higher = less grain in bright areas, more kept in dark ones; negative reverses it. Empty = even grain everywhere.\n\nExample: `10`"
+kwargs = "Extra settings as a Python dict: `seed` (repeatable grain), `size` (clump size for PERLIN, SIMPLEX, FBM_SIMPLEX; default 2), `protect_edges_blend` (softer edge protection).\n\nExample: `{'seed': 1, 'size': 3}`"

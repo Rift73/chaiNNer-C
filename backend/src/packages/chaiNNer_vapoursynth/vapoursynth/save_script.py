@@ -28,9 +28,18 @@ from . import clips_group
     ],
     icon="MdSave",
     inputs=[
-        DirectoryInput(must_exist=False),
-        RelativePathInput("Script Name"),
-        *named_clip_inputs(),
+        DirectoryInput(must_exist=False).with_docs(
+            "The folder of the script; it is made when it does not exist.", hint=True
+        ),
+        RelativePathInput("Script Name").with_docs(
+            "The file name without .vpy, which may start with sub-folders. A file of"
+            " that name is replaced. Example: episode01",
+            hint=True,
+        ),
+        *named_clip_inputs(
+            "A clip of the script; the connected clips are its outputs 0, 1, 2 and so"
+            " on, in order."
+        ),
     ],
     outputs=[],
     side_effects=True,

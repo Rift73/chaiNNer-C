@@ -13,7 +13,11 @@ import {
 } from '../../common/Backend';
 import { EdgeData, InputData, NodeData, OutputId } from '../../common/common-types';
 import { formatExecutionErrorMessage } from '../../common/formatExecutionErrorMessage';
-import { withInputOverrides } from '../../common/input-override-common';
+import {
+    withClipViewer,
+    withInputOverrides,
+    withOnlyUpTo,
+} from '../../common/input-override-common';
 import { log } from '../../common/log';
 import { checkFeatures } from '../../common/nodes/checkFeatures';
 import { checkNodeValidity } from '../../common/nodes/checkNodeValidity';
@@ -85,6 +89,11 @@ export interface NodeProgress {
     total: number;
 }
 
+export type PreviewRender =
+    | { readonly kind: 'rendered' }
+    | { readonly kind: 'failed'; readonly message: string }
+    | { readonly kind: 'skipped' };
+
 interface ExecutionContextValue {
     run: () => Promise<void>;
     /**
@@ -93,6 +102,22 @@ interface ExecutionContextValue {
      * keep their values. Does nothing unless the executor is ready.
      */
     runWithOverrides: (overrides: ReadonlyMap<string, InputData>) => Promise<void>;
+    /**
+     * Renders what the node shows (its Preview at its own Seek) with the given input values of
+     * the node: only the node and the nodes it depends on run, and the node keeps what it shows
+     * although the overriding values change its items. The render is no run of the chain: the
+     * Run buttons and the execution number stay as they are, a failure is returned, not alerted,
+     * and a Run asked for meanwhile starts once the render ends. Skipped while a run goes on or
+     * waits, or another render does.
+     */
+    renderPreview: (nodeId: string, overrides: InputData) => Promise<PreviewRender>;
+    /**
+     * Shows the clip of the given output of the node in the viewer, as a Preview Clips node fed by
+     * it shows it, without adding one to the chain: only the node and the nodes it depends on run.
+     * The viewer it opens for the node reloads at the node's next preview. Does nothing unless the
+     * executor is ready.
+     */
+    previewClip: (nodeId: string, outputId: OutputId) => Promise<void>;
     pause: () => Promise<void>;
     kill: () => Promise<void>;
     status: ExecutionStatus;
@@ -218,6 +243,13 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     const statusRef = useRef(status);
     statusRef.current = status;
     const runsInFlightRef = useRef(0);
+    // The Preview render in flight (renderPreview), settled when it ends; whether a run waits for
+    // it; and its failure as the error event told it, which raises no alert.
+    const previewRef = useRef<Promise<void>>();
+    const runAskedRef = useRef(false);
+    const previewFailureRef = useRef<string>();
+    // Error events of renders that ended before their event came.
+    const lateFailuresRef = useRef(0);
 
     const [executionNumber, setExecutionNumber] = useState(1);
 
@@ -257,6 +289,8 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             // A run this window started ends with the reply to its request. A status reply can say
             // ready before that: asked after the run started, it can reach the worker first.
             if (executorStatus === 'ready' && runsInFlightRef.current > 0) return;
+            // a Preview render is no run of the chain
+            if (previewRef.current !== undefined) return;
             const statusMapping = {
                 running: ExecutionStatus.RUNNING,
                 paused: ExecutionStatus.PAUSED,
@@ -289,6 +323,9 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     const executingIteratorNodesRef = useRef<ReadonlySet<string>>(EMPTY_SET);
     // The nodes whose inputs the running chain overrides (runWithOverrides).
     const overriddenNodesRef = useRef<ReadonlySet<string>>(EMPTY_SET);
+    // The node whose Preview the running chain renders (renderPreview), or whose clip it shows
+    // (previewClip).
+    const shownNodeRef = useRef<string>();
 
     const processSingleNode = (nodeId: string, events: NodeEvents[]) => {
         let executionStatus;
@@ -315,6 +352,11 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                     broadcastData = data.data;
                     types = data.types;
                     sequenceTypes = data.sequenceTypes ?? undefined;
+                } else if (nodeId === shownNodeRef.current) {
+                    // The run renders what the node shows for its own Seek, Frame Count and FPS:
+                    // only the length of its frames is the overriding range's.
+                    broadcastData = data.data;
+                    types = data.types;
                 }
             } else {
                 progress = data;
@@ -399,6 +441,21 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
 
     useBackendEventSourceListener(eventSource, 'execution-error', (data) => {
         if (data) {
+            const formatted = formatExecutionErrorMessage(
+                data,
+                schemata,
+                (label, value) => `• ${label}: ${value}`,
+                (nodeId) => getNodes().find((n) => n.id === nodeId)?.data.nodeName
+            );
+            // A Preview render's failure goes to the render, which reports it once for a drag.
+            if (previewRef.current !== undefined) {
+                previewFailureRef.current = formatted;
+                return;
+            }
+            if (lateFailuresRef.current > 0) {
+                lateFailuresRef.current -= 1;
+                return;
+            }
             if (statusRef.current === ExecutionStatus.KILLING) {
                 // Stop is still ending this run, and the user asked for it to end.
                 log.warn(`A stopped run failed: ${data.exception}`);
@@ -406,12 +463,7 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             }
             sendAlert({
                 type: AlertType.ERROR,
-                message: formatExecutionErrorMessage(
-                    data,
-                    schemata,
-                    (label, value) => `• ${label}: ${value}`,
-                    (nodeId) => getNodes().find((n) => n.id === nodeId)?.data.nodeName
-                ),
+                message: formatted,
                 trace: data.exceptionTrace,
             });
             clearNodeStatusMap();
@@ -458,7 +510,8 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         if (lastChangesRef.current === currentChanges) return;
         lastChangesRef.current = currentChanges;
 
-        if (status === ExecutionStatus.RUNNING) {
+        // a run that renders a node's Preview follows the changes that asked for it
+        if (status === ExecutionStatus.RUNNING && shownNodeRef.current === undefined) {
             sendToast({
                 status: 'warning',
                 description:
@@ -480,14 +533,33 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     }, [status, nodeChanges, edgeChanges, sendToast]);
 
     const runNodes = useCallback(
-        async (overrides: ReadonlyMap<string, InputData>) => {
+        async (
+            overrides: ReadonlyMap<string, InputData>,
+            shownNodeId?: string,
+            clipOutput?: OutputId
+        ): Promise<string | undefined> => {
+            // A Preview render (a shown node, no viewer) leaves the Run buttons alone and returns
+            // its failure instead of alerting it.
+            const isPreview = shownNodeId !== undefined && clipOutput === undefined;
+            let failure: string | undefined;
+            const fail = (message: string) => {
+                failure ??= message;
+                if (!isPreview) sendAlert({ type: AlertType.ERROR, message });
+            };
             flushInputChanges();
             // The overriding values go into copies of the nodes: the editor's nodes and their
             // input hashes keep theirs.
             const overridden = withInputOverrides(getNodes(), getEdges(), overrides);
+            let part =
+                shownNodeId === undefined
+                    ? overridden
+                    : withOnlyUpTo(overridden.nodes, overridden.edges, shownNodeId);
+            if (shownNodeId !== undefined && clipOutput !== undefined) {
+                part = withClipViewer(part.nodes, part.edges, shownNodeId, clipOutput);
+            }
             const { nodes, edges, report } = optimizeChain(
-                overridden.nodes,
-                overridden.edges,
+                part.nodes,
+                part.edges,
                 schemata,
                 passthrough
             );
@@ -508,14 +580,14 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                 } else {
                     message = i18n.t('execution.noNodes', 'There are no nodes to run.');
                 }
-                sendAlert({ type: AlertType.ERROR, message });
-                return;
+                fail(message);
+                return failure;
             }
 
             // check for static errors
             const invalidNodes = nodes.flatMap((node) => {
                 // The editor's types describe a node's own values, not the overriding ones (a
-                // saved range of In after Out is invalid, the overriding one-frame range is
+                // saved range of Start after End is invalid, the overriding one-frame range is
                 // not): an overridden node is checked without them, and the backend checks the
                 // values it runs.
                 const functionInstance = overrides.has(node.data.id)
@@ -542,14 +614,13 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
             });
             if (invalidNodes.length > 0) {
                 const reasons = invalidNodes.join('\n');
-                sendAlert({
-                    type: AlertType.ERROR,
-                    message: `${i18n.t(
+                fail(
+                    `${i18n.t(
                         'execution.invalidNodes',
                         'There are invalid nodes in the editor. Please fix them before running.'
-                    )}\n${reasons}`,
-                });
-                return;
+                    )}\n${reasons}`
+                );
+                return failure;
             }
 
             // find iterator nodes for later
@@ -558,13 +629,16 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                     .filter((n) => schemata.get(n.data.schemaId).kind === 'generator')
                     .map((n) => n.data.id)
             );
-            executingIteratorNodesRef.current = iteratorNodeIds;
+            if (!isPreview) {
+                executingIteratorNodesRef.current = iteratorNodeIds;
+                setChainProgress(getInitialChainProgress(nodes, schemata));
+            }
             overriddenNodesRef.current = new Set(overrides.keys());
-            setChainProgress(getInitialChainProgress(nodes, edges, schemata));
+            shownNodeRef.current = shownNodeId;
 
             runsInFlightRef.current += 1;
             try {
-                setLocalStatus(ExecutionStatus.RUNNING);
+                if (!isPreview) setLocalStatus(ExecutionStatus.RUNNING);
 
                 const data = toBackendJson(nodes, edges, schemata);
                 const response = await backend.run({
@@ -572,37 +646,41 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                     options: packageSettings,
                     sendBroadcastData: true,
                 });
-                if (response.type === 'error') {
-                    // no need to alert here, because the error has already been handled by the queue
-                }
+                // An 'error' reply needs no alert here: the execution-error event reports it.
                 if (response.type === 'already-running') {
-                    sendAlert({
-                        type: AlertType.ERROR,
-                        message: i18n.t(
+                    fail(
+                        i18n.t(
                             'execution.previousStillRunning',
                             'Cannot start because a previous executor is still running.'
-                        ),
-                    });
+                        )
+                    );
+                } else if (response.type === 'error' && isPreview) {
+                    // its event may come after the reply: it is the render's too
+                    if (previewFailureRef.current === undefined) lateFailuresRef.current += 1;
+                    failure ??= previewFailureRef.current ?? response.exception;
                 }
             } catch (err: unknown) {
                 if (!(err instanceof CancelError)) {
-                    sendAlert({
-                        type: AlertType.ERROR,
-                        message: i18n.t(
+                    fail(
+                        i18n.t(
                             'execution.unexpectedErrorDetail',
                             'An unexpected error occurred: {{error}}',
                             { error: String(err) }
-                        ),
-                    });
+                        )
+                    );
                 }
             } finally {
                 runsInFlightRef.current -= 1;
                 nodeEventBacklog.processAll();
                 overriddenNodesRef.current = EMPTY_SET;
-                clearNodeStatusMap();
-                setLocalStatus(ExecutionStatus.READY);
-                clearManualTypes(iteratorNodeIds);
+                shownNodeRef.current = undefined;
+                if (!isPreview) {
+                    clearNodeStatusMap();
+                    setLocalStatus(ExecutionStatus.READY);
+                    clearManualTypes(iteratorNodeIds);
+                }
             }
+            return failure;
         },
         [
             flushInputChanges,
@@ -639,10 +717,24 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         } catch (err) {
             sendAlert({
                 type: AlertType.ERROR,
-                message: i18n.t('execution.unexpectedError', 'An unexpected error occurred.'),
+                message: `${i18n.t(
+                    'execution.unexpectedError',
+                    'An unexpected error occurred.'
+                )}\n\n${String(err)}`,
             });
         }
     }, [backend, sendAlert, setLocalStatus]);
+
+    // A run waits for the Preview render in flight, and no render starts while it waits.
+    const afterPreview = useCallback(async (start: () => Promise<unknown>) => {
+        runAskedRef.current = true;
+        try {
+            await previewRef.current;
+            await start();
+        } finally {
+            runAskedRef.current = false;
+        }
+    }, []);
 
     const run = useCallback(async () => {
         if (!isBackendReady) {
@@ -652,10 +744,10 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         if (status === ExecutionStatus.PAUSED) {
             await resume();
         } else {
-            await runNodes(EMPTY_MAP);
+            await afterPreview(() => runNodes(EMPTY_MAP));
             setExecutionNumber((prev) => prev + 1);
         }
-    }, [isBackendReady, resume, runNodes, status, setExecutionNumber]);
+    }, [isBackendReady, resume, runNodes, status, setExecutionNumber, afterPreview]);
 
     const runWithOverrides = useCallback(
         async (overrides: ReadonlyMap<string, InputData>) => {
@@ -663,10 +755,46 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
                 // a paused run is not resumed with other values, and a run is not started twice
                 return;
             }
-            await runNodes(overrides);
+            await afterPreview(() => runNodes(overrides));
             setExecutionNumber((prev) => prev + 1);
         },
-        [isBackendReady, runNodes, status, setExecutionNumber]
+        [isBackendReady, runNodes, status, setExecutionNumber, afterPreview]
+    );
+
+    const renderPreview = useCallback(
+        async (nodeId: string, overrides: InputData): Promise<PreviewRender> => {
+            if (
+                !isBackendReady ||
+                status !== ExecutionStatus.READY ||
+                runAskedRef.current ||
+                previewRef.current !== undefined
+            ) {
+                return { kind: 'skipped' };
+            }
+            let settle = () => {};
+            previewRef.current = new Promise<void>((resolve) => {
+                settle = resolve;
+            });
+            previewFailureRef.current = undefined;
+            try {
+                const failure = await runNodes(new Map([[nodeId, overrides]]), nodeId);
+                return failure === undefined
+                    ? { kind: 'rendered' }
+                    : { kind: 'failed', message: failure };
+            } finally {
+                previewRef.current = undefined;
+                settle();
+            }
+        },
+        [isBackendReady, runNodes, status]
+    );
+
+    const previewClip = useCallback(
+        async (nodeId: string, outputId: OutputId) => {
+            if (!isBackendReady || status !== ExecutionStatus.READY) return;
+            await afterPreview(() => runNodes(EMPTY_MAP, nodeId, outputId));
+        },
+        [isBackendReady, runNodes, status, afterPreview]
     );
 
     const pause = useCallback(async () => {
@@ -683,7 +811,10 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         } catch (err) {
             sendAlert({
                 type: AlertType.ERROR,
-                message: i18n.t('execution.unexpectedError', 'An unexpected error occurred.'),
+                message: `${i18n.t(
+                    'execution.unexpectedError',
+                    'An unexpected error occurred.'
+                )}\n\n${String(err)}`,
             });
         }
     }, [backend, sendAlert, setLocalStatus]);
@@ -717,7 +848,10 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
         } catch (err) {
             sendAlert({
                 type: AlertType.ERROR,
-                message: i18n.t('execution.unexpectedError', 'An unexpected error occurred.'),
+                message: `${i18n.t(
+                    'execution.unexpectedError',
+                    'An unexpected error occurred.'
+                )}\n\n${String(err)}`,
             });
         }
         setNodeProgress({});
@@ -783,6 +917,8 @@ export const ExecutionProvider = memo(({ children }: React.PropsWithChildren<{}>
     const value = useMemoObject<ExecutionContextValue>({
         run,
         runWithOverrides,
+        renderPreview,
+        previewClip,
         pause,
         kill,
         status,

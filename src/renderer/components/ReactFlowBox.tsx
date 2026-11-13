@@ -158,7 +158,7 @@ export const ReactFlowBox = memo(({ wrapperRef, nodeTypes, edgeTypes }: ReactFlo
             }
         }
 
-        return [displayNodes, displayEdges, isSnapToGrid && snapToGridAmount];
+        return [displayNodes, displayEdges];
     }, [nodes, edges, isSnapToGrid, snapToGridAmount]);
 
     // Node-on-edge collision detection
@@ -312,8 +312,7 @@ export const ReactFlowBox = memo(({ wrapperRef, nodeTypes, edgeTypes }: ReactFlo
     );
 
     const onNodeDrag = useCallback(
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        (event: React.MouseEvent, node: Node<NodeData>, _nodes: Node[]) => {
+        (event: React.MouseEvent, node: Node<NodeData>) => {
             if (altPressed) {
                 const mousePosition = {
                     // React flow's type for the event is incorrect. This value exists.
@@ -377,8 +376,7 @@ export const ReactFlowBox = memo(({ wrapperRef, nodeTypes, edgeTypes }: ReactFlo
     );
 
     const onSelectionDragStop = useCallback(
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        (event: React.MouseEvent, nNodes: Node<NodeData>[]) => {
+        (event: React.MouseEvent) => {
             onNodeDragStop(event, null);
         },
         [onNodeDragStop]
@@ -454,14 +452,6 @@ export const ReactFlowBox = memo(({ wrapperRef, nodeTypes, edgeTypes }: ReactFlo
         },
         [createNode, wrapper, reactFlowInstance, schemata, sendAlert, changeEdges, changeNodes]
     );
-
-    // TODO: I want to get this to work at some point but for now it needs to not exist
-    // const onEdgeUpdate = useCallback(
-    //     (oldEdge: Edge, newConnection: Connection) => {
-    //         return setEdges((els) => updateEdge(oldEdge, newConnection, els));
-    //     },
-    //     [setEdges]
-    // );
 
     const { onConnectStart, onConnectStop, onPaneContextMenu } = usePaneNodeSearchMenu();
 

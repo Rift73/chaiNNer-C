@@ -13,6 +13,7 @@ from .native import (
     check,
     empty_ordered,
     f32,
+    image_shape,
     lib,
     numpy_order,
     ordered_layout,
@@ -61,17 +62,9 @@ for _name in ("assemble", "flip", "shift", "bbox", "crop"):
     getattr(_lib, "cn_channels_" + _name).restype = ct.c_int
 
 
-def _shape(image: object) -> tuple[int, int, int]:
-    if not isinstance(image, np.ndarray) or image.dtype != np.float32:
-        raise TypeError("C image kernels require a native-endian float32 NumPy array")
-    if image.ndim not in (2, 3) or any(size == 0 for size in image.shape):
-        raise ValueError("Expected a nonempty two- or three-dimensional image")
-    return image.shape[0], image.shape[1], 1 if image.ndim == 2 else image.shape[2]
-
-
 def _three_dimensional(value: np.ndarray) -> np.ndarray:
-    """A checked image (_shape) with a channel axis, np.atleast_3d's view."""
-    _shape(value)
+    """A checked image (image_shape) with a channel axis, np.atleast_3d's view."""
+    image_shape(value)
     return value if value.ndim == 3 else value[:, :, np.newaxis]
 
 
@@ -92,7 +85,7 @@ def _layout(
     3), which converts any other channel count with cv2 (C order)."""
     if isinstance(value, Color):
         return ordered_layout((height, width, value.channels), (0, 1, 2))
-    if rgb and _shape(value)[2] != 3:
+    if rgb and image_shape(value)[2] != 3:
         return ordered_layout((height, width, 3), (0, 1, 2))
     return _three_dimensional(value)
 
@@ -109,7 +102,7 @@ def _assemble(
     Interleaved and planar inputs are read in place; a planar result is written
     one plane at a time."""
     first = next(value for value in inputs if isinstance(value, np.ndarray))
-    height, width, _ = _shape(first)
+    height, width, _ = image_shape(first)
     readable = {
         index: pixel_source(_three_dimensional(value))
         for index, value in enumerate(inputs)
@@ -119,7 +112,7 @@ def _assemble(
     for output_channel, (input_index, input_channel) in enumerate(selections):
         value = inputs[input_index]
         if isinstance(value, np.ndarray):
-            h, w, channels = _shape(value)
+            h, w, channels = image_shape(value)
             if (h, w) != (height, width) or not 0 <= input_channel < channels:
                 raise ValueError("Invalid source dimensions or channel selection")
             array, pixel, plane = readable[input_index]
@@ -153,7 +146,9 @@ def _assemble(
 
 
 def _same_size(inputs: tuple[np.ndarray | Color, ...], error: str) -> None:
-    shapes = [_shape(value)[:2] for value in inputs if isinstance(value, np.ndarray)]
+    shapes = [
+        image_shape(value)[:2] for value in inputs if isinstance(value, np.ndarray)
+    ]
     if not shapes:
         raise ValueError(error)
     assert all(shape == shapes[0] for shape in shapes), (
@@ -173,11 +168,12 @@ def combine_rgba(
         "At least one channels must be an image, but all given channels are colors.",
     )
     if any(
-        (_shape(v)[2] if isinstance(v, np.ndarray) else v.channels) != 1 for v in inputs
+        (image_shape(v)[2] if isinstance(v, np.ndarray) else v.channels) != 1
+        for v in inputs
     ):
         raise ValueError("All channel images must have a single channel")
     # Upstream's np.stack on a new channel axis: np.concatenate's order K.
-    h, w = next(_shape(v)[:2] for v in inputs if isinstance(v, np.ndarray))
+    h, w = next(image_shape(v)[:2] for v in inputs if isinstance(v, np.ndarray))
     order = numpy_order(*(_layout(value, h, w) for value in inputs))
     return _assemble(inputs, [(i, 0) for i in range(4)], order)
 
@@ -188,14 +184,14 @@ def combine_rgb_alpha(rgb: np.ndarray | Color, alpha: np.ndarray | Color) -> np.
         inputs,
         "At least one input must be an image, but both RGB and Alpha are colors.",
     )
-    channels = _shape(rgb)[2] if isinstance(rgb, np.ndarray) else rgb.channels
+    channels = image_shape(rgb)[2] if isinstance(rgb, np.ndarray) else rgb.channels
     alpha_channels = (
-        _shape(alpha)[2] if isinstance(alpha, np.ndarray) else alpha.channels
+        image_shape(alpha)[2] if isinstance(alpha, np.ndarray) else alpha.channels
     )
     if channels not in (1, 3, 4) or alpha_channels != 1:
         raise ValueError("Expected grayscale/RGB/RGBA color and a single alpha channel")
     # Upstream's np.dstack((as_target_channels(rgb, 3, narrowing=True), alpha)).
-    h, w = next(_shape(v)[:2] for v in inputs if isinstance(v, np.ndarray))
+    h, w = next(image_shape(v)[:2] for v in inputs if isinstance(v, np.ndarray))
     order = numpy_order(_layout(rgb, h, w, rgb=True), _layout(alpha, h, w))
     return _assemble(
         inputs, [(0, 0 if channels == 1 else i) for i in range(3)] + [(1, 0)], order
@@ -206,12 +202,12 @@ def merge_channels(*images: np.ndarray | None) -> np.ndarray:
     inputs = tuple(image for image in images if image is not None)
     if not inputs:
         raise ValueError("At least one input image is required")
-    h, w = _shape(inputs[0])[:2]
-    assert all(_shape(image)[:2] == (h, w) for image in inputs), (
+    h, w = image_shape(inputs[0])[:2]
+    assert all(image_shape(image)[:2] == (h, w) for image in inputs), (
         "All images to be merged must be the same resolution"
     )
     selections = [
-        (i, c) for i, image in enumerate(inputs) for c in range(_shape(image)[2])
+        (i, c) for i, image in enumerate(inputs) for c in range(image_shape(image)[2])
     ][:4]
     # Upstream's np.concatenate on the channel axis, whose first four channels
     # are kept; two channels go through cv2.merge((b, g, g)) (C order).
@@ -224,7 +220,7 @@ def merge_channels(*images: np.ndarray | None) -> np.ndarray:
 
 
 def flip(image: np.ndarray, axis: int) -> np.ndarray:
-    height, width, channels = _shape(image)
+    height, width, channels = image_shape(image)
     if axis == 2:
         return image
     if axis not in (-1, 0, 1):
@@ -237,7 +233,7 @@ def flip(image: np.ndarray, axis: int) -> np.ndarray:
 
 
 def shift(image: np.ndarray, dx: int, dy: int, fill: int) -> np.ndarray:
-    height, width, channels = _shape(image)
+    height, width, channels = image_shape(image)
     if fill == 2:
         dx, dy = dx % width, dy % height
         if dx == 0 and dy == 0:
@@ -290,7 +286,7 @@ def shift(image: np.ndarray, dx: int, dy: int, fill: int) -> np.ndarray:
 def _bbox(
     image: np.ndarray, channel: int, threshold: float
 ) -> tuple[int, int, int, int]:
-    height, width, channels = _shape(image)
+    height, width, channels = image_shape(image)
     if not 0 <= channel < channels:
         raise ValueError("Invalid bounding-box channel")
     array, pixel, plane = pixel_source(_three_dimensional(image))
@@ -311,7 +307,7 @@ def _bbox(
 
 
 def bounding_box(image: np.ndarray, threshold: float) -> tuple[int, int, int, int]:
-    if _shape(image)[2] != 1:
+    if image_shape(image)[2] != 1:
         raise ValueError("Expected a grayscale bounding-box mask")
     bounds = _bbox(image, 0, min(threshold / 100, 0.99999))
     if bounds[2] == 0:
@@ -320,7 +316,7 @@ def bounding_box(image: np.ndarray, threshold: float) -> tuple[int, int, int, in
 
 
 def crop_to_content(image: np.ndarray, threshold: float) -> np.ndarray:
-    height, width, channels = _shape(image)
+    height, width, channels = image_shape(image)
     if channels < 4:
         return image
     x, y, crop_width, crop_height = _bbox(image, 3, min(threshold / 100, 0.99999))
@@ -360,7 +356,7 @@ def concatenate_channels(*images: np.ndarray) -> np.ndarray:
     """Join all image channels without Merge Channels' four-channel UI limit."""
     if not images:
         raise ValueError("At least one input image is required")
-    shapes = [_shape(image) for image in images]
+    shapes = [image_shape(image) for image in images]
     if any(shape[:2] != shapes[0][:2] for shape in shapes):
         raise ValueError("Channel images must have matching dimensions")
     # Upstream's np.dstack and np.concatenate on the channel axis.

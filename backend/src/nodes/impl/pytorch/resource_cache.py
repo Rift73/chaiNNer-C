@@ -1,4 +1,4 @@
-"""One exclusively leased model bundle per node context, for one chain only.
+"""One exclusively leased model bundle per node, for one chain only.
 
 No global model lifetime, file-content hashing, device transfer or model logic
 is hidden here. Callers choose keys, construction, reset and retention policy.
@@ -10,11 +10,11 @@ from collections.abc import Callable, Hashable, Iterator
 from contextlib import contextmanager
 from threading import RLock
 from typing import Any, TypeVar
-from weakref import WeakKeyDictionary
+from weakref import WeakValueDictionary
 
 from sanic.log import logger
 
-from api import NodeContext
+from api import NodeContext, NodeId
 
 T = TypeVar("T")
 
@@ -34,7 +34,10 @@ class _Entry:
             self.retain = False
 
 
-_ENTRIES: WeakKeyDictionary[NodeContext, _Entry] = WeakKeyDictionary()
+# By node, not by context: an engine computes a node ahead for a look-ahead with a copy
+# of its context. The chain cleanup each lease registers holds the entry until the
+# chain ends; then it goes. Two runs of one node at once take turns on its lock.
+_ENTRIES: WeakValueDictionary[NodeId, _Entry] = WeakValueDictionary()
 _ENTRIES_LOCK = RLock()
 
 
@@ -48,10 +51,10 @@ def lease_resource(
     reset: Callable[[T], None] | None = None,
 ) -> Iterator[T]:
     with _ENTRIES_LOCK:
-        entry = _ENTRIES.get(context)
+        entry = _ENTRIES.get(context.node_id)
         if entry is None:
             entry = _Entry()
-            _ENTRIES[context] = entry
+            _ENTRIES[context.node_id] = entry
     # Register on every invocation: the executor may rerun with the same context
     # after draining its cleanup set. The bound method compares/hash-deduplicates.
     context.add_cleanup(entry.clear, after="chain")

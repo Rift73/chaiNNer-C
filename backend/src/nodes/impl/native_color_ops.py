@@ -24,7 +24,6 @@ def _api():
         "cn_color_linear": [fp, fp, size, real, real],
         "cn_hls_adjust": [fp, size, real, real],
         "cn_threshold_f32": [fp, fp, fp, size, integer, real, real],
-        "cn_quantize_u8": [fp, up, size],
         "cn_auto_threshold": [fp, size, size, integer, ct.POINTER(integer)],
         "cn_adaptive_apply": [up, up, up, size, integer, integer, integer],
         "cn_material_f32": [fp, fp, fp, fp, size, integer, real, real],
@@ -105,13 +104,6 @@ def threshold(
     return result
 
 
-def quantize_u8(image: np.ndarray) -> np.ndarray:
-    source, _ = _image(image)
-    result = np.empty(source.shape, dtype=np.uint8)
-    check(_api().cn_quantize_u8(ptr(source), _u8ptr(result), source.size))
-    return result
-
-
 def auto_threshold(image: np.ndarray, method: int) -> float:
     source, channels = _image(image)
     if channels > 7:
@@ -136,7 +128,7 @@ def adaptive_threshold(
         raise ValueError("Invalid adaptive threshold shape or parameters")
     # Reuse the checked C conversion, including the original NumPy floating
     # warnings/errors for nonfinite and overflowing registered float32 inputs.
-    source_u8 = converted_pixels(source, 8, normalized=True)
+    source_u8 = converted_pixels(source, 8)
     assert source_u8 is not None
     source_u8 = source_u8.reshape(source.shape[:2])
     if method == 0:

@@ -1,6 +1,6 @@
 /* Port of regex-syntax 0.7.2 (src/hir/mod.rs, src/parser.rs, src/utf8.rs, src/lib.rs), MIT OR Apache-2.0. */
-/* The HIR contract between the regex front end (X1: parse, ast, error, translate, hir,
- * interval, unicode, utf8 and unicode_tables/) and the engine (X2: compile, prog, pikevm,
+/* The HIR contract between the regex front end (parse, ast, error, translate, hir,
+ * interval, unicode, utf8 and unicode_tables/) and the engine (compile, prog, pikevm,
  * backtrack, exec, iter, prefilter, position, dfa). It is private to chainner_regex.lib:
  * chainner_ext and _chainner_graph use chainner_regex.h only.
  *
@@ -18,7 +18,7 @@
  * - Rust aborts on allocation failure. C returns CHN_HIR_ERROR_NOMEM instead, frees what
  *   it consumed and leaves every output empty.
  * - The regex 1.8.4 engine reads only the Properties marked "engine:" below; the rest
- *   exist because X1 computes Properties inductively, exactly as Rust does. */
+ *   exist because the front end computes Properties inductively, exactly as Rust does. */
 #ifndef CHAINNER_HIR_H
 #define CHAINNER_HIR_H
 #include <stdbool.h>
@@ -31,8 +31,7 @@ extern "C" {
 typedef enum chn_hir_status {
     CHN_HIR_OK = 0,
     CHN_HIR_ERROR_SYNTAX = 1,        /* regex_syntax::Error: Parse(ast::Error) | Translate(hir::Error) */
-    CHN_HIR_ERROR_NOMEM = 2,         /* allocation failure (Rust: abort) */
-    CHN_HIR_ERROR_UNIMPLEMENTED = 3  /* X0 scaffold stub; never returned once X1 lands */
+    CHN_HIR_ERROR_NOMEM = 2          /* allocation failure (Rust: abort) */
 } chn_hir_status;
 
 /* String / Box<str>: UTF-8, len bytes, malloc'd with one trailing NUL that len does not

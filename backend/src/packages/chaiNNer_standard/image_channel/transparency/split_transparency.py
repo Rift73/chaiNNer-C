@@ -24,10 +24,8 @@ from .. import transparency_group
 def split_transparency_node(img: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     c = get_h_w_c(img)[2]
     if c == 3:
-        # Performance optimization:
-        # Subsequent operations will be faster since the underlying array will
-        # be contiguous in memory. The speed up can anything from nothing to
-        # 5x faster depending on the operation.
+        # RGB passes as it is rather than as a slice of an RGBA copy: later nodes run
+        # up to 5x faster on the contiguous array.
         return img, np.ones(img.shape[:2], dtype=img.dtype)
 
     img = as_target_channels(img, 4)

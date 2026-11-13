@@ -60,9 +60,6 @@ def timed_supplier(supplier: Callable[[], T]) -> Callable[[], tuple[T, float]]:
     return wrapper
 
 
-T = TypeVar("T")
-
-
 def combine_sets(set_list: list[set[T]]) -> list[set[T]]:
     """
     Combines sets in a list which have at least one intersecting value
@@ -70,11 +67,6 @@ def combine_sets(set_list: list[set[T]]) -> list[set[T]]:
     Example:
         in: [{1, 2}, {1, 4}, {3}, {3, 5}, {6}]
         out: [{1, 2, 4}, {3, 5}, {6}]
-    Note:
-        This code was written by ChatGPT. I tried to make my own algorithm for this, as well as
-        find resources to help online, and was unsuccessful. From all my testing, this implementation
-        seems to be both correct and performant. However, if you are familiar with this problem
-        and you know a better way to do this, please submit a PR with a modification.
     """
     sets = [set(x) for x in set_list]
     combined = True

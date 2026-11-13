@@ -1,4 +1,4 @@
-"""Golden manifests of the SP4 kernels, run through a DLL's C entries (SP4 spec 4.4).
+"""Golden manifests of the native kernels, run through a DLL's C entries.
 
 Usage:
   python native/tools/golden_kernels.py write --dll DLL --kernel K --out FILE
@@ -111,8 +111,7 @@ class SpecialSet(TypedDict):
 
 # A case's set goes into src, and into the convolution kernel as case() says.
 # The single-payload sets list their defining non-finite values first, so the
-# smallest arrays (one or six special positions) hold them too (controller
-# ruling, 2026-10-03).
+# smallest arrays (one or six special positions) hold them too.
 SPECIALS: dict[str, SpecialSet] = {
     "clean": {"payloads": "single", "values": []},
     "edges": {"payloads": "single", "values": list(_EDGES)},
@@ -130,13 +129,13 @@ SPECIALS: dict[str, SpecialSet] = {
             "0xff800000",
         ],
     },
-    # SP4b D3 (first used by lens_power, Task 3b): denormals only, no +-0, NaN or inf.
+    # First used by lens_power: denormals only, no +-0, NaN or inf.
     "denorm": {
         "payloads": "single",
         "values": ["0x00000001", "0x007fffff", "0x80000001", "0x807fffff"],
     },
 }
-# SP4a's sets. The matrices and sweeps of the kernels written before denorm draw from
+# The original sets. The matrices and sweeps of the kernels written before denorm draw from
 # these, so their manifests and sweeps stay as written.
 SP4A_SETS = ("clean", "edges", "nan", "snan", "inf", "mixed")
 
@@ -248,11 +247,11 @@ KERNEL_ENTRIES = {
     "blend": (BLEND_IMAGES, BLEND_MODE),
     "tail": (TILE_ENTRY, STORE_ENTRY, MULTIPLY_ENTRY, NORMAL_ENTRY, CAPTION_ENTRY),
 }
-# convolution_border (SP4b D8): the hoisted borders' shapes. The 61-tap forms at
+# convolution_border: the hoisted borders' shapes. The 61-tap forms at
 # widths (heights) 58-66 have interiors 0, 0, 0, 1, ..., 6 pixels wide; the plane
 # has 13,467 outputs at padding 0: 4 chunks of 3367/3366 at B3's grain 4096 (the
 # manifest's), whose starts are off the 8-lane grid of its 201-wide rows, and one
-# chunk at the convolution grain 16384 (SP4b Task 3e).
+# chunk at the convolution grain 16384.
 BORDER_FORMS = ((1, 61), (61, 1), (3, 3), (11, 11), (5, 5))
 BORDER_SETS = ("clean", "nan", "inf", "edges", "mixed")
 REACH_SIZES = tuple(range(58, 67))
@@ -283,7 +282,7 @@ POWER_EXPONENTS = {"fifth": "0x3e4ccccd", "five": "0x40a00000", "one": "0x3f8000
 POWER_SETS = ("clean", "edges", "nan", "denorm")
 POWER_CHANNELS = (1, 3, 4)
 POWER_PIXELS = 196_608
-# morphology (SP4b Task 4): each entry's arguments after (src, out, h, w, c), in call
+# morphology: each entry's arguments after (src, out, h, w, c), in call
 # order, and their manifest values. cn_morphology_complete's shape is 0 (rectangle),
 # 1 (cross) or 2 (ellipse), lanes OpenCV's vector width mirror; cn_filter_morphology's
 # cross is 0 (rectangle) or 1. The node forms: Dilate's ellipse through
@@ -311,7 +310,7 @@ MORPH_SHAPE = (37, 41, 3)
 MORPH_BENCH = (384, 512, 3)  # the bench's 512x384 images
 # 125,967 elements: the ellipse combine ran 8 chunks (7 of 15,746, 1 of 15,745) at
 # B3's grain 16,384 (the manifest's) and runs 2 (62,984 and 62,983) at the combine
-# grain 65,536 (SP4b Task 4b); the cross merge (grain 65,536) runs 2. No chunk
+# grain 65,536; the cross merge (grain 65,536) runs 2. No chunk
 # boundary falls on a row start of the 633-wide rows.
 MORPH_CHUNKS = (199, 211, 3)
 # cn_image_exceptional: one word at index 0 or count - 1 of a unit src (no other
@@ -335,7 +334,7 @@ EXCEPTIONAL_WORDS = (
 )
 EXCEPTIONAL_COUNTS = (*range(1, 34), 589_824)
 EXCEPTIONAL_POSITIONS = ("first", "last")
-# resample (SP4b Task 4; Task 7 reuses it): cn_resample_filtered's filters 1-11
+# resample: cn_resample_filtered's filters 1-11
 # (native_resample's ResizeFilter values), the (h, w) -> (th, tw) geometries and sets.
 RESAMPLE_FILTERS = tuple(range(1, 12))
 RESAMPLE_GRID = ((29, 31), (43, 37))
@@ -344,7 +343,7 @@ RESAMPLE_EDGES = (((11, 13, 4), (71, 67)), ((37, 50, 3), (19, 25)))
 RESAMPLE_SETS = ("nan", "edges", "inf", "denorm")
 # The bench's Hermite resizes (bench-data/resize-real-256.json; video-resize-h264).
 RESAMPLE_BENCH = (((375, 500, 3), (192, 256)), ((720, 1280, 3), (360, 640)))
-# palette (SP4b Task 5): cn_palette_median_cut on a (pixels, channels) src. Any NaN in
+# palette: cn_palette_median_cut on a (pixels, channels) src. Any NaN in
 # the src makes its first split's channel NaN and returns status 6 (empty child), as
 # the original median cut fails at np.min; so the NaN sets' cases are status 6.
 PALETTE_PIXELS = (*range(1, 18), 64, 1000)
@@ -366,7 +365,7 @@ PALETTE_NAN_PIXELS = (64, 1001)
 PALETTE_NAN_CHANNELS = (3, 4)
 PALETTE_NAN_POSITIONS = ("middle", "last")
 PALETTE_NAN_SETS = ("nan", "snan")
-# Group M (SP4b Task 5b): medians inside a tie class, on the zeros mapping; an even and
+# Group M: medians inside a tie class, on the zeros mapping; an even and
 # an odd count, so the even counts' rank middle - 1 is selected too.
 PALETTE_MEDIAN_PIXELS = (1000, 1001)
 PALETTE_MEDIAN_CHANNELS = (1, 3)
@@ -393,10 +392,10 @@ ZERO_WEIGHTS = (
     ("0x3f800000", 6),
 )
 SWEEP_MAX_PIXELS = 300
-# dither (SP4b Task 5): a prepared palette (cn_neighborhood_palette_create, _apply and
+# dither: a prepared palette (cn_neighborhood_palette_create, _apply and
 # _free), cn_neighborhood_dither with a palette (colors 2 and map_size 2, which the
 # palette path ignores) and cn_neighborhood_palette_riemersma. A palette of 300 or more
-# unique finite colors is searched through a kd tree, a smaller one linearly (D12).
+# unique finite colors is searched through a kd tree, a smaller one linearly.
 DITHER_SIZES = (1, 2, 7, 8, 9, 16, 17, 40, 299, 300)
 DITHER_CHANNELS = (1, 3, 4)
 DITHER_SHAPE = (17, 23)  # (h, w)
@@ -421,10 +420,10 @@ _DITHER_FORM_ENTRIES: dict[str, dict[int, tuple[str, ...]]] = {
     "nonfinite": {1: ("0x7f800000",), 2: ("0x7fc12345",)},
     "nanfirst": {0: ("0xffc54321",)},
 }
-# composite (SP4b Task 6): cn_composite_canvas called as native_composite.canvas calls
+# composite: cn_composite_canvas called as native_composite.canvas calls
 # it (composite_geometry()). A case's args are canvas()'s: each layer's h, w and c (bh,
 # bw, bc; oh, ow, oc) and whether it is a constant (a Color: c floats, whose h and w
-# are the other layer's), the mode (0-22), x, y and crop. D13's shortcut blends a full
+# are the other layer's), the mode (0-22), x, y and crop. The shortcut blends a full
 # overlap straight into out: two images of one size at x = y = 0.
 COMPOSITE_SHAPE = (9, 13)  # (h, w)
 COMPOSITE_CHANNELS = (1, 3, 4)
@@ -466,7 +465,7 @@ DAZ_PAIRS = ((3, 3), (4, 3))
 DAZ_MODES = (4, 14)
 COMPOSITE_BENCH = (384, 512, 3)  # parallel-branches: the two blurs, mode 1
 SWEEP_MAX_SIDE = 40
-# blend (SP4b Task 6 Step 6): cn_blend_images(overlay, base, out, pixels, overlay
+# blend: cn_blend_images(overlay, base, out, pixels, overlay
 # channels, base channels, mode) and cn_blend_mode(overlay, base, out, count, mode),
 # both partitioned at 65,536 (pixels or elements). The AVX2 unit's 8-lane form: modes 0
 # (NORMAL) and 1 (MULTIPLY), equal channel counts below 4.
@@ -476,7 +475,7 @@ BLEND_SETS = COMPOSITE_SETS
 SIMD_MODES = (0, 1)
 SIMD_PAIRS = ((1, 1), (3, 3))
 BLEND_DAZ_PIXELS = 17  # group T: 2 groups and a tail at 1 channel, 6 and a tail at 3
-# tail (SP4b Task 8): the spectral filter's C stages around cv2.dft
+# tail: the spectral filter's C stages around cv2.dft
 # (native_spectral_filter.filter2d: cn_spectral_tile stages one channel of a tile of the
 # padded image, with its border, in the float64 transform plane; cn_spectral_multiply
 # multiplies the plane's packed spectrum by the kernel's in place; cn_spectral_store
@@ -570,7 +569,7 @@ CONVERT_DTYPES = (
     "bool",
 )
 CONVERT_OUTPUTS = ("float32", "uint8", "uint16")
-# The bridges' (type, output, normalize) combos with their own loops (SP4b D7):
+# The bridges' (type, output, normalize) combos with their own loops:
 # u8 -> f32 normalized, f32 clamp, f32 copy, f32 -> u8 without and with the clamp.
 HOT_COMBOS = ((2, 0, 1), (0, 0, 1), (0, 0, 0), (0, 1, 0), (0, 1, 1))
 # The conversion grain is 262,144: WIDE_COUNT is one chunk, 589,824 is 3 chunks of
@@ -580,7 +579,7 @@ WIDE_COUNT = 196_613
 LARGE_COUNTS = (589_824, 2_764_800)
 SMALL_COUNTS = tuple(range(1, 18))
 SWEEP_MAX_COUNT = 140_000
-# conversion_small's float32 sets, rotated over the counts (controller ruling).
+# conversion_small's float32 sets, rotated over the counts.
 _SMALL_SETS = ("edges", "snan", "inf")
 _ARRAYS = ("src", "kernel", "dst", "out")
 _CTYPES = {
@@ -593,7 +592,7 @@ _CTYPES = {
 # S1: separable 4551 values, 5 chunks of 911/910 at grain 1024 (first boundary at
 # column 50 of a 123-wide row); convolution 6750/7332/7938 values at padding
 # 0/1/2, 2 chunks at B3's grain 4096 (the manifest's) and one at the convolution
-# grain 16384 (SP4b Task 3e).
+# grain 16384.
 _S1 = {"separable": (37, 41, 3), "convolution": (45, 50, 3)}
 # S2: widths 1 to 2R + 1 with R = 8 (AVX2 lanes); group C's form per entry.
 _C_FORMS = {
@@ -601,8 +600,8 @@ _C_FORMS = {
     "cn_box_separable": (1.5, 2.5),
     "cn_convolution_spatial": (3, 3),
 }
-# separable_tiles (SP4b D9): the row tiles' shapes. The manifest is written from B3
-# before Task 3's geometry sweep chooses B0 (16, 32 or 64), so it holds every
+# separable_tiles: the row tiles' shapes. The manifest is written from B3
+# before the geometry sweep chooses B0 (16, 32 or 64), so it holds every
 # candidate's band edges: a band holds B = max(B0, 4 * ry) rows, which is 20, 32 or 64
 # at ry 5 (ny 11) and B0 at ry <= 4 (every box form). Group H's heights are B - 1, B,
 # B + 1, 2B and 2B + 1 of each.
@@ -610,7 +609,7 @@ TILE_BANDS = (16, 20, 32, 64)
 TILE_HEIGHTS = tuple(
     sorted({n for b in TILE_BANDS for n in (b - 1, b, b + 1, 2 * b, 2 * b + 1)})
 )
-# The forms the tiles serve, per entry: SP4a's and the bench's Gaussians.
+# The forms the tiles serve, per entry: the original and the bench's Gaussians.
 TILE_FORMS = {
     "cn_gaussian_f32": (*ENTRIES["cn_gaussian_f32"].forms, (25, 25), (49, 49)),
     "cn_box_separable": ENTRIES["cn_box_separable"].forms,
@@ -618,7 +617,7 @@ TILE_FORMS = {
 TILE_BENCH = (384, 512, 3)  # the bench's 512x384 images
 TILE_PLANE = (200, 300, 3)  # row_width 900 = 4 (mod 8)
 TILE_SETS = ("clean", "nan", "edges", "mixed")
-# The fallback candidates (D9: R > SEPARABLE_TILE_FLOATS / 16), chosen before Task 3's
+# The fallback candidates (R > SEPARABLE_TILE_FLOATS / 16), chosen before the
 # geometry sweep: (shape, Gaussian form, box form). The first shape's R is 600, above
 # 512 (the 8192-float candidate's limit) but not 2048; at the chosen 32768 it runs in
 # tiles (B 400 for the Gaussian, 404 for the box; R 600, W 32, two bands). The
@@ -629,7 +628,7 @@ TILE_FALLBACKS = (
     ((600, 20, 1), (3, 201), (1.5, 100.5)),
     ((2100, 21, 1), (3, 685), (1.5, 342.5)),
 )
-# No tables (D9: a radius above 4096): (shape, Gaussian form).
+# No tables (a radius above 4096): (shape, Gaussian form).
 TILE_UNTABLED = (((3, 40, 1), (8195, 3)), ((40, 3, 1), (3, 8195)))
 # Indices 6 and 18 of the (5,5) kernel: zero taps, which the convolution skips.
 _ZERO_TAPS = [[6, "0x00000000"], [18, "0x80000000"]]
@@ -641,11 +640,11 @@ _UNWRITTEN_DOUBLE = 0xFFFFFFFFFFFFFFFF
 _CANARY = 32
 # The enforce clamp's reference is upstream's normalize on the reference stack (spec
 # section 3), which this venv evaluates (oracle_clip()). A conversion case re-based on
-# it (rebase()) records this. Task 3b1 re-based 40 cases on NumPy 1.24.4's np.clip;
-# NumPy 2.5.3's gives B3's bits there, so U2 restored them to B3's outputs.
+# it (rebase()) records this. 40 cases were re-based on NumPy 1.24.4's np.clip;
+# NumPy 2.5.3's gives B3's bits there, so they hold B3's outputs again.
 ORACLE = {"oracle": "upstream chaiNNer, CPython 3.14.8, NumPy 2.5.3"}
 # A case whose outputs chaiNNer-C defines where upstream's are not one value: the four
-# dither cases re-based in SP5a-c (Consult 12 R-q), whose palettes hold NaN keys that
+# dither cases re-based, whose palettes hold NaN keys that
 # upstream ties and orders by its random AHashSet. They hold the DLL's outputs.
 PORT = {
     "port": "chaiNNer-C under upstream's measured NaN key order; equal keys are an "
@@ -682,8 +681,8 @@ def _recipe(
     dtype: str = "float32",
     position: int = 0,
 ) -> dict:
-    """A recipe; its dtype is named only when not float32 (the SP4a manifests').
-    A mixed set is rotated by the input's position (D3)."""
+    """A recipe; its dtype is named only when not float32.
+    A mixed set is rotated by the input's position."""
     shift = position if SPECIALS[special]["payloads"] == "mixed" else 0
     recipe = {
         "shape": list(shape),
@@ -721,7 +720,7 @@ def case(
     The convolution kernel holds the case's set unless kernel_holds_set is false
     or the set is mixed: one non-finite tap reaches every output pixel, so src's
     NaN propagation and NaN positions are visible only with a finite kernel
-    (controller ruling, 2026-10-03). The (5,5) kernel always holds two zero taps,
+    The (5,5) kernel always holds two zero taps,
     and then kernel_specials.
     """
     spec = ENTRIES[entry]
@@ -760,7 +759,7 @@ def _matrix_case(
         parts.append(f"{spec.place}{place}")
     parts += [f"{spec.mirror}{mirror}", special, mxcsr, "x".join(map(str, shape))]
     # The seed key leaves out the MXCSR state, so default and daz_ftz twins share
-    # their inputs (review I1).
+    # their inputs.
     return case(
         "-".join(parts),
         entry,
@@ -822,11 +821,11 @@ def _conversion_matrix_case(
 
 
 def _conversion_matrix(kernel: str) -> list[Case]:
-    """D3's groups for cn_pixels_convert_checked (ids group-tToOnN-set-mxcsr-count).
+    """The groups for cn_pixels_convert_checked (ids group-tToOnN-set-mxcsr-count).
 
     conversion: A (72), every (type, output, normalize) at WIDE_COUNT, float32 on
     nan and every other dtype on bits, default MXCSR, plus daz_ftz twins of the six
-    float32 combos (D4's denormal-bearing DAZ cases); L (40), each hot combo at the
+    float32 combos (the denormal-bearing DAZ cases); L (40), each hot combo at the
     LARGE_COUNTS, float32 on clean and snan, uint8 on bits and ramp, both states;
     T (4), ties for (0,1,0) and (0,1,1), both states.
     conversion_small: S (204), each hot combo at counts 1-17 in both states;
@@ -876,13 +875,13 @@ def _conversion_matrix(kernel: str) -> list[Case]:
 
 
 def _conversion_sweep(kernel: str, count: int, seed: int) -> list[Case]:
-    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (D4).
+    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n>.
 
     Per case, in this order: the combo (from the kernel's matrix), special set,
     MXCSR state, element count in 1-SWEEP_MAX_COUNT and a variant in 0-5: a
     float32 src takes the set, and for the clean set the variant picks the signed,
     tiny (denormal) or bits mapping (raw bits: every magnitude, so scaled values
-    beyond int32 and at its bounds; review M2); a uint8 src takes bits or ramp by
+    beyond int32 and at its bounds); a uint8 src takes bits or ramp by
     the variant, another dtype bits.
     """
     rng = np.random.Generator(np.random.PCG64(seed))
@@ -950,7 +949,7 @@ def _border_case(
 
 
 def _border_matrix() -> list[Case]:
-    """convolution_border's groups (SP4b D8, review focus 1).
+    """convolution_border's groups.
 
     R (108): the 61-tap reach, (1,61) on (3, n, c) and (61,1) on (n, 5, c) for n in
     REACH_SIZES, c 1 or 3 by n, paddings 0/1/2, fused 0/8, clean, default MXCSR.
@@ -1013,7 +1012,7 @@ def _border_matrix() -> list[Case]:
 
 
 def _border_sweep(count: int, seed: int) -> list[Case]:
-    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (D4).
+    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n>.
 
     Per case, in this order: the form, padding, fused value, set and MXCSR state
     from the manifest's values; h and w in 1-64; one case in eight then draws h in
@@ -1125,7 +1124,7 @@ def _lens_matrix() -> list[Case]:
 
 
 def _lens_sweep(count: int, seed: int) -> list[Case]:
-    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (D4).
+    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n>.
 
     Per case, in this order: accumulate, pair, set and MXCSR state from the
     manifest's values, the element count in 1-SWEEP_MAX_COUNT, and a clean case's
@@ -1235,7 +1234,7 @@ def _power_matrix() -> list[Case]:
 
 
 def _power_sweep(count: int, seed: int) -> list[Case]:
-    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (D4).
+    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n>.
 
     Per case, in this order: channels, exponent, set and MXCSR state from the
     manifest's values, pixels in 1-(SWEEP_MAX_COUNT // channels) (at most
@@ -1366,7 +1365,7 @@ def _exceptional_matrix_case(
 
 
 def _morph_matrix() -> list[Case]:
-    """morphology's groups (SP4b D3; ids group-entry-form-set-mxcsr-shape, and for X
+    """morphology's groups (ids group-entry-form-set-mxcsr-shape, and for X
     X-position-word-mxcsr-count).
 
     A (216): cn_morphology_complete, every MORPH_FORMS form (shape x radius x
@@ -1485,7 +1484,7 @@ def _morph_matrix() -> list[Case]:
 
 
 def _morph_sweep(count: int, seed: int) -> list[Case]:
-    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (D4).
+    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n>.
 
     Per case, in this order: the entry; for cn_image_exceptional the element count in
     1-SWEEP_MAX_COUNT, the word, position and MXCSR state; otherwise each MORPH_FORMS
@@ -1642,7 +1641,7 @@ def _resample_matrix() -> list[Case]:
 
 
 def _resample_sweep(count: int, seed: int) -> list[Case]:
-    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (D4).
+    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n>.
 
     Per case, in this order: the filter, gamma, vector_clip, channels (1-4), set (clean
     or RESAMPLE_SETS) and MXCSR state; h and w in 1-64, then one case in eight draws h in
@@ -1753,7 +1752,7 @@ def _palette_nan_case(position: str, pixels: int, channels: int, special: str) -
 
 
 def _palette_matrix() -> list[Case]:
-    """palette's groups (SP4b D3; ids group-kCAPACITY-mapping-set-mxcsr-PIXELSxCHANNELS,
+    """palette's groups (ids group-kCAPACITY-mapping-set-mxcsr-PIXELSxCHANNELS,
     group N's with the position for the mapping).
 
     A (171): every PALETTE_PIXELS count (index i) x PALETTE_CHANNELS (index ci) x
@@ -1763,7 +1762,7 @@ def _palette_matrix() -> list[Case]:
     channels x capacities x PALETTE_TIES (edges and denorm on unit, clean on tiny), both
     states: zero-class ties in the extrema, and under DAZ in the median and the counts.
     N (16): PALETTE_NAN_POSITIONS x PALETTE_NAN_PIXELS x PALETTE_NAN_CHANNELS x
-    PALETTE_NAN_SETS (_palette_nan_case). M (16, SP4b Task 5b): PALETTE_MEDIAN_PIXELS x
+    PALETTE_NAN_SETS (_palette_nan_case). M (16): PALETTE_MEDIAN_PIXELS x
     PALETTE_MEDIAN_CHANNELS x PALETTE_MEDIAN_CAPACITIES on zeros, clean, both states:
     medians whose ranks fall inside a tie class.
     """
@@ -1813,7 +1812,7 @@ def _palette_matrix() -> list[Case]:
 
 
 def _palette_sweep(count: int, seed: int) -> list[Case]:
-    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (D4).
+    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n>.
 
     Per case, in this order: pixels in 1-SWEEP_MAX_PIXELS, channels, capacity, set
     (PALETTE_SETS) and MXCSR state, and a clean src's mapping, unit or tiny.
@@ -1932,7 +1931,7 @@ def _dither_matrix_case(
 
 
 def _dither_matrix() -> list[Case]:
-    """dither's groups (SP4b D3; ids group-kind-form-nCOUNT-mMODEaALGORITHM-set-mxcsr-
+    """dither's groups (ids group-kind-form-nCOUNT-mMODEaALGORITHM-set-mxcsr-
     shape; kind apply, dither or riemersma, whose mode is labelled m3a0).
 
     On (*DITHER_SHAPE, c) unless named. P (60): cn_neighborhood_palette_apply, every
@@ -2040,7 +2039,7 @@ def _dither_matrix() -> list[Case]:
 
 
 def _dither_sweep(count: int, seed: int) -> list[Case]:
-    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (D4).
+    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n>.
 
     Per case, in this order: the entry; the form (DITHER_FORMS); colors in
     1-SWEEP_MAX_COLORS; channels; the mode (apply: 0, 2 or 3; cn_neighborhood_dither: 0
@@ -2186,11 +2185,11 @@ def _composite_matrix_case(
 
 
 def _composite_matrix() -> list[Case]:
-    """composite's groups (SP4b D3, Task 6; ids as _composite_matrix_case's).
+    """composite's groups (ids as _composite_matrix_case's).
 
     Layers are two COMPOSITE_SHAPE images unless named. In each group but T and B the
     k-th case takes the set COMPOSITE_SETS[k % 4] under the state (k // 4) % 2. S (72):
-    D13's shortcut, every COMPOSITE_PAIRS channel pair p x SHORTCUT_MODES m (k = 8 p +
+    The shortcut, every COMPOSITE_PAIRS channel pair p x SHORTCUT_MODES m (k = 8 p +
     m) at a full overlap (x = y = 0), crop (p + m) % 2. N (40): the near misses, every
     NEAR_MISSES kind x NEAR_PAIRS x NEAR_MODES. A (69): every mode x BLEND_PATHS at a
     full overlap. G (40): GEOMETRY_PAIRS x the overlay COMPOSITE_SMALL at every
@@ -2264,7 +2263,7 @@ def _composite_matrix() -> list[Case]:
 
 
 def _composite_sweep(count: int, seed: int) -> list[Case]:
-    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (D4: a
+    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (a
     geometry by canvas()'s rules with sizes 1-SWEEP_MAX_SIDE).
 
     Per case, in this order: the layers' kind (0 a constant base, 1 a constant overlay,
@@ -2408,7 +2407,7 @@ def _blend_matrix_case(
 
 
 def _blend_matrix() -> list[Case]:
-    """blend's groups (SP4b D3, Task 6 Step 6; ids as _blend_matrix_case's).
+    """blend's groups (ids as _blend_matrix_case's).
 
     In each group but T the k-th case takes _rotated(k)'s set and state. M (207):
     cn_blend_images, every mode x BLEND_PAIRS, the k-th at SMALL_COUNTS[k % 17] pixels.
@@ -2453,7 +2452,7 @@ def _blend_matrix() -> list[Case]:
 
 
 def _blend_sweep(count: int, seed: int) -> list[Case]:
-    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (D4).
+    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n>.
 
     Per case, in this order: the entry; for cn_blend_images whether it takes the AVX2
     unit's 8-lane form (one in four), then the mode and (overlay, base) channels from
@@ -2677,7 +2676,7 @@ def _tail_matrix_case(
 
 
 def _tail_matrix() -> list[Case]:
-    """tail's groups (SP4b D3, Task 8; ids as _tail_matrix_case's). _rotated(k) gives
+    """tail's groups (ids as _tail_matrix_case's). _rotated(k) gives
     the k-th case's set and state where named.
 
     cn_spectral_tile. G (30): SPECTRAL_SHAPE, every padding x border x SPECTRAL_TILES
@@ -2824,7 +2823,7 @@ def _tail_matrix() -> list[Case]:
 
 
 def _sweep_height(rng: np.random.Generator) -> int:
-    """An image height by D4: 1-64, then one case in eight redraws it in 65-300."""
+    """An image height: 1-64, then one case in eight redraws it in 65-300."""
     height = int(rng.integers(1, 65))
     if int(rng.integers(8)) == 0:
         height = int(rng.integers(65, 301))
@@ -2832,7 +2831,7 @@ def _sweep_height(rng: np.random.Generator) -> int:
 
 
 def _tail_sweep(count: int, seed: int) -> list[Case]:
-    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (D4).
+    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n>.
 
     Per case, in this order: the entry; then cn_spectral_tile: h (_sweep_height), w in
     1-64, c (1/3/4), padding (0/2), kh and kw in 1-33, the tile's y in [0, oh) and x in
@@ -2947,14 +2946,14 @@ def _tile_forms(
 
 
 def _tiles_matrix() -> list[Case]:
-    """separable_tiles' groups (SP4b D9, review focus 1; ids as matrix()'s).
+    """separable_tiles' groups (ids as matrix()'s).
 
     H (128): each TILE_HEIGHTS height at width 13 with 3 channels, the Gaussian
     (21, 11) at borders 1/2/4 and the box (3.25, 4), lanes 4/8. G (14): TILE_PLANE,
     the same forms plus the Gaussian (49, 49) at borders 1/2/4, lanes 4/8. F (16):
     each TILE_FALLBACKS shape with its Gaussian form at borders 1/2/4 and its box
     form, lanes 4/8. N (6): each TILE_UNTABLED pair at borders 1/2/4, lanes 8. W (96):
-    height 7, widths 18-33 (Task 9's 16-lane groups), channels 1/3/4, lanes 8, the
+    height 7, widths 18-33, channels 1/3/4, lanes 8, the
     Gaussian (21, 11) at border (1, 2, 4)[w % 3] and the box (1.5, 2.5). P (3):
     TILE_BENCH with the bench's Gaussians (21, 11), (25, 25) and (49, 49) at border 2
     (native_gaussian's cv2.BORDER_REFLECT), lanes 8. All of these clean at the default
@@ -3031,7 +3030,7 @@ def _tiles_matrix() -> list[Case]:
 
 
 def _tiles_sweep(count: int, seed: int) -> list[Case]:
-    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n> (D4).
+    """`count` cases drawn from Generator(PCG64(seed)), ids sweep-<seed>-<n>.
 
     Per case, in this order: the entry, its form from TILE_FORMS, lanes, border (the
     Gaussian), set and MXCSR state; h and w in 1-64, then one case in eight draws h in
@@ -3089,7 +3088,7 @@ def matrix(kernel: str) -> list[Case]:
     wide mirror, clean. D (separable): S3 (heights 1-17 at 9x3), Gaussian (1,3),
     both lanes, clean. E: S1, every form at border 4 / padding 1, both mirror
     values, clean, both MXCSR states, src in the denormal range (mapping tiny), so
-    every (entry, form, mirror value) has a DAZ-sensitive golden (review I1).
+    every (entry, form, mirror value) has a DAZ-sensitive golden.
     """
     if kernel in CONVERSION_KERNELS:
         return _conversion_matrix(kernel)
@@ -3262,7 +3261,7 @@ def sweep_cases(kernel: str, count: int, seed: int) -> list[Case]:
 
 @lru_cache(maxsize=1)
 def ties() -> np.ndarray:
-    """float32 values at every rounding tie of 255.0f * v (D3), read-only.
+    """float32 values at every rounding tie of 255.0f * v, read-only.
 
     Per k in [-260, 260]: the float32 nearest (k + 0.5) / 255 and its two
     neighbours, then, when one exists and is not among them, the float within 4
@@ -3297,9 +3296,9 @@ def make_array(recipe: dict) -> np.ndarray:
     float32 (the default dtype): unit: (raw >> 40) * 2**-24 in [0, 1); signed:
     ((raw >> 40) - 2**23) * 2**-23 in [-1, 1); both exact. tiny: the 24 bits
     (raw >> 40) as the float's bits, half denormals and half the smallest normals,
-    with no float operation. grid (SP4b Task 5): (raw >> 62) * 0.25, so 0, 0.25, 0.5
+    with no float operation. grid: (raw >> 62) * 0.25, so 0, 0.25, 0.5
     or 0.75, with -0 for 0 when bit 61 is set: every difference, square and sum of
-    three squares is exact, so equal distances are exact ties. zeros (SP4b Task 5b):
+    three squares is exact, so equal distances are exact ties. zeros:
     (raw >> 58) indexes the 64 words of ZERO_WEIGHTS (each word repeated by its weight,
     in order), with no float operation. ties: ties(). Any dtype: bits: the raw words'
     little-endian bytes reinterpreted as the dtype; ramp: arange(n) % 256.
@@ -3377,7 +3376,7 @@ def digest(array: np.ndarray, payloads: str) -> str:
 
 
 def digest_int(value: int) -> str:
-    """SHA-256 of an int output as its little-endian int32 (D3)."""
+    """SHA-256 of an int output as its little-endian int32."""
     return hashlib.sha256(int(value).to_bytes(4, "little", signed=True)).hexdigest()
 
 
@@ -3459,7 +3458,7 @@ def convert(
     element: the call runs twice, into out pre-filled 0x00 with events 0 and into
     out pre-filled 0xff with events -1, and both runs must agree. out is followed
     by a _CANARY-byte tail of the same fill, which must stay unchanged: a write past
-    count (a vector group past the last chunk's end) fails the call (review M3).
+    count (a vector group past the last chunk's end) fails the call.
     """
     if src.ndim != 1 or not src.flags.c_contiguous:
         raise ValueError(f"{name}: src must be 1-D and C-contiguous")
@@ -3521,7 +3520,7 @@ def _run_conversion(dll: Library, case: Case) -> dict[str, str]:
 
 
 def clamps(args: dict) -> bool:
-    """Whether a conversion runs the enforce clamp (D7: normalize, or any type but
+    """Whether a conversion runs the enforce clamp (normalize, or any type but
     float32) on a float32 or float64 src, the combos whose reference is the oracle."""
     return args["type"] == 1 or (args["type"] == 0 and bool(args["normalize"]))
 
@@ -4179,7 +4178,7 @@ def _run_caption(dll: Library, case: Case) -> dict[str, str]:
     return {"out": digest(out.reshape(shape), case.payloads)}
 
 
-# Entries whose outputs are not one float32 array, or whose B3 form differs (D3).
+# Entries whose outputs are not one float32 array, or whose B3 form differs.
 ADAPTERS: dict[str, Callable[[Library, Case], dict[str, str]]] = {
     CONVERT_ENTRY: _run_conversion,
     LENS_ENTRY: _run_lens,
@@ -4294,7 +4293,7 @@ def rebased_ids(path: Path, marker: dict[str, str] = ORACLE) -> list[str]:
 
 def rebase(dll_path: Path, kernel: str, path: Path) -> None:
     """Re-base the conversion manifest at path, written from dll_path, on the oracle
-    (Task 3b1; plan, Protected: only the cases whose behavior the parity fix moves).
+    (only the cases whose behavior the parity fix moves).
 
     Every case runs again through the DLL. A case whose reference (oracle_outputs())
     differs from the DLL's outputs takes the reference and records ORACLE; it must

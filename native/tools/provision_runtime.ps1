@@ -8,7 +8,7 @@ from their forks' release wheels as the lock's direct-URL pins, the rest from Py
 fails unless pip check is clean, pip's version is the header's and pip freeze equals the pins line for line. The lock
 is not written.
 -Relock is the deliberate upgrade step, followed by the full acceptance: the archive checked against the release's
-SHA256SUMS, the backend's dependencies at their latest versions (the 2026-10-06 Python-stack upgrade, the ruling),
+SHA256SUMS, the backend's dependencies at their latest versions,
 then the freeze and a new lock (the freeze under a header with the interpreter, the archive's SHA-256 and pip's version).
 -BuildOnly provisions what native\Build.ps1 needs and nothing else: the lock's CPython, downloaded and checked as
 above, with only the lock's numpy and pybind11 pins (no torch, no pip check or freeze comparison). The full run on the
@@ -175,7 +175,7 @@ if ($BuildOnly) {
 }
 
 # chainner-pip from the backend's bundled wheel, which the host would otherwise install into the package at first
-# launch (Consult 6 P2). Resolved by name from that directory only, so the freeze pins its version, not a file path.
+# launch. Resolved by name from that directory only, so the freeze pins its version, not a file path.
 # ROCm's meta package the same way, from its own directory.
 $Wheels = Join-Path $Root 'backend\src\dependencies\whls\chainner-pip'
 $RocmWheels = Join-Path $Root 'backend\src\dependencies\whls\rocm'
@@ -193,7 +193,7 @@ if ($Relock) {
         'google-re2',  # oracle/reference only (upstream's onnx/load.py imports re2)
         'Sanic-Cors==2.2.0',  # oracle/reference only (upstream's server imports sanic_cors)
         # spandrel: the fork's build (DRFT, DUAL, SST, WSR, GaterV3, SMoSR, FIGSR, GFISRv2), the wheel on its release
-        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c18/spandrel-0.4.2%2Bc18-py3-none-any.whl#sha256=21b56e9b3a1b5fce4bc8f0d2063bbc8c2cea29fec3df8e862b012d7cc87ee585',
+        'spandrel @ https://github.com/Rift73/spandrel/releases/download/v0.4.2-c21/spandrel-0.4.2%2Bc21-py3-none-any.whl#sha256=470a105f33470f1a2cd5a3b6900f3b00329875e9ab20a473e02298d0295df362',
         'spandrel_extra_arches', 'facexlib', 'einops', 'safetensors',
         $OnnxRuntimePin,
         'onnx', 'onnxoptimizer', 'protobuf', 'ncnn==1.0.20260526',

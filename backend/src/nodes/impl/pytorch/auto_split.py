@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import gc
-import math
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,7 +19,7 @@ from ..upscale.bounded_tiler import BoundedTiler
 from ..upscale.tile_report import TileReport
 from ..upscale.white_pass import current_white_pass
 from .offload import offloaded
-from .utils import on_device, safe_cuda_cache_empty
+from .utils import is_finite, is_out_of_memory, on_device, safe_cuda_cache_empty
 
 
 class _Stopped(Exception):
@@ -150,11 +149,6 @@ def _channels_last_input(
     )
 
 
-def _is_finite(img: np.ndarray) -> bool:
-    # NaN propagates through min and max: two passes and no temporary array
-    return math.isfinite(img.min()) and math.isfinite(img.max())
-
-
 def _interleaved(t: torch.Tensor) -> tuple[np.ndarray, bool] | None:
     """A (1, C, H, W) or (C, H, W) float16 or float32 output, rows contiguous, as
     the BGR(A) float32 image the device permute, flip and CPU cast make, interleaved
@@ -185,9 +179,11 @@ def pytorch_auto_split(
     progress: Progress,
     use_bf16: bool = False,
     report: TileReport | None = None,
+    expected_bytes_per_pixel: float | None = None,
 ) -> np.ndarray:
     """`use_bf16` runs an FP32 model's forward in BF16 on the CPU (autocast: the
-    weights stay FP32)."""
+    weights stay FP32). `expected_bytes_per_pixel` is the model's whole-image estimate,
+    for the activation offload (offloaded)."""
     dtype = torch.float16 if use_fp16 else torch.float32
     model = on_device(model, device, dtype)
     channels_last = _channels_last_input(model, device, dtype, use_bf16)
@@ -221,9 +217,9 @@ def pytorch_auto_split(
                 input_tensor = input_tensor.clone(memory_format=torch.channels_last)
 
             # inference; activations past the GPU's memory go to RAM, not the driver's overflow
-            with offloaded(model.model, input_tensor), torch.autocast(
-                "cpu", torch.bfloat16, enabled=use_bf16
-            ):
+            with offloaded(
+                model.model, input_tensor, expected_bytes_per_pixel
+            ), torch.autocast("cpu", torch.bfloat16, enabled=use_bf16):
                 output_tensor = _forward_or_stopped(model, input_tensor, progress)
             if output_tensor is None:
                 # The kernels already queued end inside the node, so the memory is
@@ -241,36 +237,20 @@ def pytorch_auto_split(
                 # NaN or infinity, or an output the interleave does not read
                 output_tensor = _into_standard_image_form(output_tensor)
                 output_tensor = _rgb_to_bgr(output_tensor)
-                result = output_tensor.detach().cpu().detach().float().numpy()
-                finite = interleaved is None and _is_finite(result)
+                result = output_tensor.detach().cpu().float().numpy()
+                finite = interleaved is None and is_finite(result)
         except (RuntimeError, MemoryError) as e:
-            # Out of memory: the device's or the host's (torch's RuntimeError, or
-            # NumPy's MemoryError for the converted output)
-            if (
-                isinstance(e, torch.OutOfMemoryError)
-                or isinstance(e, MemoryError)
-                or "allocate" in str(e).lower()
-                or "out of memory" in str(e).lower()
-                or "ALLOC_FAILED" in str(e)
-            ):
-                # Collect garbage (clear VRAM)
-                if input_tensor is not None:
-                    try:
-                        input_tensor.detach().cpu()
-                    except Exception:
-                        pass
-                    del input_tensor
-                gc.collect()
-                safe_cuda_cache_empty()
-                return Split()
-            else:
-                # Re-raise the exception if not an OOM error
+            if not is_out_of_memory(e):
                 raise
+            input_tensor = None
+            gc.collect()
+            safe_cuda_cache_empty()
+            return Split()
 
         # Saving turns NaN into black pixels. NaN already in the input passes through;
         # NaN the model made from a finite tile is an error, raised at the first such
         # tile instead of after the whole image.
-        if not finite and _is_finite(img):
+        if not finite and is_finite(img):
             message = (
                 f"The {model.architecture.name} model returned invalid values (NaN or"
                 " infinity), which would be saved as black pixels."

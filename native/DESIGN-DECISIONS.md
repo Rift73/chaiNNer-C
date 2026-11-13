@@ -1,6 +1,6 @@
 # chaiNNer-C design decisions
 
-The key decisions and why they were taken. The published history is one commit, so this file is the record of the
+The key decisions and why they were taken. The published history is one commit per release, so this file is the record of the
 reasoning. Each entry: the decision, why, then where it lives. Mechanics: `ARCHITECTURE.md`. Commands: `README.md`.
 Checklists for changing any of this: `MAINTAINING.md`.
 
@@ -9,10 +9,11 @@ Checklists for changing any of this: `MAINTAINING.md`.
 - **Upstream chaiNNer, with its CPU image nodes in C/C++.** The app, node graph, schemas, saved chains and UI stay
   upstream's; only how the CPU nodes compute changes, so chains and behavior carry over. `native/` (kernels and
   modules), `backend/src/nodes/impl/native*.py` (bridges).
-- **Outputs match upstream.** The reference (the oracle) is upstream's own backend code, run on the same Python stack
-  with the same inputs, not a frozen copy. Where upstream is undefined or defective, the port does the deterministic,
-  correct thing and records it. `native/tools/make_oracle.py`, `native/tests/oracle/compat.diff`, the runtime
-  verifiers; `ARCHITECTURE.md` section 7 lists every accepted difference and test tolerance.
+- **chaiNNer-C's own judged outputs are the reference.** Converted nodes began bit-exact against upstream's own
+  backend code on the same Python stack (the oracle: `native/tools/make_oracle.py`, `native/tests/oracle/compat.diff`,
+  the runtime verifiers); parity with upstream is no longer required. Where upstream is undefined or defective, the
+  port does the deterministic, correct thing and records it; `ARCHITECTURE.md` section 7 lists every accepted
+  difference and test tolerance.
 - **Retained engines stay engines.** OpenCV/IPP, NumPy's BLAS/LAPACK, FFmpeg, FreeType and the inference frameworks
   are called, never wrapped or renamed and counted as a conversion. `ARCHITECTURE.md` sections 7 and 8.
 
@@ -138,9 +139,11 @@ Checklists for changing any of this: `MAINTAINING.md`.
   source of `npm run make`.
 - **Its own app-data folder.** From source, `%APPDATA%\chaiNNer-C` (`src/main/platform.ts`); the package keeps its
   profile inside its folder (`portable` marker). An installed chaiNNer's `%APPDATA%\chaiNNer` is never touched.
-- **No update check.** An independent edition never checks upstream releases, and old settings cannot re-enable it.
-  `src/renderer/components/Header/AppInfo.tsx`; both bundle patches force `checkForUpdatesOnStartup` off.
-- **Version label.** The UI shows `v0.3.11` (header, About, startup log, system information) while `app.getVersion()`
+- **Its own releases only.** The update check reads chaiNNer-C's releases, never upstream's; Update now downloads the
+  latest zip, checks its SHA-256 and installs it over the folder. `src/renderer/helpers/github.ts`,
+  `src/renderer/components/Header/AppInfo.tsx`, `src/main/updater.ts`; the package's bundle patches force
+  `checkForUpdatesOnStartup` off.
+- **Version label.** The UI shows `v0.3.12` (header, About, startup log, system information) while `app.getVersion()`
   stays upstream's, since it stamps saved chains that upstream's migrations read. `src/common/version.ts`,
   `independent_ui.PRODUCT_VERSION`.
 
@@ -149,7 +152,7 @@ Checklists for changing any of this: `MAINTAINING.md`.
 - **Source plus an optional release zip.** The source tree is the product; `npm run make` builds a release from `src/`
   with `backend/src` (binaries included) as an extra resource, and its zip gets a `portable` marker
   (`forge.config.js`). The local portable package (`package_port.py`) is the artifact the acceptance gates test.
-- **A single commit on the upstream base** (`d56e507f`), so the diff against upstream is the whole change; the working
-  history stays local.
+- **One commit per release**, the first on the upstream base (`d56e507f`), each later one on the previous release, so
+  each release's diff is its whole change; the working history stays local.
 - **Local-only files never ship.** Git-ignored: `native/reports/` (evidence), `docs/superpowers/` (planning records),
   `native/local/` (local overlays), `native/runtime/`, `out/`.

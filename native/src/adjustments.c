@@ -24,8 +24,8 @@ static cn_status checked_buffers(const float *src, size_t source_count,
     return CN_OK;
 }
 
-/* The channel-aware kernels run flat over gapless memory in any axis order (D-16:
- * np.clip's order-K layout). With channel stride s in elements, the memory holds
+/* The channel-aware kernels run flat over gapless memory in any axis order
+ * (np.clip's order-K layout). With channel stride s in elements, the memory holds
  * runs of s elements of one channel that cycle through the channels: element i is
  * channel (i / s) % channels, and its pixel's channel k sits at i + (k - c) * s.
  * Interleaved memory has s = 1; a planar (c, h, w) base has s = h * w. Every run
@@ -43,7 +43,7 @@ typedef struct adjustment_job {
    original Python scalar arithmetic, and individual float operations intentionally
    match NumPy's float32 stages. ALPHA is the same pixel's channel 3, read only by
    ops 5 and 6. Op 6 keeps a zero channel of a zero-alpha pixel at 0, where
-   upstream divides 0 by 0 (NaN in every transparent black pixel; 2026-10-23).
+   upstream divides 0 by 0 (NaN in every transparent black pixel).
    A statement macro, so each loop below compiles as written: an inline function
    costs the interleaved clamp about 7 %. */
 #define ADJUST_ELEMENT(job, x, c, a, b, ALPHA)                                    \
@@ -176,7 +176,7 @@ static float cached_powf(pow_cache *cache, float x, float exponent) {
 static inline float leveled(const levels_job *job, pow_cache caches[2], float x, size_t c) {
     if (job->channels == 1 || (job->mask & (1u << c))) {
         /* Equal input black and white is a step at that level, 1 at or above it, where upstream divides 0 by 0
-           for a value exactly at it (NaN; 2026-10-23). */
+           for a value exactly at it (NaN). */
         if (job->span == 0.0f && x == job->black) x = 1.0f;
         else x = (x - job->black) / job->span;
         x = cn_numpy_clip_f32(x, 0.0f, 1.0f);

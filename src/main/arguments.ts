@@ -107,20 +107,29 @@ export const parseArgs = (args: readonly string[]): ParsedArguments => {
         refresh: parsed.refresh,
     };
 
-    const command = (parsed._[0] as ParsedArguments['command'] | undefined) ?? 'open';
+    // `_` holds the command, if one was given, and the switches the parser does not know (Chromium's)
+    const command: ParsedArguments['command'] = parsed._[0] === 'run' ? 'run' : 'open';
+    // A switch the parser does not know before the chain leaves the chain's positional empty and
+    // the chain in `_`. Chromium's switches never take a separate value (only --name=value), so
+    // the chain is the first argument after the command that is not a switch.
+    const file =
+        parsed.file ||
+        parsed._.slice(parsed._[0] === command ? 1 : 0).find(
+            (arg): arg is string => typeof arg === 'string' && !arg.startsWith('-')
+        );
 
     switch (command) {
         case 'open':
             return {
                 command: 'open',
-                file: parsed.file,
+                file,
                 devtools: parsed.devtools,
                 ...options,
             };
         case 'run':
             return {
                 command: 'run',
-                file: parsed.file!,
+                file: file ?? '',
                 overrideFile: parsed.override,
                 ...options,
             };

@@ -11,31 +11,6 @@ from nodes.utils.utils import get_h_w_c
 from .. import quantize_group
 
 
-def add_xy(img: np.ndarray, scale: float) -> np.ndarray:
-    h, w, _ = get_h_w_c(img)
-    x = np.linspace(0, 1, w)
-    y = np.linspace(0, 1, h)
-    xx, yy = np.meshgrid(x, y)
-    return np.dstack((img, xx * scale, yy * scale))
-
-
-def quantize_image(image: np.ndarray, palette: np.ndarray):
-    _, _, c = get_h_w_c(image)
-    # Flatten image and palette for easy computation
-    flat_img = image.reshape((-1, c))
-    flat_palette = palette.reshape((-1, c))
-
-    # For each pixel, find the nearest color in the palette
-    distances = np.linalg.norm(flat_img[:, np.newaxis] - flat_palette, axis=2)
-    closest_palette_idx = np.argmin(distances, axis=1)
-    quantized_img_flat = flat_palette[closest_palette_idx]
-
-    # Reshape the quantized pixels to the original image shape
-    quantized_img = quantized_img_flat.reshape(image.shape)
-
-    return quantized_img
-
-
 @quantize_group.register(
     schema_id="chainner:image:quantize_to_referece",
     name="Quantize to Reference",

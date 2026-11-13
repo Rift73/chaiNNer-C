@@ -8,7 +8,7 @@ import operator
 import cv2
 import numpy as np
 
-from .native import check, f32, lib, ptr
+from .native import check, image_f32, lib, ptr
 from .native_image_setup import exceptional
 from .native_opencv_simd import float32_lanes, target
 from .native_versions import CV_CN_MAX
@@ -43,8 +43,6 @@ _lib.cn_morphology_complete.argtypes = [
     _n,
 ]
 _lib.cn_morphology_complete.restype = ct.c_int
-_lib.cn_morphology_ellipse_spans.argtypes = [_n, ct.POINTER(_n)]
-_lib.cn_morphology_ellipse_spans.restype = ct.c_int
 _lib.cn_filter_quantize_reference.argtypes = [
     _p,
     _p,
@@ -66,13 +64,6 @@ for _name in (
     getattr(_lib, "cn_filter_" + _name).restype = ct.c_int
 
 
-def _image(image: np.ndarray) -> tuple[np.ndarray, int]:
-    source = f32(image)
-    if source.ndim not in (2, 3) or any(n == 0 for n in source.shape):
-        raise ValueError(f"Invalid image shape {source.shape}")
-    return source, source.shape[2] if source.ndim == 3 else 1
-
-
 def arithmetic(
     image: np.ndarray,
     operation: int,
@@ -85,13 +76,13 @@ def arithmetic(
     clip: bool = False,
     out: np.ndarray | None = None,
 ) -> np.ndarray:
-    source, _ = _image(image)
+    source, _ = image_f32(image)
     operands: list[np.ndarray | None] = [source]
     for value in (b, c, d):
         if value is None:
             operands.append(None)
         else:
-            converted, _ = _image(value)
+            converted, _ = image_f32(value)
             if converted.shape != source.shape:
                 raise ValueError("Filter operands must have identical shapes")
             operands.append(converted)
@@ -163,7 +154,7 @@ def normalize_lens(
 def morphology(
     image: np.ndarray, shape: int, radius: int, iterations: int, *, maximum: bool
 ) -> np.ndarray:
-    source, channels = _image(image)
+    source, channels = image_f32(image)
     radius = operator.index(radius)
     iterations = operator.index(iterations)
     if radius < 0 or iterations < 0:
@@ -214,8 +205,8 @@ def morphology(
 def quantize_reference(
     image: np.ndarray, reference: np.ndarray, radius: int, spatial: float
 ) -> np.ndarray:
-    source, channels = _image(image)
-    palette, palette_channels = _image(reference)
+    source, channels = image_f32(image)
+    palette, palette_channels = image_f32(reference)
     if channels != palette_channels:
         raise ValueError("Image and reference must have matching channels")
     result = np.empty_like(source)
@@ -300,7 +291,7 @@ def binary_sdf(image_u8: np.ndarray, spread: float) -> np.ndarray:
 
 def subpixel_sdf(image: np.ndarray, radius: float) -> np.ndarray:
     """Complete C ESDF variant selected by the Distance Transform node."""
-    source, channels = _image(image)
+    source, channels = image_f32(image)
     if channels != 1:
         raise ValueError("Subpixel distance transform requires one image channel")
     function = _lib.cn_distance_esdf

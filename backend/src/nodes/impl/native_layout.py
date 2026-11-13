@@ -14,6 +14,7 @@ from .native import (
     check,
     empty_ordered,
     f32,
+    image_shape,
     lib,
     numpy_order,
     ordered_layout,
@@ -32,14 +33,6 @@ for _name in ("pad", "paste", "zstack", "pixelate", "rotate_u8"):
     getattr(_lib, "cn_layout_" + _name).restype = ct.c_int
 
 
-def _shape(image: object) -> tuple[int, int, int]:
-    if not isinstance(image, np.ndarray) or image.dtype != np.float32:
-        raise TypeError("C image kernels require a native-endian float32 NumPy array")
-    if image.ndim not in (2, 3) or any(size == 0 for size in image.shape):
-        raise ValueError("Expected a nonempty two- or three-dimensional image")
-    return image.shape[0], image.shape[1], image.shape[2] if image.ndim == 3 else 1
-
-
 def _paste(
     source: np.ndarray,
     out: np.ndarray,
@@ -49,8 +42,8 @@ def _paste(
     width: int,
     expand_gray: bool,
 ) -> None:
-    h, w, c = _shape(source)
-    oh, ow, oc = _shape(out)
+    h, w, c = image_shape(source)
+    oh, ow, oc = image_shape(out)
     if (
         min(top, left) < 0
         or min(height, width) < 1
@@ -87,7 +80,7 @@ def pad(
     left: int,
     output_size: tuple[int, int] | None = None,
 ) -> np.ndarray:
-    h, w, c = _shape(image)
+    h, w, c = image_shape(image)
     if min(top, right, bottom, left) < 0:
         raise ValueError("Padding must not be negative")
     if max(top, right, bottom, left) > 2**31 - 1:
@@ -163,7 +156,7 @@ def stack(images: Sequence[np.ndarray | None], orientation: str) -> np.ndarray:
     items = [image for image in images if image is not None]
     if not items:
         raise ValueError("No images in sequence to stack")
-    shapes = [_shape(image) for image in items]
+    shapes = [image_shape(image) for image in items]
     if orientation not in ("horizontal", "vertical"):
         raise AssertionError(f"Invalid orientation '{orientation}'")
     max_h, max_w = max(s[0] for s in shapes), max(s[1] for s in shapes)
@@ -179,7 +172,7 @@ def stack(images: Sequence[np.ndarray | None], orientation: str) -> np.ndarray:
         if expanded_c < max_c:
             # Upstream allocates a promoted image at the largest height and width: a
             # one-pixel strip broadcasts to them (kept), any other size failed with
-            # NumPy's broadcast error and now keeps its own size (2026-10-23).
+            # NumPy's broadcast error and keeps its own size here.
             if th in (1, max_h) and tw in (1, max_w):
                 th, tw = max_h, max_w
         targets.append((th, tw))
@@ -204,7 +197,7 @@ def merge_spritesheet(
     items = list(images[: rows * columns])
     if not items:
         raise ValueError("need at least one array to concatenate")
-    shapes = [_shape(image) for image in items]
+    shapes = [image_shape(image) for image in items]
     c, ndim = shapes[0][2], items[0].ndim
     if any(
         shape[2] != c or image.ndim != ndim
@@ -268,7 +261,7 @@ def z_stack(images: Sequence[np.ndarray | None], mode: str) -> np.ndarray:
     assert 2 <= len(items) <= 15, (
         f"Number of images must be between 2 and 15 ({len(items)})"
     )
-    shapes = [_shape(image) for image in items]
+    shapes = [image_shape(image) for image in items]
     assert all(shape == shapes[0] for shape in shapes), (
         "All images must have the same dimensions and channels"
     )
@@ -285,7 +278,7 @@ def z_stack(images: Sequence[np.ndarray | None], mode: str) -> np.ndarray:
 
 
 def pixelate(image: np.ndarray, size_x: int, size_y: int) -> np.ndarray:
-    h, w, c = _shape(image)
+    h, w, c = image_shape(image)
     if not 1 <= size_x <= 1024 or not 1 <= size_y <= 1024:
         raise ValueError("Pixel blocks must be between 1 and 1024 pixels")
     source = f32(image)
@@ -295,7 +288,7 @@ def pixelate(image: np.ndarray, size_x: int, size_y: int) -> np.ndarray:
 
 
 def rotate_quarters(image: np.ndarray, quarter: int, transparent: bool) -> np.ndarray:
-    h, w, c = _shape(image)
+    h, w, c = image_shape(image)
     if quarter not in (0, 1, 2, 3) or c not in (1, 2, 3, 4):
         raise ValueError("Unsupported right-angle rotation")
     if transparent:

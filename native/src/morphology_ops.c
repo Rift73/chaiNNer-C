@@ -238,9 +238,9 @@ CN_EXPORT cn_status cn_morphology_ellipse_spans(size_t radius, size_t *spans)
 }
 
 /* The image-size scratch (horizontal, alternate, queue) is one lease of the shared
- * pool, every buffer written before it is read (D10); the ellipse spans stay a small
+ * pool, every buffer written before it is read; the ellipse spans stay a small
  * malloc. Iteration i writes out when (iterations - 1 - i) is even, else alternate,
- * so the last writes out (ping-pong, D11). */
+ * so the last writes out (ping-pong). */
 CN_EXPORT cn_status cn_morphology_complete(const float *src, float *out,
     size_t height, size_t width, size_t channels, size_t radius, size_t iterations,
     int shape, int maximum, size_t lanes)
@@ -310,7 +310,7 @@ CN_EXPORT cn_status cn_morphology_complete(const float *src, float *out,
             status = cn_parallel_for(count, 512, ordered_rectangle, &ctx);
         } else if (deques) {
             /* One horizontal pass per half-width and one combine per run of offsets dy
-             * sharing it (B3 ran a combine per dy). The half-width falls with dy, so
+             * sharing it. The half-width falls with dy, so
              * the offsets of half-width 0, whose row extrema are current's own bits,
              * end the list and join the run before them. */
             size_t dy = 0;

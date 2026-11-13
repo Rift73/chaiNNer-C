@@ -1,4 +1,4 @@
-/* chaiNNer-C's default PNG encoder (decision 2026-10-21; GPL-3.0): every row filtered by libpng's MinSum rule
+/* chaiNNer-C's default PNG encoder (GPL-3.0): every row filtered by libpng's MinSum rule
  * (png_encode_shared.h), the rows cut into bands that libdeflate 1.26 (vendored, third_party/libdeflate) compresses at
  * level 6 in parallel on the native pool, each band's DEFLATE data a piece of one zlib stream: a band ends with an
  * empty non-final stored block (the vendored libdeflate_deflate_compress_nonfinal patch), the last band ends the
@@ -26,7 +26,7 @@
 /* Bands: at most PNG_MAX_BANDS, each with at least PNG_MIN_BAND_BYTES of filtered rows and PNG_MIN_BAND_ROWS rows,
  * so a small image takes the bands it can fill (one below 32 KiB), and at most PNG_MAX_BAND_BYTES each (with a row's
  * bytes added by the split), so a band's data stays far below a chunk's limit of 2^31 - 1 bytes. 16 KiB (measured
- * 2026-10-21 on 16 threads): larger minimums leave images of 128^2 to 768^2 pixels with fewer bands than the pool can
+ * on 16 threads): larger minimums leave images of 128^2 to 768^2 pixels with fewer bands than the pool can
  * run (up to 3.5x slower at 256 KiB), smaller ones gain nothing more (the pool's dispatch and libdeflate's set-up per
  * band dominate); each band costs some compression, about 1 % at 512^2 RGB against 256 KiB bands. */
 #define PNG_MAX_BANDS 32

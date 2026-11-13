@@ -41,6 +41,16 @@ class _Fp32Convolution(nn.Module):
     bias: torch.Tensor | None
 
     def __init__(self, source: nn.Conv2d) -> None:
+        # Its forward takes the stride and padding alone
+        if (
+            source.dilation != (1, 1)
+            or source.groups != 1
+            or source.padding_mode != "zeros"
+        ):
+            raise ValueError(
+                "The first convolution of this model has a dilation, groups or padding"
+                " mode the FP16 export's FP32 input does not take."
+            )
         super().__init__()
         bias = source.bias
         self.register_buffer("weight", source.weight.detach().float())

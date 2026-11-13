@@ -196,9 +196,9 @@ class VideoSeekInput(NumberInput):
     """A video node's seek bar: the number of a frame in the video (0 is the first).
 
     The app's seek bar spans the node's Frame Count output and steps by its FPS output (both
-    as the node's last run reported them), and its In and Out buttons set the node's frame
-    range: `frames_input` (an enum with the values "all" and "range") to "range" and
-    `in_input` or `out_input` to the frame. It has no handle."""
+    as the node's last run reported them), and its Set start and Set end buttons set the
+    node's frame range: `frames_input` (an enum with the values "all" and "range") to
+    "range" and `in_input` or `out_input` to the frame. It has no handle."""
 
     def __init__(
         self,

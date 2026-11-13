@@ -315,12 +315,13 @@ def _video_track(container: InputContainer) -> VideoStream:
     (cover art, which an MP4 lists first when its metadata stands before its tracks),
     else the first, as video_io.cpp probe_metadata picks ffprobe's entry."""
     tracks = container.streams.video
+    first = tracks[0]
     if len(tracks) > 1:
         for track in tracks:
             disposition = track.disposition
             if not disposition & type(disposition).attached_pic:
                 return track
-    return tracks[0]
+    return first
 
 
 def _variable_timestamps(
@@ -1297,6 +1298,29 @@ def preview_frame(node_id: str, loader: VideoLoader, n: int) -> np.ndarray:
         raise
     _keep_preview(node_id, reader)
     return image
+
+
+def previewed(path: str) -> bool:
+    """Whether a kept preview reader holds the file at `path` open (Save Video names it
+    when it cannot replace that file)."""
+    with _previews_lock:
+        paths = [reader.path for reader in _previews.values()]
+    for held in paths:
+        try:
+            if os.path.samefile(held, path):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def close_preview(node_id: str) -> None:
+    """Closes node `node_id`'s preview reader, if it has one (the node was cleared or
+    removed), so its file is no longer held open."""
+    with _previews_lock:
+        reader = _previews.pop(node_id, None)
+    if reader is not None:
+        _close_readers([reader])
 
 
 def close_previews() -> None:

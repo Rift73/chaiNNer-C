@@ -53,11 +53,11 @@ def get_settings(context: NodeContext) -> TensorRTSettings:
 
     timing_cache_path = settings.get_cache_location("timing_cache")
     if timing_cache_path and not os.path.exists(timing_cache_path):
-        os.makedirs(timing_cache_path)
+        os.makedirs(timing_cache_path, exist_ok=True)
         logger.info("Created TensorRT timing cache at: %s", timing_cache_path)
     engine_cache_path = settings.get_cache_location("engine_cache")
     if engine_cache_path and not os.path.exists(engine_cache_path):
-        os.makedirs(engine_cache_path)
+        os.makedirs(engine_cache_path, exist_ok=True)
         logger.info("Created TensorRT engine cache at: %s", engine_cache_path)
 
     return TensorRTSettings(

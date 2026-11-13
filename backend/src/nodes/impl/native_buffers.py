@@ -39,7 +39,7 @@ _TYPES = {
 
 # lru_cache does not serialize first calls. Two at once would each set argtypes on the
 # function objects their getattr misses create, and one thread's object can replace the
-# other's on the library (SP3b audit A8), so the body runs one thread at a time.
+# other's on the library, so the body runs one thread at a time.
 _api_lock = Lock()
 
 
@@ -54,7 +54,6 @@ def _api():
             ct.c_void_p,
         )
         for name, signature in {
-            "cn_pixels_convert": [void, void, size, integer, integer, integer],
             "cn_pixels_convert_checked": [
                 void,
                 void,
@@ -129,18 +128,16 @@ def _gapless(image: np.ndarray) -> np.ndarray | None:
     return ordered if ordered.flags.c_contiguous else None
 
 
-def converted_pixels(
-    image: np.ndarray, bits: int = 0, normalized: bool = False
-) -> np.ndarray | None:
-    """Return None only for explicitly retained dtype/scalar conversion semantics.
+def converted_pixels(image: np.ndarray, bits: int = 0) -> np.ndarray | None:
+    """image as float32 (bits 0), uint8 or uint16; None for a dtype the C conversion
+    does not take, or a 0-d array.
 
     The result has np.clip's layout: np.empty_like(image, order="K"), so a node's
     permuted output (Lens Blur's transposed plane) keeps its strides, as upstream's
     ImageOutput passes them on. The conversion runs flat over both arrays in that
     order; the source is copied first only if it has gaps.
 
-    Integer output always saturates to [0, 1] before quantization. ``normalized``
-    remains a compatibility argument; it no longer permits integer wraparound.
+    Integer output always saturates to [0, 1] before quantization.
     """
     if bits not in (0, 8, 16):
         raise ValueError("Expected float32 normalization, uint8 or uint16 output")

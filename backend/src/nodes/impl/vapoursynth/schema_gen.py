@@ -9,6 +9,11 @@ postprocess=vsaa.NNEDI3(...).deinterlace)`. Every name a statement uses is
 module-qualified (`import vsdenoise`, `vsdenoise.bm3d(...)`), so that no two imports
 of a script can shadow each other; plugins go through the script's `core`.
 
+Pop-ups: an input, Method entry or class entry with a text (catalog's Method.docs,
+doc, choice_docs) shows it when the pointer rests on it (a hint input; a dropdown
+option's description), followed by a line naming the Python parameter and its default,
+or the call, so that the node can be matched to scripts and documentation.
+
 Input ids: 0 main clip, 1 Method, 2 Simple/Advanced, 3 Use as filter; every other id is
 catalog.input_ids' hash of family/method/parameter, so saved chains keep their values
 when the catalog changes. A value an input cannot take (a choice a newer catalog
@@ -75,13 +80,22 @@ _CLIP_KINDS = ("clip", "optional_clip")
 # The parameter name a filter's lambda gives the clip.
 _FILTER_CLIP = "clip"
 # The label of a **kwargs parameter.
-_MORE = "More arguments"
+_MORE = "More arguments (name: value)"
 # The input id key suffix of a union parameter's Python value input (Adapter.other).
 _OTHER = "#other"
 
 # Icon and description of each family node.
 FAMILY_TEXT: dict[str, tuple[str, str]] = {
-    "Load Clip": ("MdVideoCameraBack", "Opens a video file as a VapourSynth clip."),
+    "Load Clip": (
+        "MdVideoCameraBack",
+        (
+            "Opens a video file as a clip: the start of every VapourSynth chain. Load"
+            " Clip, then filter nodes, then Clip Frames (the frames as images, for Save"
+            " Video or Save Image), Preview Clips or Save Script. Use it instead of Load"
+            " Video: the filters work on a whole clip, and most cannot take single"
+            " frames."
+        ),
+    ),
     "Clip Properties": (
         "ImInfo",
         (
@@ -91,23 +105,35 @@ FAMILY_TEXT: dict[str, tuple[str, str]] = {
     ),
     "Convert Format": (
         "MdChangeCircle",
-        "Converts a clip to another format, bit depth or colour space.",
+        "Converts a clip to another format, bit depth, colour space or range.",
     ),
     "Resize": (
         "MdOutlinePhotoSizeSelectLarge",
-        "Scales, descales, crops and shifts clips.",
+        "Scales, descales, crops, pads, flips and turns clips.",
     ),
     "Cut and Splice": ("MdContentCut", "Cuts, joins and replaces frames."),
     "Planes": ("BsLayersHalf", "Joins, merges and stacks the planes of clips."),
-    "Deinterlace": ("MdVideoLabel", "Deinterlaces, field-matches and decimates."),
+    "Deinterlace": (
+        "MdVideoLabel",
+        (
+            "Deinterlaces, and undoes telecine (detelecine, IVTC): field matching and"
+            " decimation."
+        ),
+    ),
     "Denoise": ("CgEditNoise", "Removes noise."),
     "Sharpen and Blur": ("MdBlurOn", "Sharpens, blurs and cleans up clips."),
     "Anti-alias": ("MdAutoFixHigh", "Smooths jagged edges."),
     "Dehalo": ("MdLens", "Removes halos and ringing."),
     "Deband and Grain": ("MdGradient", "Removes banding and adds grain."),
     "Masks": ("MdOutlineOpacity", "Makes masks: edges, details, ranges, credits."),
-    "Colour": ("MdColorLens", "Adjusts and matches colours."),
-    "Expression": ("MdCalculate", "Computes pixels with expressions."),
+    "Colour": (
+        "MdColorLens",
+        "Levels, local contrast, tone mapping and colour matching.",
+    ),
+    "Expression": (
+        "MdCalculate",
+        "Per-pixel formulas (expressions) and lookup tables.",
+    ),
     "User Functions": (
         "MdInput",
         (
@@ -123,6 +149,49 @@ FAMILY_TEXT: dict[str, tuple[str, str]] = {
             " or a filter goes in a socket, with the name of the argument it is."
         ),
     ),
+}
+# Everyday words node search finds a family node by, beside its method names.
+FAMILY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "Load Clip": (
+        "Load Video",
+        "Open Video",
+        "Video File",
+        "Import Video",
+        "Video Source",
+    ),
+    "Deinterlace": (
+        "Detelecine",
+        "Inverse Telecine",
+        "IVTC",
+        "Telecine",
+        "Pulldown",
+        "Interlaced",
+        "Combing",
+    ),
+    "Resize": ("Upscale", "Downscale", "Descale", "Borders", "Pad", "Rotate"),
+    "Cut and Splice": ("Cut", "Join", "Append", "Concatenate"),
+    "Convert Format": (
+        "RGB",
+        "YUV",
+        "Colour Space",
+        "Colorspace",
+        "Bit Depth",
+        "Range",
+        "Limited",
+        "Full Range",
+    ),
+    "Colour": ("Brightness", "Contrast", "Tone Mapping", "HDR"),
+    "Deband and Grain": ("Banding", "Add Grain", "Film Grain"),
+    "Denoise": ("Noise", "Degrain", "Deblock"),
+    "Sharpen and Blur": ("Sharpen", "Blur", "Sharpness"),
+    "Anti-alias": ("Aliasing", "Jaggies", "Stair Steps"),
+}
+# The nodes a family node's documentation points to.
+FAMILY_SEE_ALSO: dict[str, list[str]] = {
+    "Load Clip": [
+        "chainner:vapoursynth:clip_frames",
+        "chainner:vapoursynth:preview_clips",
+    ],
 }
 _METHOD_HELP = (
     "Pick what the node does in Method; its settings appear below it (Simple shows the"
@@ -155,6 +224,30 @@ _MAIN_HELP = (
     " temporal radius counts as 0, whatever its setting shows: one image has no other"
     " frames."
 )
+_CLASS_HELP = (
+    "Picks the {label} this method runs with; rest the pointer on an entry to see what"
+    " it gives."
+)
+# The connected ones go after Clip, in order; unconnected ones are left out.
+_MORE_CLIP_HELP = (
+    "One more clip for this method, after Clip and the ones above. Leave it"
+    " unconnected when the method needs fewer."
+)
+_MODE_HELP = {
+    "simple": "Shows the main settings of the picked method.",
+    "advanced": "Shows every setting of the picked method, the main ones first.",
+}
+_ROW_HELP = (
+    "One argument of the function, written as name = value with a Python value: a"
+    " number, 'text', True or a list. Example: sigma = 0.8"
+)
+_SOCKET_HELP = (
+    "A clip, or a filter (a node with Use as filter on), for the argument named in"
+    " Argument name {n}."
+)
+_SOCKET_NAME_HELP = (
+    "The name of the argument that Clip or filter {n} fills. Example: ref"
+)
 
 I = TypeVar("I", bound=BaseInput)
 Item = BaseInput | NestedGroup
@@ -169,6 +262,8 @@ OnImage = Callable[
     ],
     np.ndarray,
 ]
+# Adds to a clip a node gives what its node shows of it after the run (Load Clip's).
+OnClip = Callable[[NodeContext, VideoClip], VideoClip]
 
 
 class Dropped:
@@ -213,6 +308,29 @@ def slug(family: str) -> str:
 
 def schema_id(family: str) -> str:
     return f"chainner:vapoursynth:{slug(family)}"
+
+
+def _code(text: str) -> str:
+    """A text as Markdown code (a default may hold a backtick)."""
+    return f"`` {text} ``" if "`" in text else f"`{text}`"
+
+
+def _pop_up(text: str, last: str) -> str:
+    """A pop-up: the text, then the line that names the Python side."""
+    return f"{text}\n\n{last}"
+
+
+def _param_line(param: Param) -> str:
+    """`opt` · default `False`; a parameter without a default is required."""
+    star = {"var_positional": "*", "var_keyword": "**"}.get(param.kind, "")
+    name = _code(star + param.name)
+    if param.default is not None:
+        return f"{name} · default {_code(param.default)}"
+    return name if star else f"{name} · required"
+
+
+def _call_line(method: Method) -> str:
+    return _code(method.call or method.id)
 
 
 def _plain(name: str) -> str:
@@ -400,12 +518,14 @@ class _Family:
         self.has_main = family != LOAD_CLIP
         self.images = self.has_main and any(m.frame_route for m in methods)
         self.switch = family not in NO_FILTER
-        # Common first (methods with an overlay), each part by label; Any Function's
-        # by module (its dropdown groups).
+        # Common first (ranked ones by rank), each part by label; Any Function's by
+        # module (its dropdown groups). The first is a new node's method.
         self.methods = sorted(
             methods,
             key=lambda m: (
                 m.id.split(".", 1)[0] if family == ANY_FUNCTION else not m.common,
+                m.rank is None,
+                m.rank or 0,
                 m.label.lower(),
             ),
         )
@@ -471,14 +591,14 @@ class _Family:
                         _MORE if param.kind == "var_keyword" else _plain(param.name)
                     )
                     start = _start_value(member, param, adapter)
-                    made = adapter.make_input(label, param, ids[method.id, key], start)
+                    made = adapter.make_input(label, ids[method.id, key], start)
                     if method.frame_route and adapter.kind in _CLIP_KINDS:
                         cast(VideoClipInput, made).take_images(SECOND_TYPE)
                     elif method.frame_route and adapter.kind == "clip_or_filter":
                         cast(VSFilterInput, made).take_images(SECOND_FILTER_TYPE)
-                    doc = member.arg_docs.get(param.name)
+                    doc = member.docs.get(param.name)
                     if doc:
-                        made.with_docs(doc)
+                        made.with_docs(doc, _param_line(param), hint=True)
                     choices = frozenset(parsed.variants[init, param.name][param])
                     shown = frozenset() if choices == everyone else choices
                     simple = param.name in method.simple or (
@@ -491,9 +611,9 @@ class _Family:
                     if adapter.other:
                         other = Adapter("extra", name=param.name, optional=True)
                         other_id = ids[method.id, key + _OTHER]
-                        typed = other.make_input(
-                            f"{label} as a Python value", param, other_id
-                        )
+                        typed = other.make_input(f"{label} (other values)", other_id)
+                        if doc:
+                            typed.with_docs(doc, _param_line(param), hint=True)
                         plan.advanced.append((shown, _tolerant(typed)))
                     slot = slots[key] = _Slot(
                         made.id, adapter, label, made.optional, other_id
@@ -512,11 +632,25 @@ class _Family:
         if method.members:
             plan.class_id = ids[method.id, CLASS]
             choices = [m.choice for m in method.members]
+            options: list[DropDownOption] = []
+            for member in method.members:
+                option: DropDownOption = {
+                    "option": member.choice,
+                    "value": member.choice,
+                }
+                text = method.choice_docs.get(member.choice)
+                if text:
+                    option["description"] = _pop_up(text, _call_line(member))
+                options.append(option)
+            label = method.labels.get(CLASS, "Class")
             dropdown = DropDownInput(
                 input_type="string",
-                label=method.labels.get(CLASS, "Class"),
-                options=[{"option": c, "value": c} for c in choices],
+                label=label,
+                options=options,
                 default_value=method.default_choice or choices[0],
+            ).with_docs(
+                method.docs.get(CLASS) or _CLASS_HELP.format(label=label.lower()),
+                hint=True,
             )
             plan.simple.insert(
                 0, (frozenset(), _tolerant(dropdown.with_id(plan.class_id)))
@@ -547,18 +681,21 @@ class _Family:
                 for label, part in (("Common", common), ("All", rest))
                 if part
             ]
-        return _tolerant(
-            DropDownInput(
-                input_type="string",
-                label="Method",
-                options=[self._method_option(m) for m in self.methods],
-                default_value=self.methods[0].id,
-                groups=groups,
-            ).with_id(METHOD_ID)
+        dropdown = DropDownInput(
+            input_type="string",
+            label="Method",
+            options=[self._method_option(m) for m in self.methods],
+            default_value=self.methods[0].id,
+            groups=groups,
         )
+        if self.family != ANY_FUNCTION:
+            dropdown.with_docs(_METHOD_HELP, hint=True)
+        return _tolerant(dropdown.with_id(METHOD_ID))
 
     def _method_option(self, method: Method) -> DropDownOption:
         option: DropDownOption = {"option": method.label, "value": method.id}
+        if method.doc:
+            option["description"] = _pop_up(method.doc, _call_line(method))
         if self.images:
             option["type"] = FRAME_OPTION if method.frame_route else CLIP_OPTION
         return option
@@ -573,7 +710,7 @@ class _Family:
     def _main_input(self) -> Item:
         main = VideoClipInput("Clip")
         if self.images:
-            main.take_images(MAIN_TYPE).with_docs(_MAIN_HELP)
+            main.take_images(MAIN_TYPE).with_docs(_MAIN_HELP, hint=True)
         clip = _tolerant(main.make_optional().with_id(MAIN_ID))
         if self.family == ANY_FUNCTION:
             return clip
@@ -596,22 +733,14 @@ class _Family:
                     input_type="string",
                     label="Inputs",
                     options=[
-                        {"option": "Simple", "value": "simple"},
-                        {"option": "Advanced", "value": "advanced"},
+                        {"option": o, "value": v, "description": _MODE_HELP[v]}
+                        for o, v in (("Simple", "simple"), ("Advanced", "advanced"))
                     ],
                     default_value="simple",
                     preferred_style="tabs",
                 ).with_id(MODE_ID)
             )
         )
-        if self.switch:
-            items.append(
-                _tolerant(
-                    BoolInput("Use as filter", default=False)
-                    .with_id(FILTER_ID)
-                    .with_docs(_FILTER_HELP)
-                )
-            )
         for method in self.methods:
             plan = self.plans[method.id]
             body = _by_choices(plan.simple, plan.class_id)
@@ -625,6 +754,15 @@ class _Family:
             # frontend rejects an empty one and then shows a blank window.
             if body:
                 items.append(if_enum_group(METHOD_ID, method.id)(*body))
+        if self.switch:
+            # Few chains need it: last, under Advanced, and shown while it is on.
+            shown = Condition.enum(MODE_ID, "advanced") | Condition.bool(
+                FILTER_ID, True
+            )
+            switch = BoolInput("Use as filter", default=False).with_id(FILTER_ID)
+            items.append(
+                if_group(shown)(_tolerant(switch.with_docs(_FILTER_HELP, hint=True)))
+            )
         return items
 
 
@@ -646,16 +784,17 @@ def _by_choices(
 
 
 def _more_clip(number: int, method: Method) -> VideoClipInput:
-    clip = VideoClipInput(f"Clip {number}")
+    clip = VideoClipInput(f"Clip {number}").with_docs(_MORE_CLIP_HELP, hint=True)
     return clip.take_images(SECOND_TYPE) if method.frame_route else clip
 
 
 def _any_inputs(images: bool) -> list[Item]:
     rows = [
         _tolerant(
-            TextInput(f"Argument {n}", placeholder="name = value, e.g. sigma = 0.8")
+            TextInput(f"Argument {n}", placeholder="e.g. sigma = 0.8")
             .make_optional()
             .with_id(input_id)
+            .with_docs(_ROW_HELP, hint=True)
         )
         for n, input_id in enumerate(ANY_ROW_IDS, start=1)
     ]
@@ -666,12 +805,14 @@ def _any_inputs(images: bool) -> list[Item]:
         socket = VSFilterInput(f"Clip or filter {n}")
         if images:
             socket.take_images(SECOND_FILTER_TYPE)
+        socket.with_docs(_SOCKET_HELP.format(n=n), hint=True)
         items.append(_tolerant(socket.make_optional().with_id(socket_id)))
         items.append(
             _tolerant(
                 TextInput(f"Argument name {n}", placeholder="e.g. ref")
                 .make_optional()
                 .with_id(name_id)
+                .with_docs(_SOCKET_NAME_HELP.format(n=n), hint=True)
             )
         )
     return items
@@ -804,7 +945,7 @@ def _args(
                 reason = run.reasons.get(slot.input_id)
                 if reason:
                     raise ValueError(f"{slot.label}: {reason}")
-                raise ValueError(f"{slot.label} needs a value.")
+                raise ValueError(slot.adapter.missing(slot.label))
             call.skip(param)
             continue
         if isinstance(value, (VideoClip, VSFilter)):
@@ -876,7 +1017,11 @@ def _statement(
     if not as_filter:
         var = clip_var(node_id)
         stmt = f"{var} = {callee}({call.text()})"
-        return VideoClip(var, stmt, deps, frozenset(imports), node_id, method.many)
+        # A group's member is the group's entry with the picked class or member.
+        label = f"{plan.method.label}: {choice}" if choice else method.label
+        return VideoClip(
+            var, stmt, deps, frozenset(imports), node_id, method.many, label
+        )
     # The callable: the method itself when nothing else is set, a partial with the
     # keyword arguments, a lambda when more positional ones are set.
     if call.positional == [_FILTER_CLIP] and not call.keywords:
@@ -938,7 +1083,13 @@ def _any_statement(
     var = clip_var(node_id)
     stmt = f"{var} = {method.call.replace('(...)', '()')}({call.text()})"
     return VideoClip(
-        var, stmt, tuple(call.deps), _imports(method), node_id, method.many
+        var,
+        stmt,
+        tuple(call.deps),
+        _imports(method),
+        node_id,
+        method.many,
+        method.label,
     )
 
 
@@ -987,6 +1138,7 @@ def _runner(
     plans: Mapping[str, _Plan],
     input_order: Sequence[int],
     on_image: OnImage | None,
+    on_clip: OnClip | None,
 ) -> Callable[..., VideoClip | VSFilter | np.ndarray]:
     def run(context: NodeContext, *values: object) -> VideoClip | VSFilter | np.ndarray:
         by_id = dict(zip(input_order, values))
@@ -1015,7 +1167,10 @@ def _runner(
                 "Images and clips do not mix on one node: connect an image to its Clip"
                 " input too, or a clip here."
             )
-        return write(picked)
+        written = write(picked)
+        if on_clip is not None and isinstance(written, VideoClip):
+            return on_clip(context, written)
+        return written
 
     run.__name__ = f"{slug(family)}_node"
     return run
@@ -1037,6 +1192,7 @@ def _any_methods(methods: Sequence[Method]) -> list[Method]:
                     params=member.params,
                     doc=member.doc,
                     arg_docs=member.arg_docs,
+                    docs=member.docs,
                     simple=member.simple,
                     import_line=member.import_line,
                     search_path=member.search_path,
@@ -1048,9 +1204,10 @@ def _any_methods(methods: Sequence[Method]) -> list[Method]:
     return flat
 
 
-def _keywords(methods: Sequence[Method]) -> list[str]:
-    """What node search finds the node by: method labels and ids, group members."""
-    words: list[str] = []
+def _keywords(family: str, methods: Sequence[Method]) -> list[str]:
+    """What node search finds the node by: everyday words, method labels and ids,
+    group members."""
+    words: list[str] = [*FAMILY_KEYWORDS.get(family, ())]
     for method in methods:
         words += [method.label, method.id, *(m.choice for m in method.members)]
     return list(dict.fromkeys(words))
@@ -1081,9 +1238,11 @@ def register_families(
     enums: Enums | None = None,
     families: Sequence[str] = FAMILIES,
     on_image: OnImage | None = None,
+    on_clip: OnClip | None = None,
 ) -> None:
     """Registers in `group` the node of each of `families` that has methods. `enums`
-    is the catalog's enums map (Catalog.enums); `on_image` runs a node on an image."""
+    is the catalog's enums map (Catalog.enums); `on_image` runs a node on an image;
+    `on_clip` adds to a node's clip what the node shows of it."""
     by_family: dict[str, list[Method]] = {}
     for method in methods:
         if method.id not in EXCLUDED:
@@ -1093,7 +1252,7 @@ def register_families(
         if family == ANY_FUNCTION:
             found = _any_methods(found)
         if found:
-            _register(family, found, group, enums or {}, on_image)
+            _register(family, found, group, enums or {}, on_image, on_clip)
 
 
 def _register(
@@ -1102,6 +1261,7 @@ def _register(
     group: NodeGroup,
     enums: Enums,
     on_image: OnImage | None,
+    on_clip: OnClip | None,
 ) -> None:
     builder = _Family(family, methods, enums)
     if family == ANY_FUNCTION:
@@ -1112,13 +1272,13 @@ def _register(
     flat = _flat(inputs)
     clip_type = OUTPUT_TYPE if builder.images else "VideoClip"
     output = VideoClipOutput(
-        label="Clip or filter" if builder.switch else "Clip",
+        label="Clip",
         output_type=f"if Input3 {{ VSFilter }} else {{ {clip_type} }}"
         if builder.switch
         else clip_type,
         images=builder.images,
     )
-    run = _runner(family, builder.plans, [i.id for i in flat], on_image)
+    run = _runner(family, builder.plans, [i.id for i in flat], on_image, on_clip)
     # For chaiNNer's schema check (CHECK_LEVEL): the inputs' and the output's types.
     types = [i.associated_type for i in flat]
     run.__annotations__ = {
@@ -1137,7 +1297,8 @@ def _register(
         inputs=inputs,
         outputs=[output],
         node_context=True,
-        keywords=_keywords(methods),
+        keywords=_keywords(family, methods),
+        see_also=FAMILY_SEE_ALSO.get(family),
         suggestions=_suggestions(family, builder.methods),
         generated=True,
     )(run)

@@ -56,14 +56,6 @@ class BinaryOpTypes:
     RDIV = 8
 
 
-class CastElementTypes:
-    AUTO = 0
-    FLOAT32 = 1
-    FLOAT16 = 2
-    INT8 = 3
-    BFLOAT16 = 4
-
-
 class EltwiseOpTypes:
     PROD = 0
     SUM = 1
@@ -140,23 +132,6 @@ class ReductionOpTypes:
     L2 = 8
     LOGSUM = 9
     LOGSUMEXP = 10
-
-
-class GridSampleSampleTypes:
-    NEAREST = 1
-    BILINEAR = 2
-    BICUBIC = 3
-
-
-class GridSamplePadModes:
-    ZEROS = 1
-    BORDER = 2
-    REFLECTION = 3
-
-
-class LrnRegionTypes:
-    ACROSS_CHANNELS = 0
-    WITH_CHANNEL = 1
 
 
 class NcnnWeight:
@@ -365,7 +340,3 @@ class NcnnModelWrapper:
                     )
                 multiple *= max(1, int(stride))
         return multiple
-
-    @staticmethod
-    def get_nf_and_in_nc(layer: NcnnLayer) -> tuple[int, int]:
-        return native_ncnn_graph.get_nf(layer)
